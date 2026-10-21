@@ -1,0 +1,31 @@
+# Rust
+/target/
+/spikes/target/
+
+# Compiled binaries (staged builds live under /mnt/c, never in the repo)
+*.mexw64
+*.mexa64
+*.mexmaca64
+*.mexmaci64
+*.dll
+*.so
+*.dylib
+*.pdb
+*.lib
+*.exp
+*.o
+*.obj
+
+# MATLAB
+/build/
+/.buildtool/
+*.asv
+*.autosave
+*.mltbx
+slprj/
+codegen/
+
+# Editors and OS
+.vscode/settings.json
+.DS_Store
+Thumbs.db

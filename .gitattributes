@@ -1,0 +1,18 @@
+# Store text with LF everywhere. MATLAB on Windows reads LF files fine.
+* text=auto eol=lf
+
+# matlab-win has no extension, so name it explicitly: a CRLF copy breaks bash.
+scripts/* text eol=lf
+
+# Build outputs and MATLAB binary formats.
+*.mexw64 binary
+*.mexa64 binary
+*.mexmaca64 binary
+*.mexmaci64 binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.mltbx binary
+*.mat binary
+*.fig binary
+*.png binary

@@ -1,0 +1,38 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "MATLAB: check setup",
+      "type": "process",
+      "command": "${workspaceFolder}/scripts/matlab-win",
+      "args": ["disp(version); disp(matlabroot); disp(pwd)"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MATLAB: run current file",
+      "type": "process",
+      "command": "${workspaceFolder}/scripts/matlab-win",
+      "args": ["--run", "${file}"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "MATLAB: buildtool",
+      "type": "process",
+      "command": "${workspaceFolder}/scripts/matlab-win",
+      "args": ["buildtool ${input:buildTask}"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "buildTask",
+      "type": "pickString",
+      "description": "buildtool task",
+      "options": ["cargo", "mex", "test", "package"],
+      "default": "test"
+    }
+  ]
+}

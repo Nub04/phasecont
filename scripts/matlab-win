@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Run Windows MATLAB from WSL in batch mode, starting in the current WSL folder.
+#
+# Usage:
+#   scripts/matlab-win "disp(version)"        run a MATLAB command
+#   scripts/matlab-win --run path/to/file.m   run a script file
+#
+# Set MATLAB_EXE to pick a specific release, for example:
+#   export MATLAB_EXE="/mnt/c/Program Files/MATLAB/R2026a/bin/matlab.exe"
+set -euo pipefail
+
+if [[ -z "${MATLAB_EXE:-}" ]]; then
+  shopt -s nullglob
+  candidates=( "/mnt/c/Program Files/MATLAB/"R*/bin/matlab.exe )
+  shopt -u nullglob
+  if (( ${#candidates[@]} == 0 )); then
+    echo "matlab-win: no matlab.exe under /mnt/c/Program Files/MATLAB; set MATLAB_EXE" >&2
+    exit 1
+  fi
+  # Glob results are sorted, so the last entry is the newest release.
+  MATLAB_EXE="${candidates[${#candidates[@]}-1]}"
+fi
+
+# MATLAB char literals escape a single quote by doubling it.
+mquote() { printf "%s" "${1//\'/\'\'}"; }
+
+win_cwd="$(mquote "$(wslpath -w "$PWD")")"
+
+if [[ "${1:-}" == "--run" ]]; then
+  file="${2:?usage: matlab-win --run path/to/file.m}"
+  win_file="$(mquote "$(wslpath -w "$(realpath "$file")")")"
+  cmd="run('$win_file')"
+else
+  cmd="${1:?usage: matlab-win \"<MATLAB command>\" | --run file.m}"
+fi
+
+exec "$MATLAB_EXE" -batch "cd('$win_cwd'); $cmd"
