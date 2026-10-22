@@ -6,6 +6,11 @@ use crate::lexer::TokenKind;
 
 const F: FileId = FileId(0);
 
+/// The longest diagnostic message any input may produce, in bytes. A
+/// message quotes at most four pieces of source, each cut to `QUOTE_MAX`
+/// bytes, around less than 100 bytes of fixed text.
+const MESSAGE_MAX: usize = 340;
+
 fn parse(text: &str) -> (Expr, Vec<Diagnostic>) {
     parse_expr_text(F, text)
 }
@@ -733,7 +738,7 @@ fn one_expression_reports_every_independent_mistake() {
     let text = "f(2*, -x^-1, (1+2)";
     assert_eq!(
         codes(text),
-        vec![EXPECTED_EXPRESSION, MISPLACED_PREFIX, UNCLOSED_DELIMITER]
+        vec![UNCLOSED_DELIMITER, EXPECTED_EXPRESSION, MISPLACED_PREFIX]
     );
 }
 
@@ -808,6 +813,9 @@ fn slice_parser_survives_an_empty_or_short_token_list() {
         diags: &mut diags,
     };
     assert!(parse_expr(&mut c).is_error());
+    // Every error node has a diagnostic, even this one.
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].code, EXPECTED_EXPRESSION);
     let (tokens, _) = lex(F, "1");
     let mut c = ExprCursor {
         tokens: &tokens,
@@ -821,70 +829,25 @@ fn slice_parser_survives_an_empty_or_short_token_list() {
 #[test]
 fn codes_are_registered_in_order() {
     let ours = [
-        (
-            EXPECTED_EXPRESSION,
-            4,
-            Severity::Error,
-            "expected an expression",
-        ),
-        (
-            MISSING_OPERATOR,
-            5,
-            Severity::Error,
-            "missing operator between two operands",
-        ),
-        (
-            UNEXPECTED_TOKEN,
-            6,
-            Severity::Error,
-            "unexpected token in an expression",
-        ),
-        (BANG_OPERATOR, 7, Severity::Error, "`!` is not an operator"),
-        (
-            EQUALS_IN_EXPRESSION,
-            8,
-            Severity::Error,
-            "`=` inside an expression",
-        ),
-        (
-            UNCLOSED_DELIMITER,
-            9,
-            Severity::Error,
-            "unclosed `(` or `[`",
-        ),
-        (
-            MISPLACED_PREFIX,
-            10,
-            Severity::Error,
-            "prefix operator in the wrong place",
-        ),
-        (UNARY_PLUS, 11, Severity::Error, "unary `+`"),
-        (BLANK_IN_TOKEN, 12, Severity::Error, "blank inside a token"),
-        (
-            PORTABILITY,
-            13,
-            Severity::Warning,
-            "XPPAUT 8.0 rejects this",
-        ),
-        (
-            PRECEDENCE,
-            14,
-            Severity::Warning,
-            "operator precedence differs from C",
-        ),
-        (
-            UNSUPPORTED_INDEX,
-            15,
-            Severity::Error,
-            "unsupported index form",
-        ),
-        (MALFORMED_IF, 16, Severity::Error, "malformed if expression"),
+        (EXPECTED_EXPRESSION, 4, Severity::Error),
+        (MISSING_OPERATOR, 5, Severity::Error),
+        (UNEXPECTED_TOKEN, 6, Severity::Error),
+        (BANG_OPERATOR, 7, Severity::Error),
+        (EQUALS_IN_EXPRESSION, 8, Severity::Error),
+        (UNCLOSED_DELIMITER, 9, Severity::Error),
+        (MISPLACED_PREFIX, 10, Severity::Error),
+        (UNARY_PLUS, 11, Severity::Error),
+        (BLANK_IN_TOKEN, 12, Severity::Error),
+        (PORTABILITY, 13, Severity::Warning),
+        (PRECEDENCE, 14, Severity::Warning),
+        (UNSUPPORTED_INDEX, 15, Severity::Error),
+        (MALFORMED_IF, 16, Severity::Error),
+        (EXPRESSION_TOO_DEEP, 17, Severity::Error),
     ];
-    for (code, number, severity, summary) in ours {
+    for (code, number, severity) in ours {
         assert_eq!(code, Code(number));
         let entry = CODES.iter().find(|(c, _, _)| *c == code).unwrap();
         assert_eq!(entry.1, severity, "{code}");
-        assert_eq!(entry.2, summary, "{code}");
     }
 }
 
@@ -899,6 +862,10 @@ fn check_spans(text: &str) {
             && text.is_char_boundary(s.start)
             && text.is_char_boundary(s.end)
     };
+    assert!(
+        diags.windows(2).all(|w| w[0].span.start <= w[1].span.start),
+        "{text:?}: diagnostics out of source order: {diags:#?}"
+    );
     for d in &diags {
         assert!(inside(d.span), "{text:?}: {d:#?}");
         if let Some(fix) = &d.fix_it {
@@ -949,22 +916,310 @@ fn parser_keeps_spans_inside_the_text_on_every_short_string() {
     }
 }
 
+/// The height of a tree: 1 for a leaf, plus 1 per level of nodes above it.
+fn height(e: &Expr) -> usize {
+    match e {
+        Expr::Unary { operand, .. } => 1 + height(operand),
+        Expr::Binary { lhs, rhs, .. } => 1 + height(lhs).max(height(rhs)),
+        Expr::Call { args, .. } => 1 + args.iter().map(height).max().unwrap_or(0),
+        Expr::If {
+            cond, then, else_, ..
+        } => 1 + height(cond).max(height(then)).max(height(else_)),
+        _ => 1,
+    }
+}
+
+fn too_deep_count(diags: &[Diagnostic]) -> usize {
+    diags
+        .iter()
+        .filter(|d| d.code == EXPRESSION_TOO_DEEP)
+        .count()
+}
+
 #[test]
-fn deep_nesting_is_an_error_not_a_crash() {
-    let text = format!("{}x{}", "(".repeat(500), ")".repeat(500));
-    let (_, diags) = parse(&text);
-    assert!(diags.iter().any(|d| d.code == UNEXPECTED_TOKEN));
-    let text = format!("2^{}1", "-".repeat(5000));
-    let (_, diags) = parse(&text);
-    assert!(!diags.is_empty());
-    clean(&format!("{}x{}", "(".repeat(50), ")".repeat(50)));
+fn long_chains_and_deep_nesting_are_capped() {
+    // Runs on the default 2 MB test thread. Without the cap the tree for
+    // each of these is thousands of levels deep, and the recursive
+    // `strip_spans`, `Clone` and `Drop` overflow the stack.
+    let n = 10000;
+    let inputs = [
+        vec!["x"; n].join("+"),
+        vec!["x"; n].join("^"),
+        vec!["x"; n].join("*"),
+        vec!["x"; n].join("<"),
+        format!("{}x{}", "(".repeat(n), ")".repeat(n)),
+        format!("{}x{}", "f(".repeat(n), ")".repeat(n)),
+        format!("{}x", "-".repeat(n)),
+        format!("{}0", "not ".repeat(n)),
+        format!("{}x", "!".repeat(n)),
+        format!("{}1", "2^".repeat(n)),
+    ];
+    for text in &inputs {
+        let (e, diags) = parse(text);
+        let head = &text[..20];
+        assert_eq!(too_deep_count(&diags), 1, "{head:?}");
+        assert!(height(&e) <= MAX_DEPTH, "{head:?}: {}", height(&e));
+        let copy = e.clone();
+        let stripped = e.strip_spans();
+        drop(stripped);
+        drop(copy);
+        drop(e);
+    }
+}
+
+#[test]
+fn the_depth_limit_is_exact_for_a_chain() {
+    let text = vec!["x"; MAX_DEPTH].join("+");
+    let e = clean(&text);
+    assert_eq!(height(&e), MAX_DEPTH);
+    let text = vec!["x"; MAX_DEPTH + 1].join("+");
+    let (e, diags) = parse(&text);
+    assert_eq!(codes(&text), vec![EXPRESSION_TOO_DEEP]);
+    assert_eq!(height(&e), MAX_DEPTH);
+    // The diagnostic points at the operator that would go too deep.
+    let at = 2 * MAX_DEPTH - 1;
+    assert_eq!(diags[0].span, sp(at, at + 1));
+}
+
+#[test]
+fn moderate_nesting_is_fine() {
+    clean(&format!("{}x{}", "(".repeat(150), ")".repeat(150)));
+    clean(&format!("{}x{}", "sin(".repeat(150), ")".repeat(150)));
+    clean(&vec!["x"; 150].join("*"));
+}
+
+#[test]
+fn mistakes_after_a_too_deep_part_are_not_lost_on_other_lines() {
+    // The cap ends the expression, but a slice parser on the next line
+    // starts fresh.
+    let text = format!("{}\ny+1", vec!["x"; 300].join("+"));
+    let (tokens, _) = lex(F, &text);
+    let (_, at, diags) = slice(&text, 0);
+    assert_eq!(too_deep_count(&diags), 1);
+    assert_eq!(tokens[at].kind, TokenKind::Newline);
+}
+
+#[test]
+fn messages_stay_short_on_long_input() {
+    let sum = vec!["x"; 150].join("+");
+    let long_a = "a".repeat(5000);
+    let long_b = "b".repeat(5000);
+    let inputs = [
+        vec!["x"; 16000].join("^"),
+        vec!["2x"; 16000].join("/"),
+        vec!["2x"; 16000].join("*"),
+        format!("({sum})*({sum})>({sum})"),
+        format!("({sum})/2({sum})"),
+        format!("({sum})^({sum})^({sum})"),
+        format!("{long_a}+{long_b}&1"),
+        format!("{long_a} {long_b}"),
+        format!("(1){long_b}"),
+        format!("x[{long_b}]"),
+        format!("2*-{long_b}"),
+        format!("{long_a}'"),
+        // The worst case: four long quotes.
+        format!("{long_a}/{}{long_b}", "2".repeat(100)),
+        format!("if({long_a})then(1){long_b}"),
+    ];
+    for text in &inputs {
+        let (_, diags) = parse(text);
+        assert!(!diags.is_empty(), "{:?}", &text[..20]);
+        for d in &diags {
+            assert!(
+                d.message.len() <= MESSAGE_MAX,
+                "{:?}: {} bytes: {}",
+                &text[..20],
+                d.message.len(),
+                d.message
+            );
+        }
+    }
+}
+
+#[test]
+fn long_quotes_are_cut_in_the_middle_at_char_boundaries() {
+    assert_eq!(clip("short"), "short");
+    let s = "é".repeat(100);
+    let c = clip(&s);
+    assert!(c.len() <= QUOTE_MAX + 3, "{}", c.len());
+    assert!(c.contains("..."));
+    assert!(c.starts_with('é') && c.ends_with('é'));
+}
+
+#[test]
+fn semicolon_ends_an_expression_at_any_depth() {
+    // `global 1 x-1 {x=0;y=1}`: the statement parser parses each value.
+    let text = "x=0;y=1";
+    let (tokens, _) = lex(F, text);
+    let (e, at, diags) = slice(text, 2);
+    assert_eq!(e, n("0"));
+    assert_eq!(tokens[at].kind, TokenKind::Semicolon);
+    assert_eq!(at, 3);
+    assert!(diags.is_empty(), "{diags:#?}");
+    let (e, at, diags) = slice(text, 6);
+    assert_eq!(e, n("1"));
+    assert_eq!(tokens[at].kind, TokenKind::Eof);
+    assert!(diags.is_empty(), "{diags:#?}");
+    // Inside parentheses too, so a missing `)` cannot swallow the rest.
+    let text = "f(1;y=2";
+    let (tokens, _) = lex(F, text);
+    let (_, at, diags) = slice(text, 0);
+    assert_eq!(tokens[at].kind, TokenKind::Semicolon);
+    let got: Vec<Code> = diags.iter().map(|d| d.code).collect();
+    assert_eq!(got, vec![UNCLOSED_DELIMITER]);
+    // No false `=` or precedence diagnostics from the next assignment.
+    assert_eq!(codes("x;y=1"), vec![UNEXPECTED_TOKEN]);
+}
+
+#[test]
+fn no_precedence_warning_on_recovered_nodes() {
+    // The lexer reports `$`; nothing else is said about it.
+    let (_, diags) = parse("2*$>1+2");
+    assert_eq!(diags.len(), 1, "{diags:#?}");
+    assert_eq!(diags[0].code, crate::lexer::STRAY_CHARACTER);
+    assert_eq!(codes("a x>1"), vec![BLANK_IN_TOKEN]);
+    assert_eq!(codes("a!=b+1"), vec![BANG_OPERATOR]);
+    assert_eq!(codes("a=b+1"), vec![EQUALS_IN_EXPRESSION]);
+    assert_eq!(codes("2*-x>1"), vec![MISPLACED_PREFIX]);
+    assert_eq!(codes("3< =3+1"), vec![BLANK_IN_TOKEN]);
+    // A valid operand next to a recovered one still has no warning, but a
+    // valid expression elsewhere in the line keeps its own.
+    assert_eq!(
+        codes("(a=b)+(2*x>1)"),
+        vec![EQUALS_IN_EXPRESSION, PRECEDENCE]
+    );
+}
+
+#[test]
+fn precedence_message_does_not_claim_what_xppaut_does_for_implicit_products() {
+    let (_, diags) = parse("2x>1");
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![PORTABILITY, PRECEDENCE]
+    );
+    assert!(!diags[1].message.contains("XPPAUT"), "{}", diags[1].message);
+    assert!(diags[1].message.contains("2(x>1)"), "{}", diags[1].message);
+}
+
+#[test]
+fn a_power_chain_warns_once() {
+    check_one("a^b^c^d", PRECEDENCE, (0, 7), Some(((0, 5), "((a^b)^c)")));
+    assert!(one("a^b^c^d").message.contains("((a^b)^c)^d"));
+    check_one("a**b^c", PRECEDENCE, (0, 6), Some(((0, 4), "(a**b)")));
+    check_one("(a^b)^c^d", PRECEDENCE, (0, 9), Some(((0, 7), "((a^b)^c)")));
+    clean("a^(b^c)");
+    clean("(a^b)^c");
+    assert_eq!(
+        codes(&vec!["x"; 50].join("^")),
+        vec![PRECEDENCE],
+        "one warning for the whole chain"
+    );
+}
+
+#[test]
+fn implicit_multiplication_warning_is_local() {
+    check_one("y*2x", PORTABILITY, (2, 4), Some(((3, 3), "*")));
+    check_one("a+b*c*2x", PORTABILITY, (6, 8), Some(((7, 7), "*")));
+    let d = one("a+b*c*2x");
+    assert!(d.message.contains("`2*x`"), "{}", d.message);
+    assert!(!d.message.contains("b*c"), "{}", d.message);
+}
+
+#[test]
+fn malformed_if_keeps_parsing_after_an_operator() {
+    assert_eq!(
+        codes("if(x)then(1) + 2*-3"),
+        vec![MALFORMED_IF, MISPLACED_PREFIX]
+    );
+    assert_eq!(
+        tree("if(x)then(1)+2"),
+        bin(B::Add, if_(v("x"), n("1"), err()), n("2"))
+    );
+    // A token that cannot go on still skips the rest.
+    assert_eq!(codes("if(x)then(1) 2*-3"), vec![MALFORMED_IF]);
+}
+
+#[test]
+fn bare_range_is_an_error() {
+    check_one("[1..3]", UNSUPPORTED_INDEX, (0, 6), None);
+    assert_eq!(tree("[1..3]"), err());
+    check_one("2*[1..3]", UNSUPPORTED_INDEX, (2, 8), None);
+    // A range after a name is fine (`global 1 x[1..5]-1 {x[j]=0}`).
+    clean("x[1..5]-1");
+}
+
+#[test]
+fn parse_expr_text_accepts_a_trailing_line_end() {
+    clean("x+1\r\n");
+    clean("x+1\n\n");
+    let (_, diags) = parse("x+\r\n1");
+    let got: Vec<(Code, Span)> = diags.iter().map(|d| (d.code, d.span)).collect();
+    assert_eq!(
+        got,
+        vec![
+            (EXPECTED_EXPRESSION, sp(2, 4)),
+            (UNEXPECTED_TOKEN, sp(4, 5))
+        ]
+    );
+}
+
+#[test]
+fn diagnostics_come_in_source_order() {
+    let (_, diags) = parse("2 not x");
+    let got: Vec<(Code, Span)> = diags.iter().map(|d| (d.code, d.span)).collect();
+    assert_eq!(
+        got,
+        vec![(BLANK_IN_TOKEN, sp(1, 2)), (MISPLACED_PREFIX, sp(2, 7))]
+    );
+}
+
+#[test]
+fn operator_symbols_parse_back_to_the_same_operator() {
+    let ops = [
+        B::Add,
+        B::Sub,
+        B::Mul,
+        B::Div,
+        B::Pow,
+        B::StarStar,
+        B::Lt,
+        B::Gt,
+        B::Le,
+        B::Ge,
+        B::Eq,
+        B::And,
+        B::Or,
+    ];
+    for op in ops {
+        let text = format!("a{}b", op.symbol());
+        assert_eq!(clean(&text), bin(op, v("a"), v("b")), "{text:?}");
+    }
 }
 
 #[test]
 fn applying_a_fix_it_removes_the_diagnostic() {
-    for text in [
-        "2*-3", "2 x", "x * * 2", "3< =3", "+x", "a=b", "2x", "2*x>1", "a|b+c", "a^b^c", "2 (x)",
-    ] {
+    let cases = [
+        ("2*-3", bin(B::Mul, n("2"), neg(n("3")))),
+        ("2 x", imp(n("2"), v("x"))),
+        ("x * * 2", bin(B::StarStar, v("x"), n("2"))),
+        ("3< =3", bin(B::Le, n("3"), n("3"))),
+        ("+x", v("x")),
+        ("a=b", bin(B::Eq, v("a"), v("b"))),
+        ("2x", bin(B::Mul, n("2"), v("x"))),
+        ("2*x>1", bin(B::Mul, n("2"), bin(B::Gt, v("x"), n("1")))),
+        ("a|b+c", bin(B::Add, bin(B::Or, v("a"), v("b")), v("c"))),
+        ("a^b^c", bin(B::Pow, bin(B::Pow, v("a"), v("b")), v("c"))),
+        (
+            "a^b^c^d",
+            bin(
+                B::Pow,
+                bin(B::Pow, bin(B::Pow, v("a"), v("b")), v("c")),
+                v("d"),
+            ),
+        ),
+        ("2 (x)", bin(B::Mul, n("2"), v("x"))),
+    ];
+    for (text, expected) in cases {
         let d = one(text);
         let fix = d.fix_it.unwrap();
         let fixed = format!(
@@ -973,10 +1228,11 @@ fn applying_a_fix_it_removes_the_diagnostic() {
             fix.replacement,
             &text[fix.span.end..]
         );
-        let (_, after) = parse(&fixed);
+        let (e, after) = parse(&fixed);
         assert!(
             after.iter().all(|a| a.code != d.code),
             "{text:?} -> {fixed:?}: {after:#?}"
         );
+        assert_eq!(e.strip_spans(), expected, "{text:?} -> {fixed:?}");
     }
 }

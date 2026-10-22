@@ -64,6 +64,8 @@ pub enum TokenKind {
     Pipe,
     /// `!`. The text `!=` gives `Bang` then `Eq`; the parser reports it.
     Bang,
+    /// `;`, which separates the assignments in a `global` block.
+    Semicolon,
     /// `@`, which starts option lines.
     At,
     /// `#` and the rest of the line, without the line terminator.
@@ -146,6 +148,7 @@ impl Lexer<'_> {
                 b'{' => self.single(TokenKind::LBrace, 1),
                 b'}' => self.single(TokenKind::RBrace, 1),
                 b',' => self.single(TokenKind::Comma, 1),
+                b';' => self.single(TokenKind::Semicolon, 1),
                 b'%' => self.single(TokenKind::Percent, 1),
                 b'+' => self.single(TokenKind::Plus, 1),
                 b'-' => self.single(TokenKind::Minus, 1),
@@ -527,6 +530,28 @@ mod tests {
     }
 
     #[test]
+    fn semicolon_separates_global_assignments() {
+        use TokenKind::*;
+        let (tokens, diags) = lex(F, "{x=0;y=1}");
+        assert!(diags.is_empty(), "{diags:#?}");
+        assert_eq!(
+            kinds_of(&tokens),
+            vec![
+                LBrace,
+                name("x"),
+                Eq,
+                n(0.0),
+                Semicolon,
+                name("y"),
+                Eq,
+                n(1.0),
+                RBrace
+            ]
+        );
+        assert_eq!(tokens[4].span, Span::new(F, 4, 5));
+    }
+
+    #[test]
     fn bang_equals_is_two_tokens() {
         use TokenKind::*;
         assert_eq!(kinds("a!=b"), vec![name("a"), Bang, Eq, name("b")]);
@@ -781,7 +806,6 @@ mod tests {
             ("é", "é"),
             ("x = Ω", "Ω"),
             (":", ":"),
-            (";", ";"),
             ("\"", "\""),
             ("~", "~"),
         ] {

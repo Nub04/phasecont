@@ -83,6 +83,7 @@ pub const CODES: &[(Code, Severity, &str)] = &[
     ),
     (Code(15), Severity::Error, "unsupported index form"),
     (Code(16), Severity::Error, "malformed if expression"),
+    (Code(17), Severity::Error, "expression too deep"),
 ];
 
 #[cfg(test)]

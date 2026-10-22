@@ -14,7 +14,11 @@
 //! mistake becomes a diagnostic, the tree gets an [`Expr::Error`] node where
 //! an operand is missing, and parsing goes on so later mistakes are reported
 //! too. Tokens the lexer already reported ([`TokenKind::Unknown`]) are used
-//! as silent placeholders.
+//! as silent placeholders. Precedence warnings are left out for any part of
+//! the tree that came from error recovery, since its reading is a guess.
+//!
+//! No tree is deeper than [`MAX_DEPTH`] levels, so the parser and every
+//! recursive pass over the tree stay within a small stack.
 //!
 //! Parentheses are tracked while parsing, so that the precedence warnings
 //! leave parenthesized operands alone, but they are not kept in the tree.
@@ -48,15 +52,48 @@ pub const BLANK_IN_TOKEN: Code = Code(12);
 pub const PORTABILITY: Code = Code(13);
 /// An operator mix that XPPAUT reads differently from C (`2*x>1`).
 pub const PRECEDENCE: Code = Code(14);
-/// An index form other than `[i1..i2]`, `[j]`, `[j+n]`, `[j-n]`, `[j*n]`.
+/// An index form other than `[i1..i2]`, `[j]`, `[j+n]`, `[j-n]`, `[j*n]`,
+/// or a range `[i1..i2]` that does not follow a name.
 pub const UNSUPPORTED_INDEX: Code = Code(15);
 /// An `if` that is not `if(c)then(a)else(b)`.
 pub const MALFORMED_IF: Code = Code(16);
+/// An expression whose tree would be deeper than [`MAX_DEPTH`].
+pub const EXPRESSION_TOO_DEEP: Code = Code(17);
 
-/// How deeply atoms may nest (parentheses, calls, chains of prefix
-/// operators) before the parser gives up on the rest of the expression.
-/// This keeps pathological input from overflowing the stack.
-const MAX_DEPTH: usize = 100;
+/// The deepest expression tree the parser builds. A leaf has height 1, and
+/// every node adds one level: each operator in a chain such as `x+x+x`,
+/// each prefix operator, call and `if`. Parentheses do not add a level to
+/// the tree, but nesting them counts against the same limit while parsing.
+///
+/// An expression that would go deeper gets one [`EXPRESSION_TOO_DEEP`]
+/// error and the rest of it is skipped. The limit keeps the parser and
+/// every later recursive pass over the tree (`strip_spans`, `Clone`, `Drop`,
+/// `check`, the writer) within a 2 MB stack. 200 levels is far more than a
+/// hand-written model needs.
+const MAX_DEPTH: usize = 200;
+
+/// The longest piece of source text a message quotes, in bytes. Longer text
+/// is cut in the middle, so that the size of a message does not grow with
+/// the size of the expression.
+const QUOTE_MAX: usize = 60;
+
+/// `s` as it should appear in a message: unchanged when it is at most
+/// [`QUOTE_MAX`] bytes, otherwise its start and end joined by `...`.
+fn clip(s: &str) -> String {
+    if s.len() <= QUOTE_MAX {
+        return s.to_string();
+    }
+    let keep = (QUOTE_MAX - 3) / 2;
+    let mut head = keep;
+    while !s.is_char_boundary(head) {
+        head -= 1;
+    }
+    let mut tail = s.len() - keep;
+    while !s.is_char_boundary(tail) {
+        tail += 1;
+    }
+    format!("{}...{}", &s[..head], &s[tail..])
+}
 
 /// A position in a token slice, for the statement parser.
 ///
@@ -72,32 +109,40 @@ pub(crate) struct ExprCursor<'a> {
 
 /// Parses one expression starting at `c.pos` and leaves `c.pos` on the token
 /// that ended it, which is always a stop token: `Newline`, `Eof`, `Comment`,
-/// or at nesting depth 0 `Comma`, `RParen`, `RBracket`, `RBrace` or `LBrace`.
-/// The stop token is not consumed. Other stray tokens are reported and
-/// skipped up to the next stop token.
+/// `;`, or at nesting depth 0 `Comma`, `RParen`, `RBracket`, `RBrace` or
+/// `LBrace`. The stop token is not consumed. Other stray tokens are reported
+/// and skipped up to the next stop token.
 ///
 /// The first token counts as the start of an expression, so a prefix `-` or
-/// `not` is allowed there.
+/// `not` is allowed there. The diagnostics this call adds are sorted by
+/// where they start.
 pub(crate) fn parse_expr(c: &mut ExprCursor) -> Expr {
     if c.tokens.is_empty() {
-        return Expr::Error {
-            span: Span::new(FileId(0), 0, 0),
-        };
+        let span = Span::new(FileId(0), 0, 0);
+        c.diags.push(Diagnostic {
+            code: EXPECTED_EXPRESSION,
+            severity: severity_of(EXPECTED_EXPRESSION),
+            span,
+            message: "expected an expression, found end of the text".to_string(),
+            fix_it: None,
+            notes: Vec::new(),
+        });
+        return Expr::Error { span };
     }
     if c.pos >= c.tokens.len() {
         c.pos = c.tokens.len() - 1;
     }
-    let mut p = Parser {
-        start: c.pos,
-        c,
-        depth: 0,
-    };
-    p.full().expr
+    let before = c.diags.len();
+    let expr = *Parser::new(c).full().expr;
+    c.diags[before..].sort_by_key(|d| d.span.start);
+    expr
 }
 
-/// Lexes `text` and parses it as one expression. Lexer diagnostics come
-/// first. A token left over after the expression, before the end of the
-/// text, is reported as unexpected.
+/// Lexes `text` and parses it as one expression, for tests and tools. Line
+/// ends after the expression are allowed; any other token left over before
+/// the end of the text is reported as unexpected. The diagnostics come
+/// sorted by where they start.
+#[doc(hidden)]
 pub fn parse_expr_text(file: FileId, text: &str) -> (Expr, Vec<Diagnostic>) {
     let (tokens, mut diags) = lex(file, text);
     let mut c = ExprCursor {
@@ -107,36 +152,52 @@ pub fn parse_expr_text(file: FileId, text: &str) -> (Expr, Vec<Diagnostic>) {
         diags: &mut diags,
     };
     let e = parse_expr(&mut c);
-    let mut p = Parser {
-        start: c.pos,
-        c: &mut c,
-        depth: 0,
-    };
-    if p.kind(0) != &TokenKind::Eof {
+    let mut p = Parser::new(&mut c);
+    while *p.kind(0) == TokenKind::Newline {
+        p.advance();
+    }
+    if *p.kind(0) != TokenKind::Eof {
         let span = p.span_at(0);
         let message = format!("unexpected {} after the expression", p.describe(0));
         p.report(UNEXPECTED_TOKEN, span, message, None);
     }
+    diags.sort_by_key(|d| d.span.start);
     (e, diags)
 }
 
-/// A parsed operand plus what the precedence warnings need to know about it.
+/// A parsed operand plus what the precedence warnings and the depth limit
+/// need to know about it.
 struct Parsed {
-    expr: Expr,
+    expr: Box<Expr>,
     /// The operand was written in parentheses.
     parens: bool,
     /// The span including those parentheses.
     outer: Span,
+    /// The height of `expr`: 1 for a leaf, plus 1 per level of nodes.
+    height: usize,
+    /// `expr`, or something inside it, came from error recovery.
+    recovered: bool,
 }
 
 impl Parsed {
-    fn plain(expr: Expr) -> Parsed {
+    fn new(expr: Expr, height: usize, recovered: bool) -> Parsed {
         let outer = expr.span();
         Parsed {
-            expr,
+            expr: Box::new(expr),
             parens: false,
             outer,
+            height,
+            recovered,
         }
+    }
+
+    fn leaf(expr: Expr) -> Parsed {
+        let recovered = expr.is_error();
+        Parsed::new(expr, 1, recovered)
+    }
+
+    fn error(span: Span) -> Parsed {
+        Parsed::new(Expr::Error { span }, 1, true)
     }
 }
 
@@ -144,8 +205,11 @@ struct Parser<'p, 'a> {
     c: &'p mut ExprCursor<'a>,
     /// Token index where the expression began, a prefix position.
     start: usize,
-    /// Current nesting of atoms, checked against [`MAX_DEPTH`].
+    /// Current nesting of atoms, checked against [`MAX_DEPTH`] so that the
+    /// parser's own recursion stays bounded.
     depth: usize,
+    /// [`EXPRESSION_TOO_DEEP`] has been reported for this expression.
+    too_deep_reported: bool,
 }
 
 static EOF: TokenKind = TokenKind::Eof;
@@ -160,18 +224,14 @@ fn severity_of(code: Code) -> Severity {
 /// Tokens that end an expression at nesting depth 0.
 fn is_stop(kind: &TokenKind) -> bool {
     use TokenKind::*;
-    matches!(
-        kind,
-        Newline | Eof | Comment | Comma | RParen | RBracket | RBrace | LBrace
-    )
+    ends_at_any_depth(kind) || matches!(kind, Comma | RParen | RBracket | RBrace | LBrace)
 }
 
-/// Tokens that end an expression at any depth.
-fn is_line_end(kind: &TokenKind) -> bool {
-    matches!(
-        kind,
-        TokenKind::Newline | TokenKind::Eof | TokenKind::Comment
-    )
+/// Tokens that end an expression at any depth, so that a missing `)` cannot
+/// swallow the next line or the next assignment in a `global` block.
+fn ends_at_any_depth(kind: &TokenKind) -> bool {
+    use TokenKind::*;
+    matches!(kind, Newline | Eof | Comment | Semicolon)
 }
 
 /// Tokens that can start an operand, for the juxtaposition rules.
@@ -180,8 +240,43 @@ fn starts_operand(kind: &TokenKind) -> bool {
     matches!(kind, Num(_) | Name(_) | LParen | LBracket | Unknown)
 }
 
+/// Tokens that can come right after a complete operand: a binary operator
+/// (including the ones that are reported but still parsed) or a stop token.
+fn can_follow_operand(kind: &TokenKind) -> bool {
+    use TokenKind::*;
+    is_stop(kind)
+        || matches!(
+            kind,
+            Plus | Minus
+                | Star
+                | Slash
+                | Amp
+                | Pipe
+                | Caret
+                | StarStar
+                | Lt
+                | Gt
+                | Le
+                | Ge
+                | EqEq
+                | Eq
+                | Bang
+        )
+}
+
 fn is_name(kind: &TokenKind, key: &str) -> bool {
     matches!(kind, TokenKind::Name(k) if k == key)
+}
+
+impl<'p, 'a> Parser<'p, 'a> {
+    fn new(c: &'p mut ExprCursor<'a>) -> Self {
+        Parser {
+            start: c.pos,
+            c,
+            depth: 0,
+            too_deep_reported: false,
+        }
+    }
 }
 
 impl Parser<'_, '_> {
@@ -248,12 +343,22 @@ impl Parser<'_, '_> {
         self.c.text.get(span.start..span.end).unwrap_or("")
     }
 
+    /// The text of `span`, shortened for a message with [`clip`].
+    fn quote(&self, span: Span) -> String {
+        clip(self.src(span))
+    }
+
+    /// The text from byte `start` to byte `end`, shortened with [`clip`].
+    fn quote_range(&self, start: usize, end: usize) -> String {
+        clip(self.c.text.get(start..end).unwrap_or(""))
+    }
+
     fn describe(&self, k: usize) -> String {
         match self.kind(k) {
             TokenKind::Newline => "line break".to_string(),
             TokenKind::Eof => "end of the text".to_string(),
             TokenKind::Comment => "comment".to_string(),
-            _ => format!("`{}`", self.src(self.span_at(k))),
+            _ => format!("`{}`", self.quote(self.span_at(k))),
         }
     }
 
@@ -266,6 +371,20 @@ impl Parser<'_, '_> {
             fix_it,
             notes: Vec::new(),
         });
+    }
+
+    /// Reports [`EXPRESSION_TOO_DEEP`] at `span`, once per expression, and
+    /// skips the rest of the expression up to the next stop token.
+    fn too_deep(&mut self, span: Span) {
+        if !self.too_deep_reported {
+            self.too_deep_reported = true;
+            let message = format!(
+                "this expression is more than {MAX_DEPTH} levels deep; split it into \
+                 smaller parts"
+            );
+            self.report(EXPRESSION_TOO_DEEP, span, message, None);
+        }
+        self.skip_to_stop();
     }
 
     /// A fix-it that replaces `span` with its own text in parentheses.
@@ -299,7 +418,7 @@ impl Parser<'_, '_> {
         let mut depth = 0usize;
         loop {
             let kind = self.kind(0);
-            if is_line_end(kind) || (depth == 0 && is_stop(kind)) {
+            if ends_at_any_depth(kind) || (depth == 0 && is_stop(kind)) {
                 return;
             }
             match kind {
@@ -315,7 +434,7 @@ impl Parser<'_, '_> {
 impl Parser<'_, '_> {
     /// One whole expression, then any stray tokens up to a stop token.
     fn full(&mut self) -> Parsed {
-        let parsed = self.level1();
+        let mut parsed = self.level1();
         let kind = self.kind(0);
         if !is_stop(kind) {
             let span = self.span_at(0);
@@ -327,6 +446,7 @@ impl Parser<'_, '_> {
                 self.report(UNEXPECTED_TOKEN, span, message, None);
             }
             self.skip_to_stop();
+            parsed.recovered = true;
         }
         parsed
     }
@@ -341,9 +461,10 @@ impl Parser<'_, '_> {
                 TokenKind::Pipe => BinaryOp::Or,
                 _ => return lhs,
             };
+            let op_span = self.span_at(0);
             self.advance();
             let rhs = self.level2();
-            lhs = self.binary(op, lhs, rhs, false);
+            lhs = self.binary(op, op_span, lhs, rhs, false, false);
         }
     }
 
@@ -364,9 +485,10 @@ impl Parser<'_, '_> {
                 }
                 _ => return lhs,
             };
+            let op_span = self.span_at(0);
             self.advance();
             let rhs = self.unary();
-            lhs = self.binary(op, lhs, rhs, false);
+            lhs = self.binary(op, op_span, lhs, rhs, false, false);
             after_div = op == BinaryOp::Div;
         }
     }
@@ -375,58 +497,88 @@ impl Parser<'_, '_> {
     /// multiplication (a number followed directly by a name or `(`); the
     /// other cases are errors that recover as a multiplication.
     fn juxtaposition(&mut self, lhs: Parsed, after_div: bool) -> Parsed {
-        let left = self.prev().map(|t| (t.kind.clone(), t.span));
-        let right = self.kind(0).clone();
-        let right_span = self.span_at(0);
-        let blank = self.blank_at(0);
-        let gap = self.gap_before(0);
+        // The recursive path keeps only token positions on the stack; the
+        // diagnostics are worked out afterwards in `report_juxtaposition`.
+        let right = self.c.pos;
+        let right_point = self.point_at(0);
         let rhs = self.unary();
-        let left_kind = left.as_ref().map(|(k, _)| k);
+        let recovered = self.report_juxtaposition(right, &lhs, &rhs, after_div);
+        self.binary(BinaryOp::Mul, right_point, lhs, rhs, true, recovered)
+    }
+
+    /// Reports the juxtaposition whose right operand starts at token index
+    /// `right_at` and returns true unless it is valid implicit
+    /// multiplication.
+    fn report_juxtaposition(
+        &mut self,
+        right_at: usize,
+        lhs: &Parsed,
+        rhs: &Parsed,
+        after_div: bool,
+    ) -> bool {
+        let tokens = self.c.tokens;
+        let Some(right_tok) = tokens.get(right_at) else {
+            return true;
+        };
+        let left_tok = right_at.checked_sub(1).and_then(|i| tokens.get(i));
+        let left_kind = left_tok.map(|t| &t.kind);
+        let right = &right_tok.kind;
+        let right_span = right_tok.span;
+        let right_point = Span::new(right_span.file, right_span.start, right_span.start);
+        let blank = right_tok.preceded_by_blank;
+        let gap = Span::new(
+            right_span.file,
+            left_tok.map_or(right_span.start, |t| t.span.end.min(right_span.start)),
+            right_span.start,
+        );
         let silent = lhs.expr.is_error()
             || rhs.expr.is_error()
             || matches!(left_kind, Some(TokenKind::Unknown))
-            || right == TokenKind::Unknown;
-        if !silent {
-            let numeric_left = matches!(left_kind, Some(TokenKind::Num(_)));
-            let word_left = match left_kind {
-                Some(TokenKind::Num(_)) => true,
-                Some(TokenKind::Name(k)) => !matches!(k.as_str(), "not" | "if" | "then" | "else"),
-                _ => false,
-            };
-            let word_right = matches!(right, TokenKind::Num(_) | TokenKind::Name(_));
-            let insert_star = FixIt {
-                span: Span::new(right_span.file, right_span.start, right_span.start),
-                replacement: "*".to_string(),
-            };
-            if numeric_left && !blank && matches!(right, TokenKind::Name(_) | TokenKind::LParen) {
-                let l = self.src(lhs.outer).to_string();
-                let r = self.src(rhs.outer).to_string();
-                let mut message = format!(
-                    "XPPAUT 8.0 rejects implicit multiplication; write `{l}*{r}` instead of `{l}{r}`"
-                );
-                if after_div {
-                    message.push_str(&format!("; note that `{l}{r}` reads as `({l})*{r}`"));
-                }
-                let span = lhs.outer.to(rhs.outer);
-                self.report(PORTABILITY, span, message, Some(insert_star));
-            } else if word_left && word_right && blank {
-                let left_span = left.as_ref().map_or(gap, |(_, s)| *s);
-                let message = format!(
-                    "XPPAUT deletes this blank and joins `{}` and `{}` into one word; \
-                     delete the blank or add an operator",
-                    self.src(left_span),
-                    self.src(right_span)
-                );
-                self.report(BLANK_IN_TOKEN, gap, message, Some(Self::delete_fix(gap)));
-            } else {
-                let message = format!(
-                    "missing operator before `{}`; write `*` to multiply",
-                    self.src(right_span)
-                );
-                self.report(MISSING_OPERATOR, right_span, message, Some(insert_star));
-            }
+            || *right == TokenKind::Unknown;
+        if silent {
+            return true;
         }
-        self.binary(BinaryOp::Mul, lhs, rhs, true)
+        let numeric_left = matches!(left_kind, Some(TokenKind::Num(_)));
+        let word_left = match left_kind {
+            Some(TokenKind::Num(_)) => true,
+            Some(TokenKind::Name(k)) => !matches!(k.as_str(), "not" | "if" | "then" | "else"),
+            _ => false,
+        };
+        let word_right = matches!(right, TokenKind::Num(_) | TokenKind::Name(_));
+        let insert_star = FixIt {
+            span: right_point,
+            replacement: "*".to_string(),
+        };
+        let left_span = left_tok.map_or(gap, |t| t.span);
+        if numeric_left && !blank && matches!(right, TokenKind::Name(_) | TokenKind::LParen) {
+            let l = self.quote(left_span);
+            let r = self.quote(rhs.outer);
+            let mut message =
+                format!("XPPAUT 8.0 rejects implicit multiplication; write `{l}*{r}`");
+            if after_div {
+                let quotient = self.quote(lhs.outer);
+                message.push_str(&format!("; note that this reads as `({quotient})*{r}`"));
+            }
+            let span = left_span.to(rhs.outer);
+            self.report(PORTABILITY, span, message, Some(insert_star));
+            return false;
+        }
+        if word_left && word_right && blank {
+            let message = format!(
+                "XPPAUT deletes this blank and joins `{}` and `{}` into one word; \
+                 delete the blank or add an operator",
+                self.quote(left_span),
+                self.quote(right_span)
+            );
+            self.report(BLANK_IN_TOKEN, gap, message, Some(Self::delete_fix(gap)));
+        } else {
+            let message = format!(
+                "missing operator before `{}`; write `*` to multiply",
+                self.quote(right_span)
+            );
+            self.report(MISSING_OPERATOR, right_span, message, Some(insert_star));
+        }
+        true
     }
 
     /// Level 3: prefix `-` and `not`, after skipping any unary `+`.
@@ -453,26 +605,34 @@ impl Parser<'_, '_> {
     fn prefix(&mut self, op: UnaryOp, allowed: bool) -> Parsed {
         let op_span = self.span_at(0);
         self.advance();
-        let operand = self.level4();
+        let mut operand = self.level4();
+        if operand.height >= MAX_DEPTH {
+            self.too_deep(op_span);
+            operand.recovered = true;
+            return operand;
+        }
         let span = op_span.to(operand.outer);
         if !allowed {
             let word = if op == UnaryOp::Neg { "-" } else { "not" };
             let message = format!(
                 "prefix `{word}` is allowed only at the start of an expression or after \
                  `(` or `,`; write `({})`",
-                self.src(span)
+                self.quote(span)
             );
             let fix = self.wrap_fix(span);
             self.report(MISPLACED_PREFIX, span, message, Some(fix));
         }
-        if op == UnaryOp::Neg && !operand.expr.is_error() {
+        if op == UnaryOp::Neg && allowed && !operand.recovered {
             self.warn_precedence(span, |o| o.is_comparison(), &operand);
         }
-        Parsed::plain(Expr::Unary {
+        let height = operand.height + 1;
+        let recovered = operand.recovered || !allowed;
+        let expr = Expr::Unary {
             op,
-            operand: Box::new(operand.expr),
+            operand: operand.expr,
             span,
-        })
+        };
+        Parsed::new(expr, height, recovered)
     }
 
     /// Level 4: comparisons, with recovery for `!=`, `=` and split tokens.
@@ -481,15 +641,15 @@ impl Parser<'_, '_> {
         loop {
             let span = self.span_at(0);
             let split = matches!(self.kind(1), TokenKind::Eq) && self.blank_at(1);
-            let (op, count) = match self.kind(0) {
-                TokenKind::Lt if split => (BinaryOp::Le, 2),
-                TokenKind::Gt if split => (BinaryOp::Ge, 2),
-                TokenKind::Eq if split => (BinaryOp::Eq, 2),
-                TokenKind::Lt => (BinaryOp::Lt, 1),
-                TokenKind::Gt => (BinaryOp::Gt, 1),
-                TokenKind::Le => (BinaryOp::Le, 1),
-                TokenKind::Ge => (BinaryOp::Ge, 1),
-                TokenKind::EqEq => (BinaryOp::Eq, 1),
+            let (op, count, recovered) = match self.kind(0) {
+                TokenKind::Lt if split => (BinaryOp::Le, 2, true),
+                TokenKind::Gt if split => (BinaryOp::Ge, 2, true),
+                TokenKind::Eq if split => (BinaryOp::Eq, 2, true),
+                TokenKind::Lt => (BinaryOp::Lt, 1, false),
+                TokenKind::Gt => (BinaryOp::Gt, 1, false),
+                TokenKind::Le => (BinaryOp::Le, 1, false),
+                TokenKind::Ge => (BinaryOp::Ge, 1, false),
+                TokenKind::EqEq => (BinaryOp::Eq, 1, false),
                 TokenKind::Eq => {
                     let message = "`=` cannot compare values; write `==`".to_string();
                     let fix = FixIt {
@@ -497,11 +657,11 @@ impl Parser<'_, '_> {
                         replacement: "==".to_string(),
                     };
                     self.report(EQUALS_IN_EXPRESSION, span, message, Some(fix));
-                    (BinaryOp::Eq, 1)
+                    (BinaryOp::Eq, 1, true)
                 }
                 TokenKind::Bang if *self.kind(1) == TokenKind::Eq && !self.blank_at(1) => {
                     self.report_bang_equals();
-                    (BinaryOp::Eq, 2)
+                    (BinaryOp::Eq, 2, true)
                 }
                 _ => return lhs,
             };
@@ -512,7 +672,7 @@ impl Parser<'_, '_> {
                 self.advance();
             }
             let rhs = self.level5();
-            lhs = self.binary(op, lhs, rhs, false);
+            lhs = self.binary(op, span, lhs, rhs, false, recovered);
         }
     }
 
@@ -528,71 +688,127 @@ impl Parser<'_, '_> {
         let gap = self.gap_before(k);
         let joined = format!(
             "{}{}",
-            self.src(self.span_at(k - 1)),
-            self.src(self.span_at(k))
+            self.quote(self.span_at(k - 1)),
+            self.quote(self.span_at(k))
         );
         let message = format!("XPPAUT deletes this blank and reads `{joined}`; delete it");
         self.report(BLANK_IN_TOKEN, gap, message, Some(Self::delete_fix(gap)));
     }
 
-    /// Level 5: `^` and `**`, with recovery for `* *`.
+    /// Level 5: `^` and `**`, with recovery for `* *`. A chain of three or
+    /// more operands gets one precedence warning for the whole chain.
     fn level5(&mut self) -> Parsed {
         let mut lhs = self.atom();
+        // The outer spans of the chain's operands, once there are two.
+        let mut operands: Vec<Span> = Vec::new();
         loop {
-            let op = match self.kind(0) {
-                TokenKind::Caret => BinaryOp::Pow,
-                TokenKind::StarStar => BinaryOp::StarStar,
+            let op_span = self.span_at(0);
+            let (op, recovered) = match self.kind(0) {
+                TokenKind::Caret => (BinaryOp::Pow, false),
+                TokenKind::StarStar => (BinaryOp::StarStar, false),
                 TokenKind::Star if *self.kind(1) == TokenKind::Star && self.blank_at(1) => {
                     self.report_split(1);
                     self.advance();
-                    BinaryOp::StarStar
+                    (BinaryOp::StarStar, true)
                 }
-                _ => return lhs,
+                _ => break,
             };
             self.advance();
             let rhs = self.atom();
-            lhs = self.binary(op, lhs, rhs, false);
+            if operands.is_empty() {
+                operands.push(lhs.outer);
+            }
+            operands.push(rhs.outer);
+            lhs = self.binary(op, op_span, lhs, rhs, false, recovered);
         }
+        if operands.len() >= 3 && !lhs.recovered {
+            self.warn_power_chain(&operands);
+        }
+        lhs
     }
 
-    /// Builds a binary node and gives the precedence warnings for it.
-    fn binary(&mut self, op: BinaryOp, lhs: Parsed, rhs: Parsed, implicit: bool) -> Parsed {
-        let span = lhs.outer.to(rhs.outer);
-        if !lhs.expr.is_error() && !rhs.expr.is_error() {
-            let child_warns = |child: BinaryOp, is_lhs: bool| {
-                (op.is_arithmetic() && child.is_comparison())
-                    || (op.is_arithmetic() && child.is_logical())
-                    || (op.is_logical() && child.is_arithmetic())
-                    || (op.is_power() && child.is_power() && is_lhs)
-            };
-            self.warn_precedence(span, |c| child_warns(c, true), &lhs);
-            self.warn_precedence(span, |c| child_warns(c, false), &rhs);
+    /// Warns that a chain of `^` and `**` groups to the left. The fix-it
+    /// puts parentheses around every left part but the whole chain, so
+    /// `a^b^c^d` becomes `((a^b)^c)^d`.
+    fn warn_power_chain(&mut self, operands: &[Span]) {
+        let n = operands.len();
+        let text = |a: usize, b: usize| self.c.text.get(a..b).unwrap_or("");
+        let mut inner = "(".repeat(n - 2);
+        inner.push_str(self.src(operands[0]));
+        for i in 1..n - 1 {
+            inner.push_str(text(operands[i - 1].end, operands[i].end));
+            inner.push(')');
         }
-        Parsed::plain(Expr::Binary {
+        let rewritten = format!("{inner}{}", text(operands[n - 2].end, operands[n - 1].end));
+        let message = format!(
+            "`^` and `**` group to the left, so this reads as `{}`; add parentheses to \
+             say so",
+            clip(&rewritten)
+        );
+        let whole = operands[0].to(operands[n - 1]);
+        let fix = FixIt {
+            span: operands[0].to(operands[n - 2]),
+            replacement: inner,
+        };
+        self.report(PRECEDENCE, whole, message, Some(fix));
+    }
+
+    /// Builds a binary node and gives the precedence warnings for it. A node
+    /// that would be deeper than [`MAX_DEPTH`] is not built: the depth error
+    /// is reported at `op_span`, the rest of the expression is skipped and
+    /// `lhs` is returned. `recovered` marks a node built by error recovery.
+    fn binary(
+        &mut self,
+        op: BinaryOp,
+        op_span: Span,
+        lhs: Parsed,
+        rhs: Parsed,
+        implicit: bool,
+        recovered: bool,
+    ) -> Parsed {
+        let height = 1 + lhs.height.max(rhs.height);
+        if height > MAX_DEPTH {
+            self.too_deep(op_span);
+            let mut lhs = lhs;
+            lhs.recovered = true;
+            return lhs;
+        }
+        let span = lhs.outer.to(rhs.outer);
+        let recovered = recovered || lhs.recovered || rhs.recovered;
+        if !recovered {
+            let child_warns = |child: BinaryOp| {
+                (op.is_arithmetic() && (child.is_comparison() || child.is_logical()))
+                    || (op.is_logical() && child.is_arithmetic())
+            };
+            self.warn_precedence(span, child_warns, &lhs);
+            self.warn_precedence(span, child_warns, &rhs);
+        }
+        let expr = Expr::Binary {
             op,
-            lhs: Box::new(lhs.expr),
-            rhs: Box::new(rhs.expr),
+            lhs: lhs.expr,
+            rhs: rhs.expr,
             implicit,
             span,
-        })
+        };
+        Parsed::new(expr, height, recovered)
     }
 
     /// Warns when `child` is an unparenthesized binary node whose operator
-    /// `applies` accepts. `whole` is the span of the parent node.
+    /// `applies` accepts. `whole` is the span of the parent node. The
+    /// message quotes only the parent's operator and operands.
     fn warn_precedence(&mut self, whole: Span, applies: impl Fn(BinaryOp) -> bool, child: &Parsed) {
-        let Expr::Binary { op, .. } = &child.expr else {
+        let Expr::Binary { op, .. } = &*child.expr else {
             return;
         };
-        if child.parens || !applies(*op) {
+        if child.parens || child.recovered || !applies(*op) {
             return;
         }
         let inner = child.outer;
-        let before = self.c.text.get(whole.start..inner.start).unwrap_or("");
-        let after = self.c.text.get(inner.end..whole.end).unwrap_or("");
         let message = format!(
-            "XPPAUT reads `{}` as `{before}({}){after}`; add parentheses to say so",
-            self.src(whole),
-            self.src(inner)
+            "this reads as `{}({}){}`, unlike C; add parentheses to say so",
+            self.quote_range(whole.start, inner.start),
+            self.quote(inner),
+            self.quote_range(inner.end, whole.end)
         );
         let fix = self.wrap_fix(inner);
         self.report(PRECEDENCE, whole, message, Some(fix));
@@ -605,12 +821,9 @@ impl Parser<'_, '_> {
     fn atom(&mut self) -> Parsed {
         if self.depth >= MAX_DEPTH {
             let span = self.span_at(0);
-            let message = "expression nested too deeply".to_string();
-            self.report(UNEXPECTED_TOKEN, span, message, None);
-            self.skip_to_stop();
-            return Parsed::plain(Expr::Error {
-                span: self.point_at(0),
-            });
+            let point = self.point_at(0);
+            self.too_deep(span);
+            return Parsed::error(point);
         }
         self.depth += 1;
         let parsed = self.atom_inner();
@@ -618,93 +831,148 @@ impl Parser<'_, '_> {
         parsed
     }
 
+    /// Dispatches on the current token. The functions on the recursive path
+    /// (this one, `parens`, `call` and the levels) keep their frames small,
+    /// with the diagnostics in separate functions, so that [`MAX_DEPTH`]
+    /// levels of nesting fit in a 2 MB stack in a debug build.
     fn atom_inner(&mut self) -> Parsed {
-        let span = self.span_at(0);
-        match self.kind(0).clone() {
+        match self.kind(0) {
             TokenKind::Num(value) => {
-                self.advance();
-                let text = self.src(span).to_string();
-                Parsed::plain(Expr::Num { value, text, span })
+                let value = *value;
+                self.number(value)
             }
             TokenKind::Name(key) if key == "not" => self.prefix(UnaryOp::Not, false),
             TokenKind::Name(key) if key == "if" => self.if_form(),
-            TokenKind::Name(key) => self.name_or_call(key),
+            TokenKind::Name(_) => self.name_or_call(),
             TokenKind::LParen => self.parens(),
-            TokenKind::LBracket => {
-                let expr = match self.index() {
-                    Some(index) => Expr::Index(index),
-                    None => Expr::Error {
-                        span: span.to(self.prev_end()),
-                    },
-                };
-                Parsed::plain(expr)
-            }
-            TokenKind::Unknown => {
-                self.advance();
-                Parsed::plain(Expr::Error { span })
-            }
+            TokenKind::LBracket => self.bracket_atom(),
             TokenKind::Minus => self.prefix(UnaryOp::Neg, false),
             TokenKind::Plus => {
                 self.skip_unary_plus();
                 self.atom()
             }
             TokenKind::Bang => {
-                if *self.kind(1) == TokenKind::Eq && !self.blank_at(1) {
-                    self.report_bang_equals();
-                    self.advance();
-                } else {
-                    let message = "`!` is not an operator; use `not(...)` for negation".to_string();
-                    self.report(BANG_OPERATOR, span, message, None);
-                }
-                self.advance();
-                self.atom()
+                self.report_bang_atom();
+                let mut parsed = self.atom();
+                parsed.recovered = true;
+                parsed
             }
-            kind => {
-                let message = format!("expected an expression, found {}", self.describe(0));
-                self.report(EXPECTED_EXPRESSION, span, message, None);
-                let consumable = matches!(
-                    kind,
-                    TokenKind::Quote | TokenKind::Percent | TokenKind::DotDot | TokenKind::At
+            _ => self.no_operand(),
+        }
+    }
+
+    fn number(&mut self, value: f64) -> Parsed {
+        let span = self.span_at(0);
+        self.advance();
+        let text = self.src(span).to_string();
+        Parsed::leaf(Expr::Num { value, text, span })
+    }
+
+    /// An index form in operand position. Only the `[j]` forms are values;
+    /// a range must follow a name.
+    fn bracket_atom(&mut self) -> Parsed {
+        let span = self.span_at(0);
+        match self.index() {
+            Some(index @ Index::Range { .. }) => {
+                let range = index.span();
+                let message = format!(
+                    "a range can only follow a name, as in `x{}`",
+                    self.quote(range)
                 );
-                if consumable {
-                    self.advance();
-                    Parsed::plain(Expr::Error { span })
-                } else {
-                    Parsed::plain(Expr::Error {
-                        span: self.point_at(0),
-                    })
-                }
+                self.report(UNSUPPORTED_INDEX, range, message, None);
+                Parsed::error(range)
             }
+            Some(index) => Parsed::leaf(Expr::Index(index)),
+            None => Parsed::error(span.to(self.prev_end())),
+        }
+    }
+
+    /// Reports `!` or `!=` in operand position and consumes it.
+    fn report_bang_atom(&mut self) {
+        if *self.kind(1) == TokenKind::Eq && !self.blank_at(1) {
+            self.report_bang_equals();
+            self.advance();
+        } else {
+            let span = self.span_at(0);
+            let message = "`!` is not an operator; use `not(...)` for negation".to_string();
+            self.report(BANG_OPERATOR, span, message, None);
+        }
+        self.advance();
+    }
+
+    /// A token that cannot start an operand. A token the lexer already
+    /// reported is used silently; anything else is reported.
+    fn no_operand(&mut self) -> Parsed {
+        let span = self.span_at(0);
+        if *self.kind(0) == TokenKind::Unknown {
+            self.advance();
+            return Parsed::error(span);
+        }
+        let message = format!("expected an expression, found {}", self.describe(0));
+        self.report(EXPECTED_EXPRESSION, span, message, None);
+        let consumable = matches!(
+            self.kind(0),
+            TokenKind::Quote | TokenKind::Percent | TokenKind::DotDot | TokenKind::At
+        );
+        if consumable {
+            self.advance();
+            Parsed::error(span)
+        } else {
+            Parsed::error(self.point_at(0))
         }
     }
 
     /// A name with an optional index form, and a call when `(` follows.
-    fn name_or_call(&mut self, key: String) -> Parsed {
+    fn name_or_call(&mut self) -> Parsed {
+        let (ident, recovered) = self.name();
+        if *self.kind(0) != TokenKind::LParen {
+            return Parsed::new(Expr::Name(*ident), 1, recovered);
+        }
+        self.call(ident, recovered)
+    }
+
+    /// The name at the current token with an optional index form, and
+    /// whether a bad index form was skipped after it.
+    fn name(&mut self) -> (Box<Ident>, bool) {
         let span = self.span_at(0);
+        let key = match self.kind(0) {
+            TokenKind::Name(key) => key.clone(),
+            _ => String::new(),
+        };
         self.advance();
-        let mut ident = Ident {
+        let mut ident = Box::new(Ident {
             text: self.src(span).to_string(),
             key,
             index: None,
             span,
-        };
-        if *self.kind(0) == TokenKind::LBracket
-            && let Some(index) = self.index()
-        {
-            ident.span = span.to(index.span());
-            ident.index = Some(index);
+        });
+        let mut recovered = false;
+        if *self.kind(0) == TokenKind::LBracket {
+            match self.index() {
+                Some(index) => {
+                    ident.span = span.to(index.span());
+                    ident.index = Some(index);
+                }
+                None => recovered = true,
+            }
         }
-        if *self.kind(0) != TokenKind::LParen {
-            return Parsed::plain(Expr::Name(ident));
-        }
+        (ident, recovered)
+    }
+
+    /// The arguments of a call to `ident`, starting at `(`.
+    fn call(&mut self, ident: Box<Ident>, mut recovered: bool) -> Parsed {
         let open = self.span_at(0);
         self.advance();
         let mut args = Vec::new();
+        let mut height = 0;
         if *self.kind(0) == TokenKind::RParen {
             self.advance();
         } else {
             loop {
-                args.push(self.full().expr);
+                let arg = self.full();
+                height = height.max(arg.height);
+                recovered |= arg.recovered;
+                args.push(arg.expr);
                 match self.kind(0) {
                     TokenKind::Comma => self.advance(),
                     TokenKind::RParen => {
@@ -713,17 +981,41 @@ impl Parser<'_, '_> {
                     }
                     _ => {
                         self.report_unclosed(open, "(");
+                        recovered = true;
                         break;
                     }
                 }
             }
         }
+        self.finish_call(ident, open, args, height, recovered)
+    }
+
+    /// Builds the call node, or reports that it would be too deep.
+    #[expect(
+        clippy::boxed_local,
+        clippy::vec_box,
+        reason = "the boxes keep the recursive frames small: 200 nested \
+                  calls need about 800 KB of stack boxed and 1 MB unboxed"
+    )]
+    fn finish_call(
+        &mut self,
+        ident: Box<Ident>,
+        open: Span,
+        args: Vec<Box<Expr>>,
+        height: usize,
+        recovered: bool,
+    ) -> Parsed {
         let span = ident.span.to(self.prev_end());
-        Parsed::plain(Expr::Call {
-            name: ident,
-            args,
+        if height >= MAX_DEPTH {
+            self.too_deep(open);
+            return Parsed::error(span);
+        }
+        let expr = Expr::Call {
+            name: *ident,
+            args: args.into_iter().map(|a| *a).collect(),
             span,
-        })
+        };
+        Parsed::new(expr, height + 1, recovered)
     }
 
     fn report_unclosed(&mut self, open: Span, what: &str) {
@@ -736,6 +1028,7 @@ impl Parser<'_, '_> {
         let open = self.span_at(0);
         self.advance();
         let inner = self.full();
+        let mut recovered = inner.recovered;
         let mut reported = false;
         while *self.kind(0) == TokenKind::Comma {
             if !reported {
@@ -743,6 +1036,7 @@ impl Parser<'_, '_> {
                 let message = "unexpected `,`: parentheses hold one expression".to_string();
                 self.report(UNEXPECTED_TOKEN, span, message, None);
                 reported = true;
+                recovered = true;
             }
             self.advance();
             self.skip_to_stop();
@@ -751,11 +1045,14 @@ impl Parser<'_, '_> {
             self.advance();
         } else {
             self.report_unclosed(open, "(");
+            recovered = true;
         }
         Parsed {
             expr: inner.expr,
             parens: true,
             outer: open.to(self.prev_end()),
+            height: inner.height,
+            recovered,
         }
     }
 
@@ -763,7 +1060,7 @@ impl Parser<'_, '_> {
     fn if_form(&mut self) -> Parsed {
         let start = self.span_at(0);
         self.advance();
-        let mut parts: Vec<Expr> = Vec::new();
+        let mut parts: Vec<Parsed> = Vec::new();
         for word in ["if", "then", "else"] {
             if word != "if" {
                 if is_name(self.kind(0), word) {
@@ -775,30 +1072,39 @@ impl Parser<'_, '_> {
             if *self.kind(0) != TokenKind::LParen {
                 return self.bad_if(start, parts, &format!("expected `(` after `{word}`"));
             }
-            parts.push(self.parens().expr);
+            parts.push(self.parens());
         }
-        self.make_if(start, parts)
+        self.make_if(start, parts, false)
     }
 
     /// Builds the `if` node from the `if` keyword span and its three parts.
-    fn make_if(&self, start: Span, parts: Vec<Expr>) -> Parsed {
+    fn make_if(&mut self, start: Span, parts: Vec<Parsed>, recovered: bool) -> Parsed {
         let span = start.to(self.prev_end());
-        let mut parts = parts.into_iter().map(Box::new);
+        let height = parts.iter().map(|p| p.height).max().unwrap_or(0);
+        let recovered = recovered || parts.iter().any(|p| p.recovered);
+        if height >= MAX_DEPTH {
+            self.too_deep(start);
+            return Parsed::error(span);
+        }
+        let mut parts = parts.into_iter().map(|p| p.expr);
         let (Some(cond), Some(then), Some(else_)) = (parts.next(), parts.next(), parts.next())
         else {
-            return Parsed::plain(Expr::Error { span });
+            return Parsed::error(span);
         };
-        Parsed::plain(Expr::If {
+        let expr = Expr::If {
             cond,
             then,
             else_,
             span,
-        })
+        };
+        Parsed::new(expr, height + 1, recovered)
     }
 
-    /// Reports a malformed `if` at the current token, skips the rest of the
-    /// expression and fills the missing parts with error nodes.
-    fn bad_if(&mut self, start: Span, mut parts: Vec<Expr>, what: &str) -> Parsed {
+    /// Reports a malformed `if` at the current token and fills the missing
+    /// parts with error nodes. When the current token can follow an operand
+    /// (an operator or a stop token), parsing goes on from it; otherwise the
+    /// rest of the expression is skipped.
+    fn bad_if(&mut self, start: Span, mut parts: Vec<Parsed>, what: &str) -> Parsed {
         let span = self.span_at(0);
         let message = format!(
             "{what}, found {}: write if(condition)then(value)else(value)",
@@ -806,11 +1112,13 @@ impl Parser<'_, '_> {
         );
         self.report(MALFORMED_IF, span, message, None);
         let missing = self.point_at(0);
-        self.skip_to_stop();
-        while parts.len() < 3 {
-            parts.push(Expr::Error { span: missing });
+        if !can_follow_operand(self.kind(0)) {
+            self.skip_to_stop();
         }
-        self.make_if(start, parts)
+        while parts.len() < 3 {
+            parts.push(Parsed::error(missing));
+        }
+        self.make_if(start, parts, true)
     }
 
     /// An index form starting at `[`. Returns `None` after reporting an
@@ -829,7 +1137,7 @@ impl Parser<'_, '_> {
         let mut k = 1;
         let close = loop {
             match self.kind(k) {
-                kind if is_line_end(kind) => break None,
+                kind if ends_at_any_depth(kind) => break None,
                 TokenKind::LBracket => depth += 1,
                 TokenKind::RBracket if depth == 0 => break Some(k),
                 TokenKind::RBracket => depth -= 1,
@@ -843,7 +1151,7 @@ impl Parser<'_, '_> {
                 let message = format!(
                     "unsupported index form `{}`: use [i1..i2], [j], [j+n], [j-n] or [j*n] \
                      with non-negative integers",
-                    self.src(span)
+                    self.quote(span)
                 );
                 self.report(UNSUPPORTED_INDEX, span, message, None);
                 for _ in 0..=k {
