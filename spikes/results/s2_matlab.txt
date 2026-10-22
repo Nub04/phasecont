@@ -1,0 +1,119 @@
+command: scripts/matlab-win --run spikes/matlab/s2_jit.m
+date: 2026-10-21T16:44:45Z
+power: power line Online (Win32_Battery BatteryStatus=2, 100%), scheme Balanced, AC overlay ded574b5-45a0-4f42-8737-46345c09c238 (Best performance)
+[Warning: Unable to obtain a change notification handle for \\wsl.localhost\fedoralinux-44\home\nub04\dev\phasecont\spikes\matlab.] 
+[> In run (line 34)] 
+MATLAB 26.2.0.3386108 (R2026b), win64, maxNumCompThreads 16
+matlab anonymous rhs: median 208.4 ns per call (193.5 to 221.7), 1e7 calls take about 2.08 s
+matlab anonymous jac: median 318.4 ns per call (291.4 to 331.5), 1e7 calls take about 3.18 s
+pckern spike abi=1 target=x86_64-pc-windows-gnu profile=release built=1792599836
+loaded C:\Users\<user>\phasecont-stage\spikes\pckern.dll
+run_json:
+{"spike":"s2","target":"x86_64-pc-windows-gnu","profile":"release","calls":10000000,"reps":5,"samples":100000,"compile_ms":2.80819e1,"code_bytes":279,"c_compiler":"none","max_ulp_vs_rust":{"jit_rhs":0e0,"jit_jac":0e0,"jit_shim_exp":0e0},"rhs_checksums_match":true,"jac_checksums_match":true,"timings":[{"name":"jit rhs","median_ns":3.53047e0,"min_ns":3.29263e0,"max_ns":4.16098e0,"checksum":"2016bb7a754b358c"},{"name":"rust rhs via pointer","median_ns":3.69174e0,"min_ns":3.53908e0,"max_ns":3.78277e0,"checksum":"2016bb7a754b358c"},{"name":"rust rhs inlined","median_ns":3.47495e0,"min_ns":3.35571e0,"max_ns":3.6848e0,"checksum":"2016bb7a754b358c"},{"name":"jit jac","median_ns":3.15333e0,"min_ns":2.68657e0,"max_ns":3.33721e0,"checksum":"381e88b16b83b31c"},{"name":"rust jac via pointer","median_ns":2.73084e0,"min_ns":2.48339e0,"max_ns":3.01568e0,"checksum":"381e88b16b83b31c"},{"name":"rust jac inlined","median_ns":1.92818e0,"min_ns":1.68314e0,"max_ns":2.25653e0,"checksum":"381e88b16b83b31c"}],"ratios":[{"name":"rhs jit/pointer","median":9.975671643477967e-1,"min":9.249333160620392e-1,"max":1.1063993852420877e0,"per_rep":[1.1063993852420877e0,9.249333160620392e-1,1.0083619106437616e0,9.975671643477967e-1,9.297406429569808e-1]},{"name":"jac jit/pointer","median":1.070409482978095e0,"min":1.0166231165110355e0,"max":1.272591095236753e0,"per_rep":[1.0166231165110355e0,1.272591095236753e0,1.070409482978095e0,1.0234396428244905e0,1.2220452315038595e0]}]}
+  compile_ms 28.082 (first JIT compile in this process)
+  jit rhs                median 3.53 ns (3.29 to 4.16)
+  rust rhs via pointer   median 3.69 ns (3.54 to 3.78)
+  rust rhs inlined       median 3.47 ns (3.36 to 3.68)
+  jit jac                median 3.15 ns (2.69 to 3.34)
+  rust jac via pointer   median 2.73 ns (2.48 to 3.02)
+  rust jac inlined       median 1.93 ns (1.68 to 2.26)
+  rhs jit/pointer  median 0.998 (0.925 to 1.106), per rep 1.106 0.925 1.008 0.998 0.930
+  jac jit/pointer  median 1.070 (1.017 to 1.273), per rep 1.017 1.273 1.070 1.023 1.222
+  matlab anonymous rhs / jit rhs = 59
+bench_c:
+{"spike":"s2","target":"x86_64-pc-windows-gnu","profile":"release","calls":10000000,"reps":5,"samples":100000,"compile_ms":6.650999999999999e-1,"code_bytes":279,"c_compiler":"passed in by the caller","max_ulp_vs_rust":{"jit_rhs":0e0,"jit_jac":0e0,"jit_shim_exp":0e0,"c_rhs":0e0,"c_jac":0e0},"rhs_checksums_match":true,"jac_checksums_match":true,"timings":[{"name":"jit rhs","median_ns":3.71558e0,"min_ns":3.3311800000000003e0,"max_ns":3.73662e0,"checksum":"2016bb7a754b358c"},{"name":"rust rhs via pointer","median_ns":3.73415e0,"min_ns":3.2022500000000003e0,"max_ns":3.85393e0,"checksum":"2016bb7a754b358c"},{"name":"rust rhs inlined","median_ns":3.55532e0,"min_ns":3.4108e0,"max_ns":3.79265e0,"checksum":"2016bb7a754b358c"},{"name":"c rhs","median_ns":3.57933e0,"min_ns":3.20495e0,"max_ns":3.78936e0,"checksum":"2016bb7a754b358c"},{"name":"jit jac","median_ns":3.39209e0,"min_ns":3.03053e0,"max_ns":3.55499e0,"checksum":"381e88b16b83b31c"},{"name":"rust jac via pointer","median_ns":3.02672e0,"min_ns":2.4691e0,"max_ns":3.07236e0,"checksum":"381e88b16b83b31c"},{"name":"rust jac inlined","median_ns":2.09974e0,"min_ns":1.6217599999999999e0,"max_ns":2.16221e0,"checksum":"381e88b16b83b31c"},{"name":"c jac","median_ns":3.06567e0,"min_ns":2.79973e0,"max_ns":3.6377e0,"checksum":"381e88b16b83b31c"}],"ratios":[{"name":"rhs jit/pointer","median":9.897188664966224e-1,"min":8.797842783042289e-1,"max":1.1668732922164102e0,"per_rep":[9.950269807051136e-1,8.797842783042289e-1,1.1668732922164102e0,9.897188664966224e-1,9.645219295628099e-1]},{"name":"rhs jit/c","median":1.0439439783423154e0,"min":8.853705145821762e-1,"max":1.1017394967160172e0,"per_rep":[1.048056391581881e0,8.853705145821762e-1,1.0439439783423154e0,1.1017394967160172e0,9.809572064939727e-1]},{"name":"jac jit/pointer","median":1.1506411126187246e0,"min":1.0395312417402336e0,"max":1.2273824470454822e0,"per_rep":[1.1670244895279365e0,1.1506411126187246e0,1.2273824470454822e0,1.0395312417402336e0,1.114638258537411e0]},{"name":"jac jit/c","median":1.1238119390084043e0,"min":9.222971225101573e-1,"max":1.1596127437069221e0,"per_rep":[1.1596127437069221e0,9.324820628419056e-1,9.222971225101573e-1,1.1238119390084043e0,1.1321603670974376e0]}]}
+  compile_ms 0.665 (second compile, warm)
+  jit rhs                median 3.72 ns (3.33 to 3.74)
+  rust rhs via pointer   median 3.73 ns (3.20 to 3.85)
+  rust rhs inlined       median 3.56 ns (3.41 to 3.79)
+  c rhs                  median 3.58 ns (3.20 to 3.79)
+  jit jac                median 3.39 ns (3.03 to 3.55)
+  rust jac via pointer   median 3.03 ns (2.47 to 3.07)
+  rust jac inlined       median 2.10 ns (1.62 to 2.16)
+  c jac                  median 3.07 ns (2.80 to 3.64)
+  rhs jit/pointer  median 0.990 (0.880 to 1.167), per rep 0.995 0.880 1.167 0.990 0.965
+  rhs jit/c        median 1.044 (0.885 to 1.102), per rep 1.048 0.885 1.044 1.102 0.981
+  jac jit/pointer  median 1.151 (1.040 to 1.227), per rep 1.167 1.151 1.227 1.040 1.115
+  jac jit/c        median 1.124 (0.922 to 1.160), per rep 1.160 0.932 0.922 1.124 1.132
+  matlab anonymous rhs / jit rhs = 56
+exit code: 0
+
+command: scripts/matlab-win --run spikes/matlab/s2_jit.m
+date: 2026-10-21T16:45:08Z
+power: power line Online (Win32_Battery BatteryStatus=2, 100%), scheme Balanced, AC overlay ded574b5-45a0-4f42-8737-46345c09c238 (Best performance)
+[Warning: Unable to obtain a change notification handle for \\wsl.localhost\fedoralinux-44\home\nub04\dev\phasecont\spikes\matlab.] 
+[> In run (line 34)] 
+MATLAB 26.2.0.3386108 (R2026b), win64, maxNumCompThreads 16
+matlab anonymous rhs: median 177.0 ns per call (165.5 to 179.7), 1e7 calls take about 1.77 s
+matlab anonymous jac: median 310.4 ns per call (297.3 to 322.8), 1e7 calls take about 3.10 s
+pckern spike abi=1 target=x86_64-pc-windows-gnu profile=release built=1792599836
+loaded C:\Users\<user>\phasecont-stage\spikes\pckern.dll
+run_json:
+{"spike":"s2","target":"x86_64-pc-windows-gnu","profile":"release","calls":10000000,"reps":5,"samples":100000,"compile_ms":1.3863e0,"code_bytes":279,"c_compiler":"none","max_ulp_vs_rust":{"jit_rhs":0e0,"jit_jac":0e0,"jit_shim_exp":0e0},"rhs_checksums_match":true,"jac_checksums_match":true,"timings":[{"name":"jit rhs","median_ns":3.83294e0,"min_ns":3.61554e0,"max_ns":4.0864e0,"checksum":"2016bb7a754b358c"},{"name":"rust rhs via pointer","median_ns":3.93858e0,"min_ns":3.75623e0,"max_ns":4.16997e0,"checksum":"2016bb7a754b358c"},{"name":"rust rhs inlined","median_ns":3.77678e0,"min_ns":3.37495e0,"max_ns":3.88872e0,"checksum":"2016bb7a754b358c"},{"name":"jit jac","median_ns":3.31027e0,"min_ns":3.15101e0,"max_ns":3.65204e0,"checksum":"381e88b16b83b31c"},{"name":"rust jac via pointer","median_ns":3.3054399999999995e0,"min_ns":2.45699e0,"max_ns":3.42112e0,"checksum":"381e88b16b83b31c"},{"name":"rust jac inlined","median_ns":2.17556e0,"min_ns":2.02822e0,"max_ns":2.3155e0,"checksum":"381e88b16b83b31c"}],"ratios":[{"name":"rhs jit/pointer","median":9.779405010971066e-1,"min":8.67042208936755e-1,"max":1.0878993032907995e0,"per_rep":[9.779405010971066e-1,8.67042208936755e-1,9.922433973665636e-1,1.0878993032907995e0,9.157476994816083e-1]},{"name":"jac jit/pointer","median":9.794175870125239e-1,"min":9.532800474369525e-1,"max":1.289699998778994e0,"per_rep":[9.794175870125239e-1,9.675983303713404e-1,1.289699998778994e0,1.2548197676616009e0,9.532800474369525e-1]}]}
+  compile_ms 1.386 (first JIT compile in this process)
+  jit rhs                median 3.83 ns (3.62 to 4.09)
+  rust rhs via pointer   median 3.94 ns (3.76 to 4.17)
+  rust rhs inlined       median 3.78 ns (3.37 to 3.89)
+  jit jac                median 3.31 ns (3.15 to 3.65)
+  rust jac via pointer   median 3.31 ns (2.46 to 3.42)
+  rust jac inlined       median 2.18 ns (2.03 to 2.32)
+  rhs jit/pointer  median 0.978 (0.867 to 1.088), per rep 0.978 0.867 0.992 1.088 0.916
+  jac jit/pointer  median 0.979 (0.953 to 1.290), per rep 0.979 0.968 1.290 1.255 0.953
+  matlab anonymous rhs / jit rhs = 46
+bench_c:
+{"spike":"s2","target":"x86_64-pc-windows-gnu","profile":"release","calls":10000000,"reps":5,"samples":100000,"compile_ms":5.547e-1,"code_bytes":279,"c_compiler":"passed in by the caller","max_ulp_vs_rust":{"jit_rhs":0e0,"jit_jac":0e0,"jit_shim_exp":0e0,"c_rhs":0e0,"c_jac":0e0},"rhs_checksums_match":true,"jac_checksums_match":true,"timings":[{"name":"jit rhs","median_ns":3.69703e0,"min_ns":3.57608e0,"max_ns":4.22182e0,"checksum":"2016bb7a754b358c"},{"name":"rust rhs via pointer","median_ns":3.80648e0,"min_ns":3.60265e0,"max_ns":4.07506e0,"checksum":"2016bb7a754b358c"},{"name":"rust rhs inlined","median_ns":3.7669e0,"min_ns":3.10871e0,"max_ns":3.94117e0,"checksum":"2016bb7a754b358c"},{"name":"c rhs","median_ns":4.00484e0,"min_ns":3.42851e0,"max_ns":4.2922e0,"checksum":"2016bb7a754b358c"},{"name":"jit jac","median_ns":3.32059e0,"min_ns":3.06461e0,"max_ns":3.56576e0,"checksum":"381e88b16b83b31c"},{"name":"rust jac via pointer","median_ns":3.06046e0,"min_ns":2.81732e0,"max_ns":3.42363e0,"checksum":"381e88b16b83b31c"},{"name":"rust jac inlined","median_ns":1.96693e0,"min_ns":1.77132e0,"max_ns":2.5917e0,"checksum":"381e88b16b83b31c"},{"name":"c jac","median_ns":3.10936e0,"min_ns":2.97098e0,"max_ns":3.60242e0,"checksum":"381e88b16b83b31c"}],"ratios":[{"name":"rhs jit/pointer","median":1.0105172581294326e0,"min":9.394716378386331e-1,"max":1.0360141936560445e0,"per_rep":[1.0360141936560445e0,1.0105172581294326e0,1.0287563527810335e0,9.553765010814763e-1,9.394716378386331e-1]},{"name":"rhs jit/c","median":9.8360281440753e-1,"min":8.929395431527852e-1,"max":1.0783197365619466e0,"per_rep":[9.8360281440753e-1,1.0203707544578544e0,9.764276592772911e-1,1.0783197365619466e0,8.929395431527852e-1]},{"name":"jac jit/pointer","median":1.084997026590774e0,"min":9.540633771756878e-1,"max":1.1888521769861935e0,"per_rep":[1.0249150554406838e0,1.087774906648872e0,1.084997026590774e0,1.1888521769861935e0,9.540633771756878e-1]},{"name":"jac jit/c","median":1.0315148536846428e0,"min":9.067127097895304e-1,"max":1.117956428696257e0,"per_rep":[1.117956428696257e0,1.0315148536846428e0,1.067933594051509e0,1.0071402747650036e0,9.067127097895304e-1]}]}
+  compile_ms 0.555 (second compile, warm)
+  jit rhs                median 3.70 ns (3.58 to 4.22)
+  rust rhs via pointer   median 3.81 ns (3.60 to 4.08)
+  rust rhs inlined       median 3.77 ns (3.11 to 3.94)
+  c rhs                  median 4.00 ns (3.43 to 4.29)
+  jit jac                median 3.32 ns (3.06 to 3.57)
+  rust jac via pointer   median 3.06 ns (2.82 to 3.42)
+  rust jac inlined       median 1.97 ns (1.77 to 2.59)
+  c jac                  median 3.11 ns (2.97 to 3.60)
+  rhs jit/pointer  median 1.011 (0.939 to 1.036), per rep 1.036 1.011 1.029 0.955 0.939
+  rhs jit/c        median 0.984 (0.893 to 1.078), per rep 0.984 1.020 0.976 1.078 0.893
+  jac jit/pointer  median 1.085 (0.954 to 1.189), per rep 1.025 1.088 1.085 1.189 0.954
+  jac jit/c        median 1.032 (0.907 to 1.118), per rep 1.118 1.032 1.068 1.007 0.907
+  matlab anonymous rhs / jit rhs = 48
+exit code: 0
+
+command: scripts/matlab-win --run spikes/matlab/s2_jit.m
+date: 2026-10-21T16:45:28Z
+power: power line Online (Win32_Battery BatteryStatus=2, 100%), scheme Balanced, AC overlay ded574b5-45a0-4f42-8737-46345c09c238 (Best performance)
+[Warning: Unable to obtain a change notification handle for \\wsl.localhost\fedoralinux-44\home\nub04\dev\phasecont\spikes\matlab.] 
+[> In run (line 34)] 
+MATLAB 26.2.0.3386108 (R2026b), win64, maxNumCompThreads 16
+matlab anonymous rhs: median 202.0 ns per call (192.9 to 215.7), 1e7 calls take about 2.02 s
+matlab anonymous jac: median 353.7 ns per call (321.7 to 382.9), 1e7 calls take about 3.54 s
+pckern spike abi=1 target=x86_64-pc-windows-gnu profile=release built=1792599836
+loaded C:\Users\<user>\phasecont-stage\spikes\pckern.dll
+run_json:
+{"spike":"s2","target":"x86_64-pc-windows-gnu","profile":"release","calls":10000000,"reps":5,"samples":100000,"compile_ms":1.4768999999999999e0,"code_bytes":279,"c_compiler":"none","max_ulp_vs_rust":{"jit_rhs":0e0,"jit_jac":0e0,"jit_shim_exp":0e0},"rhs_checksums_match":true,"jac_checksums_match":true,"timings":[{"name":"jit rhs","median_ns":3.64836e0,"min_ns":3.50559e0,"max_ns":3.90332e0,"checksum":"2016bb7a754b358c"},{"name":"rust rhs via pointer","median_ns":3.81199e0,"min_ns":3.36708e0,"max_ns":4.16575e0,"checksum":"2016bb7a754b358c"},{"name":"rust rhs inlined","median_ns":3.44764e0,"min_ns":3.22218e0,"max_ns":3.90818e0,"checksum":"2016bb7a754b358c"},{"name":"jit jac","median_ns":3.27949e0,"min_ns":3.20284e0,"max_ns":3.3692e0,"checksum":"381e88b16b83b31c"},{"name":"rust jac via pointer","median_ns":2.93059e0,"min_ns":2.81842e0,"max_ns":2.95703e0,"checksum":"381e88b16b83b31c"},{"name":"rust jac inlined","median_ns":2.15531e0,"min_ns":1.51724e0,"max_ns":2.36632e0,"checksum":"381e88b16b83b31c"}],"ratios":[{"name":"rhs jit/pointer","median":9.370029406469423e-1,"min":8.935444842298101e-1,"max":1.0770935053518182e0,"per_rep":[9.370029406469423e-1,8.935444842298101e-1,1.0770935053518182e0,9.752412781775398e-1,9.323551236326209e-1]},{"name":"jac jit/pointer","median":1.1190545248567694e0,"min":1.085888842553509e0,"max":1.1839201630472977e0,"per_rep":[1.085888842553509e0,1.1605651393333853e0,1.1190545248567694e0,1.1175875794293597e0,1.1839201630472977e0]}]}
+  compile_ms 1.477 (first JIT compile in this process)
+  jit rhs                median 3.65 ns (3.51 to 3.90)
+  rust rhs via pointer   median 3.81 ns (3.37 to 4.17)
+  rust rhs inlined       median 3.45 ns (3.22 to 3.91)
+  jit jac                median 3.28 ns (3.20 to 3.37)
+  rust jac via pointer   median 2.93 ns (2.82 to 2.96)
+  rust jac inlined       median 2.16 ns (1.52 to 2.37)
+  rhs jit/pointer  median 0.937 (0.894 to 1.077), per rep 0.937 0.894 1.077 0.975 0.932
+  jac jit/pointer  median 1.119 (1.086 to 1.184), per rep 1.086 1.161 1.119 1.118 1.184
+  matlab anonymous rhs / jit rhs = 55
+bench_c:
+{"spike":"s2","target":"x86_64-pc-windows-gnu","profile":"release","calls":10000000,"reps":5,"samples":100000,"compile_ms":1.2519e0,"code_bytes":279,"c_compiler":"passed in by the caller","max_ulp_vs_rust":{"jit_rhs":0e0,"jit_jac":0e0,"jit_shim_exp":0e0,"c_rhs":0e0,"c_jac":0e0},"rhs_checksums_match":true,"jac_checksums_match":true,"timings":[{"name":"jit rhs","median_ns":3.56997e0,"min_ns":2.37594e0,"max_ns":4.0658e0,"checksum":"2016bb7a754b358c"},{"name":"rust rhs via pointer","median_ns":3.36499e0,"min_ns":2.76704e0,"max_ns":3.93488e0,"checksum":"2016bb7a754b358c"},{"name":"rust rhs inlined","median_ns":3.489e0,"min_ns":2.32058e0,"max_ns":4.21654e0,"checksum":"2016bb7a754b358c"},{"name":"c rhs","median_ns":3.68747e0,"min_ns":3.26558e0,"max_ns":4.19082e0,"checksum":"2016bb7a754b358c"},{"name":"jit jac","median_ns":3.32453e0,"min_ns":2.94072e0,"max_ns":3.93547e0,"checksum":"381e88b16b83b31c"},{"name":"rust jac via pointer","median_ns":3.07687e0,"min_ns":2.60596e0,"max_ns":3.449e0,"checksum":"381e88b16b83b31c"},{"name":"rust jac inlined","median_ns":2.21642e0,"min_ns":1.91348e0,"max_ns":2.39525e0,"checksum":"381e88b16b83b31c"},{"name":"c jac","median_ns":3.16279e0,"min_ns":3.08494e0,"max_ns":3.38865e0,"checksum":"381e88b16b83b31c"}],"ratios":[{"name":"rhs jit/pointer","median":1.0364141510912923e0,"min":8.58657626922632e-1,"max":1.0798307843685089e0,"per_rep":[1.033271662668239e0,1.0364141510912923e0,1.0798307843685089e0,1.062457837913337e0,8.58657626922632e-1]},{"name":"rhs jit/c","median":9.764567717702213e-1,"min":5.669391670365226e-1,"max":1.0948009235725353e0,"per_rep":[9.764567717702213e-1,9.681353339823783e-1,9.958605121425911e-1,1.0948009235725353e0,5.669391670365226e-1]},{"name":"jac jit/pointer","median":1.0181483130584001e0,"min":8.526297477529718e-1,"max":1.3455693870972694e0,"per_rep":[9.816197095766481e-1,8.526297477529718e-1,1.3455693870972694e0,1.3213813249168989e0,1.0181483130584001e0]},{"name":"jac jit/c","median":1.0776643954177392e0,"min":9.244713971640621e-1,"max":1.1859111893253622e0,"per_rep":[1.0776643954177392e0,9.297866756882371e-1,1.1125388666793579e0,1.1859111893253622e0,9.244713971640621e-1]}]}
+  compile_ms 1.252 (second compile, warm)
+  jit rhs                median 3.57 ns (2.38 to 4.07)
+  rust rhs via pointer   median 3.36 ns (2.77 to 3.93)
+  rust rhs inlined       median 3.49 ns (2.32 to 4.22)
+  c rhs                  median 3.69 ns (3.27 to 4.19)
+  jit jac                median 3.32 ns (2.94 to 3.94)
+  rust jac via pointer   median 3.08 ns (2.61 to 3.45)
+  rust jac inlined       median 2.22 ns (1.91 to 2.40)
+  c jac                  median 3.16 ns (3.08 to 3.39)
+  rhs jit/pointer  median 1.036 (0.859 to 1.080), per rep 1.033 1.036 1.080 1.062 0.859
+  rhs jit/c        median 0.976 (0.567 to 1.095), per rep 0.976 0.968 0.996 1.095 0.567
+  jac jit/pointer  median 1.018 (0.853 to 1.346), per rep 0.982 0.853 1.346 1.321 1.018
+  jac jit/c        median 1.078 (0.924 to 1.186), per rep 1.078 0.930 1.113 1.186 0.924
+  matlab anonymous rhs / jit rhs = 57
+exit code: 0

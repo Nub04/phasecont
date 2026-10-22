@@ -1,0 +1,10 @@
+command: scripts/matlab-win --run spikes/matlab/s2_jit.m
+date: 2026-10-21T14:26:29Z
+power: power line Online (Win32_Battery BatteryStatus=2, 100%), scheme Balanced, AC overlay ded574b5-45a0-4f42-8737-46345c09c238 (Best performance)
+[Warning: Unable to obtain a change notification handle for \\wsl.localhost\fedoralinux-44\home\nub04\dev\phasecont\spikes\matlab.] 
+[> In run (line 34)] 
+MATLAB 26.2.0.3386108 (R2026b), win64, maxNumCompThreads 16
+matlab anonymous rhs: median 138.5 ns per call (118.8 to 156.7), 1e7 calls take about 1.39 s
+matlab anonymous jac: median 162.3 ns per call (160.9 to 182.2), 1e7 calls take about 1.62 s
+SKIP pckern runs: no pckern.dll in C:\Users\<user>\phasecont-stage\spikes
+exit code: 0
