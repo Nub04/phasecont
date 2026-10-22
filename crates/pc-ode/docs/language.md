@@ -25,7 +25,7 @@ Where XPPAUT 8.0 and the manual disagree, the measured behavior wins unless a ru
 
 The first word of a line decides what the line is.
 
-- A first word is a keyword only when a blank follows it and the next non-blank character is not `=` (manual, measured). So `p a=5` declares a parameter, while `p=5`, `p = 5`, `a = 1`, `w = 1`, `i = 1`, `d = 1`, `g = 1`, `b = 1` and `m = 1` all define fixed quantities.
+- A first word is a keyword only when a blank or the end of the line follows it and the next non-blank character is not `=` (manual, measured). So `p a=5` declares a parameter, while `p=5`, `p = 5`, `a = 1`, `w = 1`, `i = 1`, `d = 1`, `g = 1`, `b = 1` and `m = 1` all define fixed quantities.
 - For the nine declarations below, only the first letter is compared, whatever follows (measured: `pzz a=2` declares a parameter). The implementation must not check that the word is a prefix of the full keyword.
 
 | First letter | Declaration |
@@ -74,7 +74,7 @@ Unsupported statements stay in the AST as raw text, so the writer reproduces the
 
 ### Lists
 
-- `par`, `number` and `init` lists separate entries with commas or blanks (measured: `par a=1 b=2` declares both). Blanks around `=` are allowed in these lists and in formulas (measured: `par a = 2`, `x(0) = 3`, `x' = 1`, `dx/dt = 1`, `aux v = 2`, `f(u) = u*2` all work). No diagnostic.
+- `par`, `number` and `init` lists separate entries with commas or blanks (measured: `par a=1 b=2`, `number a=1 b=2` and `init x=1 y=2` each set both). Blanks around `=` are allowed in these lists and in formulas (measured: `par a = 2`, `x(0) = 3`, `x' = 1`, `dx/dt = 1`, `aux v = 2`, `f(u) = u*2` all work). No diagnostic.
 - In an `@` list XPPAUT 8.0 accepts blanks around `=` but does not apply the option (measured: `@ total = 1, dt = .5` ran with the default `dt`). PhaseCont reads the option and gives a warning that XPPAUT 8.0 ignores it, with a fix-it that removes the blanks.
 - `@` option names are all stored. An unknown name gives a warning (PhaseCont choice; XPPAUT ignores it silently). The AUTO options (`ntst`, `nmax`, `npr`, `dsmin`, `dsmax`, `ds`, `parmin`, `parmax`, `epsl`, `epsu`, `epss` and the rest the manual lists) are kept for P3 to use as defaults.
 
@@ -89,7 +89,7 @@ Unsupported statements stay in the AST as raw text, so the writer reproduces the
 - XPPAUT 8.0 truncates names to 10 characters, so names that agree in their first 10 characters collide (measured). A name longer than 10 characters gives the portability warning. When two declared names agree in their first 10 characters, ignoring case, the warning adds a note.
 - Reserved names cannot be declared as states, parameters, numbers, fixed quantities, aux quantities or functions: `t`, `pi`, every builtin function name, and `arg1` to `arg9` (manual "Reserved words"; measured: `t'=0` and `par sin=2` stop XPPAUT with "duplicate name").
 - Declaring the same name twice is an error, including a repeated `par` (measured: XPPAUT stops with "duplicate name").
-- Names may be used before their declaration, with one exception: XPPAUT evaluates fixed quantities in file order, so a fixed quantity read above its line is 0 (measured). A fixed quantity that uses another fixed quantity defined on a later line is an error.
+- Names may be used before their declaration, with one exception: XPPAUT evaluates fixed quantities in file order, so a fixed quantity that reads another fixed quantity defined on a later line sees 0 (measured). PhaseCont makes that forward reference between fixed quantities an error. ODEs, maps, `aux` lines and user functions see the final values of all fixed quantities, wherever they are defined (measured: an `aux` above `b=...` sees the value of `b`), so they give no diagnostic.
 - An `aux` name used inside a formula is an error (manual: aux quantities are output only).
 - A user function may not call itself, directly or through other functions, since functions are inlined (PhaseCont choice).
 - A file that mixes ODEs and maps is an error (PhaseCont choice; XPPAUT 8.0 loads it silently).
@@ -110,7 +110,7 @@ Loosest to tightest (measured; XPPAUT 8.0 differs from C here):
 
 | Level | Operators | Associativity |
 |---|---|---|
-| 1 | binary `+ -`, `|` | left, all at one level |
+| 1 | binary `+ -`, `\|` | left, all at one level |
 | 2 | `* /`, `&`, implicit multiplication | left, all at one level |
 | 3 | prefix `-`, `not` | prefix; the operand is parsed at level 4 |
 | 4 | `< > <= >= ==` | left, all at one level |
@@ -121,8 +121,8 @@ Measured examples, each of which is a parser test:
 
 | Expression | Reads as | XPPAUT 8.0 value (`x=3`) |
 |---|---|---|
-| `1|0+1` | `(1|0)+1` | 2 |
-| `2+1|0` | `(2+1)|0` | 1 |
+| `1\|0+1` | `(1\|0)+1` | 2 |
+| `2+1\|0` | `(2+1)\|0` | 1 |
 | `2*1&1` | `(2*1)&1` | 1 |
 | `1&1*2` | `(1&1)*2` | 2 |
 | `3>2>1` | `(3>2)>1` | 0 |
@@ -160,7 +160,7 @@ PhaseCont treats blanks as separators. Wherever deleting a blank would join its 
 
 - A number literal followed directly by a name or `(`, with no blank between them, multiplies at level 2: `2v^2(1-w)` is `2*(v^2)*(1-w)` (PhaseCont choice, approved). Nothing else multiplies implicitly; `x(1)` stays a call and `)(` is an error.
 - XPPAUT 8.0 rejects `2x` and `2(x)` (measured), so every use gives the portability warning with a fix-it that inserts `*`. After `/` the warning also says that `a/2v` reads as `(a/2)*v`.
-- The AST marks implicit multiplication, and the writer writes it back without `*`.
+- The AST marks implicit multiplication, and the writer writes it back without `*`. The one exception: when the right operand starts with `e` or `E` followed by a digit, juxtaposition would re-lex as one number (`2` then `e1` would read as `2e1`), so the writer writes `*`. The parser never produces that case; only hand-built ASTs lose the flag.
 
 ### Precedence warnings
 
@@ -216,7 +216,7 @@ Arity `n` means the function takes exactly `n` arguments. "Smooth" means the fun
 | `flr` | 1 | floor | no | no | measured (`flr(-2.5)` = -3, `flr(-2)` = -2) |
 | `ceil` | 1 | ceiling | no | no | manual; XPPAUT 8.0 rejects it, so portability warning |
 | `erf erfc` | 1 | error function, complement | yes | no | manual, measured (`erf(1)` = 0.84270078) |
-| `lgamma` | 1 | `ln|Γ(x)|` | yes, away from poles | no | measured (`lgamma(5)` = 3.1780539, `lgamma(-0.5)` = 1.2655121) |
+| `lgamma` | 1 | `ln\|Γ(x)\|` | yes, away from poles | no | measured (`lgamma(5)` = 3.1780539, `lgamma(-0.5)` = 1.2655121) |
 | `besselj bessely` | 2 | `J_n(x)`, `Y_n(x)`; order truncated toward zero | yes in `x` | no | manual, measured (`besselj(1.5,1)` = `besselj(1,1)`, `besselj(-0.5,1)` = `besselj(0,1)`) |
 | `ran` | 1 | uniform on `[0, a]` | no | yes | manual, measured |
 | `normal` | 2 | normal with mean `m` and variance `v` | no | yes | manual |

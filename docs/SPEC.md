@@ -23,14 +23,14 @@ This file is the source of truth for what the engine computes and how each phase
 The rules below were checked against the XPPAUT manuals (v5.0, v5.41, v8 notes) and measured with XPPAUT 8.0 on our own probe files (`references/xpp-probes/`). The full language reference, with the precedence table, the builtin semantics table and the diagnostic codes, is `crates/pc-ode/docs/language.md`.
 
 Parsing rules:
-- **Keywords:** only the first letter is significant for the nine declarations `markov`, `parameter`, `wiener`, `table`, `aux`, `init`, `bndry`, `global` and `done` (`p`, `par` and `pzz` all declare parameters). Other keywords (`number`, `set`, `options`, `only`, `special`, `solv`, `export`, `volt`) need the full word. A first word is a keyword only when a blank follows it and the next non-blank character is not `=`, so `p=3` and `p = 3` define a fixed quantity named `p`.
+- **Keywords:** only the first letter is significant for the nine declarations `markov`, `parameter`, `wiener`, `table`, `aux`, `init`, `bndry`, `global` and `done` (`p`, `par` and `pzz` all declare parameters). Other keywords (`number`, `set`, `options`, `only`, `special`, `solv`, `export`, `volt`, `hom_bcs`) need the full word. A first word is a keyword only when a blank or the end of the line follows it and the next non-blank character is not `=`, so `p=3` and `p = 3` define a fixed quantity named `p`.
 - **Case:** the language is case-insensitive.
 - **Names:** XPPAUT 8.0 truncates names to 10 characters. A longer name gives a portability warning, not an error.
 - **Line continuation:** a backslash at the end of a line continues it.
 - **Order:** names may be used before their declaration, except fixed quantities: XPPAUT evaluates them in file order, so a fixed quantity that uses one defined on a later line is an error.
 - **Spaces around `=`:** accepted in `par`, `number` and `init` lists and in formulas. In `@` lists XPPAUT 8.0 accepts the line but ignores the option, so PhaseCont gives a warning with a fix-it.
-- **Declared values:** `par`, `number`, `init` and `x(0)=` values are signed numeric literals (XPPAUT reads only a leading number). A repeated `par` is an error.
-- **Comments:** `#` at the start of a line. A trailing `#` comment is accepted after `par`, `number` and `@` lists and is an error elsewhere, as in XPPAUT 8.0.
+- **Declared values:** `par`, `number`, `init` and `x(0)=` values are signed numeric literals (XPPAUT reads only a leading number); inside an array template a value may also be a bare index form (`x[j](0)=[j]`). A repeated `par` is an error.
+- **Comments:** `#` at the start of a line. A trailing `#` comment is accepted after `par`, `number` and `@` lists, where XPPAUT 8.0 ignores it, and is an error elsewhere: XPPAUT 8.0 rejects it after formulas and `init` lists, and PhaseCont also rejects it after the statements that were not measured.
 - **Arrays:** range lines (`x[1..10]'=-x[j]`) and `%[1..n]` ... `%` blocks are expanded during loading.
 - **Old-style files**, whose first line starts with a digit, are an error.
 
@@ -44,7 +44,7 @@ Parsing rules:
 | Fixed quantities | `w=...` | full (inlined in the DAG) |
 | Auxiliary output | `aux I=...` | full |
 | User functions | `f(x,y)=...` | full (inlined) |
-| Tables | `table h % 101 0 6.283 sin(t)` | inline formula tables; file tables later |
+| Tables | `table h % 101 0 6.283 sin(t)` | inline formula tables; file tables give an unsupported warning |
 | Options | `@ xp=V, yp=w, total=100, dt=.05, meth=stiff` | full |
 | Include, sets | `#include`, `set name {...}` | full |
 | Arrays | `x[1..n]'=...`, `%[1..n]` ... `%` | full (expanded) |
