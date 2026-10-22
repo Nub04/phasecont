@@ -1,0 +1,16 @@
+# Phase 0 spikes. This workspace is separate from the main one (the root
+# Cargo.toml excludes it) and is thrown away once docs/spikes.md is approved.
+[workspace]
+resolver = "3"
+members = ["pckern"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+rust-version = "1.97"
+
+[profile.release]
+# The panic barrier relies on catch_unwind.
+panic = "unwind"

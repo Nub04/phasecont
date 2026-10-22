@@ -1,0 +1,28 @@
+command: scripts/matlab-win --run spikes/matlab/s1_gateway_nodll.m
+date: 2026-10-21T14:26:04Z
+power: power line Online (Win32_Battery BatteryStatus=2, 100%), scheme Balanced, AC overlay ded574b5-45a0-4f42-8737-46345c09c238 (Best performance)
+[Warning: Unable to obtain a change notification handle for \\wsl.localhost\fedoralinux-44\home\nub04\dev\phasecont\spikes\matlab.] 
+[> In run (line 34)] 
+MATLAB 26.2.0.3386108 (R2026b)
+repo:  \\wsl.localhost\fedoralinux-44\home\nub04\dev\phasecont
+stage: C:\Users\<user>\phasecont-stage\spikes
+Building with 'Microsoft Visual C++ 2026 (C)'.
+MEX completed successfully.
+PASS mex with a UNC current folder: \\wsl.localhost\fedoralinux-44\home\nub04\dev\phasecont
+gateway: C:\Users\<user>\AppData\Local\Temp\pckern_s1_nodll\pckern.mexw64
+PASS no command: phasecont:engine:badArg | usage: pckern(command, ...)
+PASS numeric command: phasecont:engine:badArg | the command must be a character vector or string scalar
+PASS string array command: phasecont:engine:badArg | the command must be a string scalar
+PASS empty string array command: phasecont:engine:badArg | the command must be a string scalar
+PASS char matrix command: phasecont:engine:badArg | the command must be a character vector or string scalar
+PASS missing string command: phasecont:engine:badArg | unknown command ""
+PASS unknown command: phasecont:engine:badArg | unknown command "nope"
+PASS info without pckern.dll, call 1: phasecont:engine:load | cannot load C:\Users\<user>\AppData\Local\Temp\pckern_s1_nodll\pckern.dll: The specified module could not be found. (Windows error 126)
+PASS info without pckern.dll, call 2: phasecont:engine:load | cannot load C:\Users\<user>\AppData\Local\Temp\pckern_s1_nodll\pckern.dll: The specified module could not be found. (Windows error 126)
+PASS scale without pckern.dll: phasecont:engine:load | cannot load C:\Users\<user>\AppData\Local\Temp\pckern_s1_nodll\pckern.dll: The specified module could not be found. (Windows error 126)
+PASS module_path kernel32.dll: C:\WINDOWS\System32\KERNEL32.DLL
+PASS module_path pckern.dll is empty: []
+PASS preload a missing file: phasecont:engine:load | cannot load C:\nope\missing.dll: The specified module could not be found. (Windows error 126)
+PASS preload kernel32.dll by full path: C:\WINDOWS\System32\KERNEL32.DLL
+S1 gateway checks without pckern.dll: all passed
+exit code: 0

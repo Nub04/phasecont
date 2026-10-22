@@ -1,0 +1,49 @@
+command: scripts/matlab-win --run spikes/matlab/s1_ffi.m
+date: 2026-10-21T16:28:34Z
+power: power line Online (Win32_Battery BatteryStatus=2, 100%), scheme Balanced, AC overlay 961cc777-2547-4f9d-8174-7d86181b8a7a (Best power efficiency)
+[Warning: Unable to obtain a change notification handle for \\wsl.localhost\fedoralinux-44\home\nub04\dev\phasecont\spikes\matlab.] 
+[> In run (line 34)] 
+MATLAB 26.2.0.3386108 (R2026b), win64, maxNumCompThreads 16
+pckern spike abi=1 target=x86_64-pc-windows-gnu profile=release built=1792599836
+loaded C:\Users\<user>\phasecont-stage\spikes\pckern.dll
+PASS string command, empty 0x0: size [0 0], class double
+PASS char command,   empty 0x0: size [0 0], class double
+PASS string command, empty 1x0: size [1 0], class double
+PASS char command,   empty 1x0: size [1 0], class double
+PASS string command, empty 0x3: size [0 3], class double
+PASS char command,   empty 0x3: size [0 3], class double
+PASS string command, scalar: size [1 1], class double
+PASS char command,   scalar: size [1 1], class double
+PASS string command, row: size [1 5], class double
+PASS char command,   row: size [1 5], class double
+PASS string command, column: size [4 1], class double
+PASS char command,   column: size [4 1], class double
+PASS string command, matrix 3x4: size [3 4], class double
+PASS char command,   matrix 3x4: size [3 4], class double
+PASS string command, array 2x3x2: size [2 3 2], class double
+PASS char command,   array 2x3x2: size [2 3 2], class double
+PASS string command, NaN and Inf: size [1 6], class double
+PASS char command,   NaN and Inf: size [1 6], class double
+PASS factor 0.5, times 4: size [3 4], class double
+PASS panic, call 1: phasecont:engine:panic | panic: spike panic: 100% on purpose (at pckern/src/s1.rs:33)
+PASS scale after panic 1: size [1 3], class double
+PASS panic, call 2: phasecont:engine:panic | panic: spike panic: 100% on purpose (at pckern/src/s1.rs:33)
+PASS scale after panic 2: size [1 3], class double
+PASS panic_in_worker, call 1: phasecont:engine:panic | panic: spike worker panic at item 37 (raised on another thread)
+PASS scale after panic_in_worker 1: size [1 3], class double
+PASS panic_in_worker, call 2: phasecont:engine:panic | panic: spike worker panic at item 37 (raised on another thread)
+PASS scale after panic_in_worker 2: size [1 3], class double
+PASS test_handle returns a uint64 scalar: class uint64, size [1 1], value 5783466346473848835
+PASS free_handle on a live handle: no error
+PASS second free_handle: phasecont:engine:badHandle | unknown handle 0x5043000000000003
+PASS free_handle on id 0: phasecont:engine:badHandle | unknown handle 0x0000000000000000
+PASS free_handle on a double: phasecont:engine:badArg | the handle must be a uint64 scalar
+PASS scale rejects single x: phasecont:engine:badArg | x must be a real, full double array
+PASS scale rejects int32 x: phasecont:engine:badArg | x must be a real, full double array
+PASS scale rejects complex x: phasecont:engine:badArg | x must be a real, full double array
+PASS scale rejects sparse x: phasecont:engine:badArg | x must be a real, full double array
+PASS scale rejects single a: phasecont:engine:badArg | a must be a real double scalar
+PASS scale rejects vector a: phasecont:engine:badArg | a must be a real double scalar
+PASS scale after the argument errors: size [1 3], class double
+S1 FFI checks: all passed
+exit code: 0
