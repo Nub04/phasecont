@@ -1,0 +1,123 @@
+//! Diagnostics and their stable codes.
+
+use std::fmt;
+
+use crate::span::Span;
+
+/// How serious a diagnostic is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    Error,
+    Warning,
+    Note,
+}
+
+/// A suggested edit: replace the text under `span` with `replacement`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixIt {
+    pub span: Span,
+    pub replacement: String,
+}
+
+/// A stable diagnostic code, shown as `ODE` plus four digits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Code(pub u16);
+
+impl fmt::Display for Code {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ODE{:04}", self.0)
+    }
+}
+
+/// One message about the input, with an optional fix and related locations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnostic {
+    pub code: Code,
+    pub severity: Severity,
+    pub span: Span,
+    pub message: String,
+    pub fix_it: Option<FixIt>,
+    pub notes: Vec<(Span, String)>,
+}
+
+/// Every diagnostic code with its default severity and a one-line summary.
+///
+/// Entries are in increasing code order. New codes are appended and existing
+/// codes are never renumbered.
+pub const CODES: &[(Code, Severity, &str)] = &[];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::span::{FileId, Span};
+
+    /// Checks that codes are strictly increasing, so unique and sorted.
+    fn check_sorted_unique(table: &[(Code, Severity, &str)]) -> Result<(), String> {
+        for pair in table.windows(2) {
+            if pair[0].0 >= pair[1].0 {
+                return Err(format!("{} is not before {}", pair[0].0, pair[1].0));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn code_table_is_unique_and_sorted() {
+        check_sorted_unique(CODES).unwrap();
+    }
+
+    #[test]
+    fn code_table_summaries_are_one_line() {
+        for (code, _, summary) in CODES {
+            assert!(!summary.is_empty(), "{code} has an empty summary");
+            assert!(!summary.contains('\n'), "{code} summary spans lines");
+        }
+    }
+
+    #[test]
+    fn checker_rejects_bad_tables() {
+        let ok = [
+            (Code(1), Severity::Error, "a"),
+            (Code(2), Severity::Warning, "b"),
+        ];
+        assert!(check_sorted_unique(&ok).is_ok());
+        assert!(check_sorted_unique(&[]).is_ok());
+        let dup = [
+            (Code(1), Severity::Error, "a"),
+            (Code(1), Severity::Error, "b"),
+        ];
+        assert!(check_sorted_unique(&dup).is_err());
+        let unsorted = [
+            (Code(2), Severity::Error, "a"),
+            (Code(1), Severity::Error, "b"),
+        ];
+        assert!(check_sorted_unique(&unsorted).is_err());
+    }
+
+    #[test]
+    fn code_displays_with_four_digits() {
+        assert_eq!(Code(1).to_string(), "ODE0001");
+        assert_eq!(Code(12).to_string(), "ODE0012");
+        assert_eq!(Code(9999).to_string(), "ODE9999");
+        assert_eq!(Code(65535).to_string(), "ODE65535");
+    }
+
+    #[test]
+    fn diagnostic_holds_its_parts() {
+        let f = FileId(0);
+        let d = Diagnostic {
+            code: Code(1),
+            severity: Severity::Error,
+            span: Span::new(f, 0, 3),
+            message: "bad".to_string(),
+            fix_it: Some(FixIt {
+                span: Span::new(f, 0, 3),
+                replacement: "good".to_string(),
+            }),
+            notes: vec![(Span::new(f, 5, 6), "declared here".to_string())],
+        };
+        assert_eq!(d.clone(), d);
+        assert_eq!(d.severity, Severity::Error);
+        assert_ne!(Severity::Warning, Severity::Note);
+    }
+}
