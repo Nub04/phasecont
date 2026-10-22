@@ -118,6 +118,11 @@ struct Lexer<'a> {
 
 impl Lexer<'_> {
     fn run(&mut self) {
+        // A byte order mark at the very start of the file is ignored. Anywhere
+        // else U+FEFF is a stray character.
+        if self.text.starts_with('\u{feff}') {
+            self.pos = '\u{feff}'.len_utf8();
+        }
         while let Some(&b) = self.bytes.get(self.pos) {
             match b {
                 b' ' | b'\t' => self.skip_blank(1),
@@ -289,7 +294,8 @@ impl Lexer<'_> {
             }
         }
 
-        let hex = &self.text[start..i] == "0"
+        // Only zeros before the `x` (`0x10`, `00x10`), with no dot or exponent.
+        let hex = self.bytes[start..i].iter().all(|&b| b == b'0')
             && matches!(self.bytes.get(i), Some(b'x' | b'X'))
             && self.bytes.get(i + 1).is_some_and(u8::is_ascii_hexdigit);
         // A dot here is a second dot, or a dot after an exponent.
@@ -323,7 +329,10 @@ impl Lexer<'_> {
     fn malformed_number(&mut self, start: usize, scanned: usize) {
         let mut i = scanned;
         while let Some(&b) = self.bytes.get(i) {
-            if b.is_ascii_alphanumeric() || b == b'_' || self.is_single_dot_at(i) {
+            let exponent_sign = matches!(b, b'+' | b'-')
+                && matches!(self.bytes[i - 1], b'e' | b'E')
+                && self.is_digit_at(i + 1);
+            if b.is_ascii_alphanumeric() || b == b'_' || self.is_single_dot_at(i) || exponent_sign {
                 i += 1;
             } else {
                 break;
@@ -675,6 +684,7 @@ mod tests {
             ("1.2.3", "1.2.3"),
             (".5.5", ".5.5"),
             ("1e2.", "1e2."),
+            ("00x10", "00x10"),
         ] {
             let wrapped = format!("a+{text}+b");
             let (tokens, d) = one_error(&wrapped);
@@ -698,12 +708,52 @@ mod tests {
     }
 
     #[test]
+    fn malformed_numbers_swallow_a_signed_exponent() {
+        for text in [
+            "1.2.3e-4", "1_000e+3", "1e2.5e+3", "1_0e+5", "1.2.3E-4", "0x1e+3",
+        ] {
+            let (tokens, d) = one_error(text);
+            assert_eq!(d.code, MALFORMED_NUMBER, "{text}");
+            assert_eq!(d.span, Span::new(F, 0, text.len()), "{text}");
+            assert_eq!(kinds_of(&tokens), vec![TokenKind::Unknown], "{text}");
+            assert_eq!(tokens[0].span, d.span, "{text}");
+        }
+        // A sign that is not followed by a digit stays outside the run.
+        let (tokens, d) = one_error("1_0e+x");
+        assert_eq!(d.span, Span::new(F, 0, 4));
+        assert_eq!(
+            kinds_of(&tokens),
+            vec![TokenKind::Unknown, TokenKind::Plus, name("x")]
+        );
+        // A sign after something other than e or E stays outside the run.
+        let (tokens, _) = lex(F, "1_0x+5");
+        assert_eq!(
+            kinds_of(&tokens),
+            vec![TokenKind::Unknown, TokenKind::Plus, n(5.0)]
+        );
+    }
+
+    #[test]
+    fn bare_malformed_number_cases_have_exact_tokens() {
+        for text in ["1e2.", "00x10", "0x10", "1.2.3"] {
+            let (tokens, d) = one_error(text);
+            assert_eq!(d.code, MALFORMED_NUMBER, "{text}");
+            assert_eq!(kinds_of(&tokens), vec![TokenKind::Unknown], "{text}");
+            assert_eq!(d.span, Span::new(F, 0, text.len()), "{text}");
+        }
+    }
+
+    #[test]
     fn near_misses_are_not_malformed() {
         use TokenKind::*;
         assert_eq!(kinds("0xy"), vec![n(0.0), name("xy")]);
         assert_eq!(kinds("10x"), vec![n(10.0), name("x")]);
         assert_eq!(kinds("5.x"), vec![n(5.0), name("x")]);
         assert_eq!(kinds("1.5.."), vec![n(1.5), DotDot]);
+        // Not a hex form: the integer part has a dot.
+        assert_eq!(kinds("0.0x10"), vec![n(0.0), name("x10")]);
+        // A number, then `..`, then `.5`.
+        assert_eq!(kinds("1...5"), vec![n(1.0), DotDot, n(0.5)]);
     }
 
     #[test]
@@ -714,6 +764,8 @@ mod tests {
         assert_eq!(d.span, Span::new(F, 0, 5));
         assert_eq!(tokens[0].kind, n(f64::INFINITY));
         assert_eq!(tokens[0].span, d.span);
+        // Underflow is not an error.
+        assert_eq!(kinds("1e-999"), vec![n(0.0)]);
         // The largest finite value is fine.
         assert_eq!(kinds("1.7976931348623157e308"), vec![n(f64::MAX)]);
     }
@@ -747,6 +799,34 @@ mod tests {
     }
 
     #[test]
+    fn leading_byte_order_mark_is_skipped() {
+        let text = "\u{feff}x=1";
+        let (tokens, diags) = lex(F, text);
+        assert!(diags.is_empty());
+        assert_eq!(kinds_of(&tokens), vec![name("x"), TokenKind::Eq, n(1.0)]);
+        assert_eq!(tokens[0].span, Span::new(F, 3, 4));
+        assert!(!tokens[0].preceded_by_blank);
+        let (tokens, diags) = lex(F, "\u{feff}");
+        assert!(diags.is_empty());
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].span, Span::new(F, 3, 3));
+    }
+
+    #[test]
+    fn byte_order_mark_elsewhere_is_a_stray_character() {
+        let (tokens, d) = one_error("x\u{feff}");
+        assert_eq!(d.code, STRAY_CHARACTER);
+        assert_eq!(d.span, Span::new(F, 1, 4));
+        assert_eq!(kinds_of(&tokens), vec![name("x"), TokenKind::Unknown]);
+        // Only the first one at offset 0 is skipped.
+        let (tokens, d) = one_error("\u{feff}\u{feff}x");
+        assert_eq!(d.span, Span::new(F, 3, 6));
+        assert_eq!(kinds_of(&tokens), vec![TokenKind::Unknown, name("x")]);
+        let (_, d) = one_error("\nx\n\u{feff}");
+        assert_eq!(d.code, STRAY_CHARACTER);
+    }
+
+    #[test]
     fn non_ascii_letters_are_not_name_characters() {
         use TokenKind::*;
         let (tokens, diags) = lex(F, "aé1");
@@ -769,9 +849,41 @@ mod tests {
         assert_eq!(MALFORMED_NUMBER, Code(1));
         assert_eq!(NUMBER_TOO_LARGE, Code(2));
         assert_eq!(STRAY_CHARACTER, Code(3));
-        for code in [MALFORMED_NUMBER, NUMBER_TOO_LARGE, STRAY_CHARACTER] {
+        for (code, summary) in [
+            (MALFORMED_NUMBER, "malformed number"),
+            (
+                NUMBER_TOO_LARGE,
+                "number too large for a double precision value",
+            ),
+            (STRAY_CHARACTER, "stray character"),
+        ] {
             let entry = CODES.iter().find(|(c, _, _)| *c == code).unwrap();
             assert_eq!(entry.1, Severity::Error);
+            assert_eq!(entry.2, summary);
+        }
+    }
+
+    /// Checks the span rules for every token and diagnostic of `text`: inside
+    /// the text, on char boundaries, in order, not overlapping, one final Eof.
+    fn check_spans(text: &str) {
+        let (tokens, diags) = lex(F, text);
+        assert!(!tokens.is_empty(), "{text:?}");
+        assert_eq!(tokens.last().unwrap().kind, TokenKind::Eof, "{text:?}");
+        let eofs = tokens.iter().filter(|t| t.kind == TokenKind::Eof).count();
+        assert_eq!(eofs, 1, "{text:?}");
+        let spans = tokens
+            .iter()
+            .map(|t| t.span)
+            .chain(diags.iter().map(|d| d.span));
+        for s in spans {
+            assert_eq!(s.file, F);
+            assert!(s.start <= s.end, "{text:?}: {s:?}");
+            assert!(s.end <= text.len(), "{text:?}: {s:?}");
+            assert!(text.is_char_boundary(s.start), "{text:?}: {s:?}");
+            assert!(text.is_char_boundary(s.end), "{text:?}: {s:?}");
+        }
+        for pair in tokens.windows(2) {
+            assert!(pair[0].span.end <= pair[1].span.start, "{text:?}");
         }
     }
 
@@ -810,58 +922,30 @@ mod tests {
             "a\\",
         ];
         for text in inputs {
-            let (tokens, diags) = lex(F, text);
-            assert!(!tokens.is_empty(), "{text:?}");
-            assert_eq!(tokens.last().unwrap().kind, TokenKind::Eof, "{text:?}");
-            let spans = tokens
-                .iter()
-                .map(|t| t.span)
-                .chain(diags.iter().map(|d| d.span));
-            for s in spans {
-                assert_eq!(s.file, F);
-                assert!(s.start <= s.end, "{text:?}: {s:?}");
-                assert!(s.end <= text.len(), "{text:?}: {s:?}");
-                assert!(text.is_char_boundary(s.start), "{text:?}: {s:?}");
-                assert!(text.is_char_boundary(s.end), "{text:?}: {s:?}");
-            }
-            // Tokens are in order and never overlap.
-            for pair in tokens.windows(2) {
-                assert!(pair[0].span.end <= pair[1].span.start, "{text:?}");
-            }
+            check_spans(text);
         }
     }
 
     #[test]
-    fn lexer_survives_every_short_ascii_string() {
-        // All strings of length <= 3 over a small alphabet that hits each rule.
+    fn lexer_keeps_span_rules_on_every_short_string() {
+        // All strings of length <= 4 over a small alphabet that hits each rule.
         let alphabet = [
-            'a', 'e', '1', '.', '_', 'x', '+', '\\', '\n', '\r', '#', ' ', 'é',
+            'a', 'e', '0', '1', '.', '_', 'x', '+', '-', '*', '=', '<', '!', '\\', '\n', '\r', '#',
+            ' ', 'é', '\u{feff}',
         ];
-        let mut texts = vec![String::new()];
         let mut frontier = vec![String::new()];
-        for _ in 0..3 {
+        check_spans("");
+        for _ in 0..4 {
             let mut next = Vec::new();
             for s in &frontier {
                 for c in alphabet {
                     let mut t = s.clone();
                     t.push(c);
+                    check_spans(&t);
                     next.push(t);
                 }
             }
-            texts.extend(next.iter().cloned());
             frontier = next;
-        }
-        for text in texts {
-            let (tokens, diags) = lex(F, &text);
-            assert_eq!(tokens.last().unwrap().kind, TokenKind::Eof);
-            for s in tokens
-                .iter()
-                .map(|t| t.span)
-                .chain(diags.iter().map(|d| d.span))
-            {
-                assert!(s.start <= s.end && s.end <= text.len(), "{text:?}");
-                assert!(text.is_char_boundary(s.start) && text.is_char_boundary(s.end));
-            }
         }
     }
 }

@@ -20,6 +20,9 @@ Where XPPAUT 8.0 and the manual disagree, the measured behavior wins unless a ru
 - A trailing `#` comment after a statement is accepted after a `par`, `number` or `@` list, kept on the statement and written back (measured: XPPAUT 8.0 ignores it there). After any other statement it is an error (measured for formulas and `init`, which XPPAUT rejects; PhaseCont choice for the statements not measured).
 - A file whose first line starts with a digit is in the old XPPAUT format, which is an error (manual).
 - Case is ignored in names and keywords (manual, measured). The AST keeps the spelling as written and uses the lower-case form as the lookup key.
+- A stray character is an error. That includes any non-ASCII character outside a comment, and a backslash that is not the last character of a line (PhaseCont choice).
+- A byte order mark (U+FEFF) at the very start of a file is ignored. Anywhere else it is a stray character (PhaseCont choice).
+- A lone `\r` that is not followed by `\n` is a blank (PhaseCont choice).
 
 ## Statement classification
 
@@ -100,6 +103,8 @@ Unsupported statements stay in the AST as raw text, so the writer reproduces the
 - `e` or `E` starts an exponent only when a digit, or a sign and then a digit, follows it. So `2exp(x)` is `2` then `exp(x)`, and `2e-3x` is `2e-3` then `x`.
 - A `.` followed by another `.` ends the number, so `1..10` is `1`, `..`, `10`.
 - `1e2.5`, `0x10` and `1_000` are errors (measured).
+- `1.2.3`, `.5.5`, `1e2.` and `00x10` are also errors (PhaseCont choice). A bad literal such as `1_000e+3` is one error that covers the whole literal, including a signed exponent.
+- A literal that is too large for a double, such as `1e999`, is an error. A literal that underflows to zero, such as `1e-999`, is not (PhaseCont choice).
 - `pi` is a constant. `e` is not (measured: `par e=2` is legal).
 
 ## Expressions
