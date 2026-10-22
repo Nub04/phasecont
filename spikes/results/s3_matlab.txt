@@ -1,0 +1,403 @@
+command: scripts/matlab-win --run spikes/matlab/s3_linalg.m
+date: 2026-10-21T16:46:05Z
+power: power line Online (Win32_Battery BatteryStatus=2, 100%), scheme Balanced, AC overlay ded574b5-45a0-4f42-8737-46345c09c238 (Best performance)
+[Warning: Unable to obtain a change notification handle for \\wsl.localhost\fedoralinux-44\home\nub04\dev\phasecont\spikes\matlab.] 
+[> In run (line 34)] 
+MATLAB 26.2.0.3386108 (R2026b), win64, maxNumCompThreads 16
+pckern spike abi=1 target=x86_64-pc-windows-gnu profile=release built=1792599836
+loaded C:\Users\<user>\phasecont-stage\spikes\pckern.dll
+
+== N = 40 (n = 4, m = 4, 16 thread(s) for the parallel runs) ==
+PASS handle is a uint64 scalar: uint64
+PASS s3_build sizes match the contract formulas: nr 646 (646), nnz 15378 (15378)
+PASS size(A) and numel(b): A 646x646, numel(b) 646, nr 646
+PASS nnz(A) equals the nnz from s3_build: nnz(A) 15378, s3_build 15378
+  sparse_lu threads=1: reps 20, n 4, m 4, N 40, nr 646, nnz 15378, nred 166, backward_error 1.166e-17
+PASS sparse_lu threads=1 spike and method: s3, sparse_lu
+PASS sparse_lu threads=1 threads and reps: threads 1, reps 20
+PASS sparse_lu threads=1 sizes match the matrix MATLAB got: report nr 646 nnz 15378, matrix nr 646 nnz 15378
+PASS sparse_lu threads=1 sizes match the contract formulas: nr 646 (646), nnz 15378 (15378), nred 166 (166)
+PASS sparse_lu threads=1 report backward error <= 1e-13: 1.166e-17
+    first     median 1013.0 us, min 824.8 us, max 1232.6 us
+    repeat    median 621.0 us, min 531.1 us, max 754.4 us
+PASS sparse_lu threads=1 timing rows: first, repeat
+PASS sparse_lu threads=1 timing values: median > 0 and min <= median <= max
+PASS sparse_lu threads=1 x is an nr-by-1 double: size [646 1], class double
+PASS sparse_lu threads=1 MATLAB backward error <= 1e-13: 1.175e-17
+  condensed_sparse threads=1: reps 20, n 4, m 4, N 40, nr 646, nnz 15378, nred 166, backward_error 1.565e-17
+PASS condensed_sparse threads=1 spike and method: s3, condensed_sparse
+PASS condensed_sparse threads=1 threads and reps: threads 1, reps 20
+PASS condensed_sparse threads=1 sizes match the matrix MATLAB got: report nr 646 nnz 15378, matrix nr 646 nnz 15378
+PASS condensed_sparse threads=1 sizes match the contract formulas: nr 646 (646), nnz 15378 (15378), nred 166 (166)
+PASS condensed_sparse threads=1 report backward error <= 1e-13: 1.565e-17
+    first     median 293.4 us, min 266.9 us, max 426.4 us
+    repeat    median 198.9 us, min 148.5 us, max 313.2 us
+    condense  median 99.3 us, min 80.6 us, max 193.4 us
+    reduced   median 73.8 us, min 50.1 us, max 172.1 us
+    backsub   median 18.4 us, min 12.2 us, max 33.3 us
+PASS condensed_sparse threads=1 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_sparse threads=1 timing values: median > 0 and min <= median <= max
+PASS condensed_sparse threads=1 x is an nr-by-1 double: size [646 1], class double
+PASS condensed_sparse threads=1 MATLAB backward error <= 1e-13: 1.550e-17
+  condensed_sparse threads=16: reps 20, n 4, m 4, N 40, nr 646, nnz 15378, nred 166, backward_error 1.565e-17
+PASS condensed_sparse threads=16 spike and method: s3, condensed_sparse
+PASS condensed_sparse threads=16 threads and reps: threads 16, reps 20
+PASS condensed_sparse threads=16 sizes match the matrix MATLAB got: report nr 646 nnz 15378, matrix nr 646 nnz 15378
+PASS condensed_sparse threads=16 sizes match the contract formulas: nr 646 (646), nnz 15378 (15378), nred 166 (166)
+PASS condensed_sparse threads=16 report backward error <= 1e-13: 1.565e-17
+    first     median 308.4 us, min 264.2 us, max 639.8 us
+    repeat    median 188.0 us, min 151.3 us, max 341.0 us
+    condense  median 81.8 us, min 56.7 us, max 173.8 us
+    reduced   median 52.9 us, min 46.7 us, max 112.0 us
+    backsub   median 47.7 us, min 23.9 us, max 107.9 us
+PASS condensed_sparse threads=16 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_sparse threads=16 timing values: median > 0 and min <= median <= max
+PASS condensed_sparse threads=16 x is an nr-by-1 double: size [646 1], class double
+PASS condensed_sparse threads=16 MATLAB backward error <= 1e-13: 1.550e-17
+  condensed_dense threads=1: reps 20, n 4, m 4, N 40, nr 646, nnz 15378, nred 166, backward_error 1.745e-17
+PASS condensed_dense threads=1 spike and method: s3, condensed_dense
+PASS condensed_dense threads=1 threads and reps: threads 1, reps 20
+PASS condensed_dense threads=1 sizes match the matrix MATLAB got: report nr 646 nnz 15378, matrix nr 646 nnz 15378
+PASS condensed_dense threads=1 sizes match the contract formulas: nr 646 (646), nnz 15378 (15378), nred 166 (166)
+PASS condensed_dense threads=1 report backward error <= 1e-13: 1.745e-17
+    first     median 350.6 us, min 332.5 us, max 486.6 us
+    repeat    median 376.4 us, min 261.9 us, max 833.8 us
+    condense  median 107.5 us, min 80.0 us, max 369.7 us
+    reduced   median 239.2 us, min 163.5 us, max 501.6 us
+    backsub   median 21.5 us, min 12.9 us, max 65.4 us
+PASS condensed_dense threads=1 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_dense threads=1 timing values: median > 0 and min <= median <= max
+PASS condensed_dense threads=1 x is an nr-by-1 double: size [646 1], class double
+PASS condensed_dense threads=1 MATLAB backward error <= 1e-13: 1.730e-17
+  condensed_dense threads=16: reps 20, n 4, m 4, N 40, nr 646, nnz 15378, nred 166, backward_error 1.745e-17
+PASS condensed_dense threads=16 spike and method: s3, condensed_dense
+PASS condensed_dense threads=16 threads and reps: threads 16, reps 20
+PASS condensed_dense threads=16 sizes match the matrix MATLAB got: report nr 646 nnz 15378, matrix nr 646 nnz 15378
+PASS condensed_dense threads=16 sizes match the contract formulas: nr 646 (646), nnz 15378 (15378), nred 166 (166)
+PASS condensed_dense threads=16 report backward error <= 1e-13: 1.745e-17
+    first     median 553.2 us, min 398.8 us, max 980.8 us
+    repeat    median 1989.4 us, min 1234.7 us, max 6093.6 us
+    condense  median 233.3 us, min 97.6 us, max 889.5 us
+    reduced   median 1334.9 us, min 939.0 us, max 5873.6 us
+    backsub   median 133.7 us, min 74.2 us, max 1034.7 us
+PASS condensed_dense threads=16 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_dense threads=16 timing values: median > 0 and min <= median <= max
+PASS condensed_dense threads=16 x is an nr-by-1 double: size [646 1], class double
+PASS condensed_dense threads=16 MATLAB backward error <= 1e-13: 1.730e-17
+PASS MATLAB decomposition(A) + solve backward error <= 1e-13: 7.044e-18, 2583.6 us
+PASS MATLAB A\b backward error <= 1e-13: 7.044e-18, 1798.4 us
+PASS largest pairwise solution difference <= 1e-10: 1.016e-14 over 7 solutions, condest(A) 1.488e+05
+run_json("s3"):
+{"spike":"s3","target":"x86_64-pc-windows-gnu","profile":"release","n":4,"m":4,"N":40,"nr":646,"nnz":15378,"nred":166,"threads":16,"reps":20,"cond1_est":1.488473678137417e5,"methods":[{"method":"sparse_lu","threads":1,"backward_error":1.1660801619929139e-17,"timings":[{"name":"first","median_ns":9.087e5,"min_ns":6.837e5,"max_ns":1.1101e6},{"name":"repeat","median_ns":4.8725e5,"min_ns":3.622e5,"max_ns":5.733e5}]},{"method":"condensed_sparse","threads":1,"backward_error":1.564888247135455e-17,"timings":[{"name":"first","median_ns":2.846e5,"min_ns":2.7e5,"max_ns":5.013e5},{"name":"repeat","median_ns":1.7875e5,"min_ns":1.723e5,"max_ns":2.327e5},{"name":"condense","median_ns":1.0105e5,"min_ns":9.79e4,"max_ns":1.158e5},{"name":"reduced","median_ns":5.845e4,"min_ns":5.54e4,"max_ns":1.064e5},{"name":"backsub","median_ns":1.55e4,"min_ns":1.47e4,"max_ns":2.18e4}]},{"method":"condensed_sparse","threads":16,"backward_error":1.564888247135455e-17,"timings":[{"name":"first","median_ns":2.726e5,"min_ns":2.057e5,"max_ns":3.507e5},{"name":"repeat","median_ns":2.2575e5,"min_ns":1.776e5,"max_ns":3.91e5},{"name":"condense","median_ns":8.97e4,"min_ns":6.44e4,"max_ns":1.474e5},{"name":"reduced","median_ns":7.04e4,"min_ns":6.25e4,"max_ns":1.878e5},{"name":"backsub","median_ns":5.45e4,"min_ns":1.99e4,"max_ns":1.066e5}]},{"method":"condensed_dense","threads":1,"backward_error":1.7447853724986725e-17,"timings":[{"name":"first","median_ns":3.333e5,"min_ns":2.545e5,"max_ns":6.884e5},{"name":"repeat","median_ns":3.3415e5,"min_ns":2.64e5,"max_ns":5.319e5},{"name":"condense","median_ns":1.083e5,"min_ns":8.4e4,"max_ns":1.629e5},{"name":"reduced","median_ns":2.034e5,"min_ns":1.608e5,"max_ns":3.697e5},{"name":"backsub","median_ns":1.84e4,"min_ns":1.28e4,"max_ns":5.27e4}]},{"method":"condensed_dense","threads":16,"backward_error":1.7447853724986725e-17,"timings":[{"name":"first","median_ns":5.436e5,"min_ns":3.526e5,"max_ns":8.16e5},{"name":"repeat","median_ns":1.20385e6,"min_ns":8.287e5,"max_ns":8.1542e6},{"name":"condense","median_ns":1.563e5,"min_ns":7.12e4,"max_ns":4.397e5},{"name":"reduced","median_ns":9.4065e5,"min_ns":6.356e5,"max_ns":7.6145e6},{"name":"backsub","median_ns":1.104e5,"min_ns":5.57e4,"max_ns":2.866e5}]}],"max_pairwise_rel_diff":1.0158159759701378e-14,"sparse_threads_bitwise_equal":true,"pass":true}
+  target "x86_64-pc-windows-gnu", profile "release", n 4, m 4, N 40, nr 646, nnz 15378, nred 166, threads 16, reps 20
+PASS run spike: s3
+PASS run threads and reps: threads 16, reps 20
+PASS run sizes match the matrix MATLAB got: report nr 646 nnz 15378, matrix nr 646 nnz 15378
+PASS run sizes match the contract formulas: nr 646 (646), nnz 15378 (15378), nred 166 (166)
+PASS run method list: sparse_lu@1, condensed_sparse@1, condensed_sparse@16, condensed_dense@1, condensed_dense@16
+PASS sparse_lu threads=1 report backward error <= 1e-13: 1.166e-17
+    first     median 908.7 us, min 683.7 us, max 1110.1 us
+    repeat    median 487.2 us, min 362.2 us, max 573.3 us
+PASS sparse_lu threads=1 timing rows: first, repeat
+PASS sparse_lu threads=1 timing values: median > 0 and min <= median <= max
+PASS condensed_sparse threads=1 report backward error <= 1e-13: 1.565e-17
+    first     median 284.6 us, min 270.0 us, max 501.3 us
+    repeat    median 178.8 us, min 172.3 us, max 232.7 us
+    condense  median 101.0 us, min 97.9 us, max 115.8 us
+    reduced   median 58.5 us, min 55.4 us, max 106.4 us
+    backsub   median 15.5 us, min 14.7 us, max 21.8 us
+PASS condensed_sparse threads=1 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_sparse threads=1 timing values: median > 0 and min <= median <= max
+PASS condensed_sparse threads=16 report backward error <= 1e-13: 1.565e-17
+    first     median 272.6 us, min 205.7 us, max 350.7 us
+    repeat    median 225.8 us, min 177.6 us, max 391.0 us
+    condense  median 89.7 us, min 64.4 us, max 147.4 us
+    reduced   median 70.4 us, min 62.5 us, max 187.8 us
+    backsub   median 54.5 us, min 19.9 us, max 106.6 us
+PASS condensed_sparse threads=16 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_sparse threads=16 timing values: median > 0 and min <= median <= max
+PASS condensed_dense threads=1 report backward error <= 1e-13: 1.745e-17
+    first     median 333.3 us, min 254.5 us, max 688.4 us
+    repeat    median 334.1 us, min 264.0 us, max 531.9 us
+    condense  median 108.3 us, min 84.0 us, max 162.9 us
+    reduced   median 203.4 us, min 160.8 us, max 369.7 us
+    backsub   median 18.4 us, min 12.8 us, max 52.7 us
+PASS condensed_dense threads=1 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_dense threads=1 timing values: median > 0 and min <= median <= max
+PASS condensed_dense threads=16 report backward error <= 1e-13: 1.745e-17
+    first     median 543.6 us, min 352.6 us, max 816.0 us
+    repeat    median 1203.8 us, min 828.7 us, max 8154.2 us
+    condense  median 156.3 us, min 71.2 us, max 439.7 us
+    reduced   median 940.6 us, min 635.6 us, max 7614.5 us
+    backsub   median 110.4 us, min 55.7 us, max 286.6 us
+PASS condensed_dense threads=16 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_dense threads=16 timing values: median > 0 and min <= median <= max
+PASS run max_pairwise_rel_diff <= 1e-10: 1.016e-14
+PASS run sparse_threads_bitwise_equal: true
+  cond1_est 1.488e+05 (informational)
+PASS run pass flag: true
+PASS free_handle, N = 40: no error
+
+== N = 100 (n = 4, m = 4, 16 thread(s) for the parallel runs) ==
+PASS handle is a uint64 scalar: uint64
+PASS s3_build sizes match the contract formulas: nr 1606 (1606), nnz 38418 (38418)
+PASS size(A) and numel(b): A 1606x1606, numel(b) 1606, nr 1606
+PASS nnz(A) equals the nnz from s3_build: nnz(A) 38418, s3_build 38418
+  sparse_lu threads=1: reps 20, n 4, m 4, N 100, nr 1606, nnz 38418, nred 406, backward_error 6.105e-18
+PASS sparse_lu threads=1 spike and method: s3, sparse_lu
+PASS sparse_lu threads=1 threads and reps: threads 1, reps 20
+PASS sparse_lu threads=1 sizes match the matrix MATLAB got: report nr 1606 nnz 38418, matrix nr 1606 nnz 38418
+PASS sparse_lu threads=1 sizes match the contract formulas: nr 1606 (1606), nnz 38418 (38418), nred 406 (406)
+PASS sparse_lu threads=1 report backward error <= 1e-13: 6.105e-18
+    first     median 2098.0 us, min 1769.3 us, max 4867.3 us
+    repeat    median 1210.0 us, min 1088.6 us, max 1474.8 us
+PASS sparse_lu threads=1 timing rows: first, repeat
+PASS sparse_lu threads=1 timing values: median > 0 and min <= median <= max
+PASS sparse_lu threads=1 x is an nr-by-1 double: size [1606 1], class double
+PASS sparse_lu threads=1 MATLAB backward error <= 1e-13: 5.869e-18
+  condensed_sparse threads=1: reps 20, n 4, m 4, N 100, nr 1606, nnz 38418, nred 406, backward_error 5.769e-18
+PASS condensed_sparse threads=1 spike and method: s3, condensed_sparse
+PASS condensed_sparse threads=1 threads and reps: threads 1, reps 20
+PASS condensed_sparse threads=1 sizes match the matrix MATLAB got: report nr 1606 nnz 38418, matrix nr 1606 nnz 38418
+PASS condensed_sparse threads=1 sizes match the contract formulas: nr 1606 (1606), nnz 38418 (38418), nred 406 (406)
+PASS condensed_sparse threads=1 report backward error <= 1e-13: 5.769e-18
+    first     median 648.2 us, min 563.8 us, max 824.0 us
+    repeat    median 421.8 us, min 378.9 us, max 515.1 us
+    condense  median 223.9 us, min 192.5 us, max 257.8 us
+    reduced   median 141.9 us, min 127.0 us, max 233.1 us
+    backsub   median 41.4 us, min 32.2 us, max 84.4 us
+PASS condensed_sparse threads=1 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_sparse threads=1 timing values: median > 0 and min <= median <= max
+PASS condensed_sparse threads=1 x is an nr-by-1 double: size [1606 1], class double
+PASS condensed_sparse threads=1 MATLAB backward error <= 1e-13: 6.605e-18
+  condensed_sparse threads=16: reps 20, n 4, m 4, N 100, nr 1606, nnz 38418, nred 406, backward_error 5.769e-18
+PASS condensed_sparse threads=16 spike and method: s3, condensed_sparse
+PASS condensed_sparse threads=16 threads and reps: threads 16, reps 20
+PASS condensed_sparse threads=16 sizes match the matrix MATLAB got: report nr 1606 nnz 38418, matrix nr 1606 nnz 38418
+PASS condensed_sparse threads=16 sizes match the contract formulas: nr 1606 (1606), nnz 38418 (38418), nred 406 (406)
+PASS condensed_sparse threads=16 report backward error <= 1e-13: 5.769e-18
+    first     median 703.8 us, min 526.3 us, max 942.4 us
+    repeat    median 861.2 us, min 629.7 us, max 1655.1 us
+    condense  median 351.2 us, min 199.1 us, max 707.6 us
+    reduced   median 252.2 us, min 177.3 us, max 527.6 us
+    backsub   median 238.8 us, min 110.2 us, max 556.2 us
+PASS condensed_sparse threads=16 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_sparse threads=16 timing values: median > 0 and min <= median <= max
+PASS condensed_sparse threads=16 x is an nr-by-1 double: size [1606 1], class double
+PASS condensed_sparse threads=16 MATLAB backward error <= 1e-13: 6.605e-18
+  condensed_dense threads=1: reps 20, n 4, m 4, N 100, nr 1606, nnz 38418, nred 406, backward_error 6.487e-18
+PASS condensed_dense threads=1 spike and method: s3, condensed_dense
+PASS condensed_dense threads=1 threads and reps: threads 1, reps 20
+PASS condensed_dense threads=1 sizes match the matrix MATLAB got: report nr 1606 nnz 38418, matrix nr 1606 nnz 38418
+PASS condensed_dense threads=1 sizes match the contract formulas: nr 1606 (1606), nnz 38418 (38418), nred 406 (406)
+PASS condensed_dense threads=1 report backward error <= 1e-13: 6.487e-18
+    first     median 3028.3 us, min 2595.7 us, max 3597.5 us
+    repeat    median 2857.1 us, min 2563.9 us, max 3776.4 us
+    condense  median 260.0 us, min 230.1 us, max 390.4 us
+    reduced   median 2487.8 us, min 2227.5 us, max 3332.2 us
+    backsub   median 88.6 us, min 55.5 us, max 154.1 us
+PASS condensed_dense threads=1 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_dense threads=1 timing values: median > 0 and min <= median <= max
+PASS condensed_dense threads=1 x is an nr-by-1 double: size [1606 1], class double
+PASS condensed_dense threads=1 MATLAB backward error <= 1e-13: 6.228e-18
+  condensed_dense threads=16: reps 20, n 4, m 4, N 100, nr 1606, nnz 38418, nred 406, backward_error 6.487e-18
+PASS condensed_dense threads=16 spike and method: s3, condensed_dense
+PASS condensed_dense threads=16 threads and reps: threads 16, reps 20
+PASS condensed_dense threads=16 sizes match the matrix MATLAB got: report nr 1606 nnz 38418, matrix nr 1606 nnz 38418
+PASS condensed_dense threads=16 sizes match the contract formulas: nr 1606 (1606), nnz 38418 (38418), nred 406 (406)
+PASS condensed_dense threads=16 report backward error <= 1e-13: 6.487e-18
+    first     median 15250.9 us, min 5417.0 us, max 31317.5 us
+    repeat    median 15863.2 us, min 8936.7 us, max 25574.4 us
+    condense  median 317.4 us, min 220.5 us, max 554.9 us
+    reduced   median 15073.0 us, min 8413.6 us, max 24999.9 us
+    backsub   median 249.4 us, min 166.4 us, max 591.2 us
+PASS condensed_dense threads=16 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_dense threads=16 timing values: median > 0 and min <= median <= max
+PASS condensed_dense threads=16 x is an nr-by-1 double: size [1606 1], class double
+PASS condensed_dense threads=16 MATLAB backward error <= 1e-13: 6.228e-18
+PASS MATLAB decomposition(A) + solve backward error <= 1e-13: 3.697e-18, 5716.2 us
+PASS MATLAB A\b backward error <= 1e-13: 3.697e-18, 5657.3 us
+PASS largest pairwise solution difference <= 1e-10: 1.471e-14 over 7 solutions, condest(A) 2.384e+05
+run_json("s3"):
+{"spike":"s3","target":"x86_64-pc-windows-gnu","profile":"release","n":4,"m":4,"N":100,"nr":1606,"nnz":38418,"nred":406,"threads":16,"reps":20,"cond1_est":2.383512891660256e5,"methods":[{"method":"sparse_lu","threads":1,"backward_error":6.104681559797099e-18,"timings":[{"name":"first","median_ns":1.95755e6,"min_ns":1.6388e6,"max_ns":2.3111e6},{"name":"repeat","median_ns":1.51785e6,"min_ns":7.872e5,"max_ns":2.8305e6}]},{"method":"condensed_sparse","threads":1,"backward_error":5.769130114369562e-18,"timings":[{"name":"first","median_ns":6.627e5,"min_ns":4.324e5,"max_ns":1.3456e6},{"name":"repeat","median_ns":4.3565e5,"min_ns":3.686e5,"max_ns":6.292e5},{"name":"condense","median_ns":2.3205e5,"min_ns":1.977e5,"max_ns":3.82e5},{"name":"reduced","median_ns":1.44e5,"min_ns":1.187e5,"max_ns":1.961e5},{"name":"backsub","median_ns":4.35e4,"min_ns":3.44e4,"max_ns":9.07e4}]},{"method":"condensed_sparse","threads":16,"backward_error":5.769130114369562e-18,"timings":[{"name":"first","median_ns":8.2515e5,"min_ns":5.895e5,"max_ns":1.196e6},{"name":"repeat","median_ns":7.5435e5,"min_ns":6.217e5,"max_ns":1.1846e6},{"name":"condense","median_ns":2.688e5,"min_ns":1.858e5,"max_ns":5.229e5},{"name":"reduced","median_ns":1.94e5,"min_ns":1.637e5,"max_ns":3.853e5},{"name":"backsub","median_ns":2.3035e5,"min_ns":1.399e5,"max_ns":3.988e5}]},{"method":"condensed_dense","threads":1,"backward_error":6.487327944933953e-18,"timings":[{"name":"first","median_ns":2.7292e6,"min_ns":2.0456e6,"max_ns":2.965e6},{"name":"repeat","median_ns":2.98075e6,"min_ns":2.4813e6,"max_ns":4.6832e6},{"name":"condense","median_ns":2.5195e5,"min_ns":2.214e5,"max_ns":3.637e5},{"name":"reduced","median_ns":2.6058e6,"min_ns":2.1785e6,"max_ns":4.2984e6},{"name":"backsub","median_ns":9.035e4,"min_ns":5.82e4,"max_ns":1.107e5}]},{"method":"condensed_dense","threads":16,"backward_error":6.487327944933953e-18,"timings":[{"name":"first","median_ns":1.502535e7,"min_ns":2.7594e6,"max_ns":2.64724e7},{"name":"repeat","median_ns":1.69396e7,"min_ns":1.17304e7,"max_ns":2.13729e7},{"name":"condense","median_ns":3.4265e5,"min_ns":1.73e5,"max_ns":7.182e5},{"name":"reduced","median_ns":1.636685e7,"min_ns":1.11294e7,"max_ns":2.06627e7},{"name":"backsub","median_ns":2.257e5,"min_ns":1.185e5,"max_ns":5.326e5}]}],"max_pairwise_rel_diff":1.4705540050589163e-14,"sparse_threads_bitwise_equal":true,"pass":true}
+  target "x86_64-pc-windows-gnu", profile "release", n 4, m 4, N 100, nr 1606, nnz 38418, nred 406, threads 16, reps 20
+PASS run spike: s3
+PASS run threads and reps: threads 16, reps 20
+PASS run sizes match the matrix MATLAB got: report nr 1606 nnz 38418, matrix nr 1606 nnz 38418
+PASS run sizes match the contract formulas: nr 1606 (1606), nnz 38418 (38418), nred 406 (406)
+PASS run method list: sparse_lu@1, condensed_sparse@1, condensed_sparse@16, condensed_dense@1, condensed_dense@16
+PASS sparse_lu threads=1 report backward error <= 1e-13: 6.105e-18
+    first     median 1957.5 us, min 1638.8 us, max 2311.1 us
+    repeat    median 1517.8 us, min 787.2 us, max 2830.5 us
+PASS sparse_lu threads=1 timing rows: first, repeat
+PASS sparse_lu threads=1 timing values: median > 0 and min <= median <= max
+PASS condensed_sparse threads=1 report backward error <= 1e-13: 5.769e-18
+    first     median 662.7 us, min 432.4 us, max 1345.6 us
+    repeat    median 435.6 us, min 368.6 us, max 629.2 us
+    condense  median 232.1 us, min 197.7 us, max 382.0 us
+    reduced   median 144.0 us, min 118.7 us, max 196.1 us
+    backsub   median 43.5 us, min 34.4 us, max 90.7 us
+PASS condensed_sparse threads=1 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_sparse threads=1 timing values: median > 0 and min <= median <= max
+PASS condensed_sparse threads=16 report backward error <= 1e-13: 5.769e-18
+    first     median 825.1 us, min 589.5 us, max 1196.0 us
+    repeat    median 754.4 us, min 621.7 us, max 1184.6 us
+    condense  median 268.8 us, min 185.8 us, max 522.9 us
+    reduced   median 194.0 us, min 163.7 us, max 385.3 us
+    backsub   median 230.3 us, min 139.9 us, max 398.8 us
+PASS condensed_sparse threads=16 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_sparse threads=16 timing values: median > 0 and min <= median <= max
+PASS condensed_dense threads=1 report backward error <= 1e-13: 6.487e-18
+    first     median 2729.2 us, min 2045.6 us, max 2965.0 us
+    repeat    median 2980.8 us, min 2481.3 us, max 4683.2 us
+    condense  median 251.9 us, min 221.4 us, max 363.7 us
+    reduced   median 2605.8 us, min 2178.5 us, max 4298.4 us
+    backsub   median 90.3 us, min 58.2 us, max 110.7 us
+PASS condensed_dense threads=1 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_dense threads=1 timing values: median > 0 and min <= median <= max
+PASS condensed_dense threads=16 report backward error <= 1e-13: 6.487e-18
+    first     median 15025.4 us, min 2759.4 us, max 26472.4 us
+    repeat    median 16939.6 us, min 11730.4 us, max 21372.9 us
+    condense  median 342.6 us, min 173.0 us, max 718.2 us
+    reduced   median 16366.9 us, min 11129.4 us, max 20662.7 us
+    backsub   median 225.7 us, min 118.5 us, max 532.6 us
+PASS condensed_dense threads=16 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_dense threads=16 timing values: median > 0 and min <= median <= max
+PASS run max_pairwise_rel_diff <= 1e-10: 1.471e-14
+PASS run sparse_threads_bitwise_equal: true
+  cond1_est 2.384e+05 (informational)
+PASS run pass flag: true
+PASS free_handle, N = 100: no error
+
+== N = 400 (n = 4, m = 4, 16 thread(s) for the parallel runs) ==
+PASS handle is a uint64 scalar: uint64
+PASS s3_build sizes match the contract formulas: nr 6406 (6406), nnz 153618 (153618)
+PASS size(A) and numel(b): A 6406x6406, numel(b) 6406, nr 6406
+PASS nnz(A) equals the nnz from s3_build: nnz(A) 153618, s3_build 153618
+  sparse_lu threads=1: reps 20, n 4, m 4, N 400, nr 6406, nnz 153618, nred 1606, backward_error 2.515e-18
+PASS sparse_lu threads=1 spike and method: s3, sparse_lu
+PASS sparse_lu threads=1 threads and reps: threads 1, reps 20
+PASS sparse_lu threads=1 sizes match the matrix MATLAB got: report nr 6406 nnz 153618, matrix nr 6406 nnz 153618
+PASS sparse_lu threads=1 sizes match the contract formulas: nr 6406 (6406), nnz 153618 (153618), nred 1606 (1606)
+PASS sparse_lu threads=1 report backward error <= 1e-13: 2.515e-18
+    first     median 11414.9 us, min 9846.7 us, max 20297.2 us
+    repeat    median 7165.9 us, min 5966.2 us, max 10016.0 us
+PASS sparse_lu threads=1 timing rows: first, repeat
+PASS sparse_lu threads=1 timing values: median > 0 and min <= median <= max
+PASS sparse_lu threads=1 x is an nr-by-1 double: size [6406 1], class double
+PASS sparse_lu threads=1 MATLAB backward error <= 1e-13: 2.538e-18
+  condensed_sparse threads=1: reps 20, n 4, m 4, N 400, nr 6406, nnz 153618, nred 1606, backward_error 2.108e-18
+PASS condensed_sparse threads=1 spike and method: s3, condensed_sparse
+PASS condensed_sparse threads=1 threads and reps: threads 1, reps 20
+PASS condensed_sparse threads=1 sizes match the matrix MATLAB got: report nr 6406 nnz 153618, matrix nr 6406 nnz 153618
+PASS condensed_sparse threads=1 sizes match the contract formulas: nr 6406 (6406), nnz 153618 (153618), nred 1606 (1606)
+PASS condensed_sparse threads=1 report backward error <= 1e-13: 2.108e-18
+    first     median 3861.3 us, min 2626.5 us, max 6411.2 us
+    repeat    median 1987.5 us, min 1760.9 us, max 2549.4 us
+    condense  median 1126.5 us, min 970.9 us, max 1506.2 us
+    reduced   median 623.5 us, min 548.0 us, max 788.2 us
+    backsub   median 194.0 us, min 175.2 us, max 284.5 us
+PASS condensed_sparse threads=1 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_sparse threads=1 timing values: median > 0 and min <= median <= max
+PASS condensed_sparse threads=1 x is an nr-by-1 double: size [6406 1], class double
+PASS condensed_sparse threads=1 MATLAB backward error <= 1e-13: 2.347e-18
+  condensed_sparse threads=16: reps 20, n 4, m 4, N 400, nr 6406, nnz 153618, nred 1606, backward_error 2.108e-18
+PASS condensed_sparse threads=16 spike and method: s3, condensed_sparse
+PASS condensed_sparse threads=16 threads and reps: threads 16, reps 20
+PASS condensed_sparse threads=16 sizes match the matrix MATLAB got: report nr 6406 nnz 153618, matrix nr 6406 nnz 153618
+PASS condensed_sparse threads=16 sizes match the contract formulas: nr 6406 (6406), nnz 153618 (153618), nred 1606 (1606)
+PASS condensed_sparse threads=16 report backward error <= 1e-13: 2.108e-18
+    first     median 3094.2 us, min 2533.9 us, max 4163.9 us
+    repeat    median 1877.3 us, min 1480.1 us, max 2260.8 us
+    condense  median 631.0 us, min 364.9 us, max 962.3 us
+    reduced   median 707.9 us, min 505.8 us, max 914.7 us
+    backsub   median 416.2 us, min 264.3 us, max 625.0 us
+PASS condensed_sparse threads=16 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_sparse threads=16 timing values: median > 0 and min <= median <= max
+PASS condensed_sparse threads=16 x is an nr-by-1 double: size [6406 1], class double
+PASS condensed_sparse threads=16 MATLAB backward error <= 1e-13: 2.347e-18
+  condensed_dense threads=1: reps 20, n 4, m 4, N 400, nr 6406, nnz 153618, nred 1606, backward_error 2.245e-18
+PASS condensed_dense threads=1 spike and method: s3, condensed_dense
+PASS condensed_dense threads=1 threads and reps: threads 1, reps 20
+PASS condensed_dense threads=1 sizes match the matrix MATLAB got: report nr 6406 nnz 153618, matrix nr 6406 nnz 153618
+PASS condensed_dense threads=1 sizes match the contract formulas: nr 6406 (6406), nnz 153618 (153618), nred 1606 (1606)
+PASS condensed_dense threads=1 report backward error <= 1e-13: 2.245e-18
+    first     median 115247.6 us, min 93922.5 us, max 133074.3 us
+    repeat    median 115994.8 us, min 94719.5 us, max 133883.0 us
+    condense  median 891.6 us, min 701.9 us, max 1274.7 us
+    reduced   median 114665.4 us, min 93610.0 us, max 132144.7 us
+    backsub   median 321.8 us, min 229.9 us, max 458.8 us
+PASS condensed_dense threads=1 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_dense threads=1 timing values: median > 0 and min <= median <= max
+PASS condensed_dense threads=1 x is an nr-by-1 double: size [6406 1], class double
+PASS condensed_dense threads=1 MATLAB backward error <= 1e-13: 2.373e-18
+  condensed_dense threads=16: reps 20, n 4, m 4, N 400, nr 6406, nnz 153618, nred 1606, backward_error 2.267e-18
+PASS condensed_dense threads=16 spike and method: s3, condensed_dense
+PASS condensed_dense threads=16 threads and reps: threads 16, reps 20
+PASS condensed_dense threads=16 sizes match the matrix MATLAB got: report nr 6406 nnz 153618, matrix nr 6406 nnz 153618
+PASS condensed_dense threads=16 sizes match the contract formulas: nr 6406 (6406), nnz 153618 (153618), nred 1606 (1606)
+PASS condensed_dense threads=16 report backward error <= 1e-13: 2.267e-18
+    first     median 155047.3 us, min 133549.8 us, max 179742.7 us
+    repeat    median 151765.0 us, min 131937.2 us, max 174370.0 us
+    condense  median 628.6 us, min 476.7 us, max 867.4 us
+    reduced   median 150560.5 us, min 130707.6 us, max 173063.2 us
+    backsub   median 477.5 us, min 269.5 us, max 772.9 us
+PASS condensed_dense threads=16 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_dense threads=16 timing values: median > 0 and min <= median <= max
+PASS condensed_dense threads=16 x is an nr-by-1 double: size [6406 1], class double
+PASS condensed_dense threads=16 MATLAB backward error <= 1e-13: 2.318e-18
+PASS MATLAB decomposition(A) + solve backward error <= 1e-13: 1.885e-18, 25819.0 us
+PASS MATLAB A\b backward error <= 1e-13: 1.885e-18, 25184.5 us
+PASS largest pairwise solution difference <= 1e-10: 2.672e-14 over 7 solutions, condest(A) 7.973e+06
+run_json("s3"):
+{"spike":"s3","target":"x86_64-pc-windows-gnu","profile":"release","n":4,"m":4,"N":400,"nr":6406,"nnz":153618,"nred":1606,"threads":16,"reps":20,"cond1_est":7.972520936075523e6,"methods":[{"method":"sparse_lu","threads":1,"backward_error":2.514879719028095e-18,"timings":[{"name":"first","median_ns":1.039365e7,"min_ns":8.7705e6,"max_ns":1.29451e7},{"name":"repeat","median_ns":5.61425e6,"min_ns":4.5441e6,"max_ns":7.8513e6}]},{"method":"condensed_sparse","threads":1,"backward_error":2.1077835645104452e-18,"timings":[{"name":"first","median_ns":2.5655e6,"min_ns":1.7569e6,"max_ns":5.8869e6},{"name":"repeat","median_ns":1.799e6,"min_ns":1.3173e6,"max_ns":3.4828e6},{"name":"condense","median_ns":9.424e5,"min_ns":6.59e5,"max_ns":1.8204e6},{"name":"reduced","median_ns":6.1315e5,"min_ns":4.121e5,"max_ns":1.2102e6},{"name":"backsub","median_ns":1.962e5,"min_ns":1.218e5,"max_ns":3.92e5}]},{"method":"condensed_sparse","threads":16,"backward_error":2.1077835645104452e-18,"timings":[{"name":"first","median_ns":3.23125e6,"min_ns":2.3438e6,"max_ns":6.9823e6},{"name":"repeat","median_ns":1.93155e6,"min_ns":1.418e6,"max_ns":3.1499e6},{"name":"condense","median_ns":5.9715e5,"min_ns":3.157e5,"max_ns":1.5796e6},{"name":"reduced","median_ns":7.328e5,"min_ns":5.881e5,"max_ns":1.473e6},{"name":"backsub","median_ns":4.387e5,"min_ns":2.838e5,"max_ns":7.048e5}]},{"method":"condensed_dense","threads":1,"backward_error":2.2445301492326025e-18,"timings":[{"name":"first","median_ns":1.10582e8,"min_ns":8.6775e7,"max_ns":1.248101e8},{"name":"repeat","median_ns":1.104324e8,"min_ns":8.9434e7,"max_ns":1.25353e8},{"name":"condense","median_ns":9.5245e5,"min_ns":7.654e5,"max_ns":1.8357e6},{"name":"reduced","median_ns":1.09148e8,"min_ns":8.73201e7,"max_ns":1.24258e8},{"name":"backsub","median_ns":3.389e5,"min_ns":2.326e5,"max_ns":7.329e5}]},{"method":"condensed_dense","threads":16,"backward_error":2.2665353467741005e-18,"timings":[{"name":"first","median_ns":1.5199275e8,"min_ns":1.281248e8,"max_ns":1.712509e8},{"name":"repeat","median_ns":1.482002e8,"min_ns":1.266922e8,"max_ns":1.774051e8},{"name":"condense","median_ns":5.7555e5,"min_ns":3.37e5,"max_ns":1.2439e6},{"name":"reduced","median_ns":1.4676105e8,"min_ns":1.254785e8,"max_ns":1.745348e8},{"name":"backsub","median_ns":5.821e5,"min_ns":3.005e5,"max_ns":2.0598e6}]}],"max_pairwise_rel_diff":2.672448648623745e-14,"sparse_threads_bitwise_equal":true,"pass":true}
+  target "x86_64-pc-windows-gnu", profile "release", n 4, m 4, N 400, nr 6406, nnz 153618, nred 1606, threads 16, reps 20
+PASS run spike: s3
+PASS run threads and reps: threads 16, reps 20
+PASS run sizes match the matrix MATLAB got: report nr 6406 nnz 153618, matrix nr 6406 nnz 153618
+PASS run sizes match the contract formulas: nr 6406 (6406), nnz 153618 (153618), nred 1606 (1606)
+PASS run method list: sparse_lu@1, condensed_sparse@1, condensed_sparse@16, condensed_dense@1, condensed_dense@16
+PASS sparse_lu threads=1 report backward error <= 1e-13: 2.515e-18
+    first     median 10393.6 us, min 8770.5 us, max 12945.1 us
+    repeat    median 5614.2 us, min 4544.1 us, max 7851.3 us
+PASS sparse_lu threads=1 timing rows: first, repeat
+PASS sparse_lu threads=1 timing values: median > 0 and min <= median <= max
+PASS condensed_sparse threads=1 report backward error <= 1e-13: 2.108e-18
+    first     median 2565.5 us, min 1756.9 us, max 5886.9 us
+    repeat    median 1799.0 us, min 1317.3 us, max 3482.8 us
+    condense  median 942.4 us, min 659.0 us, max 1820.4 us
+    reduced   median 613.1 us, min 412.1 us, max 1210.2 us
+    backsub   median 196.2 us, min 121.8 us, max 392.0 us
+PASS condensed_sparse threads=1 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_sparse threads=1 timing values: median > 0 and min <= median <= max
+PASS condensed_sparse threads=16 report backward error <= 1e-13: 2.108e-18
+    first     median 3231.2 us, min 2343.8 us, max 6982.3 us
+    repeat    median 1931.5 us, min 1418.0 us, max 3149.9 us
+    condense  median 597.1 us, min 315.7 us, max 1579.6 us
+    reduced   median 732.8 us, min 588.1 us, max 1473.0 us
+    backsub   median 438.7 us, min 283.8 us, max 704.8 us
+PASS condensed_sparse threads=16 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_sparse threads=16 timing values: median > 0 and min <= median <= max
+PASS condensed_dense threads=1 report backward error <= 1e-13: 2.245e-18
+    first     median 110582.0 us, min 86775.0 us, max 124810.1 us
+    repeat    median 110432.4 us, min 89434.0 us, max 125353.0 us
+    condense  median 952.5 us, min 765.4 us, max 1835.7 us
+    reduced   median 109148.0 us, min 87320.1 us, max 124258.0 us
+    backsub   median 338.9 us, min 232.6 us, max 732.9 us
+PASS condensed_dense threads=1 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_dense threads=1 timing values: median > 0 and min <= median <= max
+PASS condensed_dense threads=16 report backward error <= 1e-13: 2.267e-18
+    first     median 151992.8 us, min 128124.8 us, max 171250.9 us
+    repeat    median 148200.2 us, min 126692.2 us, max 177405.1 us
+    condense  median 575.5 us, min 337.0 us, max 1243.9 us
+    reduced   median 146761.0 us, min 125478.5 us, max 174534.8 us
+    backsub   median 582.1 us, min 300.5 us, max 2059.8 us
+PASS condensed_dense threads=16 timing rows: first, repeat, condense, reduced, backsub
+PASS condensed_dense threads=16 timing values: median > 0 and min <= median <= max
+PASS run max_pairwise_rel_diff <= 1e-10: 2.672e-14
+PASS run sparse_threads_bitwise_equal: true
+  cond1_est 7.973e+06 (informational)
+PASS run pass flag: true
+PASS free_handle, N = 400: no error
+S3 checks: all passed
+exit code: 0
