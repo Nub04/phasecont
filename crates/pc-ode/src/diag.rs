@@ -53,6 +53,36 @@ pub const CODES: &[(Code, Severity, &str)] = &[
         "number too large for a double precision value",
     ),
     (Code(3), Severity::Error, "stray character"),
+    // Expression parser (`parser/expr.rs`).
+    (Code(4), Severity::Error, "expected an expression"),
+    (
+        Code(5),
+        Severity::Error,
+        "missing operator between two operands",
+    ),
+    (
+        Code(6),
+        Severity::Error,
+        "unexpected token in an expression",
+    ),
+    (Code(7), Severity::Error, "`!` is not an operator"),
+    (Code(8), Severity::Error, "`=` inside an expression"),
+    (Code(9), Severity::Error, "unclosed `(` or `[`"),
+    (
+        Code(10),
+        Severity::Error,
+        "prefix operator in the wrong place",
+    ),
+    (Code(11), Severity::Error, "unary `+`"),
+    (Code(12), Severity::Error, "blank inside a token"),
+    (Code(13), Severity::Warning, "XPPAUT 8.0 rejects this"),
+    (
+        Code(14),
+        Severity::Warning,
+        "operator precedence differs from C",
+    ),
+    (Code(15), Severity::Error, "unsupported index form"),
+    (Code(16), Severity::Error, "malformed if expression"),
 ];
 
 #[cfg(test)]
