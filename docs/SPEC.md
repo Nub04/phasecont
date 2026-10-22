@@ -20,13 +20,19 @@ This file is the source of truth for what the engine computes and how each phase
 
 ## 2. `.ode` support for v1
 
-Parsing rules, taken from Ermentrout's XPPAUT documentation (verify each one against the manual while implementing):
-- **Keywords:** only the first letter is significant, so `par`, `param` and `p` are equivalent.
+The rules below were checked against the XPPAUT manuals (v5.0, v5.41, v8 notes) and measured with XPPAUT 8.0 on our own probe files (`references/xpp-probes/`). The full language reference, with the precedence table, the builtin semantics table and the diagnostic codes, is `crates/pc-ode/docs/language.md`.
+
+Parsing rules:
+- **Keywords:** only the first letter is significant for the nine declarations `markov`, `parameter`, `wiener`, `table`, `aux`, `init`, `bndry`, `global` and `done` (`p`, `par` and `pzz` all declare parameters). Other keywords (`number`, `set`, `options`, `only`, `special`, `solv`, `export`, `volt`) need the full word. A first word is a keyword only when a blank follows it and the next non-blank character is not `=`, so `p=3` and `p = 3` define a fixed quantity named `p`.
 - **Case:** the language is case-insensitive.
-- **Names:** must be shorter than 10 characters; emit a warning, not an error.
+- **Names:** XPPAUT 8.0 truncates names to 10 characters. A longer name gives a portability warning, not an error.
 - **Line continuation:** a backslash at the end of a line continues it.
-- **Two passes:** the parser makes two passes, so declaration order mostly does not matter.
-- **Spaces around `=`:** inside `par`, `init` and `@` lists, spaces separate entries. Flag `a = 2` as a diagnostic.
+- **Order:** names may be used before their declaration, except fixed quantities: XPPAUT evaluates them in file order, so a fixed quantity that uses one defined on a later line is an error.
+- **Spaces around `=`:** accepted in `par`, `number` and `init` lists and in formulas. In `@` lists XPPAUT 8.0 accepts the line but ignores the option, so PhaseCont gives a warning with a fix-it.
+- **Declared values:** `par`, `number`, `init` and `x(0)=` values are signed numeric literals (XPPAUT reads only a leading number). A repeated `par` is an error.
+- **Comments:** `#` at the start of a line. A trailing `#` comment is accepted after `par`, `number` and `@` lists and is an error elsewhere, as in XPPAUT 8.0.
+- **Arrays:** range lines (`x[1..10]'=-x[j]`) and `%[1..n]` ... `%` blocks are expanded during loading.
+- **Old-style files**, whose first line starts with a digit, are an error.
 
 | Construct | Example | v1 status |
 |---|---|---|
@@ -41,20 +47,24 @@ Parsing rules, taken from Ermentrout's XPPAUT documentation (verify each one aga
 | Tables | `table h % 101 0 6.283 sin(t)` | inline formula tables; file tables later |
 | Options | `@ xp=V, yp=w, total=100, dt=.05, meth=stiff` | full |
 | Include, sets | `#include`, `set name {...}` | full |
+| Arrays | `x[1..n]'=...`, `%[1..n]` ... `%` | full (expanded) |
 | Global flags | `global -1 {u-.2} {m=.5*m}` | simulation only |
 | Markov, Wiener | `markov z 2`, `wiener w` | simulation only |
 | Delay | `delay(x,tau)` | warn; v2 |
 | Volterra, BVP | `volt`, `bdry` | warn; unsupported |
+| DAEs | `0=...`, `solv` | warn; unsupported |
+| Other constructs | `special`, `export`, `only`, `options`, `shift`, `del_shft`, `sum(..)of(..)`, `hom_bcs` | warn; unsupported |
 | End | `done` | full |
 
 **Expressions.**
-- Operators: `+ - * /`, `^` and `**` for powers, unary minus, comparisons, logical operators.
-- Built-in functions: `sin cos tan asin acos atan atan2 sinh cosh tanh exp ln log log10 sqrt abs heav sign mod min max flr`, and `if(c)then(a)else(b)`.
-- `ran` and `normal` make a model simulation-only.
-- Check each function's exact meaning in the XPPAUT manual (for example which log is natural) and record it in a table in `pc-ode` docs.
+- Operators: `+ - * /`, `^` and `**` for powers, prefix `-` and `not`, comparisons `< > <= >= ==`, and `&` and `|`. XPPAUT's precedence differs from C: `&` binds like `*`, `|` like `+`, comparisons bind tighter than arithmetic, and `^` is left-associative. PhaseCont follows XPPAUT and warns where the reading is surprising. The measured table is in `language.md`.
+- A number followed directly by a name or `(` (`2v`) multiplies, with a portability warning, since XPPAUT 8.0 rejects it.
+- Built-in functions: `sin cos tan asin acos atan atan2 sinh cosh tanh exp ln log log10 sqrt abs heav sign mod min max flr ceil erf erfc lgamma besselj bessely`, and `if(c)then(a)else(b)`. `ceil` gets a portability warning.
+- `ran`, `normal` and `poisson` make a model simulation-only, as do `markov`, `wiener` and `global`.
+- The exact meaning of each function (for example that `log` is natural and `atan2(y,x)` uses C's order), with its source, is in the semantics table in `language.md`. Division by zero and whether `if` evaluates both branches are open questions for P2.
 
 **Non-smooth models.**
-- Any of `heav sign abs mod flr min max if` marks a model as non-smooth.
+- Any of `heav sign abs mod flr ceil min max if`, or a table, marks a model as non-smooth.
 - Equilibrium continuation is allowed, with a warning, as long as no switching surface is crossed.
 - Derivatives use one-sided rules and the result is flagged.
 

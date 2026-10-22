@@ -2,7 +2,9 @@
 
 ## Phase
 
-P0: discovery, scaffold and spikes S1 to S4 (`docs/KICKOFF.md`). The plan was approved on 2026-10-21. P0 was accepted on 2026-10-22, when the owner approved the decisions in `docs/spikes.md` (SPEC section 14).
+P1: the `pc-ode` parser, diagnostics and writer, and `pc-cli parse` (SPEC section 14). The plan was approved on 2026-10-22. Work is on the `phase1-pc-ode` branch.
+
+P0 was accepted on 2026-10-22, when the owner approved the decisions in `docs/spikes.md` (SPEC section 14). The P0 record follows under "Done".
 
 ## Done
 
@@ -24,11 +26,11 @@ P0: discovery, scaffold and spikes S1 to S4 (`docs/KICKOFF.md`). The plan was ap
 
 ## In progress
 
-- Nothing.
+- P1. The `.ode` rules in SPEC section 2 were checked against the XPPAUT manuals and measured with XPPAUT 8.0, which was already installed on this machine (`docs/ENVIRONMENT.md`). SPEC section 2 now follows the measured behavior, and `crates/pc-ode/docs/language.md` is the full language reference. The parser, checker, writer, corpus and `pc-cli parse` come next, in the order of the P1 plan.
 
 ## Next
 
-- P1 (`pc-ode` parser, diagnostics, writer, `pc-cli parse`), started in plan mode.
+- Finish P1, then P2 (`pc-ir`) in plan mode.
 - P2: the macOS arm64 JIT check in SPEC section 4, on a Mac with MATLAB or on the macOS runner of the MATLAB CI job.
 - P8a: confirm on the File Exchange submission form that it accepts an Apache-2.0 toolbox linked to GitHub.
 
@@ -38,4 +40,8 @@ P0: discovery, scaffold and spikes S1 to S4 (`docs/KICKOFF.md`). The plan was ap
 
 ## Open questions
 
-- Nothing.
+These do not block P1. They block P2, where `pc-ir` evaluates expressions (`crates/pc-ode/docs/language.md`, Builtins):
+
+- Division by zero. XPPAUT 8.0 guards it (`1/0` gives 4.4843049e14 and `0/0` gives 0). PhaseCont keeps IEEE division for now; P2 decides whether to match XPPAUT.
+- `mod`. The measured values fit `r = fmod(x, y)`, plus `y` when `r < 0`. P2 confirms the formula on more cases before using it.
+- `if(c)then(a)else(b)`. Whether XPPAUT evaluates both branches cannot be seen from its output, since XPPAUT has no floating-point traps. P2 decides what PhaseCont does.
