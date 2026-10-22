@@ -1,0 +1,10 @@
+[package]
+name = "pc-linalg"
+description = "faer wrappers, bordered solvers, condensation and Floquet multipliers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]

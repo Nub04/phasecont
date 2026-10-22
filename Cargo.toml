@@ -1,0 +1,17 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+# The Phase 0 spikes are a separate workspace with their own lock file.
+exclude = ["spikes"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+rust-version = "1.97"
+
+[profile.release]
+# pc-ffi catches panics with catch_unwind before they reach the C ABI,
+# which only works when panics unwind.
+panic = "unwind"

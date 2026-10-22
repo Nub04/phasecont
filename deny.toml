@@ -1,0 +1,39 @@
+# cargo-deny configuration. `cargo deny check` runs before every commit.
+
+[graph]
+# Check optional dependencies too, not only the default feature set.
+all-features = true
+
+[advisories]
+ignore = []
+
+[licenses]
+# CLAUDE.md rule 2. Ask before adding anything to this list.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+]
+# The list is a policy, so licenses that no current dependency uses are fine.
+unused-allowed-license = "allow"
+confidence-threshold = 0.93
+exceptions = []
+# There is no [licenses.private] section, so the workspace crates are checked
+# as well, and a crate without `license.workspace = true` fails the check.
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Workspace crates depend on each other by path, without a version.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -1,0 +1,10 @@
+[package]
+name = "pc-ir"
+description = "Expression DAG, common subexpression elimination and symbolic differentiation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]

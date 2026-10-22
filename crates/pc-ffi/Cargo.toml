@@ -1,0 +1,15 @@
+[package]
+name = "pc-ffi"
+description = "C ABI for the MEX gateway: handle registry and panic barrier"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[lib]
+# The MEX gateway loads this library as pckern.dll, libpckern.so or libpckern.dylib.
+name = "pckern"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]

@@ -1,0 +1,10 @@
+[package]
+name = "pc-jit"
+description = "Cranelift lowering of the right-hand side, Jacobians and directional derivatives"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]

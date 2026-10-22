@@ -1,0 +1,10 @@
+[package]
+name = "pc-codegen"
+description = "Emitters for C, CUDA, OpenCL C, Metal Shading Language, LaTeX and MATLAB reference code"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
