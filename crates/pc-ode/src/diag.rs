@@ -44,7 +44,16 @@ pub struct Diagnostic {
 ///
 /// Entries are in increasing code order. New codes are appended and existing
 /// codes are never renumbered.
-pub const CODES: &[(Code, Severity, &str)] = &[];
+pub const CODES: &[(Code, Severity, &str)] = &[
+    // Lexer (`lexer.rs`).
+    (Code(1), Severity::Error, "malformed number"),
+    (
+        Code(2),
+        Severity::Error,
+        "number too large for a double precision value",
+    ),
+    (Code(3), Severity::Error, "stray character"),
+];
 
 #[cfg(test)]
 mod tests {
