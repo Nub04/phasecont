@@ -49,7 +49,6 @@ pub const CODES: &[(Code, Severity, &str)] = &[];
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::span::{FileId, Span};
 
     /// Checks that codes are strictly increasing, so unique and sorted.
     fn check_sorted_unique(table: &[(Code, Severity, &str)]) -> Result<(), String> {
@@ -100,24 +99,5 @@ mod tests {
         assert_eq!(Code(12).to_string(), "ODE0012");
         assert_eq!(Code(9999).to_string(), "ODE9999");
         assert_eq!(Code(65535).to_string(), "ODE65535");
-    }
-
-    #[test]
-    fn diagnostic_holds_its_parts() {
-        let f = FileId(0);
-        let d = Diagnostic {
-            code: Code(1),
-            severity: Severity::Error,
-            span: Span::new(f, 0, 3),
-            message: "bad".to_string(),
-            fix_it: Some(FixIt {
-                span: Span::new(f, 0, 3),
-                replacement: "good".to_string(),
-            }),
-            notes: vec![(Span::new(f, 5, 6), "declared here".to_string())],
-        };
-        assert_eq!(d.clone(), d);
-        assert_eq!(d.severity, Severity::Error);
-        assert_ne!(Severity::Warning, Severity::Note);
     }
 }

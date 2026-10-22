@@ -5,6 +5,9 @@
 pub struct FileId(pub u32);
 
 /// A half-open byte range `start..end` inside one source file.
+///
+/// Build spans with [`Span::new`] or [`Span::to`], which assert
+/// `start <= end`, rather than with a struct literal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     pub file: FileId,
@@ -19,9 +22,9 @@ impl Span {
         Span { file, start, end }
     }
 
-    /// Length in bytes.
+    /// Length in bytes. A reversed span has length 0.
     pub fn len(&self) -> usize {
-        self.end - self.start
+        self.end.saturating_sub(self.start)
     }
 
     /// True when the span covers no bytes.
@@ -29,9 +32,20 @@ impl Span {
         self.start == self.end
     }
 
-    /// True when `other` is in the same file and lies inside this span.
+    /// True when `other` is a well-formed span in the same file that lies
+    /// inside this span.
     pub fn contains(&self, other: Span) -> bool {
-        self.file == other.file && self.start <= other.start && other.end <= self.end
+        self.file == other.file
+            && other.start <= other.end
+            && self.start <= other.start
+            && other.end <= self.end
+    }
+
+    /// The span from the start of `self` to the end of `other`. Panics if the
+    /// files differ or `other` ends before `self` starts.
+    pub fn to(self, other: Span) -> Span {
+        assert!(self.file == other.file, "spans must be in the same file");
+        Span::new(self.file, self.start, other.end)
     }
 }
 
@@ -43,10 +57,25 @@ struct SourceFile {
     line_starts: Vec<usize>,
 }
 
+impl SourceFile {
+    /// Byte range of line `index` (0-based) without its terminator.
+    fn line_range(&self, index: usize) -> (usize, usize) {
+        let start = self.line_starts[index];
+        let rest = &self.text[start..];
+        let Some(newline) = rest.find('\n') else {
+            return (start, self.text.len());
+        };
+        let text = &rest[..newline];
+        let len = text.strip_suffix('\r').map_or(text.len(), str::len);
+        (start, start + len)
+    }
+}
+
 /// Holds the text of every file seen by one parse, addressed by [`FileId`].
 ///
 /// Lines split on `\n`. A `\r` directly before `\n` belongs to the line
-/// terminator. Columns count Unicode scalar values and start at 1.
+/// terminator; any other `\r` is an ordinary character. Columns count
+/// Unicode scalar values and start at 1.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SourceMap {
     files: Vec<SourceFile>,
@@ -89,9 +118,10 @@ impl SourceMap {
 
     /// Line and column (both 1-based) of the start of `span`.
     ///
-    /// An offset equal to the text length (end of file) is valid. Panics if
-    /// the file is unknown, the offset is past the end, or it is not on a
-    /// char boundary.
+    /// An offset equal to the text length (end of file) is valid. An offset
+    /// inside a line terminator maps to the column just past the line text.
+    /// Panics if the file is unknown, the offset is past the end, or it is
+    /// not on a char boundary.
     pub fn line_col(&self, span: Span) -> (usize, usize) {
         let file = self.file(span.file);
         let offset = span.start;
@@ -106,22 +136,22 @@ impl SourceMap {
             file.name
         );
         let line = file.line_starts.partition_point(|&s| s <= offset);
-        let line_start = file.line_starts[line - 1];
-        let col = file.text[line_start..offset].chars().count() + 1;
+        let (line_start, line_end) = file.line_range(line - 1);
+        let col = file.text[line_start..offset.min(line_end)].chars().count() + 1;
         (line, col)
     }
 
     /// Text of a 1-based line without its `\n` or `\r\n` terminator.
-    /// Returns `None` when the line does not exist.
+    /// Returns `None` when the line does not exist. Panics on an unknown
+    /// file id.
     pub fn line_text(&self, file: FileId, line: usize) -> Option<&str> {
         let file = self.file(file);
-        let start = *file.line_starts.get(line.checked_sub(1)?)?;
-        let rest = &file.text[start..];
-        let Some(end) = rest.find('\n') else {
-            return Some(rest);
-        };
-        let text = &rest[..end];
-        Some(text.strip_suffix('\r').unwrap_or(text))
+        let index = line.checked_sub(1)?;
+        if index >= file.line_starts.len() {
+            return None;
+        }
+        let (start, end) = file.line_range(index);
+        Some(&file.text[start..end])
     }
 }
 
@@ -182,6 +212,27 @@ mod tests {
         assert_eq!(at(&map, f, 4), (2, 1));
         let (map, f) = map_with("");
         assert_eq!(at(&map, f, 0), (1, 1));
+    }
+
+    #[test]
+    fn offsets_inside_a_terminator_map_to_end_of_line() {
+        let (map, f) = map_with("ab\r\ncd");
+        assert_eq!(at(&map, f, 2), (1, 3));
+        assert_eq!(at(&map, f, 3), (1, 3));
+        assert_eq!(at(&map, f, 4), (2, 1));
+        let (lf, g) = map_with("ab\ncd");
+        assert_eq!(at(&lf, g, 2), (1, 3));
+        assert_eq!(at(&lf, g, 3), (2, 1));
+    }
+
+    #[test]
+    fn lone_cr_is_an_ordinary_character() {
+        let (map, f) = map_with("a\r\r\nb");
+        assert_eq!(map.line_text(f, 1), Some("a\r"));
+        assert_eq!(at(&map, f, 1), (1, 2));
+        assert_eq!(at(&map, f, 2), (1, 3));
+        assert_eq!(at(&map, f, 3), (1, 3));
+        assert_eq!(at(&map, f, 4), (2, 1));
     }
 
     #[test]
@@ -250,6 +301,57 @@ mod tests {
         assert!(!outer.contains(Span::new(f, 1, 5)));
         assert!(!outer.contains(Span::new(f, 5, 11)));
         assert!(!outer.contains(Span::new(FileId(1), 3, 4)));
+    }
+
+    #[test]
+    fn contains_rejects_reversed_other() {
+        let f = FileId(0);
+        let outer = Span::new(f, 2, 10);
+        let reversed = Span {
+            file: f,
+            start: 6,
+            end: 4,
+        };
+        assert!(!outer.contains(reversed));
+    }
+
+    #[test]
+    fn len_of_reversed_span_is_zero() {
+        let reversed = Span {
+            file: FileId(0),
+            start: 6,
+            end: 4,
+        };
+        assert_eq!(reversed.len(), 0);
+    }
+
+    #[test]
+    fn to_merges_spans() {
+        let f = FileId(0);
+        assert_eq!(
+            Span::new(f, 2, 4).to(Span::new(f, 6, 9)),
+            Span::new(f, 2, 9)
+        );
+        assert_eq!(
+            Span::new(f, 2, 7).to(Span::new(f, 3, 5)),
+            Span::new(f, 2, 5)
+        );
+        assert_eq!(
+            Span::new(f, 2, 4).to(Span::new(f, 4, 4)),
+            Span::new(f, 2, 4)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "same file")]
+    fn to_rejects_other_file() {
+        let _ = Span::new(FileId(0), 0, 1).to(Span::new(FileId(1), 2, 3));
+    }
+
+    #[test]
+    #[should_panic(expected = "start must not exceed end")]
+    fn to_rejects_end_before_start() {
+        let _ = Span::new(FileId(0), 5, 6).to(Span::new(FileId(0), 1, 2));
     }
 
     #[test]
