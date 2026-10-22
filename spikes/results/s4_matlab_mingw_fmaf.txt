@@ -1,0 +1,47 @@
+command: scripts/matlab-win --run spikes/matlab/s4_cuda.m
+date: 2026-10-21T16:50:23Z
+power: power line Online (Win32_Battery BatteryStatus=2, 100%), scheme Balanced, AC overlay ded574b5-45a0-4f42-8737-46345c09c238 (Best performance)
+[Warning: Unable to obtain a change notification handle for \\wsl.localhost\fedoralinux-44\home\nub04\dev\phasecont\spikes\matlab.] 
+[> In run (line 34)] 
+MATLAB 26.2.0.3386108 (R2026b), win64, maxNumCompThreads 16
+pckern spike abi=1 target=x86_64-pc-windows-gnu profile=release built=1792599836
+loaded C:\Users\<user>\phasecont-stage\spikes\pckern.dll
+run_json("s4"):
+{"spike":"s4","target":"x86_64-pc-windows-gnu","profile":"release","driver_version":13040,"nvrtc_major":13,"nvrtc_minor":1,"nvrtc_path":"","device":"NVIDIA GeForce RTX 5060 Laptop GPU","cc_major":12,"cc_minor":0,"n":16777216,"a":1.7000000476837158e0,"reps":20,"chosen":"ptx","paths":[{"name":"ptx","arch":"compute_120","compile_ms":1.323586e2,"load_ms":1.473979e2,"error":"","max_ulp_fma":2e0,"max_ulp_unfused":4.139734e6,"gbps":2.5442511310501706e2,"timings":[{"name":"kernel","median_ns":7.913e5,"min_ns":7.83e5,"max_ns":8.657e5}],"pass":false},{"name":"cubin","arch":"sm_120","compile_ms":2.53205e1,"load_ms":3.27182e1,"error":"","max_ulp_fma":2e0,"max_ulp_unfused":4.139734e6,"gbps":2.5664681241634264e2,"timings":[{"name":"kernel","median_ns":7.8445e5,"min_ns":7.747e5,"max_ns":9.373e5}],"pass":false}],"pass":false}
+  target "x86_64-pc-windows-gnu", profile "release", n 16777216, a 1.70000005, reps 20
+  driver_version 13040, NVRTC 13.1
+  device "NVIDIA GeForce RTX 5060 Laptop GPU", compute capability 12.0
+  nvrtc_path "", chosen "ptx"
+  path "ptx": arch "compute_120", compile_ms 132.359, load_ms 147.398, gbps 254.4
+    max_ulp_fma 2, max_ulp_unfused 4.13973e+06, pass false
+    error ""
+    timing "kernel": median 791.3 us, min 783.0 us, max 865.7 us
+  path "cubin": arch "sm_120", compile_ms 25.320, load_ms 32.718, gbps 256.6
+    max_ulp_fma 2, max_ulp_unfused 4.13973e+06, pass false
+    error ""
+    timing "kernel": median 784.5 us, min 774.7 us, max 937.3 us
+PASS S4 spike: s4
+PASS S4 paths are ptx then cubin: 2 path(s)
+PASS S4 chosen follows the selection rule: chosen "ptx", rule gives "ptx"
+PASS S4 path ptx shape: path ran but failed the ulp check
+PASS S4 path ptx pass flag: pass false, error empty and max_ulp_fma <= 1 gives false
+PASS S4 path cubin shape: path ran but failed the ulp check
+PASS S4 path cubin pass flag: pass false, error empty and max_ulp_fma <= 1 gives false
+FAIL S4 the chosen path exists and passes: chosen "ptx"
+PASS S4 pass flag agrees with the chosen path: pass false, chosen path passes false
+FAIL S4 report pass flag is true: false
+module_path: nvrtc64_130_0.dll -> C:\Program Files\MATLAB\R2026b\bin\win64\nvrtc64_130_0.dll
+module_path: nvcuda.dll -> C:\WINDOWS\SYSTEM32\nvcuda.dll
+module_path: nvrtc-builtins64_131.dll -> C:\Program Files\MATLAB\R2026b\bin\win64\nvrtc-builtins64_131.dll
+{Error using assert
+S4 checks failed (variant a)
+
+Error in s4_cuda (line 26)
+assert(ok, 'spikes:s4:fail', 'S4 checks failed (variant a)');
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Error in run (line 100)
+evalin('caller', strcat(scriptStem, ';'));
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+} 
+ERROR: MATLAB error Exit Status: 0x00000001
+exit code: 1

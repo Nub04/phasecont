@@ -1,0 +1,41 @@
+command: spikes/target/release/spikecli s4
+date: 2026-10-21T14:22:19Z
+host: Linux 6.18.54.1-microsoft-standard-WSL2, 12 vCPUs, Intel(R) Core(TM) Ultra 7 255H
+power: power line Online (Win32_Battery BatteryStatus=2, 100%), scheme Balanced, AC overlay ded574b5-45a0-4f42-8737-46345c09c238 (Best performance)
+rustc: rustc 1.99.0 (b940084d7 2026-09-28) (Fedora 1.99.0-1.fc45)
+{"spike":"s4","target":"x86_64-unknown-linux-gnu","profile":"release","driver_version":13040,"nvrtc_major":13,"nvrtc_minor":4,"nvrtc_path":"/usr/local/cuda-13.4/targets/x86_64-linux/lib/libnvrtc.so.13.4.92","device":"NVIDIA GeForce RTX 5060 Laptop GPU","cc_major":12,"cc_minor":0,"n":16777216,"a":1.7000000476837158e0,"reps":20,"chosen":"ptx","paths":[{"name":"ptx","arch":"compute_120","compile_ms":1.8113901000000002e1,"load_ms":5.36971e-1,"error":"","max_ulp_fma":0e0,"max_ulp_unfused":4.139734e6,"gbps":2.7712136326252505e2,"timings":[{"name":"kernel","median_ns":7.264925e5,"min_ns":7.09732e5,"max_ns":7.62877e5}],"pass":true},{"name":"cubin","arch":"sm_120","compile_ms":4.3903119999999994e1,"load_ms":2.86403e-1,"error":"","max_ulp_fma":0e0,"max_ulp_unfused":4.139734e6,"gbps":2.7565617768917537e2,"timings":[{"name":"kernel","median_ns":7.30354e5,"min_ns":7.03205e5,"max_ns":8.07994e5}],"pass":true}],"pass":true}
+
+command: CUDA_CACHE_DISABLE=1 spikes/target/release/spikecli s4
+date: 2026-10-21T14:22:22Z
+host: Linux 6.18.54.1-microsoft-standard-WSL2, 12 vCPUs, Intel(R) Core(TM) Ultra 7 255H
+power: power line Online (Win32_Battery BatteryStatus=2, 100%), scheme Balanced, AC overlay ded574b5-45a0-4f42-8737-46345c09c238 (Best performance)
+rustc: rustc 1.99.0 (b940084d7 2026-09-28) (Fedora 1.99.0-1.fc45)
+{"spike":"s4","target":"x86_64-unknown-linux-gnu","profile":"release","driver_version":13040,"nvrtc_major":13,"nvrtc_minor":4,"nvrtc_path":"/usr/local/cuda-13.4/targets/x86_64-linux/lib/libnvrtc.so.13.4.92","device":"NVIDIA GeForce RTX 5060 Laptop GPU","cc_major":12,"cc_minor":0,"n":16777216,"a":1.7000000476837158e0,"reps":20,"chosen":"ptx","paths":[{"name":"ptx","arch":"compute_120","compile_ms":2.05742916e2,"load_ms":1.8508925200000002e2,"error":"","max_ulp_fma":0e0,"max_ulp_unfused":4.139734e6,"gbps":2.918779232866941e2,"timings":[{"name":"kernel","median_ns":6.89763e5,"min_ns":6.69137e5,"max_ns":7.52521e5}],"pass":true},{"name":"cubin","arch":"sm_120","compile_ms":1.18786741e2,"load_ms":2.5991600000000004e-1,"error":"","max_ulp_fma":0e0,"max_ulp_unfused":4.139734e6,"gbps":2.8022976640860537e2,"timings":[{"name":"kernel","median_ns":7.18434e5,"min_ns":6.92016e5,"max_ns":7.84248e5}],"pass":true}],"pass":true}
+
+command: spikes/target/release/spikecli s4
+date: 2026-10-21T14:22:24Z
+host: Linux 6.18.54.1-microsoft-standard-WSL2, 12 vCPUs, Intel(R) Core(TM) Ultra 7 255H
+power: power line Online (Win32_Battery BatteryStatus=2, 100%), scheme Balanced, AC overlay ded574b5-45a0-4f42-8737-46345c09c238 (Best performance)
+rustc: rustc 1.99.0 (b940084d7 2026-09-28) (Fedora 1.99.0-1.fc45)
+{"spike":"s4","target":"x86_64-unknown-linux-gnu","profile":"release","driver_version":13040,"nvrtc_major":13,"nvrtc_minor":4,"nvrtc_path":"/usr/local/cuda-13.4/targets/x86_64-linux/lib/libnvrtc.so.13.4.92","device":"NVIDIA GeForce RTX 5060 Laptop GPU","cc_major":12,"cc_minor":0,"n":16777216,"a":1.7000000476837158e0,"reps":20,"chosen":"ptx","paths":[{"name":"ptx","arch":"compute_120","compile_ms":1.9288460999999998e1,"load_ms":4.92562e-1,"error":"","max_ulp_fma":0e0,"max_ulp_unfused":4.139734e6,"gbps":2.754172841532858e2,"timings":[{"name":"kernel","median_ns":7.309875e5,"min_ns":7.01864e5,"max_ns":8.6459e5}],"pass":true},{"name":"cubin","arch":"sm_120","compile_ms":8.329006999999999e0,"load_ms":3.18318e-1,"error":"","max_ulp_fma":0e0,"max_ulp_unfused":4.139734e6,"gbps":2.855299433553917e2,"timings":[{"name":"kernel","median_ns":7.05098e5,"min_ns":6.86922e5,"max_ns":8.77495e5}],"pass":true}],"pass":true}
+
+command: spikes/target/release/spikecli s4
+date: 2026-10-21T19:35:58Z
+host: Linux 6.18.54.1-microsoft-standard-WSL2, 12 vCPUs, Intel(R) Core(TM) Ultra 7 255H
+power: power line Online (Win32_Battery BatteryStatus=2, 97%), scheme Balanced, AC overlay ded574b5-45a0-4f42-8737-46345c09c238 (Best performance)
+rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13) (Fedora 1.99.1-2.fc45)
+{"spike":"s4","target":"x86_64-unknown-linux-gnu","profile":"release","driver_version":13040,"nvrtc_major":13,"nvrtc_minor":4,"nvrtc_path":"/usr/local/cuda-13.4/targets/x86_64-linux/lib/libnvrtc.so.13.4.92","device":"NVIDIA GeForce RTX 5060 Laptop GPU","cc_major":12,"cc_minor":0,"n":16777216,"a":1.7000000476837158e0,"reps":20,"chosen":"ptx","paths":[{"name":"ptx","arch":"compute_120","compile_ms":3.5012689e1,"load_ms":1.044332e0,"error":"","max_ulp_fma":0e0,"max_ulp_unfused":4.139734e6,"gbps":2.9873361689246786e2,"timings":[{"name":"kernel","median_ns":6.739335e5,"min_ns":6.63594e5,"max_ns":7.2866e5}],"pass":true},{"name":"cubin","arch":"sm_120","compile_ms":9.149623e0,"load_ms":3.12101e-1,"error":"","max_ulp_fma":0e0,"max_ulp_unfused":4.139734e6,"gbps":2.957310363467572e2,"timings":[{"name":"kernel","median_ns":6.80776e5,"min_ns":6.62127e5,"max_ns":1.0040159999999999e6}],"pass":true}],"pass":true}
+
+command: CUDA_CACHE_DISABLE=1 spikes/target/release/spikecli s4
+date: 2026-10-21T19:36:01Z
+host: Linux 6.18.54.1-microsoft-standard-WSL2, 12 vCPUs, Intel(R) Core(TM) Ultra 7 255H
+power: power line Online (Win32_Battery BatteryStatus=2, 97%), scheme Balanced, AC overlay ded574b5-45a0-4f42-8737-46345c09c238 (Best performance)
+rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13) (Fedora 1.99.1-2.fc45)
+{"spike":"s4","target":"x86_64-unknown-linux-gnu","profile":"release","driver_version":13040,"nvrtc_major":13,"nvrtc_minor":4,"nvrtc_path":"/usr/local/cuda-13.4/targets/x86_64-linux/lib/libnvrtc.so.13.4.92","device":"NVIDIA GeForce RTX 5060 Laptop GPU","cc_major":12,"cc_minor":0,"n":16777216,"a":1.7000000476837158e0,"reps":20,"chosen":"ptx","paths":[{"name":"ptx","arch":"compute_120","compile_ms":1.06510796e2,"load_ms":2.02810935e2,"error":"","max_ulp_fma":0e0,"max_ulp_unfused":4.139734e6,"gbps":2.9001425679077437e2,"timings":[{"name":"kernel","median_ns":6.941955e5,"min_ns":6.67691e5,"max_ns":7.33911e5}],"pass":true},{"name":"cubin","arch":"sm_120","compile_ms":7.549624e1,"load_ms":2.20507e-1,"error":"","max_ulp_fma":0e0,"max_ulp_unfused":4.139734e6,"gbps":2.791737824853723e2,"timings":[{"name":"kernel","median_ns":7.211515e5,"min_ns":6.64198e5,"max_ns":8.91127e5}],"pass":true}],"pass":true}
+
+command: spikes/target/release/spikecli s4
+date: 2026-10-21T19:36:03Z
+host: Linux 6.18.54.1-microsoft-standard-WSL2, 12 vCPUs, Intel(R) Core(TM) Ultra 7 255H
+power: power line Online (Win32_Battery BatteryStatus=2, 97%), scheme Balanced, AC overlay ded574b5-45a0-4f42-8737-46345c09c238 (Best performance)
+rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13) (Fedora 1.99.1-2.fc45)
+{"spike":"s4","target":"x86_64-unknown-linux-gnu","profile":"release","driver_version":13040,"nvrtc_major":13,"nvrtc_minor":4,"nvrtc_path":"/usr/local/cuda-13.4/targets/x86_64-linux/lib/libnvrtc.so.13.4.92","device":"NVIDIA GeForce RTX 5060 Laptop GPU","cc_major":12,"cc_minor":0,"n":16777216,"a":1.7000000476837158e0,"reps":20,"chosen":"ptx","paths":[{"name":"ptx","arch":"compute_120","compile_ms":1.652219e1,"load_ms":4.82147e-1,"error":"","max_ulp_fma":0e0,"max_ulp_unfused":4.139734e6,"gbps":2.8915702685875186e2,"timings":[{"name":"kernel","median_ns":6.962535e5,"min_ns":6.75114e5,"max_ns":7.6969e5}],"pass":true},{"name":"cubin","arch":"sm_120","compile_ms":8.814082e0,"load_ms":2.82027e-1,"error":"","max_ulp_fma":0e0,"max_ulp_unfused":4.139734e6,"gbps":3.031200711854148e2,"timings":[{"name":"kernel","median_ns":6.64181e5,"min_ns":6.29517e5,"max_ns":7.14573e5}],"pass":true}],"pass":true}

@@ -1,0 +1,43 @@
+command: scripts/matlab-win --run spikes/matlab/s4_cuda_preload.m
+date: 2026-10-21T19:29:17Z
+power: power line Online (Win32_Battery BatteryStatus=2, 96%), scheme Balanced, AC overlay ded574b5-45a0-4f42-8737-46345c09c238 (Best performance)
+[Warning: Unable to obtain a change notification handle for \\wsl.localhost\fedoralinux-44\home\nub04\dev\phasecont\spikes\matlab.] 
+[> In run (line 34)] 
+MATLAB 26.2.0.3386108 (R2026b), win64, maxNumCompThreads 16
+CUDA_PATH_V13_4 C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4
+toolkit bin folder C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4\bin\x64
+pckern spike abi=1 target=x86_64-pc-windows-gnu profile=release built=1792610350
+loaded C:\Users\<user>\phasecont-stage\spikes\pckern.dll
+PASS preload nvrtc-builtins64_134.dll: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4\bin\x64\nvrtc-builtins64_134.dll
+PASS preload nvrtc64_130_0.dll: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4\bin\x64\nvrtc64_130_0.dll
+run_json("s4"):
+{"spike":"s4","target":"x86_64-pc-windows-gnu","profile":"release","driver_version":13040,"nvrtc_major":13,"nvrtc_minor":4,"nvrtc_path":"","device":"NVIDIA GeForce RTX 5060 Laptop GPU","cc_major":12,"cc_minor":0,"n":16777216,"a":1.7000000476837158e0,"reps":20,"chosen":"ptx","paths":[{"name":"ptx","arch":"compute_120","compile_ms":1.9376e2,"load_ms":9.006790000000001e1,"error":"","max_ulp_fma":0e0,"max_ulp_unfused":4.139734e6,"gbps":3.05549540142662e2,"timings":[{"name":"kernel","median_ns":6.589e5,"min_ns":6.502e5,"max_ns":6.924e5}],"pass":true},{"name":"cubin","arch":"sm_120","compile_ms":8.6664e1,"load_ms":1.794e-1,"error":"","max_ulp_fma":0e0,"max_ulp_unfused":4.139734e6,"gbps":2.991257588589258e2,"timings":[{"name":"kernel","median_ns":6.7305e5,"min_ns":6.508e5,"max_ns":7.131e5}],"pass":true}],"pass":true}
+  target "x86_64-pc-windows-gnu", profile "release", n 16777216, a 1.70000005, reps 20
+  driver_version 13040, NVRTC 13.4
+  device "NVIDIA GeForce RTX 5060 Laptop GPU", compute capability 12.0
+  nvrtc_path "", chosen "ptx"
+  path "ptx": arch "compute_120", compile_ms 193.760, load_ms 90.068, gbps 305.5
+    max_ulp_fma 0, max_ulp_unfused 4.13973e+06, pass true
+    error ""
+    timing "kernel": median 658.9 us, min 650.2 us, max 692.4 us
+  path "cubin": arch "sm_120", compile_ms 86.664, load_ms 0.179, gbps 299.1
+    max_ulp_fma 0, max_ulp_unfused 4.13973e+06, pass true
+    error ""
+    timing "kernel": median 673.0 us, min 650.8 us, max 713.1 us
+PASS S4 spike: s4
+PASS S4 paths are ptx then cubin: 2 path(s)
+PASS S4 chosen follows the selection rule: chosen "ptx", rule gives "ptx"
+PASS S4 path ptx shape: working path: one kernel row, gbps > 0, compile_ms and load_ms set
+PASS S4 path ptx pass flag: pass true, error empty and max_ulp_fma <= 1 gives true
+PASS S4 path cubin shape: working path: one kernel row, gbps > 0, compile_ms and load_ms set
+PASS S4 path cubin pass flag: pass true, error empty and max_ulp_fma <= 1 gives true
+PASS S4 the chosen path exists and passes: chosen "ptx"
+PASS S4 pass flag agrees with the chosen path: pass true, chosen path passes true
+PASS S4 report pass flag is true: true
+PASS S4 NVRTC minor version: loaded 13.4, wanted 13.4
+module_path: nvrtc64_130_0.dll -> C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4\bin\x64\nvrtc64_130_0.dll
+module_path: nvcuda.dll -> C:\WINDOWS\SYSTEM32\nvcuda.dll
+module_path: nvrtc-builtins64_134.dll -> C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4\bin\x64\nvrtc-builtins64_134.dll
+PASS nvrtc64_130_0.dll was loaded from the toolkit folder: loaded C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4\bin\x64\nvrtc64_130_0.dll, toolkit folder C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4\bin\x64
+S4 checks, variant b (toolkit NVRTC preloaded): all passed
+exit code: 0
