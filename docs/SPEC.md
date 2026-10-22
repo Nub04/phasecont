@@ -86,17 +86,19 @@ Parsing rules, taken from Ermentrout's XPPAUT documentation (verify each one aga
 
 ## 4. JIT and AOT (pc-jit, pc-codegen)
 
-**Entry points.** Lower each needed DAG to Cranelift IR as an `extern "C"` function. A typical signature is `fn(x: *const f64, p: *const f64, out: *mut f64)`. Directional entries take extra vector pointers.
+**Entry points.** Lower each needed DAG to Cranelift IR as an `extern "C"` function. A typical signature is `fn(x: *const f64, p: *const f64, out: *mut f64)`. Directional entries take extra vector pointers. Matrix outputs such as the Jacobian are written column major.
 
-**Transcendentals.** Call Rust `extern "C"` shims around the `f64` methods (`sin`, `exp`, and so on).
+**Code generation flags.** Set `is_pic` only on x86_64 and set `use_colocated_libcalls` to false, as `JITBuilder::new` does. Set `enable_probestack` to true and `probestack_strategy` to `inline`. Cranelift leaves stack probes off by default, Windows needs them for frames over 4096 bytes, and the default `outline` strategy calls `__cranelift_probestack`, which `pckern` does not provide.
 
-**Ownership.** Each compiled model owns its `JITModule` and frees it when its handle is freed.
+**Transcendentals.** Call Rust `extern "C"` shims around the `f64` methods (`sin`, `exp`, and so on). Register every shim with `JITBuilder::symbol`. Shim bodies must not panic: a panic that leaves an `extern "C"` function aborts the process, JIT frames have no unwind information, and the panic barrier sits outside the JIT call.
+
+**Ownership.** Each compiled model owns its `JITModule`. Dropping a `JITModule` leaves its code pages mapped, so the model handle calls `JITModule::free_memory` when it is freed and on every error path after `JITModule::new`, and only when no thread can still call the compiled functions.
 
 **Equivalence.** JIT output must match the dual-number interpreter to within 4 ulp. Exact equality is not expected, because of fused multiply-add.
 
-**AOT path.** `pc-codegen` emits C with the same signatures. It is compiled through `mex` when a compiler exists and selected with `phasecont.config("Codegen","aot")`. AOT output must match JIT output to within 4 ulp.
+**AOT path.** `pc-codegen` emits C with the same signatures. It is compiled through `mex` when a compiler exists and selected with `phasecont.config("Codegen","aot")`. AOT output must match JIT output to within 4 ulp. Compile AOT code with floating-point contraction turned off, as the spike's gcc build does with `-ffp-contract=off`, and store the compiler, its version and its flags with every benchmark or test result that uses AOT code.
 
-**macOS arm64.** Confirm that JIT pages can be mapped executable inside the MATLAB process. This is spike S2. If it fails there, the fallback is AOT plus a documented requirement for the Xcode Command Line Tools on Macs only.
+**macOS arm64.** Confirm that JIT pages can be mapped executable inside the MATLAB process. Phase 0 ran only on Windows and WSL, so this check moves to Phase 2, which runs it on a Mac with MATLAB or on the macOS runner of the MATLAB job in section 12. `cranelift-jit` 0.137.0 accepts `is_pic=true` only on x86_64. Its default `SystemMemoryProvider` maps code pages read-write without `MAP_JIT` and makes them read-execute with `mprotect`, which the hardened runtime allows only with `com.apple.security.cs.allow-unsigned-executable-memory` or `com.apple.security.cs.disable-executable-page-protection`. `codesign -d --entitlements - <matlabroot>/bin/maca64/MATLAB`, where `<matlabroot>` is the folder that `matlabroot` returns, lists the entitlements MATLAB has. Without either entitlement, `pc-jit` needs its own `JITMemoryProvider`, set with `JITBuilder::memory_provider`, that maps pages with `MAP_JIT`, which needs `com.apple.security.cs.allow-jit`, and switches them with `pthread_jit_write_protect_np`. With none of the three, rule 5 of `CLAUDE.md` still holds: models run on an `f64` evaluator in Rust built from the same code as the dual-number interpreter of section 3, and PhaseCont warns that this is slower than compiled code. The AOT path stays the optional speed-up on Macs that have the Xcode Command Line Tools, selected with `phasecont.config("Codegen","aot")`. No Mac user is required to install a compiler.
 
 ## 5. Continuation core (pc-engine)
 
@@ -126,7 +128,7 @@ $$G(x) = \begin{pmatrix} F(x) \\ v_k^\top (x - x_k) - h \end{pmatrix} = 0.$$
 
 **Branch storage.** Columns are $u$, $\alpha$, tangent, eigenvalues (or multipliers), test function values, step size and Newton iteration count. Special points carry a label, an index and a struct of extras.
 
-**Background runs.** A continuation runs on a Rust background thread. MATLAB polls for new points with `pc_run_poll` from a `timer`, so plots update live, and `pc_run_cancel` stops the run.
+**Background runs.** A continuation runs on a Rust background thread. MATLAB polls for new points with `pc_run_poll` from a `timer`, so plots update live, and `pc_run_cancel` stops the run. A panic on the background thread is caught on that thread, with its message and source location, and the next `pc_run_poll` reports it as an error.
 
 ## 6. Equilibrium bifurcations and normal forms
 
@@ -165,9 +167,9 @@ The integral is the phase condition.
 **Linear solves by condensation of parameters** (Doedel, Keller and Kernévez 1991; AUTO-07p):
 1. On each interval, eliminate the interior unknowns with dense LU (faer).
 2. This leaves a block system in the mesh-point values plus the bordering rows and columns.
-3. Solve that reduced system.
+3. Solve that reduced system with faer's sparse LU. `pc-linalg` chooses between faer's simplicial and supernodal variants itself, starting with the simplicial one, instead of using faer's automatic choice. Tests compare the result with a sparse LU of the full matrix.
 
-Assemble and condense in Rust, parallelizing across intervals with rayon when $N$ is large.
+Assemble and condense in Rust. Run sequentially by default, and parallelize across intervals in a rayon pool that `pc-linalg` owns, only above a value of $N$ and with a thread count, both of which Phase 5 measures. `pc-linalg` sets faer's global parallelism once and checks a memory budget before large solves, since a failed allocation in `Vec` or in dyn-stack's `MemBuffer::new` aborts the MATLAB process.
 
 **Floquet multipliers.**
 - The condensed blocks give the linear map from $u(0)$ to $u(1)$.
@@ -232,11 +234,12 @@ Performance:
 
 ## 10. C ABI and MEX gateway
 
-**Shape of the boundary.** The Rust side is a `cdylib` named `pckern` that exports a single symbol, `pc_api_v1()`. That function returns a struct of function pointers plus an ABI version number. Sketch:
+**Shape of the boundary.** The Rust side is a `cdylib` named `pckern` that exports a single symbol, `pc_api_v1()`. That function returns a struct of function pointers that starts with an ABI version number and the struct's size in bytes. Sketch:
 
 ```c
 typedef struct {
   uint32_t abi_version;
+  uint32_t struct_size;   /* sizeof the table in this build of pckern */
   int32_t (*model_from_ode)(const char* text, size_t len, uint64_t* model, char** diag_json);
   int32_t (*model_compile)(uint64_t model, const char* opts_json);
   int32_t (*model_rhs)(uint64_t model, const double* x, const double* p, double* out);
@@ -250,7 +253,7 @@ typedef struct {
 } pc_api_v1_t;
 ```
 
-**Gateway.** `mex/pckern_gateway.c` is compiled with `mex -R2018a`. On its first call it loads `pckern` from the folder that holds the MEX file (`LoadLibraryW` on Windows, `dlopen` elsewhere), checks `abi_version`, and dispatches on a command string. Loading the library at runtime keeps the gateway independent of the Rust toolchain (MSVC or MinGW on Windows).
+**Gateway.** `mex/pckern_gateway.c` is compiled with `mex -R2018a`. The first command that needs `pckern` loads it from the folder that holds the MEX file: on Windows the gateway finds its own file with `GetModuleHandleExW` and `GetModuleFileNameW` and loads `pckern.dll` by full path with `LoadLibraryExW` and `LOAD_WITH_ALTERED_SEARCH_PATH`, and elsewhere it uses `dlopen`. The gateway then calls `pc_api_v1`, requires `abi_version` to equal its own and `struct_size` to be at least the size of its own table, and dispatches on a command string. A failed load raises `phasecont:engine:load`, and the next call tries again. The gateway never unloads `pckern`, since worker threads may still run its code. Loading the library at runtime keeps the gateway independent of the Rust toolchain (MSVC or MinGW on Windows).
 
 **Data rules.** Metadata and options cross as JSON. Numeric arrays are copied into buffers that MATLAB allocated. Rust never holds a pointer into MATLAB memory after a call returns.
 
@@ -274,10 +277,12 @@ phasecont.session.replay("ml.pcsession.json");   % headless rerun
 ## 12. Build, CI and packaging
 
 **`buildfile.m` tasks.**
-- `cargo`: release build for the current platform.
+- `cargo`: release build for the current platform. For Windows the task lists the DLLs that `pckern.dll` imports and fails when one of them is not on an allow-list of DLLs that ship with Windows. Before a Windows build in WSL it checks that `rustc -vV` and `rpm -q rust-std-static-x86_64-pc-windows-gnu` report the same version, and stops with both versions in the message when they differ.
 - `mex`: build the gateway.
 - `test`: run `matlab.unittest` with JUnit output.
-- `package`: build the `.mltbx` with `matlab.addons.toolbox.ToolboxOptions`, using a fixed UUID that never changes between versions.
+- `package`: build the `.mltbx` with `matlab.addons.toolbox.ToolboxOptions`, using a fixed UUID that never changes between versions. Before packaging, the task writes the license text of every crate linked into `pckern` on each platform into the toolbox, next to `LICENSE` and `THIRD_PARTY_NOTICES.md`. A Rust tool in this repo builds that file from `cargo metadata --filter-platform` and the license files in each crate's source.
+
+**Base MATLAB check.** A test in `tests/` runs `matlab.codetools.requiredFilesAndProducts` on every file under `toolbox/` and fails when it lists a product other than MATLAB. Files of the optional `gpuArray` route may also list Parallel Computing Toolbox (rule 8 of `CLAUDE.md`). The test starts with the first MATLAB code under `toolbox/`.
 
 **GitHub Actions.**
 - **Rust job:** fmt, clippy, test and deny on Ubuntu, Windows and macOS.
@@ -290,12 +295,14 @@ phasecont.session.replay("ml.pcsession.json");   % headless rerun
 ## 13. Later phases (pointers only)
 
 - **GPU ensemble engine** (`pc-ensemble`). Backends:
-  - `cuda`: `cudarc`, driver API plus NVRTC; primary for NVIDIA, and required for the developer's sm_120 GPU.
+  - `cuda`: `cudarc`, driver API plus NVRTC; primary for NVIDIA. Spike S4 compiled and ran an `sm_120` kernel with it on the developer's GPU, inside MATLAB R2026b and in WSL.
   - `opencl`: the `opencl3` crate; for AMD, Intel, and NVIDIA as a fallback.
   - `metal`: the `objc2-metal` crate; for every Mac, in `f32`.
   - `hip`: bindgen bindings loaded with `libloading`; for AMD.
   - `cpu`: rayon.
   - Kernels are emitted by `pc-codegen` and compiled at runtime. The precision policy is in `CLAUDE.md`, rule 6.
+  - `cuda` host code calls `is_culib_present` for the driver and NVRTC before any other `cudarc` call, because `cudarc` panics when it cannot load a library. It compiles kernels through the raw NVRTC calls and destroys the program on every path: when a compile fails and reading the program log fails too, `cudarc`'s `compile_ptx_with_opts` panics, and the `Drop` of its program panics again if destroying the program also fails. That second panic aborts the process, which `catch_unwind` cannot stop.
+  - NVRTC contracts `a*b + c` into an FMA by default (`--fmad`, "Default: true" in `/usr/local/cuda-13.4/include/nvrtc.h:960-965`). A test that compares a GPU result with a CPU reference at the level of single ulps rounds each contracted operation once in the reference, and does not get that rounding from `f32::mul_add` on `x86_64-pc-windows-gnu` at the baseline target features.
 - **LaTeX companion toolbox:** pgfplots figures, tables of special points, a side-by-side editor with a pdf.js preview driving `latexmk` or Tectonic.
 - **VS Code extension:** a TypeScript client plus `pc-lsp` (Rust, `tower-lsp`) that reuses `pc-ode` diagnostics.
 - **Optional external backends:** AUTO-07p and XPPAUT, run as subprocesses the user installs separately.

@@ -97,7 +97,7 @@ A failed MATLAB command reaches WSL as a nonzero exit code. `scripts/matlab-win 
 
 Every run whose current folder is the repo prints `Warning: Unable to obtain a change notification handle for \\wsl.localhost\fedoralinux-44\home\nub04\dev\phasecont.` MATLAB cannot watch a UNC folder for changes, so a desktop session may not see files edited from WSL until `rehash` runs. Each `-batch` run starts fresh, so `scripts/matlab-win` is not affected.
 
-`ver` lists 120 products in all, each at 26.2, among them Parallel Computing Toolbox, Symbolic Math Toolbox, Optimization Toolbox, MATLAB Coder, GPU Coder and MATLAB Test. Rule 8 of `CLAUDE.md` forbids depending on most of these. They are all installed here, so an accidental dependency will not fail on this machine; a later phase needs a check for it, for example `matlab.codetools.requiredFilesAndProducts` over `toolbox/`.
+`ver` lists 120 products in all, each at 26.2, among them Parallel Computing Toolbox, Symbolic Math Toolbox, Optimization Toolbox, MATLAB Coder, GPU Coder and MATLAB Test. Rule 8 of `CLAUDE.md` forbids depending on most of these. They are all installed here, so an accidental dependency will not fail on this machine; the "Base MATLAB check" test in section 12 of `docs/SPEC.md` catches one.
 
 Commands: `version`, `matlabroot`, `computer('arch')`, `mex.getCompilerConfigurations('C','Selected')`, `maxNumCompThreads`, `gpuDevice` and `ver`, all through `scripts/matlab-win`, plus directory listings of `extern\lib\win64` and `bin\win64`.
 
@@ -114,7 +114,7 @@ Commands: `version`, `matlabroot`, `computer('arch')`, `mex.getCompilerConfigura
 
 On Windows, `CUDA_PATH` is unset and `CUDA_PATH_V13_4` is `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4`. The toolkit's NVRTC and the copy in MATLAB's `bin\win64` share the file name `nvrtc64_130_0.dll`. Their builtins files (`nvrtc-builtins64_134.dll` and `nvrtc-builtins64_131.dll`) suggest NVRTC 13.4 and 13.1. Spike S4 confirmed both with `nvrtcVersion`: a DLL inside MATLAB that loads the bare name `nvrtc64_130_0.dll` gets MATLAB's copy, NVRTC 13.1, and gets the toolkit's 13.4 only when it loads that file by absolute path first (`spikes/results/s4_matlab.txt`, `spikes/results/s4_matlab_preload.txt`).
 
-`gpuDevice` reports `DeviceSupported` 1 for this compute capability 12.0 card. `CLAUDE.md` says 12.0 is outside the range MATLAB supports for `gpuArray`, but that does not hold for R2026b. `docs/spikes.md` takes this up.
+`gpuDevice` reports `DeviceSupported` 1 for this compute capability 12.0 card. `gpuArray` still needs Parallel Computing Toolbox, which rule 8 of `CLAUDE.md` allows only on the optional `gpuArray` route.
 
 Commands: `nvidia-smi --query-gpu=name,compute_cap,driver_version,memory.total --format=csv` and plain `nvidia-smi`, in WSL and as `/mnt/c/Windows/System32/nvidia-smi.exe`; `/usr/local/cuda/bin/nvcc --version`; `cmd.exe /c 'echo %CUDA_PATH% & echo %CUDA_PATH_V13_4%'`; and directory listings of the toolkit and `/usr/lib/wsl/lib`.
 
@@ -136,7 +136,7 @@ sudo dnf install cargo-deny
 
 The first command also installed other MinGW packages, among them `mingw64-binutils`, `mingw64-crt` and `mingw64-headers`, and upgraded `rust`, `cargo`, `rust-std-static`, `rustfmt`, `clippy` and `rust-analyzer` from 1.99.0 to 1.99.1. The second command keeps `rust-src`, which rust-analyzer reads, at the compiler's version.
 
-After any later Rust update, `rustc -vV` and `rpm -q rust-std-static-x86_64-pc-windows-gnu` must report the same version, or Windows builds fail. No version lock is set (`dnf versionlock list` prints nothing). dnf5 has the versionlock plugin (`dnf5-plugins` is installed), so this command would pin the set:
+After any later Rust update, `rustc -vV` and `rpm -q rust-std-static-x86_64-pc-windows-gnu` must report the same version, or Windows builds fail. No version lock is set (`dnf versionlock list` prints nothing), and none is planned. `rpm -q --requires rust-std-static-x86_64-pc-windows-gnu` lists `rust = 1.99.1-2.fc45`, so dnf cannot move `rust` to another version while the Windows std of the old version stays installed, and a lock would also hold back Rust security updates. Instead, the `cargo` build task compares the two versions before a Windows build (`docs/SPEC.md`, section 12). If a Fedora update ever moves `rust` before a matching Windows std is available, this command pins the set:
 
 ```
 sudo dnf versionlock add rust cargo rust-std-static rust-std-static-x86_64-pc-windows-gnu

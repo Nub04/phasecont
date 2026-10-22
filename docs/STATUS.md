@@ -2,7 +2,7 @@
 
 ## Phase
 
-P0: discovery, scaffold and spikes S1 to S4 (`docs/KICKOFF.md`). The plan was approved on 2026-10-21. P0 is accepted when the decisions in `docs/spikes.md` are approved (SPEC section 14).
+P0: discovery, scaffold and spikes S1 to S4 (`docs/KICKOFF.md`). The plan was approved on 2026-10-21. P0 was accepted on 2026-10-22, when the owner approved the decisions in `docs/spikes.md` (SPEC section 14).
 
 ## Done
 
@@ -19,6 +19,8 @@ P0: discovery, scaffold and spikes S1 to S4 (`docs/KICKOFF.md`). The plan was ap
   - The 29 files in `spikes/matlab` give 29 `checkcode` messages, all of them the CFERR message about a missing settings file, and no `codeIssues` finding.
   - Each spike, the MATLAB scripts, the whole tree and the S4 fix were checked for defects, and the fixes that held up are in the code. Minor items in the throwaway spike code stay open; the lessons later phases need are in `docs/spikes.md`.
 - `docs/spikes.md`: for each spike, what was built, the commands, the numbers and what went wrong, then the four recommendations that `docs/KICKOFF.md` asks for.
+- The four recommendations are approved: Windows build route 1, the Cranelift JIT as the default backend with AOT C as an opt-in speed-up, condensation with faer sparse LU as the first linear solver, and all 17 changes to `CLAUDE.md` and `docs/SPEC.md`, which are applied.
+- The open questions of P0 are decided; "Decisions after review" in `docs/spikes.md` gives each decision and its reason.
 
 ## In progress
 
@@ -26,8 +28,9 @@ P0: discovery, scaffold and spikes S1 to S4 (`docs/KICKOFF.md`). The plan was ap
 
 ## Next
 
-- Approval of the decisions in `docs/spikes.md`, including the changes to `CLAUDE.md` and `docs/SPEC.md` that recommendation 4 proposes. That approval accepts P0.
-- Then P1 (`pc-ode` parser, diagnostics, writer, `pc-cli parse`), started in plan mode.
+- P1 (`pc-ode` parser, diagnostics, writer, `pc-cli parse`), started in plan mode.
+- P2: the macOS arm64 JIT check in SPEC section 4, on a Mac with MATLAB or on the macOS runner of the MATLAB CI job.
+- P8a: confirm on the File Exchange submission form that it accepts an Apache-2.0 toolbox linked to GitHub.
 
 ## Blocked
 
@@ -35,8 +38,4 @@ P0: discovery, scaffold and spikes S1 to S4 (`docs/KICKOFF.md`). The plan was ap
 
 ## Open questions
 
-- Does File Exchange accept an Apache-2.0 toolbox linked from a GitHub release? Check before P8a.
-- The `.mltbx` has to carry the license notices of the Rust crates linked into `pckern`. P8a needs a step that collects them.
-- Rule 8 needs an automated check that `toolbox/` uses only base MATLAB, since every toolbox is installed on this machine.
-- Should the Rust packages be pinned with `dnf versionlock`? A Rust update that moves `rustc` without the Windows std breaks Windows builds. The command is in `docs/ENVIRONMENT.md`.
-- Can JIT pages be mapped executable inside the MATLAB process on macOS arm64? `docs/SPEC.md:99` assigns that check to S2, which ran only on Windows and WSL, so it moves to P2. If it fails, the fallback in the same paragraph (AOT plus the Xcode Command Line Tools on Macs) conflicts with rule 5 in `CLAUDE.md`, and the owner decides which of the two gives way (`docs/spikes.md`, recommendation 2).
+- Nothing.
