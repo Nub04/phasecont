@@ -84,6 +84,64 @@ pub const CODES: &[(Code, Severity, &str)] = &[
     (Code(15), Severity::Error, "unsupported index form"),
     (Code(16), Severity::Error, "malformed if expression"),
     (Code(17), Severity::Error, "expression too deep"),
+    // Statement parser (`parser/stmt.rs`).
+    (Code(18), Severity::Error, "old-style XPPAUT file"),
+    (Code(19), Severity::Error, "unrecognized statement"),
+    (Code(20), Severity::Error, "malformed statement"),
+    (
+        Code(21),
+        Severity::Error,
+        "unexpected text after a statement",
+    ),
+    (
+        Code(22),
+        Severity::Error,
+        "comment not allowed after this statement",
+    ),
+    (Code(23), Severity::Error, "value is not a number literal"),
+    (Code(24), Severity::Warning, "unknown option name"),
+    (
+        Code(25),
+        Severity::Warning,
+        "XPPAUT 8.0 ignores an option with blanks around `=`",
+    ),
+    (Code(26), Severity::Error, "malformed markov rows"),
+    (Code(27), Severity::Error, "malformed array block"),
+    (
+        Code(28),
+        Severity::Warning,
+        "Volterra equations are not supported",
+    ),
+    (
+        Code(29),
+        Severity::Warning,
+        "boundary value problems are not supported",
+    ),
+    (
+        Code(30),
+        Severity::Warning,
+        "algebraic constraints are not supported",
+    ),
+    (Code(31), Severity::Warning, "`special` is not supported"),
+    (Code(32), Severity::Warning, "`export` is not supported"),
+    (Code(33), Severity::Warning, "`only` is not supported"),
+    (
+        Code(34),
+        Severity::Warning,
+        "`options` files are not supported",
+    ),
+    (Code(35), Severity::Warning, "`hom_bcs` is not supported"),
+    (Code(36), Severity::Warning, "file tables are not supported"),
+    (
+        Code(37),
+        Severity::Warning,
+        "`sum(..)of(..)` is not supported",
+    ),
+    (
+        Code(38),
+        Severity::Warning,
+        "active comments are not supported",
+    ),
 ];
 
 #[cfg(test)]

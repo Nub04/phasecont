@@ -79,7 +79,7 @@ const QUOTE_MAX: usize = 60;
 
 /// `s` as it should appear in a message: unchanged when it is at most
 /// [`QUOTE_MAX`] bytes, otherwise its start and end joined by `...`.
-fn clip(s: &str) -> String {
+pub(crate) fn clip(s: &str) -> String {
     if s.len() <= QUOTE_MAX {
         return s.to_string();
     }
@@ -163,6 +163,27 @@ pub fn parse_expr_text(file: FileId, text: &str) -> (Expr, Vec<Diagnostic>) {
     }
     diags.sort_by_key(|d| d.span.start);
     (e, diags)
+}
+
+/// Parses the name at `c.pos` with an optional index form after it, for
+/// the left sides of statements. Returns `None`, consuming nothing, when
+/// the current token is not a name. The flag is true when a bad index form
+/// was reported and skipped; the name is still returned without it.
+pub(crate) fn parse_name(c: &mut ExprCursor) -> Option<(Ident, bool)> {
+    if !matches!(
+        c.tokens.get(c.pos).map(|t| &t.kind),
+        Some(TokenKind::Name(_))
+    ) {
+        return None;
+    }
+    let (ident, recovered) = Parser::new(c).name();
+    Some((*ident, recovered))
+}
+
+/// Parses the index form that starts at the `[` at `c.pos`. Returns `None`
+/// after reporting an unsupported or unclosed form, which is skipped.
+pub(crate) fn parse_index(c: &mut ExprCursor) -> Option<Index> {
+    Parser::new(c).index()
 }
 
 /// A parsed operand plus what the precedence warnings and the depth limit

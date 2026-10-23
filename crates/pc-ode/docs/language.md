@@ -86,6 +86,19 @@ Unsupported statements stay in the AST as raw text, so the writer reproduces the
 - A value in a `par`, `number` or `init` list, and the right side of `x(0)=`, is a signed numeric literal. Inside an array template it may also be a bare index form (`x[j](0)=[j]`). Anything else is an error (measured: XPPAUT reads only a leading number, so `par a=1+1` gives 1 and `x(0)=t+2` gives 0).
 - A bare name in a `par` list (`par a`) declares the parameter with value 0 (manual).
 
+### Statement details
+
+These rules fix what the parser does where the manual is silent. Each is a PhaseCont choice unless marked otherwise.
+
+- An `@` entry is `name=value`, split by commas or blanks. The value is kept as text up to the next comma, blank, comment or line end. A `set` block uses the same entries, split by commas, inside `{...}`; blanks around `=` there give no diagnostic.
+- `global` takes the literal `-1`, `0` or `1`, a condition and `{name=expr; ...}`. `markov name n` is followed by the next `n` lines that are not blank or comments, each with exactly `n` `{expr}` groups. Text after `n` is an error with a fix-it that deletes it, and so are missing rows. Comment lines between the rows are kept and follow the `markov` statement in the AST.
+- A user function has at least one parameter, and neither its name nor its parameters carry an index. The left side `x(t)=` is a Volterra equation.
+- Text after `done` is not read, so it gives no diagnostic. `done` inside an array block also ends the block, which is reported as unclosed.
+- A line that matches no statement form is an error, and parsing goes on with the next line. A statement whose form is known but whose parts are wrong is a separate error. Lexer diagnostics inside text kept raw (`@` and `set` values, unsupported statements, active comments, everything after `done`) are dropped.
+- A line that starts with `"` (an XPPAUT active comment) is unsupported and kept as raw text, with its own warning.
+- `%[i1..i2]` and `%` must each be alone on their line; a comment after them is an error. A nested block, an unclosed block and a `%` that closes nothing are errors. The bounds are read as integers, and a negative bound is reported later, by the array pass.
+- Only lower-case `#include` followed by a blank is an include; `#includes` and `#INCLUDE` are comments. `#done` is a comment.
+
 ### Names and order
 
 - A name is a letter followed by letters, digits, `_` and `.` (manual: `aux P.E.=...`). A `.` followed by another `.` ends the name, so `x[1..3]` lexes as expected.
