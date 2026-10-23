@@ -142,6 +142,54 @@ pub const CODES: &[(Code, Severity, &str)] = &[
         Severity::Warning,
         "active comments are not supported",
     ),
+    // Name resolution and model checks (`check.rs`).
+    (Code(39), Severity::Error, "undefined name"),
+    (Code(40), Severity::Error, "reserved name declared"),
+    (Code(41), Severity::Error, "name declared twice"),
+    (
+        Code(42),
+        Severity::Error,
+        "fixed quantity used above its definition",
+    ),
+    (Code(43), Severity::Error, "circular definition"),
+    (
+        Code(44),
+        Severity::Error,
+        "initial value for a name that is not a state",
+    ),
+    (Code(45), Severity::Error, "initial value given twice"),
+    (Code(46), Severity::Error, "more than 9 function parameters"),
+    (Code(47), Severity::Error, "recursive function"),
+    (Code(48), Severity::Error, "wrong number of arguments"),
+    (
+        Code(49),
+        Severity::Error,
+        "function used as a value, or a value called as a function",
+    ),
+    (
+        Code(50),
+        Severity::Error,
+        "`argK` outside a function that has it",
+    ),
+    (
+        Code(51),
+        Severity::Error,
+        "`aux` quantity used in a formula",
+    ),
+    (Code(52), Severity::Error, "ODEs and maps in one file"),
+    (
+        Code(53),
+        Severity::Error,
+        "derived parameter uses a name that is not a parameter",
+    ),
+    (Code(54), Severity::Warning, "`delay` is not supported yet"),
+    (Code(55), Severity::Warning, "`shift` is not supported"),
+    (Code(56), Severity::Warning, "`del_shft` is not supported"),
+    (
+        Code(57),
+        Severity::Warning,
+        "undefined name that an unsupported statement may declare",
+    ),
 ];
 
 #[cfg(test)]

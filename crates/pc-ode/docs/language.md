@@ -136,6 +136,17 @@ These rules fix what the parser does where the manual is silent. Each rule says 
 - An `aux` name used inside a formula is an error (manual: aux quantities are output only).
 - A user function may not call itself, directly or through other functions, since functions are inlined (PhaseCont choice).
 - A file that mixes ODEs and maps is an error (PhaseCont choice; XPPAUT 8.0 loads it silently).
+- The keyword words `not`, `if`, `then` and `else` are reserved too (PhaseCont choice). `e` is not reserved: it is an ordinary name, and Euler's number is `exp(1)`.
+- A reserved name keeps its meaning when a file declares it anyway: `par sin=2` is reported once, and `sin(x)` still calls the builtin.
+- Function parameters follow the same rules: a reserved parameter name is an error, a parameter named twice in one function is an error, and a parameter hides a global name with the same spelling inside the function body.
+- `init x=...` and `x(0)=...` must name a state declared by an ODE, map or `markov` statement, and each state gets at most one initial value. Both are errors (PhaseCont choice).
+- A cycle among fixed quantities (`a=b`, `b=a`) is an error, reported once at its earliest member with notes at the others. Uses inside a cycle are not also reported as forward references.
+- A derived parameter (`!name=...`) may use numbers, parameters, `number` constants, other derived parameters, `pi`, builtins and user functions. It may not use `t`, states, fixed quantities, `wiener` names or `aux` quantities, since it is evaluated once, before integration (PhaseCont choice). A derived parameter may use one defined on a later line; a cycle among derived parameters is an error.
+- A function takes at most 9 parameters (manual). Inside a function body, `argK` names parameter `K` when the function has at least `K` parameters (manual: `arg1` to `arg9`). Any other use of `argK`, inside a function with fewer parameters or outside every function, is an error (PhaseCont choice; XPPAUT 8.0 reads it as 0).
+- Calls are checked against the callee: a builtin against the table below, a user function against its parameter count, a table against one argument. Calling a value (`a(1)` for a parameter `a`) and using a function or table as a value (`x'=sin`) are errors.
+- When a file mixes ODEs and maps, the model kind is the kind of the first ODE or map line, and the error sits on the first line of the other kind, with a note at the first line of the first kind. `markov` states do not set the kind.
+- Undefined names and unsupported statements (PhaseCont choice). An undefined name is an error, unless the file has an unsupported statement whose text may declare names: a Volterra equation, an algebraic constraint (`0=...` or `solv`), `special`, a file table or `sum(..)of(..)`. Then the undefined name gives warning ODE0057 instead, with a note at the first such statement, since PhaseCont did not read the declaration that statement may hold. The same applies to an `init` name that names nothing. Active comments, boundary conditions, `export`, `only`, `hom_bcs` and `options` declare no names, so they leave the error in place.
+- `check` ignores `#include` lines and `@`, `set` and `options` statements. It skips the bodies of array blocks and declarations whose name carries an index, and it never reports a name with an index as undefined; array expansion runs before it.
 
 ## Numbers
 
@@ -269,6 +280,8 @@ Arity `n` means the function takes exactly `n` arguments. "Smooth" means the fun
 | `delay` | 2 | `delay(x,tau)` | | | manual; warning, v2 |
 | `shift`, `del_shft`, `sum(..)of(..)` | | | | | manual; unsupported, warning |
 | `if(c)then(a)else(b)` | | `a` when `c` is nonzero, else `b` | no | no | manual, measured (`if(-1)` takes `then`) |
+
+`delay(x,tau)` gives warning ODE0054 (planned for v2), and `shift` and `del_shft` give ODE0055 and ODE0056; the calls are kept as written. `ceil` gives the portability warning, since XPPAUT 8.0 rejects it. The `if(c)then(a)else(b)` and `sum(..)of(..)` rows are not calls: `if` is an expression form that makes the model non-smooth, and the parser keeps a `sum(..)of(..)` line as an unsupported statement. A bare call `sum(...)` gives warning ODE0037. `crates/pc-ode/src/builtins.rs` holds the same table, and a test checks that the two agree.
 
 Operator semantics (measured):
 

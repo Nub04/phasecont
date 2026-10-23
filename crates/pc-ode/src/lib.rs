@@ -3,10 +3,14 @@
 //! See `docs/SPEC.md`, section 2. So far the crate holds source spans and
 //! the source map ([`span`]), diagnostics with their stable codes
 //! ([`diag`]), the tokenizer ([`lexer`]), the syntax tree ([`ast`]), the
-//! known `@` option names ([`options`]) and the parser ([`parser`]).
-//! [`parse`] turns one file into a [`Model`].
+//! known `@` option names ([`options`]), the parser ([`parser`]), the
+//! builtin table ([`builtins`]) and the name checks ([`check`]).
+//! [`parse`] turns one file into a [`Model`], and [`check()`] resolves its
+//! names and reports model errors.
 
 pub mod ast;
+pub mod builtins;
+pub mod check;
 pub mod diag;
 pub mod lexer;
 pub mod options;
@@ -17,6 +21,7 @@ pub use ast::{
     Assign, BinaryOp, Comment, DUMMY_SPAN, Entry, Expr, Ident, Index, IndexOp, MarkovLine,
     MarkovRow, Model, OdeForm, RawAssign, Stmt, StmtKind, UnaryOp, Unsupported, Value,
 };
+pub use check::{ModelInfo, ModelKind, StateKind, Symbol, SymbolKind, check};
 pub use diag::{CODES, Code, Diagnostic, FixIt, Severity};
 pub use lexer::{Token, TokenKind, lex};
 pub use parser::parse;
