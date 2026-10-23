@@ -25,7 +25,9 @@ pub use ast::{
 };
 pub use check::{ModelInfo, ModelKind, StateKind, Symbol, SymbolKind, check};
 pub use diag::{CODES, Code, Diagnostic, FixIt, Severity};
-pub use include::{FsLoader, MAX_INCLUDE_DEPTH, MapLoader, SourceLoader, resolve_includes};
+pub use include::{
+    FsLoader, MAX_INCLUDE_DEPTH, MAX_INCLUDES, MapLoader, SourceLoader, resolve_includes,
+};
 pub use lexer::{Token, TokenKind, lex};
 pub use parser::parse;
 #[doc(hidden)]

@@ -234,6 +234,11 @@ pub const CODES: &[(Code, Severity, &str)] = &[
         Severity::Error,
         "`#include` inside an array block",
     ),
+    (
+        Code(64),
+        Severity::Error,
+        "more than 4096 includes in total",
+    ),
 ];
 
 #[cfg(test)]

@@ -21,6 +21,7 @@ fn resolve(top: &str, files: &[(&str, &str)]) -> (Model, Model, Vec<Diagnostic>,
         let severity = CODES.iter().find(|(c, _, _)| *c == d.code).unwrap().1;
         assert_eq!(d.severity, severity, "{d:#?}");
         assert!(d.span.end <= map.text(d.span.file).len(), "{d:#?}");
+        assert!(!d.message.chars().any(char::is_control), "{d:#?}");
     }
     (model, resolved, diags, map)
 }
@@ -117,25 +118,37 @@ fn nested_includes() {
 
 #[test]
 fn diamond_is_allowed() {
-    // R17 g: the same file twice without a cycle loads twice, and `check`
-    // reports the duplicate names.
+    // R17 g: the same file twice without a cycle is spliced twice, and
+    // `check` reports the duplicate names. R19 B: it is read and parsed once
+    // and keeps one FileId, so its parse diagnostics appear once.
     let (_, resolved, diags, map) = resolve(
         "#include a.ode\n#include b.ode\nx'=1",
         &[
             ("a.ode", "#include c.ode"),
             ("b.ode", "#include c.ode"),
-            ("c.ode", "par c=1"),
+            ("c.ode", "par c=1\npar q=("),
         ],
     );
-    assert!(diags.is_empty(), "{diags:#?}");
     assert_eq!(
-        resolved.strip_spans().statements,
-        flat("par c=1\npar c=1\nx'=1")
+        codes(&diags),
+        [crate::parser::stmt::BAD_VALUE],
+        "{diags:#?}"
     );
+    assert_eq!(map.name(diags[0].span.file), "c.ode");
+    assert_eq!(map.file_count(), 4);
     assert_eq!(map.name(FileId(2)), "c.ode");
-    assert_eq!(map.name(FileId(4)), "c.ode");
+    assert_eq!(map.name(FileId(3)), "b.ode");
+    let files: Vec<FileId> = resolved.statements.iter().map(|s| s.span.file).collect();
+    assert_eq!(
+        files,
+        [FileId(2), FileId(2), FileId(2), FileId(2), FileId(0)]
+    );
+    assert_eq!(resolved.statements[0], resolved.statements[2]);
     let (_, check_diags) = check(&resolved);
-    assert_eq!(codes(&check_diags), [DUPLICATE_NAME]);
+    assert!(
+        codes(&check_diags).contains(&DUPLICATE_NAME),
+        "{check_diags:#?}"
+    );
 }
 
 #[test]
@@ -153,22 +166,13 @@ fn self_include_is_a_cycle() {
 #[test]
 fn two_file_cycle() {
     let top = "#include b.ode\nx'=1";
-    let b = "par b=1\n#include main.ode";
+    let b = "par b=1\n#include a.ode";
     let mut map = SourceMap::new();
     let id = map.add("a.ode", top);
     let (model, _) = parse(top, id);
     let mut loader = MapLoader::new();
     loader.insert("b.ode", b);
     loader.insert("a.ode", top);
-    let (resolved, diags) = resolve_includes(&model, id, &mut map, &mut loader);
-    // `main.ode` is not in the loader: unreadable, not a cycle.
-    assert_eq!(codes(&diags), [INCLUDE_UNREADABLE]);
-    assert_eq!(resolved.strip_spans().statements, flat("par b=1\nx'=1"));
-
-    let b = "par b=1\n#include a.ode";
-    loader.insert("b.ode", b);
-    let mut map = SourceMap::new();
-    let id = map.add("a.ode", top);
     let (resolved, diags) = resolve_includes(&model, id, &mut map, &mut loader);
     assert_eq!(codes(&diags), [INCLUDE_CYCLE]);
     let d = &diags[0];
@@ -183,6 +187,30 @@ fn two_file_cycle() {
     assert_eq!(d.notes.len(), 1, "{d:#?}");
     assert_eq!(d.notes[0].0, nth(FileId(0), top, "#include b.ode", 0));
     assert_eq!(resolved.strip_spans().statements, flat("par b=1\nx'=1"));
+}
+
+#[test]
+fn map_loader_top_spelled_differently() {
+    // With `MapLoader` the top file is not known under its include
+    // spelling, so a self include loads one extra copy before the copy's
+    // own self include closes the cycle.
+    let top = "#include model.ode\npar a=1";
+    let mut map = SourceMap::new();
+    let id = map.add("/m/model.ode", top);
+    let (model, _) = parse(top, id);
+    let mut loader = MapLoader::new();
+    loader.insert("model.ode", top);
+    let (resolved, diags) = resolve_includes(&model, id, &mut map, &mut loader);
+    assert_eq!(codes(&diags), [INCLUDE_CYCLE]);
+    assert_eq!(diags[0].span.file, FileId(1));
+    assert!(
+        diags[0]
+            .message
+            .contains("/m/model.ode -> model.ode -> model.ode"),
+        "{}",
+        diags[0].message
+    );
+    assert_eq!(resolved.strip_spans().statements, flat("par a=1\npar a=1"));
 }
 
 #[test]
@@ -442,10 +470,11 @@ fn map_loader_ignores_the_including_file() {
     let mut loader = MapLoader::new();
     loader.insert("a.ode", "par a=1");
     assert_eq!(
-        loader.load(FileId(7), "a.ode"),
+        loader.load(FileId(7), "x/y.ode", "a.ode"),
         Ok(("a.ode".to_string(), "par a=1".to_string()))
     );
-    assert!(loader.load(FileId(0), "b.ode").is_err());
+    assert!(loader.load(FileId(0), "main.ode", "b.ode").is_err());
+    assert_eq!(loader.identity("a.ode"), "a.ode");
 }
 
 #[test]
@@ -573,13 +602,21 @@ fn fs_loader_absolute_and_missing_paths() {
 fn fs_loader_errors() {
     let tmp = TempDir::new("err");
     let mut map = SourceMap::new();
-    let mut loader = FsLoader::new();
+    let loader = FsLoader::new();
     assert!(loader.load_top(&mut map, tmp.0.join("none.ode")).is_err());
     assert_eq!(map.file_count(), 0);
-    // A file this loader did not load has no directory.
-    let other = map.add("other.ode", "");
-    let err = loader.load(other, "a.ode").unwrap_err();
-    assert!(err.contains("other") || err.contains("not loaded"), "{err}");
+    // The error names the full path that was tried.
+    let err = FsLoader::new()
+        .load(
+            FileId(0),
+            &tmp.0.join("m.ode").display().to_string(),
+            "a.ode",
+        )
+        .unwrap_err();
+    assert!(
+        err.starts_with(&tmp.0.join("a.ode").display().to_string()),
+        "{err}"
+    );
 }
 
 #[test]
@@ -603,4 +640,202 @@ fn temp_dir_is_removed() {
     assert!(dir.join("sub/a.ode").is_file());
     drop(tmp);
     assert!(!dir.exists());
+}
+
+#[test]
+fn fs_loader_top_added_by_hand() {
+    // R19 A3: the loader is stateless, so a top file the caller holds in
+    // memory resolves whenever its name is a path.
+    let tmp = TempDir::new("hand");
+    tmp.write("d/b.ode", "par b=1");
+    let mut map = SourceMap::new();
+    let name = tmp.0.join("d/hand.ode").display().to_string();
+    let id = map.add(name, "#include b.ode\nx'=b");
+    let (model, _) = parse(map.text(id), id);
+    let (resolved, diags) = resolve_includes(&model, id, &mut map, &mut FsLoader::new());
+    assert!(diags.is_empty(), "{diags:#?}");
+    assert_eq!(resolved.strip_spans().statements, flat("par b=1\nx'=b"));
+}
+
+#[cfg(unix)]
+#[test]
+fn fs_loader_symlink_self_include_is_a_cycle() {
+    let tmp = TempDir::new("sym");
+    tmp.write("d/s.ode", "#include loop/s.ode\npar s=1");
+    std::os::unix::fs::symlink(".", tmp.0.join("d/loop")).unwrap();
+    let mut map = SourceMap::new();
+    let loader = FsLoader::new();
+    let id = loader.load_top(&mut map, tmp.0.join("d/s.ode")).unwrap();
+    let (model, _) = parse(map.text(id), id);
+    let (resolved, diags) = resolve_includes(&model, id, &mut map, &mut FsLoader::new());
+    assert_eq!(codes(&diags), [INCLUDE_CYCLE], "{diags:#?}");
+    assert_eq!(diags[0].span.file, id);
+    assert_eq!(map.file_count(), 1);
+    assert_eq!(resolved.strip_spans().statements, flat("par s=1"));
+}
+
+/// `abs` as a path relative to the working directory, going up to the root
+/// first, so the result does not depend on where the tests run.
+fn relative_to_cwd(abs: &Path) -> PathBuf {
+    let cwd = std::env::current_dir().unwrap();
+    let mut rel = PathBuf::new();
+    for part in cwd.components() {
+        if matches!(part, std::path::Component::Normal(_)) {
+            rel.push("..");
+        }
+    }
+    for part in abs.components() {
+        if let std::path::Component::Normal(p) = part {
+            rel.push(p);
+        }
+    }
+    rel
+}
+
+#[cfg(unix)]
+#[test]
+fn fs_loader_relative_top_including_itself_by_absolute_path() {
+    let tmp = TempDir::new("self");
+    let abs = tmp.0.join("d/abs.ode");
+    let text = format!("#include {}\npar a=1", abs.display());
+    tmp.write("d/abs.ode", &text);
+    let rel = relative_to_cwd(&abs);
+    assert!(rel.is_relative());
+    let mut map = SourceMap::new();
+    let id = map.add(rel.display().to_string(), text.as_str());
+    let (model, _) = parse(map.text(id), id);
+    let (resolved, diags) = resolve_includes(&model, id, &mut map, &mut FsLoader::new());
+    assert_eq!(codes(&diags), [INCLUDE_CYCLE], "{diags:#?}");
+    assert_eq!(diags[0].span.file, id);
+    assert_eq!(map.file_count(), 1);
+    assert_eq!(resolved.strip_spans().statements, flat("par a=1"));
+}
+
+#[test]
+fn include_count_limit() {
+    // Exactly MAX_INCLUDES includes resolve.
+    let top = "#include a.ode\n".repeat(MAX_INCLUDES);
+    let (_, resolved, diags, map) = resolve(&top, &[("a.ode", "par a=1")]);
+    assert!(diags.is_empty());
+    assert_eq!(resolved.statements.len(), MAX_INCLUDES);
+    assert_eq!(map.file_count(), 2);
+
+    // One more gives one error, at the first include past the limit.
+    let top = "#include a.ode\n".repeat(MAX_INCLUDES + 3);
+    let (_, resolved, diags, _) = resolve(&top, &[("a.ode", "par a=1")]);
+    assert_eq!(codes(&diags), [INCLUDE_TOO_MANY]);
+    let line = "#include a.ode\n".len() * MAX_INCLUDES;
+    assert_eq!(diags[0].span, Span::new(FileId(0), line, line + 14));
+    assert!(diags[0].message.contains("4096"), "{}", diags[0].message);
+    assert_eq!(resolved.statements.len(), MAX_INCLUDES);
+}
+
+#[test]
+fn include_count_limit_in_a_lattice() {
+    // Each level includes the next one twice: 2 + 4 + ... + 2^13 includes.
+    let mut files: Vec<(String, String)> = (0..13)
+        .map(|i| {
+            (
+                format!("l{i}.ode"),
+                format!("#include l{0}.ode\n#include l{0}.ode", i + 1),
+            )
+        })
+        .collect();
+    files.push(("l13.ode".to_string(), "par q=(".to_string()));
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    let (_, _, diags, map) = resolve("#include l0.ode\n#include l0.ode", &refs);
+    let mut want = vec![crate::parser::stmt::BAD_VALUE, INCLUDE_TOO_MANY];
+    want.sort();
+    let mut got = codes(&diags);
+    got.sort();
+    assert_eq!(got, want, "{diags:#?}");
+    // Each file is read and parsed once.
+    assert_eq!(map.file_count(), 15);
+}
+
+#[test]
+fn empty_quoted_name() {
+    for top in ["#include \"\"", "#include ''"] {
+        let (_, resolved, diags, map) = resolve(top, &[("", "par a=1")]);
+        assert_eq!(
+            codes(&diags),
+            [crate::parser::stmt::MALFORMED_STATEMENT],
+            "{top:?}"
+        );
+        assert!(diags[0].fix_it.is_none());
+        assert!(
+            diags[0].message.contains("names no file"),
+            "{}",
+            diags[0].message
+        );
+        assert_eq!(map.file_count(), 1);
+        assert!(resolved.statements.is_empty());
+    }
+}
+
+#[test]
+fn control_characters_are_escaped_in_messages() {
+    let (_, _, diags, _) = resolve("#include a.ode\u{c}", &[]);
+    assert_eq!(codes(&diags), [INCLUDE_UNREADABLE]);
+    assert!(
+        diags[0].message.contains("a.ode\\u{c}"),
+        "{}",
+        diags[0].message
+    );
+    assert_eq!(show("a\\b \"c\"\t\r"), "a\\b \"c\"\\t\\r");
+}
+
+#[test]
+fn nested_file_diagnostics_get_notes() {
+    let top = "#include a.ode";
+    let via = nth(FileId(0), top, "#include a.ode", 0);
+
+    // A quoted name in a nested file.
+    let a = "#include \"b.ode\"";
+    let (_, resolved, diags, _) = resolve(top, &[("a.ode", a), ("b.ode", "par b=1")]);
+    assert_eq!(codes(&diags), [INCLUDE_QUOTED]);
+    assert_eq!(diags[0].span, nth(FileId(1), a, "\"b.ode\"", 0));
+    assert_eq!(diags[0].notes, [(via, "included here".to_string())]);
+    assert_eq!(resolved.strip_spans().statements, flat("par b=1"));
+
+    // A trailing comment in a nested file: the parser reports it in the
+    // nested file and the include still resolves.
+    let a = "#include b.ode # c";
+    let (_, resolved, diags, _) = resolve(top, &[("a.ode", a), ("b.ode", "par b=1")]);
+    assert_eq!(codes(&diags), [TRAILING_COMMENT]);
+    assert_eq!(diags[0].span.file, FileId(1));
+    assert_eq!(resolved.strip_spans().statements, flat("par b=1"));
+
+    // An include inside a block in a nested file.
+    let a = "%[1..2]\n#include b.ode\n%";
+    let (_, _, diags, map) = resolve(top, &[("a.ode", a), ("b.ode", "par b=1")]);
+    assert_eq!(codes(&diags), [INCLUDE_IN_BLOCK]);
+    assert_eq!(diags[0].span, nth(FileId(1), a, "#include b.ode", 0));
+    assert_eq!(diags[0].notes, [(via, "included here".to_string())]);
+    assert_eq!(map.file_count(), 2);
+}
+
+#[test]
+fn self_include_at_the_depth_limit_is_too_deep() {
+    // R19 C1: the depth check runs before the file is read, so a cycle that
+    // closes exactly at the limit reports ODE0062.
+    let mut files = chain(MAX_INCLUDE_DEPTH);
+    files.last_mut().unwrap().1 = format!("#include f{MAX_INCLUDE_DEPTH}.ode");
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    let (_, _, diags, _) = resolve("#include f1.ode", &refs);
+    assert_eq!(codes(&diags), [INCLUDE_TOO_DEEP]);
+}
+
+#[test]
+fn drive_relative_paths() {
+    // Only Windows paths have a prefix; on other systems this is a plain
+    // relative name.
+    assert!(drive_relative(Path::new("a.ode")).is_none());
+    assert!(drive_relative(Path::new("/a.ode")).is_none());
 }
