@@ -291,15 +291,32 @@ pub struct Stmt {
     /// it but keeps it here.
     pub comment: Option<Comment>,
     pub span: Span,
+    /// The index `j` when array expansion made this statement as one copy
+    /// of a range line or of a block body statement; `None` for every
+    /// statement the parser makes. Copies keep the template's spans, so
+    /// this is what tells the copies of one line apart.
+    pub array_index: Option<i64>,
 }
 
 impl Stmt {
-    /// A copy with every span replaced by [`DUMMY_SPAN`].
+    /// A statement with no array index.
+    pub fn new(kind: StmtKind, comment: Option<Comment>, span: Span) -> Stmt {
+        Stmt {
+            kind,
+            comment,
+            span,
+            array_index: None,
+        }
+    }
+
+    /// A copy with every span replaced by [`DUMMY_SPAN`]. The array index
+    /// is not a span and is kept.
     pub fn strip_spans(&self) -> Stmt {
         Stmt {
             kind: self.kind.strip_spans(),
             comment: self.comment.as_ref().map(Comment::strip_spans),
             span: DUMMY_SPAN,
+            array_index: self.array_index,
         }
     }
 }

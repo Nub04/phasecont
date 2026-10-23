@@ -239,6 +239,30 @@ pub const CODES: &[(Code, Severity, &str)] = &[
         Severity::Error,
         "more than 4096 includes in total",
     ),
+    // Arrays (`expand.rs`).
+    (
+        Code(65),
+        Severity::Error,
+        "more than one range in a statement",
+    ),
+    (Code(66), Severity::Error, "range inside an array block"),
+    (
+        Code(67),
+        Severity::Error,
+        "index form with no range in scope",
+    ),
+    (Code(68), Severity::Error, "negative array index"),
+    (Code(69), Severity::Error, "array index too large"),
+    (
+        Code(70),
+        Severity::Error,
+        "`markov` inside an array block or with a range",
+    ),
+    (
+        Code(71),
+        Severity::Error,
+        "arrays expand to more than 100000 statements",
+    ),
 ];
 
 #[cfg(test)]

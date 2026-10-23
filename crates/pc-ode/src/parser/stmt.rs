@@ -498,6 +498,7 @@ impl StmtParser<'_> {
             kind,
             comment,
             span: self.span(start, end),
+            array_index: None,
         }
     }
 
@@ -516,6 +517,7 @@ impl StmtParser<'_> {
             },
             comment: None,
             span,
+            array_index: None,
         }
     }
 }
@@ -596,6 +598,7 @@ impl StmtParser<'_> {
         };
         Stmt {
             span: self.span(b.open.start, end),
+            array_index: None,
             kind,
             comment: None,
         }
@@ -796,6 +799,7 @@ impl StmtParser<'_> {
                     kind: StmtKind::Done,
                     comment,
                     span,
+                    array_index: None,
                 })
             }
             Keyword::Par | Keyword::Number | Keyword::Init => {
@@ -849,6 +853,7 @@ impl StmtParser<'_> {
             return Some(Stmt {
                 kind,
                 comment: None,
+                array_index: None,
                 span,
             });
         };
@@ -891,6 +896,7 @@ impl StmtParser<'_> {
             },
             comment,
             span,
+            array_index: None,
         })
     }
 

@@ -7,11 +7,16 @@
 //! recursion, `aux` quantities used in formulas and files that mix ODEs and
 //! maps. It also sets the model flags.
 //!
-//! The model must have no array templates: `expand` (Task 8) runs before
-//! `check`. Until then `check` skips array block bodies, skips declarations
-//! whose name carries an index, and never reports a name with an index as
-//! undefined. Includes must be resolved too; an `Include` statement left in
-//! the model is ignored.
+//! [`expand`](crate::expand()) runs before `check`, so the model normally
+//! has no array templates. If one is left, `check` skips array block
+//! bodies, skips declarations whose name carries an index, and never
+//! reports a name with an index as undefined. Includes must be resolved
+//! too; an `Include` statement left in the model is ignored.
+//!
+//! A diagnostic about a statement that `expand` copied gets the note "in
+//! the copy with j = N of this array line" at the template line. When
+//! several copies give the same diagnostic (same code, severity, span and
+//! message), only the first one is kept.
 
 use std::collections::{HashMap, HashSet};
 
@@ -195,11 +200,15 @@ fn bad_arg_message(id: &Ident, k: usize) -> String {
 pub fn check(model: &Model) -> (ModelInfo, Vec<Diagnostic>) {
     let mut c = Checker::new(model);
     c.declare_all();
+    c.at(None);
     c.check_inits();
+    c.at(None);
     c.resolve_all();
+    c.at(None);
     c.report_graph();
     c.report_long_names();
     let mut diags = c.diags;
+    collapse_copies(&mut diags);
     diags.sort_by_key(|d| d.span.start);
     let info = ModelInfo {
         kind: c.kind.map_or(ModelKind::None, |k| k.0),
@@ -209,6 +218,22 @@ pub fn check(model: &Model) -> (ModelInfo, Vec<Diagnostic>) {
         index: c.index,
     };
     (info, diags)
+}
+
+/// The start of the note that names the copy a diagnostic comes from.
+const COPY_NOTE: &str = "in the copy with j = ";
+
+/// Keeps only the first of the diagnostics from array copies that agree in
+/// code, severity, span and message. Diagnostics outside copies are kept.
+fn collapse_copies(diags: &mut Vec<Diagnostic>) {
+    let mut seen = HashSet::new();
+    diags.retain(|d| {
+        if !d.notes.iter().any(|(_, m)| m.starts_with(COPY_NOTE)) {
+            return true;
+        }
+        let span = (d.span.file.0, d.span.start, d.span.end);
+        seen.insert((d.code, d.severity as u8, span, d.message.clone()))
+    });
 }
 
 /// Where a name is used, which decides what it may refer to.
@@ -246,10 +271,10 @@ struct Checker<'a> {
     reserved_tried: HashSet<String>,
     /// Every global name that was declared without error, for the name
     /// length warning.
-    declared: Vec<&'a Ident>,
+    declared: Vec<(Option<usize>, &'a Ident)>,
     /// The parameters of each function that were declared without error,
     /// one group per function, for the name length warning.
-    params: Vec<Vec<&'a Ident>>,
+    params: Vec<(Option<usize>, Vec<&'a Ident>)>,
     /// Uses between symbols: (user, used, span of the use). Only uses that
     /// can close a cycle are recorded: among fixed quantities, derived
     /// parameters and functions.
@@ -257,6 +282,9 @@ struct Checker<'a> {
     /// For each function symbol, the first use in its body of `t`, a
     /// state, a fixed quantity or a Wiener variable.
     fn_bad: HashMap<usize, BadUse>,
+    /// The statement being checked, when it is an array copy: its index in
+    /// the model. [`Checker::report`] adds the copy note for it.
+    current: Option<usize>,
 }
 
 impl<'a> Checker<'a> {
@@ -276,13 +304,27 @@ impl<'a> Checker<'a> {
             params: Vec::new(),
             edges: Vec::new(),
             fn_bad: HashMap::new(),
+            current: None,
         }
     }
 
     fn report(&mut self, code: Code, span: Span, message: String, notes: Vec<(Span, String)>) {
         let mut d = Diagnostic::new(code, span, message);
         d.notes = notes;
+        if let Some(i) = self.current {
+            let stmt = &self.model.statements[i];
+            if let Some(j) = stmt.array_index {
+                d.notes
+                    .push((stmt.span, format!("{COPY_NOTE}{j} of this array line")));
+            }
+        }
         self.diags.push(d);
+    }
+
+    /// Makes statement `i` the one whose copy note [`Checker::report`]
+    /// adds, or clears it with `None`.
+    fn at(&mut self, i: Option<usize>) {
+        self.current = i.filter(|&i| self.model.statements[i].array_index.is_some());
     }
 
     fn lookup(&self, key: &str) -> Option<usize> {
@@ -303,19 +345,35 @@ impl<'a> Checker<'a> {
         }
         if let Some(first) = self.lookup(&name.key) {
             let first = &self.symbols[first];
-            let note = (
+            let mut notes = vec![(
                 first.name.span,
                 format!("`{}` is first declared here", first.name.text),
-            );
+            )];
             let message = format!(
                 "`{}` is declared twice; it is already {}",
                 name.text,
                 noun(first.kind)
             );
-            self.report(DUPLICATE_NAME, name.span, message, vec![note]);
+            // Both declarations come from copies of one array line.
+            let first_stmt = &self.model.statements[first.stmt];
+            let this = &self.model.statements[stmt];
+            if first_stmt.array_index.is_some()
+                && this.array_index.is_some()
+                && first_stmt.span == this.span
+            {
+                notes.push((
+                    this.span,
+                    format!(
+                        "this array line is copied once per index, and `{}` has no index, so \
+                         every copy declares it again",
+                        name.text
+                    ),
+                ));
+            }
+            self.report(DUPLICATE_NAME, name.span, message, notes);
             return;
         }
-        self.declared.push(name);
+        self.declared.push((self.current, name));
         self.index.insert(name.key.clone(), self.symbols.len());
         self.symbols.push(Symbol {
             name: name.clone(),
@@ -347,6 +405,7 @@ impl<'a> Checker<'a> {
     fn declare_all(&mut self) {
         let model = self.model;
         for (i, stmt) in model.statements.iter().enumerate() {
+            self.at(Some(i));
             match &stmt.kind {
                 StmtKind::Ode { name, .. } => {
                     self.set_kind(ModelKind::Ode, stmt.span);
@@ -427,7 +486,7 @@ impl<'a> Checker<'a> {
                 group.push(p);
             }
         }
-        self.params.push(group);
+        self.params.push((self.current, group));
     }
 
     /// Reports an undefined name, or the softer warning when an
@@ -457,7 +516,8 @@ impl<'a> Checker<'a> {
     fn check_inits(&mut self) {
         let model = self.model;
         let mut seen: HashMap<&str, Span> = HashMap::new();
-        for stmt in &model.statements {
+        for (i, stmt) in model.statements.iter().enumerate() {
+            self.at(Some(i));
             let names: Vec<&Ident> = match &stmt.kind {
                 StmtKind::Init { entries } => entries.iter().map(|e| &e.name).collect(),
                 StmtKind::InitValue { name, .. } => vec![name],
@@ -522,6 +582,7 @@ impl<'a> Checker<'a> {
     fn resolve_all(&mut self) {
         let model = self.model;
         for (i, stmt) in model.statements.iter().enumerate() {
+            self.at(Some(i));
             match &stmt.kind {
                 StmtKind::Ode { name, rhs, .. }
                 | StmtKind::Map { name, rhs }
@@ -880,6 +941,7 @@ impl<'a> Checker<'a> {
         }
         groups.sort_by_key(|g| g[0]);
         for g in groups {
+            self.at(Some(self.symbols[g[0]].stmt));
             let first = &self.symbols[g[0]];
             let names: Vec<&str> = g
                 .iter()
@@ -949,6 +1011,7 @@ impl<'a> Checker<'a> {
 
         let edges = std::mem::take(&mut self.edges);
         for &(u, w, span) in &edges {
+            self.at(Some(self.symbols[u].stmt));
             let (user, used) = (&self.symbols[u], &self.symbols[w]);
             let same_cycle = comp[u] == comp[w] && cyclic[u];
             if same_cycle {
@@ -994,6 +1057,7 @@ impl<'a> Checker<'a> {
             }
         }
         self.edges = edges;
+        self.at(None);
     }
 
     /// Portability warning for names longer than XPPAUT 8.0 keeps, with a
@@ -1003,13 +1067,16 @@ impl<'a> Checker<'a> {
     fn report_long_names(&mut self) {
         let declared = std::mem::take(&mut self.declared);
         let params = std::mem::take(&mut self.params);
-        self.long_names(&declared);
-        for group in &params {
-            self.long_names(group);
+        let (at, names): (Vec<_>, Vec<_>) = declared.into_iter().unzip();
+        self.long_names(&names, &at);
+        for (at, group) in &params {
+            self.long_names(group, &vec![*at; group.len()]);
         }
+        self.at(None);
     }
 
-    fn long_names(&mut self, names: &[&Ident]) {
+    /// `at[i]` is the statement of `names[i]`, for the copy note.
+    fn long_names(&mut self, names: &[&Ident], at: &[Option<usize>]) {
         let prefix = |id: &Ident| id.key.chars().take(XPP_NAME_LEN).collect::<String>();
         let is_long = |id: &Ident| id.key.chars().count() > XPP_NAME_LEN;
         // The first two names of at least 10 characters for each kept
@@ -1047,6 +1114,7 @@ impl<'a> Checker<'a> {
                  XPPAUT 8.0 truncates names to {XPP_NAME_LEN} characters",
                 id.text
             );
+            self.at(at[i]);
             self.report(PORTABILITY, id.span, message, notes);
         }
     }

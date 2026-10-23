@@ -543,6 +543,7 @@ fn blocks() {
                 },
                 comment: None,
                 span: DUMMY_SPAN,
+                array_index: None,
             }],
         }
     );
