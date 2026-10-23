@@ -220,6 +220,20 @@ pub const CODES: &[(Code, Severity, &str)] = &[
         Severity::Error,
         "name cannot be assigned in `global`",
     ),
+    // Includes (`include.rs`).
+    (Code(59), Severity::Error, "quoted `#include` file name"),
+    (Code(60), Severity::Error, "included file cannot be read"),
+    (Code(61), Severity::Error, "include cycle"),
+    (
+        Code(62),
+        Severity::Error,
+        "includes nested more than 16 deep",
+    ),
+    (
+        Code(63),
+        Severity::Error,
+        "`#include` inside an array block",
+    ),
 ];
 
 #[cfg(test)]

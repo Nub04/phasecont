@@ -4,14 +4,16 @@
 //! the source map ([`span`]), diagnostics with their stable codes
 //! ([`diag`]), the tokenizer ([`lexer`]), the syntax tree ([`ast`]), the
 //! known `@` option names ([`options`]), the parser ([`parser`]), the
-//! builtin table ([`builtins`]) and the name checks ([`check`]).
-//! [`parse`] turns one file into a [`Model`], and [`check()`] resolves its
-//! names and reports model errors.
+//! builtin table ([`builtins`]), the name checks ([`check`]) and the
+//! include pass ([`include`]). [`parse`] turns one file into a [`Model`],
+//! [`resolve_includes`] replaces its `#include` lines with the files they
+//! name, and [`check()`] resolves names and reports model errors.
 
 pub mod ast;
 pub mod builtins;
 pub mod check;
 pub mod diag;
+pub mod include;
 pub mod lexer;
 pub mod options;
 pub mod parser;
@@ -23,6 +25,7 @@ pub use ast::{
 };
 pub use check::{ModelInfo, ModelKind, StateKind, Symbol, SymbolKind, check};
 pub use diag::{CODES, Code, Diagnostic, FixIt, Severity};
+pub use include::{FsLoader, MAX_INCLUDE_DEPTH, MapLoader, SourceLoader, resolve_includes};
 pub use lexer::{Token, TokenKind, lex};
 pub use parser::parse;
 #[doc(hidden)]

@@ -153,6 +153,11 @@ impl SourceMap {
         let (start, end) = file.line_range(index);
         Some(&file.text[start..end])
     }
+
+    /// The number of files stored so far.
+    pub fn file_count(&self) -> usize {
+        self.files.len()
+    }
 }
 
 #[cfg(test)]
@@ -282,12 +287,14 @@ mod tests {
     #[test]
     fn files_are_kept_by_id() {
         let mut map = SourceMap::new();
+        assert_eq!(map.file_count(), 0);
         let a = map.add("a.ode", "x");
         let b = map.add(String::from("b.ode"), String::from("yy"));
         assert_ne!(a, b);
         assert_eq!(map.name(a), "a.ode");
         assert_eq!(map.text(b), "yy");
         assert_eq!(map.line_col(Span::new(b, 1, 2)), (1, 2));
+        assert_eq!(map.file_count(), 2);
     }
 
     #[test]
