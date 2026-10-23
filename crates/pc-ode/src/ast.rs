@@ -269,6 +269,21 @@ impl Expr {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Model {
     pub statements: Vec<Stmt>,
+    /// The names that statements dropped by [`expand`](crate::expand())
+    /// would have declared, so that [`check`](crate::check()) does not
+    /// report their uses as undefined. Empty for every model the parser
+    /// and the include pass make.
+    pub suppressed: Vec<SuppressedName>,
+}
+
+/// A name that a statement dropped by array expansion would have declared.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SuppressedName {
+    /// The lower-case key: the whole name, or its root when `indexed`.
+    pub key: String,
+    /// True when the name had an index, so that it stands for the root
+    /// followed by any index.
+    pub indexed: bool,
 }
 
 impl Model {
@@ -276,6 +291,7 @@ impl Model {
     pub fn strip_spans(&self) -> Model {
         Model {
             statements: self.statements.iter().map(Stmt::strip_spans).collect(),
+            suppressed: self.suppressed.clone(),
         }
     }
 }
@@ -296,27 +312,23 @@ pub struct Stmt {
     /// statement the parser makes. Copies keep the template's spans, so
     /// this is what tells the copies of one line apart.
     pub array_index: Option<i64>,
+    /// For an array copy, the template it was copied from: one id per
+    /// range line, or per body statement of an array block, numbered
+    /// within one [`expand`](crate::expand()) call. A file included twice
+    /// gives two templates. `None` for every statement the parser makes.
+    pub array_template: Option<u32>,
 }
 
 impl Stmt {
-    /// A statement with no array index.
-    pub fn new(kind: StmtKind, comment: Option<Comment>, span: Span) -> Stmt {
-        Stmt {
-            kind,
-            comment,
-            span,
-            array_index: None,
-        }
-    }
-
     /// A copy with every span replaced by [`DUMMY_SPAN`]. The array index
-    /// is not a span and is kept.
+    /// and template id are not spans and are kept.
     pub fn strip_spans(&self) -> Stmt {
         Stmt {
             kind: self.kind.strip_spans(),
             comment: self.comment.as_ref().map(Comment::strip_spans),
             span: DUMMY_SPAN,
             array_index: self.array_index,
+            array_template: self.array_template,
         }
     }
 }

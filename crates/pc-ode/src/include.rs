@@ -259,7 +259,13 @@ pub fn resolve_includes(
     };
     let mut statements = Vec::new();
     resolver.statements(&model.statements, &mut statements);
-    (Model { statements }, resolver.diags)
+    (
+        Model {
+            statements,
+            suppressed: Vec::new(),
+        },
+        resolver.diags,
+    )
 }
 
 /// A file being included.

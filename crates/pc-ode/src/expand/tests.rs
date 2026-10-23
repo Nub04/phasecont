@@ -47,7 +47,7 @@ fn clean(text: &str) -> Model {
     model
 }
 
-/// The statements without spans or array indices.
+/// The statements without spans, array indices or template ids.
 fn plain(model: &Model) -> Vec<Stmt> {
     model
         .strip_spans()
@@ -55,6 +55,7 @@ fn plain(model: &Model) -> Vec<Stmt> {
         .into_iter()
         .map(|mut s| {
             s.array_index = None;
+            s.array_template = None;
             s
         })
         .collect()
@@ -441,7 +442,7 @@ fn the_copy_cap() {
     let (model, d) = one(text, TOO_MANY_COPIES, "[0..4000000000]", 0);
     // Later arrays make no copies; plain statements pass through.
     assert_eq!(plain(&model), flat("z'=1"));
-    assert!(d.message.contains("100000"), "{d:#?}");
+    assert!(d.message.contains("more than 100000 statements"), "{d:#?}");
     // A block with no body makes no statements, however large.
     let model = clean("%[0..4000000000]\n%\nz'=1");
     assert_eq!(plain(&model), flat("z'=1"));
@@ -573,7 +574,7 @@ fn duplicate_from_a_shared_range_line() {
     assert!(
         d.notes
             .iter()
-            .any(|(_, m)| m.contains("copied once per index")),
+            .any(|(_, m)| m.contains("does not change with the index")),
         "{d:#?}"
     );
     // A duplicate between two different lines gets no such note.
@@ -583,7 +584,7 @@ fn duplicate_from_a_shared_range_line() {
     assert!(
         !d.notes
             .iter()
-            .any(|(_, m)| m.contains("copied once per index")),
+            .any(|(_, m)| m.contains("does not change with the index")),
         "{d:#?}"
     );
     assert!(has_copy_note(d, 1), "{d:#?}");
@@ -598,9 +599,271 @@ fn graph_and_name_length_diagnostics_name_the_copy() {
     assert_eq!(codes(&loaded.diagnostics), vec![CIRCULAR, CIRCULAR]);
     assert!(has_copy_note(&loaded.diagnostics[0], 1));
     assert!(has_copy_note(&loaded.diagnostics[1], 2));
-    // Names longer than XPPAUT keeps, one per copy.
+    // Names longer than XPPAUT keeps: the first copy warns, with a count.
     let (loaded, _) = load_text("par conductance[1..2]=1", &[]);
-    assert_eq!(codes(&loaded.diagnostics), vec![PORTABILITY, PORTABILITY]);
+    assert_eq!(codes(&loaded.diagnostics), vec![PORTABILITY]);
     assert!(has_copy_note(&loaded.diagnostics[0], 1));
-    assert!(has_copy_note(&loaded.diagnostics[1], 2));
+}
+
+// ------------------------------------------------------ fix round 1 (R22)
+
+#[test]
+fn work_budget_stops_a_wide_par_line() {
+    // 400 indexed entries on one range line of 100000 copies.
+    let mut text = String::from("par p[1..100000]=0");
+    for k in 0..400 {
+        text.push_str(&format!(",q{k}[j]=0"));
+    }
+    text.push_str("\nx'=1");
+    let start = Instant::now();
+    let (model, d) = one(&text, TOO_MANY_COPIES, "[1..100000]", 0);
+    assert!(start.elapsed() < Duration::from_secs(5));
+    assert!(
+        d.message
+            .contains(&format!("more than {MAX_ARRAY_WORK} units of work")),
+        "{d:#?}"
+    );
+    assert_eq!(plain(&model), flat("x'=1"));
+}
+
+#[test]
+fn work_budget_stops_a_deep_expression() {
+    let mut text = String::from("par c=1\nx[1..100000]'=1");
+    for _ in 0..150 {
+        text.push_str("+c");
+    }
+    let start = Instant::now();
+    let (model, d) = one(&text, TOO_MANY_COPIES, "[1..100000]", 0);
+    assert!(start.elapsed() < Duration::from_secs(5));
+    assert!(d.message.contains("units of work"), "{d:#?}");
+    assert_eq!(plain(&model), flat("par c=1"));
+    // The cap holds for later arrays too.
+    let (_, diags) = run(&format!("{text}\ny[1..2]'=1"));
+    assert_eq!(codes(&diags), vec![TOO_MANY_COPIES]);
+}
+
+#[test]
+fn work_budget_counts_names_values_and_nodes() {
+    // A `par` line with `n` entries weighs 1 + 2n per copy.
+    let line = |n: usize| {
+        let mut text = String::from("par p0[1..1000]=0");
+        for k in 1..n {
+            text.push_str(&format!(",p{k}[j]=0"));
+        }
+        text
+    };
+    // 1000 copies of weight 1999: just under the budget.
+    let model = clean(&line(999));
+    assert_eq!(model.statements.len(), 1000);
+    // 1000 copies of weight 2001: just over it.
+    one(&line(1000), TOO_MANY_COPIES, "[1..1000]", 0);
+    // Expression nodes count: `x'=c+c` weighs 1 + 1 + 3.
+    let rhs = vec!["c"; 100].join("+");
+    // 1 + 1 + 199 = 201 per copy; 9950 copies fit, 9951 do not.
+    clean(&format!("x[1..9950]'={rhs}"));
+    one(
+        &format!("x[1..9951]'={rhs}"),
+        TOO_MANY_COPIES,
+        "[1..9951]",
+        0,
+    );
+    // A block weighs the sum of its body statements per index.
+    let text = "%[1..400000]\nx[j]'=1\n%";
+    let (_, d) = one(text, TOO_MANY_COPIES, "[1..400000]", 0);
+    assert!(d.message.contains("statements"), "{d:#?}");
+    let text = "%[1..60000]\nx[j]'=1\ny[j]'=-y[j]\n%";
+    // 60000 * (3 + 4) = 420000 units, 120000 statements.
+    let (_, d) = one(text, TOO_MANY_COPIES, "[1..60000]", 0);
+    assert!(d.message.contains("more than 100000 statements"), "{d:#?}");
+}
+
+#[test]
+fn cap_message_counts() {
+    // The count is exact past 64 bits.
+    let mut text = format!("%[0..{MAX_INDEX}]\n");
+    for k in 0..2049 {
+        text.push_str(&format!("v{k}[j]'=1\n"));
+    }
+    text.push('%');
+    let (_, d) = one(&text, TOO_MANY_COPIES, &format!("[0..{MAX_INDEX}]"), 0);
+    let count = (MAX_INDEX as u128 + 1) * 2049;
+    assert!(count > u128::from(u64::MAX));
+    assert!(
+        d.message.contains(&format!("makes {count} statements")),
+        "{d:#?}"
+    );
+    // One statement is singular.
+    let (_, d) = one("a[1..100000]'=1\nb[1..1]'=1", TOO_MANY_COPIES, "[1..1]", 0);
+    assert!(d.message.contains("makes 1 statement,"), "{d:#?}");
+}
+
+#[test]
+fn copies_carry_a_template_id() {
+    let model = clean("x[1..2]'=1\n%[1..2]\na[j]'=1\nb[j]'=1\n%\nz'=1");
+    let ids: Vec<Option<u32>> = model.statements.iter().map(|s| s.array_template).collect();
+    let (x, a, b) = (ids[0], ids[2], ids[3]);
+    assert!(x.is_some() && a.is_some() && b.is_some());
+    assert_eq!(ids, vec![x, x, a, b, a, b, None]);
+    assert!(x != a && a != b && x != b);
+    // The parser sets none.
+    let (parsed, _) = parse("x[1..2]'=1", F);
+    assert_eq!(parsed.statements[0].array_template, None);
+}
+
+#[test]
+fn dropped_lines_do_not_cascade() {
+    let cases = [
+        ("x[0..2]'=x[j-1]\ny'=x1+x2", NEGATIVE_INDEX),
+        (
+            "a[1..100000]=1\nb[1..3]'=-b[j]\nz'=b1+b2+b3",
+            TOO_MANY_COPIES,
+        ),
+        ("markov m[1..2] 2\n{0} {1}\n{1} {0}\nx'=m1", MARKOV_ARRAY),
+        // A plain name on a dropped line.
+        ("par k[0..1]=[j-1],c=2\nx'=k1+c", NEGATIVE_INDEX),
+        // A dropped block drops every body statement.
+        ("%[-1..2]\nx[j]'=1\npar k=1\n%\ny'=x1+k", NEGATIVE_INDEX),
+        // Two ranges, and `[j]` with no range.
+        ("x[1..2]'=y[1..2]\nz'=x1", MULTIPLE_RANGES),
+        ("aux w[j]=1\nz'=w3", INDEX_OUT_OF_SCOPE),
+        // A `global` target.
+        ("x[0..1]'=[j-1]\nglobal 1 t-1 {x1=0}", NEGATIVE_INDEX),
+    ];
+    for (top, code) in cases {
+        let (loaded, _) = load_text(top, &[]);
+        assert_eq!(
+            codes(&loaded.diagnostics),
+            vec![code],
+            "{top:?}: {:#?}",
+            loaded.diagnostics
+        );
+    }
+    // Only the root followed by a plain index is suppressed.
+    let top = "x[0..2]'=x[j-1]\ny'=x0+x10+x01+xq+x";
+    let (loaded, _) = load_text(top, &[]);
+    let undefined: Vec<&str> = loaded
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == UNDEFINED_NAME)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(undefined.len(), 3, "{:#?}", loaded.diagnostics);
+    for name in ["`x01`", "`xq`", "`x`"] {
+        assert!(
+            undefined.iter().any(|m| m.contains(name)),
+            "{name}: {undefined:#?}"
+        );
+    }
+    // The record is data on the expanded model, so `check` alone sees it.
+    let (model, _) = parse("x[0..2]'=x[j-1]\ny'=x1", F);
+    let (expanded, _) = expand(&model);
+    assert_eq!(
+        expanded.suppressed,
+        vec![SuppressedName {
+            key: "x".to_string(),
+            indexed: true
+        }]
+    );
+    let (_, diags) = crate::check(&expanded);
+    assert!(diags.is_empty(), "{diags:#?}");
+}
+
+#[test]
+fn shared_line_note_needs_one_template_and_one_name() {
+    let note = "does not change with the index of this array line";
+    let has_note = |d: &Diagnostic| d.notes.iter().any(|(_, m)| m.contains(note));
+    // (a) Both names have an index and come from one copy.
+    let (loaded, _) = load_text("par a[1..2]=.5, a[j]=.1", &[]);
+    assert_eq!(codes(&loaded.diagnostics), vec![DUPLICATE_NAME; 2]);
+    assert!(
+        !loaded.diagnostics.iter().any(has_note),
+        "{:#?}",
+        loaded.diagnostics
+    );
+    // (b) One file included twice: separate templates.
+    let top = "#include inc1.ode\n#include inc1.ode\n";
+    let (loaded, _) = load_text(top, &[("inc1.ode", "par a[1..2]=.5")]);
+    assert_eq!(codes(&loaded.diagnostics), vec![DUPLICATE_NAME; 2]);
+    assert!(
+        !loaded.diagnostics.iter().any(has_note),
+        "{:#?}",
+        loaded.diagnostics
+    );
+    // (c) An index that does not change with `j`.
+    let top = "par a[0..1]=1, b[j*0]=2";
+    let (loaded, _) = load_text(top, &[]);
+    assert_eq!(codes(&loaded.diagnostics), vec![DUPLICATE_NAME]);
+    let d = &loaded.diagnostics[0];
+    assert_eq!(d.span, nth(top, "b[j*0]", 0));
+    let text = &d.notes.iter().find(|(_, m)| m.contains(note)).unwrap().1;
+    assert_eq!(
+        text,
+        "`b0` does not change with the index of this array line, so every copy declares it \
+         again"
+    );
+    // Spec input A: the duplicate comes from two different names.
+    let (loaded, _) = load_text("par a[1..3]=1, a[j+1]=2", &[]);
+    assert_eq!(codes(&loaded.diagnostics), vec![DUPLICATE_NAME; 2]);
+    assert!(
+        !loaded.diagnostics.iter().any(has_note),
+        "{:#?}",
+        loaded.diagnostics
+    );
+}
+
+#[test]
+fn separate_inclusions_do_not_collapse() {
+    // (d) One error per inclusion.
+    let top = "aux v=1\n#include inc2.ode\n#include inc2.ode\n";
+    let (loaded, _) = load_text(top, &[("inc2.ode", "y[1..3]'=v")]);
+    let aux = loaded
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == AUX_IN_FORMULA)
+        .count();
+    assert_eq!(aux, 2, "{:#?}", loaded.diagnostics);
+}
+
+#[test]
+fn long_name_warnings_collapse_per_template() {
+    use crate::parser::expr::PORTABILITY;
+    let (loaded, _) = load_text("averylongname[1..100000]'=1", &[]);
+    assert_eq!(codes(&loaded.diagnostics), vec![PORTABILITY]);
+    let d = &loaded.diagnostics[0];
+    assert!(has_copy_note(d, 1), "{d:#?}");
+    assert!(
+        d.notes
+            .iter()
+            .any(|(_, m)| m == "99999 more copies of this array line give the same warning"),
+        "{d:#?}"
+    );
+    let (loaded, _) = load_text("par conductance[1..2]=1", &[]);
+    assert_eq!(codes(&loaded.diagnostics), vec![PORTABILITY]);
+    assert!(
+        loaded.diagnostics[0]
+            .notes
+            .iter()
+            .any(|(_, m)| m == "1 more copy of this array line gives the same warning"),
+        "{:#?}",
+        loaded.diagnostics
+    );
+    // Two templates warn separately.
+    let (loaded, _) = load_text("par conductance[1..2]=1\naux resistance[1..2]=1", &[]);
+    assert_eq!(codes(&loaded.diagnostics), vec![PORTABILITY; 2]);
+}
+
+#[test]
+fn load_keeps_the_pass_order_at_one_start() {
+    use crate::parser::expr::PRECEDENCE;
+    // The parser warns about the power chain and `check` about `q`, both at
+    // the start of `q`.
+    let top = "x'=q^2^3";
+    let (loaded, _) = load_text(top, &[]);
+    let got: Vec<(usize, Code)> = loaded
+        .diagnostics
+        .iter()
+        .map(|d| (d.span.start, d.code))
+        .collect();
+    let at = nth(top, "q", 0).start;
+    assert_eq!(got, vec![(at, PRECEDENCE), (at, UNDEFINED_NAME)]);
 }

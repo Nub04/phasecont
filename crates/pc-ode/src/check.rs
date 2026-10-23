@@ -15,8 +15,12 @@
 //!
 //! A diagnostic about a statement that `expand` copied gets the note "in
 //! the copy with j = N of this array line" at the template line. When
-//! several copies give the same diagnostic (same code, severity, span and
-//! message), only the first one is kept.
+//! several copies of one template give the same diagnostic (same code,
+//! severity, span and message), only the first one is kept. Name length
+//! warnings from copies of one template at one span collapse to the first,
+//! with a note that counts the others. Uses of names that a statement
+//! dropped by `expand` would have declared ([`Model::suppressed`]) are not
+//! reported as undefined.
 
 use std::collections::{HashMap, HashSet};
 
@@ -207,8 +211,7 @@ pub fn check(model: &Model) -> (ModelInfo, Vec<Diagnostic>) {
     c.at(None);
     c.report_graph();
     c.report_long_names();
-    let mut diags = c.diags;
-    collapse_copies(&mut diags);
+    let mut diags = collapse_copies(c.diags, &c.templates);
     diags.sort_by_key(|d| d.span.start);
     let info = ModelInfo {
         kind: c.kind.map_or(ModelKind::None, |k| k.0),
@@ -223,17 +226,54 @@ pub fn check(model: &Model) -> (ModelInfo, Vec<Diagnostic>) {
 /// The start of the note that names the copy a diagnostic comes from.
 const COPY_NOTE: &str = "in the copy with j = ";
 
-/// Keeps only the first of the diagnostics from array copies that agree in
-/// code, severity, span and message. Diagnostics outside copies are kept.
-fn collapse_copies(diags: &mut Vec<Diagnostic>) {
+/// Collapses the diagnostics from array copies. `templates` gives, for each
+/// diagnostic, the template id of the copy it comes from, if any.
+///
+/// - The name length warnings (ODE0013) from copies of one template at one
+///   span collapse to the first, which gets a note that counts the others.
+/// - Of the other diagnostics from copies of one template that agree in
+///   code, severity, span and message, only the first is kept.
+///
+/// Diagnostics outside copies are kept.
+fn collapse_copies(diags: Vec<Diagnostic>, templates: &[Option<u32>]) -> Vec<Diagnostic> {
+    let mut out: Vec<Diagnostic> = Vec::new();
     let mut seen = HashSet::new();
-    diags.retain(|d| {
-        if !d.notes.iter().any(|(_, m)| m.starts_with(COPY_NOTE)) {
-            return true;
-        }
+    // For each (template, span) of a name length warning: the position of
+    // the kept one, how many others it stands for and the template line.
+    let mut long: HashMap<_, (usize, usize, Span)> = HashMap::new();
+    debug_assert_eq!(diags.len(), templates.len());
+    for (d, &template) in diags.into_iter().zip(templates) {
+        let Some((copy_span, _)) = d.notes.iter().find(|(_, m)| m.starts_with(COPY_NOTE)) else {
+            out.push(d);
+            continue;
+        };
+        let copy_span = *copy_span;
         let span = (d.span.file.0, d.span.start, d.span.end);
-        seen.insert((d.code, d.severity as u8, span, d.message.clone()))
-    });
+        if d.code == PORTABILITY {
+            match long.get_mut(&(template, span)) {
+                Some((_, others, _)) => *others += 1,
+                None => {
+                    long.insert((template, span), (out.len(), 0, copy_span));
+                    out.push(d);
+                }
+            }
+            continue;
+        }
+        if seen.insert((template, d.code, d.severity as u8, span, d.message.clone())) {
+            out.push(d);
+        }
+    }
+    for (kept, others, line) in long.into_values() {
+        if others > 0 {
+            let message = if others == 1 {
+                "1 more copy of this array line gives the same warning".to_string()
+            } else {
+                format!("{others} more copies of this array line give the same warning")
+            };
+            out[kept].notes.push((line, message));
+        }
+    }
+    out
 }
 
 /// Where a name is used, which decides what it may refer to.
@@ -285,6 +325,13 @@ struct Checker<'a> {
     /// The statement being checked, when it is an array copy: its index in
     /// the model. [`Checker::report`] adds the copy note for it.
     current: Option<usize>,
+    /// For each diagnostic in `diags`, the template id of the copy it
+    /// comes from.
+    templates: Vec<Option<u32>>,
+    /// Keys that a statement dropped by `expand` would have declared.
+    suppressed_plain: HashSet<String>,
+    /// Roots of indexed names that a dropped statement would have declared.
+    suppressed_roots: HashSet<String>,
 }
 
 impl<'a> Checker<'a> {
@@ -305,6 +352,19 @@ impl<'a> Checker<'a> {
             edges: Vec::new(),
             fn_bad: HashMap::new(),
             current: None,
+            templates: Vec::new(),
+            suppressed_plain: model
+                .suppressed
+                .iter()
+                .filter(|s| !s.indexed)
+                .map(|s| s.key.clone())
+                .collect(),
+            suppressed_roots: model
+                .suppressed
+                .iter()
+                .filter(|s| s.indexed)
+                .map(|s| s.key.clone())
+                .collect(),
         }
     }
 
@@ -318,6 +378,10 @@ impl<'a> Checker<'a> {
                     .push((stmt.span, format!("{COPY_NOTE}{j} of this array line")));
             }
         }
+        let template = self
+            .current
+            .and_then(|i| self.model.statements[i].array_template);
+        self.templates.push(template);
         self.diags.push(d);
     }
 
@@ -354,18 +418,19 @@ impl<'a> Checker<'a> {
                 name.text,
                 noun(first.kind)
             );
-            // Both declarations come from copies of one array line.
+            // Two copies of one template declare the name from one place.
             let first_stmt = &self.model.statements[first.stmt];
             let this = &self.model.statements[stmt];
-            if first_stmt.array_index.is_some()
-                && this.array_index.is_some()
-                && first_stmt.span == this.span
+            if first_stmt.array_template.is_some()
+                && first_stmt.array_template == this.array_template
+                && first_stmt.array_index != this.array_index
+                && first.name.span == name.span
             {
                 notes.push((
                     this.span,
                     format!(
-                        "this array line is copied once per index, and `{}` has no index, so \
-                         every copy declares it again",
+                        "`{}` does not change with the index of this array line, so every \
+                         copy declares it again",
                         name.text
                     ),
                 ));
@@ -489,9 +554,28 @@ impl<'a> Checker<'a> {
         self.params.push((self.current, group));
     }
 
+    /// True when a statement that `expand` dropped would have declared
+    /// `key`: it is a recorded plain key, or a recorded root followed by a
+    /// decimal index (`0`, or digits with no leading zero).
+    fn suppressed(&self, key: &str) -> bool {
+        if self.suppressed_plain.contains(key) {
+            return true;
+        }
+        let digits = key.len() - key.trim_end_matches(|c: char| c.is_ascii_digit()).len();
+        (key.len() - digits..key.len()).any(|i| {
+            let index = &key[i..];
+            (index == "0" || !index.starts_with('0')) && self.suppressed_roots.contains(&key[..i])
+        })
+    }
+
     /// Reports an undefined name, or the softer warning when an
-    /// unsupported statement may declare it.
+    /// unsupported statement may declare it. A name that a dropped array
+    /// statement would have declared is not reported, since `expand`
+    /// already reported why it was dropped.
     fn undefined(&mut self, name: &Ident, function: bool) {
+        if self.suppressed(&name.key) {
+            return;
+        }
         let what = if function { "function " } else { "" };
         match self.declarer {
             Some(decl) => {
@@ -714,6 +798,9 @@ impl<'a> Checker<'a> {
             return;
         }
         let Some(s) = self.lookup(&id.key) else {
+            if self.suppressed(&id.key) {
+                return;
+            }
             if self.declarer.is_some() {
                 self.undefined(id, false);
             } else {

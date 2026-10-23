@@ -8,15 +8,22 @@
 //! copy, a name with an index becomes the name followed by the decimal
 //! index (`x[j+1]` at `j = 2` is `x3`), and a bare index form such as
 //! `[j*2]` becomes the integer it stands for. Every copy keeps the spans of
-//! the template and records its index in [`Stmt::array_index`], so that
-//! later passes can say which copy a diagnostic comes from.
+//! the template and records its index in [`Stmt::array_index`] and its
+//! template in [`Stmt::array_template`], so that later passes can say which
+//! copy a diagnostic comes from.
 //!
 //! A statement whose array form is wrong (two ranges, a range inside a
 //! block, `[j]` with no range in scope, an index below 0 or above
 //! [`MAX_INDEX`], `markov` in an array) is reported and makes no copies.
+//! So is every array once one call would pass [`MAX_ARRAY_COPIES`] or
+//! [`MAX_ARRAY_WORK`]. The names a dropped statement would have declared
+//! are recorded in [`Model::suppressed`], so that `check` does not report
+//! their uses as undefined.
 //! See `docs/language.md`, "Arrays".
 
-use crate::ast::{Expr, Ident, Index, IndexOp, MarkovLine, Model, Stmt, StmtKind, Value};
+use crate::ast::{
+    Expr, Ident, Index, IndexOp, MarkovLine, Model, Stmt, StmtKind, SuppressedName, Value,
+};
 use crate::diag::{Code, Diagnostic};
 use crate::span::Span;
 
@@ -32,11 +39,16 @@ pub const NEGATIVE_INDEX: Code = Code(68);
 pub const INDEX_TOO_LARGE: Code = Code(69);
 /// `markov` inside an array block, or with a range in it.
 pub const MARKOV_ARRAY: Code = Code(70);
-/// Expansion that would make more than [`MAX_ARRAY_COPIES`] statements.
+/// Expansion that would make more than [`MAX_ARRAY_COPIES`] statements or
+/// do more than [`MAX_ARRAY_WORK`] units of work.
 pub const TOO_MANY_COPIES: Code = Code(71);
 
 /// The most statements one [`expand`] call makes as copies.
 pub const MAX_ARRAY_COPIES: usize = 100_000;
+
+/// The most work one [`expand`] call does: each copy costs the weight of its
+/// template, 1 for the statement plus 1 per name, value and expression node.
+pub const MAX_ARRAY_WORK: usize = 2_000_000;
 
 /// The largest index: 2^53, so that every index is exact as a double.
 pub const MAX_INDEX: i64 = 1 << 53;
@@ -45,11 +57,20 @@ pub const MAX_INDEX: i64 = 1 << 53;
 /// an array form are kept as they are; a bad array block (`BadBlock`) is
 /// kept too, since the parser already reported it.
 pub fn expand(model: &Model) -> (Model, Vec<Diagnostic>) {
-    let mut x = Expander::default();
+    let mut x = Expander {
+        suppressed: model.suppressed.clone(),
+        ..Expander::default()
+    };
     for stmt in &model.statements {
         x.statement(stmt);
     }
-    (Model { statements: x.out }, x.diags)
+    (
+        Model {
+            statements: x.out,
+            suppressed: x.suppressed,
+        },
+        x.diags,
+    )
 }
 
 /// One place in a statement where an index form can appear.
@@ -60,10 +81,13 @@ enum Slot<'a> {
     Bare(&'a mut Expr),
     /// A list value that may be a bare index form.
     Value(&'a mut Value),
+    /// Any other expression node. It holds no index form; it is visited
+    /// so that the work budget can count it.
+    Node,
 }
 
-/// Calls `f` on every name, expression and value of `kind` that can hold an
-/// index form, in source order. The name of a function is skipped; the
+/// Calls `f` on every name, value and expression node of `kind`, in source
+/// order. The name of a function is skipped; the
 /// caller handles it.
 fn visit(kind: &mut StmtKind, f: &mut dyn FnMut(Slot)) {
     match kind {
@@ -149,10 +173,15 @@ fn visit(kind: &mut StmtKind, f: &mut dyn FnMut(Slot)) {
 }
 
 fn visit_expr(expr: &mut Expr, f: &mut dyn FnMut(Slot)) {
+    if let Expr::Index(_) = expr {
+        return f(Slot::Bare(expr));
+    }
+    if let Expr::Name(id) = expr {
+        return f(Slot::Name(id));
+    }
+    f(Slot::Node);
     match expr {
-        Expr::Num { .. } | Expr::Error { .. } => {}
-        Expr::Index(_) => f(Slot::Bare(expr)),
-        Expr::Name(id) => f(Slot::Name(id)),
+        Expr::Num { .. } | Expr::Error { .. } | Expr::Index(_) | Expr::Name(_) => {}
         Expr::Unary { operand, .. } => visit_expr(operand, f),
         Expr::Binary { lhs, rhs, .. } => {
             visit_expr(lhs, f);
@@ -185,30 +214,35 @@ struct Occurrence {
     span: Span,
 }
 
-/// Every index form of `kind`, in source order.
-fn occurrences(kind: &StmtKind) -> Vec<Occurrence> {
+/// Every index form of `kind`, in source order, and the weight of one copy:
+/// 1 for the statement plus 1 per name, value and expression node.
+fn occurrences(kind: &StmtKind) -> (Vec<Occurrence>, u128) {
     let mut kind = kind.clone();
     let mut found = Vec::new();
-    visit(&mut kind, &mut |slot| match slot {
-        Slot::Name(id) => {
-            if let Some(index) = &id.index {
+    let mut weight = 1;
+    visit(&mut kind, &mut |slot| {
+        weight += 1;
+        match slot {
+            Slot::Name(id) => {
+                if let Some(index) = &id.index {
+                    found.push(Occurrence {
+                        index: index.clone(),
+                        text: format!("{}{}", id.text, index_text(index)),
+                        span: id.span,
+                    });
+                }
+            }
+            Slot::Bare(Expr::Index(index)) | Slot::Value(Value::Index(index)) => {
                 found.push(Occurrence {
                     index: index.clone(),
-                    text: format!("{}{}", id.text, index_text(index)),
-                    span: id.span,
+                    text: index_text(index),
+                    span: index.span(),
                 });
             }
+            Slot::Bare(_) | Slot::Value(_) | Slot::Node => {}
         }
-        Slot::Bare(Expr::Index(index)) | Slot::Value(Value::Index(index)) => {
-            found.push(Occurrence {
-                index: index.clone(),
-                text: index_text(index),
-                span: index.span(),
-            });
-        }
-        Slot::Bare(_) | Slot::Value(_) => {}
     });
-    found
+    (found, weight)
 }
 
 /// An index form as XPPAUT writes it.
@@ -246,21 +280,80 @@ fn first_range_note(span: Span) -> (Span, String) {
     (span, "the first range is here".to_string())
 }
 
+/// The names a statement of `kind` declares, with or without an index:
+/// the target of an ODE, map or initial value, and the names of `aux`,
+/// fixed, derived, `par`, `number`, `wiener`, `markov`, `table`, function
+/// and `set` statements.
+fn declared_names(kind: &StmtKind) -> Vec<&Ident> {
+    match kind {
+        StmtKind::Ode { name, .. }
+        | StmtKind::Map { name, .. }
+        | StmtKind::Derived { name, .. }
+        | StmtKind::Fixed { name, .. }
+        | StmtKind::Aux { name, .. }
+        | StmtKind::InitValue { name, .. }
+        | StmtKind::Function { name, .. }
+        | StmtKind::Table { name, .. }
+        | StmtKind::Set { name, .. }
+        | StmtKind::Markov { name, .. } => vec![name],
+        StmtKind::Init { entries } | StmtKind::Par { entries } | StmtKind::Number { entries } => {
+            entries.iter().map(|e| &e.name).collect()
+        }
+        StmtKind::Wiener { names } => names.iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
 #[derive(Default)]
 struct Expander {
     out: Vec<Stmt>,
     diags: Vec<Diagnostic>,
     /// Copies made so far.
-    produced: usize,
-    /// Set once a statement would pass [`MAX_ARRAY_COPIES`]; from then on
-    /// no statement makes copies.
+    produced: u128,
+    /// Work done so far, in the units of [`MAX_ARRAY_WORK`].
+    worked: u128,
+    /// Set once an array would pass [`MAX_ARRAY_COPIES`] or
+    /// [`MAX_ARRAY_WORK`]; from then on no statement makes copies.
     capped: bool,
+    /// The id the next template gets.
+    next_template: u32,
+    /// The names that dropped statements would have declared, in the order
+    /// they were dropped. A name may appear more than once.
+    suppressed: Vec<SuppressedName>,
 }
 
 impl Expander {
     fn report(&mut self, code: Code, span: Span, message: String) -> &mut Diagnostic {
         self.diags.push(Diagnostic::new(code, span, message));
         self.diags.last_mut().expect("just pushed")
+    }
+
+    /// Records the names that `stmt`, which is dropped, would have
+    /// declared. A block counts every statement in its body.
+    fn suppress(&mut self, stmt: &Stmt) {
+        match &stmt.kind {
+            StmtKind::Block { body, .. } | StmtKind::BadBlock { body } => {
+                for s in body {
+                    self.suppress(s);
+                }
+            }
+            kind => {
+                for name in declared_names(kind) {
+                    self.suppressed.push(SuppressedName {
+                        key: name.key.clone(),
+                        indexed: name.index.is_some(),
+                    });
+                }
+            }
+        }
+    }
+
+    /// A new template id.
+    fn template(&mut self) -> u32 {
+        let id = self.next_template;
+        // At most one id per copy, and copies are capped.
+        self.next_template += 1;
+        id
     }
 
     fn statement(&mut self, stmt: &Stmt) {
@@ -274,14 +367,19 @@ impl Expander {
             // The parser reported it; keep it as written.
             StmtKind::BadBlock { .. } => self.out.push(stmt.clone()),
             // The parser reported the index on a function name.
-            StmtKind::Function { name, .. } if name.index.is_some() => {}
-            _ => self.line(stmt),
+            StmtKind::Function { name, .. } if name.index.is_some() => self.suppress(stmt),
+            _ => {
+                if !self.line(stmt) {
+                    self.suppress(stmt);
+                }
+            }
         }
     }
 
-    /// A statement outside an array block.
-    fn line(&mut self, stmt: &Stmt) {
-        let found = occurrences(&stmt.kind);
+    /// A statement outside an array block. Returns false when it is
+    /// dropped.
+    fn line(&mut self, stmt: &Stmt) -> bool {
+        let (found, weight) = occurrences(&stmt.kind);
         let ranges: Vec<&Occurrence> = found
             .iter()
             .filter(|o| matches!(o.index, Index::Range { .. }))
@@ -293,7 +391,7 @@ impl Expander {
                            `markov` statement per state variable"
                 .to_string();
             self.report(MARKOV_ARRAY, first.index.span(), message);
-            return;
+            return false;
         }
         match ranges.as_slice() {
             [] => {
@@ -304,9 +402,10 @@ impl Expander {
                         var.text
                     );
                     self.report(INDEX_OUT_OF_SCOPE, var.index.span(), message);
-                } else {
-                    self.out.push(stmt.clone());
+                    return false;
                 }
+                self.out.push(stmt.clone());
+                true
             }
             [range] => {
                 let Index::Range { start, end, span } = range.index else {
@@ -314,15 +413,17 @@ impl Expander {
                 };
                 let (start, end) = (i64::from(start), i64::from(end));
                 if !self.bounds_ok(&found, start.min(end), start.max(end)) {
-                    return;
+                    return false;
                 }
-                let count = start.abs_diff(end) + 1;
-                if !self.take(count, span) {
-                    return;
+                let count = u128::from(start.abs_diff(end)) + 1;
+                if !self.take(count, count.saturating_mul(weight), span) {
+                    return false;
                 }
+                let id = self.template();
                 for j in indices(start, end) {
-                    self.out.push(copy(stmt, j));
+                    self.out.push(copy(stmt, j, id));
                 }
+                true
             }
             [first, second, ..] => {
                 let message = format!(
@@ -333,47 +434,59 @@ impl Expander {
                 self.report(MULTIPLE_RANGES, second.index.span(), message)
                     .notes
                     .push(note);
+                false
             }
         }
     }
 
     fn block(&mut self, start: i64, end: i64, range_span: Span, body: &[Stmt]) {
         for bound in [start, end] {
-            if bound < 0 {
-                let message = format!(
-                    "array block bound {bound} is negative; array indices must be 0 or more"
-                );
-                self.report(NEGATIVE_INDEX, range_span, message);
-                return;
+            let message = if bound < 0 {
+                format!("array block bound {bound} is negative; array indices must be 0 or more")
+            } else if bound > MAX_INDEX {
+                format!("array block bound {bound} is larger than the largest index, {MAX_INDEX}")
+            } else {
+                continue;
+            };
+            let code = if bound < 0 {
+                NEGATIVE_INDEX
+            } else {
+                INDEX_TOO_LARGE
+            };
+            self.report(code, range_span, message);
+            for stmt in body {
+                self.suppress(stmt);
             }
-            if bound > MAX_INDEX {
-                let message = format!(
-                    "array block bound {bound} is larger than the largest index, {MAX_INDEX}"
-                );
-                self.report(INDEX_TOO_LARGE, range_span, message);
-                return;
-            }
+            return;
         }
         let (lo, hi) = (start.min(end), start.max(end));
         let mut valid = Vec::new();
+        let mut weight: u128 = 0;
         for stmt in body {
             match &stmt.kind {
                 // The include pass reported it.
                 StmtKind::Include { .. } => continue,
                 // The parser reported nested and bad blocks, and an index on
                 // a function name.
-                StmtKind::Block { .. } | StmtKind::BadBlock { .. } => continue,
-                StmtKind::Function { name, .. } if name.index.is_some() => continue,
+                StmtKind::Block { .. } | StmtKind::BadBlock { .. } => {
+                    self.suppress(stmt);
+                    continue;
+                }
+                StmtKind::Function { name, .. } if name.index.is_some() => {
+                    self.suppress(stmt);
+                    continue;
+                }
                 StmtKind::Markov { name, .. } => {
                     let message = "a `markov` statement cannot be inside an array block; write \
                                    one `markov` statement per state variable"
                         .to_string();
                     self.report(MARKOV_ARRAY, name.span, message);
+                    self.suppress(stmt);
                     continue;
                 }
                 _ => {}
             }
-            let found = occurrences(&stmt.kind);
+            let (found, w) = occurrences(&stmt.kind);
             if let Some(range) = found
                 .iter()
                 .find(|o| matches!(o.index, Index::Range { .. }))
@@ -383,23 +496,31 @@ impl Expander {
                     range.text
                 );
                 self.report(RANGE_IN_BLOCK, range.index.span(), message);
+                self.suppress(stmt);
                 continue;
             }
             if self.bounds_ok(&found, lo, hi) {
                 valid.push(stmt);
+                weight += w;
+            } else {
+                self.suppress(stmt);
             }
         }
         if valid.is_empty() {
             return;
         }
-        let count = (u128::from(start.abs_diff(end)) + 1) * valid.len() as u128;
-        let count = u64::try_from(count).unwrap_or(u64::MAX);
-        if !self.take(count, range_span) {
+        let per_index = u128::from(start.abs_diff(end)) + 1;
+        let count = per_index * valid.len() as u128;
+        if !self.take(count, per_index.saturating_mul(weight), range_span) {
+            for stmt in valid {
+                self.suppress(stmt);
+            }
             return;
         }
+        let ids: Vec<u32> = valid.iter().map(|_| self.template()).collect();
         for j in indices(start, end) {
-            for stmt in &valid {
-                self.out.push(copy(stmt, j));
+            for (stmt, &id) in valid.iter().zip(&ids) {
+                self.out.push(copy(stmt, j, id));
             }
         }
     }
@@ -441,25 +562,38 @@ impl Expander {
         ok
     }
 
-    /// Counts `count` copies against [`MAX_ARRAY_COPIES`]. Returns false,
-    /// after reporting once at `span`, when they do not fit or an earlier
-    /// statement already passed the limit.
-    fn take(&mut self, count: u64, span: Span) -> bool {
+    /// Counts `statements` copies and `work` units against
+    /// [`MAX_ARRAY_COPIES`] and [`MAX_ARRAY_WORK`]. Returns false, after
+    /// reporting once at `span`, when they do not fit or an earlier array
+    /// already passed a limit.
+    fn take(&mut self, statements: u128, work: u128, span: Span) -> bool {
         if self.capped {
             return false;
         }
-        let room = (MAX_ARRAY_COPIES - self.produced) as u64;
-        if count > room {
-            self.capped = true;
-            let message = format!(
-                "this array makes {count} statements, and with the copies before it that is \
-                 more than {MAX_ARRAY_COPIES}; it and every later array are not expanded"
-            );
-            self.report(TOO_MANY_COPIES, span, message);
-            return false;
-        }
-        self.produced += count as usize;
-        true
+        const LATER: &str = "it and every later array are not expanded";
+        let message = if statements > MAX_ARRAY_COPIES as u128 - self.produced {
+            let noun = if statements == 1 {
+                "statement"
+            } else {
+                "statements"
+            };
+            format!(
+                "this array makes {statements} {noun}, and with the copies before it that is \
+                 more than {MAX_ARRAY_COPIES} statements; {LATER}"
+            )
+        } else if work > MAX_ARRAY_WORK as u128 - self.worked {
+            format!(
+                "this array expands to {work} units of work, and with the arrays before it that \
+                 is more than {MAX_ARRAY_WORK} units of work; {LATER}"
+            )
+        } else {
+            self.produced += statements;
+            self.worked += work;
+            return true;
+        };
+        self.capped = true;
+        self.report(TOO_MANY_COPIES, span, message);
+        false
     }
 }
 
@@ -472,11 +606,12 @@ fn indices(start: i64, end: i64) -> Box<dyn Iterator<Item = i64>> {
     }
 }
 
-/// The copy of `stmt` for index `j`. The caller checked every index form,
-/// so no value overflows here.
-fn copy(stmt: &Stmt, j: i64) -> Stmt {
+/// The copy of `stmt` for index `j`, from template `template`. The caller
+/// checked every index form, so no value overflows here.
+fn copy(stmt: &Stmt, j: i64, template: u32) -> Stmt {
     let mut out = stmt.clone();
     out.array_index = Some(j);
+    out.array_template = Some(template);
     let value = |index: &Index| index_value(index, j).expect("index checked before copying");
     visit(&mut out.kind, &mut |slot| match slot {
         Slot::Name(id) => {
@@ -506,6 +641,7 @@ fn copy(stmt: &Stmt, j: i64) -> Stmt {
                 };
             }
         }
+        Slot::Node => {}
     });
     out
 }

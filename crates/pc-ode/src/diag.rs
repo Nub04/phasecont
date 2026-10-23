@@ -261,7 +261,7 @@ pub const CODES: &[(Code, Severity, &str)] = &[
     (
         Code(71),
         Severity::Error,
-        "arrays expand to more than 100000 statements",
+        "arrays expand past the statement or work limit",
     ),
 ];
 

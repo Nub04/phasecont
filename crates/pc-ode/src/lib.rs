@@ -24,11 +24,12 @@ pub mod span;
 
 pub use ast::{
     Assign, BinaryOp, Comment, DUMMY_SPAN, Entry, Expr, Ident, Index, IndexOp, MarkovLine,
-    MarkovRow, Model, OdeForm, RawAssign, Stmt, StmtKind, UnaryOp, Unsupported, Value,
+    MarkovRow, Model, OdeForm, RawAssign, Stmt, StmtKind, SuppressedName, UnaryOp, Unsupported,
+    Value,
 };
 pub use check::{ModelInfo, ModelKind, StateKind, Symbol, SymbolKind, check};
 pub use diag::{CODES, Code, Diagnostic, FixIt, Severity};
-pub use expand::{MAX_ARRAY_COPIES, MAX_INDEX, expand};
+pub use expand::{MAX_ARRAY_COPIES, MAX_ARRAY_WORK, MAX_INDEX, expand};
 pub use include::{
     FsLoader, MAX_INCLUDE_DEPTH, MAX_INCLUDES, MapLoader, SourceLoader, resolve_includes,
 };

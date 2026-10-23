@@ -499,6 +499,7 @@ impl StmtParser<'_> {
             comment,
             span: self.span(start, end),
             array_index: None,
+            array_template: None,
         }
     }
 
@@ -518,6 +519,7 @@ impl StmtParser<'_> {
             comment: None,
             span,
             array_index: None,
+            array_template: None,
         }
     }
 }
@@ -558,7 +560,10 @@ impl StmtParser<'_> {
             target.push(stmt);
         }
         self.close_unclosed(&mut block, &mut top);
-        Model { statements: top }
+        Model {
+            statements: top,
+            suppressed: Vec::new(),
+        }
     }
 
     /// Reports an old-style file (first line starts with a digit) and keeps
@@ -599,6 +604,7 @@ impl StmtParser<'_> {
         Stmt {
             span: self.span(b.open.start, end),
             array_index: None,
+            array_template: None,
             kind,
             comment: None,
         }
@@ -800,6 +806,7 @@ impl StmtParser<'_> {
                     comment,
                     span,
                     array_index: None,
+                    array_template: None,
                 })
             }
             Keyword::Par | Keyword::Number | Keyword::Init => {
@@ -854,6 +861,7 @@ impl StmtParser<'_> {
                 kind,
                 comment: None,
                 array_index: None,
+                array_template: None,
                 span,
             });
         };
@@ -897,6 +905,7 @@ impl StmtParser<'_> {
             comment,
             span,
             array_index: None,
+            array_template: None,
         })
     }
 
