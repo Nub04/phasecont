@@ -417,10 +417,13 @@ impl Assign {
     }
 }
 
-/// One row of a `markov` statement: one `{expr}` per state.
+/// One row of a `markov` statement: one `{expr}` per state. A trailing
+/// comment is reported and kept.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MarkovRow {
     pub entries: Vec<Expr>,
+    pub comment: Option<Comment>,
+    /// The row text, without the trailing comment.
     pub span: Span,
 }
 
@@ -428,7 +431,25 @@ impl MarkovRow {
     pub fn strip_spans(&self) -> MarkovRow {
         MarkovRow {
             entries: self.entries.iter().map(Expr::strip_spans).collect(),
+            comment: self.comment.as_ref().map(Comment::strip_spans),
             span: DUMMY_SPAN,
+        }
+    }
+}
+
+/// A line that belongs to a `markov` statement: a row, or a full-line
+/// comment between rows. Blank lines are not stored.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MarkovLine {
+    Row(MarkovRow),
+    Comment(Comment),
+}
+
+impl MarkovLine {
+    pub fn strip_spans(&self) -> MarkovLine {
+        match self {
+            Self::Row(r) => Self::Row(r.strip_spans()),
+            Self::Comment(c) => Self::Comment(c.strip_spans()),
         }
     }
 }
@@ -519,11 +540,12 @@ pub enum StmtKind {
         cond: Expr,
         assigns: Vec<Assign>,
     },
-    /// `markov name n`, then `n` rows of `n` entries each.
+    /// `markov name n`, then `n` rows of `n` entries each. `lines` holds the
+    /// rows and the comment lines between them, in source order.
     Markov {
         name: Ident,
         states: u32,
-        rows: Vec<MarkovRow>,
+        lines: Vec<MarkovLine>,
     },
     /// `wiener w1,w2`.
     Wiener { names: Vec<Ident> },
@@ -535,6 +557,10 @@ pub enum StmtKind {
         range_span: Span,
         body: Vec<Stmt>,
     },
+    /// An array block whose `%[..]` line is malformed and was reported.
+    /// It holds the statements up to the matching `%`, so they do not leak
+    /// to the top level. The array pass neither expands nor checks it.
+    BadBlock { body: Vec<Stmt> },
     /// A full-line `#` comment.
     Comment(Comment),
     /// A statement kept as raw source text (the statement's span).
@@ -621,10 +647,17 @@ impl StmtKind {
                 cond: cond.strip_spans(),
                 assigns: assigns.iter().map(Assign::strip_spans).collect(),
             },
-            Self::Markov { name, states, rows } => Self::Markov {
+            Self::Markov {
+                name,
+                states,
+                lines,
+            } => Self::Markov {
                 name: name.strip_spans(),
                 states: *states,
-                rows: rows.iter().map(MarkovRow::strip_spans).collect(),
+                lines: lines.iter().map(MarkovLine::strip_spans).collect(),
+            },
+            Self::BadBlock { body } => Self::BadBlock {
+                body: body.iter().map(Stmt::strip_spans).collect(),
             },
             Self::Wiener { names } => Self::Wiener {
                 names: names.iter().map(Ident::strip_spans).collect(),

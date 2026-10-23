@@ -150,6 +150,14 @@ fn comment(text: &str) -> Comment {
     }
 }
 
+fn row(entries: Vec<Expr>) -> MarkovRow {
+    MarkovRow {
+        entries,
+        comment: None,
+        span: DUMMY_SPAN,
+    }
+}
+
 fn unsupported(family: Unsupported, text: &str) -> StmtKind {
     StmtKind::Unsupported {
         family,
@@ -461,21 +469,16 @@ fn global_markov_wiener_include_comment() {
         StmtKind::Markov {
             name: ident("z"),
             states: 2,
-            rows: vec![
-                MarkovRow {
-                    entries: vec![n("0"), v("a")],
-                    span: DUMMY_SPAN,
-                },
-                MarkovRow {
-                    entries: vec![v("b"), n("0")],
-                    span: DUMMY_SPAN,
-                },
+            lines: vec![
+                MarkovLine::Row(row(vec![n("0"), v("a")])),
+                MarkovLine::Comment(comment("# note")),
+                MarkovLine::Row(row(vec![v("b"), n("0")])),
             ],
         }
     );
-    // The comment between the rows follows the statement.
-    assert_eq!(kinds[1], StmtKind::Comment(comment("# note")));
-    assert!(matches!(kinds[2], StmtKind::Ode { .. }));
+    // The comment between the rows stays inside the statement.
+    assert_eq!(kinds.len(), 2);
+    assert!(matches!(kinds[1], StmtKind::Ode { .. }));
     let model = parse_all(text).0;
     assert_eq!(model.statements[0].span, sp(0, at(text, "{b} {0}").1));
     assert_eq!(
@@ -808,8 +811,8 @@ fn bad_blocks() {
     let text = "%[1..2]\nx[j]'=1";
     check_one(text, BAD_BLOCK, (1, 7), None);
     assert!(matches!(self::kinds(text)[0], StmtKind::Block { .. }));
-    check_one("%[1..2] x", BAD_BLOCK, (0, 9), None);
-    check_one("%[a..2]", BAD_BLOCK, (0, 7), None);
+    check_one("%[1..2] x\n%", BAD_BLOCK, (0, 9), None);
+    check_one("%[a..2]\n%", BAD_BLOCK, (0, 7), None);
 }
 
 // ---------------------------------------------------------------------------
@@ -995,4 +998,352 @@ fn include_spelling() {
     let text = "%[1..2]\nx[j]'=1\ndone";
     check_one(text, BAD_BLOCK, (1, 7), None);
     assert_eq!(kinds(text).last(), Some(&StmtKind::Done));
+}
+
+// ---------------------------------------------------------------------------
+// Fix round 1.
+
+/// The parser diagnostics with `code` in `text`.
+fn count(text: &str, code: Code) -> usize {
+    codes(text).iter().filter(|&&c| c == code).count()
+}
+
+#[test]
+fn continued_option_is_not_spaced() {
+    // XPPAUT 8.0 applies `dt=\<newline>.5` (measured).
+    let text = "@ total=1, dt=\\\n.5";
+    assert_eq!(
+        clean_one(text),
+        StmtKind::Options {
+            entries: vec![raw("total", "1"), raw("dt", ".5")],
+        }
+    );
+    assert!(clean("@ dt\\\n=.5").len() == 1);
+    // A real blank is still reported, and the message has no line break.
+    let text = "@ dt= .5";
+    check_one(text, SPACED_OPTION, (4, 6), Some(((4, 6), "=")));
+    let d = one(text);
+    assert!(d.message.contains("`dt=.5`"), "{}", d.message);
+    let d = one("@ dt=\\\n .5");
+    assert_eq!(d.code, SPACED_OPTION);
+    assert!(!d.message.contains('\n'), "{}", d.message);
+}
+
+#[test]
+fn include_with_a_trailing_comment() {
+    let text = "#include a.ode # c";
+    check_one(text, TRAILING_COMMENT, (15, 18), Some(((14, 18), "")));
+    let s = &parse_all(text).0.statements[0];
+    let StmtKind::Include { path, path_span } = &s.kind else {
+        panic!("{s:#?}");
+    };
+    assert_eq!(path, "a.ode");
+    assert_eq!(*path_span, sp(9, 14));
+    assert_eq!(s.comment.as_ref().unwrap().text, "# c");
+    // A `#` inside the path is part of it; quotes stay as written.
+    let path_of = |text: &str| match clean_one(text) {
+        StmtKind::Include { path, .. } => path,
+        other => panic!("{other:#?}"),
+    };
+    assert_eq!(path_of("#include a#b.ode"), "a#b.ode");
+    assert_eq!(path_of("#include \"a.ode\""), "\"a.ode\"");
+    check_one("#include # c", MALFORMED_STATEMENT, (0, 12), None);
+}
+
+#[test]
+fn malformed_block_openers_poison_their_block() {
+    for opener in [
+        "%[1.5..3]",
+        "%[1..2",
+        "%[a..3]",
+        "%[1..3] x",
+        "%[1e2..2]",
+        "%[1..99999999999999999999]",
+    ] {
+        let text = format!("{opener}\nx[j]'=1\n%\ny'=1");
+        assert_eq!(count(&text, BAD_BLOCK), 1, "{text:?}: {:?}", codes(&text));
+        let kinds = kinds(&text);
+        assert_eq!(kinds.len(), 2, "{text:?}: {kinds:#?}");
+        let StmtKind::BadBlock { body } = &kinds[0] else {
+            panic!("{text:?}: {kinds:#?}");
+        };
+        assert_eq!(body.len(), 1);
+        assert!(matches!(kinds[1], StmtKind::Ode { .. }));
+    }
+    let text = "%[a..3]\nx'=1\n%";
+    check_one(text, BAD_BLOCK, (0, 7), None);
+    assert_eq!(parse_all(text).0.statements[0].span, sp(0, 14));
+    // An unclosed bad block is reported too.
+    assert_eq!(codes("%[a..3]\nx'=1"), vec![BAD_BLOCK, BAD_BLOCK]);
+    // A bad opener inside a block: its `%` is ignored.
+    let text = "%[1..2]\n%[a..3]\nx[j]'=1\n%\n%";
+    check_one(text, BAD_BLOCK, (8, 15), None);
+    let kinds = kinds(text);
+    assert_eq!(kinds.len(), 1);
+    assert!(matches!(&kinds[0], StmtKind::Block { body, .. } if body.len() == 1));
+    // A malformed closer changes nothing.
+    let text = "%[1..2]\n% x\nx[j]'=1\n%";
+    check_one(text, BAD_BLOCK, (8, 11), None);
+    assert!(matches!(&self::kinds(text)[0], StmtKind::Block { body, .. } if body.len() == 1));
+}
+
+#[test]
+fn raw_ranges_filter_lexer_diagnostics() {
+    let text = "@ dt=$ total=$\nx'=1$\nspecial k=$\ndone $\ny'=1$";
+    assert_eq!(codes(text), vec![STRAY_CHARACTER, UNSUPPORTED_SPECIAL]);
+    let text = "special k=$\nspecial j=$\nx'=1$";
+    assert_eq!(
+        codes(text),
+        vec![UNSUPPORTED_SPECIAL, UNSUPPORTED_SPECIAL, STRAY_CHARACTER]
+    );
+}
+
+#[test]
+fn unknown_tokens_are_reported_once() {
+    for text in [
+        "par é=1",
+        "par a=1 é",
+        "wiener é",
+        "@ é=1",
+        "@ dt=1 é",
+        "global 1 x {é=1}",
+        "global é x {x=0}",
+        "set é {a=1}",
+        "set s {é=1}",
+        "table é % 3 0 1 t",
+        "markov é 2",
+        "markov z é",
+        "par a=1, $",
+        "f(é)=1",
+        "xé'=1",
+        "!é=1",
+        "!é",
+        "aux é=1",
+        "x' é",
+        "global 1 x {x=0} é",
+        "markov z 1\n{1} é",
+        "markov z 1 é\n{1}",
+        "x'=1 é",
+    ] {
+        assert_eq!(codes(text), vec![STRAY_CHARACTER], "{text:?}");
+    }
+    // Text after the unknown token is still reported.
+    assert_eq!(
+        codes("global 1 x {x=0} é y"),
+        vec![STRAY_CHARACTER, TRAILING_TEXT]
+    );
+}
+
+#[test]
+fn table_fields_are_named() {
+    for (text, field, at) in [
+        ("table h %", "number of points", 9),
+        ("table h % 11", "lower bound", 12),
+        ("table h % 11 0", "upper bound", 14),
+        ("table h % 11 0 1", "formula", 16),
+    ] {
+        check_one(text, MALFORMED_STATEMENT, (at, at), None);
+        let d = one(text);
+        assert!(d.message.contains(field), "{text:?}: {}", d.message);
+        assert!(matches!(kinds(text)[0], StmtKind::Table { .. }), "{text:?}");
+    }
+    let text = "table h % 3 - 1 0 t";
+    check_one(text, BAD_VALUE, (12, 15), None);
+    assert!(one(text).message.contains("lower bound"));
+    assert!(matches!(kinds(text)[0], StmtKind::Table { .. }));
+    let text = "table h % x 0 1 t";
+    check_one(text, BAD_VALUE, (10, 11), None);
+    assert!(one(text).message.contains("number of points"));
+    check_one("table h % 3 0 y t", BAD_VALUE, (14, 15), None);
+}
+
+#[test]
+fn spaced_sign_is_one_bad_value() {
+    check_one("init x=- 1", BAD_VALUE, (7, 10), None);
+    check_one("par a=- 1, b=2", BAD_VALUE, (6, 9), None);
+}
+
+#[test]
+fn missing_at_line_end_is_zero_width() {
+    for text in ["markov z", "markov z\n", "markov z\r\n", "markov z  \n"] {
+        let d = one(text);
+        assert_eq!(d.code, MALFORMED_STATEMENT, "{text:?}");
+        assert_eq!(d.span.start, d.span.end, "{text:?}: {d:#?}");
+    }
+    check_one("markov z\r\n", MALFORMED_STATEMENT, (8, 8), None);
+    check_one("aux x\n", MALFORMED_STATEMENT, (5, 5), None);
+    check_one("@ dt\r\n", MALFORMED_STATEMENT, (4, 4), None);
+}
+
+#[test]
+fn trailing_comments_on_done_and_markov() {
+    let text = "done # c";
+    check_one(text, TRAILING_COMMENT, (5, 8), Some(((4, 8), "")));
+    let s = &parse_all(text).0.statements[0];
+    assert_eq!(s.kind, StmtKind::Done);
+    assert_eq!(s.comment.as_ref().unwrap().text, "# c");
+    // Text after `done` is still ignored.
+    assert!(codes("done x # c").is_empty());
+    let text = "markov z 1\n{1} # c";
+    check_one(text, TRAILING_COMMENT, (15, 18), Some(((14, 18), "")));
+    let StmtKind::Markov { lines, .. } = &kinds(text)[0] else {
+        panic!();
+    };
+    let MarkovLine::Row(r) = &lines[0] else {
+        panic!();
+    };
+    assert_eq!(r.comment.as_ref().unwrap().text, "# c");
+    assert_eq!(parse_all(text).0.statements[0].span, sp(0, 18));
+    let text = "markov z 1 # c\n{1}";
+    check_one(text, TRAILING_COMMENT, (11, 14), Some(((10, 14), "")));
+    let s = &parse_all(text).0.statements[0];
+    assert_eq!(s.comment.as_ref().unwrap().text, "# c");
+    assert_eq!(s.span, sp(0, 18));
+}
+
+#[test]
+fn markov_lines_keep_source_order() {
+    let text = "# a\nmarkov z 2\n{0} {a}\n\n# note\n{b} {0}\nx'=z";
+    let model = parse_all(text).0;
+    assert_eq!(model.statements.len(), 3);
+    let spans: Vec<Span> = model.statements.iter().map(|s| s.span).collect();
+    for pair in spans.windows(2) {
+        assert!(pair[0].end <= pair[1].start, "{spans:?}");
+    }
+    // An `#include` line ends the rows and is parsed as a statement.
+    let text = "markov z 2\n{0} {1}\n#include a.ode\n{1} {0}";
+    assert_eq!(codes(text), vec![MARKOV_ROWS, UNRECOGNIZED_STATEMENT]);
+    assert!(matches!(kinds(text)[1], StmtKind::Include { .. }));
+    // Comments after a short chain are not taken into it.
+    let text = "markov z 2\n{0} {1}\n# c\nx'=1";
+    check_one(text, MARKOV_ROWS, (7, 8), None);
+    let kinds = kinds(text);
+    assert_eq!(kinds.len(), 3);
+    assert!(matches!(&kinds[0], StmtKind::Markov { lines, .. } if lines.len() == 1));
+    assert_eq!(kinds[1], StmtKind::Comment(comment("# c")));
+}
+
+#[test]
+fn set_and_global_brace_lists() {
+    // Measured with XPPAUT 8.0: blanks separate set entries, and an empty
+    // set list loads.
+    assert_eq!(
+        clean_one("set s {a=2 b=3}"),
+        StmtKind::Set {
+            name: ident("s"),
+            entries: vec![raw("a", "2"), raw("b", "3")],
+        }
+    );
+    assert_eq!(
+        clean_one("set s {}"),
+        StmtKind::Set {
+            name: ident("s"),
+            entries: vec![],
+        }
+    );
+    // Measured: XPPAUT rejects an empty global list ("Bad global").
+    let text = "global 1 x-5 {}";
+    check_one(text, MALFORMED_STATEMENT, (13, 15), None);
+    assert!(one(text).message.contains("at least one assignment"));
+}
+
+#[test]
+fn coverage_gaps() {
+    // `0=` on line 1 is an old-style file, not an algebraic constraint.
+    check_one("0=x+y", OLD_STYLE_FILE, (0, 5), None);
+    // An unsupported statement inside a block stays in the block.
+    let text = "%[1..2]\nbndry x\n%";
+    assert_eq!(codes(text), vec![UNSUPPORTED_BOUNDARY]);
+    let StmtKind::Block { body, .. } = &kinds(text)[0] else {
+        panic!();
+    };
+    assert_eq!(body[0].kind, unsupported(Unsupported::Boundary, "bndry x"));
+    // Backslash continuation inside statements.
+    let kinds = clean("par a=1,\\\n  b=2\nx'=a+\\\nb\nglobal 1 x \\\n{x=0}");
+    assert_eq!(kinds.len(), 3);
+    assert!(matches!(&kinds[0], StmtKind::Par { entries } if entries.len() == 2));
+    assert_eq!(
+        kinds[1],
+        StmtKind::Ode {
+            name: ident("x"),
+            form: OdeForm::Prime,
+            rhs: bin(B::Add, v("a"), v("b")),
+        }
+    );
+}
+
+#[test]
+fn message_text_per_code() {
+    let cases: [(&str, Code, &str); 21] = [
+        ("2\n", OLD_STYLE_FILE, "old XPPAUT format"),
+        (
+            "+x=1",
+            UNRECOGNIZED_STATEMENT,
+            "is not a statement XPPAUT reads",
+        ),
+        ("par", MALFORMED_STATEMENT, "needs at least one entry"),
+        ("x'=1)", TRAILING_TEXT, "after the statement"),
+        ("x'=1 # c", TRAILING_COMMENT, "on a line of its own"),
+        ("par a=x", BAD_VALUE, "is not a number literal"),
+        ("@ nosuch=1", UNKNOWN_OPTION, "unknown option `nosuch`"),
+        ("@ dt =1", SPACED_OPTION, "blanks around `=`"),
+        ("markov z 2\n{0} {1}", MARKOV_ROWS, "needs 2 rows"),
+        ("%\nx'=1", BAD_BLOCK, "closes no array block"),
+        (
+            "volt x=1",
+            UNSUPPORTED_VOLTERRA,
+            "Volterra integral equations are not supported",
+        ),
+        (
+            "bndry x",
+            UNSUPPORTED_BOUNDARY,
+            "boundary conditions are not supported",
+        ),
+        (
+            "solv x",
+            UNSUPPORTED_DAE,
+            "algebraic constraints are not supported",
+        ),
+        (
+            "special k=1",
+            UNSUPPORTED_SPECIAL,
+            "`special` is not supported",
+        ),
+        (
+            "export {x} {y}",
+            UNSUPPORTED_EXPORT,
+            "`export` is not supported",
+        ),
+        ("only x", UNSUPPORTED_ONLY, "`only` is not supported"),
+        (
+            "options a.opt",
+            UNSUPPORTED_OPTIONS_FILE,
+            "`options` files are not supported",
+        ),
+        (
+            "hom_bcs 1",
+            UNSUPPORTED_HOM_BCS,
+            "`hom_bcs` is not supported",
+        ),
+        (
+            "table f a.tab",
+            UNSUPPORTED_FILE_TABLE,
+            "tables read from a file are not supported",
+        ),
+        (
+            "x'=sum(1,2)of(i')",
+            UNSUPPORTED_SUM_OF,
+            "`sum(..)of(..)` is not supported",
+        ),
+        (
+            "\" note",
+            UNSUPPORTED_ACTIVE_COMMENT,
+            "active comments are not supported",
+        ),
+    ];
+    for (text, code, needle) in cases {
+        let d = one(text);
+        assert_eq!(d.code, code, "{text:?}: {d:#?}");
+        assert!(d.message.contains(needle), "{text:?}: {}", d.message);
+    }
 }

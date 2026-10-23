@@ -88,16 +88,43 @@ Unsupported statements stay in the AST as raw text, so the writer reproduces the
 
 ### Statement details
 
-These rules fix what the parser does where the manual is silent. Each is a PhaseCont choice unless marked otherwise.
+These rules fix what the parser does where the manual is silent. Each rule says where it comes from: the manual, a measurement with XPPAUT 8.0 ("measured"), or a PhaseCont choice.
 
-- An `@` entry is `name=value`, split by commas or blanks. The value is kept as text up to the next comma, blank, comment or line end. A `set` block uses the same entries, split by commas, inside `{...}`; blanks around `=` there give no diagnostic.
-- `global` takes the literal `-1`, `0` or `1`, a condition and `{name=expr; ...}`. `markov name n` is followed by the next `n` lines that are not blank or comments, each with exactly `n` `{expr}` groups. Text after `n` is an error with a fix-it that deletes it, and so are missing rows. Comment lines between the rows are kept and follow the `markov` statement in the AST.
-- A user function has at least one parameter, and neither its name nor its parameters carry an index. The left side `x(t)=` is a Volterra equation.
-- Text after `done` is not read, so it gives no diagnostic. `done` inside an array block also ends the block, which is reported as unclosed.
-- A line that matches no statement form is an error, and parsing goes on with the next line. A statement whose form is known but whose parts are wrong is a separate error. Lexer diagnostics inside text kept raw (`@` and `set` values, unsupported statements, active comments, everything after `done`) are dropped.
-- A line that starts with `"` (an XPPAUT active comment) is unsupported and kept as raw text, with its own warning.
-- `%[i1..i2]` and `%` must each be alone on their line; a comment after them is an error. A nested block, an unclosed block and a `%` that closes nothing are errors. The bounds are read as integers, and a negative bound is reported later, by the array pass.
-- Only lower-case `#include` followed by a blank is an include; `#includes` and `#INCLUDE` are comments. `#done` is a comment.
+- `@` lines.
+  - An `@` entry is `name=value`, split by commas or blanks. The value is kept as text up to the next comma, blank, comment or line end (PhaseCont choice).
+  - A blank before or after `=` makes XPPAUT 8.0 ignore the option, so it gives a warning (measured). A backslash-newline continuation is not a blank: `dt=\` with `.5` on the next line sets `dt` to 0.5 and gives no warning (measured).
+- `set` lines.
+  - The syntax is `set name {a=1,b=2}` (manual), and `set low {a=1,b=2}` loads and works (measured).
+  - Blanks also separate entries, as in `set s {a=2 b=3}`, and an empty list `set s {}` loads (both measured). Blanks around `=` give no diagnostic (PhaseCont choice).
+- `global` lines.
+  - The form is `global sign cond {name=expr; ...}` (manual), and `global 1 x-0.5 {x=0;y=2}` loads and works (measured).
+  - The sign must be the literal `-1`, `0` or `1` (PhaseCont choice).
+  - An empty list `{}` is an error: XPPAUT rejects it with "Bad global" (measured).
+- `markov` lines.
+  - `markov name n` is followed by `n` rows, each with `n` `{expr}` groups (manual).
+  - XPPAUT ignores extra text after `n`, as in `markov z 2 1` (measured). PhaseCont reports it with a fix-it that deletes it (PhaseCont choice). Missing rows are an error too (PhaseCont choice).
+  - Blank lines and comment lines may sit between the rows. The comments are kept inside the `markov` statement in source order, and the blank lines are not stored (PhaseCont choice). An `#include` line ends the rows.
+- `table name % npts lo hi expr`: `table h % 11 0 1 2*t` loads and works (measured). A missing or bad field is one error that names the field, and the rest of the line is skipped (PhaseCont choice).
+- User functions.
+  - A user function has at least one parameter (PhaseCont choice).
+  - Neither its name nor its parameters carry an index (PhaseCont choice).
+  - The left side `x(t)=` is a Volterra equation (manual).
+- `done`.
+  - Text after `done` is not read, so it gives no diagnostic, but a comment right after `done` is an error like any other trailing comment (PhaseCont choice).
+  - `done` inside an array block also ends the block, which is reported as unclosed (PhaseCont choice).
+- Lines the parser cannot read.
+  - A line that matches no statement form is an error, and parsing goes on with the next line. A statement whose form is known but whose parts are wrong is a separate error (PhaseCont choice).
+  - Lexer diagnostics inside text kept raw (`@` and `set` values, unsupported statements, active comments, everything after `done`) are dropped (PhaseCont choice).
+  - An unknown character gets only the lexer's diagnostic. The parser skips it without a second report (PhaseCont choice).
+- Active comments: a line that starts with `"` is an XPPAUT active comment (manual). Such lines load and change nothing (measured). PhaseCont keeps them as raw text, with an unsupported warning.
+- Array blocks.
+  - `%[i1..i2]` opens a block and `%` closes it (manual). Each must be alone on its line, and a comment after them is an error (PhaseCont choice).
+  - A nested block, an unclosed block and a `%` that closes nothing are errors. The bounds are read as integers, and a negative bound is reported later, by the array pass (PhaseCont choice).
+  - A malformed `%[` line is one error. It still opens a block, so its `%` closes it without a second error and the lines in between stay inside it. The AST keeps such a block as `BadBlock`, which the array pass neither expands nor checks (PhaseCont choice).
+- Includes.
+  - `#include file` includes a file (manual).
+  - Only lower-case `#include` followed by a blank is an include; `#includes` and `#INCLUDE` are comments, and so is `#done` (PhaseCont choice).
+  - A blank followed by `#` starts a trailing comment, which is an error with a fix-it that deletes it: XPPAUT does not load the file when a comment follows the name (measured). Quotes around the name are kept as written for now.
 
 ### Names and order
 

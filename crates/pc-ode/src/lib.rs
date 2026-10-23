@@ -14,8 +14,8 @@ pub mod parser;
 pub mod span;
 
 pub use ast::{
-    Assign, BinaryOp, Comment, DUMMY_SPAN, Entry, Expr, Ident, Index, IndexOp, MarkovRow, Model,
-    OdeForm, RawAssign, Stmt, StmtKind, UnaryOp, Unsupported, Value,
+    Assign, BinaryOp, Comment, DUMMY_SPAN, Entry, Expr, Ident, Index, IndexOp, MarkovLine,
+    MarkovRow, Model, OdeForm, RawAssign, Stmt, StmtKind, UnaryOp, Unsupported, Value,
 };
 pub use diag::{CODES, Code, Diagnostic, FixIt, Severity};
 pub use lexer::{Token, TokenKind, lex};

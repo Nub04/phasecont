@@ -13,8 +13,8 @@
 //! nest, so the stack stays bounded.
 
 use crate::ast::{
-    Assign, Comment, Entry, Ident, Index, MarkovRow, Model, OdeForm, RawAssign, Stmt, StmtKind,
-    Unsupported, Value,
+    Assign, Comment, Entry, Expr, Ident, Index, MarkovLine, MarkovRow, Model, OdeForm, RawAssign,
+    Stmt, StmtKind, Unsupported, Value,
 };
 use crate::diag::{CODES, Code, Diagnostic, FixIt, Severity};
 use crate::lexer::{Token, TokenKind, lex};
@@ -186,25 +186,46 @@ pub fn parse(src: &str, file: FileId) -> (Model, Vec<Diagnostic>) {
         pos: 0,
         diags: Vec::new(),
         raw: Vec::new(),
-        extra: Vec::new(),
     };
     let model = p.run();
+    let raw = merge_ranges(std::mem::take(&mut p.raw));
     let mut diags: Vec<Diagnostic> = lex_diags
         .into_iter()
-        .filter(|d| !p.is_raw(d.span.start))
+        .filter(|d| !in_ranges(&raw, d.span.start))
         .collect();
     diags.extend(p.diags);
     diags.sort_by_key(|d| d.span.start);
     (model, diags)
 }
 
+/// Sorts half-open byte ranges and merges the ones that overlap or touch.
+fn merge_ranges(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+    ranges.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(ranges.len());
+    for (s, e) in ranges {
+        match merged.last_mut() {
+            Some(last) if s <= last.1 => last.1 = last.1.max(e),
+            _ => merged.push((s, e)),
+        }
+    }
+    merged
+}
+
+/// True when `offset` is inside one of the sorted, disjoint `ranges`.
+fn in_ranges(ranges: &[(usize, usize)], offset: usize) -> bool {
+    let after = ranges.partition_point(|&(s, _)| s <= offset);
+    after > 0 && offset < ranges[after - 1].1
+}
+
 /// An array block that has been opened and not yet closed.
 struct OpenBlock {
-    start: i64,
-    end: i64,
-    range_span: Span,
-    /// Start of the `%[..]` line.
+    /// The bounds and the span of `[i1..i2]`, or `None` for a block whose
+    /// opener line was malformed and reported.
+    range: Option<(i64, i64, Span)>,
+    /// The `%` of the opener line.
     open: Span,
+    /// The whole opener line, comments excluded.
+    head: Span,
     body: Vec<Stmt>,
     /// Nested openers that were reported and ignored, so that their
     /// closers are ignored too.
@@ -220,15 +241,18 @@ struct StmtParser<'a> {
     diags: Vec<Diagnostic>,
     /// Byte ranges kept as raw text, where lexer diagnostics are dropped.
     raw: Vec<(usize, usize)>,
-    /// Comment lines found between `markov` rows, emitted after the
-    /// `markov` statement.
-    extra: Vec<Stmt>,
 }
 
 static EOF: TokenKind = TokenKind::Eof;
 
 fn is_line_end(kind: &TokenKind) -> bool {
     matches!(kind, TokenKind::Newline | TokenKind::Eof)
+}
+
+/// The text after `#include` when a comment line is an include line.
+fn include_rest(text: &str) -> Option<&str> {
+    text.strip_prefix("#include")
+        .filter(|rest| rest.is_empty() || rest.starts_with([' ', '\t']))
 }
 
 /// A token that ends the useful part of a line.
@@ -238,10 +262,6 @@ fn ends_line(kind: &TokenKind) -> bool {
 
 /// Helpers for moving over tokens and reporting.
 impl StmtParser<'_> {
-    fn is_raw(&self, offset: usize) -> bool {
-        self.raw.iter().any(|&(s, e)| s <= offset && offset < e)
-    }
-
     fn tok(&self, k: usize) -> Option<&Token> {
         self.tokens.get(self.pos + k)
     }
@@ -338,6 +358,13 @@ impl StmtParser<'_> {
         self.pos = self.line_end(self.pos);
     }
 
+    /// Moves past unknown tokens, which the lexer has reported.
+    fn skip_unknown(&mut self) {
+        while *self.kind(0) == TokenKind::Unknown {
+            self.advance();
+        }
+    }
+
     /// Moves to the next comment or line end on this line.
     fn skip_to_comment(&mut self) {
         while !ends_line(self.kind(0)) {
@@ -400,10 +427,26 @@ impl StmtParser<'_> {
         })
     }
 
-    /// Reports a malformed statement at token `k` and skips to the next
-    /// comment or line end.
-    fn malformed(&mut self, k: usize, what: &str) {
+    /// The span of token `k`, or a zero-width span at its start when it is
+    /// a line end, so that LF, CRLF and the file end give the same span.
+    fn point_at(&self, k: usize) -> Span {
         let span = self.span_at(k);
+        if is_line_end(self.kind(k)) {
+            self.span(span.start, span.start)
+        } else {
+            span
+        }
+    }
+
+    /// Reports a malformed statement at token `k` and skips to the next
+    /// comment or line end. An unknown token is skipped without a report,
+    /// since the lexer has reported it.
+    fn malformed(&mut self, k: usize, what: &str) {
+        if *self.kind(k) == TokenKind::Unknown {
+            self.skip_to_comment();
+            return;
+        }
+        let span = self.point_at(k);
         let message = format!("{what}, found {}", self.describe(k));
         self.report(MALFORMED_STATEMENT, span, message, None);
         self.skip_to_comment();
@@ -424,6 +467,7 @@ impl StmtParser<'_> {
     /// tokens, takes a trailing comment (an error unless `comment_ok`) and
     /// stops at the line end.
     fn end_statement(&mut self, start: usize, kind: StmtKind, comment_ok: bool) -> Stmt {
+        self.skip_unknown();
         if !ends_line(self.kind(0)) {
             let first = self.span_at(0);
             let first_text = self.describe(0);
@@ -517,7 +561,6 @@ impl StmtParser<'_> {
                 None => &mut top,
             };
             target.push(stmt);
-            target.append(&mut self.extra);
         }
         self.close_unclosed(&mut block, &mut top);
         Model { statements: top }
@@ -547,6 +590,24 @@ impl StmtParser<'_> {
         true
     }
 
+    /// The statement for a block that ends at byte `end`.
+    fn block_stmt(&self, b: OpenBlock, end: usize) -> Stmt {
+        let kind = match b.range {
+            Some((start, end, range_span)) => StmtKind::Block {
+                start,
+                end,
+                range_span,
+                body: b.body,
+            },
+            None => StmtKind::BadBlock { body: b.body },
+        };
+        Stmt {
+            span: self.span(b.open.start, end),
+            kind,
+            comment: None,
+        }
+    }
+
     /// Reports a block that is still open and adds it to `top`.
     fn close_unclosed(&mut self, block: &mut Option<OpenBlock>, top: &mut Vec<Stmt>) {
         let Some(b) = block.take() else {
@@ -554,22 +615,15 @@ impl StmtParser<'_> {
         };
         let message =
             "this array block is not closed; end it with `%` on a line of its own".to_string();
-        self.report(BAD_BLOCK, b.range_span, message, None);
-        let end = b.body.last().map_or(b.range_span.end, |s| s.span.end);
-        top.push(Stmt {
-            span: self.span(b.open.start, end),
-            kind: StmtKind::Block {
-                start: b.start,
-                end: b.end,
-                range_span: b.range_span,
-                body: b.body,
-            },
-            comment: None,
-        });
+        let at = b.range.map_or(b.head, |r| r.2);
+        self.report(BAD_BLOCK, at, message, None);
+        let end = b.body.last().map_or(b.head.end, |s| s.span.end);
+        top.push(self.block_stmt(b, end));
     }
 
     /// A line that starts with `%`: `%[i1..i2]` opens a block, `%` alone
-    /// closes it.
+    /// closes it. A malformed `%[` line is reported and still opens a block,
+    /// kept as [`StmtKind::BadBlock`], so that its `%` closes it quietly.
     fn block_line(&mut self, block: &mut Option<OpenBlock>, top: &mut Vec<Stmt>) {
         let percent = self.span_at(0);
         self.advance();
@@ -582,19 +636,9 @@ impl StmtParser<'_> {
             match block {
                 Some(b) if b.ignored > 0 => b.ignored -= 1,
                 Some(_) => {
-                    let Some(b) = block.take() else {
-                        return;
-                    };
-                    top.push(Stmt {
-                        span: self.span(b.open.start, percent.end),
-                        kind: StmtKind::Block {
-                            start: b.start,
-                            end: b.end,
-                            range_span: b.range_span,
-                            body: b.body,
-                        },
-                        comment: None,
-                    });
+                    if let Some(b) = block.take() {
+                        top.push(self.block_stmt(b, percent.end));
+                    }
                 }
                 None => {
                     let message = "this `%` closes no array block".to_string();
@@ -603,28 +647,28 @@ impl StmtParser<'_> {
             }
             return;
         }
-        let Some((start, end, range_span)) = self.block_range() else {
-            self.malformed_block(percent);
-            return;
+        let range = self.block_range().filter(|_| ends_line(self.kind(0)));
+        let head = if range.is_some() {
+            let head = self.span(percent.start, self.prev_end(percent.end));
+            self.block_tail(percent.start);
+            head
+        } else {
+            self.malformed_block(percent)
         };
-        if !ends_line(self.kind(0)) {
-            self.malformed_block(percent);
-            return;
-        }
-        self.block_tail(percent.start);
         match block {
             Some(b) => {
-                let message =
-                    "array blocks cannot be nested; close the open block first".to_string();
-                self.report(BAD_BLOCK, percent.to(range_span), message, None);
+                if let Some((_, _, range_span)) = range {
+                    let message =
+                        "array blocks cannot be nested; close the open block first".to_string();
+                    self.report(BAD_BLOCK, percent.to(range_span), message, None);
+                }
                 b.ignored += 1;
             }
             None => {
                 *block = Some(OpenBlock {
-                    start,
-                    end,
-                    range_span,
+                    range,
                     open: percent,
+                    head,
                     body: Vec::new(),
                     ignored: 0,
                 });
@@ -667,7 +711,9 @@ impl StmtParser<'_> {
         Some(if negative { -value } else { value })
     }
 
-    fn malformed_block(&mut self, percent: Span) {
+    /// Reports a malformed block line from `percent` to the line end and
+    /// returns the span it reported.
+    fn malformed_block(&mut self, percent: Span) -> Span {
         let span = self.span(percent.start, self.rest_of_line().end.max(percent.end));
         let message = format!(
             "expected `%[i1..i2]` or `%` alone on a line, found `{}`",
@@ -675,6 +721,7 @@ impl StmtParser<'_> {
         );
         self.report(BAD_BLOCK, span, message, None);
         self.skip_line();
+        span
     }
 
     /// The end of a block line: a trailing comment is an error.
@@ -729,12 +776,32 @@ impl StmtParser<'_> {
         match keyword {
             Keyword::Unsupported(family) => Some(self.unsupported(family)),
             Keyword::Done => {
-                let span = self.span_at(0);
+                let word = self.span_at(0);
+                let mut span = word;
+                let mut comment = None;
+                if *self.kind(1) == TokenKind::Comment {
+                    // R12 m: a comment after `done` is reported like any
+                    // other trailing comment; the rest of the file is not.
+                    let at = self.span_at(1);
+                    let message = "XPPAUT rejects a comment after this statement; put the \
+                                   comment on a line of its own"
+                        .to_string();
+                    let fix = FixIt {
+                        span: self.span(word.end, at.end),
+                        replacement: String::new(),
+                    };
+                    self.report(TRAILING_COMMENT, at, message, Some(fix));
+                    comment = Some(Comment {
+                        text: self.src(at).to_string(),
+                        span: at,
+                    });
+                    span = word.to(at);
+                }
                 self.raw.push((span.end, self.text.len() + 1));
                 self.pos = self.tokens.len().saturating_sub(1);
                 Some(Stmt {
                     kind: StmtKind::Done,
-                    comment: None,
+                    comment,
                     span,
                 })
             }
@@ -784,10 +851,7 @@ impl StmtParser<'_> {
         let text = self.src(span).to_string();
         self.advance();
         self.skip_line();
-        let include = text
-            .strip_prefix("#include")
-            .filter(|rest| rest.is_empty() || rest.starts_with([' ', '\t']));
-        let Some(rest) = include else {
+        let Some(rest) = include_rest(&text) else {
             let kind = StmtKind::Comment(Comment { text, span });
             return Some(Stmt {
                 kind,
@@ -795,22 +859,44 @@ impl StmtParser<'_> {
                 span,
             });
         };
-        let path = rest.trim_matches([' ', '\t']);
+        let rest_start = span.start + "#include".len();
+        // A blank followed by `#` starts a trailing comment.
+        let hash = rest.char_indices().find_map(|(i, c)| {
+            let after = &rest[i..];
+            let tail = after.trim_start_matches([' ', '\t']);
+            (matches!(c, ' ' | '\t') && tail.starts_with('#')).then(|| i + after.len() - tail.len())
+        });
+        let path_part = &rest[..hash.unwrap_or(rest.len())];
+        let path = path_part.trim_matches([' ', '\t']);
         if path.is_empty() {
             let message = "`#include` needs a file name, as in `#include other.ode`".to_string();
             self.report(MALFORMED_STATEMENT, span, message, None);
             return None;
         }
-        let offset = span.start
-            + "#include".len()
-            + (rest.len() - rest.trim_start_matches([' ', '\t']).len());
+        let offset =
+            rest_start + (path_part.len() - path_part.trim_start_matches([' ', '\t']).len());
         let path_span = self.span(offset, offset + path.len());
+        let comment = hash.map(|h| {
+            let at = self.span(rest_start + h, span.end);
+            let message = "XPPAUT does not load the file when a comment follows the name; put \
+                           the comment on a line of its own"
+                .to_string();
+            let fix = FixIt {
+                span: self.span(path_span.end, at.end),
+                replacement: String::new(),
+            };
+            self.report(TRAILING_COMMENT, at, message, Some(fix));
+            Comment {
+                text: self.src(at).to_string(),
+                span: at,
+            }
+        });
         Some(Stmt {
             kind: StmtKind::Include {
                 path: path.to_string(),
                 path_span,
             },
-            comment: None,
+            comment,
             span,
         })
     }
@@ -819,7 +905,9 @@ impl StmtParser<'_> {
     /// or blanks. A bare name is allowed only when `bare_ok`.
     fn entry_list(&mut self, word: &str, bare_ok: bool) -> Vec<Entry> {
         let keyword_end = self.prev_end(0);
-        let reported = self.diags.len();
+        // Set when the list was reported or holds an unknown token, so that
+        // an empty list is not reported a second time.
+        let mut bad = false;
         let mut entries = Vec::new();
         loop {
             if ends_line(self.kind(0)) {
@@ -831,11 +919,12 @@ impl StmtParser<'_> {
             }
             let Some(name) = self.name() else {
                 self.malformed(0, &format!("expected a name in the `{word}` list"));
+                bad = true;
                 break;
             };
             let value = if *self.kind(0) == TokenKind::Eq {
                 self.advance();
-                Some(self.list_value(false))
+                Some(self.list_value(false, None))
             } else if bare_ok {
                 None
             } else {
@@ -855,7 +944,7 @@ impl StmtParser<'_> {
                 break;
             }
         }
-        if entries.is_empty() && self.diags.len() == reported {
+        if entries.is_empty() && !bad {
             let span = self.span(keyword_end, keyword_end);
             let message = format!("`{word}` needs at least one entry");
             self.report(MALFORMED_STATEMENT, span, message, None);
@@ -866,8 +955,8 @@ impl StmtParser<'_> {
     /// A value: an optionally negative number literal or a bare index form.
     /// In a list (`to_line_end` false) the value ends at a comma, a blank,
     /// a comment or the line end; after `x(0)=` it runs to the comment or
-    /// line end.
-    fn list_value(&mut self, to_line_end: bool) -> Value {
+    /// line end. `field` names a table field in the bad-value message.
+    fn list_value(&mut self, to_line_end: bool, field: Option<&str>) -> Value {
         if ends_line(self.kind(0)) || *self.kind(0) == TokenKind::Comma {
             let point = self.span(self.prev_end(0), self.prev_end(0));
             let message = format!("expected a value after `=`, found {}", self.describe(0));
@@ -914,6 +1003,9 @@ impl StmtParser<'_> {
                         span: self.span(start, num_span.end),
                     });
                     self.pos += num_at + 1;
+                } else {
+                    // `- 1`: the sign and the number make one bad value.
+                    self.pos += 2;
                 }
             }
         }
@@ -936,9 +1028,10 @@ impl StmtParser<'_> {
         }
         let span = self.span(start, self.prev_end(start));
         if !silent {
+            let what = field.map_or_else(|| "the value".to_string(), |f| format!("the {f}"));
             let message = format!(
                 "`{}` is not a number literal; XPPAUT reads only a leading number here, so \
-                 write the value as a number such as `1.5` or `-2`",
+                 write {what} as a number such as `1.5` or `-2`",
                 self.quote(span)
             );
             self.report(BAD_VALUE, span, message, None);
@@ -948,7 +1041,7 @@ impl StmtParser<'_> {
 
     /// The names of a `wiener` line, separated by commas or blanks.
     fn wiener_names(&mut self) -> Vec<Ident> {
-        let reported = self.diags.len();
+        let mut bad = false;
         let keyword_end = self.prev_end(0);
         let mut names = Vec::new();
         loop {
@@ -963,11 +1056,12 @@ impl StmtParser<'_> {
                 Some(name) => names.push(name),
                 None => {
                     self.malformed(0, "expected a name in the `wiener` list");
+                    bad = true;
                     break;
                 }
             }
         }
-        if names.is_empty() && self.diags.len() == reported {
+        if names.is_empty() && !bad {
             let span = self.span(keyword_end, keyword_end);
             let message = "`wiener` needs at least one name".to_string();
             self.report(MALFORMED_STATEMENT, span, message, None);
@@ -1000,30 +1094,66 @@ impl StmtParser<'_> {
             return Some(self.unsupported(Unsupported::FileTable));
         }
         self.advance();
-        let npts = self.list_value(false);
-        if let Value::Num { text, span, .. } = &npts {
-            let positive =
-                text.bytes().all(|b| b.is_ascii_digit()) && text.bytes().any(|b| b != b'0');
-            if !positive {
-                let span = *span;
-                let message = format!(
-                    "the number of table points must be a positive integer, not `{}`",
-                    self.quote(span)
-                );
-                self.report(BAD_VALUE, span, message, None);
+        // Stop at the first missing or bad field, so that one mistake gives
+        // one diagnostic.
+        let mut fields = Vec::with_capacity(3);
+        for field in ["number of points", "lower bound", "upper bound"] {
+            let value = self.table_field(field, &name.text);
+            let bad = matches!(value, Value::Error { .. });
+            fields.push(value);
+            if bad {
+                break;
             }
         }
-        let lo = self.list_value(false);
-        let hi = self.list_value(false);
-        let rhs = self.expr();
+        let rhs = if fields.len() == 3 && !matches!(fields[2], Value::Error { .. }) {
+            if ends_line(self.kind(0)) {
+                self.malformed(0, &format!("expected the formula of table `{}`", name.text));
+                None
+            } else {
+                Some(self.expr())
+            }
+        } else {
+            None
+        };
+        let point = self.point_at(0);
+        if rhs.is_none() {
+            self.skip_to_comment();
+        }
+        let mut fields = fields.into_iter();
+        let mut next = || fields.next().unwrap_or(Value::Error { span: point });
+        let (npts, lo, hi) = (next(), next(), next());
         let kind = StmtKind::Table {
             name,
             npts,
             lo,
             hi,
-            rhs,
+            rhs: rhs.unwrap_or(Expr::Error { span: point }),
         };
         Some(self.end_statement(start, kind, false))
+    }
+
+    /// One number field of a `table` line. A missing or bad field is
+    /// reported and gives [`Value::Error`].
+    fn table_field(&mut self, field: &str, table: &str) -> Value {
+        if ends_line(self.kind(0)) {
+            let point = self.point_at(0);
+            self.malformed(0, &format!("expected the {field} of table `{table}`"));
+            return Value::Error { span: point };
+        }
+        let value = self.list_value(false, Some(field));
+        if let Value::Num { text, span, .. } = &value
+            && field == "number of points"
+            && !(text.bytes().all(|b| b.is_ascii_digit()) && text.bytes().any(|b| b != b'0'))
+        {
+            let span = *span;
+            let message = format!(
+                "the number of points must be a positive integer, not `{}`",
+                self.quote(span)
+            );
+            self.report(BAD_VALUE, span, message, None);
+            return Value::Error { span };
+        }
+        value
     }
 
     /// `global sign cond {name=expr; ...}`.
@@ -1072,6 +1202,14 @@ impl StmtParser<'_> {
     fn global_assigns(&mut self, open: Span, assigns: &mut Vec<Assign>) {
         loop {
             if *self.kind(0) == TokenKind::RBrace {
+                if assigns.is_empty() {
+                    // Measured: XPPAUT 8.0 rejects `{}` ("Bad global").
+                    let span = open.to(self.span_at(0));
+                    let message = "`global` needs at least one assignment, as in \
+                                   `global 1 x {x=0}`"
+                        .to_string();
+                    self.report(MALFORMED_STATEMENT, span, message, None);
+                }
                 self.advance();
                 return;
             }
@@ -1188,7 +1326,8 @@ impl StmtParser<'_> {
     }
 
     /// `markov name n`, then `n` rows of `n` `{expr}` entries on the next
-    /// lines that are not blank or comments.
+    /// lines. Blank lines and comment lines between the rows are allowed;
+    /// the comments are kept in the statement.
     fn markov(&mut self, start: usize) -> Option<Stmt> {
         self.advance();
         let Some(name) = self.name() else {
@@ -1217,6 +1356,7 @@ impl StmtParser<'_> {
         };
         let header_end = self.span_at(0).end;
         self.advance();
+        self.skip_unknown();
         if !ends_line(self.kind(0)) {
             let first = self.span_at(0).start;
             self.skip_to_comment();
@@ -1237,46 +1377,63 @@ impl StmtParser<'_> {
             StmtKind::Markov {
                 name,
                 states,
-                rows: Vec::new(),
+                lines: Vec::new(),
             },
             false,
         );
-        let rows = self.markov_rows(states, name_span);
-        if let Some(last) = rows.last() {
-            stmt.span = self.span(stmt.span.start, last.span.end);
+        let lines = self.markov_lines(states, name_span);
+        let end = lines.iter().map(|line| match line {
+            MarkovLine::Row(r) => r.comment.as_ref().map_or(r.span.end, |c| c.span.end),
+            MarkovLine::Comment(c) => c.span.end,
+        });
+        if let Some(end) = end.max() {
+            stmt.span = self.span(stmt.span.start, end.max(stmt.span.end));
         }
-        if let StmtKind::Markov { rows: slot, .. } = &mut stmt.kind {
-            *slot = rows;
+        if let StmtKind::Markov { lines: slot, .. } = &mut stmt.kind {
+            *slot = lines;
         }
         Some(stmt)
     }
 
-    fn markov_rows(&mut self, states: u32, name_span: Span) -> Vec<MarkovRow> {
-        let mut rows = Vec::new();
-        while rows.len() < states as usize {
+    /// The rows of a `markov` statement and the comment lines between them.
+    /// A line that is neither ends the rows; when rows are missing, it is
+    /// reported and comments after the last row are left for the caller.
+    fn markov_lines(&mut self, states: u32, name_span: Span) -> Vec<MarkovLine> {
+        let mut lines = Vec::new();
+        let mut rows = 0;
+        // Where the last row ends, in tokens and in `lines`.
+        let mut after_row = (self.pos, 0);
+        while rows < states as usize {
             while *self.kind(0) == TokenKind::Newline {
                 self.advance();
             }
             match self.kind(0) {
-                TokenKind::LBrace => rows.push(self.markov_row(states)),
-                TokenKind::Comment => {
-                    if let Some(stmt) = self.comment_line() {
-                        self.extra.push(stmt);
-                    }
+                TokenKind::LBrace => {
+                    lines.push(MarkovLine::Row(self.markov_row(states)));
+                    rows += 1;
+                    after_row = (self.pos, lines.len());
+                }
+                TokenKind::Comment if include_rest(self.src(self.span_at(0))).is_none() => {
+                    let span = self.span_at(0);
+                    let text = self.src(span).to_string();
+                    lines.push(MarkovLine::Comment(Comment { text, span }));
+                    self.advance();
+                    self.skip_line();
                 }
                 _ => {
                     let message = format!(
-                        "`{}` has {states} states but {} rows; each state needs a row of \
-                         {states} `{{...}}` entries",
+                        "`{}` has {states} states, so it needs {states} rows of {states} \
+                         `{{...}}` entries, but it has {rows}",
                         self.src(name_span),
-                        rows.len()
                     );
                     self.report(MARKOV_ROWS, name_span, message, None);
+                    (self.pos, _) = after_row;
+                    lines.truncate(after_row.1);
                     break;
                 }
             }
         }
-        rows
+        lines
     }
 
     /// One row of `{expr}` groups, at the current `{`.
@@ -1296,8 +1453,9 @@ impl StmtParser<'_> {
             }
         }
         let span = self.span(start, self.prev_end(start));
-        // Ends the row line: text or a comment after the row is reported.
-        self.end_statement(start, StmtKind::Done, false);
+        // Ends the row line: text or a comment after the row is reported,
+        // and the comment is kept on the row.
+        let comment = self.end_statement(start, StmtKind::Done, false).comment;
         if entries.len() != states as usize {
             let message = format!(
                 "this row has {} entries, but the chain has {states} states",
@@ -1305,14 +1463,18 @@ impl StmtParser<'_> {
             );
             self.report(MARKOV_ROWS, span, message, None);
         }
-        MarkovRow { entries, span }
+        MarkovRow {
+            entries,
+            comment,
+            span,
+        }
     }
 
     /// `@ name=value ...`, entries split by commas or blanks.
     fn options_line(&mut self) -> Stmt {
         let start = self.span_at(0).start;
         let at_end = self.span_at(0).end;
-        let reported = self.diags.len();
+        let mut bad = false;
         self.advance();
         let mut entries = Vec::new();
         loop {
@@ -1326,25 +1488,32 @@ impl StmtParser<'_> {
             }
             let Some(name) = self.plain_name() else {
                 self.option_error(0, "expected an option name");
+                bad = true;
                 continue;
             };
             if *self.kind(0) != TokenKind::Eq {
                 self.option_error(0, &format!("expected `=` after option `{}`", name.text));
+                bad = true;
                 continue;
             }
-            let blank_before = self.blank_at(0);
+            let eq = self.span_at(0);
             self.advance();
-            let blank_after = self.blank_at(0);
             let Some((value, value_span)) = self.raw_value(false) else {
                 self.option_error(0, &format!("expected a value after `{}=`", name.text));
+                bad = true;
                 continue;
             };
-            if blank_before || blank_after {
+            // Only real blanks count: a backslash-newline continuation also
+            // sets `preceded_by_blank`, and XPPAUT 8.0 applies `dt=\<newline>.5`
+            // (measured).
+            let blank = |s: usize, e: usize| self.src(self.span(s, e)).contains([' ', '\t']);
+            if blank(name.span.end, eq.start) || blank(eq.end, value_span.start) {
                 let gap = self.span(name.span.end, value_span.start);
                 let message = format!(
-                    "XPPAUT 8.0 ignores `{}` because of the blanks around `=`; write `{}={}`",
-                    self.quote(name.span.to(value_span)),
-                    name.text,
+                    "XPPAUT 8.0 ignores option `{}` because of the blanks around `=`; write \
+                     `{}={}`",
+                    clip(&name.text),
+                    clip(&name.text),
                     clip(&value)
                 );
                 let fix = FixIt {
@@ -1368,7 +1537,7 @@ impl StmtParser<'_> {
                 span,
             });
         }
-        if entries.is_empty() && self.diags.len() == reported {
+        if entries.is_empty() && !bad {
             let span = self.span(at_end, at_end);
             let message = "`@` needs at least one option, as in `@ total=100`".to_string();
             self.report(MALFORMED_STATEMENT, span, message, None);
@@ -1379,9 +1548,11 @@ impl StmtParser<'_> {
     /// Reports a malformed `@` entry at token `k` and skips to the next
     /// comma, comment or line end.
     fn option_error(&mut self, k: usize, what: &str) {
-        let span = self.span_at(k);
-        let message = format!("{what}, found {}", self.describe(k));
-        self.report(MALFORMED_STATEMENT, span, message, None);
+        if *self.kind(k) != TokenKind::Unknown {
+            let span = self.point_at(k);
+            let message = format!("{what}, found {}", self.describe(k));
+            self.report(MALFORMED_STATEMENT, span, message, None);
+        }
         while !ends_line(self.kind(0)) && *self.kind(0) != TokenKind::Comma {
             self.advance();
         }
@@ -1464,7 +1635,15 @@ impl StmtParser<'_> {
     }
 
     /// Reports the line from the current token as unrecognized.
+    /// A line that holds an unknown token is skipped quietly, since the
+    /// lexer has reported that token.
     fn unrecognized(&mut self) -> Option<Stmt> {
+        let line_end = self.line_end(self.pos);
+        let tokens = self.tokens.get(self.pos..line_end).unwrap_or(&[]);
+        if tokens.iter().any(|t| t.kind == TokenKind::Unknown) {
+            self.skip_line();
+            return None;
+        }
         let span = self.rest_of_line();
         let message = format!(
             "`{}` is not a statement XPPAUT reads; expected a formula such as `x'=...` \
@@ -1529,7 +1708,7 @@ impl StmtParser<'_> {
                 self.skip_line();
                 return None;
             }
-            let value = self.list_value(true);
+            let value = self.list_value(true, None);
             let kind = StmtKind::InitValue { name, value };
             return Some(self.end_statement(start, kind, false));
         }
@@ -1545,6 +1724,10 @@ impl StmtParser<'_> {
         loop {
             match self.plain_name() {
                 Some(p) => params.push(p),
+                None if *self.kind(0) == TokenKind::Unknown => {
+                    self.skip_line();
+                    return None;
+                }
                 None => {
                     self.pos = open;
                     self.malformed(
