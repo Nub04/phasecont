@@ -1,5 +1,5 @@
 use super::*;
-use crate::diag::CODES;
+use crate::diag::{CODES, Severity};
 use crate::parser::expr::PORTABILITY;
 use crate::parser::parse;
 use crate::parser::stmt::UNSUPPORTED_SUM_OF;
@@ -193,7 +193,6 @@ fn undefined_names_in_every_statement_form() {
         "table h % 11 0 1 q*t",
         "x'=1\nglobal 1 x-q {x=0}",
         "x'=1\nglobal 1 x {x=q}",
-        "x'=1\nglobal 1 x {q=0}",
         "markov z 2\n{0} {q}\n{1} {0}",
     ] {
         assert_eq!(codes(text), vec![UNDEFINED_NAME], "{text:?}");
@@ -343,8 +342,8 @@ fn circular_definitions() {
     assert!(d.message.contains("`g`"), "{}", d.message);
     assert_eq!(codes("a=g(1)\ng(u)=u+b\nb=a"), vec![CIRCULAR]);
     assert_eq!(codes("!d=g(1)\ng(u)=u*d"), vec![CIRCULAR]);
-    // Functions see final values, so a call into a lower line is fine.
-    clean("a=g(2)\ng(u)=u*b\nb=1");
+    // A call into a lower line is a forward reference too.
+    assert_eq!(codes("a=g(2)\ng(u)=u*b\nb=1"), vec![FIXED_FORWARD]);
 }
 
 #[test]
@@ -633,11 +632,11 @@ fn notes_point_at_declarations() {
 
 #[test]
 fn message_text_per_code() {
-    let cases: [(&str, Code, &str); 19] = [
+    let cases: [(&str, Code, &str); 20] = [
         ("x'=q", UNDEFINED_NAME, "`q` is not declared"),
         ("par sin=1", RESERVED_NAME, "builtin function"),
         ("par a=1\npar a=2", DUPLICATE_NAME, "declared twice"),
-        ("b=c\nc=1", FIXED_FORWARD, "below"),
+        ("b=c\nc=1", FIXED_FORWARD, "later line"),
         ("w=w", CIRCULAR, "in terms of itself"),
         ("x'=1\ninit y=1", INIT_NOT_STATE, "not a state"),
         ("x'=1\ninit x=1, x=2", INIT_TWICE, "more than once"),
@@ -661,10 +660,280 @@ fn message_text_per_code() {
             "`del_shft` is not supported",
         ),
         ("x'=v\nv(t)=1", MAYBE_UNDEFINED, "may declare it"),
+        ("x'=1\nglobal 1 x {t=0}", BAD_TARGET, "cannot be assigned"),
     ];
     for (text, code, needle) in cases {
         let d = one(text);
         assert_eq!(d.code, code, "{text:?}: {d:#?}");
         assert!(d.message.contains(needle), "{text:?}: {}", d.message);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Review fix round 1.
+
+#[test]
+fn long_names_scale_linearly() {
+    let n = 5000;
+    let mut text = String::new();
+    for i in 0..n {
+        text.push_str(&format!("par longparameter{i}=1\n"));
+    }
+    text.push_str("x'=1\n");
+    let start = std::time::Instant::now();
+    let (_, diags) = run(&text);
+    let elapsed = start.elapsed();
+    assert_eq!(diags.len(), n);
+    assert!(diags.iter().all(|d| d.code == PORTABILITY));
+    assert!(diags.iter().all(|d| d.notes.len() == 1), "one note each");
+    assert!(
+        elapsed < std::time::Duration::from_secs(1),
+        "{n} colliding long names took {elapsed:?}"
+    );
+}
+
+#[test]
+fn long_name_notes() {
+    // At most one note, at the first other name with the same prefix.
+    let text = "par abcdefghijk1=1, abcdefghijk2=2, abcdefghijk3=3";
+    let (_, diags) = run(text);
+    assert_eq!(diags.len(), 3);
+    let first = nth(text, "abcdefghijk1", 0);
+    assert_eq!(diags[0].notes.len(), 1);
+    assert_eq!(diags[0].notes[0].0, nth(text, "abcdefghijk2", 0));
+    assert_eq!(diags[1].notes, vec![(first, diags[1].notes[0].1.clone())]);
+    assert_eq!(diags[2].notes[0].0, first);
+    // A name declared twice gets one warning, plus the duplicate error.
+    let text = "par abcdefghijklm=1\npar abcdefghijklm=2\nx'=1";
+    let (_, diags) = run(text);
+    let got: Vec<(Code, Span)> = diags.iter().map(|d| (d.code, d.span)).collect();
+    assert_eq!(
+        got,
+        vec![
+            (PORTABILITY, nth(text, "abcdefghijklm", 0)),
+            (DUPLICATE_NAME, nth(text, "abcdefghijklm", 1)),
+        ]
+    );
+    assert!(diags[0].notes.is_empty(), "{diags:#?}");
+    // Parameters are compared with the other parameters of their function.
+    let text = "f(abcdefghijk1,abcdefghijk2)=1";
+    let (_, diags) = run(text);
+    assert_eq!(diags.len(), 2, "{diags:#?}");
+    assert_eq!(diags[0].notes[0].0, nth(text, "abcdefghijk2", 0));
+    assert_eq!(diags[1].notes[0].0, nth(text, "abcdefghijk1", 0));
+    assert!(diags[0].notes[0].1.contains("first 10"), "{diags:#?}");
+    // Not with global names, which a parameter hides.
+    let (_, diags) = run("par abcdefghijkz=1\nf(abcdefghijkq)=1\ng(abcdefghijkr)=1");
+    assert_eq!(diags.len(), 3, "{diags:#?}");
+    assert!(diags.iter().all(|d| d.notes.is_empty()), "{diags:#?}");
+}
+
+#[test]
+fn fixed_forward_through_functions() {
+    let text = "a2=g(1)\ng(u)=u*b2\nb2=3\nx'=0\naux v=a2";
+    let d = check_one(
+        text,
+        FIXED_FORWARD,
+        nth(text, "g", 0),
+        &[nth(text, "b2", 1)],
+    );
+    assert!(
+        d.message.contains("`b2`") && d.message.contains("`g`"),
+        "{}",
+        d.message
+    );
+    // Through two functions, defined in any order.
+    let text = "h(u)=u*b\na=g(1)\ng(u)=h(u)\nb=3";
+    check_one(text, FIXED_FORWARD, nth(text, "g", 0), &[nth(text, "b", 1)]);
+    // A fixed quantity defined above is fine, wherever the function is.
+    clean("b=3\na=g(1)\ng(u)=u*b");
+    // A function defined below is fine on its own.
+    clean("a=g(1)\ng(u)=2*u");
+    // A cycle through a function is one error, without forward errors.
+    assert_eq!(codes("a=g(1)\ng(u)=u+b\nb=a"), vec![CIRCULAR]);
+    // Uses from ODEs, aux and functions are never forward references.
+    clean("x'=g(1)\ng(u)=u*b\nb=3");
+}
+
+#[test]
+fn derived_through_functions() {
+    for (text, used) in [
+        ("!d4=h(1)\nh(u)=u+x\npar a=1\nx'=d4", "x"),
+        ("!d=g(1)\ng(u)=u*t", "t"),
+        ("w=1\n!d=g(1)\ng(u)=u*w", "w"),
+        ("x'=v\nwiener v\n!d=g(1)\ng(u)=u*v", "v"),
+        ("!d=g(1)\ng(u)=h(u)\nh(u)=u*x\nx'=1", "x"),
+    ] {
+        let (_, diags) = run(text);
+        assert_eq!(diags.len(), 1, "{text:?}: {diags:#?}");
+        let d = &diags[0];
+        assert_eq!(d.code, DERIVED_NON_PARAMETER, "{text:?}");
+        let bang = text.find('!').unwrap();
+        let eq = bang + text[bang..].find('=').unwrap();
+        let callee = &text[eq + 1..eq + 2];
+        assert_eq!(d.span, Span::new(F, eq + 1, eq + 2), "{text:?}");
+        assert!(d.message.contains(&format!("`{callee}`")), "{}", d.message);
+        assert!(d.message.contains(&format!("`{used}`")), "{}", d.message);
+        assert!(d.message.contains("not a parameter"), "{}", d.message);
+        let last_use = text
+            .rfind(&format!("*{used}"))
+            .or_else(|| text.rfind(&format!("+{used}")));
+        let at = last_use.unwrap() + 1;
+        assert_eq!(d.notes.len(), 1, "{d:#?}");
+        assert_eq!(d.notes[0].0, Span::new(F, at, at + used.len()), "{text:?}");
+    }
+    clean("par a=1\n!d=g(1)\ng(u)=u*a");
+    clean("!e=1\n!d=g(1)\ng(u)=u*e*pi+sin(u)");
+    // Recursion does not hide the derived error.
+    let c = codes("!d=g(1)\ng(u)=h(u)+x\nh(u)=g(u)\nx'=1");
+    assert!(
+        c.contains(&DERIVED_NON_PARAMETER) && c.contains(&RECURSIVE_FUNCTION),
+        "{c:?}"
+    );
+}
+
+#[test]
+fn comparisons_and_logic_are_not_smooth() {
+    for text in [
+        "x'=-x+(x>1)",
+        "x'=x<1",
+        "x'=x<=1",
+        "x'=x>=1",
+        "x'=x==1",
+        "x'=x&1",
+        "x'=x|1",
+        "x'=not(x)",
+        "f(u)=u>1\nx'=1",
+    ] {
+        assert!(!info(text).smooth, "{text:?}");
+    }
+    assert!(info("x'=-x+x^2-x/2").smooth);
+}
+
+#[test]
+fn if_in_an_uncalled_function_is_not_smooth() {
+    // The flags look at every formula, called or not.
+    assert!(!info("f(u)=if(u>0)then(1)else(0)\nx'=1").smooth);
+}
+
+#[test]
+fn init_of_a_reserved_name() {
+    // One fault, one diagnostic.
+    assert_eq!(codes("t'=1\nt(0)=2"), vec![RESERVED_NAME]);
+    assert_eq!(codes("par sin=1\ninit sin=2\nx'=1"), vec![RESERVED_NAME]);
+    // A reserved name nobody tried to declare is still not a state.
+    let text = "x'=1\ninit pi=1";
+    let d = check_one(text, INIT_NOT_STATE, nth(text, "pi", 0), &[]);
+    assert!(d.message.contains("`pi` is a constant"), "{}", d.message);
+}
+
+#[test]
+fn global_targets() {
+    // States and parameters can be assigned (measured in XPPAUT 8.0).
+    clean("par a=1\nx'=a\nglobal 1 x-1 {a=5}");
+    clean("x'=1\nglobal 1 x-1 {x=0}");
+    clean("markov z 2\n{0} {1}\n{1} {0}\nx'=z\nglobal 1 x-1 {z=0}");
+    for (pre, target) in [
+        ("", "t"),
+        ("", "sin"),
+        ("", "pi"),
+        ("", "arg1"),
+        ("", "q"),
+        ("aux v=1\n", "v"),
+        ("w=1\n", "w"),
+        ("!d=1\n", "d"),
+        ("f(u)=u\n", "f"),
+        ("number c=1\n", "c"),
+        ("table h % 11 0 1 t\n", "h"),
+        ("wiener n\n", "n"),
+    ] {
+        let text = format!("{pre}x'=1\nglobal 1 x-1 {{{target}=0}}");
+        let (_, diags) = run(&text);
+        assert_eq!(diags.len(), 1, "{text:?}: {diags:#?}");
+        let d = &diags[0];
+        assert_eq!(d.code, BAD_TARGET, "{text:?}");
+        let at = text.rfind(&format!("{{{target}=")).unwrap() + 1;
+        assert_eq!(d.span, Span::new(F, at, at + target.len()), "{text:?}");
+        assert!(d.message.contains(&format!("`{target}`")), "{}", d.message);
+        assert!(d.message.contains("cannot be assigned"), "{}", d.message);
+        if !pre.is_empty() {
+            assert_eq!(d.notes.len(), 1, "{d:#?}");
+            assert!(d.notes[0].1.contains("declared"), "{d:#?}");
+        }
+    }
+    // An unsupported statement that may declare the target softens it.
+    assert_eq!(
+        codes("v(t)=1\nx'=1\nglobal 1 x-1 {q=0}"),
+        vec![MAYBE_UNDEFINED]
+    );
+    // The right side is still read.
+    assert_eq!(codes("x'=1\nglobal 1 x-1 {x=q}"), vec![UNDEFINED_NAME]);
+}
+
+#[test]
+fn arg_calls() {
+    assert_eq!(codes("f(u)=arg2(1)"), vec![BAD_ARG]);
+    assert_eq!(codes("x'=arg1(2)"), vec![BAD_ARG]);
+    assert_eq!(codes("f(u,v)=arg2(1)"), vec![NOT_CALLABLE]);
+}
+
+#[test]
+fn message_grammar() {
+    let d = one("x'=arg1");
+    assert!(d.message.contains("at least 1 parameter"), "{}", d.message);
+    assert!(!d.message.contains("1 parameters"), "{}", d.message);
+    let d = one("f(u)=arg2");
+    assert!(d.message.contains("at least 2 parameters"), "{}", d.message);
+    let d = one("b=c\nc=1");
+    assert!(
+        !(d.message.contains("above") && d.message.contains("below")),
+        "{}",
+        d.message
+    );
+}
+
+#[test]
+fn delay_with_one_argument() {
+    let text = "x'=delay(x)";
+    let (_, diags) = run(text);
+    assert_eq!(
+        diags,
+        vec![
+            Diagnostic {
+                code: UNSUPPORTED_DELAY,
+                severity: Severity::Warning,
+                span: nth(text, "delay", 0),
+                message: "`delay` is not supported yet; delay equations are planned for v2"
+                    .to_string(),
+                fix_it: None,
+                notes: Vec::new(),
+            },
+            Diagnostic {
+                code: WRONG_ARITY,
+                severity: Severity::Error,
+                span: nth(text, "delay(x)", 0),
+                message: "`delay` takes 2 arguments, not 1".to_string(),
+                fix_it: None,
+                notes: Vec::new(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn unsupported_statement_and_undefined_function() {
+    let text = "v(t)=1\nx'=foo(x)";
+    let d = check_one(text, MAYBE_UNDEFINED, nth(text, "foo", 0), &[sp(0, 6)]);
+    assert_eq!(
+        d.message,
+        "function `foo` is not declared; an unsupported statement may declare it"
+    );
+}
+
+#[test]
+fn symbol_lookup() {
+    let info = info("par a=1\nx'=a");
+    assert_eq!(info.symbol("a").unwrap().kind, SymbolKind::Parameter);
+    assert_eq!(info.symbol("x").unwrap().stmt, 1);
+    assert!(info.symbol("q").is_none());
 }

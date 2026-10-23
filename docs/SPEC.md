@@ -64,7 +64,7 @@ Parsing rules:
 - The exact meaning of each function (for example that `log` is natural and `atan2(y,x)` uses C's order), with its source, is in the semantics table in `language.md`. Division by zero and whether `if` evaluates both branches are open questions for P2.
 
 **Non-smooth models.**
-- Any of `heav sign abs mod flr ceil min max if`, or a table, marks a model as non-smooth.
+- Any of `heav sign abs mod flr ceil min max if`, a comparison (`< <= > >= ==`), `&`, `|`, `not`, or a table, marks a model as non-smooth.
 - Equilibrium continuation is allowed, with a warning, as long as no switching surface is crossed.
 - Derivatives use one-sided rules and the result is flagged.
 

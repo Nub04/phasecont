@@ -13,11 +13,11 @@
 //! undefined. Includes must be resolved too; an `Include` statement left in
 //! the model is ignored.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::ast::{Expr, Ident, MarkovLine, Model, StmtKind, Unsupported};
+use crate::ast::{Expr, Ident, MarkovLine, Model, StmtKind, UnaryOp, Unsupported};
 use crate::builtins::{Status, builtin};
-use crate::diag::{CODES, Code, Diagnostic, Severity};
+use crate::diag::{Code, Diagnostic};
 use crate::parser::expr::PORTABILITY;
 use crate::parser::stmt::UNSUPPORTED_SUM_OF;
 use crate::span::Span;
@@ -61,6 +61,8 @@ pub const UNSUPPORTED_DEL_SHFT: Code = Code(56);
 /// An undefined name in a model with an unsupported statement that may
 /// declare it.
 pub const MAYBE_UNDEFINED: Code = Code(57);
+/// A `global` assignment to a name that is not a state or a parameter.
+pub const BAD_TARGET: Code = Code(58);
 
 /// Longest name XPPAUT 8.0 keeps whole.
 const XPP_NAME_LEN: usize = 10;
@@ -114,28 +116,23 @@ pub struct ModelInfo {
     /// `Ode` or `Map` after the first ODE or map statement, `None` when
     /// there is neither. A mixed file is reported and keeps the first kind.
     pub kind: ModelKind,
-    /// False when the model calls a non-smooth builtin, uses `if` or has a
-    /// table.
+    /// False when the model calls a non-smooth builtin, uses `if`, a
+    /// comparison, `&`, `|` or `not`, or has a table.
     pub smooth: bool,
     /// True when the model calls `ran`, `normal` or `poisson`, or has a
     /// `markov`, `wiener` or `global` statement.
     pub simulation_only: bool,
     /// Declared names in declaration order.
     pub symbols: Vec<Symbol>,
+    /// Lower-case name to position in `symbols`.
+    index: HashMap<String, usize>,
 }
 
 impl ModelInfo {
     /// The symbol with the lower-case name `key`.
     pub fn symbol(&self, key: &str) -> Option<&Symbol> {
-        self.symbols.iter().find(|s| s.name.key == key)
+        self.index.get(key).map(|&s| &self.symbols[s])
     }
-}
-
-fn severity_of(code: Code) -> Severity {
-    CODES
-        .iter()
-        .find(|(c, _, _)| *c == code)
-        .map_or(Severity::Error, |e| e.1)
 }
 
 /// Why `key` cannot be declared, or `None` when it can.
@@ -184,6 +181,15 @@ fn noun(kind: SymbolKind) -> &'static str {
     }
 }
 
+/// The message for `argK` used outside a function with `K` parameters.
+fn bad_arg_message(id: &Ident, k: usize) -> String {
+    let plural = if k == 1 { "" } else { "s" };
+    format!(
+        "`{}` names argument {k} only inside a function with at least {k} parameter{plural}",
+        id.text
+    )
+}
+
 /// Checks `model` and returns what it learned plus the diagnostics, sorted
 /// by where they start.
 pub fn check(model: &Model) -> (ModelInfo, Vec<Diagnostic>) {
@@ -200,6 +206,7 @@ pub fn check(model: &Model) -> (ModelInfo, Vec<Diagnostic>) {
         smooth: c.smooth,
         simulation_only: c.simulation_only,
         symbols: c.symbols,
+        index: c.index,
     };
     (info, diags)
 }
@@ -219,6 +226,10 @@ enum Owner<'a> {
     Function(Option<usize>, &'a [Ident]),
 }
 
+/// A use inside a function body that a derived parameter may not reach:
+/// the name as written, what it is, and where it is used.
+type BadUse = (String, &'static str, Span);
+
 struct Checker<'a> {
     model: &'a Model,
     diags: Vec<Diagnostic>,
@@ -231,14 +242,21 @@ struct Checker<'a> {
     simulation_only: bool,
     /// The first unsupported statement whose text may declare a name.
     declarer: Option<Span>,
-    /// Every declared global name, for the name length warning.
+    /// Keys that a statement tried to declare but are reserved.
+    reserved_tried: HashSet<String>,
+    /// Every global name that was declared without error, for the name
+    /// length warning.
     declared: Vec<&'a Ident>,
-    /// Every function parameter, for the name length warning.
-    params: Vec<&'a Ident>,
+    /// The parameters of each function that were declared without error,
+    /// one group per function, for the name length warning.
+    params: Vec<Vec<&'a Ident>>,
     /// Uses between symbols: (user, used, span of the use). Only uses that
     /// can close a cycle are recorded: among fixed quantities, derived
     /// parameters and functions.
     edges: Vec<(usize, usize, Span)>,
+    /// For each function symbol, the first use in its body of `t`, a
+    /// state, a fixed quantity or a Wiener variable.
+    fn_bad: HashMap<usize, BadUse>,
 }
 
 impl<'a> Checker<'a> {
@@ -253,21 +271,18 @@ impl<'a> Checker<'a> {
             smooth: true,
             simulation_only: false,
             declarer: None,
+            reserved_tried: HashSet::new(),
             declared: Vec::new(),
             params: Vec::new(),
             edges: Vec::new(),
+            fn_bad: HashMap::new(),
         }
     }
 
     fn report(&mut self, code: Code, span: Span, message: String, notes: Vec<(Span, String)>) {
-        self.diags.push(Diagnostic {
-            code,
-            severity: severity_of(code),
-            span,
-            message,
-            fix_it: None,
-            notes,
-        });
+        let mut d = Diagnostic::new(code, span, message);
+        d.notes = notes;
+        self.diags.push(d);
     }
 
     fn lookup(&self, key: &str) -> Option<usize> {
@@ -280,8 +295,8 @@ impl<'a> Checker<'a> {
         if name.index.is_some() {
             return;
         }
-        self.declared.push(name);
         if let Some(reason) = reserved_reason(&name.key) {
+            self.reserved_tried.insert(name.key.clone());
             let message = format!("`{}` {reason} and cannot be declared", name.text);
             self.report(RESERVED_NAME, name.span, message, Vec::new());
             return;
@@ -300,6 +315,7 @@ impl<'a> Checker<'a> {
             self.report(DUPLICATE_NAME, name.span, message, vec![note]);
             return;
         }
+        self.declared.push(name);
         self.index.insert(name.key.clone(), self.symbols.len());
         self.symbols.push(Symbol {
             name: name.clone(),
@@ -398,8 +414,8 @@ impl<'a> Checker<'a> {
             );
             self.report(TOO_MANY_PARAMS, span, message, Vec::new());
         }
+        let mut group = Vec::new();
         for (k, p) in params.iter().enumerate() {
-            self.params.push(p);
             if let Some(reason) = reserved_reason(&p.key) {
                 let message = format!("`{}` {reason} and cannot be a parameter name", p.text);
                 self.report(RESERVED_NAME, p.span, message, Vec::new());
@@ -407,8 +423,11 @@ impl<'a> Checker<'a> {
                 let message = format!("parameter `{}` is declared twice", p.text);
                 let note = (first.span, "the first one is here".to_string());
                 self.report(DUPLICATE_NAME, p.span, message, vec![note]);
+            } else {
+                group.push(p);
             }
         }
+        self.params.push(group);
     }
 
     /// Reports an undefined name, or the softer warning when an
@@ -468,21 +487,30 @@ impl<'a> Checker<'a> {
                         );
                         self.report(INIT_NOT_STATE, name.span, message, vec![note]);
                     }
-                    None if self.declarer.is_some() => self.undefined(name, false),
+                    // The declaration was already reported as reserved.
+                    None if self.reserved_tried.contains(&name.key) => {}
                     None => {
-                        let message = format!(
-                            "`{}` is not a state: no ODE, map or markov statement declares it",
-                            name.text
-                        );
-                        self.report(INIT_NOT_STATE, name.span, message, Vec::new());
+                        if let Some(reason) = reserved_reason(&name.key) {
+                            let message = format!(
+                                "`{}` {reason}, not a state, so it cannot have an initial value",
+                                name.text
+                            );
+                            self.report(INIT_NOT_STATE, name.span, message, Vec::new());
+                        } else if self.declarer.is_some() {
+                            self.undefined(name, false);
+                        } else {
+                            let message = format!(
+                                "`{}` is not a state: no ODE, map or markov statement declares it",
+                                name.text
+                            );
+                            self.report(INIT_NOT_STATE, name.span, message, Vec::new());
+                        }
                     }
                 }
             }
         }
     }
-}
 
-impl<'a> Checker<'a> {
     /// The symbol a statement declares, when this statement is the one that
     /// declared it (not a reported duplicate) and it has the given kind.
     fn own_symbol(&self, name: &Ident, stmt: usize, kind: SymbolKind) -> Option<usize> {
@@ -530,7 +558,7 @@ impl<'a> Checker<'a> {
                 StmtKind::Global { cond, assigns, .. } => {
                     self.walk(cond, Owner::Formula);
                     for a in assigns {
-                        self.name_use(&a.name, Owner::Formula);
+                        self.assign_target(&a.name);
                         self.walk(&a.rhs, Owner::Formula);
                     }
                 }
@@ -543,8 +571,16 @@ impl<'a> Checker<'a> {
         match expr {
             Expr::Num { .. } | Expr::Index(_) | Expr::Error { .. } => {}
             Expr::Name(id) => self.name_use(id, owner),
-            Expr::Unary { operand, .. } => self.walk(operand, owner),
-            Expr::Binary { lhs, rhs, .. } => {
+            Expr::Unary { op, operand, .. } => {
+                if *op == UnaryOp::Not {
+                    self.smooth = false;
+                }
+                self.walk(operand, owner);
+            }
+            Expr::Binary { op, lhs, rhs, .. } => {
+                if op.is_comparison() || op.is_logical() {
+                    self.smooth = false;
+                }
                 self.walk(lhs, owner);
                 self.walk(rhs, owner);
             }
@@ -586,6 +622,16 @@ impl<'a> Checker<'a> {
         self.report(DERIVED_NON_PARAMETER, id.span, message, Vec::new());
     }
 
+    /// Notes a use that a derived parameter may not reach through the
+    /// function `owner` is in.
+    fn bad_in_function(&mut self, id: &Ident, what: &'static str, owner: Owner<'a>) {
+        if let Owner::Function(Some(f), _) = owner {
+            self.fn_bad
+                .entry(f)
+                .or_insert_with(|| (id.text.clone(), what, id.span));
+        }
+    }
+
     fn declared_note(&self, s: usize) -> Vec<(Span, String)> {
         let sym = &self.symbols[s];
         vec![(
@@ -594,16 +640,46 @@ impl<'a> Checker<'a> {
         )]
     }
 
+    /// A target of a `global` assignment: XPPAUT 8.0 assigns states and
+    /// parameters.
+    fn assign_target(&mut self, id: &Ident) {
+        if id.index.is_some() {
+            return;
+        }
+        const ONLY: &str = "`global` can assign only states and parameters";
+        if let Some(reason) = reserved_reason(&id.key) {
+            let message = format!("`{}` {reason} and cannot be assigned; {ONLY}", id.text);
+            self.report(BAD_TARGET, id.span, message, Vec::new());
+            return;
+        }
+        let Some(s) = self.lookup(&id.key) else {
+            if self.declarer.is_some() {
+                self.undefined(id, false);
+            } else {
+                let message = format!("`{}` is not declared and cannot be assigned", id.text);
+                self.report(BAD_TARGET, id.span, message, Vec::new());
+            }
+            return;
+        };
+        let kind = self.symbols[s].kind;
+        if !matches!(kind, SymbolKind::State(_) | SymbolKind::Parameter) {
+            let message = format!(
+                "`{}` is {} and cannot be assigned; {ONLY}",
+                id.text,
+                noun(kind)
+            );
+            let notes = self.declared_note(s);
+            self.report(BAD_TARGET, id.span, message, notes);
+        }
+    }
+
     /// A name used as a value.
     fn name_use(&mut self, id: &Ident, owner: Owner<'a>) {
         if id.index.is_some() || Self::is_param(&id.key, owner) {
             return;
         }
         if let Some(k) = arg_number(&id.key) {
-            let message = format!(
-                "`{}` names argument {k} only inside a function with at least {k} parameters",
-                id.text
-            );
+            let message = bad_arg_message(id, k);
             self.report(BAD_ARG, id.span, message, Vec::new());
             return;
         }
@@ -612,6 +688,7 @@ impl<'a> Checker<'a> {
                 if matches!(owner, Owner::Derived(_)) {
                     self.derived_misuse(id, "the time variable");
                 }
+                self.bad_in_function(id, "the time variable", owner);
                 return;
             }
             "pi" => return,
@@ -641,13 +718,16 @@ impl<'a> Checker<'a> {
                 let notes = self.declared_note(s);
                 self.report(AUX_IN_FORMULA, id.span, message, notes);
             }
-            SymbolKind::Fixed => match owner {
-                Owner::Fixed(Some(u)) | Owner::Function(Some(u), _) => {
-                    self.edges.push((u, s, id.span))
+            SymbolKind::Fixed => {
+                match owner {
+                    Owner::Fixed(Some(u)) | Owner::Function(Some(u), _) => {
+                        self.edges.push((u, s, id.span))
+                    }
+                    Owner::Derived(_) => self.derived_misuse(id, noun(kind)),
+                    _ => {}
                 }
-                Owner::Derived(_) => self.derived_misuse(id, noun(kind)),
-                _ => {}
-            },
+                self.bad_in_function(id, noun(kind), owner);
+            }
             SymbolKind::Derived => {
                 if let Owner::Derived(Some(u)) | Owner::Function(Some(u), _) = owner {
                     self.edges.push((u, s, id.span));
@@ -657,6 +737,7 @@ impl<'a> Checker<'a> {
                 if matches!(owner, Owner::Derived(_)) {
                     self.derived_misuse(id, noun(kind));
                 }
+                self.bad_in_function(id, noun(kind), owner);
             }
             SymbolKind::Parameter | SymbolKind::Number => {}
         }
@@ -691,6 +772,11 @@ impl<'a> Checker<'a> {
             self.report(NOT_CALLABLE, name.span, message, Vec::new());
             return;
         }
+        if let Some(k) = arg_number(&name.key) {
+            let message = bad_arg_message(name, k);
+            self.report(BAD_ARG, name.span, message, Vec::new());
+            return;
+        }
         if let Some(reason) = match name.key.as_str() {
             "t" => Some("the time variable"),
             "pi" => Some("a constant"),
@@ -703,6 +789,10 @@ impl<'a> Checker<'a> {
         if let Some(b) = builtin(&name.key) {
             self.smooth &= b.smooth;
             self.simulation_only |= b.simulation_only;
+            let kept = format!(
+                "`{}` is not supported; the call is kept as written",
+                name.text
+            );
             let warning = match b.status {
                 Status::Full => None,
                 Status::Portability => Some((
@@ -712,27 +802,15 @@ impl<'a> Checker<'a> {
                         name.text
                     ),
                 )),
-                Status::DelayV2 => Some((
+                Status::Delay => Some((
                     UNSUPPORTED_DELAY,
                     format!(
                         "`{}` is not supported yet; delay equations are planned for v2",
                         name.text
                     ),
                 )),
-                Status::Unsupported => {
-                    let code = if b.name == "shift" {
-                        UNSUPPORTED_SHIFT
-                    } else {
-                        UNSUPPORTED_DEL_SHFT
-                    };
-                    Some((
-                        code,
-                        format!(
-                            "`{}` is not supported; the call is kept as written",
-                            name.text
-                        ),
-                    ))
-                }
+                Status::Shift => Some((UNSUPPORTED_SHIFT, kept)),
+                Status::DelShft => Some((UNSUPPORTED_DEL_SHFT, kept)),
             };
             if let Some((code, message)) = warning {
                 self.report(code, name.span, message, Vec::new());
@@ -771,11 +849,213 @@ impl<'a> Checker<'a> {
             }
         }
     }
+
+    fn is_function(&self, s: usize) -> bool {
+        matches!(self.symbols[s].kind, SymbolKind::Function { .. })
+    }
+
+    /// Reports cycles among fixed quantities, derived parameters and
+    /// functions, fixed quantities used above their definition (directly
+    /// or through functions) and derived parameters that reach a state,
+    /// a fixed quantity, `t` or noise through functions.
+    fn report_graph(&mut self) {
+        let n = self.symbols.len();
+        let mut adj = vec![Vec::new(); n];
+        for &(u, w, _) in &self.edges {
+            adj[u].push(w);
+        }
+        let comp = components(n, &adj);
+        let ncomp = comp.iter().max().map_or(0, |&c| c + 1);
+        let mut members: Vec<Vec<usize>> = vec![Vec::new(); ncomp];
+        for (s, &c) in comp.iter().enumerate() {
+            members[c].push(s);
+        }
+        let cyclic: Vec<bool> = (0..n)
+            .map(|s| members[comp[s]].len() > 1 || adj[s].contains(&s))
+            .collect();
+        let mut groups: Vec<Vec<usize>> =
+            members.iter().filter(|m| cyclic[m[0]]).cloned().collect();
+        for g in &mut groups {
+            g.sort_by_key(|&s| (self.symbols[s].stmt, self.symbols[s].name.span.start));
+        }
+        groups.sort_by_key(|g| g[0]);
+        for g in groups {
+            let first = &self.symbols[g[0]];
+            let names: Vec<&str> = g
+                .iter()
+                .map(|&s| self.symbols[s].name.text.as_str())
+                .collect();
+            let is_function = g.iter().all(|&s| self.is_function(s));
+            let message = match (is_function, names.len()) {
+                (true, 1) => format!("function `{}` calls itself", names[0]),
+                (true, _) => format!("functions {} call each other", name_list(&names)),
+                (false, 1) => format!("`{}` is defined in terms of itself", names[0]),
+                (false, _) => format!("{} are defined in terms of each other", name_list(&names)),
+            };
+            let code = if is_function {
+                RECURSIVE_FUNCTION
+            } else {
+                CIRCULAR
+            };
+            let span = first.name.span;
+            let notes = g[1..]
+                .iter()
+                .map(|&s| {
+                    let sym = &self.symbols[s];
+                    let what = if is_function { "defined" } else { "declared" };
+                    (sym.name.span, format!("`{}` is {what} here", sym.name.text))
+                })
+                .collect();
+            self.report(code, span, message, notes);
+        }
+
+        // What each component of functions reaches through function calls
+        // only: the fixed quantity on the latest line, and a use that a
+        // derived parameter may not reach. Tarjan numbers a component after
+        // every component it reaches, so increasing order sees callees
+        // first.
+        let mut latest: Vec<Option<usize>> = vec![None; ncomp];
+        let mut bad: Vec<Option<BadUse>> = vec![None; ncomp];
+        for c in 0..ncomp {
+            let mut fixed: Option<usize> = None;
+            let mut use_: Option<BadUse> = None;
+            for &f in members[c].iter().filter(|&&f| self.is_function(f)) {
+                if let Some(b) = self.fn_bad.get(&f)
+                    && use_.as_ref().is_none_or(|u| b.2.start < u.2.start)
+                {
+                    use_ = Some(b.clone());
+                }
+                for &w in &adj[f] {
+                    let cand = if self.symbols[w].kind == SymbolKind::Fixed {
+                        Some(w)
+                    } else if self.is_function(w) && comp[w] != c {
+                        if use_.is_none() {
+                            use_.clone_from(&bad[comp[w]]);
+                        }
+                        latest[comp[w]]
+                    } else {
+                        None
+                    };
+                    if let Some(x) = cand
+                        && fixed.is_none_or(|y| self.symbols[x].stmt > self.symbols[y].stmt)
+                    {
+                        fixed = Some(x);
+                    }
+                }
+            }
+            latest[c] = fixed;
+            bad[c] = use_;
+        }
+
+        let edges = std::mem::take(&mut self.edges);
+        for &(u, w, span) in &edges {
+            let (user, used) = (&self.symbols[u], &self.symbols[w]);
+            let same_cycle = comp[u] == comp[w] && cyclic[u];
+            if same_cycle {
+                continue;
+            }
+            match (user.kind, used.kind) {
+                (SymbolKind::Fixed, SymbolKind::Fixed) if used.stmt > user.stmt => {
+                    let message = format!(
+                        "fixed quantity `{}` is defined on a later line; XPPAUT 8.0 evaluates \
+                         fixed quantities in file order and reads it as 0 here",
+                        used.name.text
+                    );
+                    let notes = self.declared_note(w);
+                    self.report(FIXED_FORWARD, span, message, notes);
+                }
+                (SymbolKind::Fixed, SymbolKind::Function { .. }) => {
+                    let Some(x) = latest[comp[w]] else { continue };
+                    if self.symbols[x].stmt <= user.stmt {
+                        continue;
+                    }
+                    let message = format!(
+                        "fixed quantity `{}`, which `{}` uses, is defined on a later line; \
+                         XPPAUT 8.0 evaluates fixed quantities in file order and reads it as 0 \
+                         here",
+                        self.symbols[x].name.text, used.name.text
+                    );
+                    let notes = self.declared_note(x);
+                    self.report(FIXED_FORWARD, span, message, notes);
+                }
+                (SymbolKind::Derived, SymbolKind::Function { .. }) => {
+                    let Some((text, what, at)) = bad[comp[w]].clone() else {
+                        continue;
+                    };
+                    let message = format!(
+                        "derived parameter `{}` calls `{}`, which uses `{text}`, {what}, not a \
+                         parameter",
+                        user.name.text, used.name.text
+                    );
+                    let note = (at, format!("`{text}` is used here"));
+                    self.report(DERIVED_NON_PARAMETER, span, message, vec![note]);
+                }
+                _ => {}
+            }
+        }
+        self.edges = edges;
+    }
+
+    /// Portability warning for names longer than XPPAUT 8.0 keeps, with a
+    /// note at one other name that agrees with it in the kept characters.
+    /// Global names are compared with global names, and function
+    /// parameters with the other parameters of the same function.
+    fn report_long_names(&mut self) {
+        let declared = std::mem::take(&mut self.declared);
+        let params = std::mem::take(&mut self.params);
+        self.long_names(&declared);
+        for group in &params {
+            self.long_names(group);
+        }
+    }
+
+    fn long_names(&mut self, names: &[&Ident]) {
+        let prefix = |id: &Ident| id.key.chars().take(XPP_NAME_LEN).collect::<String>();
+        let is_long = |id: &Ident| id.key.chars().count() > XPP_NAME_LEN;
+        // The first two names of at least 10 characters for each kept
+        // prefix. Names in `names` have distinct keys, so one of the two
+        // differs from any name.
+        let mut by_prefix: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, id) in names.iter().enumerate() {
+            if id.key.chars().count() >= XPP_NAME_LEN {
+                let e = by_prefix.entry(prefix(id)).or_default();
+                if e.len() < 2 {
+                    e.push(i);
+                }
+            }
+        }
+        for (i, id) in names.iter().enumerate() {
+            if !is_long(id) {
+                continue;
+            }
+            let notes = by_prefix[&prefix(id)]
+                .iter()
+                .find(|&&j| j != i)
+                .map(|&j| {
+                    let other = names[j];
+                    let message = format!(
+                        "`{}` agrees with this name in its first {XPP_NAME_LEN} characters; \
+                         XPPAUT 8.0 reads them as one name",
+                        other.text
+                    );
+                    (other.span, message)
+                })
+                .into_iter()
+                .collect();
+            let message = format!(
+                "XPPAUT 8.0 rejects this: `{}` is longer than {XPP_NAME_LEN} characters, and \
+                 XPPAUT 8.0 truncates names to {XPP_NAME_LEN} characters",
+                id.text
+            );
+            self.report(PORTABILITY, id.span, message, notes);
+        }
+    }
 }
 
 /// The strongly connected components of a graph with `n` nodes and the
 /// adjacency lists `adj`, by Tarjan's algorithm without recursion. Returns
-/// the component number of each node.
+/// the component number of each node. A component is numbered after every
+/// component it reaches.
 fn components(n: usize, adj: &[Vec<usize>]) -> Vec<usize> {
     const UNSEEN: usize = usize::MAX;
     let mut order = vec![UNSEEN; n];
@@ -836,117 +1116,6 @@ fn name_list(names: &[&str]) -> String {
     match quoted.split_last() {
         Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
         _ => quoted.concat(),
-    }
-}
-
-impl Checker<'_> {
-    /// Reports cycles among fixed quantities, derived parameters and
-    /// functions, and fixed quantities used above their definition.
-    fn report_graph(&mut self) {
-        let n = self.symbols.len();
-        let mut adj = vec![Vec::new(); n];
-        for &(u, w, _) in &self.edges {
-            adj[u].push(w);
-        }
-        let comp = components(n, &adj);
-        let mut members: HashMap<usize, Vec<usize>> = HashMap::new();
-        for (s, &c) in comp.iter().enumerate() {
-            members.entry(c).or_default().push(s);
-        }
-        let cyclic: Vec<bool> = (0..n)
-            .map(|s| members[&comp[s]].len() > 1 || adj[s].contains(&s))
-            .collect();
-        let mut groups: Vec<Vec<usize>> = members.into_values().filter(|m| cyclic[m[0]]).collect();
-        for g in &mut groups {
-            g.sort_by_key(|&s| (self.symbols[s].stmt, self.symbols[s].name.span.start));
-        }
-        groups.sort_by_key(|g| g[0]);
-        for g in groups {
-            let first = &self.symbols[g[0]];
-            let names: Vec<&str> = g
-                .iter()
-                .map(|&s| self.symbols[s].name.text.as_str())
-                .collect();
-            let is_function = g
-                .iter()
-                .all(|&s| matches!(self.symbols[s].kind, SymbolKind::Function { .. }));
-            let message = match (is_function, names.len()) {
-                (true, 1) => format!("function `{}` calls itself", names[0]),
-                (true, _) => format!("functions {} call each other", name_list(&names)),
-                (false, 1) => format!("`{}` is defined in terms of itself", names[0]),
-                (false, _) => format!("{} are defined in terms of each other", name_list(&names)),
-            };
-            let code = if is_function {
-                RECURSIVE_FUNCTION
-            } else {
-                CIRCULAR
-            };
-            let span = first.name.span;
-            let notes = g[1..]
-                .iter()
-                .map(|&s| {
-                    let sym = &self.symbols[s];
-                    let what = if is_function { "defined" } else { "declared" };
-                    (sym.name.span, format!("`{}` is {what} here", sym.name.text))
-                })
-                .collect();
-            self.report(code, span, message, notes);
-        }
-        let edges = std::mem::take(&mut self.edges);
-        for &(u, w, span) in &edges {
-            let (user, used) = (&self.symbols[u], &self.symbols[w]);
-            let same_cycle = comp[u] == comp[w] && cyclic[u];
-            if user.kind == SymbolKind::Fixed
-                && used.kind == SymbolKind::Fixed
-                && used.stmt > user.stmt
-                && !same_cycle
-            {
-                let message = format!(
-                    "fixed quantity `{}` is used above its definition; it is defined below",
-                    used.name.text
-                );
-                let note = (
-                    used.name.span,
-                    format!("`{}` is declared here", used.name.text),
-                );
-                self.report(FIXED_FORWARD, span, message, vec![note]);
-            }
-        }
-        self.edges = edges;
-    }
-
-    /// Portability warning for names longer than XPPAUT 8.0 keeps.
-    fn report_long_names(&mut self) {
-        let prefix = |id: &Ident| id.key.chars().take(XPP_NAME_LEN).collect::<String>();
-        let names: Vec<&Ident> = self.declared.iter().chain(&self.params).copied().collect();
-        for id in names {
-            if id.key.chars().count() <= XPP_NAME_LEN {
-                continue;
-            }
-            let p = prefix(id);
-            let mut notes: Vec<(Span, String)> = Vec::new();
-            for other in &self.declared {
-                if other.key != id.key
-                    && prefix(other) == p
-                    && !notes
-                        .iter()
-                        .any(|(_, m)| m.contains(&format!("`{}`", other.text)))
-                {
-                    let message = format!(
-                        "`{}` agrees with this name in its first {XPP_NAME_LEN} characters; \
-                         XPPAUT 8.0 reads them as one name",
-                        other.text
-                    );
-                    notes.push((other.span, message));
-                }
-            }
-            let message = format!(
-                "XPPAUT 8.0 rejects this: `{}` is longer than {XPP_NAME_LEN} characters, and \
-                 XPPAUT 8.0 truncates names to {XPP_NAME_LEN} characters",
-                id.text
-            );
-            self.report(PORTABILITY, id.span, message, notes);
-        }
     }
 }
 

@@ -23,6 +23,17 @@ pub struct FixIt {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Code(pub u16);
 
+impl Code {
+    /// The default severity of this code in [`CODES`]. A code missing from
+    /// the table is an error.
+    pub fn severity(self) -> Severity {
+        CODES
+            .iter()
+            .find(|(c, _, _)| *c == self)
+            .map_or(Severity::Error, |e| e.1)
+    }
+}
+
 impl fmt::Display for Code {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "ODE{:04}", self.0)
@@ -38,6 +49,20 @@ pub struct Diagnostic {
     pub message: String,
     pub fix_it: Option<FixIt>,
     pub notes: Vec<(Span, String)>,
+}
+
+impl Diagnostic {
+    /// A diagnostic with the default severity of `code`, no fix and no notes.
+    pub fn new(code: Code, span: Span, message: String) -> Diagnostic {
+        Diagnostic {
+            code,
+            severity: code.severity(),
+            span,
+            message,
+            fix_it: None,
+            notes: Vec::new(),
+        }
+    }
 }
 
 /// Every diagnostic code with its default severity and a one-line summary.
@@ -190,6 +215,11 @@ pub const CODES: &[(Code, Severity, &str)] = &[
         Severity::Warning,
         "undefined name that an unsupported statement may declare",
     ),
+    (
+        Code(58),
+        Severity::Error,
+        "name cannot be assigned in `global`",
+    ),
 ];
 
 #[cfg(test)]
@@ -237,6 +267,20 @@ mod tests {
             (Code(1), Severity::Error, "b"),
         ];
         assert!(check_sorted_unique(&unsorted).is_err());
+    }
+
+    #[test]
+    fn severity_comes_from_the_table() {
+        assert_eq!(Code(1).severity(), Severity::Error);
+        assert_eq!(Code(13).severity(), Severity::Warning);
+        assert_eq!(Code(9999).severity(), Severity::Error);
+        let d = Diagnostic::new(
+            Code(13),
+            Span::new(crate::span::FileId(0), 1, 2),
+            "m".into(),
+        );
+        assert_eq!(d.severity, Severity::Warning);
+        assert!(d.fix_it.is_none() && d.notes.is_empty());
     }
 
     #[test]

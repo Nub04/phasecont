@@ -16,7 +16,7 @@ use crate::ast::{
     Assign, Comment, Entry, Expr, Ident, Index, MarkovLine, MarkovRow, Model, OdeForm, RawAssign,
     Stmt, StmtKind, Unsupported, Value,
 };
-use crate::diag::{CODES, Code, Diagnostic, FixIt, Severity};
+use crate::diag::{Code, Diagnostic, FixIt};
 use crate::lexer::{Token, TokenKind, lex};
 use crate::options::is_known_option;
 use crate::parser::expr::clip;
@@ -111,13 +111,6 @@ fn unsupported_info(family: Unsupported) -> (Code, &'static str) {
             "active comments are not supported; the line is kept as written",
         ),
     }
-}
-
-fn severity_of(code: Code) -> Severity {
-    CODES
-        .iter()
-        .find(|(c, _, _)| *c == code)
-        .map_or(Severity::Error, |e| e.1)
 }
 
 /// What the first word of a line declares, when it is a keyword.
@@ -322,7 +315,7 @@ impl StmtParser<'_> {
     fn report(&mut self, code: Code, span: Span, message: String, fix_it: Option<FixIt>) {
         self.diags.push(Diagnostic {
             code,
-            severity: severity_of(code),
+            severity: code.severity(),
             span,
             message,
             fix_it,

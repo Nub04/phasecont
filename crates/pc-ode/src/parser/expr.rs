@@ -24,7 +24,7 @@
 //! leave parenthesized operands alone, but they are not kept in the tree.
 
 use crate::ast::{BinaryOp, Expr, Ident, Index, IndexOp, UnaryOp};
-use crate::diag::{CODES, Code, Diagnostic, FixIt, Severity};
+use crate::diag::{Code, Diagnostic, FixIt};
 use crate::lexer::{Token, TokenKind, lex};
 use crate::span::{FileId, Span};
 
@@ -121,7 +121,7 @@ pub(crate) fn parse_expr(c: &mut ExprCursor) -> Expr {
         let span = Span::new(FileId(0), 0, 0);
         c.diags.push(Diagnostic {
             code: EXPECTED_EXPRESSION,
-            severity: severity_of(EXPECTED_EXPRESSION),
+            severity: EXPECTED_EXPRESSION.severity(),
             span,
             message: "expected an expression, found end of the text".to_string(),
             fix_it: None,
@@ -234,13 +234,6 @@ struct Parser<'p, 'a> {
 }
 
 static EOF: TokenKind = TokenKind::Eof;
-
-fn severity_of(code: Code) -> Severity {
-    CODES
-        .iter()
-        .find(|(c, _, _)| *c == code)
-        .map_or(Severity::Error, |e| e.1)
-}
 
 /// Tokens that end an expression at nesting depth 0.
 fn is_stop(kind: &TokenKind) -> bool {
@@ -386,7 +379,7 @@ impl Parser<'_, '_> {
     fn report(&mut self, code: Code, span: Span, message: String, fix_it: Option<FixIt>) {
         self.c.diags.push(Diagnostic {
             code,
-            severity: severity_of(code),
+            severity: code.severity(),
             span,
             message,
             fix_it,

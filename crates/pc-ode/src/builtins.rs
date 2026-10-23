@@ -15,10 +15,12 @@ pub enum Status {
     /// Supported, but XPPAUT 8.0 rejects it, so each use gives the
     /// portability warning (`ceil`).
     Portability,
-    /// `delay`: kept and warned about; planned for v2.
-    DelayV2,
-    /// `shift` and `del_shft`: kept and warned about.
-    Unsupported,
+    /// `delay`: kept and warned about (ODE0054); planned for v2.
+    Delay,
+    /// `shift`: kept and warned about (ODE0055).
+    Shift,
+    /// `del_shft`: kept and warned about (ODE0056).
+    DelShft,
 }
 
 /// One builtin function.
@@ -34,7 +36,8 @@ pub struct Builtin {
     /// True when a model that calls it can only be simulated.
     pub simulation_only: bool,
     pub status: Status,
-    /// Where the rule comes from, as in `docs/language.md`.
+    /// Where the rule comes from: the start of the Source cell of its row
+    /// in `docs/language.md`.
     pub source: &'static str,
 }
 
@@ -63,7 +66,7 @@ pub const BUILTINS: &[Builtin] = &[
     f("asin", 1, true, false, "manual, measured"),
     f("acos", 1, true, false, "manual, measured"),
     f("atan", 1, true, false, "manual, measured"),
-    f("atan2", 2, true, false, "measured; C argument order"),
+    f("atan2", 2, true, false, "measured"),
     f("sinh", 1, true, false, "manual, measured"),
     f("cosh", 1, true, false, "manual, measured"),
     f("tanh", 1, true, false, "manual, measured"),
@@ -75,7 +78,7 @@ pub const BUILTINS: &[Builtin] = &[
     f("abs", 1, false, false, "manual, measured"),
     f("heav", 1, false, false, "manual, measured"),
     f("sign", 1, false, false, "manual, measured"),
-    f("mod", 2, false, false, "measured; formula open for P2"),
+    f("mod", 2, false, false, "measured"),
     f("min", 2, false, false, "manual, measured"),
     f("max", 2, false, false, "manual, measured"),
     f("flr", 1, false, false, "measured"),
@@ -92,17 +95,17 @@ pub const BUILTINS: &[Builtin] = &[
     f("normal", 2, false, true, "manual"),
     f("poisson", 1, false, true, "manual, measured"),
     Builtin {
-        status: Status::DelayV2,
+        status: Status::Delay,
         ..f("delay", 2, true, false, "manual; warning, v2")
     },
     Builtin {
         arity: None,
-        status: Status::Unsupported,
+        status: Status::Shift,
         ..f("shift", 0, true, false, "manual; unsupported, warning")
     },
     Builtin {
         arity: None,
-        status: Status::Unsupported,
+        status: Status::DelShft,
         ..f("del_shft", 0, true, false, "manual; unsupported, warning")
     },
 ];
@@ -119,8 +122,8 @@ mod tests {
     const LANGUAGE: &str = include_str!("../docs/language.md");
 
     /// One builtin as the language.md table lists it: name, arity, smooth
-    /// cell and simulation-only cell.
-    type Row = (String, Option<usize>, String, String);
+    /// cell, simulation-only cell and source cell.
+    type Row = (String, Option<usize>, String, String, String);
 
     /// The function rows of the "Builtins" table in language.md, one per
     /// name. Names that are not plain identifiers (`if(c)then(a)else(b)`,
@@ -152,6 +155,7 @@ mod tests {
                             arity,
                             cells[4].to_string(),
                             cells[5].to_string(),
+                            cells[6].to_string(),
                         ));
                     }
                 }
@@ -178,8 +182,13 @@ mod tests {
         let names: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
         let ours: Vec<&str> = BUILTINS.iter().map(|b| b.name).collect();
         assert_eq!(names, ours, "names or order differ from language.md");
-        for ((name, arity, smooth, sim), b) in rows.iter().zip(BUILTINS) {
+        for ((name, arity, smooth, sim, source), b) in rows.iter().zip(BUILTINS) {
             assert_eq!(*arity, b.arity, "{name}: arity");
+            assert!(
+                !b.source.is_empty() && source.starts_with(b.source),
+                "{name}: source {:?} does not start the doc cell {source:?}",
+                b.source
+            );
             match (flag(smooth, name), flag(sim, name)) {
                 (Some(smooth), Some(sim)) => {
                     assert_eq!(smooth, b.smooth, "{name}: smooth");
@@ -191,7 +200,7 @@ mod tests {
                 }
                 (None, None) => {
                     assert!(
-                        matches!(b.status, Status::DelayV2 | Status::Unsupported),
+                        matches!(b.status, Status::Delay | Status::Shift | Status::DelShft),
                         "{name}: status"
                     );
                     assert!(b.smooth && !b.simulation_only, "{name}: flags");
@@ -205,7 +214,9 @@ mod tests {
     fn lookup_and_special_entries() {
         assert_eq!(builtin("atan2").unwrap().arity, Some(2));
         assert_eq!(builtin("ceil").unwrap().status, Status::Portability);
-        assert_eq!(builtin("delay").unwrap().status, Status::DelayV2);
+        assert_eq!(builtin("delay").unwrap().status, Status::Delay);
+        assert_eq!(builtin("shift").unwrap().status, Status::Shift);
+        assert_eq!(builtin("del_shft").unwrap().status, Status::DelShft);
         assert_eq!(builtin("shift").unwrap().arity, None);
         assert!(builtin("ran").unwrap().simulation_only);
         assert!(!builtin("abs").unwrap().smooth);
