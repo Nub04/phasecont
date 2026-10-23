@@ -100,9 +100,11 @@ impl SourceLoader for MapLoader {
 /// file's display name, never the working directory; an absolute path is
 /// used as given. The joined path is opened as it is, so the system follows
 /// symbolic links as it would for any program. The display name is the
-/// joined path cleaned up as text (`.` dropped, `dir/..` removed), for
-/// reading only. The identity of a file is its canonical path, where the
-/// system can give one.
+/// joined path with only `.` components dropped; `..` is kept, since
+/// folding it as text past a symbolic link would name a different file.
+/// The display name therefore always names the opened file, and the file's
+/// own includes are taken relative to it. The identity of a file is its
+/// canonical path, where the system can give one.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FsLoader;
 
@@ -111,13 +113,13 @@ impl FsLoader {
         FsLoader
     }
 
-    /// Reads the top file, stores it in `map` under its cleaned-up path
-    /// and returns its id. Only this path may be relative to the working
+    /// Reads the top file, stores it in `map` under its path with `.`
+    /// components dropped and returns its id. Only this path may be relative to the working
     /// directory.
     pub fn load_top(&self, map: &mut SourceMap, path: impl AsRef<Path>) -> Result<FileId, String> {
         let path = path.as_ref();
         let text = read(path)?;
-        Ok(map.add(normalize(path).display().to_string(), text))
+        Ok(map.add(display_name(path).display().to_string(), text))
     }
 }
 
@@ -135,7 +137,7 @@ impl SourceLoader for FsLoader {
         let dir = Path::new(from_name).parent().unwrap_or(Path::new(""));
         let full = dir.join(path);
         let text = read(&full)?;
-        Ok((normalize(&full).display().to_string(), text))
+        Ok((display_name(&full).display().to_string(), text))
     }
 
     fn identity(&mut self, name: &str) -> String {
@@ -169,7 +171,15 @@ fn read(path: &Path) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", show(&path.display().to_string())))
 }
 
-/// Removes `.` components and folds `dir/..` pairs, as text. A `..` with
+/// `path` without its `.` components. `..` is kept.
+fn display_name(path: &Path) -> PathBuf {
+    path.components()
+        .filter(|part| *part != Component::CurDir)
+        .collect()
+}
+
+/// Removes `.` components and folds `dir/..` pairs, as text. Only the
+/// identity fallback uses it, when the system cannot give a canonical path. A `..` with
 /// nothing left to fold stays in a relative path and is dropped after the
 /// root of an absolute one.
 fn normalize(path: &Path) -> PathBuf {
@@ -216,9 +226,14 @@ fn show(text: &str) -> String {
 /// the included file only.
 ///
 /// An include that cannot be resolved (unreadable file, cycle, depth over
-/// [`MAX_INCLUDE_DEPTH`], more than [`MAX_INCLUDES`] in total) is reported
-/// at its line and dropped. An include inside an array block is reported
-/// and left in place, unresolved.
+/// [`MAX_INCLUDE_DEPTH`]) is reported at its line and dropped. An include
+/// inside an array block is reported and left in place, unresolved.
+///
+/// Every `#include` statement reached counts toward [`MAX_INCLUDES`],
+/// resolved or not, including those in array blocks and every repeat of a
+/// file included more than once. The first one past the limit is reported
+/// once; it and every later one are dropped with no other diagnostic and no
+/// loader call.
 pub fn resolve_includes(
     model: &Model,
     file: FileId,
@@ -266,12 +281,14 @@ struct Resolver<'a> {
     diags: Vec<Diagnostic>,
     /// The chain of files from the top file to the one being read.
     stack: Vec<Open>,
-    /// Load results by including file and path as written, so each path is
-    /// read once per including file.
-    loads: HashMap<(FileId, String), Loaded>,
+    /// Load results by the including site's display name and the path as
+    /// written, so each path is read once per including name. The name, not
+    /// the file id, is the key: one file id can stand for two names whose
+    /// relative paths lead to different files.
+    loads: HashMap<(String, String), Loaded>,
     /// Each parsed file by identity key, with its `done` removed.
     parsed: HashMap<String, (FileId, Model)>,
-    /// Includes resolved so far.
+    /// `#include` statements reached so far, resolved or not.
     count: usize,
     /// Whether the include count limit was reported.
     too_many: bool,
@@ -284,7 +301,7 @@ impl Resolver<'_> {
                 StmtKind::Include { path, path_span } => self.include(stmt, path, *path_span, out),
                 StmtKind::Block { body, .. } | StmtKind::BadBlock { body } => {
                     for inner in body {
-                        if matches!(inner.kind, StmtKind::Include { .. }) {
+                        if matches!(inner.kind, StmtKind::Include { .. }) && self.counted(inner) {
                             let message = "`#include` cannot be used inside an array block, \
                                            since the block would copy the file once per index; \
                                            move it outside the block"
@@ -299,21 +316,32 @@ impl Resolver<'_> {
         }
     }
 
+    /// Counts the `#include` statement `stmt` and returns whether it is
+    /// within [`MAX_INCLUDES`]. The first one past the limit is reported;
+    /// it and every later one get no other diagnostic and no loader call.
+    fn counted(&mut self, stmt: &Stmt) -> bool {
+        self.count += 1;
+        if self.count <= MAX_INCLUDES {
+            return true;
+        }
+        if !self.too_many {
+            self.too_many = true;
+            let message = format!(
+                "more than {MAX_INCLUDES} includes in total; this `#include` and every \
+                 later one are not resolved"
+            );
+            self.report(INCLUDE_TOO_MANY, stmt.span, message, None);
+        }
+        false
+    }
+
     fn include(&mut self, stmt: &Stmt, path: &str, path_span: Span, out: &mut Vec<Stmt>) {
+        if !self.counted(stmt) {
+            return;
+        }
         let Some(path) = self.unquote(path, path_span) else {
             return;
         };
-        if self.count >= MAX_INCLUDES {
-            if !self.too_many {
-                self.too_many = true;
-                let message = format!(
-                    "more than {MAX_INCLUDES} includes in total; this `#include` and every \
-                     later one are not resolved"
-                );
-                self.report(INCLUDE_TOO_MANY, stmt.span, message, None);
-            }
-            return;
-        }
         if self.stack.len() > MAX_INCLUDE_DEPTH {
             let message = format!(
                 "includes are nested more than {MAX_INCLUDE_DEPTH} deep: {}",
@@ -362,7 +390,9 @@ impl Resolver<'_> {
                 (id, model)
             }
         };
-        self.count += 1;
+        // The stack keeps this site's own display name, even when the parse
+        // is shared with another name for the same file, so nested includes
+        // resolve against this site's directory.
         self.stack.push(Open {
             file: id,
             name,
@@ -377,7 +407,7 @@ impl Resolver<'_> {
     /// file.
     fn load(&mut self, path: &str) -> Loaded {
         let open = self.stack.last().expect("the top file is on the stack");
-        let slot = (open.file, path.to_string());
+        let slot = (open.name.clone(), path.to_string());
         if let Some(loaded) = self.loads.get(&slot) {
             return loaded.clone();
         }
@@ -394,7 +424,7 @@ impl Resolver<'_> {
 
     /// `path` without matching quotes around it. Quotes are reported with a
     /// fix-it that removes them: XPPAUT would not load the file. Returns
-    /// `None` after reporting a quoted empty name.
+    /// `None` after reporting a quoted name that is empty or blank.
     fn unquote<'p>(&mut self, path: &'p str, path_span: Span) -> Option<&'p str> {
         let quoted = path.len() >= 2
             && ((path.starts_with('"') && path.ends_with('"'))
@@ -403,7 +433,7 @@ impl Resolver<'_> {
             return Some(path);
         }
         let inner = &path[1..path.len() - 1];
-        if inner.is_empty() {
+        if inner.trim().is_empty() {
             let message = "this `#include` names no file; write a file name, as in \
                            `#include other.ode`"
                 .to_string();

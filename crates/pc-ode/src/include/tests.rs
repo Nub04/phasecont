@@ -557,8 +557,11 @@ fn fs_loader_resolves_against_the_including_file() {
     );
     assert_eq!(Path::new(map.name(FileId(1))), tmp.0.join("sub/a.ode"));
     assert_eq!(Path::new(map.name(FileId(2))), tmp.0.join("sub/b.ode"));
-    // `sub/../c.ode` is shown as `c.ode` next to `main.ode`.
-    assert_eq!(Path::new(map.name(FileId(3))), tmp.0.join("c.ode"));
+    // R20 1: `..` is kept in the display name, so it names the opened file.
+    assert_eq!(
+        map.name(FileId(3)),
+        tmp.0.join("sub/../c.ode").display().to_string()
+    );
 }
 
 #[test]
@@ -838,4 +841,203 @@ fn drive_relative_paths() {
     // relative name.
     assert!(drive_relative(Path::new("a.ode")).is_none());
     assert!(drive_relative(Path::new("/a.ode")).is_none());
+}
+
+#[test]
+fn display_names_drop_only_dot() {
+    let cases = [
+        ("a.ode", "a.ode"),
+        ("./a.ode", "a.ode"),
+        ("sub/./a.ode", "sub/a.ode"),
+        ("sub/../a.ode", "sub/../a.ode"),
+        ("../a.ode", "../a.ode"),
+        ("/r/sub/../a.ode", "/r/sub/../a.ode"),
+    ];
+    for (input, want) in cases {
+        assert_eq!(
+            display_name(Path::new(input)),
+            PathBuf::from(want),
+            "{input:?}"
+        );
+    }
+}
+
+/// Resolves the top file `top` with `FsLoader`.
+fn resolve_fs(top: &Path) -> (Model, Vec<Diagnostic>, SourceMap) {
+    let mut map = SourceMap::new();
+    let id = FsLoader::new().load_top(&mut map, top).unwrap();
+    let (model, _) = parse(map.text(id), id);
+    let (resolved, diags) = resolve_includes(&model, id, &mut map, &mut FsLoader::new());
+    (resolved, diags, map)
+}
+
+/// The tree of re-review probe fs/p1: `d/sub/lnk` links to `other/deep`, so
+/// `sub/lnk/../t.ode` opens `other/t.ode`, while folding the `..` as text
+/// would give `d/sub/t.ode`.
+#[cfg(unix)]
+fn symlink_dot_dot_tree(tag: &str, with_decoy: bool) -> TempDir {
+    let tmp = TempDir::new(tag);
+    tmp.write("other/n.ode", "par n=1");
+    tmp.write("other/t.ode", "#include n.ode\npar t=1");
+    std::fs::create_dir_all(tmp.0.join("other/deep")).unwrap();
+    tmp.write("d/sub/n.ode", "par n=99");
+    if with_decoy {
+        tmp.write("d/sub/t.ode", "par wrong=1");
+        tmp.write(
+            "d/main.ode",
+            "#include sub/lnk/../t.ode\n#include sub/t.ode",
+        );
+    } else {
+        tmp.write("d/main.ode", "#include sub/lnk/../t.ode");
+    }
+    std::os::unix::fs::symlink("../../other/deep", tmp.0.join("d/sub/lnk")).unwrap();
+    tmp
+}
+
+#[cfg(unix)]
+#[test]
+fn fs_loader_symlink_then_dot_dot_opens_the_linked_file() {
+    // Probe fs/p1: no file is put in place of another.
+    let tmp = symlink_dot_dot_tree("p1", true);
+    let (resolved, diags, map) = resolve_fs(&tmp.0.join("d/main.ode"));
+    assert!(diags.is_empty(), "{diags:#?}");
+    assert_eq!(
+        resolved.strip_spans().statements,
+        flat("par n=1\npar t=1\npar wrong=1")
+    );
+    assert_eq!(
+        map.name(FileId(1)),
+        tmp.0.join("d/sub/lnk/../t.ode").display().to_string()
+    );
+
+    // Probe fs/p1b: without the decoy, folding would make the file missing.
+    let tmp = symlink_dot_dot_tree("p1b", false);
+    let (resolved, diags, _) = resolve_fs(&tmp.0.join("d/main.ode"));
+    assert!(diags.is_empty(), "{diags:#?}");
+    assert_eq!(resolved.strip_spans().statements, flat("par n=1\npar t=1"));
+}
+
+#[cfg(unix)]
+#[test]
+fn fs_loader_one_file_under_two_names_resolves_per_site() {
+    // Probe fs/p2: `link.ode` links to `sub/real.ode`, which includes
+    // `x.ode`. Each site resolves `x.ode` next to its own name, in either
+    // order, although both share one parse.
+    let tmp = TempDir::new("p2");
+    tmp.write("d/x.ode", "par x=1");
+    tmp.write("d/sub/x.ode", "par x=2");
+    tmp.write("d/sub/real.ode", "#include x.ode\npar r=1");
+    tmp.write("d/main1.ode", "#include link.ode\n#include sub/real.ode");
+    tmp.write("d/main2.ode", "#include sub/real.ode\n#include link.ode");
+    std::os::unix::fs::symlink("sub/real.ode", tmp.0.join("d/link.ode")).unwrap();
+
+    let (resolved, diags, _) = resolve_fs(&tmp.0.join("d/main1.ode"));
+    assert!(diags.is_empty(), "{diags:#?}");
+    assert_eq!(
+        resolved.strip_spans().statements,
+        flat("par x=1\npar r=1\npar x=2\npar r=1")
+    );
+
+    let (resolved, diags, _) = resolve_fs(&tmp.0.join("d/main2.ode"));
+    assert!(diags.is_empty(), "{diags:#?}");
+    assert_eq!(
+        resolved.strip_spans().statements,
+        flat("par x=2\npar r=1\npar x=1\npar r=1")
+    );
+}
+
+#[test]
+fn include_count_includes_unresolved_ones() {
+    // R20 3: every include reached counts, resolved or not.
+    let mut top = "#include missing.ode\n".repeat(MAX_INCLUDES);
+    top.push_str("#include a.ode\n#include missing.ode\n");
+    let (_, resolved, diags, _) = resolve(&top, &[("a.ode", "par a=1")]);
+    let mut want = vec![INCLUDE_UNREADABLE; MAX_INCLUDES];
+    want.push(INCLUDE_TOO_MANY);
+    assert_eq!(codes(&diags), want);
+    assert!(resolved.statements.is_empty());
+
+    // The last include within the limit may be quoted.
+    let mut top = "#include a.ode\n".repeat(MAX_INCLUDES - 1);
+    top.push_str("#include \"a.ode\"\n");
+    let (_, resolved, diags, _) = resolve(&top, &[("a.ode", "par a=1")]);
+    assert_eq!(codes(&diags), [INCLUDE_QUOTED]);
+    assert_eq!(resolved.statements.len(), MAX_INCLUDES);
+}
+
+#[test]
+fn nothing_is_reported_past_the_include_limit() {
+    // Probe `cap`: no quoted-name error, empty-name error or array-block
+    // error after ODE0064.
+    let mut top = "#include a.ode\n".repeat(MAX_INCLUDES + 1);
+    top.push_str("#include \"a.ode\"\n#include \"a.ode\"\n#include \"\"\n");
+    top.push_str("%[1..2]\n#include a.ode\nx[j]'=1\n%\n");
+    let (_, _, diags, _) = resolve(&top, &[("a.ode", "par a=1")]);
+    assert_eq!(codes(&diags), [INCLUDE_TOO_MANY]);
+}
+
+/// Counts calls and answers every path with an error.
+struct Missing(usize);
+
+impl SourceLoader for Missing {
+    fn load(&mut self, _: FileId, _: &str, _: &str) -> Result<(String, String), String> {
+        self.0 += 1;
+        Err("there is no such file".to_string())
+    }
+}
+
+#[test]
+fn missing_files_in_a_lattice_are_bounded() {
+    // Probe `blow`, scaled down: each level includes the next one twice and
+    // the leaf names a missing file 100 times, which without the limit would
+    // give 2^12 * 100 errors.
+    let mut loader = MapLoader::new();
+    for i in 0..11 {
+        loader.insert(
+            format!("l{i}.ode"),
+            format!("#include l{0}.ode\n#include l{0}.ode", i + 1),
+        );
+    }
+    loader.insert("l11.ode", "#include missing.ode\n".repeat(100));
+    let top = "#include l0.ode\n#include l0.ode";
+    let mut map = SourceMap::new();
+    let id = map.add("main.ode", top);
+    let (model, _) = parse(top, id);
+    let start = std::time::Instant::now();
+    let (_, diags) = resolve_includes(&model, id, &mut map, &mut loader);
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    assert!(diags.len() <= MAX_INCLUDES, "{}", diags.len());
+    let too_many = diags.iter().filter(|d| d.code == INCLUDE_TOO_MANY).count();
+    assert_eq!(too_many, 1);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code == INCLUDE_TOO_MANY || d.code == INCLUDE_UNREADABLE)
+    );
+
+    // A missing path is asked for once per including file name.
+    let mut missing = Missing(0);
+    let top = "#include m.ode\n".repeat(10);
+    let mut map = SourceMap::new();
+    let id = map.add("main.ode", top.as_str());
+    let (model, _) = parse(&top, id);
+    let (_, diags) = resolve_includes(&model, id, &mut map, &mut missing);
+    assert_eq!(codes(&diags), vec![INCLUDE_UNREADABLE; 10]);
+    assert_eq!(missing.0, 1);
+}
+
+#[test]
+fn blank_quoted_name() {
+    // R20 4: a quoted name that is blank after trimming names no file.
+    for top in ["#include \" \"", "#include '  '"] {
+        let (_, resolved, diags, map) = resolve(top, &[(" ", "par a=1"), ("  ", "par a=1")]);
+        assert_eq!(
+            codes(&diags),
+            [crate::parser::stmt::MALFORMED_STATEMENT],
+            "{top:?}"
+        );
+        assert!(diags[0].fix_it.is_none());
+        assert_eq!(map.file_count(), 1);
+        assert!(resolved.statements.is_empty());
+    }
 }
