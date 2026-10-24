@@ -53,9 +53,9 @@
 //!   one) is written as `-2`, or `(-2)` where a prefix needs parentheses. It
 //!   reparses without an error but as `Neg` of `2`. `Value::Num` keeps its
 //!   sign.
-//! - A comment or `#include` path that ends in a lone `\r` (`#a\r` at the
-//!   end of the file, or `#a\r\r\n`) loses that `\r`: the lexer drops a
-//!   `\r` before the line end on reparse.
+//! - A comment or `#include` path that holds a `\r` (hand-built only; the
+//!   parser never makes one) reparses as a shorter comment followed by a
+//!   new line, since a `\r` ends a line.
 //!
 //! The writer ignores `Stmt::array_index`, `Stmt::array_template` and
 //! `Model::suppressed`, which the parser never sets.

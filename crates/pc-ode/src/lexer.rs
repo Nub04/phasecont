@@ -70,7 +70,7 @@ pub enum TokenKind {
     At,
     /// `#` and the rest of the line, without the line terminator.
     Comment,
-    /// One `\n` or `\r\n`.
+    /// One `\n`, `\r\n` or a `\r` that no `\n` follows.
     Newline,
     /// A stray character or a malformed number, reported by a diagnostic.
     Unknown,
@@ -83,7 +83,7 @@ pub enum TokenKind {
 pub struct Token {
     pub kind: TokenKind,
     pub span: Span,
-    /// True when blanks (spaces, tabs, a lone `\r` or a backslash-newline
+    /// True when blanks (spaces, tabs or a backslash-newline
     /// continuation) come directly before this token on the same logical
     /// line. The parser uses it to apply the blank-joining rule.
     pub preceded_by_blank: bool,
@@ -129,7 +129,8 @@ impl Lexer<'_> {
             match b {
                 b' ' | b'\t' => self.skip_blank(1),
                 b'\r' if self.peek(1) == Some(b'\n') => self.single(TokenKind::Newline, 2),
-                b'\r' => self.skip_blank(1),
+                // A CR that no LF follows ends the line too.
+                b'\r' => self.single(TokenKind::Newline, 1),
                 b'\n' => self.single(TokenKind::Newline, 1),
                 b'\\' => self.backslash(),
                 b'#' => self.comment(),
@@ -228,6 +229,7 @@ impl Lexer<'_> {
         match (self.peek(1), self.peek(2)) {
             (Some(b'\n'), _) => self.skip_blank(2),
             (Some(b'\r'), Some(b'\n')) => self.skip_blank(3),
+            (Some(b'\r'), _) => self.skip_blank(2),
             _ => self.stray(),
         }
     }
@@ -251,13 +253,10 @@ impl Lexer<'_> {
     fn comment(&mut self) {
         let start = self.pos;
         let rest = &self.bytes[start..];
-        let mut end = match rest.iter().position(|&b| b == b'\n') {
+        let end = match rest.iter().position(|&b| b == b'\n' || b == b'\r') {
             Some(i) => start + i,
             None => self.bytes.len(),
         };
-        if end > start && self.bytes.get(end) == Some(&b'\n') && self.bytes[end - 1] == b'\r' {
-            end -= 1;
-        }
         self.pos = end;
         self.push(TokenKind::Comment, start, end);
     }
@@ -636,9 +635,34 @@ mod tests {
     }
 
     #[test]
-    fn lone_cr_is_a_blank() {
-        assert_eq!(kinds("a\rb"), vec![name("a"), name("b")]);
-        assert_eq!(blanks("a\rb"), vec![false, true, false]);
+    fn lone_cr_is_a_line_end() {
+        assert_eq!(
+            kinds("a\rb"),
+            vec![name("a"), TokenKind::Newline, name("b")]
+        );
+        assert_eq!(blanks("a\rb"), vec![false; 4]);
+        // The token is the one byte of the CR; a CRLF stays one token.
+        let text = "a\rb\r\nc\r\r\nd";
+        let (tokens, diags) = lex(F, text);
+        assert!(diags.is_empty());
+        let spans: Vec<(usize, usize)> =
+            tokens.iter().map(|t| (t.span.start, t.span.end)).collect();
+        assert_eq!(
+            spans,
+            vec![
+                (0, 1),
+                (1, 2),
+                (2, 3),
+                (3, 5),
+                (5, 6),
+                (6, 7),
+                (7, 9),
+                (9, 10),
+                (10, 10)
+            ]
+        );
+        // A backslash before a lone CR continues the line.
+        assert_eq!(kinds("1\\\r2"), vec![n(1.0), n(2.0)]);
     }
 
     #[test]
@@ -674,9 +698,14 @@ mod tests {
         assert!(diags.is_empty());
         assert_eq!(kinds_of(&tokens), vec![Comment, Newline, name("b")]);
         assert_eq!(slice(text, &tokens[0]), "# a \\");
+        // A comment stops at a lone CR, which then ends the line.
         let text = "# a\rb\nc";
         let (tokens, _) = lex(F, text);
-        assert_eq!(slice(text, &tokens[0]), "# a\rb");
+        assert_eq!(slice(text, &tokens[0]), "# a");
+        assert_eq!(
+            kinds_of(&tokens),
+            vec![Comment, Newline, name("b"), Newline, name("c")]
+        );
     }
 
     #[test]

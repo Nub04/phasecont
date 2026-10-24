@@ -1118,12 +1118,12 @@ impl<'a> Checker<'a> {
         for &(u, w, span) in &edges {
             self.at(Some(self.symbols[u].stmt));
             let (user, used) = (&self.symbols[u], &self.symbols[w]);
+            // Edges inside a cycle are left to the cycle error for the two
+            // fixed-quantity rules. The derived-parameter rule has no cycle of
+            // its own for a function, so it reports them as well.
             let same_cycle = comp[u] == comp[w] && cyclic[u];
-            if same_cycle {
-                continue;
-            }
             match (user.kind, used.kind) {
-                (SymbolKind::Fixed, SymbolKind::Fixed) if used.stmt > user.stmt => {
+                (SymbolKind::Fixed, SymbolKind::Fixed) if used.stmt > user.stmt && !same_cycle => {
                     let message = format!(
                         "fixed quantity `{}` is defined on a later line; XPPAUT 8.0 evaluates \
                          fixed quantities in file order and reads it as 0 here",
@@ -1132,7 +1132,7 @@ impl<'a> Checker<'a> {
                     let notes = self.declared_note(w);
                     self.report(FIXED_FORWARD, span, message, notes);
                 }
-                (SymbolKind::Fixed, SymbolKind::Function { .. }) => {
+                (SymbolKind::Fixed, SymbolKind::Function { .. }) if !same_cycle => {
                     let Some(x) = latest[comp[w]] else { continue };
                     if self.symbols[x].stmt <= user.stmt {
                         continue;

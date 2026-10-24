@@ -421,10 +421,11 @@ impl StmtParser<'_> {
     }
 
     /// The span of token `k`, or a zero-width span at its start when it is
-    /// a line end, so that LF, CRLF and the file end give the same span.
+    /// a line end or a comment, so that LF, CRLF, the file end and a
+    /// trailing comment give the same kind of span for a missing item.
     fn point_at(&self, k: usize) -> Span {
         let span = self.span_at(k);
-        if is_line_end(self.kind(k)) {
+        if is_line_end(self.kind(k)) || *self.kind(k) == TokenKind::Comment {
             self.span(span.start, span.start)
         } else {
             span
@@ -575,8 +576,7 @@ impl StmtParser<'_> {
             0
         };
         let rest = &self.text[bom..];
-        let line = rest.split('\n').next().unwrap_or("");
-        let line = line.strip_suffix('\r').unwrap_or(line);
+        let line = rest.split(['\n', '\r']).next().unwrap_or("");
         let lead = line.len() - line.trim_start_matches([' ', '\t']).len();
         if !line[lead..].starts_with(|c: char| c.is_ascii_digit()) {
             return false;
@@ -617,8 +617,11 @@ impl StmtParser<'_> {
         };
         let message =
             "this array block is not closed; end it with `%` on a line of its own".to_string();
-        let at = b.range.map_or(b.head, |r| r.2);
-        self.report(BAD_BLOCK, at, message, None);
+        // A malformed `%[` line was reported when it was read; it is not
+        // reported a second time for being unclosed.
+        if let Some(range) = b.range {
+            self.report(BAD_BLOCK, range.2, message, None);
+        }
         let end = b.body.last().map_or(b.head.end, |s| s.span.end);
         top.push(self.block_stmt(b, end));
     }
@@ -630,6 +633,11 @@ impl StmtParser<'_> {
         let percent = self.span_at(0);
         self.advance();
         if *self.kind(0) != TokenKind::LBracket {
+            if *self.kind(0) == TokenKind::Unknown {
+                // The lexer has reported the character.
+                self.skip_line();
+                return;
+            }
             if !ends_line(self.kind(0)) {
                 self.malformed_block(percent);
                 return;
@@ -1143,7 +1151,8 @@ impl StmtParser<'_> {
     /// One number field of a `table` line. A missing or bad field is
     /// reported and gives [`Value::Error`].
     fn table_field(&mut self, field: &str, table: &str) -> Value {
-        if ends_line(self.kind(0)) {
+        // A comma is a missing field too: `table h % 3, 0, 1 t`.
+        if ends_line(self.kind(0)) || *self.kind(0) == TokenKind::Comma {
             let point = self.point_at(0);
             self.malformed(0, &format!("expected the {field} of table `{table}`"));
             return Value::Error { span: point };

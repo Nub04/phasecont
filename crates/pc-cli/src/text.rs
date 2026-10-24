@@ -220,8 +220,8 @@ mod tests {
 
     #[test]
     fn control_characters_in_the_source_line_are_replaced() {
-        // ESC before the span and a lone CR after it.
-        let got = one("x'=\u{1b}@\ra\n", 4, 5);
+        // ESC before the span and BEL after it.
+        let got = one("x'=\u{1b}@\u{7}a\n", 4, 5);
         assert_eq!(
             got,
             "a.ode:1:5: error[ODE0012]: msg\nx'=\u{fffd}@\u{fffd}a\n    ^\n"

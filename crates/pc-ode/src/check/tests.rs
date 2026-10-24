@@ -780,6 +780,18 @@ fn derived_through_functions() {
 }
 
 #[test]
+fn derived_cycle_through_a_function_still_reports_the_state() {
+    // `d` and `g` use each other, so ODE0043 reports the cycle; `g` also
+    // reads the state `x`, which ODE0053 reports on the call.
+    let text = "!d=g(1)\ng(u)=u*d+x\nx'=1";
+    let c = codes(text);
+    assert!(c.contains(&CIRCULAR), "{c:?}");
+    assert!(c.contains(&DERIVED_NON_PARAMETER), "{c:?}");
+    // Without the state there is only the cycle.
+    assert_eq!(codes("!d=g(1)\ng(u)=u*d"), vec![CIRCULAR]);
+}
+
+#[test]
 fn comparisons_and_logic_are_not_smooth() {
     for text in [
         "x'=-x+(x>1)",

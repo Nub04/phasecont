@@ -62,19 +62,16 @@ impl SourceFile {
     fn line_range(&self, index: usize) -> (usize, usize) {
         let start = self.line_starts[index];
         let rest = &self.text[start..];
-        let Some(newline) = rest.find('\n') else {
-            return (start, self.text.len());
-        };
-        let text = &rest[..newline];
-        let len = text.strip_suffix('\r').map_or(text.len(), str::len);
-        (start, start + len)
+        // The line ends at the first LF or CR: a CR is a terminator whether an
+        // LF follows it or not.
+        let end = rest.find(['\n', '\r']).unwrap_or(rest.len());
+        (start, start + end)
     }
 }
 
 /// Holds the text of every file seen by one parse, addressed by [`FileId`].
 ///
-/// Lines split on `\n`. A `\r` directly before `\n` belongs to the line
-/// terminator; any other `\r` is an ordinary character. Columns count
+/// A line ends at `\n`, `\r\n` or a `\r` that no `\n` follows. Columns count
 /// Unicode scalar values and start at 1.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SourceMap {
@@ -90,7 +87,13 @@ impl SourceMap {
     pub fn add(&mut self, name: impl Into<String>, text: impl Into<String>) -> FileId {
         let text = text.into();
         let mut line_starts = vec![0];
-        line_starts.extend(text.match_indices('\n').map(|(i, _)| i + 1));
+        let bytes = text.as_bytes();
+        for (i, &b) in bytes.iter().enumerate() {
+            let ends_line = b == b'\n' || (b == b'\r' && bytes.get(i + 1) != Some(&b'\n'));
+            if ends_line {
+                line_starts.push(i + 1);
+            }
+        }
         let id = FileId(u32::try_from(self.files.len()).expect("too many source files"));
         self.files.push(SourceFile {
             name: name.into(),
@@ -141,7 +144,7 @@ impl SourceMap {
         (line, col)
     }
 
-    /// Text of a 1-based line without its `\n` or `\r\n` terminator.
+    /// Text of a 1-based line without its `\n`, `\r\n` or `\r` terminator.
     /// Returns `None` when the line does not exist. Panics on an unknown
     /// file id.
     pub fn line_text(&self, file: FileId, line: usize) -> Option<&str> {
@@ -231,13 +234,28 @@ mod tests {
     }
 
     #[test]
-    fn lone_cr_is_an_ordinary_character() {
+    fn lone_cr_is_a_line_end() {
+        // Lines: `a` (ended by a lone CR), an empty line (ended by CRLF), `b`.
         let (map, f) = map_with("a\r\r\nb");
-        assert_eq!(map.line_text(f, 1), Some("a\r"));
+        assert_eq!(map.line_text(f, 1), Some("a"));
+        assert_eq!(map.line_text(f, 2), Some(""));
+        assert_eq!(map.line_text(f, 3), Some("b"));
+        assert_eq!(map.line_text(f, 4), None);
+        assert_eq!(at(&map, f, 0), (1, 1));
         assert_eq!(at(&map, f, 1), (1, 2));
-        assert_eq!(at(&map, f, 2), (1, 3));
-        assert_eq!(at(&map, f, 3), (1, 3));
-        assert_eq!(at(&map, f, 4), (2, 1));
+        assert_eq!(at(&map, f, 2), (2, 1));
+        assert_eq!(at(&map, f, 3), (2, 1));
+        assert_eq!(at(&map, f, 4), (3, 1));
+        // CR only: three lines, and a CR at the end of the text gives an
+        // empty last line.
+        let (map, f) = map_with("ab\rcd\ref\r");
+        assert_eq!(map.line_text(f, 1), Some("ab"));
+        assert_eq!(map.line_text(f, 2), Some("cd"));
+        assert_eq!(map.line_text(f, 3), Some("ef"));
+        assert_eq!(map.line_text(f, 4), Some(""));
+        assert_eq!(at(&map, f, 3), (2, 1));
+        assert_eq!(at(&map, f, 4), (2, 2));
+        assert_eq!(at(&map, f, 9), (4, 1));
     }
 
     #[test]
@@ -275,10 +293,12 @@ mod tests {
         // Empty last line after a final newline.
         let (map, f) = map_with("a\n");
         assert_eq!(map.line_text(f, 2), Some(""));
-        // A lone '\r' that is not before '\n' stays in the text.
+        // A lone '\r' that is not before '\n' ends the line.
         let (map, f) = map_with("a\rb\nc\r");
-        assert_eq!(map.line_text(f, 1), Some("a\rb"));
-        assert_eq!(map.line_text(f, 2), Some("c\r"));
+        assert_eq!(map.line_text(f, 1), Some("a"));
+        assert_eq!(map.line_text(f, 2), Some("b"));
+        assert_eq!(map.line_text(f, 3), Some("c"));
+        assert_eq!(map.line_text(f, 4), Some(""));
         // Empty file has one empty line.
         let (map, f) = map_with("");
         assert_eq!(map.line_text(f, 1), Some(""));

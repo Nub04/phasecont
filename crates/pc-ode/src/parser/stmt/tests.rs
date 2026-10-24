@@ -817,6 +817,59 @@ fn bad_blocks() {
     check_one("%[a..2]\n%", BAD_BLOCK, (0, 7), None);
 }
 
+#[test]
+fn unclosed_malformed_block_is_reported_once() {
+    check_one("%[1..\n", BAD_BLOCK, (0, 5), None);
+    check_one("x'=1\n%[1..\nx=1\n", BAD_BLOCK, (5, 10), None);
+    // A well-formed block that is not closed still gets its own report.
+    check_one("%[1..2]\nx[j]'=1", BAD_BLOCK, (1, 7), None);
+}
+
+#[test]
+fn stray_character_after_a_percent_is_reported_by_the_lexer_only() {
+    assert_eq!(codes("%\u{e9}\n"), vec![STRAY_CHARACTER]);
+    assert_eq!(codes("x'=1\n%\u{e9}\n%[1..2]\n%\n"), vec![STRAY_CHARACTER]);
+}
+
+#[test]
+fn a_comma_is_a_missing_table_field() {
+    let text = "table h % 3, 0, 1 t";
+    let d = one(text);
+    assert_eq!(d.code, MALFORMED_STATEMENT);
+    assert_eq!(d.span, sp(11, 12));
+    assert!(
+        d.message
+            .starts_with("expected the lower bound of table `h`")
+    );
+}
+
+#[test]
+fn a_missing_table_field_at_a_comment_has_a_zero_width_span() {
+    let text = "table h % 11 0 1 # c";
+    let (_, diags) = parse_all(text);
+    assert_eq!(diags[0].code, MALFORMED_STATEMENT);
+    assert_eq!(diags[0].span, sp(17, 17));
+    assert!(diags[0].message.contains("formula"));
+    let (_, diags) = parse_all("table h % 11 0 # c");
+    assert_eq!(diags[0].span, sp(15, 15));
+}
+
+#[test]
+fn messages_never_hold_a_line_break() {
+    assert_eq!(clip("a\nb\r\tc"), "a\\nb\\r\\tc");
+    for text in [
+        "%[1..\\\n2\n",
+        "%x \\\n y\n",
+        "x'=1 \\\n 2 \\\n 3\n",
+        "@ a=\\\n1 \\\n b\n",
+        "foo \\\n bar\n",
+    ] {
+        for d in parse_all(text).1 {
+            assert!(!d.message.contains(['\n', '\r']), "{text:?}: {d:#?}");
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // R12 details.
 
@@ -1075,8 +1128,8 @@ fn malformed_block_openers_poison_their_block() {
     let text = "%[a..3]\nx'=1\n%";
     check_one(text, BAD_BLOCK, (0, 7), None);
     assert_eq!(parse_all(text).0.statements[0].span, sp(0, 14));
-    // An unclosed bad block is reported too.
-    assert_eq!(codes("%[a..3]\nx'=1"), vec![BAD_BLOCK, BAD_BLOCK]);
+    // An unclosed bad block is not reported a second time.
+    assert_eq!(codes("%[a..3]\nx'=1"), vec![BAD_BLOCK]);
     // A bad opener inside a block: its `%` is ignored.
     let text = "%[1..2]\n%[a..3]\nx[j]'=1\n%\n%";
     check_one(text, BAD_BLOCK, (8, 15), None);

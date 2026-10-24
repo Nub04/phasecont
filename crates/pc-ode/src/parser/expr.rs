@@ -78,8 +78,26 @@ const MAX_DEPTH: usize = 200;
 const QUOTE_MAX: usize = 60;
 
 /// `s` as it should appear in a message: unchanged when it is at most
-/// [`QUOTE_MAX`] bytes, otherwise its start and end joined by `...`.
+/// [`QUOTE_MAX`] bytes, otherwise its start and end joined by `...`. A
+/// control character (a line break inside a continued line, say) is
+/// written as an escape, so a message never holds a line break.
 pub(crate) fn clip(s: &str) -> String {
+    let cut = clip_len(s);
+    if !cut.chars().any(char::is_control) {
+        return cut;
+    }
+    let mut out = String::with_capacity(cut.len());
+    for c in cut.chars() {
+        if c.is_control() {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn clip_len(s: &str) -> String {
     if s.len() <= QUOTE_MAX {
         return s.to_string();
     }

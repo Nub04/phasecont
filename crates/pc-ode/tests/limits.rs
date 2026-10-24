@@ -165,3 +165,23 @@ fn a_full_list_still_collapses_nothing_wrongly() {
     assert_eq!(count(d, TOO_MANY_DIAGNOSTICS), 1);
     assert!(dropped_in(d.last().unwrap()) >= 4);
 }
+
+#[test]
+fn a_lone_cr_ends_a_line_in_diagnostic_positions() {
+    // Lines separated by a lone CR, a CRLF and an LF. The error is on
+    // line 2 (the `(` at column 4) and the comment on line 3 does not run into it.
+    let text = "x'=-x\rfoo(\r\n# c\ndone";
+    let mut map = SourceMap::new();
+    let id = map.add("main.ode", text);
+    let loaded = load(id, &mut map, &mut MapLoader::new());
+    let d = loaded
+        .diagnostics
+        .iter()
+        .find(|d| d.span.start == 9)
+        .unwrap_or_else(|| panic!("{:#?}", loaded.diagnostics));
+    assert_eq!(map.line_col(d.span), (2, 4));
+    assert_eq!(map.line_text(id, 3), Some("# c"));
+    assert_eq!(map.line_text(id, 4), Some("done"));
+    // The comment is a comment of its own: nothing is reported there.
+    assert!(loaded.diagnostics.iter().all(|d| d.span.start < 11));
+}
