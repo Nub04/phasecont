@@ -333,4 +333,103 @@ mod tests {
         assert_eq!(Code(9999).to_string(), "ODE9999");
         assert_eq!(Code(65535).to_string(), "ODE65535");
     }
+
+    const LANGUAGE: &str = include_str!("../docs/language.md");
+
+    fn severity_word(s: Severity) -> &'static str {
+        match s {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+            Severity::Note => "note",
+        }
+    }
+
+    /// Compares the rows of the "Diagnostic codes" table in `doc`
+    /// (`| ODE0001 | error | meaning |`) with `table`: same codes, same
+    /// order, same severities, none twice.
+    fn check_doc_table(doc: &str, table: &[(Code, Severity, &str)]) -> Result<(), String> {
+        let start = doc
+            .find("\n## Diagnostic codes\n")
+            .ok_or("no Diagnostic codes section")?;
+        let section = &doc[start + 1..];
+        let end = section[3..].find("\n## ").map_or(section.len(), |i| i + 3);
+        let mut rows: Vec<(String, String)> = Vec::new();
+        for line in section[..end].lines().filter(|l| l.starts_with("| ODE")) {
+            let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+            if cells.len() != 5 || cells[3].is_empty() {
+                return Err(format!("row needs a code, severity and meaning: {line}"));
+            }
+            rows.push((cells[1].to_string(), cells[2].to_string()));
+        }
+        for (i, (code, severity)) in rows.iter().enumerate() {
+            if rows[..i].iter().any(|(c, _)| c == code) {
+                return Err(format!("{code} has two rows"));
+            }
+            match table.iter().find(|(c, _, _)| c.to_string() == *code) {
+                None => return Err(format!("{code} is not in CODES")),
+                Some((_, s, _)) if severity_word(*s) != severity => {
+                    return Err(format!(
+                        "{code} is {} in CODES but {severity} in the doc",
+                        severity_word(*s)
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+        for (i, (code, _, _)) in table.iter().enumerate() {
+            match rows.get(i) {
+                Some((c, _)) if *c == code.to_string() => {}
+                Some((c, _)) => return Err(format!("row {} is {c}, expected {code}", i + 1)),
+                None => return Err(format!("{code} has no row")),
+            }
+        }
+        if rows.len() > table.len() {
+            return Err("the doc has more rows than CODES".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn language_md_lists_every_code() {
+        check_doc_table(LANGUAGE, CODES).unwrap();
+    }
+
+    #[test]
+    fn doc_table_checker_rejects_mismatches() {
+        let table = [
+            (Code(1), Severity::Error, "a"),
+            (Code(2), Severity::Warning, "b"),
+        ];
+        let doc = |rows: &str| format!("x\n## Diagnostic codes\n\n{rows}\n## Next\n");
+        let good = doc("| ODE0001 | error | a |\n| ODE0002 | warning | b |\n");
+        assert_eq!(check_doc_table(&good, &table), Ok(()));
+        let cases = [
+            ("| ODE0001 | error | a |\n", "has no row"),
+            (
+                "| ODE0001 | error | a |\n| ODE0002 | warning | b |\n| ODE0003 | error | c |\n",
+                "not in CODES",
+            ),
+            (
+                "| ODE0001 | error | a |\n| ODE0002 | error | b |\n",
+                "in the doc",
+            ),
+            (
+                "| ODE0002 | warning | b |\n| ODE0001 | error | a |\n",
+                "expected",
+            ),
+            (
+                "| ODE0001 | error | a |\n| ODE0001 | error | a |\n| ODE0002 | warning | b |\n",
+                "two rows",
+            ),
+            (
+                "| ODE0001 | error | |\n| ODE0002 | warning | b |\n",
+                "needs a code",
+            ),
+        ];
+        for (rows, want) in cases {
+            let err = check_doc_table(&doc(rows), &table).unwrap_err();
+            assert!(err.contains(want), "{rows}: {err}");
+        }
+        assert!(check_doc_table("no section", &table).is_err());
+    }
 }

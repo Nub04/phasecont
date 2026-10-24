@@ -17,7 +17,7 @@
 //! as silent placeholders. Precedence warnings are left out for any part of
 //! the tree that came from error recovery, since its reading is a guess.
 //!
-//! No tree is deeper than [`MAX_DEPTH`] levels, so the parser and every
+//! No tree is deeper than `MAX_DEPTH` levels, so the parser and every
 //! recursive pass over the tree stay within a small stack.
 //!
 //! Parentheses are tracked while parsing, so that the precedence warnings
@@ -57,7 +57,7 @@ pub const PRECEDENCE: Code = Code(14);
 pub const UNSUPPORTED_INDEX: Code = Code(15);
 /// An `if` that is not `if(c)then(a)else(b)`.
 pub const MALFORMED_IF: Code = Code(16);
-/// An expression whose tree would be deeper than [`MAX_DEPTH`].
+/// An expression whose tree would be deeper than `MAX_DEPTH`.
 pub const EXPRESSION_TOO_DEEP: Code = Code(17);
 
 /// The deepest expression tree the parser builds. A leaf has height 1, and

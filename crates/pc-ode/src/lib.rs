@@ -4,8 +4,8 @@
 //! the source map ([`span`]), diagnostics with their stable codes
 //! ([`diag`]), the tokenizer ([`lexer`]), the syntax tree ([`ast`]), the
 //! known `@` option names ([`options`]), the parser ([`parser`]), the
-//! builtin table ([`builtins`]), the name checks ([`check`]), the include
-//! pass ([`include`]), the array pass ([`expand`]) and the writer
+//! builtin table ([`builtins`]), the name checks ([`mod@check`]), the include
+//! pass ([`mod@include`]), the array pass ([`mod@expand`]) and the writer
 //! ([`writer`]). [`parse`] turns one file into a [`Model`],
 //! [`resolve_includes`] replaces its `#include` lines with the files they
 //! name, [`expand()`] copies its range lines and array blocks once per

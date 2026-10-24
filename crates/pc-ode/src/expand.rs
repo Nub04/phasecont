@@ -1,6 +1,6 @@
 //! Pass 3: expands pseudo-arrays and array blocks.
 //!
-//! [`expand`] runs after the include pass and before [`check`](crate::check).
+//! [`expand`] runs after the include pass and before [`check`](mod@crate::check).
 //! A statement with one range `[i1..i2]` is replaced, in place, by one copy
 //! per index from `i1` to `i2` (counting down when `i1 > i2`). An array block
 //! `%[i1..i2] ... %` is replaced by its body copied once per index: the

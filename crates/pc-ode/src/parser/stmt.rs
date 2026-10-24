@@ -5,7 +5,7 @@
 //! classification, Statement forms, Arrays, Includes). The first word of a
 //! line decides what it is: a keyword when a blank or the end of the line
 //! follows it and the next token is not `=`, otherwise a formula told apart
-//! by its left side. Expressions are parsed by [`parse_expr`].
+//! by its left side. Expressions are parsed by `parse_expr`.
 //!
 //! The parser never panics. A line it cannot read gives a diagnostic and is
 //! skipped, so later lines are still parsed. Statements are not recursive:
