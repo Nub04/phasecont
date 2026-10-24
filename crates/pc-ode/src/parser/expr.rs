@@ -936,6 +936,8 @@ impl Parser<'_, '_> {
     /// reported is used silently; anything else is reported.
     fn no_operand(&mut self) -> Parsed {
         let span = self.span_at(0);
+        // Known limitation (P6): the lexer already reported this token, and the text
+        // after it is not parsed further, so later errors on the line are missed.
         if *self.kind(0) == TokenKind::Unknown {
             self.advance();
             return Parsed::error(span);

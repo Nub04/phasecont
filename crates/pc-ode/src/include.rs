@@ -187,6 +187,8 @@ impl SourceLoader for FsLoader {
         Ok((self.remember(display_name(&full)), text))
     }
 
+    // Known limitation (P11): when `canonicalize` fails, the fallback folds `..`
+    // textually, which differs from the file system if a link is in the path.
     fn identity(&mut self, name: &str) -> String {
         let real = self.real_path(name);
         match std::fs::canonicalize(&real) {
@@ -531,7 +533,8 @@ impl Resolver<'_> {
     }
 
     /// Loads `path` from the file on top of the stack, once per including
-    /// file.
+    /// display name (the cache key is the name of the including file and the
+    /// path as written).
     fn load(&mut self, path: &str) -> Loaded {
         let open = self.stack.last().expect("the top file is on the stack");
         let slot = (open.name.clone(), path.to_string());

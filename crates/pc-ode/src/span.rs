@@ -94,6 +94,8 @@ impl SourceMap {
                 line_starts.push(i + 1);
             }
         }
+        // Invariant: the map holds fewer than 2^32 files; a load adds at most
+        // MAX_INCLUDES + 1 files, so the count fits in a u32.
         let id = FileId(u32::try_from(self.files.len()).expect("too many source files"));
         self.files.push(SourceFile {
             name: name.into(),
@@ -105,6 +107,8 @@ impl SourceMap {
 
     fn file(&self, id: FileId) -> &SourceFile {
         self.files
+            // Invariant: a FileId only comes from `add` on this map, so it is in range.
+            // A foreign id is a caller bug; pc-ffi catches the panic.
             .get(id.0 as usize)
             .unwrap_or_else(|| panic!("unknown file id {}", id.0))
     }
@@ -128,6 +132,8 @@ impl SourceMap {
     pub fn line_col(&self, span: Span) -> (usize, usize) {
         let file = self.file(span.file);
         let offset = span.start;
+        // Invariant: spans come from the lexer, which cuts at char boundaries inside
+        // the file text; a violation is a caller bug that pc-ffi catches.
         assert!(
             offset <= file.text.len(),
             "offset {offset} is past the end of {}",
