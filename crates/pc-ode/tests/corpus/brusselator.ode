@@ -1,0 +1,7 @@
+# Brusselator. Prigogine and Lefever, Journal of Chemical Physics 48 (1968) 1695-1700; A=1 and B=3 are illustrative values past the Hopf point B=1+A^2.
+par A=1,B=3
+x'=A+x^2*y-(B+1)*x
+y'=B*x-x^2*y
+init x=1,y=3
+@ total=50,xp=x,yp=y,xlo=0,xhi=4,ylo=0,yhi=6
+done

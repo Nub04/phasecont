@@ -1,0 +1,3 @@
+# ODE0044 initial value for a non-state
+par a=1
+init a=1

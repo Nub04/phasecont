@@ -1,0 +1,34 @@
+diagnostics
+summary
+kind: Ode
+smooth: true
+simulation_only: false
+states: 2
+parameters: 13
+numbers: 0
+derived: 0
+fixed: 3
+functions: 0
+aux: 1
+tables: 0
+wiener: 0
+symbols
+parameter I
+parameter C
+parameter gL
+parameter gK
+parameter gCa
+parameter vL
+parameter vK
+parameter vCa
+parameter v1
+parameter v2
+parameter v3
+parameter v4
+parameter phi
+fixed minf
+fixed winf
+fixed tauw
+state-ode v
+state-ode w
+aux mss

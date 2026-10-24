@@ -1,0 +1,2 @@
+# ODE0047 recursive function
+f(u)=f(u)

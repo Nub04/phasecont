@@ -1,0 +1,6 @@
+# Fold (saddle-node) normal form x'=mu+x^2. Kuznetsov, Elements of Applied Bifurcation Theory, 3rd ed. (2004), chapter 3.
+par mu=-1
+x'=mu+x^2
+init x=-1
+@ total=10,xp=t,yp=x
+done

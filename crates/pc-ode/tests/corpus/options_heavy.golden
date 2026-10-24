@@ -1,0 +1,18 @@
+diagnostics
+summary
+kind: Ode
+smooth: true
+simulation_only: false
+states: 2
+parameters: 1
+numbers: 0
+derived: 0
+fixed: 0
+functions: 0
+aux: 0
+tables: 0
+wiener: 0
+symbols
+parameter mu
+state-ode x
+state-ode y

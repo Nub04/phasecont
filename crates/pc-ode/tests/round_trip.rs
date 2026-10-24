@@ -13,22 +13,15 @@ use pc_ode::{
 };
 use proptest::prelude::*;
 
+mod common;
+
+use common::{assert_round_trip, parse_ok};
+
 const FILE: FileId = FileId(0);
 
 // ---------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------
-
-/// Parses `src` and fails the test on any error-severity diagnostic.
-fn parse_ok(src: &str) -> Model {
-    let (model, diags) = parse(src, FILE);
-    let errors: Vec<_> = diags
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "errors in\n{src}\n{errors:#?}");
-    model
-}
 
 /// The canonical text of the right side of `x=<src>`.
 fn canon(src: &str) -> String {
@@ -140,15 +133,6 @@ fn expr_text(e: Expr) -> String {
         .unwrap_or_else(|| panic!("unexpected writer output {text:?}"))
         .to_string()
 }
-
-/// Asserts that `m` survives `write` then `parse` (spans stripped) and that
-/// the written text parses without errors.
-fn assert_round_trip(m: &Model) {
-    let text = write(m);
-    let back = parse_ok(&text);
-    assert_eq!(back.strip_spans(), m.strip_spans(), "text:\n{text}");
-}
-
 /// Asserts that every span of every diagnostic, note and fix-it lies in
 /// `text` and on char boundaries.
 fn assert_spans_in(text: &str, diags: &[pc_ode::Diagnostic]) {

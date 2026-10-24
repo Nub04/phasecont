@@ -1,0 +1,2 @@
+# ODE0055 shift
+x'=shift(x,1)

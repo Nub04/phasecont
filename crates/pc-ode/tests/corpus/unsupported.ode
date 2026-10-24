@@ -1,0 +1,20 @@
+# Unsupported constructs, one per line. Each line gives a warning and is kept as written. The numbers are illustrative.
+par a=1,k=0.5,tau=2
+x'=-a*x+delay(x,tau)
+y'=-y+shift(x,1)
+z'=-z+del_shft(x,2)
+u(t)=1+int{k*u}
+volt q=sin(t)+int{k*q}
+bndry x-y
+0=x-y+z
+solv w
+special sp=conv(1,5,3,0,tab)
+export {x,y} {1,2}
+only x,y
+options params.opt
+hom_bcs 1
+sp2=sum(0,3)of(i'*2)
+table ft ft.tab
+"An active comment line
+init x=1,y=0,z=0
+done

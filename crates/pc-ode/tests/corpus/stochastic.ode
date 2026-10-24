@@ -1,0 +1,11 @@
+# Leaky integrate-and-fire neuron, Lapicque (1907), with white noise and a two-state channel. Illustrative values.
+par I=0.8,sigma=0.3,g=0.2,kon=0.5,koff=0.1
+wiener w
+markov z 2
+{0} {kon}
+{koff} {0}
+v'=-v+I+g*z+sigma*w
+global 1 v-1 {v=0}
+init v=0
+@ total=100,dt=0.01,xp=t,yp=v
+done

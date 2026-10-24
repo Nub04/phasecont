@@ -1,0 +1,4 @@
+# ODE0063 include inside a block
+%[1..2]
+#include include/ok.ode
+%

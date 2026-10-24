@@ -1,0 +1,8 @@
+# Lorenz system. Lorenz, Journal of the Atmospheric Sciences 20 (1963) 130-141; sigma=10, r=28, b=8/3.
+par sigma=10,r=28,b=2.6666667
+x'=sigma*(y-x)
+y'=r*x-y-x*z
+z'=x*y-b*z
+init x=1,y=1,z=1
+@ total=50,xp=x,yp=z,xlo=-25,xhi=25,ylo=0,yhi=50
+done

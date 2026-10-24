@@ -1,0 +1,7 @@
+# Bogdanov-Takens normal form. Kuznetsov, Elements of Applied Bifurcation Theory, 3rd ed. (2004), chapter 8; the coefficient s=1 is an illustrative choice.
+par b1=0,b2=0,s=1
+x'=y
+y'=b1+b2*y+x^2+s*x*y
+init x=0.1,y=0
+@ total=10,xp=x,yp=y
+done

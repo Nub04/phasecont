@@ -1,0 +1,2 @@
+# ODE0041 name declared twice
+par a=1,a=2

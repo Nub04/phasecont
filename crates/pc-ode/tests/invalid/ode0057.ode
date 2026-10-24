@@ -1,0 +1,3 @@
+# ODE0057 undefined name that special may declare
+special s
+x'=y

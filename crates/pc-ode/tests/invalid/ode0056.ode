@@ -1,0 +1,2 @@
+# ODE0056 del_shft
+x'=del_shft(x,1)

@@ -1,0 +1,7 @@
+# Hopf normal form with a negative first Lyapunov coefficient. Kuznetsov, Elements of Applied Bifurcation Theory, 3rd ed. (2004), chapter 3.
+par mu=0.1
+x'=mu*x-y-x*(x^2+y^2)
+y'=x+mu*y-y*(x^2+y^2)
+init x=0.1,y=0
+@ total=100,xp=x,yp=y,xlo=-1,xhi=1,ylo=-1,yhi=1
+done

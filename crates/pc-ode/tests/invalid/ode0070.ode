@@ -1,0 +1,6 @@
+# ODE0070 markov inside a block
+%[1..2]
+markov z 2
+{0} {1}
+{1} {0}
+%

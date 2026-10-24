@@ -1,0 +1,4 @@
+# ODE0045 initial value twice
+x'=1
+init x=1
+x(0)=2
