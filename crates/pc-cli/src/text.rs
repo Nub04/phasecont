@@ -1,4 +1,8 @@
 //! Text rendering of a loaded model.
+//!
+//! Columns count characters, not display cells. The summary follows a blank
+//! line only when there are diagnostics, so a clean model starts with
+//! `kind:`.
 
 use std::fmt::Write as _;
 
@@ -45,7 +49,19 @@ fn snippet(map: &SourceMap, span: Span) -> Option<String> {
     }
     caret.push('^');
     caret.extend(std::iter::repeat_n('~', tildes));
-    Some(format!("{text}\n{caret}\n"))
+    // Control characters other than tab become U+FFFD, one for one, so the
+    // caret columns stay right and the terminal sees no escape codes.
+    let shown: String = text
+        .chars()
+        .map(|c| {
+            if c != '\t' && c.is_control() {
+                '\u{FFFD}'
+            } else {
+                c
+            }
+        })
+        .collect();
+    Some(format!("{shown}\n{caret}\n"))
 }
 
 fn diagnostic(out: &mut String, map: &SourceMap, d: &Diagnostic) {
@@ -65,8 +81,8 @@ fn diagnostic(out: &mut String, map: &SourceMap, d: &Diagnostic) {
         let (l2, c2) = map.line_col(Span::new(fix.span.file, fix.span.end, fix.span.end));
         let _ = writeln!(
             out,
-            "  fix-it: replace {l1}:{c1}-{l2}:{c2} with {:?}",
-            fix.replacement
+            "  fix-it: replace {l1}:{c1}-{l2}:{c2} with {}",
+            serde_json::to_string(&fix.replacement).expect("a string serializes")
         );
     }
     for (span, message) in &d.notes {
@@ -99,13 +115,23 @@ pub fn render(map: &SourceMap, loaded: &Loaded) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pc_ode::{MapLoader, load};
+    use pc_ode::{Code, FixIt, MapLoader, load};
 
     fn run(name: &str, text: &str) -> String {
         let mut map = SourceMap::new();
         let top = map.add(name, text);
         let loaded = load(top, &mut map, &mut MapLoader::new());
         render(&map, &loaded)
+    }
+
+    /// The text of one diagnostic with span `start..end` in file `text`.
+    fn one(text: &str, start: usize, end: usize) -> String {
+        let mut map = SourceMap::new();
+        let f = map.add("a.ode", text);
+        let d = Diagnostic::new(Code(12), Span::new(f, start, end), "msg".to_string());
+        let mut out = String::new();
+        diagnostic(&mut out, &map, &d);
+        out
     }
 
     #[test]
@@ -122,15 +148,70 @@ mod tests {
         assert!(first.starts_with("a.ode:2:"), "{out}");
         assert!(first.contains(": error[ODE"), "{out}");
         assert!(out.contains("\nfoo(\n"), "{out}");
-        assert!(out.contains('^'), "{out}");
         assert!(out.contains("\n\nkind: "), "{out}");
     }
 
     #[test]
-    fn caret_copies_tabs_and_ignores_cr() {
-        let out = run("a.ode", "x'=-x\n\tx'=@\r\ndone\n");
-        assert!(!out.contains('\r'), "{out:?}");
-        let caret = out.lines().find(|l| l.contains('^')).unwrap();
-        assert!(caret.starts_with('\t'), "{caret:?}");
+    fn exact_block_with_tab_prefix_and_wide_char() {
+        // Span `=\u{e9}@` after a tab, `x` and `'`: caret under `=`,
+        // tab copied, tildes up to the exclusive end.
+        let got = one("\tx'=\u{e9}@\ny=1\n", 3, 7);
+        assert_eq!(
+            got,
+            "a.ode:1:4: error[ODE0012]: msg\n\tx'=\u{e9}@\n\t  ^~~\n"
+        );
+        // A non-ASCII char before the span counts as one column.
+        let got = one("\tx'=\u{e9}@\ny=1\n", 6, 7);
+        assert_eq!(
+            got,
+            "a.ode:1:6: error[ODE0012]: msg\n\tx'=\u{e9}@\n\t    ^\n"
+        );
+    }
+
+    #[test]
+    fn multi_line_span_is_clamped_to_the_first_line() {
+        let got = one("abcd\nef\n", 1, 6);
+        assert_eq!(got, "a.ode:1:2: error[ODE0012]: msg\nabcd\n ^~~\n");
+    }
+
+    #[test]
+    fn crlf_and_span_at_end_of_line() {
+        let got = one("a\r\nbc@\r\n", 5, 5);
+        assert_eq!(got, "a.ode:2:3: error[ODE0012]: msg\nbc@\n  ^\n");
+        let got = one("ab", 2, 2);
+        assert_eq!(got, "a.ode:1:3: error[ODE0012]: msg\nab\n  ^\n");
+    }
+
+    #[test]
+    fn control_characters_in_the_source_line_are_replaced() {
+        // ESC before the span and a lone CR after it.
+        let got = one("x'=\u{1b}@\ra\n", 4, 5);
+        assert_eq!(
+            got,
+            "a.ode:1:5: error[ODE0012]: msg\nx'=\u{fffd}@\u{fffd}a\n    ^\n"
+        );
+    }
+
+    #[test]
+    fn fix_it_and_note_lines_are_exact() {
+        let mut map = SourceMap::new();
+        let f = map.add("a.ode", "\tx'=\u{e9}@\ny=1\n");
+        let g = map.add("inc/b.ode", "zz\n");
+        let mut d = Diagnostic::new(Code(12), Span::new(f, 6, 7), "msg".to_string());
+        d.fix_it = Some(FixIt {
+            span: Span::new(f, 6, 7),
+            replacement: "a\"b\u{e9}".to_string(),
+        });
+        d.notes.push((Span::new(f, 8, 9), "here".to_string()));
+        d.notes.push((Span::new(g, 0, 2), "there".to_string()));
+        let mut out = String::new();
+        diagnostic(&mut out, &map, &d);
+        assert_eq!(
+            out,
+            "a.ode:1:6: error[ODE0012]: msg\n\tx'=\u{e9}@\n\t    ^\n\
+             \x20 fix-it: replace 1:6-1:7 with \"a\\\"b\u{e9}\"\n\
+             \x20 note: a.ode:2:1: here\n\
+             \x20 note: inc/b.ode:1:1: there\n"
+        );
     }
 }

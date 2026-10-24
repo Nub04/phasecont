@@ -107,6 +107,9 @@ fn corpus_json_matches_the_golden_files() {
     let mut failures = Vec::new();
     for f in ode_files(&dir) {
         let actual = stdout(&run(&dir, &["parse", &f, "--json"]));
+        // A backslash would mean a Windows path separator leaked into a file
+        // name, which would make the goldens differ between platforms. No
+        // corpus diagnostic text has a backslash or an escaped quote.
         assert!(!actual.contains('\\'), "{f}: the JSON has a backslash");
         let golden = golden_dir().join(f.replace(".ode", ".json"));
         if bless {
@@ -264,12 +267,100 @@ fn invalid_utf8_top_file_is_a_read_error() {
     );
 }
 
+fn fixtures() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+}
+
 #[test]
-fn included_file_diagnostics_use_the_included_name() {
-    // `sets_include.ode` includes a file under `include/`; a bad include
-    // target is reported at the including line.
-    let dir = ode_tests().join("invalid");
-    let o = run(&dir, &["parse", "ode0060.ode"]);
+fn error_in_an_included_file_names_that_file() {
+    let dir = fixtures();
+    let o = run(&dir, &["parse", "top_inc.ode"]);
     assert_eq!(code(&o), 1);
-    assert!(stdout(&o).contains("[ODE0060]"));
+    let t = stdout(&o);
+    assert!(
+        t.starts_with(
+            "inc/bad.ode:2:5: error[ODE0012]: XPPAUT deletes this blank and joins `1` and `2` into one word; delete the blank or add an operator\ny'=1 2\n    ^\n"
+        ),
+        "{t}"
+    );
+    let o = run(&dir, &["parse", "top_inc.ode", "--json"]);
+    assert_eq!(code(&o), 1);
+    let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+    assert_eq!(v["file"], "top_inc.ode");
+    let d = &v["diagnostics"][0];
+    assert_eq!(d["file"], "inc/bad.ode");
+    assert_eq!(d["code"], "ODE0012");
+    assert_eq!(d["line"], 2);
+    assert_eq!(d["col"], 5);
+    assert_eq!(d["end_col"], 6);
+}
+
+#[test]
+fn double_dash_takes_a_file_that_starts_with_a_dash() {
+    let dir = ode_tests().join("corpus");
+    // The file does not exist: a read error (1), not a usage error (2).
+    let o = run(&dir, &["parse", "--", "-x.ode"]);
+    assert_eq!(code(&o), 1);
+    assert!(stderr(&o).starts_with("pc-cli: cannot read -x.ode: "));
+    let dir = std::env::temp_dir().join(format!("pc-cli-dash-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("-x.ode"), "x'=-x\ndone\n").unwrap();
+    let o = run(&dir, &["parse", "--", "-x.ode"]);
+    std::fs::remove_dir_all(&dir).ok();
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_arguments_do_not_panic() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let bin = env!("CARGO_BIN_EXE_pc-cli");
+    let bad = OsStr::from_bytes(b"bad\xff.ode");
+    // As the command: usage error.
+    let o = Command::new(bin).arg(bad).output().unwrap();
+    assert_eq!(code(&o), 2);
+    // As a flag: usage error.
+    let o = Command::new(bin)
+        .arg("parse")
+        .arg(OsStr::from_bytes(b"-\xff"))
+        .output()
+        .unwrap();
+    assert_eq!(code(&o), 2);
+    // As the file: it opens when it exists, and is a read error when not.
+    let o = Command::new(bin).arg("parse").arg(bad).output().unwrap();
+    assert_eq!(code(&o), 1);
+    assert!(stderr(&o).starts_with("pc-cli: cannot read "));
+    let dir = std::env::temp_dir().join(format!("pc-cli-nonutf8-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(bad), "x'=-x\ndone\n").unwrap();
+    let o = Command::new(bin)
+        .arg("parse")
+        .arg(bad)
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_write_exits_one_with_a_message() {
+    let Ok(full) = std::fs::OpenOptions::new().write(true).open("/dev/full") else {
+        return; // No /dev/full here.
+    };
+    let dir = ode_tests().join("corpus");
+    let o = Command::new(env!("CARGO_BIN_EXE_pc-cli"))
+        .args(["parse", "lorenz.ode"])
+        .current_dir(&dir)
+        .stdout(full)
+        .output()
+        .unwrap();
+    assert_eq!(code(&o), 1);
+    assert!(
+        stderr(&o).starts_with("pc-cli: cannot write output: "),
+        "{}",
+        stderr(&o)
+    );
 }

@@ -1,0 +1,4 @@
+# top file that includes a file with an error
+#include inc/bad.ode
+x'=-x
+done
