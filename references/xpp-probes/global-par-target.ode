@@ -1,0 +1,9 @@
+# global-par-target: Can a global event assign a parameter?
+# xpp: v@1=1 v@2=5
+# pc: ok
+x'=a
+x(0)=0
+par a=1
+aux v=a
+global 1 t-0.9 {a=5}
+@ total=2,dt=1

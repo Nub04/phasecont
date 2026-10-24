@@ -1,0 +1,8 @@
+# include-quotes: Does a quoted file name in #include load the file?
+# xpp: error
+# pc: ODE0059
+x'=0
+x(0)=0
+#include "inc/a.ode"
+aux v=ia
+@ total=0,dt=1

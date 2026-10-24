@@ -1,0 +1,9 @@
+# include-done: Does done in an included file end only that file?
+# xpp: 10
+# pc: ok
+x'=0
+x(0)=0
+#include inc/d.ode
+par tb=6
+aux v=da+tb
+@ total=0,dt=1

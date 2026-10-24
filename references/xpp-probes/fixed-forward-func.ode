@@ -1,0 +1,10 @@
+# fixed-forward-func: What does a fixed quantity get from a function that reads a later fixed quantity?
+# xpp: 1
+# pc: ODE0042
+x'=0
+x(0)=0
+b=g(1)
+c=5
+g(u)=u+c
+aux v=b
+@ total=0,dt=1

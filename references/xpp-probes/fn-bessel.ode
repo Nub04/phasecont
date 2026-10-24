@@ -1,0 +1,12 @@
+# fn-bessel: Is the order of besselj and bessely truncated toward zero?
+# xpp: v1=0.44005057 v2=0.44005057 v3=0.76519769 v4=0.76519769 v5=-0.78121281 v6=-0.78121281
+# pc: ok
+x'=0
+x(0)=0
+aux v1=besselj(1.5,1)
+aux v2=besselj(1,1)
+aux v3=besselj(-0.5,1)
+aux v4=besselj(0,1)
+aux v5=bessely(1.5,1)
+aux v6=bessely(1,1)
+@ total=0,dt=1

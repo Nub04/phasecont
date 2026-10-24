@@ -1,0 +1,10 @@
+# derived-func-state: What does a derived parameter get from a function that reads a state?
+# xpp: 5
+# pc: ODE0053
+x'=0
+x(0)=2
+par a=3
+!d=g(1)
+g(u)=u*a+x
+aux v=d
+@ total=0,dt=1

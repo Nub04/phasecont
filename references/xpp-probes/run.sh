@@ -85,14 +85,19 @@ run_xpp() {
   local src=$1 dir=$2
   mkdir -p "$dir"
   cp "$src" "$dir/p.ode"
+  # Helper files for the #include probes: the inc/ folder and *.inc files.
+  [ -d "$here/inc" ] && cp -r "$here/inc" "$dir/inc"
+  cp "$here"/*.inc "$dir/" 2>/dev/null || true
   xrc=0
-  (cd "$dir" && timeout 10 "$xpp_bin" p.ode -silent -outfile o.dat >out.txt 2>&1) || xrc=$?
+  (cd "$dir" && timeout 10 "$xpp_bin" p.ode -silent -outfile o.dat >out.txt 2>&1) 2>/dev/null || xrc=$?
 }
 
 # XPPAUT 8.0 refuses a bad file with exit status 0, no output file and a
 # message on stdout (measured: "illegal expression", "Illegal syntax", "... is
-# a duplicate name", "ERROR compiling", "Must have at least one equation").
-error_re='illegal|duplicate|error|must have|probably not|no variable'
+# a duplicate name", "ERROR compiling", "Must have at least one equation", "Bad
+# global"). A probe marked "# xpp: hang" passes when XPPAUT runs into the 10 s
+# timeout or dies from a signal (an include cycle recurses until it crashes).
+error_re='illegal|duplicate|error|must have|probably not|no variable|bad global'
 
 # ---------------------------------------------------------------- XPPAUT half
 sanity_xpp() {
@@ -117,6 +122,14 @@ check_xpp() {
   local dir="$work/x-$id"
   run_xpp "$file" "$dir"
 
+  if [ "$spec" = hang ]; then
+    if [ "$xrc" = 124 ] || [ "$xrc" -ge 128 ]; then
+      echo "PASS $id expected hang got exit $xrc"
+    else
+      echo "FAIL $id expected hang got exit $xrc"; fail=1
+    fi
+    return
+  fi
   if [ "$xrc" = 124 ]; then
     echo "FAIL $id expected $spec got timeout"; fail=1; return
   elif [ "$xrc" != 0 ]; then
@@ -142,6 +155,11 @@ check_xpp() {
   for tok in $spec; do
     key=; val=$tok
     if [[ $tok == *=* ]]; then key=${tok%%=*}; val=${tok#*=}; fi
+    if [[ $tok == =* ]]; then
+      echo "FAIL $id expected $spec got - (empty column key in '$tok')"
+      fail=1
+      return
+    fi
     if ! is_value "$val"; then
       echo "FAIL $id expected $spec got - (malformed # xpp: value '$tok')"
       fail=1
@@ -167,7 +185,7 @@ check_xpp() {
     if [ -z "${idx:-}" ]; then
       why=nocolumn; got=nocolumn
     else
-      got=$(awk -v r="$row" -v c="$idx" 'NR == r { print $c; exit }' "$dir/o.dat")
+      got=$(awk -v r="$row" -v c="$idx" 'NR == r { print $c; exit }' "$dir/o.dat" 2>/dev/null) || got=
       if [ -z "$got" ]; then why=norow; got=norow; fi
     fi
     if [ -n "$key" ]; then gots="$gots ${tok%%=*}=$got"; else gots="$gots $got"; fi

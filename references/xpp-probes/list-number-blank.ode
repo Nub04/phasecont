@@ -1,0 +1,8 @@
+# list-number-blank: Do blanks separate number entries (number a=1 b=2)?
+# xpp: 21
+# pc: ok
+x'=0
+x(0)=0
+number a=1 b=2
+aux v=a+10*b
+@ total=0,dt=1

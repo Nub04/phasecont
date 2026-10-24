@@ -1,0 +1,9 @@
+# list-init-blank: Do blanks separate init entries (init x=1 y=2)?
+# xpp: 21
+# states: 2
+# pc: ok
+x'=0
+y'=0
+init x=1 y=2
+aux v=x+10*y
+@ total=0,dt=1

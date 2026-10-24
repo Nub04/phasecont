@@ -1165,10 +1165,11 @@ impl<'a> Checker<'a> {
         self.at(None);
     }
 
-    /// Portability warning for names longer than XPPAUT 8.0 keeps, with a
-    /// note at one other name that agrees with it in the kept characters.
-    /// Global names are compared with global names, and function
-    /// parameters with the other parameters of the same function.
+    /// Portability warning for names longer than XPPAUT 8.0 keeps. XPPAUT
+    /// accepts such a declaration but cannot read the name back in a formula
+    /// (probes `name-11`, `name-11-collide-used`); names that agree in their
+    /// first 10 characters do not collide (probe `name-11-collide`), so the
+    /// warning has no note about them.
     fn report_long_names(&mut self) {
         let declared = std::mem::take(&mut self.declared);
         let params = std::mem::take(&mut self.params);
@@ -1182,45 +1183,17 @@ impl<'a> Checker<'a> {
 
     /// `at[i]` is the statement of `names[i]`, for the copy note.
     fn long_names(&mut self, names: &[&Ident], at: &[Option<usize>]) {
-        let prefix = |id: &Ident| id.key.chars().take(XPP_NAME_LEN).collect::<String>();
-        let is_long = |id: &Ident| id.key.chars().count() > XPP_NAME_LEN;
-        // The first two names of at least 10 characters for each kept
-        // prefix. Names in `names` have distinct keys, so one of the two
-        // differs from any name.
-        let mut by_prefix: HashMap<String, Vec<usize>> = HashMap::new();
         for (i, id) in names.iter().enumerate() {
-            if id.key.chars().count() >= XPP_NAME_LEN {
-                let e = by_prefix.entry(prefix(id)).or_default();
-                if e.len() < 2 {
-                    e.push(i);
-                }
-            }
-        }
-        for (i, id) in names.iter().enumerate() {
-            if !is_long(id) {
+            if id.key.chars().count() <= XPP_NAME_LEN {
                 continue;
             }
-            let notes = by_prefix[&prefix(id)]
-                .iter()
-                .find(|&&j| j != i)
-                .map(|&j| {
-                    let other = names[j];
-                    let message = format!(
-                        "`{}` agrees with this name in its first {XPP_NAME_LEN} characters; \
-                         XPPAUT 8.0 reads them as one name",
-                        other.text
-                    );
-                    (other.span, message)
-                })
-                .into_iter()
-                .collect();
             let message = format!(
                 "XPPAUT 8.0 rejects this: `{}` is longer than {XPP_NAME_LEN} characters, and \
-                 XPPAUT 8.0 truncates names to {XPP_NAME_LEN} characters",
+                 XPPAUT 8.0 keeps only the first {XPP_NAME_LEN} characters of a name in a formula",
                 id.text
             );
             self.at(at[i]);
-            self.report(PORTABILITY, id.span, message, notes);
+            self.report(PORTABILITY, id.span, message, Vec::new());
         }
     }
 }

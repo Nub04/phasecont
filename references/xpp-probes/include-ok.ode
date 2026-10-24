@@ -1,0 +1,8 @@
+# include-ok: Does #include inc/a.ode load the file?
+# xpp: 3
+# pc: ok
+x'=0
+x(0)=0
+#include inc/a.ode
+aux v=ia
+@ total=0,dt=1

@@ -547,23 +547,17 @@ fn long_names() {
     let d = check_one(text, PORTABILITY, nth(text, "abcdefghijk", 0), &[]);
     assert!(d.message.contains("`abcdefghijk`"), "{}", d.message);
     assert!(d.message.contains("10 characters"), "{}", d.message);
-    // Two names that agree in their first 10 characters, ignoring case.
+    // Names that agree in their first 10 characters get a warning each and
+    // no note: XPPAUT 8.0 does not collide them (probe `name-11-collide`).
     let text = "par abcdefghijk=1, ABCDEFGHIJl=2\nx'=abcdefghijk+abcdefghijl";
     let (_, diags) = run(text);
     assert_eq!(diags.len(), 2, "{diags:#?}");
     assert_eq!(diags[0].span, nth(text, "abcdefghijk", 0));
-    assert_eq!(diags[0].notes.len(), 1);
-    assert_eq!(diags[0].notes[0].0, nth(text, "ABCDEFGHIJl", 0));
-    assert!(diags[0].notes[0].1.contains("first 10"), "{diags:#?}");
-    assert_eq!(diags[1].notes[0].0, nth(text, "abcdefghijk", 0));
+    assert!(diags.iter().all(|d| d.notes.is_empty()), "{diags:#?}");
+    assert!(!diags[0].message.contains("agrees"), "{diags:#?}");
     // A long name next to its own 10-character prefix.
     let text = "par abcdefghij=1, abcdefghijk=2";
-    let d = check_one(
-        text,
-        PORTABILITY,
-        nth(text, "abcdefghijk", 0),
-        &[nth(text, "abcdefghij", 0)],
-    );
+    let d = check_one(text, PORTABILITY, nth(text, "abcdefghijk", 0), &[]);
     assert!(d.code == PORTABILITY);
     // Function parameters get the warning too.
     assert_eq!(codes("f(abcdefghijk)=abcdefghijk"), vec![PORTABILITY]);
@@ -685,7 +679,7 @@ fn long_names_scale_linearly() {
     let elapsed = start.elapsed();
     assert_eq!(diags.len(), n);
     assert!(diags.iter().all(|d| d.code == PORTABILITY));
-    assert!(diags.iter().all(|d| d.notes.len() == 1), "one note each");
+    assert!(diags.iter().all(|d| d.notes.is_empty()), "no notes");
     assert!(
         elapsed < std::time::Duration::from_secs(1),
         "{n} colliding long names took {elapsed:?}"
@@ -694,15 +688,11 @@ fn long_names_scale_linearly() {
 
 #[test]
 fn long_name_notes() {
-    // At most one note, at the first other name with the same prefix.
+    // Names with the same first 10 characters get no note.
     let text = "par abcdefghijk1=1, abcdefghijk2=2, abcdefghijk3=3";
     let (_, diags) = run(text);
     assert_eq!(diags.len(), 3);
-    let first = nth(text, "abcdefghijk1", 0);
-    assert_eq!(diags[0].notes.len(), 1);
-    assert_eq!(diags[0].notes[0].0, nth(text, "abcdefghijk2", 0));
-    assert_eq!(diags[1].notes, vec![(first, diags[1].notes[0].1.clone())]);
-    assert_eq!(diags[2].notes[0].0, first);
+    assert!(diags.iter().all(|d| d.notes.is_empty()), "{diags:#?}");
     // A name declared twice gets one warning, plus the duplicate error.
     let text = "par abcdefghijklm=1\npar abcdefghijklm=2\nx'=1";
     let (_, diags) = run(text);
@@ -715,13 +705,10 @@ fn long_name_notes() {
         ]
     );
     assert!(diags[0].notes.is_empty(), "{diags:#?}");
-    // Parameters are compared with the other parameters of their function.
     let text = "f(abcdefghijk1,abcdefghijk2)=1";
     let (_, diags) = run(text);
     assert_eq!(diags.len(), 2, "{diags:#?}");
-    assert_eq!(diags[0].notes[0].0, nth(text, "abcdefghijk2", 0));
-    assert_eq!(diags[1].notes[0].0, nth(text, "abcdefghijk1", 0));
-    assert!(diags[0].notes[0].1.contains("first 10"), "{diags:#?}");
+    assert!(diags.iter().all(|d| d.notes.is_empty()), "{diags:#?}");
     // Not with global names, which a parameter hides.
     let (_, diags) = run("par abcdefghijkz=1\nf(abcdefghijkq)=1\ng(abcdefghijkr)=1");
     assert_eq!(diags.len(), 3, "{diags:#?}");

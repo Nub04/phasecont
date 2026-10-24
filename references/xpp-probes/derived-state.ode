@@ -1,0 +1,9 @@
+# derived-state: What does a derived parameter read from a state?
+# xpp: 6
+# pc: ODE0053
+x'=0
+x(0)=2
+par a=3
+!d=a*x
+aux v=d
+@ total=0,dt=1

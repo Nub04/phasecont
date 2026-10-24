@@ -1,0 +1,8 @@
+# active-comment: Does a line that starts with a double quote load and change nothing?
+# xpp: 1
+# pc: ODE0038
+x'=0
+x(0)=0
+aux v=x+1
+"this is an active comment
+@ total=0,dt=1
