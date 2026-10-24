@@ -1,0 +1,7 @@
+# eqspace-aux: Are blanks around = accepted in aux?
+# xpp: 2
+# pc: ok
+x'=0
+x(0)=3
+aux v = 2
+@ total=0,dt=1

@@ -1,0 +1,9 @@
+# eqspace-par-list: Do blanks separate par entries (par a=1 b=2)?
+# xpp: va=1 vb=2
+# pc: ok
+x'=0
+x(0)=3
+par a=1 b=2
+aux va=a
+aux vb=b
+@ total=0,dt=1

@@ -1,0 +1,8 @@
+# fn-log10: What is log10(100)?
+# xpp: 2
+# pc: ok
+x'=0
+x(0)=3
+par a=2
+aux v=log10(100)
+@ total=0,dt=1

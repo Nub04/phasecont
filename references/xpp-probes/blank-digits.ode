@@ -1,0 +1,8 @@
+# blank-digits: Does XPPAUT delete a blank between digits (1 2)?
+# xpp: 12
+# pc: ODE0012
+x'=0
+x(0)=3
+par a=2
+aux v=1 2
+@ total=0,dt=1

@@ -1,0 +1,8 @@
+# case-keywords: Is case ignored in keywords and names?
+# xpp: 2
+# pc: ok
+x'=0
+x(0)=3
+PAR A=2
+AUX V=a
+@ total=0,dt=1

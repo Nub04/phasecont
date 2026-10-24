@@ -1,0 +1,8 @@
+# comment-number: Is a trailing comment after a number list accepted?
+# xpp: 2
+# pc: ok
+x'=0
+x(0)=3
+number z=2 # c
+aux v=z
+@ total=0,dt=1

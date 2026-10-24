@@ -1,0 +1,9 @@
+# name-11-collide: Do names that agree in 10 characters collide?
+# xpp: error
+# pc: ODE0013
+x'=0
+x(0)=3
+par abcdefghijk=1
+par abcdefghijl=2
+aux v=abcdefghijk
+@ total=0,dt=1

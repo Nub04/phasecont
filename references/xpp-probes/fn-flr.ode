@@ -1,0 +1,9 @@
+# fn-flr: Is flr a floor?
+# xpp: v1=2 v2=-2 v3=-3
+# pc: ok
+x'=0
+x(0)=3
+aux v1=flr(2)
+aux v2=flr(-2)
+aux v3=flr(-2.5)
+@ total=0,dt=1

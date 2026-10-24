@@ -1,0 +1,11 @@
+# array-block: Does a %[1..2] block copy its body per index?
+# xpp: v1=1 v2=2
+# pc: ok
+# states: 2
+%[1..2]
+y[j]'=0
+y[j](0)=[j]
+%
+aux v1=y1
+aux v2=y2
+@ total=0,dt=1

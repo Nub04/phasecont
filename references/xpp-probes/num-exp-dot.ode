@@ -1,0 +1,8 @@
+# num-exp-dot: Is 1e2.5 accepted?
+# xpp: error
+# pc: ODE0001
+x'=0
+x(0)=3
+par a=2
+aux v=1e2.5
+@ total=0,dt=1

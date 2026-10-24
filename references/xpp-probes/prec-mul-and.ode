@@ -1,0 +1,8 @@
+# prec-mul-and: Do * and & share one level (2*1&1)?
+# xpp: 1
+# pc: ODE0014
+x'=0
+x(0)=3
+par a=2
+aux v=2*1&1
+@ total=0,dt=1

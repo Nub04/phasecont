@@ -1,0 +1,7 @@
+# comment-ode: Is a trailing comment after an ODE accepted?
+# xpp: error
+# pc: ODE0022
+x'=0 # c
+x(0)=3
+aux v=x
+@ total=0,dt=1

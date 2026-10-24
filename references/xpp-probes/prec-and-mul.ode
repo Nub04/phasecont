@@ -1,0 +1,8 @@
+# prec-and-mul: Does 1&1*2 read as (1&1)*2?
+# xpp: 2
+# pc: ODE0014
+x'=0
+x(0)=3
+par a=2
+aux v=1&1*2
+@ total=0,dt=1

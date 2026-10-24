@@ -1,0 +1,8 @@
+# fn-log: Is log natural (log(100))?
+# xpp: 4.6051702
+# pc: ok
+x'=0
+x(0)=3
+par a=2
+aux v=log(100)
+@ total=0,dt=1

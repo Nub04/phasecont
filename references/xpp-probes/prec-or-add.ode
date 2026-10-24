@@ -1,0 +1,8 @@
+# prec-or-add: Do | and binary + share one level, left to right (1|0+1)?
+# xpp: 2
+# pc: ODE0014
+x'=0
+x(0)=3
+par a=2
+aux v=1|0+1
+@ total=0,dt=1

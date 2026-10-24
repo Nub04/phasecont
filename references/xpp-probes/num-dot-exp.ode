@@ -1,0 +1,8 @@
+# num-dot-exp: Is 1.e2 a number?
+# xpp: 100
+# pc: ok
+x'=0
+x(0)=3
+par a=2
+aux v=1.e2
+@ total=0,dt=1

@@ -1,0 +1,8 @@
+# blank-name: Does XPPAUT delete a blank inside a name (si n(0))?
+# xpp: 0
+# pc: ODE0039,ODE0012
+x'=0
+x(0)=3
+par a=2
+aux v=si n(0)
+@ total=0,dt=1

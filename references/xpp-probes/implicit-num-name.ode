@@ -1,0 +1,8 @@
+# implicit-num-name: Is implicit multiplication of a number and a name accepted (2x)?
+# xpp: error
+# pc: ODE0013
+x'=0
+x(0)=3
+par a=2
+aux v=2x
+@ total=0,dt=1

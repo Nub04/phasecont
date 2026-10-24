@@ -1,0 +1,7 @@
+# eqspace-init: Are blanks around = accepted in init?
+# xpp: 4
+# pc: ok
+x'=0
+init x = 4
+aux v=x
+@ total=0,dt=1

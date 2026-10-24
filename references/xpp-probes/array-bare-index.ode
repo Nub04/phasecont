@@ -1,0 +1,7 @@
+# array-bare-index: Does a bare [j+1] in an expression expand to an integer?
+# xpp: w1=2 w2=3
+# pc: ok
+x'=0
+x(0)=3
+aux w[1..2]=[j+1]
+@ total=0,dt=1

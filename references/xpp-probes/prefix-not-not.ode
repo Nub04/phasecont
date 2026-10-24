@@ -1,0 +1,8 @@
+# prefix-not-not: What does a doubled not compute (not not 0)?
+# xpp: 1
+# pc: ODE0010
+x'=0
+x(0)=3
+par a=2
+aux v=not not 0
+@ total=0,dt=1

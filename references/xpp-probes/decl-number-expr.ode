@@ -1,0 +1,8 @@
+# decl-number-expr: What does number z=1+1 declare?
+# xpp: 1
+# pc: ODE0023
+x'=0
+x(0)=3
+number z=1+1
+aux v=z
+@ total=0,dt=1

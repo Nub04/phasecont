@@ -1,0 +1,7 @@
+# comment-init: Is a trailing comment after an init list accepted?
+# xpp: error
+# pc: ODE0022
+x'=0
+init x=3 # c
+aux v=x
+@ total=0,dt=1

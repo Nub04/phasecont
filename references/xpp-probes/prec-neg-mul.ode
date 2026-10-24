@@ -1,0 +1,8 @@
+# prec-neg-mul: Does prefix minus bind tighter than * (-x*a)?
+# xpp: -6
+# pc: ok
+x'=0
+x(0)=3
+par a=2
+aux v=-x*a
+@ total=0,dt=1

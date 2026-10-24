@@ -1,0 +1,8 @@
+# kw-p-nospace: Is p=5 (no blanks) a fixed quantity?
+# xpp: 5
+# pc: ok
+x'=0
+x(0)=3
+p=5
+aux v=p
+@ total=0,dt=1

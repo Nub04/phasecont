@@ -1,0 +1,8 @@
+# num-exp-upper: Is 1E2 a number?
+# xpp: 100
+# pc: ok
+x'=0
+x(0)=3
+par a=2
+aux v=1E2
+@ total=0,dt=1

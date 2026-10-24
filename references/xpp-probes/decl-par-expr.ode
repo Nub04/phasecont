@@ -1,0 +1,8 @@
+# decl-par-expr: What does par a=1+1 declare?
+# xpp: 1
+# pc: ODE0023
+x'=0
+x(0)=3
+par a=1+1
+aux v=a
+@ total=0,dt=1

@@ -1,0 +1,8 @@
+# prec-cmp-chain: Is a comparison chain left associative (3>2>1)?
+# xpp: 0
+# pc: ok
+x'=0
+x(0)=3
+par a=2
+aux v=3>2>1
+@ total=0,dt=1

@@ -1,0 +1,8 @@
+# prefix-not-cmp-and: Is x>2&not x>4 accepted?
+# xpp: 1
+# pc: ODE0010
+x'=0
+x(0)=3
+par a=2
+aux v=x>2&not x>4
+@ total=0,dt=1

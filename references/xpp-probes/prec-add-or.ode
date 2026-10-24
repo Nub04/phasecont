@@ -1,0 +1,8 @@
+# prec-add-or: Does 2+1|0 read as (2+1)|0?
+# xpp: 1
+# pc: ODE0014
+x'=0
+x(0)=3
+par a=2
+aux v=2+1|0
+@ total=0,dt=1

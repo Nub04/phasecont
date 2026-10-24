@@ -1,0 +1,8 @@
+# stmt-abbrev: Does only the first letter of par count (pzz a=2)?
+# xpp: 2
+# pc: ok
+x'=0
+x(0)=3
+pzz a=2
+aux v=a
+@ total=0,dt=1

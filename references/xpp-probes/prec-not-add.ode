@@ -1,0 +1,8 @@
+# prec-not-add: Does not bind tighter than + (not 0+1)?
+# xpp: 2
+# pc: ok
+x'=0
+x(0)=3
+par a=2
+aux v=not 0+1
+@ total=0,dt=1

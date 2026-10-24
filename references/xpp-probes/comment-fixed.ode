@@ -1,0 +1,8 @@
+# comment-fixed: Is a trailing comment after a fixed quantity accepted?
+# xpp: error
+# pc: ODE0022
+x'=0
+x(0)=3
+b=2 # c
+aux v=b
+@ total=0,dt=1

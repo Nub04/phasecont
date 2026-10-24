@@ -1,0 +1,8 @@
+# call-atan2-1: Is atan2 with one argument accepted?
+# xpp: error
+# pc: ODE0048
+x'=0
+x(0)=3
+par a=2
+aux v=atan2(1)
+@ total=0,dt=1
