@@ -312,6 +312,17 @@ Operator semantics (measured):
 - Division: XPPAUT 8.0 guards it (`1/0` = 4.4843049e14, `0/0` = 0). PhaseCont keeps IEEE division for now. **Open for P2.**
 - Whether `if` evaluates both branches cannot be seen from values, since XPPAUT has no traps. **Open for P2.**
 
+## Writer
+
+`write` (`crates/pc-ode/src/writer.rs`) turns a model back into `.ode` text, and `parse` of that text gives the same model, spans aside (PhaseCont choice; property tests in `crates/pc-ode/tests/round_trip.rs`). `write_expanded` is the same function, called on the expanded model.
+
+- **Canonical text.** One statement per line. Keywords are written in full and in lower case (`par`, `init`, `aux`, `wiener`, `table`, `global`, `markov`, `done`). Lists use `,` with no blanks (`par a=1,b=2`), `@` lines use `, `, `global` assignments use `;`. ODEs use `x'=` unless they were written `dx/dt=`.
+- **Expressions.** Parentheses only where the precedence above needs them or the parser would give a precedence warning, plus parentheses around a prefix `-` or `not` that does not start the expression (after `=`, `(` or `,`). Binary `+`, `-` and the comparisons get a blank on each side; `* / ^ ** & |` get none.
+- **Spelling kept.** Names keep their spelling. Number literals keep the text they were written with (`1.50E+2`, `.5`). A literal without text gets the shortest digits that read back as the same value, in plain notation when the decimal exponent is in -5..=15 and in `e` notation otherwise.
+- **Implicit multiplication.** Written as juxtaposition (`2x`, `2(x + 1)`) when the left side ends with a literal, unless the right side starts with `e` or `E` and a digit (`2*e1`, since `2e1` is one number). When the left side needs parentheses, it is written with `*`.
+- **Kept as written.** `#include` lines, range lines, `%` blocks, comments, trailing comments and unsupported statements (as their raw text).
+- **Errors.** A model with errors is not guaranteed to round-trip. Error nodes are written as `?`, a malformed `%[..]` line as `%[]`, and a literal that is not finite as `1e999`; each reparses with an error.
+
 ## Diagnostic codes
 
 Filled in by Task 13 of Phase 1. Every code in the `CODES` table in `src/diag.rs` is listed here with its severity and meaning.

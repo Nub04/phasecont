@@ -5,11 +5,13 @@
 //! ([`diag`]), the tokenizer ([`lexer`]), the syntax tree ([`ast`]), the
 //! known `@` option names ([`options`]), the parser ([`parser`]), the
 //! builtin table ([`builtins`]), the name checks ([`check`]), the include
-//! pass ([`include`]) and the array pass ([`expand`]). [`parse`] turns one
-//! file into a [`Model`], [`resolve_includes`] replaces its `#include` lines
-//! with the files they name, [`expand()`] copies its range lines and array
-//! blocks once per index, and [`check()`] resolves names and reports model
-//! errors. [`load`] runs all four.
+//! pass ([`include`]), the array pass ([`expand`]) and the writer
+//! ([`writer`]). [`parse`] turns one file into a [`Model`],
+//! [`resolve_includes`] replaces its `#include` lines with the files they
+//! name, [`expand()`] copies its range lines and array blocks once per
+//! index, and [`check()`] resolves names and reports model errors. [`load`]
+//! runs all four. [`write()`] turns a [`Model`] back into `.ode` text that
+//! parses to the same model.
 
 pub mod ast;
 pub mod builtins;
@@ -21,6 +23,7 @@ pub mod lexer;
 pub mod options;
 pub mod parser;
 pub mod span;
+pub mod writer;
 
 pub use ast::{
     Assign, BinaryOp, Comment, DUMMY_SPAN, Entry, Expr, Ident, Index, IndexOp, MarkovLine,
@@ -38,6 +41,7 @@ pub use parser::parse;
 #[doc(hidden)]
 pub use parser::parse_expr_text;
 pub use span::{FileId, SourceMap, Span};
+pub use writer::{format_number, write, write_expanded};
 
 /// What [`load`] gives for one model file.
 #[derive(Debug, Clone, PartialEq)]
