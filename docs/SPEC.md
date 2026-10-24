@@ -25,7 +25,7 @@ The rules below were checked against the XPPAUT manuals (v5.0, v5.41, v8 notes) 
 Parsing rules:
 - **Keywords:** only the first letter is significant for the nine declarations `markov`, `parameter`, `wiener`, `table`, `aux`, `init`, `bndry`, `global` and `done` (`p`, `par` and `pzz` all declare parameters). Other keywords (`number`, `set`, `options`, `only`, `special`, `solv`, `export`, `volt`, `hom_bcs`) need the full word. A first word is a keyword only when a blank or the end of the line follows it and the next non-blank character is not `=`, so `p=3` and `p = 3` define a fixed quantity named `p`.
 - **Case:** the language is case-insensitive.
-- **Names:** XPPAUT 8.0 truncates names to 10 characters. A longer name gives a portability warning, not an error.
+- **Names:** XPPAUT 8.0 accepts a declared name longer than 10 characters but stops with an error where the name is used in a formula. A longer name gives a portability warning, not an error.
 - **Line continuation:** a backslash at the end of a line continues it.
 - **Order:** names may be used before their declaration, except fixed quantities: XPPAUT evaluates them in file order, so a fixed quantity that uses one defined on a later line is an error.
 - **Spaces around `=`:** accepted in `par`, `number` and `init` lists and in formulas. In `@` lists XPPAUT 8.0 accepts the line but ignores the option, so PhaseCont gives a warning with a fix-it.

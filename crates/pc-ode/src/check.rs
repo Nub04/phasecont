@@ -1188,8 +1188,8 @@ impl<'a> Checker<'a> {
                 continue;
             }
             let message = format!(
-                "XPPAUT 8.0 rejects this: `{}` is longer than {XPP_NAME_LEN} characters, and \
-                 XPPAUT 8.0 keeps only the first {XPP_NAME_LEN} characters of a name in a formula",
+                "`{}` is longer than {XPP_NAME_LEN} characters; XPPAUT 8.0 accepts the declaration \
+                 but stops with an error where the name is used in a formula",
                 id.text
             );
             self.at(at[i]);
