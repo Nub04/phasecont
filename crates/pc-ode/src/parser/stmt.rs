@@ -1189,9 +1189,26 @@ impl StmtParser<'_> {
             return None;
         };
         self.pos += at + 1;
+        // Measured (probe global-braces): XPPAUT 8.0 accepts braces around the
+        // condition and reads `global 1 {c} {x=5}` as `global 1 c {x=5}`.
+        let braced = *self.kind(0) == TokenKind::LBrace;
+        if braced {
+            self.advance();
+        }
         let cond = self.expr();
         let mut assigns = Vec::new();
-        if *self.kind(0) != TokenKind::LBrace {
+        let closed = if braced && *self.kind(0) != TokenKind::RBrace {
+            self.malformed(0, "expected `}` after the condition of `global`");
+            false
+        } else {
+            if braced {
+                self.advance();
+            }
+            true
+        };
+        if !closed {
+            // The line was skipped by `malformed`.
+        } else if *self.kind(0) != TokenKind::LBrace {
             self.malformed(0, "expected `{` and the assignments of the event");
         } else {
             let open = self.span_at(0);

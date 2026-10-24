@@ -98,6 +98,7 @@ These rules fix what the parser does where the manual is silent. Each rule says 
   - Blanks also separate entries, as in `set s {a=2 b=3}`, and an empty list `set s {}` loads (both measured). Blanks around `=` give no diagnostic (PhaseCont choice).
 - `global` lines.
   - The form is `global sign cond {name=expr; ...}` (manual), and `global 1 x-0.5 {x=0;y=2}` loads and works (measured).
+  - The condition may be in braces: `global 1 {t-0.5} {x=5}` acts like `global 1 t-0.5 {x=5}` (measured: probe `global-braces`, compared with `global-plain`). The writer prints the form without braces.
   - The sign must be the literal `-1`, `0` or `1` (PhaseCont choice).
   - An empty list `{}` is an error: XPPAUT rejects it with "Bad global" (measured).
   - A target may be a state or a parameter (measured: with `par a=1`, `x'=a` and `global 1 t-0.9 {a=5}`, `a` changes from 1 to 5 after t=0.9, and a state target is reset the same way). Any other target (`t`, `pi`, a builtin, `argK`, an aux quantity, a fixed quantity, a derived parameter, a number, a function, a table, a `wiener` name or an undeclared name) is error ODE0058, "cannot be assigned" (PhaseCont choice). An undeclared target gives warning ODE0057 instead when an unsupported statement may declare it. The right side is checked like any formula.

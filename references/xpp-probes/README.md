@@ -94,6 +94,8 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `fn-log` | Is log natural (log(100))? | `log(100)` | 4.6051702 | no diagnostic; computes 4.6051702 | matches |
 | `fn-mod` | What does mod give for negative, fractional and zero arguments? | `mod(-7,3)`, `mod(7,-3)`, `mod(-7,-3)`, `mod(7.5,2)`, `mod(-7.5,2)`, `mod(5,2.5)`, `mod(1,0)` | v1=2 v2=1 v3=-4 v4=1.5 v5=0.5 v6=0 v7=nan | no diagnostic; computes v1=2 v2=1 v3=-4 v4=1.5 v5=0.5 v6=0 v7=nan | matches |
 | `fn-shift` | Does shift(x,0) evaluate? | `10*shift(x,0)` | 30 | ODE0055 warning, `shift` unsupported | PhaseCont choice |
+| `global-braces` | Does global 1 {t-0.5} {x=5} work like the form without braces? | `global 1 {t-0.5} {x=5}`, `aux v=x` | v@2=5 | no diagnostic | matches |
+| `global-plain` | Does global 1 t-0.5 {x=5} set x at the crossing? | `global 1 t-0.5 {x=5}`, `aux v=x` | v@2=5 | no diagnostic | matches |
 | `heav-negzero` | What is heav(-0)? | `heav(-0)` | 1 | no diagnostic; computes 1 | matches |
 | `heav-zero` | What is heav(0)? | `heav(0)` | 1 | no diagnostic; computes 1 | matches |
 | `hom-bcs` | Does XPPAUT 8.0 accept a hom_bcs line? | `hom_bcs 1` | 5 | ODE0035 warning, `hom_bcs` unsupported | PhaseCont choice |

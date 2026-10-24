@@ -1349,3 +1349,27 @@ fn message_text_per_code() {
         assert!(d.message.contains(needle), "{text:?}: {}", d.message);
     }
 }
+
+#[test]
+fn global_condition_may_be_in_braces() {
+    // Measured with XPPAUT 8.0 (probe global-braces): `global 1 {t-0.5} {x=5}`
+    // acts like `global 1 t-0.5 {x=5}`.
+    let plain = clean_one("global 1 t-0.5 {x=5}");
+    assert!(matches!(plain, StmtKind::Global { sign: 1, .. }));
+    assert_eq!(clean_one("global 1 {t-0.5} {x=5}"), plain);
+    assert_eq!(clean_one("global -1 { t-0.5 } { x=5 }"), {
+        let StmtKind::Global { cond, assigns, .. } = plain else {
+            panic!()
+        };
+        StmtKind::Global {
+            sign: -1,
+            cond,
+            assigns,
+        }
+    });
+    // No closing brace after the condition.
+    let text = "global 1 {t-0.5 {x=5}";
+    assert_eq!(codes(text), vec![MALFORMED_STATEMENT]);
+    // A lone brace list is still an error.
+    assert!(codes("global 1 {x=5}").contains(&MALFORMED_STATEMENT));
+}
