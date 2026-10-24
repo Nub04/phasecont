@@ -243,7 +243,7 @@ Arrays are expanded while loading, after includes and before `check` (manual v8,
   - Other names on the same line use `[j]`: `par a[1..2]=.25,b[j]=.3` gives `par a1=.25,b1=.3` and `par a2=.25,b2=.3`.
   - A plain name on a shared range line is declared once per copy, so `par a[1..2]=.5, c=.1` declares `c` twice. That gives the duplicate-name error plus the note "`c` does not change with the index of this array line, so every copy declares it again". The note appears only when two copies of the same template, with different indices, declare the name at the same place; `b[j*0]` gets it too. A duplicate between two names of one copy (`par a[1..2]=.5, a[j]=.1`) or between two inclusions of one file is a plain duplicate.
 - **Index forms.** `[j]`, `[j+n]`, `[j-n]` and `[j*n]` with an integer `n`. The expanded name is the root with the decimal index appended (`x[j-1]` at `j=3` is `x2`).
-- **Index limit.** Two limits apply, at different places. The parser reads the integers of a range on a name or in an expression (`x[1..10]`) and the `n` of `[j+n]`, `[j-n]` and `[j*n]` as plain digits that fit in a `u32`, 0 to 4294967295. A larger literal, a sign, or any other character makes the whole index form unsupported (ODE0015), so `x[0..4294967296]` and `y[j+4294967296]` give ODE0015 and `x[0..4294967295]` does not. The bounds of a block line `%[i1..i2]` are not limited to `u32`: they are read as `i64`, and a block bound above 2^53 gives ODE0069 as the next bullet says. A block bound that does not fit in `i64` (`%[0..9223372036854775808]`) makes the block line malformed (ODE0027). The value of an index form at some `j` is checked against 0 and 2^53 after the copies are planned (ODE0068, ODE0069). A range within these limits can still pass the copy and work caps (ODE0071).
+- **Index limit.** Two limits apply, at different places. The parser reads the integers of a range on a name or in an expression (`x[1..10]`) and the `n` of `[j+n]`, `[j-n]` and `[j*n]` as plain digits that fit in a `u32`, 0 to 4294967295. A larger literal, a sign, or any other character makes the whole index form unsupported (ODE0015), so `x[0..4294967296]` and `y[j+4294967296]` give ODE0015 and `x[0..4294967295]` does not. The bounds of a block line `%[i1..i2]` are not limited to `u32`: they are read as `i64`, and a block bound above 2^53 gives ODE0069 as the Errors bullet says. A block bound that does not fit in `i64` (`%[0..9223372036854775808]`) makes the block line malformed (ODE0027). The value of an index form at some `j` is checked against 0 and 2^53 after the copies are planned (ODE0068, ODE0069). A range within these limits can still pass the copy and work caps (ODE0071).
 - **Bare index forms.** An index form on its own in an expression or a value position (`[j]`, `[j+1]`) expands to the integer (measured).
 - **Blocks.** `%[i1..i2]` on its own line, then statements that use `[j]`, then `%` on its own line. The block is copied in index order: all of `j=i1`, then all of the next index.
 - **Errors.** More than one range on a line (ODE0065, at the second range, with a note at the first); a range inside a block (ODE0066); `[j]` with no range in scope (ODE0067, once per statement, at the first index form); an index form not listed above (the parser reports it); a negative block bound, or an index form below 0 at some `j` (ODE0068, so `x[j-1]` on a line that starts at `j=0`); a block bound or index form above 2^53 = 9007199254740992 (ODE0069, `MAX_INDEX`, so that every index is exact as a double; PhaseCont choice); `markov` inside a block (the manual warns it fails) or with a range anywhere in it (ODE0070, PhaseCont choice, since the rows would be copied with the name).
@@ -344,20 +344,20 @@ Every diagnostic has a stable code, `ODE` plus four digits. The table lists them
 | ODE0010 | error | A prefix `-` or `not` where XPPAUT 8.0 does not accept it, as in `2*-3`. The fix-it adds parentheses ([Prefix operators](#prefix-operators)). |
 | ODE0011 | error | A unary `+` ([Prefix operators](#prefix-operators)). |
 | ODE0012 | error | A blank sits inside what XPPAUT 8.0 reads as one token, such as `1 2` or `x * * 2`. The fix-it deletes the blank ([Blanks inside formulas](#blanks-inside-formulas)). |
-| ODE0013 | warning | XPPAUT 8.0 rejects the construct: implicit multiplication, `ceil`, or a name longer than 10 characters ([Portability warning](#portability-warning)). |
+| ODE0013 | warning | XPPAUT 8.0 rejects the construct: implicit multiplication, a builtin XPPAUT 8.0 lacks (`ceil`), or a name longer than 10 characters ([Portability warning](#portability-warning)). |
 | ODE0014 | warning | An operator mix whose XPPAUT 8.0 precedence differs from C, such as `2*x>1` or `a^b^c`. The fix-it adds parentheses ([Precedence warnings](#precedence-warnings)). |
-| ODE0015 | error | An array index form that is not `[i1..i2]`, `[j]`, `[j+n]`, `[j-n]` or `[j*n]` with unsigned integers that fit in 32 bits, or a range where only a name or a `[j]` form may stand ([Arrays](#arrays)). |
+| ODE0015 | error | An array index form that is not `[i1..i2]`, `[j]`, `[j+n]`, `[j-n]` or `[j*n]` with unsigned integers that fit in 32 bits, or a range `[i1..i2]` used as a value instead of after a name ([Arrays](#arrays)). |
 | ODE0016 | error | An `if(c)then(a)else(b)` expression that is missing a part or a closing parenthesis. |
 | ODE0017 | error | An expression nested more than 200 levels deep. |
 | ODE0018 | error | The first line of the file starts with a digit, so the file is in the old XPPAUT format ([Lines](#lines)). |
 | ODE0019 | error | A line that matches no statement form ([Statement details](#statement-details)). |
 | ODE0020 | error | A line with a known statement form whose parts are wrong, such as `table` with no name or an `#include` with an empty quoted name ([Statement details](#statement-details)). |
 | ODE0021 | error | Text after the end of a statement, as in `x'=1 )`. |
-| ODE0022 | error | A trailing comment after a statement that does not allow one. The fix-it deletes the comment ([Lines](#lines)). |
+| ODE0022 | error | A trailing comment after any statement other than a `par`, `number` or `@` list. The fix-it deletes the comment ([Lines](#lines)). |
 | ODE0023 | error | The value in a `par`, `number` or `init` list, or after `x(0)=`, is not a number literal or a bare index form ([Values](#values)). |
 | ODE0024 | warning | An `@` option name that PhaseCont does not know ([Lists](#lists)). |
 | ODE0025 | warning | An `@` option with blanks around `=`, which XPPAUT 8.0 ignores. The fix-it removes the blanks ([Lists](#lists)). |
-| ODE0026 | error | A `markov` statement whose rows are wrong: too few or too many rows, a row with the wrong number of `{expr}` groups, or an unclosed `{` ([Statement details](#statement-details)). |
+| ODE0026 | error | A `markov` statement whose rows are wrong: too few rows, a row with the wrong number of `{expr}` groups, or an unclosed `{`; a row after the last one is read as a separate line (ODE0019) ([Statement details](#statement-details)). |
 | ODE0027 | error | A malformed array block: a bad `%[i1..i2]` line, a nested block, an unclosed block, or a `%` that closes nothing ([Statement details](#statement-details)). |
 | ODE0028 | warning | A Volterra equation, which is kept as raw text and not supported ([Statement forms](#statement-forms)). |
 | ODE0029 | warning | A boundary value statement (`bndry`, `bdry`), kept as raw text and not supported. |
@@ -373,14 +373,14 @@ Every diagnostic has a stable code, `ODE` plus four digits. The table lists them
 | ODE0039 | error | A name that no statement declares ([Names and order](#names-and-order)). |
 | ODE0040 | error | A reserved name (`t`, `pi`, a builtin, `argK`, `not`, `if`, `then`, `else`) is declared, or used as a function parameter ([Names and order](#names-and-order)). |
 | ODE0041 | error | A name is declared twice ([Names and order](#names-and-order)). |
-| ODE0042 | error | A fixed quantity reads another fixed quantity that is defined on a later line ([Names and order](#names-and-order)). |
+| ODE0042 | error | A fixed quantity reads another fixed quantity that is defined on a later line, directly or through a user function ([Names and order](#names-and-order)). |
 | ODE0043 | error | Fixed quantities or derived parameters that depend on each other in a cycle ([Names and order](#names-and-order)). |
 | ODE0044 | error | An initial value for a name that is not a state ([Names and order](#names-and-order)). |
 | ODE0045 | error | A state has more than one initial value ([Names and order](#names-and-order)). |
 | ODE0046 | error | A user function with more than 9 parameters ([Names and order](#names-and-order)). |
 | ODE0047 | error | A user function that calls itself, directly or through other functions ([Names and order](#names-and-order)). |
 | ODE0048 | error | A call with the wrong number of arguments ([Errors](#errors)). |
-| ODE0049 | error | A function or table used as a value, or a value called as a function ([Names and order](#names-and-order)). |
+| ODE0049 | error | A function, table or builtin used as a value, or a value (`t`, `pi`, a parameter) called as a function ([Names and order](#names-and-order)). |
 | ODE0050 | error | `argK` outside a function that has at least `K` parameters ([Names and order](#names-and-order)). |
 | ODE0051 | error | An `aux` quantity used inside a formula ([Names and order](#names-and-order)). |
 | ODE0052 | error | The file has both ODEs and maps ([Names and order](#names-and-order)). |

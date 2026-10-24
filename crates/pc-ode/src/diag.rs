@@ -354,7 +354,13 @@ mod tests {
         let section = &doc[start + 1..];
         let end = section[3..].find("\n## ").map_or(section.len(), |i| i + 3);
         let mut rows: Vec<(String, String)> = Vec::new();
-        for line in section[..end].lines().filter(|l| l.starts_with("| ODE")) {
+        for line in section[..end].lines().map(str::trim_start) {
+            if !line
+                .strip_prefix('|')
+                .is_some_and(|r| r.trim_start().starts_with("ODE"))
+            {
+                continue;
+            }
             let cells: Vec<&str> = line.split('|').map(str::trim).collect();
             if cells.len() != 5 || cells[3].is_empty() {
                 return Err(format!("row needs a code, severity and meaning: {line}"));
@@ -403,6 +409,8 @@ mod tests {
         let doc = |rows: &str| format!("x\n## Diagnostic codes\n\n{rows}\n## Next\n");
         let good = doc("| ODE0001 | error | a |\n| ODE0002 | warning | b |\n");
         assert_eq!(check_doc_table(&good, &table), Ok(()));
+        let tight = doc("|ODE0001|error|a|\n  | ODE0002 |  warning  | b |\n");
+        assert_eq!(check_doc_table(&tight, &table), Ok(()));
         let cases = [
             ("| ODE0001 | error | a |\n", "has no row"),
             (
