@@ -19,20 +19,20 @@ P1 (the numbers below were measured on 2026-10-23 at the head of the branch):
 
 - `crates/pc-ode` has these modules: `span`, `diag`, `lexer`, `ast`, `options`, `builtins`, `parser` (expressions and statements), `include`, `expand` (pseudo-arrays and array blocks), `check` (name resolution and model checks) and `writer`. `crates/pc-ode/docs/language.md` is the language reference.
 - `pc-cli parse FILE` parses a model, prints each diagnostic with its source line, then a model summary, and has a `--json` flag.
-- 71 diagnostic codes, ODE0001 to ODE0071. Counted with `grep -E "^\| ODE[0-9]{4}" crates/pc-ode/docs/language.md | wc -l`. Each code has an invalid file in `crates/pc-ode/tests/invalid/` (70 files without the `_b` suffix, plus ODE0018, which is built in `invalid.rs`).
-- 387 tests pass in `cargo test`: 14 unit tests and 15 + 3 integration tests in `pc-cli`; 299 unit tests, 13 corpus, 5 invalid-file and 38 round-trip tests in `pc-ode`. `PROPTEST_CASES=10000 cargo test -p pc-ode --release round_trip` passes with 11 round-trip tests.
+- 73 diagnostic codes, ODE0001 to ODE0073. Counted with `grep -E "^\| ODE[0-9]{4}" crates/pc-ode/docs/language.md | wc -l`. Each code has an invalid file in `crates/pc-ode/tests/invalid/` (72 files without the `_b` suffix, plus ODE0018, which is built in `invalid.rs`).
+- 409 tests pass in `cargo test`: 18 unit tests and 16 + 3 integration tests in `pc-cli`; 307 unit tests, 13 corpus, 5 invalid-file, 9 limit and 38 round-trip tests in `pc-ode`. `PROPTEST_CASES=10000 cargo test -p pc-ode --release round_trip` passes with 11 round-trip tests.
 - 21 corpus models in `crates/pc-ode/tests/corpus/`, each with a golden file. All 21 parse with `target/debug/pc-cli parse` without a failure. `crates/pc-ode/tests/README.md` holds the coverage matrix; every test and file it names exists.
-- 136 XPPAUT 8.0 probe files in `references/xpp-probes/`. `references/xpp-probes/run.sh` runs each through XPPAUT and `pc-cli`, gives 272 PASS lines and no FAIL, and ends with "all checks passed". The probes back the grammar rulings in SPEC section 2 and `language.md`.
-- One measured mismatch: XPPAUT 8.0 does not collide names that agree in their first 10 characters (probe `name-11-collide`), but pc-ode still adds a note for it on the length warning. The final review round fixes the note.
+- 162 XPPAUT 8.0 probe files in `references/xpp-probes/`. `references/xpp-probes/run.sh` runs each through XPPAUT and `pc-cli`, gives 324 PASS lines and no FAIL, and ends with "all checks passed". The probes back the grammar rulings in SPEC section 2 and `language.md`.
 - The four checks pass: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and `cargo deny check`. `cargo build --target x86_64-pc-windows-gnu -p pc-cli` and `RUSTDOCFLAGS="-D warnings" cargo doc -p pc-ode -p pc-cli --no-deps` also pass.
 
 ## In progress
 
-- The final whole-branch review of P1. Its fix round may change this file again.
+- The final fix round (R37) of P1 is done; the owner decides on acceptance.
 
 ## Next
 
 - Owner acceptance of P1, then P2 (`pc-ir`) in plan mode.
+- P7a: the `pc-ffi` worker thread. Parsing at depth 200 needs about 800 KB of stack in a debug build, so `pc-ffi` must parse on a worker thread with an explicit stack size (for example 8 MB), not on MATLAB's thread (parked P1).
 - P2: the macOS arm64 JIT check in SPEC section 4, on a Mac with MATLAB or on the macOS runner of the MATLAB CI job.
 - P8a: confirm on the File Exchange submission form that it accepts an Apache-2.0 toolbox linked to GitHub.
 
