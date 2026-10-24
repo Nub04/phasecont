@@ -1,0 +1,7 @@
+# reserved-t: Can t be declared as a state?
+# xpp: error
+# pc: ODE0040
+t'=0
+t(0)=3
+aux v=t
+@ total=0,dt=1

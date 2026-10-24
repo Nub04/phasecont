@@ -1,0 +1,37 @@
+diagnostics
+unsupported.ode:3:9: warning[ODE0054]: `delay` is not supported yet; delay equations are planned for v2
+unsupported.ode:4:7: warning[ODE0055]: `shift` is not supported; the call is kept as written
+unsupported.ode:5:7: warning[ODE0056]: `del_shft` is not supported; the call is kept as written
+unsupported.ode:6:1: warning[ODE0028]: Volterra integral equations are not supported; the line is kept as written
+unsupported.ode:7:1: warning[ODE0028]: Volterra integral equations are not supported; the line is kept as written
+unsupported.ode:8:1: warning[ODE0029]: boundary conditions are not supported; the line is kept as written
+unsupported.ode:9:1: warning[ODE0030]: algebraic constraints are not supported; the line is kept as written
+unsupported.ode:10:1: warning[ODE0030]: algebraic constraints are not supported; the line is kept as written
+unsupported.ode:11:1: warning[ODE0031]: `special` is not supported; the line is kept as written
+unsupported.ode:12:1: warning[ODE0032]: `export` is not supported; the line is kept as written
+unsupported.ode:13:1: warning[ODE0033]: `only` is not supported; the line is kept as written
+unsupported.ode:14:1: warning[ODE0034]: `options` files are not supported; the line is kept as written
+unsupported.ode:15:1: warning[ODE0035]: `hom_bcs` is not supported; the line is kept as written
+unsupported.ode:16:1: warning[ODE0037]: `sum(..)of(..)` is not supported; the line is kept as written
+unsupported.ode:17:1: warning[ODE0036]: tables read from a file are not supported; the line is kept as written
+unsupported.ode:18:1: warning[ODE0038]: active comments are not supported; the line is kept as written
+summary
+kind: Ode
+smooth: false
+simulation_only: false
+states: 3
+parameters: 3
+numbers: 0
+derived: 0
+fixed: 0
+functions: 0
+aux: 0
+tables: 0
+wiener: 0
+symbols
+parameter a
+parameter k
+parameter tau
+state-ode x
+state-ode y
+state-ode z

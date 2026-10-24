@@ -1,0 +1,8 @@
+# truth-if-neg: Is -1 true for if (if(-1)then(7)else(8))?
+# xpp: 7
+# pc: ok
+x'=0
+x(0)=3
+par a=2
+aux v=if(-1)then(7)else(8)
+@ total=0,dt=1

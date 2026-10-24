@@ -1,0 +1,10 @@
+# Chain of 20 FitzHugh-Nagumo cells with diffusive coupling, written with range lines. Local dynamics after FitzHugh (1961); coupling d=0.5 is illustrative.
+par d=0.5,I=0.5,a=0.7,b=0.8,eps=0.08
+v1'=v1-v1^3/3-w1+I+d*(v2-v1)
+v[2..19]'=v[j]-v[j]^3/3-w[j]+I+d*(v[j-1]-2*v[j]+v[j+1])
+v20'=v20-v20^3/3-w20+I+d*(v19-v20)
+w[1..20]'=eps*(v[j]+a-b*w[j])
+v[1..20](0)=-1
+w[1..20](0)=-0.5
+@ total=200,xp=t,yp=v10
+done

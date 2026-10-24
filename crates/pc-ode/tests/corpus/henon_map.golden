@@ -1,0 +1,19 @@
+diagnostics
+summary
+kind: Map
+smooth: true
+simulation_only: false
+states: 2
+parameters: 2
+numbers: 0
+derived: 0
+fixed: 0
+functions: 0
+aux: 0
+tables: 0
+wiener: 0
+symbols
+parameter a
+parameter b
+state-map x
+state-map y

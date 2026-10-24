@@ -1,0 +1,16 @@
+{
+  "diagnostics": [],
+  "file": "morris_lecar.ode",
+  "summary": {
+    "aux": 1,
+    "errors": 0,
+    "fixed": 3,
+    "functions": 0,
+    "kind": "ode",
+    "parameters": 13,
+    "simulation_only": false,
+    "smooth": true,
+    "states": 2,
+    "warnings": 0
+  }
+}

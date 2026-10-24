@@ -1,0 +1,9 @@
+# if-lazy: Does if(1)then(1)else(1/0) evaluate both branches?
+# xpp: 1
+# pc: ok
+# open: P2 if evaluation
+x'=0
+x(0)=3
+par a=2
+aux v=if(1)then(1)else(1/0)
+@ total=0,dt=1

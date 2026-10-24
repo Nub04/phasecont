@@ -1,0 +1,8 @@
+# include-missing: Is an #include of a missing file ignored?
+# xpp: 1
+# pc: ODE0060
+x'=0
+x(0)=0
+#include inc/none.ode
+aux v=1
+@ total=0,dt=1

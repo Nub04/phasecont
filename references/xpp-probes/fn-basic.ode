@@ -1,0 +1,24 @@
+# fn-basic: What do the elementary builtins give?
+# xpp: v1=1.5574077 v2=1.5707964 v3=1.5707964 v4=0.78539819 v5=1.1752012 v6=1.5430807 v7=0.76159418 v8=2.5 v9=2 v10=3 v11=0.84270078 v12=0.15729921 v13=2.7182817 v14=2 v15=0.84147096 v16=0.54030228 v17=-1 v18=1
+# pc: ok
+x'=0
+x(0)=0
+aux v1=tan(1)
+aux v2=asin(1)
+aux v3=acos(0)
+aux v4=atan(1)
+aux v5=sinh(1)
+aux v6=cosh(1)
+aux v7=tanh(1)
+aux v8=abs(-2.5)
+aux v9=min(3,2)
+aux v10=max(3,2)
+aux v11=erf(1)
+aux v12=erfc(1)
+aux v13=exp(1)
+aux v14=sqrt(4)
+aux v15=sin(1)
+aux v16=cos(1)
+aux v17=sign(-3)
+aux v18=sign(2)
+@ total=0,dt=1

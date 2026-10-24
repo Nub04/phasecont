@@ -1,0 +1,8 @@
+# prefix-neg-not: What does minus before not compute (-not 0)?
+# xpp: 1
+# pc: ODE0010
+x'=0
+x(0)=3
+par a=2
+aux v=-not 0
+@ total=0,dt=1

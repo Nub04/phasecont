@@ -1,0 +1,8 @@
+# exp-overflow: What is exp(710)?
+# xpp: inf
+# pc: ok
+x'=0
+x(0)=3
+par a=2
+aux v=exp(710)
+@ total=0,dt=1

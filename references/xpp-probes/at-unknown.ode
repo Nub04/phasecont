@@ -1,0 +1,7 @@
+# at-unknown: Is an unknown @ option accepted?
+# xpp: 13
+# pc: ODE0024
+x'=0
+x(0)=3
+aux v=x+10
+@ total=0,dt=1,nosuchopt=1

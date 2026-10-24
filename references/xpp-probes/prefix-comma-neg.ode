@@ -1,0 +1,8 @@
+# prefix-comma-neg: Is prefix minus after a comma accepted (max(1,-3))?
+# xpp: 1
+# pc: ok
+x'=0
+x(0)=3
+par a=2
+aux v=max(1,-3)
+@ total=0,dt=1

@@ -1,0 +1,6 @@
+# Cusp normal form x'=b1+b2*x-x^3. Kuznetsov, Elements of Applied Bifurcation Theory, 3rd ed. (2004), chapter 8.
+par b1=0,b2=1
+x'=b1+b2*x-x^3
+init x=0.1
+@ total=20,xp=t,yp=x
+done

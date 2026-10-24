@@ -1,0 +1,8 @@
+# fn-int: Is int a builtin (int(2.5))?
+# xpp: error
+# pc: ODE0039
+x'=0
+x(0)=3
+par a=2
+aux v=int(2.5)
+@ total=0,dt=1

@@ -1,0 +1,8 @@
+# reserved-sin: Can sin be declared as a parameter?
+# xpp: error
+# pc: ODE0040,ODE0049
+x'=0
+x(0)=3
+par sin=2
+aux v=sin
+@ total=0,dt=1

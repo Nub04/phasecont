@@ -1,0 +1,37 @@
+diagnostics
+summary
+kind: Ode
+smooth: true
+simulation_only: false
+states: 4
+parameters: 8
+numbers: 0
+derived: 0
+fixed: 3
+functions: 6
+aux: 1
+tables: 0
+wiener: 0
+symbols
+parameter Iapp
+parameter Cm
+parameter gna
+parameter gk
+parameter gl
+parameter ena
+parameter ek
+parameter el
+function(1) an
+function(1) bn
+function(1) am
+function(1) bm
+function(1) ah
+function(1) bh
+fixed ina
+fixed ik
+fixed il
+state-ode v
+state-ode m
+state-ode h
+state-ode n
+aux current

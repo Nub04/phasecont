@@ -1,0 +1,6 @@
+# Logistic map. May, Nature 261 (1976) 459-467; r=3.7 is an illustrative value in the chaotic range.
+par r=3.7
+x(t+1)=r*x*(1-x)
+init x=0.2
+@ total=100,xp=t,yp=x
+done

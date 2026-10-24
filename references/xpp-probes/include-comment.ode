@@ -1,0 +1,8 @@
+# include-comment: Does a trailing comment on an #include line stop the file from loading?
+# xpp: error
+# pc: ODE0022
+x'=0
+x(0)=0
+#include inc/a.ode # c
+aux v=ia
+@ total=0,dt=1

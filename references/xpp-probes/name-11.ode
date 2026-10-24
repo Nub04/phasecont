@@ -1,0 +1,8 @@
+# name-11: Can a single 11-character parameter be used in a formula?
+# xpp: error
+# pc: ODE0013
+x'=0
+x(0)=7
+par abcdefghijk=5
+aux v=abcdefghijk
+@ total=0,dt=1

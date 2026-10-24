@@ -1,0 +1,8 @@
+# at-cont: Does a backslash-newline in an @ list join dt=\ with .5 on the next line?
+# xpp: t@2=0.5
+# pc: ok
+x'=0
+x(0)=3
+aux v=x
+@ total=1,dt=\
+.5

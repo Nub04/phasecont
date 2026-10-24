@@ -1,0 +1,14 @@
+# The chain of chain_range.ode written as % blocks. The test chain_range_and_block_declare_the_same_model compares the two.
+par d=0.5,I=0.5,a=0.7,b=0.8,eps=0.08
+v1'=v1-v1^3/3-w1+I+d*(v2-v1)
+%[2..19]
+v[j]'=v[j]-v[j]^3/3-w[j]+I+d*(v[j-1]-2*v[j]+v[j+1])
+%
+v20'=v20-v20^3/3-w20+I+d*(v19-v20)
+%[1..20]
+w[j]'=eps*(v[j]+a-b*w[j])
+v[j](0)=-1
+w[j](0)=-0.5
+%
+@ total=200,xp=t,yp=v10
+done

@@ -1,0 +1,8 @@
+# fn-atan2: Which argument order does atan2 use?
+# xpp: v1=1.5707964 v2=-2.3561945
+# pc: ok
+x'=0
+x(0)=3
+aux v1=atan2(1,0)
+aux v2=atan2(-1,-1)
+@ total=0,dt=1

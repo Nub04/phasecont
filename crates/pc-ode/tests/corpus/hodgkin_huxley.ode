@@ -1,0 +1,20 @@
+# Hodgkin-Huxley model. Hodgkin and Huxley, Journal of Physiology 117 (1952) 500-544, with the modern sign convention and the rate functions as printed in Dayan and Abbott, Theoretical Neuroscience (2001), chapter 5.
+par Iapp=10,Cm=1,gna=120,gk=36,gl=0.3
+par ena=50,ek=-77,el=-54.387
+an(v)=0.01*(v+55)/(1-exp(-(v+55)/10))
+bn(v)=0.125*exp(-(v+65)/80)
+am(v)=0.1*(v+40)/(1-exp(-(v+40)/10))
+bm(v)=4*exp(-(v+65)/18)
+ah(v)=0.07*exp(-(v+65)/20)
+bh(v)=1/(1+exp(-(v+35)/10))
+ina=gna*m^3*h*(v-ena)
+ik=gk*n^4*(v-ek)
+il=gl*(v-el)
+v'=(Iapp-ina-ik-il)/Cm
+m'=am(v)*(1-m)-bm(v)*m
+h'=ah(v)*(1-h)-bh(v)*h
+n'=an(v)*(1-n)-bn(v)*n
+init v=-65,m=0.0529,h=0.5961,n=0.3177
+aux current=ina+ik+il
+@ total=100,xp=t,yp=v,xlo=0,xhi=100,ylo=-80,yhi=50
+done

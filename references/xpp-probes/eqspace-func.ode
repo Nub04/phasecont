@@ -1,0 +1,8 @@
+# eqspace-func: Are blanks around = accepted in a function definition?
+# xpp: 8
+# pc: ok
+x'=0
+x(0)=3
+f(u) = u*2
+aux v=f(4)
+@ total=0,dt=1

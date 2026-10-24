@@ -1,0 +1,8 @@
+# prefix-pow-not: What does not after ^ compute (2^not 0)?
+# xpp: 1
+# pc: ODE0010
+x'=0
+x(0)=3
+par a=2
+aux v=2^not 0
+@ total=0,dt=1

@@ -1,0 +1,8 @@
+# prec-pow-cmp: Does ^ bind tighter than a comparison (2^3>9)?
+# xpp: 0
+# pc: ok
+x'=0
+x(0)=3
+par a=2
+aux v=2^3>9
+@ total=0,dt=1

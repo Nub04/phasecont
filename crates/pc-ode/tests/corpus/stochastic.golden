@@ -1,0 +1,23 @@
+diagnostics
+summary
+kind: Ode
+smooth: true
+simulation_only: true
+states: 2
+parameters: 5
+numbers: 0
+derived: 0
+fixed: 0
+functions: 0
+aux: 0
+tables: 0
+wiener: 1
+symbols
+parameter I
+parameter sigma
+parameter g
+parameter kon
+parameter koff
+wiener w
+state-markov z
+state-ode v

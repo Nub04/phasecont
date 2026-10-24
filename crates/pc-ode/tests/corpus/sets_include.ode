@@ -1,0 +1,10 @@
+# Lotka-Volterra predator-prey model. Lotka, Elements of Physical Biology (1925); Volterra (1926). Parameter sets are illustrative.
+#include include/lv_params.ode
+set slow {a=0.5,b=0.2,c=0.2,d=0.1}
+set fast {a=1.5,b=0.8,c=0.6,d=0.3}
+set empty {}
+x'=a*x-b*x*y
+y'=-c*y+d*x*y
+init x=2,y=1
+@ total=100,xp=x,yp=y
+done

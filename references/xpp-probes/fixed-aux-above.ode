@@ -1,0 +1,8 @@
+# fixed-aux-above: Does an aux above a fixed quantity see its final value?
+# xpp: 5
+# pc: ok
+x'=0
+x(0)=3
+aux v=b
+b=5
+@ total=0,dt=1

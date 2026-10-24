@@ -1,0 +1,16 @@
+{
+  "diagnostics": [],
+  "file": "henon_map.ode",
+  "summary": {
+    "aux": 0,
+    "errors": 0,
+    "fixed": 0,
+    "functions": 0,
+    "kind": "map",
+    "parameters": 2,
+    "simulation_only": false,
+    "smooth": true,
+    "states": 2,
+    "warnings": 0
+  }
+}

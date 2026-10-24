@@ -1,0 +1,4 @@
+# ODE0066 range inside a block
+%[1..2]
+x[1..2]'=1
+%

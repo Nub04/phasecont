@@ -1,0 +1,8 @@
+# prec-neg-cmp: Does prefix minus bind looser than a comparison (-x>2)?
+# xpp: -1
+# pc: ODE0014
+x'=0
+x(0)=3
+par a=2
+aux v=-x>2
+@ total=0,dt=1

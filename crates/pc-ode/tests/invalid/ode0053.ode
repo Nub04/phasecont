@@ -1,0 +1,3 @@
+# ODE0053 derived parameter uses a state
+x'=1
+!d=x

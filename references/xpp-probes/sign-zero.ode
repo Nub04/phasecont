@@ -1,0 +1,8 @@
+# sign-zero: What is sign(0)?
+# xpp: 0
+# pc: ok
+x'=0
+x(0)=3
+par a=2
+aux v=sign(0)
+@ total=0,dt=1

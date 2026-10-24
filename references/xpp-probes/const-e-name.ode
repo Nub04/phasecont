@@ -1,0 +1,8 @@
+# const-e-name: Is e an ordinary name (par e=2)?
+# xpp: 2
+# pc: ok
+x'=0
+x(0)=3
+par e=2
+aux v=e
+@ total=0,dt=1

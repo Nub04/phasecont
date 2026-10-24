@@ -1,0 +1,8 @@
+# num-leading-dot: Is .5 a number?
+# xpp: 0.5
+# pc: ok
+x'=0
+x(0)=3
+par a=2
+aux v=.5
+@ total=0,dt=1

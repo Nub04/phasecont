@@ -1,0 +1,9 @@
+# hom-bcs: Does XPPAUT 8.0 accept a hom_bcs line?
+# xpp: 5
+# pc: ODE0035
+x'=0
+x(0)=3
+par a=5
+hom_bcs 1
+aux v=a
+@ total=0,dt=1

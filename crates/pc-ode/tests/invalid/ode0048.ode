@@ -1,0 +1,2 @@
+# ODE0048 wrong number of arguments
+x'=sin(1,2)

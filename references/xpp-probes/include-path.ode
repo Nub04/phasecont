@@ -1,0 +1,8 @@
+# include-path: Is an include inside inc/sub/a.ode taken relative to that file?
+# xpp: error
+# pc: ok
+x'=0
+x(0)=0
+#include inc/sub/a.ode
+aux v=bv
+@ total=0,dt=1

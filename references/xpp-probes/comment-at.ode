@@ -1,0 +1,7 @@
+# comment-at: Is a trailing comment after an @ list accepted, and are its options applied?
+# xpp: t@2=0.5
+# pc: ok
+x'=0
+x(0)=3
+aux v=x
+@ total=1,dt=.5 # c

@@ -1,0 +1,9 @@
+# fixed-forward: What does a fixed quantity read from a later line?
+# xpp: 1
+# pc: ODE0042
+x'=0
+x(0)=3
+b=c+1
+c=2
+aux v=b
+@ total=0,dt=1

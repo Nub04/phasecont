@@ -1,0 +1,8 @@
+# array-range: Does x[1..3]'=-x[j] with x[1..3](0)=[j] declare three states?
+# xpp: 13
+# pc: ok
+# states: 3
+x[1..3]'=-x[j]
+x[1..3](0)=[j]
+aux v=x3+10
+@ total=0,dt=1

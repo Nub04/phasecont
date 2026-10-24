@@ -1,0 +1,8 @@
+# prec-cmp-add: Does a comparison bind tighter than + (3>2+5)?
+# xpp: 6
+# pc: ODE0014
+x'=0
+x(0)=3
+par a=2
+aux v=3>2+5
+@ total=0,dt=1

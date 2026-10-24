@@ -1,0 +1,13 @@
+# Morris-Lecar model. Morris and Lecar, Biophysical Journal 35 (1981) 193-213, in the form of Rinzel and Ermentrout (1998). Parameter values are illustrative, quoted from memory.
+par I=100,C=20,gL=2,gK=8,gCa=4.4
+par vL=-60,vK=-84,vCa=120
+par v1=-1.2,v2=18,v3=2,v4=30,phi=0.04
+minf=0.5*(1+tanh((v-v1)/v2))
+winf=0.5*(1+tanh((v-v3)/v4))
+tauw=1/cosh((v-v3)/(2*v4))
+v'=(I-gL*(v-vL)-gK*w*(v-vK)-gCa*minf*(v-vCa))/C
+w'=phi*(winf-w)/tauw
+init v=-60,w=0
+aux mss=minf
+@ total=500,xp=t,yp=v,xlo=0,xhi=500,ylo=-80,yhi=60
+done

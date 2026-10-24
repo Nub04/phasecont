@@ -1,0 +1,7 @@
+# decl-init-t: What does x(0)=t+2 declare?
+# xpp: 10
+# pc: ODE0023
+x'=0
+x(0)=t+2
+aux v=x+10
+@ total=0,dt=1

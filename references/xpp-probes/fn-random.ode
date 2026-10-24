@@ -1,0 +1,8 @@
+# fn-random: What do ran(0) and poisson(0) give?
+# xpp: v1=0 v2=0
+# pc: ok
+x'=0
+x(0)=0
+aux v1=ran(0)
+aux v2=poisson(0)
+@ total=0,dt=1

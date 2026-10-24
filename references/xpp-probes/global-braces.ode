@@ -1,0 +1,8 @@
+# global-braces: Does global 1 {t-0.5} {x=5} work like global 1 t-0.5 {x=5}?
+# xpp: v@2=5
+# pc: ok
+x'=0
+x(0)=0
+aux v=x
+global 1 {t-0.5} {x=5}
+@ total=2,dt=1

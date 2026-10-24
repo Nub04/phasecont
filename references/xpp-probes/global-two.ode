@@ -1,0 +1,11 @@
+# global-two: Does global 1 t-0.5 {x=5;y=2} set both states?
+# xpp: v@2=25
+# states: 2
+# pc: ok
+x'=0
+y'=0
+x(0)=0
+y(0)=0
+aux v=x+10*y
+global 1 t-0.5 {x=5;y=2}
+@ total=2,dt=1

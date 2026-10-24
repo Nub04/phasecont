@@ -1,0 +1,8 @@
+# prec-not-cmp: Does not bind looser than a comparison (not 1>2)?
+# xpp: 1
+# pc: ok
+x'=0
+x(0)=3
+par a=2
+aux v=not 1>2
+@ total=0,dt=1

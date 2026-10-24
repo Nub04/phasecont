@@ -1,0 +1,9 @@
+# div-zero-zero: What is 0/0?
+# xpp: 0
+# pc: ok
+# open: P2 division guard
+x'=0
+x(0)=3
+par a=2
+aux v=0/0
+@ total=0,dt=1

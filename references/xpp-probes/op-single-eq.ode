@@ -1,0 +1,8 @@
+# op-single-eq: Is a single = inside a formula accepted (1=2)?
+# xpp: error
+# pc: ODE0008
+x'=0
+x(0)=3
+par a=2
+aux v=1=2
+@ total=0,dt=1

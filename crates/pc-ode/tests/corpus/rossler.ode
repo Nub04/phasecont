@@ -1,0 +1,8 @@
+# Rossler system. Rossler, Physics Letters A 57 (1976) 397-398; a=b=0.2, c=5.7 as in the usual chaotic example.
+par a=0.2,b=0.2,c=5.7
+x'=-y-z
+y'=x+a*y
+z'=b+z*(x-c)
+init x=1,y=1,z=1
+@ total=300,xp=x,yp=y,xlo=-12,xhi=12,ylo=-12,yhi=12
+done

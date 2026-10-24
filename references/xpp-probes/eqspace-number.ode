@@ -1,0 +1,8 @@
+# eqspace-number: Are blanks around = accepted in number?
+# xpp: 5
+# pc: ok
+x'=0
+x(0)=3
+number z = 5
+aux v=z
+@ total=0,dt=1

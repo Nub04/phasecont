@@ -1,0 +1,8 @@
+# blank-decimal: Does XPPAUT delete a blank inside a decimal (1. 5)?
+# xpp: 1.5
+# pc: ODE0012
+x'=0
+x(0)=3
+par a=2
+aux v=1. 5
+@ total=0,dt=1

@@ -118,6 +118,20 @@ On Windows, `CUDA_PATH` is unset and `CUDA_PATH_V13_4` is `C:\Program Files\NVID
 
 Commands: `nvidia-smi --query-gpu=name,compute_cap,driver_version,memory.total --format=csv` and plain `nvidia-smi`, in WSL and as `/mnt/c/Windows/System32/nvidia-smi.exe`; `/usr/local/cuda/bin/nvcc --version`; `cmd.exe /c 'echo %CUDA_PATH% & echo %CUDA_PATH_V13_4%'`; and directory listings of the toolkit and `/usr/lib/wsl/lib`.
 
+## XPPAUT
+
+XPPAUT is used only on this machine, to measure how XPPAUT reads `.ode` files. PhaseCont never calls it, and XPPAUT code and example files stay out of the repo (CLAUDE.md rule 3).
+
+| Item | Value |
+|---|---|
+| Binary | `/usr/local/sbin/xppaut`, dated 2026-09-08, not owned by any package. It was already installed; Phase 1 installed nothing. |
+| Version | `xppaut -version` prints `XPPAUT Version 8.0` |
+| Headless run | `xppaut file.ode -silent -outfile o.dat`, run from the file's folder. Each row of `o.dat` is `t`, the states, then the aux quantities. |
+| Output precision | The output file is written with float32 precision (`0.15` prints as `0.15000001`), so values carry about 7 significant digits. |
+| Quirk | A continued statement on the first line of a file fails to load, so probe files start with a `#` comment line. |
+
+The probe files and their runner are in `references/xpp-probes/`.
+
 ## Staging folder
 
 Windows MATLAB loads compiled binaries from the Windows file system, so Windows build outputs are staged under `/mnt/c/Users/<user>/phasecont-stage/` (`C:\Users\<user>\phasecont-stage\`). The spikes use its `spikes\` subfolder, which `spikes/stage.sh` creates.

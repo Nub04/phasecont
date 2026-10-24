@@ -1,0 +1,7 @@
+# eqspace-x0: Are blanks around = accepted in x(0)=?
+# xpp: 13
+# pc: ok
+x'=0
+x(0) = 3
+aux v=x+10
+@ total=0,dt=1

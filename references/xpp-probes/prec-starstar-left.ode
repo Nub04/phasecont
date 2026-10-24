@@ -1,0 +1,8 @@
+# prec-starstar-left: Is ** left associative (2**3**2)?
+# xpp: 64
+# pc: ODE0014
+x'=0
+x(0)=3
+par a=2
+aux v=2**3**2
+@ total=0,dt=1

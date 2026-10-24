@@ -1,0 +1,38 @@
+diagnostics
+summary
+kind: Ode
+smooth: true
+simulation_only: false
+states: 20
+parameters: 3
+numbers: 0
+derived: 0
+fixed: 0
+functions: 0
+aux: 0
+tables: 0
+wiener: 0
+symbols
+parameter tau
+parameter D
+parameter Iin
+state-ode v1
+state-ode v2
+state-ode v3
+state-ode v4
+state-ode v5
+state-ode v6
+state-ode v7
+state-ode v8
+state-ode v9
+state-ode v10
+state-ode v11
+state-ode v12
+state-ode v13
+state-ode v14
+state-ode v15
+state-ode v16
+state-ode v17
+state-ode v18
+state-ode v19
+state-ode v20

@@ -1,0 +1,7 @@
+# FitzHugh-Nagumo model. FitzHugh, Biophysical Journal 1 (1961) 445-466; a=0.7, b=0.8, tau=12.5 as quoted there; the drive I is illustrative.
+par I=0.5,a=0.7,b=0.8,tau=12.5
+v'=v-v^3/3-w+I
+w'=(v+a-b*w)/tau
+init v=-1,w=-0.5
+@ total=200,xp=t,yp=v,xlo=0,xhi=200,ylo=-2.5,yhi=2.5
+done

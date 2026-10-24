@@ -1,0 +1,28 @@
+diagnostics
+abbreviations.ode:6:5: warning[ODE0013]: XPPAUT 8.0 rejects implicit multiplication; write `2*Om`
+  fix-it: abbreviations.ode:6:6: replace "" with "*"
+summary
+kind: Ode
+smooth: true
+simulation_only: false
+states: 2
+parameters: 5
+numbers: 1
+derived: 1
+fixed: 1
+functions: 0
+aux: 1
+tables: 0
+wiener: 0
+symbols
+parameter Om
+parameter Gam
+parameter delta
+parameter alpha
+parameter beta
+number eps
+derived w2
+fixed drag
+aux Ener
+state-ode X
+state-ode Y

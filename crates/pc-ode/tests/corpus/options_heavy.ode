@@ -1,0 +1,13 @@
+# Van der Pol oscillator with many @ options. Van der Pol, Philosophical Magazine 2 (1926) 978-992; mu=2 is an illustrative value.
+par mu=2
+x'=y
+y'=mu*(1-x^2)*y-x
+init x=2,y=0
+@ total=80,dt=0.02,njmp=5,t0=0,trans=0,meth=stiff,toler=1e-6,atoler=1e-6
+@ maxstor=20000,bound=1000,dtmin=1e-6,dtmax=0.5,seed=7,quiet=1
+@ xp=x,yp=y,zp=t,axes=2,nplot=2,xp2=t,yp2=x,xlo=-3,xhi=3,ylo=-5,yhi=5
+@ xlo2=0,xhi2=80,ylo2=-3,yhi2=3,s1=mu,slo1=0,shi1=5
+@ ntst=40,nmax=300,npr=50,dsmin=0.0001,dsmax=0.5,ds=0.02,parmin=0,parmax=5
+@ normmin=0,normmax=1000,epsl=1e-6,epsu=1e-6,epss=1e-4
+@ autoxmin=0,autoxmax=5,autoymin=-3,autoymax=3,autovar=x
+done

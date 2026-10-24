@@ -1,0 +1,8 @@
+# table-inline: Does table h % 11 0 1 2*t define h(0.5)=1?
+# xpp: 1
+# pc: ok
+x'=0
+x(0)=0
+aux v=h(0.5)
+table h % 11 0 1 2*t
+@ total=0,dt=1

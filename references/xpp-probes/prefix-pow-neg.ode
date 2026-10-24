@@ -1,0 +1,8 @@
+# prefix-pow-neg: Is prefix minus after ^ accepted (2^-1)?
+# xpp: error
+# pc: ODE0010
+x'=0
+x(0)=3
+par a=2
+aux v=2^-1
+@ total=0,dt=1

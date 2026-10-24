@@ -1,0 +1,2 @@
+# ODE0031 special
+special s=conv(1,5,3,0,t)

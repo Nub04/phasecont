@@ -1,0 +1,8 @@
+# prefix-sub-neg: Is x - -1 accepted?
+# xpp: error
+# pc: ODE0010
+x'=0
+x(0)=3
+par a=2
+aux v=x - -1
+@ total=0,dt=1

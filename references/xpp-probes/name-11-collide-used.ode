@@ -1,0 +1,9 @@
+# name-11-collide-used: Can two names that agree in 10 characters be used in a formula?
+# xpp: error
+# pc: ODE0013
+x'=0
+x(0)=7
+par abcdefghijk=1
+par abcdefghijl=2
+aux v=abcdefghijk+abcdefghijl
+@ total=0,dt=1

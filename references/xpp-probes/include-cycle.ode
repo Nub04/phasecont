@@ -1,0 +1,8 @@
+# include-cycle: What does XPPAUT do with a file that includes itself?
+# xpp: hang
+# pc: ODE0061
+x'=0
+x(0)=0
+#include loop.inc
+aux v=1
+@ total=0,dt=1

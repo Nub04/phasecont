@@ -1,0 +1,8 @@
+# op-bang: Is a bare ! accepted (!1)?
+# xpp: error
+# pc: ODE0007
+x'=0
+x(0)=3
+par a=2
+aux v=!1
+@ total=0,dt=1

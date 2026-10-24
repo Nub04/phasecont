@@ -1,0 +1,8 @@
+# call-sin-0: Is sin with no argument accepted?
+# xpp: error
+# pc: ODE0048
+x'=0
+x(0)=3
+par a=2
+aux v=sin()
+@ total=0,dt=1

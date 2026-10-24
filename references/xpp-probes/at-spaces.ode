@@ -1,0 +1,7 @@
+# at-spaces: Does @ total = 1, dt = .5 set dt?
+# xpp: t@2=0.05
+# pc: ODE0025
+x'=0
+x(0)=3
+aux v=x
+@ total = 1, dt = .5

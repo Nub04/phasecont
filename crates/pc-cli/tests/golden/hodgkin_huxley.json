@@ -1,0 +1,16 @@
+{
+  "diagnostics": [],
+  "file": "hodgkin_huxley.ode",
+  "summary": {
+    "aux": 1,
+    "errors": 0,
+    "fixed": 3,
+    "functions": 6,
+    "kind": "ode",
+    "parameters": 8,
+    "simulation_only": false,
+    "smooth": true,
+    "states": 4,
+    "warnings": 0
+  }
+}

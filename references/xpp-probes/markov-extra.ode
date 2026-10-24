@@ -1,0 +1,11 @@
+# markov-extra: Is extra text after n ignored (markov z 2 1)?
+# xpp: v@2=1 v@3=0
+# states: 2
+# pc: ODE0020
+x'=0
+x(0)=0
+aux v=z
+markov z 2 1
+{0} {1}
+{1} {0}
+@ total=3,dt=1

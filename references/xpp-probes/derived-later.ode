@@ -1,0 +1,9 @@
+# derived-later: Can an aux read a derived parameter defined on a later line?
+# xpp: 4
+# pc: ok
+x'=0
+x(0)=2
+par a=3
+aux v=d
+!d=a+1
+@ total=0,dt=1

@@ -1,0 +1,2 @@
+# ODE0010 prefix operator in the wrong place
+x'=2*-3

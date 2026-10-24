@@ -1,0 +1,9 @@
+# par-duplicate: Is a duplicate par accepted?
+# xpp: error
+# pc: ODE0041
+x'=0
+x(0)=3
+par a=1
+par a=2
+aux v=a
+@ total=0,dt=1

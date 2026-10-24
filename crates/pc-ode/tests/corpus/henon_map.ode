@@ -1,0 +1,7 @@
+# Henon map. Henon, Communications in Mathematical Physics 50 (1976) 69-77; a=1.4, b=0.3.
+par a=1.4,b=0.3
+x(t+1)=1-a*x^2+y
+y(t+1)=b*x
+init x=0,y=0
+@ total=1000,xp=x,yp=y,xlo=-1.5,xhi=1.5,ylo=-0.5,yhi=0.5
+done

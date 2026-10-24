@@ -1,0 +1,22 @@
+# kw-fixed-letters: Are p=, a=, w=, i=, d=, g=, b=, m= fixed quantities?
+# xpp: vp=5 va=6 vw=7 vi=8 vd=9 vg=10 vb=11 vm=12
+# pc: ok
+x'=0
+x(0)=3
+p = 5
+a = 6
+w = 7
+i = 8
+d = 9
+g = 10
+b = 11
+m = 12
+aux vp=p
+aux va=a
+aux vw=w
+aux vi=i
+aux vd=d
+aux vg=g
+aux vb=b
+aux vm=m
+@ total=0,dt=1

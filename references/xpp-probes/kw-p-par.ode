@@ -1,0 +1,8 @@
+# kw-p-par: Does p a=5 declare a parameter?
+# xpp: 5
+# pc: ok
+x'=0
+x(0)=3
+p a=5
+aux v=a
+@ total=0,dt=1

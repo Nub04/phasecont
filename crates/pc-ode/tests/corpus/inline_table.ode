@@ -1,0 +1,8 @@
+# Damped pendulum with the restoring force read from an inline table of sin on [0, 2 pi]. Illustrative model and values.
+par damp=0.2,drive=0.1
+table sn % 101 0 6.2832 sin(t)
+x'=y
+y'=-sn(x)-damp*y+drive
+init x=1,y=0
+@ total=60,xp=x,yp=y
+done

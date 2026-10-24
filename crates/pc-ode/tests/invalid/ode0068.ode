@@ -1,0 +1,2 @@
+# ODE0068 negative index
+x[0..2]'=x[j-1]

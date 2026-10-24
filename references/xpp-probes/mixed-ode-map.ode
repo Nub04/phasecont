@@ -1,0 +1,10 @@
+# mixed-ode-map: Is a file with an ODE and a map accepted?
+# xpp: 17
+# states: 2
+# pc: ODE0052
+x'=0
+y(t+1)=y/2
+x(0)=7
+y(0)=1
+aux v=x+10
+@ total=0,dt=1

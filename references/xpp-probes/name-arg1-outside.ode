@@ -1,0 +1,8 @@
+# name-arg1-outside: What does arg1 read as outside a function?
+# xpp: 0
+# pc: ODE0050
+x'=0
+x(0)=3
+par a=2
+aux v=arg1
+@ total=0,dt=1
