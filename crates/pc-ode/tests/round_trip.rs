@@ -7,9 +7,9 @@
 //! them with more cases.
 
 use pc_ode::{
-    Assign, BinaryOp, Comment, DUMMY_SPAN, Entry, Expr, FileId, Ident, Index, IndexOp, MapLoader,
-    MarkovLine, MarkovRow, Model, OdeForm, RawAssign, Severity, SourceMap, Stmt, StmtKind,
-    TokenKind, UnaryOp, Value, format_number, lex, load, parse, write, write_expanded,
+    Assign, BinaryOp, Code, Comment, DUMMY_SPAN, Entry, Expr, FileId, Ident, Index, IndexOp,
+    MapLoader, MarkovLine, MarkovRow, Model, OdeForm, RawAssign, Severity, SourceMap, Stmt,
+    StmtKind, TokenKind, UnaryOp, Value, format_number, lex, load, parse, write, write_expanded,
 };
 use proptest::prelude::*;
 
@@ -376,22 +376,222 @@ fn implicit_multiplication_is_written_as_juxtaposition() {
 }
 
 #[test]
-fn implicit_multiplication_falls_back_to_star() {
-    // `2` then `e1` would re-lex as the number `2e1`.
+fn implicit_multiplication_puts_a_merging_right_side_in_parentheses() {
+    // `2` then `e1` would re-lex as the number `2e1`; `2(e1)` is still
+    // implicit (R24 A1, replacing the brief's `2*e1`).
     let e = implicit(num(2.0), name("e1"));
-    assert_eq!(expr_text(e), "2*e1");
+    assert_eq!(expr_text(e), "2(e1)");
     let e = implicit(num(2.0), name("E5x"));
-    assert_eq!(expr_text(e), "2*E5x");
-    // The left side does not end with a literal.
+    assert_eq!(expr_text(e), "2(E5x)");
+    // The right side does not start with a name or `(`.
+    let e = implicit(num(2.0), num(3.0));
+    assert_eq!(expr_text(e), "2(3)");
+    let e = implicit(num(2.0), num(0.5));
+    assert_eq!(expr_text(e), "2(0.5)");
+    let e = implicit(num(2.0), Expr::Index(var(IndexOp::None, 0)));
+    assert_eq!(expr_text(e), "2([j])");
+    // A literal of zeros then `x` and a hex digit lexes as a malformed
+    // hex number.
+    let e = implicit(num(0.0), name("x1"));
+    assert_eq!(expr_text(e), "0(x1)");
+    let zeros = Expr::Num {
+        value: 0.0,
+        text: "00".to_string(),
+        span: DUMMY_SPAN,
+    };
+    let e = implicit(zeros, name("XF"));
+    assert_eq!(expr_text(e), "00(XF)");
+    // Not the hex trap: a dot, a non-zero digit or no hex digit after `x`.
+    assert_eq!(canon("0.x1"), "0.x1");
+    assert_eq!(canon("10x1"), "10x1");
+    assert_eq!(canon("0xg"), "0xg");
+}
+
+#[test]
+fn implicit_multiplication_falls_back_to_star() {
+    // The left side does not end with a literal (hand-built only).
     let e = implicit(name("a"), name("b"));
     assert_eq!(expr_text(e), "a*b");
     let e = implicit(name("x1"), name("b"));
     assert_eq!(expr_text(e), "x1*b");
-    // The right side does not start with a name or `(`.
-    let e = implicit(num(2.0), num(3.0));
-    assert_eq!(expr_text(e), "2*3");
-    let e = implicit(num(2.0), Expr::Index(var(IndexOp::None, 0)));
-    assert_eq!(expr_text(e), "2*[j]");
+    let e = implicit(bin(BinaryOp::Add, name("a"), num(2.0)), name("b"));
+    assert_eq!(expr_text(e), "(a + 2)*b");
+}
+
+/// Asserts that `src` (the right side of `x=`) parses without errors, is
+/// written as `want`, and that `want` parses back to the same tree.
+fn assert_canon_round_trip(src: &str, want: &str) {
+    let m = parse_ok(&format!("x={src}\n"));
+    assert_eq!(canon(src), want, "{src}");
+    assert_round_trip(&m);
+}
+
+#[test]
+fn implicit_flag_survives_every_parser_input() {
+    // Review 1, finding 1 (hex trap).
+    for (src, want) in [
+        ("0(x1)", "0(x1)"),
+        ("0(xb2)", "0(xb2)"),
+        ("00(XF)", "00(XF)"),
+        ("p+0(xff)", "p + 0(xff)"),
+    ] {
+        assert_canon_round_trip(src, want);
+    }
+    // Review 1, finding 3 (right side that would merge or is no name).
+    for (src, want) in [("2(3)", "2(3)"), ("2([j])", "2([j])"), ("2(e1)", "2(e1)")] {
+        assert_canon_round_trip(src, want);
+    }
+    // Only the first operand of such a right side gets the parentheses, so
+    // a literal at its end can start the next juxtaposition (found by the
+    // widened generator).
+    for (src, want) in [
+        ("0(0)<0(e1)", "0(0) < 0(e1)"),
+        ("2(3)<4x", "2(3) < 4x"),
+        ("2(e1)^2", "2(e1)^2"),
+        ("2(e1^2)", "2(e1)^2"),
+    ] {
+        assert_canon_round_trip(src, want);
+    }
+    // Review 1, finding 4, and review 0, finding 1: a comparison, a logical
+    // operator or a prefix on the left keeps the juxtaposition.
+    for (src, want) in [
+        ("a<2x", "a < 2x"),
+        ("-a<2x", "-a < 2x"),
+        ("a&b<2x", "a&b < 2x"),
+        ("a>0.5x", "a > 0.5x"),
+        ("a&1x", "a&1x"),
+        ("a/b<2x", "a/b < 2x"),
+        ("a+(-2x)", "a + (-2x)"),
+        ("a-(-2x)", "a - (-2x)"),
+        ("a+(not 2x)", "a + (not 2x)"),
+        ("a*(-2x)", "a*(-2x)"),
+        ("2b<2c<2d", "2b < 2c < 2d"),
+    ] {
+        assert_canon_round_trip(src, want);
+    }
+    // Review 0, finding 4: a prefix on the left of a later operand.
+    for (src, want) in [
+        ("a+(-b)*c", "a + (-b*c)"),
+        ("a-(not b)*c", "a - (not b*c)"),
+        ("(-b)*c", "-b*c"),
+    ] {
+        assert_canon_round_trip(src, want);
+    }
+}
+
+#[test]
+fn implicit_flag_survives_a_long_chain_quickly() {
+    // Each link has a comparison on the right, so a writer that tried both
+    // parenthesizations at every level would take exponential time.
+    let src = vec!["2b<2"; 90].join("c<");
+    let m = parse_ok(&format!("x={src}\n"));
+    assert_round_trip(&m);
+}
+
+#[test]
+fn expanded_implicit_multiplication_round_trips() {
+    // Review 0, finding 2, and review 1, findings 1 and 3.
+    for (template, want) in [
+        ("x[0..2]'=0x[j]\n", "x0'=0(x0)\nx1'=0(x1)\nx2'=0(x2)\n"),
+        (
+            "x[10..12]'=0x[j]\n",
+            "x10'=0(x10)\nx11'=0(x11)\nx12'=0(x12)\n",
+        ),
+        ("x[0..2]'=2([j])\n", "x0'=2(0)\nx1'=2(1)\nx2'=2(2)\n"),
+        ("e[0..2]'=2e[j]\n", "e0'=2(e0)\ne1'=2(e1)\ne2'=2(e2)\n"),
+    ] {
+        let mut map = SourceMap::new();
+        let top = map.add("/m/top.ode", template);
+        let mut loader = MapLoader::new();
+        let loaded = load(top, &mut map, &mut loader);
+        let errors: Vec<_> = loaded
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "{template}: {errors:#?}");
+        let mut expanded = loaded.expanded.clone();
+        expanded.suppressed.clear();
+        for s in &mut expanded.statements {
+            s.array_index = None;
+            s.array_template = None;
+        }
+        let text = write_expanded(&expanded);
+        assert_eq!(text, want, "{template}");
+        let back = parse_ok(&text);
+        assert_eq!(back.strip_spans(), expanded.strip_spans(), "{template}");
+    }
+}
+
+#[test]
+fn a_leading_digit_gets_a_blank_line() {
+    // Review 1, finding 2: `0=x-y` on the first line would mark an
+    // old-format file.
+    for src in ["\n0=x-y\n", "   \n0=x-y\n"] {
+        let m = parse_ok(src);
+        let text = write(&m);
+        assert_eq!(text, "\n0=x-y\n", "{src:?}");
+        assert_eq!(write_expanded(&m), text);
+        assert_round_trip(&m);
+    }
+}
+
+#[test]
+fn a_trailing_backslash_gets_a_blank() {
+    // Review 1, finding 5: raw text that ends in `\` must not continue the
+    // line.
+    for (src, want) in [
+        ("@ total=10\\ \n", "@ total=10\\ \n"),
+        ("@ total=x\\ \nx'=1\n", "@ total=x\\ \nx'=1\n"),
+        ("bndry x\\ \ny'=1\n", "bndry x\\ \ny'=1\n"),
+        ("bndry x\\ ", "bndry x\\ \n"),
+        ("\"hello\\ \nx'=1\n", "\"hello\\ \nx'=1\n"),
+    ] {
+        let (m, diags) = parse(src, FILE);
+        assert!(
+            diags.iter().all(|d| d.severity != Severity::Error),
+            "{src:?}: {diags:#?}"
+        );
+        let text = write(&m);
+        assert_eq!(text, want, "{src:?}");
+        let (back, _) = parse(&text, FILE);
+        assert_eq!(back.strip_spans(), m.strip_spans(), "{src:?}");
+    }
+    // A `#` comment never continues, so it keeps its text as it is. An
+    // `#include` line is a comment token too.
+    let src = "# ends in \\\npar a=1 # also \\\n#include foo\\\nx'=1\n";
+    let m = parse_ok(src);
+    assert_eq!(m.statements.len(), 4);
+    assert_eq!(write(&m), src);
+    assert_round_trip(&m);
+}
+
+#[test]
+fn negative_literals_never_give_a_parse_error() {
+    // Hand-built only: the parser never gives a negative `Expr::Num`.
+    let neg = |v: f64| Expr::Num {
+        value: v,
+        text: String::new(),
+        span: DUMMY_SPAN,
+    };
+    let cases = [
+        (neg(-5.0), "-5"),
+        (bin(BinaryOp::Pow, num(2.0), neg(-5.0)), "2^(-5)"),
+        (bin(BinaryOp::Pow, neg(-5.0), num(2.0)), "(-5)^2"),
+        (bin(BinaryOp::Add, name("a"), neg(-5.0)), "a + (-5)"),
+        (bin(BinaryOp::Lt, neg(-5.0), name("a")), "(-5) < a"),
+        (unary(UnaryOp::Neg, neg(-5.0)), "-(-5)"),
+        (implicit(num(2.0), neg(-5.0)), "2(-5)"),
+        (
+            bin(BinaryOp::Add, name("a"), implicit(neg(-0.0), name("x1"))),
+            "a + (-0(x1))",
+        ),
+    ];
+    for (e, want) in cases {
+        let text = expr_text(e);
+        assert_eq!(text, want);
+        parse_ok(&format!("x={text}\n"));
+    }
 }
 
 #[test]
@@ -709,6 +909,9 @@ const NAMES: &[&str] = &[
     "ek2",
     "x_1",
     "vlong_name_1",
+    "Vm",
+    "X",
+    "Pa",
 ];
 
 /// Only the keyword letters and names that start with them.
@@ -846,27 +1049,80 @@ fn call_name(ctx: Ctx) -> BoxedStrategy<Ident> {
     prop_oneof![pool_name(ctx), prop::sample::select(CALLS).prop_map(ident)].boxed()
 }
 
-/// An expression. Implicit multiplication appears only where the left
-/// operand's text ends with a literal and the right operand's text starts
-/// with a name or `(` (brief, property 3).
+/// A literal, sometimes one made only of zeros (`0`, `00`), which turns a
+/// following `x1` into a malformed hex number.
+fn lit_expr() -> BoxedStrategy<Expr> {
+    prop_oneof![
+        4 => num_expr(),
+        1 => prop::sample::select(vec!["0", "00"]).prop_map(|text| Expr::Num {
+            value: 0.0,
+            text: text.to_string(),
+            span: DUMMY_SPAN,
+        }),
+    ]
+    .boxed()
+}
+
+/// Names that merge with a literal written before them: an exponent
+/// (`e1`, `E2x`) or, after a zero literal, a hex prefix (`x1`, `xa`, `Xf`).
+const MERGING_NAMES: &[&str] = &["e1", "E2x", "e0b", "x1", "xa", "Xf", "x", "X", "xg"];
+
+/// A left operand of implicit multiplication as the parser builds it: an
+/// expression whose text ends with a literal, through any binary or prefix
+/// operator above level 1 (`docs/language.md`, "Precedence"). Each right
+/// operand binds tighter than its parent, so the writer never has to put
+/// it in parentheses for precedence; the parentheses it would add only to
+/// avoid a warning are dropped in this position.
+fn lit_tail(inner: BoxedStrategy<Expr>) -> BoxedStrategy<Expr> {
+    let power = prop::sample::select(vec![BinaryOp::Pow, BinaryOp::StarStar]);
+    let comparison = prop::sample::select(vec![
+        BinaryOp::Lt,
+        BinaryOp::Gt,
+        BinaryOp::Le,
+        BinaryOp::Ge,
+        BinaryOp::Eq,
+    ]);
+    let term = prop::sample::select(vec![BinaryOp::Mul, BinaryOp::Div, BinaryOp::And]);
+    // Level 5 and up.
+    let t5 = prop_oneof![
+        2 => lit_expr(),
+        1 => (inner.clone(), lit_expr(), power).prop_map(|(a, n, op)| bin(op, a, n)),
+    ]
+    .boxed();
+    // Level 4 and up.
+    let t4 = prop_oneof![
+        2 => t5.clone(),
+        1 => (inner.clone(), t5.clone(), comparison.clone()).prop_map(|(a, b, op)| bin(op, a, b)),
+    ]
+    .boxed();
+    prop_oneof![
+        3 => t4.clone(),
+        1 => (inner.clone(), t4.clone(), term).prop_map(|(a, b, op)| bin(op, a, b)),
+        1 => (t4.clone(), any::<bool>())
+            .prop_map(|(a, neg)| unary(if neg { UnaryOp::Neg } else { UnaryOp::Not }, a)),
+        // `2b<2c`: a product whose right side is a comparison that ends
+        // with a literal.
+        1 => (lit_expr(), inner, t5, comparison)
+            .prop_map(|(n, a, b, op)| implicit(n, bin(op, a, b))),
+    ]
+    .boxed()
+}
+
+/// An expression. Implicit multiplication appears only where the parser
+/// can build it: the left operand's text ends with a literal (`lit_tail`).
 fn expr(ctx: Ctx) -> BoxedStrategy<Expr> {
     leaf(ctx)
         .prop_recursive(4, 40, 3, move |inner| {
-            let lit_end = prop_oneof![
-                num_expr(),
-                (
-                    inner.clone(),
-                    num_expr(),
-                    prop::sample::select(vec![
-                        BinaryOp::Mul,
-                        BinaryOp::Div,
-                        BinaryOp::Pow,
-                        BinaryOp::StarStar
-                    ])
-                )
-                    .prop_map(|(a, n, op)| bin(op, a, n)),
-            ];
+            let lit_end = lit_tail(inner.clone());
+            let index_rhs = if ctx.index {
+                index_var(ctx).prop_map(Expr::Index).boxed()
+            } else {
+                lit_expr()
+            };
             let name_start = prop_oneof![
+                prop::sample::select(MERGING_NAMES).prop_map(|n| Expr::Name(ident(n))),
+                lit_expr(),
+                index_rhs,
                 use_name(ctx).prop_map(Expr::Name),
                 (call_name(ctx), prop::collection::vec(inner.clone(), 1..3)).prop_map(
                     |(name, args)| Expr::Call {
@@ -975,7 +1231,7 @@ fn raw_assign(
 const OPTION_NAMES: &[&str] = &[
     "meth", "dt", "total", "xlo", "xhi", "maxstor", "bounds", "Ntst",
 ];
-const RAW_VALUES: &[&str] = &["stiff", "0.01", "1e-3", "200", "-5", "x1", "Qrk"];
+const RAW_VALUES: &[&str] = &["stiff", "0.01", "1e-3", "200", "-5", "x1", "Qrk", "10\\"];
 
 /// Lines the parser keeps as `Unsupported` statements.
 const UNSUPPORTED_LINES: &[&str] = &[
@@ -990,6 +1246,9 @@ const UNSUPPORTED_LINES: &[&str] = &[
     "w(t)=1 + int{exp(-t)}",
     "z=sum(0,2)of(i')",
     "bdry x - 1",
+    // Raw text that ends in a backslash; the parser trims the blank.
+    "bndry x\\ ",
+    "\"hello\\ ",
 ];
 
 fn unsupported_stmt() -> BoxedStrategy<Stmt> {
@@ -1233,19 +1492,8 @@ fn top_stmt(pool: &'static [&'static str]) -> BoxedStrategy<Stmt> {
 fn gen_model(pool: &'static [&'static str]) -> BoxedStrategy<Model> {
     (prop::collection::vec(top_stmt(pool), 0..8), any::<bool>())
         .prop_map(|(mut statements, done)| {
-            // A first line that starts with a digit (`0=x - y`) marks an
-            // old-format file, so such a model starts with a comment.
-            if let Some(StmtKind::Unsupported { text, .. }) = statements.first().map(|s| &s.kind)
-                && text.starts_with(|c: char| c.is_ascii_digit())
-            {
-                statements.insert(
-                    0,
-                    stmt(StmtKind::Comment(Comment {
-                        text: "# old format guard".to_string(),
-                        span: DUMMY_SPAN,
-                    })),
-                );
-            }
+            // A model may start with `0=x - y`; the writer puts a blank line
+            // before it so that the text does not look like an old-format file.
             if done {
                 statements.push(stmt(StmtKind::Done));
             }
@@ -1578,6 +1826,90 @@ fn normalize(m: &Model) -> Model {
 // Properties
 // ---------------------------------------------------------------------
 
+/// Collects every expression of `stmts`, at any depth.
+fn stmt_exprs<'a>(stmts: &'a [Stmt], out: &mut Vec<&'a Expr>) {
+    fn sub<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
+        out.push(e);
+        match e {
+            Expr::Unary { operand, .. } => sub(operand, out),
+            Expr::Binary { lhs, rhs, .. } => {
+                sub(lhs, out);
+                sub(rhs, out);
+            }
+            Expr::Call { args, .. } => args.iter().for_each(|a| sub(a, out)),
+            Expr::If {
+                cond, then, else_, ..
+            } => {
+                sub(cond, out);
+                sub(then, out);
+                sub(else_, out);
+            }
+            _ => {}
+        }
+    }
+    for s in stmts {
+        match &s.kind {
+            StmtKind::Ode { rhs, .. }
+            | StmtKind::Map { rhs, .. }
+            | StmtKind::Derived { rhs, .. }
+            | StmtKind::Fixed { rhs, .. }
+            | StmtKind::Aux { rhs, .. }
+            | StmtKind::Function { rhs, .. }
+            | StmtKind::Table { rhs, .. } => sub(rhs, out),
+            StmtKind::Global { cond, assigns, .. } => {
+                sub(cond, out);
+                assigns.iter().for_each(|a| sub(&a.rhs, out));
+            }
+            StmtKind::Markov { lines, .. } => {
+                for l in lines {
+                    if let MarkovLine::Row(r) = l {
+                        r.entries.iter().for_each(|e| sub(e, out));
+                    }
+                }
+            }
+            StmtKind::Block { body, .. } | StmtKind::BadBlock { body } => stmt_exprs(body, out),
+            _ => {}
+        }
+    }
+}
+
+/// True for an implicit product whose left operand, on its right edge
+/// (`Binary.rhs` and `Unary.operand`, down from the top), holds an operator
+/// pair that the parser warns about: a comparison or `&`/`|` under
+/// arithmetic (`a < 2x`, `a&1x`, `a/b < 2x`), arithmetic under `&`/`|`, or a
+/// comparison under prefix `-` (`-a < 2x`). The writer leaves out the
+/// parentheses that would avoid the warning there, since `(a < 2)x` is not
+/// implicit.
+fn warning_implicit(e: &Expr) -> bool {
+    #[derive(Clone, Copy)]
+    enum Parent {
+        Bin(BinaryOp),
+        Un(UnaryOp),
+    }
+    fn warns(parent: Parent, child: &Expr) -> bool {
+        let Expr::Binary { op, .. } = child else {
+            return false;
+        };
+        match parent {
+            Parent::Bin(p) => {
+                (p.is_arithmetic() && (op.is_comparison() || op.is_logical()))
+                    || (p.is_logical() && op.is_arithmetic())
+            }
+            Parent::Un(u) => u == UnaryOp::Neg && op.is_comparison(),
+        }
+    }
+    fn edge(parent: Parent, e: &Expr) -> bool {
+        warns(parent, e)
+            || match e {
+                Expr::Binary { op, rhs, .. } => edge(Parent::Bin(*op), rhs),
+                Expr::Unary { op, operand, .. } => edge(Parent::Un(*op), operand),
+                _ => false,
+            }
+    }
+    matches!(e, Expr::Binary { op: BinaryOp::Mul, implicit: true, lhs, .. }
+        if edge(Parent::Bin(BinaryOp::Mul), lhs))
+}
+
 /// Property 1 for one generated model.
 fn check_round_trip(m: &Model) -> Result<(), TestCaseError> {
     let text = write(m);
@@ -1588,6 +1920,21 @@ fn check_round_trip(m: &Model) -> Result<(), TestCaseError> {
         .collect();
     prop_assert!(errors.is_empty(), "errors in\n{}\n{:#?}", text, errors);
     prop_assert_eq!(back.strip_spans(), m.strip_spans(), "text:\n{}", text);
+    // The writer adds the parentheses that avoid a precedence warning,
+    // except where they would turn an implicit product into `*`. Each
+    // warning must fall in a statement that holds such a product.
+    for d in diags.iter().filter(|d| d.code == Code(14)) {
+        let i = back
+            .statements
+            .iter()
+            .position(|s| s.span.start <= d.span.start && d.span.start < s.span.end);
+        let exempt = i.is_some_and(|i| {
+            let mut exprs = Vec::new();
+            stmt_exprs(std::slice::from_ref(&m.statements[i]), &mut exprs);
+            exprs.iter().any(|e| warning_implicit(e))
+        });
+        prop_assert!(exempt, "warning in\n{}\n{:#?}", text, d);
+    }
     // parse(write(parse(s))) == parse(s) on the generated text.
     let again = write(&back);
     prop_assert_eq!(&again, &text);
@@ -1705,7 +2052,9 @@ const SOUP: &[&str] = &[
 
 proptest! {
     // Failures are reported, not stored: an integration test has no
-    // `lib.rs` next to it for the default persistence file.
+    // `lib.rs` next to it for the default persistence file. Copy the
+    // shrunk input of a failure into a unit test by hand, so that it is
+    // checked on every run.
     #![proptest_config(ProptestConfig {
         failure_persistence: None,
         ..ProptestConfig::default()

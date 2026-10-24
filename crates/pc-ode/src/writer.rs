@@ -9,20 +9,35 @@
 //! - Names keep their spelling (`Ident::text`; the key when the text is
 //!   empty). Number literals keep the text they were written with; a
 //!   literal with empty text is written by [`format_number`].
-//! - Expressions get parentheses only where the measured precedence needs
-//!   them (`docs/language.md`, "Precedence"), where the parser would give a
-//!   precedence warning, and around a prefix `-` or `not` that is not at the
-//!   start of an expression, after `(` or after `,`. Binary `+`, `-` and the
-//!   comparisons have a blank on each side; the other operators have none.
-//! - Implicit multiplication is written as juxtaposition (`2x`) when the
-//!   left operand's text ends with a number literal and the right operand's
-//!   text starts with a name or `(`, unless that name starts with `e` or `E`
-//!   and a digit, which would lex as part of the number. Otherwise it is
-//!   written with `*`. When the left operand needs parentheses (`(a<2)x`
-//!   cannot be written), the `*` form loses the `implicit` flag.
+//! - Expressions get parentheses where the measured precedence needs them
+//!   (`docs/language.md`, "Precedence"), where the parser would give a
+//!   precedence warning (a comparison or `&`/`|` inside arithmetic,
+//!   arithmetic inside `&`/`|`, `-` of a comparison), around the inner
+//!   comparison or power of a chain (`(a < b) < c`, `(a^b)^c`), and around a
+//!   whole operand whose text starts with a prefix `-` or `not` when it is
+//!   not at the start of an expression, after `(` or after `,`
+//!   (`a + (-2x)`, `a*(-b)`). Binary `+`, `-` and the comparisons have a
+//!   blank on each side; the other operators have none.
+//! - Implicit multiplication is always written as juxtaposition, since the
+//!   parser builds it only where the left operand's text ends with a number
+//!   literal. When the right operand's text cannot follow the literal
+//!   directly, its first operand goes in parentheses, one level more than
+//!   the source may have had: a number (`2(3)`), a bare index (`2([j])`), a
+//!   name that starts with `e` or `E` and a digit, which would lex as an
+//!   exponent (`2(e1)`, `2(e1)^2`), and, after a literal made only of zeros,
+//!   a name that starts with `x` or `X` and a hex digit, which would lex as
+//!   a malformed hex number (`0(x1)`). The parentheses that would only avoid
+//!   a precedence warning are left out of the left operand, because
+//!   `(a<2)x` is not implicit: `a<2x` is written `a < 2x` and keeps the
+//!   warning of the source. A hand-built product whose left operand does
+//!   not end with a literal is written with `*` and loses the flag.
 //! - `#include` lines, range lines, `%` blocks, comments and the trailing
 //!   comments of `par`, `number` and `@` lines are kept. Unsupported
 //!   statements are written as their raw text.
+//! - A text whose first line would start with a digit (`0=x-y`) gets a
+//!   blank first line, since that digit marks an old-format file.
+//! - A line that would end in `\` outside a `#` comment (raw text, an `@`
+//!   value) gets a blank after it, so that it does not continue the line.
 //!
 //! Limitations of the round trip:
 //!
@@ -34,6 +49,13 @@
 //!   the text only reparses with an error.
 //! - A literal with empty text and a value that is not finite is written as
 //!   `1e999`, which reparses with an error.
+//! - A negative `Expr::Num` value (hand-built only; the parser never makes
+//!   one) is written as `-2`, or `(-2)` where a prefix needs parentheses. It
+//!   reparses without an error but as `Neg` of `2`. `Value::Num` keeps its
+//!   sign.
+//! - A comment or `#include` path that ends in a lone `\r` (`#a\r` at the
+//!   end of the file, or `#a\r\r\n`) loses that `\r`: the lexer drops a
+//!   `\r` before the line end on reparse.
 //!
 //! The writer ignores `Stmt::array_index`, `Stmt::array_template` and
 //! `Model::suppressed`, which the parser never sets.
@@ -51,6 +73,13 @@ pub fn write(model: &Model) -> String {
     for s in &model.statements {
         stmt(&mut out, s);
     }
+    // A first line that starts with a digit marks the old file format.
+    if out
+        .trim_start_matches([' ', '\t'])
+        .starts_with(|c: char| c.is_ascii_digit())
+    {
+        out.insert(0, '\n');
+    }
     out
 }
 
@@ -64,8 +93,9 @@ pub fn write_expanded(model: &Model) -> String {
 /// The canonical text of a number literal: the shortest digits that read
 /// back as the same `f64`, in plain notation when the decimal exponent is
 /// in -5..=15 and in `e` notation otherwise (`0.00001`, `1e-6`,
-/// `1000000000000000`, `1e16`). A negative value gets a leading `-`. A value
-/// that is not finite gives `1e999`, which the lexer rejects.
+/// `1000000000000000`, `1e16`). A negative value gets a leading `-`, and so
+/// does `-0.0` (`-0`). A value that is not finite gives `1e999`, which the
+/// lexer rejects.
 pub fn format_number(value: f64) -> String {
     if !value.is_finite() {
         return "1e999".to_string();
@@ -228,7 +258,15 @@ fn stmt(out: &mut String, s: &Stmt) {
         StmtKind::Unsupported { text, .. } => out.push_str(text),
         StmtKind::Done => out.push_str("done"),
     }
+    let ends_in_comment = s.comment.is_some()
+        || matches!(s.kind, StmtKind::Comment(_) | StmtKind::Include { .. })
+        || matches!(&s.kind, StmtKind::Markov { lines, .. }
+            if matches!(lines.last(), Some(MarkovLine::Comment(_))));
     trailing(out, &s.comment);
+    // A backslash right before the newline would join the next line.
+    if !ends_in_comment && out.ends_with('\\') {
+        out.push(' ');
+    }
     out.push('\n');
 }
 
@@ -320,51 +358,157 @@ fn expr_level(e: &Expr) -> u8 {
     }
 }
 
-/// True when `child`, an operand of the binary operator `parent`, needs
-/// parentheses. `at_start` tells whether the operand's text would start the
-/// expression (after `(`, `,` or `=`).
-fn binary_child_parens(parent: BinaryOp, child: &Expr, is_rhs: bool, at_start: bool) -> bool {
-    match child {
-        // The operand of a prefix operator is parsed at level 4, so a prefix
-        // expression cannot be the left operand of a comparison or power
-        // without parentheses. Elsewhere it is wrapped unless it starts the
-        // expression.
-        Expr::Unary { .. } => parent.is_comparison() || parent.is_power() || is_rhs || !at_start,
-        Expr::Binary { op, .. } => {
-            let (p, c) = (level(parent), level(*op));
-            c < p
-                || (c == p && is_rhs)
-                || (parent.is_comparison() && op.is_comparison())
-                || (parent.is_power() && op.is_power())
-                || (parent.is_arithmetic() && (op.is_comparison() || op.is_logical()))
-                || (parent.is_logical() && op.is_arithmetic())
+/// Why an operand gets parentheses.
+#[derive(Clone, Copy, PartialEq)]
+enum Wrap {
+    No,
+    /// The text would parse differently, or with an error, without them.
+    Needed,
+    /// Only to avoid a precedence warning, or to make the grouping of a
+    /// comparison or power chain visible. The tree is the same without them.
+    Warning,
+}
+
+/// The text of an operand and what its neighbors need to know about it.
+#[derive(Clone)]
+struct Out {
+    text: String,
+    /// The text ends with a number literal that is not inside parentheses.
+    /// The flag tells whether that literal is made only of zeros.
+    tail_literal: Option<bool>,
+    /// The text starts with a prefix `-` or `not` that is not inside
+    /// parentheses.
+    prefix: bool,
+    /// The length of the first operand at the start of the text: a leaf, a
+    /// call or a group in parentheses. The whole text for a prefix operator.
+    head: usize,
+}
+
+impl Out {
+    fn wrapped(self) -> Out {
+        let text = format!("({})", self.text);
+        Out {
+            head: text.len(),
+            text,
+            tail_literal: None,
+            prefix: false,
         }
-        _ => false,
+    }
+
+    fn wrap_if(self, yes: bool) -> Out {
+        if yes { self.wrapped() } else { self }
+    }
+}
+
+/// An operand written two ways: `normal` with every parenthesis of
+/// [`Wrap`], and `relaxed` without the [`Wrap::Warning`] ones on its right
+/// edge (the right operands of binary nodes and the operands of prefix
+/// operators, down from the top). The relaxed form is used only for the
+/// left operand of an implicit multiplication, where it lets the text end
+/// with a literal.
+struct Both {
+    normal: Out,
+    relaxed: Out,
+}
+
+/// Why `child`, written as `out`, needs parentheses as an operand of the
+/// binary operator `parent`.
+fn binary_child_wrap(parent: BinaryOp, child: &Expr, out: &Out, is_rhs: bool) -> Wrap {
+    // A prefix operator is allowed only at the start of an expression, and
+    // its operand is parsed at level 4, so it cannot start the left operand
+    // of a comparison or power either.
+    if out.prefix && (is_rhs || parent.is_comparison() || parent.is_power()) {
+        return Wrap::Needed;
+    }
+    let Expr::Binary { op, .. } = child else {
+        return Wrap::No;
+    };
+    let (p, c) = (level(parent), level(*op));
+    if c < p || (c == p && is_rhs) {
+        Wrap::Needed
+    } else if (parent.is_comparison() && op.is_comparison())
+        || (parent.is_power() && op.is_power())
+        || (parent.is_arithmetic() && (op.is_comparison() || op.is_logical()))
+        || (parent.is_logical() && op.is_arithmetic())
+    {
+        Wrap::Warning
+    } else {
+        Wrap::No
+    }
+}
+
+/// Why the operand of a prefix operator needs parentheses.
+fn unary_operand_wrap(op: UnaryOp, operand: &Expr, out: &Out) -> Wrap {
+    if expr_level(operand) < 4 || out.prefix {
+        Wrap::Needed
+    } else if op == UnaryOp::Neg && matches!(operand, Expr::Binary { op, .. } if op.is_comparison())
+    {
+        Wrap::Warning
+    } else {
+        Wrap::No
     }
 }
 
 fn expr_text(e: &Expr) -> String {
-    expr(e, true).0
+    expr(e).normal.text
 }
 
-/// Writes `e`. Returns the text and whether it ends with a number literal
-/// that is not inside parentheses.
-fn expr(e: &Expr, at_start: bool) -> (String, bool) {
+fn leaf(text: String) -> Both {
+    let out = Out {
+        head: text.len(),
+        text,
+        tail_literal: None,
+        prefix: false,
+    };
+    Both {
+        normal: out.clone(),
+        relaxed: out,
+    }
+}
+
+/// Writes `e` in both forms of [`Both`]. Every child is written once, so
+/// the time stays linear in the size of the tree.
+fn expr(e: &Expr) -> Both {
     match e {
-        Expr::Num { value, text, .. } => (literal(*value, text), true),
-        Expr::Name(id) => (ident(id), false),
-        Expr::Index(ix) => (index(ix), false),
-        Expr::Error { .. } => ("?".to_string(), false),
+        Expr::Num { value, text, .. } => {
+            let text = literal(*value, text);
+            let digits = text.strip_prefix('-').unwrap_or(&text);
+            let zeros = !digits.is_empty() && digits.bytes().all(|b| b == b'0');
+            let out = Out {
+                prefix: text.starts_with('-'),
+                head: text.len(),
+                text,
+                tail_literal: Some(zeros),
+            };
+            Both {
+                normal: out.clone(),
+                relaxed: out,
+            }
+        }
+        Expr::Name(id) => leaf(ident(id)),
+        Expr::Index(ix) => leaf(index(ix)),
+        Expr::Error { .. } => leaf("?".to_string()),
         Expr::Unary { op, operand, .. } => {
-            let wrap = expr_level(operand) < 4
-                || (*op == UnaryOp::Neg
-                    && matches!(**operand, Expr::Binary { op, .. } if op.is_comparison()));
-            let (inner, lit) = child(operand, wrap, false);
+            let inner = expr(operand);
             let prefix = match op {
                 UnaryOp::Neg => "-",
                 UnaryOp::Not => "not ",
             };
-            (format!("{prefix}{inner}"), lit)
+            let form = |o: Out, relaxed: bool| {
+                let wrap = unary_operand_wrap(*op, operand, &o);
+                let o = o.wrap_if(wrap == Wrap::Needed || (wrap == Wrap::Warning && !relaxed));
+                let text = format!("{prefix}{}", o.text);
+                Out {
+                    head: text.len(),
+                    text,
+                    tail_literal: o.tail_literal,
+                    prefix: true,
+                }
+            };
+            Both {
+                normal: form(inner.normal, false),
+                relaxed: form(inner.relaxed, true),
+            }
         }
         Expr::Binary {
             op,
@@ -373,58 +517,102 @@ fn expr(e: &Expr, at_start: bool) -> (String, bool) {
             implicit,
             ..
         } => {
-            let lwrap = binary_child_parens(*op, lhs, false, at_start);
-            let rwrap = binary_child_parens(*op, rhs, true, false);
-            let (ltext, llit) = child(lhs, lwrap, at_start);
-            let (rtext, rlit) = child(rhs, rwrap, false);
-            let sep = match op {
-                BinaryOp::Mul if *implicit && llit && juxtaposable(&rtext) => "",
-                BinaryOp::Add | BinaryOp::Sub => {
-                    return (format!("{ltext} {} {rtext}", op.symbol()), rlit);
-                }
-                op if op.is_comparison() => {
-                    return (format!("{ltext} {} {rtext}", op.symbol()), rlit);
-                }
-                op => op.symbol(),
+            let l = expr(lhs);
+            let r = expr(rhs);
+            let left = if *op == BinaryOp::Mul && *implicit {
+                implicit_left(lhs, l)
+            } else {
+                let wrap = binary_child_wrap(*op, lhs, &l.normal, false);
+                l.normal.wrap_if(wrap != Wrap::No)
             };
-            (format!("{ltext}{sep}{rtext}"), rlit)
+            let form = |o: Out, relaxed: bool| {
+                let wrap = binary_child_wrap(*op, rhs, &o, true);
+                let o = o.wrap_if(wrap == Wrap::Needed || (wrap == Wrap::Warning && !relaxed));
+                binary_text(*op, *implicit, &left, o)
+            };
+            Both {
+                normal: form(r.normal, false),
+                relaxed: form(r.relaxed, true),
+            }
         }
         Expr::Call { name, args, .. } => {
             let args: Vec<String> = args.iter().map(expr_text).collect();
-            (format!("{}({})", ident(name), args.join(",")), false)
+            leaf(format!("{}({})", ident(name), args.join(",")))
         }
         Expr::If {
             cond, then, else_, ..
-        } => (
-            format!(
-                "if({})then({})else({})",
-                expr_text(cond),
-                expr_text(then),
-                expr_text(else_)
-            ),
-            false,
-        ),
+        } => leaf(format!(
+            "if({})then({})else({})",
+            expr_text(cond),
+            expr_text(then),
+            expr_text(else_)
+        )),
     }
 }
 
-/// Writes an operand, in parentheses when `wrap` is set.
-fn child(e: &Expr, wrap: bool, at_start: bool) -> (String, bool) {
-    if wrap {
-        (format!("({})", expr(e, true).0), false)
+/// The left operand of an implicit multiplication. It is written with all
+/// its parentheses when that text ends with a literal. Otherwise, when the
+/// parentheses that keep the literal off the end are there only for a
+/// warning, they are left out, so that the product can still be written as
+/// juxtaposition (`a < 2x`). The text then gives the same precedence
+/// warning as the source.
+fn implicit_left(lhs: &Expr, l: Both) -> Out {
+    let wrap = binary_child_wrap(BinaryOp::Mul, lhs, &l.normal, false);
+    let normal = l.normal.wrap_if(wrap != Wrap::No);
+    if normal.tail_literal.is_some() || wrap == Wrap::Needed || l.relaxed.tail_literal.is_none() {
+        normal
     } else {
-        expr(e, at_start)
+        l.relaxed
     }
 }
 
-/// True when `rhs` can follow a number literal without `*`: it starts with
-/// a letter or `(`, and not with `e` or `E` followed by a digit.
-fn juxtaposable(rhs: &str) -> bool {
+/// Joins two written operands with the operator `op`.
+fn binary_text(op: BinaryOp, implicit: bool, left: &Out, right: Out) -> Out {
+    let mut tail_literal = right.tail_literal;
+    let text = match op {
+        BinaryOp::Mul if implicit && left.tail_literal.is_some() => {
+            let zeros = left.tail_literal == Some(true);
+            if can_follow_literal(&right.text, zeros) {
+                format!("{}{}", left.text, right.text)
+            } else {
+                // Only the first operand of the right side goes in
+                // parentheses (`2(e1)^2`, `0(0) < 0`), so that a literal at
+                // its end can still start another juxtaposition.
+                let (head, rest) = right.text.split_at(right.head);
+                if rest.is_empty() {
+                    tail_literal = None;
+                }
+                format!("{}({head}){rest}", left.text)
+            }
+        }
+        BinaryOp::Add | BinaryOp::Sub => format!("{} {} {}", left.text, op.symbol(), right.text),
+        op if op.is_comparison() => format!("{} {} {}", left.text, op.symbol(), right.text),
+        op => format!("{}{}{}", left.text, op.symbol(), right.text),
+    };
+    Out {
+        text,
+        tail_literal,
+        prefix: left.prefix,
+        head: left.head,
+    }
+}
+
+/// True when `rhs` can follow a number literal directly and still be read
+/// as implicit multiplication. The parser needs a name or `(` right after
+/// the literal, and the lexer must not take any of `rhs` into the number:
+/// `e` or `E` followed by a digit, or by a sign and a digit, is an
+/// exponent, and after a literal made only of zeros (`zeros`), `x` or `X`
+/// followed by a hex digit is a malformed hex number.
+fn can_follow_literal(rhs: &str, zeros: bool) -> bool {
     let b = rhs.as_bytes();
+    let digit_at = |i: usize| b.get(i).is_some_and(u8::is_ascii_digit);
     match b.first() {
         Some(b'(') => true,
-        Some(c) if c.is_ascii_alphabetic() => {
-            !((*c == b'e' || *c == b'E') && b.get(1).is_some_and(u8::is_ascii_digit))
+        Some(b'e' | b'E') => {
+            !(digit_at(1) || (matches!(b.get(1), Some(b'+' | b'-')) && digit_at(2)))
         }
-        _ => false,
+        Some(b'x' | b'X') if zeros => !b.get(1).is_some_and(u8::is_ascii_hexdigit),
+        Some(c) => c.is_ascii_alphabetic(),
+        None => false,
     }
 }

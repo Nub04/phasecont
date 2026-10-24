@@ -158,7 +158,11 @@ impl Ident {
 /// An expression.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
-    /// A number literal with its value and its text as written.
+    /// A number literal with its value and its text as written. The lexer
+    /// reads no sign, so `value` is never negative in a parsed model (`-2`
+    /// is `Unary` `Neg` of `2`). A hand-built negative `value` is written as
+    /// `-2`, or `(-2)` where a prefix needs parentheses, and reparses as
+    /// `Neg` of `2`, so it does not round-trip.
     Num {
         value: f64,
         text: String,
