@@ -8,3 +8,5 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+pc-ode = { path = "../pc-ode" }
+serde_json = "1.0.154"

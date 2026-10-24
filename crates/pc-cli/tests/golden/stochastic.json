@@ -1,0 +1,16 @@
+{
+  "diagnostics": [],
+  "file": "stochastic.ode",
+  "summary": {
+    "aux": 0,
+    "errors": 0,
+    "fixed": 0,
+    "functions": 0,
+    "kind": "ode",
+    "parameters": 5,
+    "simulation_only": true,
+    "smooth": true,
+    "states": 2,
+    "warnings": 0
+  }
+}

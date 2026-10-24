@@ -1,0 +1,35 @@
+{
+  "diagnostics": [
+    {
+      "code": "ODE0013",
+      "col": 5,
+      "end_col": 8,
+      "end_line": 6,
+      "file": "abbreviations.ode",
+      "fix_it": {
+        "col": 6,
+        "end_col": 6,
+        "end_line": 6,
+        "line": 6,
+        "replacement": "*"
+      },
+      "line": 6,
+      "message": "XPPAUT 8.0 rejects implicit multiplication; write `2*Om`",
+      "notes": [],
+      "severity": "warning"
+    }
+  ],
+  "file": "abbreviations.ode",
+  "summary": {
+    "aux": 1,
+    "errors": 0,
+    "fixed": 1,
+    "functions": 0,
+    "kind": "ode",
+    "parameters": 5,
+    "simulation_only": false,
+    "smooth": true,
+    "states": 2,
+    "warnings": 1
+  }
+}
