@@ -18,41 +18,17 @@ pub fn severity_name(s: Severity) -> &'static str {
     }
 }
 
-/// `file:line:col` of the start of `span`.
-fn at(map: &SourceMap, span: Span) -> String {
-    let (line, col) = map.line_col(span);
-    format!("{}:{line}:{col}", map.name(span.file))
-}
+/// The most characters of a source line that the text report echoes.
+const WINDOW: usize = 120;
+/// How many characters before the span the window starts, when the line is
+/// cut on the left.
+const LEFT_CONTEXT: usize = 40;
 
-/// The source line of `span` and a caret line under it.
-fn snippet(map: &SourceMap, span: Span) -> Option<String> {
-    let (line, col) = map.line_col(span);
-    let text = map.line_text(span.file, line)?;
-    let text = text.strip_suffix('\r').unwrap_or(text);
-    let (end_line, end_col) = map.line_col(Span::new(span.file, span.end, span.end));
-    let width = text.chars().count();
-    let end_col = if end_line == line {
-        end_col.min(width + 1)
-    } else {
-        width + 1
-    };
-    // One caret at the start, then `~` up to the exclusive end.
-    let tildes = end_col.saturating_sub(col + 1);
-    let mut caret = String::new();
-    for c in text.chars().take(col - 1) {
-        caret.push(if c == '\t' { '\t' } else { ' ' });
-    }
-    // A span past the end of the line (a missing token at the line end)
-    // still gets its caret, in the column after the last character.
-    for _ in text.chars().count()..col - 1 {
-        caret.push(' ');
-    }
-    caret.push('^');
-    caret.extend(std::iter::repeat_n('~', tildes));
-    // Control characters other than tab become U+FFFD, one for one, so the
-    // caret columns stay right and the terminal sees no escape codes.
-    let shown: String = text
-        .chars()
+/// `s` with every control character other than tab replaced by U+FFFD, one
+/// for one, so the terminal sees no escape codes and no line breaks. JSON
+/// output keeps the true strings, since it escapes them.
+fn plain(s: &str) -> String {
+    s.chars()
         .map(|c| {
             if c != '\t' && c.is_control() {
                 '\u{FFFD}'
@@ -60,7 +36,67 @@ fn snippet(map: &SourceMap, span: Span) -> Option<String> {
                 c
             }
         })
-        .collect();
+        .collect()
+}
+
+/// `file:line:col` of the start of `span`.
+fn at(map: &SourceMap, span: Span) -> String {
+    let (line, col) = map.line_col(span);
+    plain(&format!("{}:{line}:{col}", map.name(span.file)))
+}
+
+/// The source line of `span` and a caret line under it. A line longer than
+/// `WINDOW` characters is cut to a window around the span, and each cut end
+/// is marked with `...`.
+fn snippet(map: &SourceMap, span: Span) -> Option<String> {
+    let (line, col) = map.line_col(span);
+    let text = map.line_text(span.file, line)?;
+    let text = text.strip_suffix('\r').unwrap_or(text);
+    let (end_line, end_col) = map.line_col(Span::new(span.file, span.end, span.end));
+    let chars: Vec<char> = text.chars().collect();
+    let width = chars.len();
+    let end_col = if end_line == line {
+        end_col.min(width + 1)
+    } else {
+        width + 1
+    };
+    // One caret at the start, then `~` up to the exclusive end.
+    let tildes = end_col.saturating_sub(col + 1);
+    // The window: `WINDOW` characters, starting `LEFT_CONTEXT` before the
+    // span, and moved left when the line ends sooner.
+    let start = col - 1;
+    let (lo, hi) = if width <= WINDOW {
+        (0, width)
+    } else {
+        let hi = (start.saturating_sub(LEFT_CONTEXT) + WINDOW).min(width);
+        (hi - WINDOW, hi)
+    };
+    let (cut_left, cut_right) = (lo > 0, hi < width);
+    let mut shown = String::new();
+    let mut caret = String::new();
+    if cut_left {
+        shown.push_str("...");
+        caret.push_str("   ");
+    }
+    shown.push_str(&plain(&chars[lo..hi].iter().collect::<String>()));
+    if cut_right {
+        shown.push_str("...");
+    }
+    // Tabs before the span are copied so the caret lines up.
+    for c in chars.iter().take(start.min(hi)).skip(lo) {
+        caret.push(if *c == '\t' { '\t' } else { ' ' });
+    }
+    // A span past the end of the line (a missing token at the line end)
+    // still gets its caret, in the column after the last character.
+    for _ in width..start {
+        caret.push(' ');
+    }
+    caret.push('^');
+    // The tildes stop at the end of the window.
+    caret.extend(std::iter::repeat_n(
+        '~',
+        tildes.min(hi.saturating_sub(start + 1)),
+    ));
     Some(format!("{shown}\n{caret}\n"))
 }
 
@@ -71,7 +107,7 @@ fn diagnostic(out: &mut String, map: &SourceMap, d: &Diagnostic) {
         at(map, d.span),
         severity_name(d.severity),
         d.code,
-        d.message
+        plain(&d.message)
     );
     if let Some(s) = snippet(map, d.span) {
         out.push_str(&s);
@@ -86,7 +122,7 @@ fn diagnostic(out: &mut String, map: &SourceMap, d: &Diagnostic) {
         );
     }
     for (span, message) in &d.notes {
-        let _ = writeln!(out, "  note: {}: {message}", at(map, *span));
+        let _ = writeln!(out, "  note: {}: {}", at(map, *span), plain(message));
     }
 }
 
@@ -189,6 +225,67 @@ mod tests {
         assert_eq!(
             got,
             "a.ode:1:5: error[ODE0012]: msg\nx'=\u{fffd}@\u{fffd}a\n    ^\n"
+        );
+    }
+
+    #[test]
+    fn long_line_is_cut_on_both_sides_around_a_span_in_the_middle() {
+        // 149 `a`, the span `@`, 150 `b`: the window holds 40 `a`, `@` and 79
+        // `b`, and both ends are cut.
+        let text = format!("{}@{}\n", "a".repeat(149), "b".repeat(150));
+        let got = one(&text, 149, 150);
+        let echoed = format!("...{}@{}...", "a".repeat(40), "b".repeat(79));
+        let caret = format!("{}^", " ".repeat(3 + 40));
+        assert_eq!(
+            got,
+            format!("a.ode:1:150: error[ODE0012]: msg\n{echoed}\n{caret}\n")
+        );
+    }
+
+    #[test]
+    fn long_line_is_cut_on_the_left_only_when_the_span_is_at_the_end() {
+        let text = format!("{}@\n", "a".repeat(299));
+        let got = one(&text, 299, 300);
+        let echoed = format!("...{}@", "a".repeat(119));
+        let caret = format!("{}^", " ".repeat(3 + 119));
+        assert_eq!(
+            got,
+            format!("a.ode:1:300: error[ODE0012]: msg\n{echoed}\n{caret}\n")
+        );
+        // A span at the start is cut on the right only.
+        let text = format!("@{}\n", "b".repeat(299));
+        let got = one(&text, 0, 3);
+        let echoed = format!("@{}...", "b".repeat(119));
+        assert_eq!(
+            got,
+            format!("a.ode:1:1: error[ODE0012]: msg\n{echoed}\n^~~\n")
+        );
+    }
+
+    #[test]
+    fn a_line_of_exactly_the_window_is_not_cut() {
+        let text = format!("{}\n", "a".repeat(WINDOW));
+        let got = one(&text, 5, 6);
+        assert_eq!(
+            got,
+            format!(
+                "a.ode:1:6: error[ODE0012]: msg\n{}\n{}^\n",
+                "a".repeat(WINDOW),
+                " ".repeat(5)
+            )
+        );
+    }
+
+    #[test]
+    fn control_characters_in_names_and_messages_are_replaced() {
+        let mut map = SourceMap::new();
+        let f = map.add("a\u{1b}[2J.ode", "x\n");
+        let d = Diagnostic::new(Code(12), Span::new(f, 0, 1), "m\nn\u{7}".to_string());
+        let mut out = String::new();
+        diagnostic(&mut out, &map, &d);
+        assert_eq!(
+            out,
+            "a\u{fffd}[2J.ode:1:1: error[ODE0012]: m\u{fffd}n\u{fffd}\nx\n^\n"
         );
     }
 

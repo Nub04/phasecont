@@ -364,3 +364,27 @@ fn a_failed_write_exits_one_with_a_message() {
         stderr(&o)
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_top_path_still_resolves_relative_includes() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let bin = env!("CARGO_BIN_EXE_pc-cli");
+    let dir = std::env::temp_dir().join(format!("pc-cli-nonutf8-inc-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join(OsStr::from_bytes(b"d\xff"))).unwrap();
+    let sub = dir.join(OsStr::from_bytes(b"d\xff"));
+    std::fs::write(sub.join("top.ode"), "#include inc.ode\ndone\n").unwrap();
+    std::fs::write(sub.join("inc.ode"), "x'=-x\n").unwrap();
+    // The working directory is not the folder of the model, so a lossy
+    // path would not find `inc.ode`.
+    let o = Command::new(bin)
+        .arg("parse")
+        .arg(sub.join("top.ode"))
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+    assert_eq!(code(&o), 0, "{}{}", stdout(&o), stderr(&o));
+    assert!(stdout(&o).contains("states: 1\n"), "{}", stdout(&o));
+}

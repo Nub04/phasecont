@@ -44,18 +44,18 @@ fn out(text: &str, code: u8) -> ExitCode {
 
 fn parse(file: &Path, json: bool) -> ExitCode {
     let shown = file.to_string_lossy();
-    // The top file is read as strict UTF-8, like included files in
-    // `FsLoader`: invalid bytes are a read error, never replaced.
-    let text = match std::fs::read_to_string(file) {
-        Ok(t) => t,
+    let mut map = SourceMap::new();
+    let mut loader = FsLoader::new();
+    // One read path for the top file and its includes: strict UTF-8, so
+    // invalid bytes are a read error, never replaced.
+    let top = match loader.load_top(&mut map, file) {
+        Ok(id) => id,
         Err(e) => {
-            eprintln!("pc-cli: cannot read {shown}: {e}");
+            eprintln!("pc-cli: cannot read {e}");
             return ExitCode::from(1);
         }
     };
-    let mut map = SourceMap::new();
-    let top = map.add(shown.as_ref(), text);
-    let loaded = load(top, &mut map, &mut FsLoader::new());
+    let loaded = load(top, &mut map, &mut loader);
     let report = if json {
         json::render(&shown, &map, &loaded)
     } else {

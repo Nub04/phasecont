@@ -605,7 +605,7 @@ fn fs_loader_absolute_and_missing_paths() {
 fn fs_loader_errors() {
     let tmp = TempDir::new("err");
     let mut map = SourceMap::new();
-    let loader = FsLoader::new();
+    let mut loader = FsLoader::new();
     assert!(loader.load_top(&mut map, tmp.0.join("none.ode")).is_err());
     assert_eq!(map.file_count(), 0);
     // The error names the full path that was tried.
@@ -667,7 +667,7 @@ fn fs_loader_symlink_self_include_is_a_cycle() {
     tmp.write("d/s.ode", "#include loop/s.ode\npar s=1");
     std::os::unix::fs::symlink(".", tmp.0.join("d/loop")).unwrap();
     let mut map = SourceMap::new();
-    let loader = FsLoader::new();
+    let mut loader = FsLoader::new();
     let id = loader.load_top(&mut map, tmp.0.join("d/s.ode")).unwrap();
     let (model, _) = parse(map.text(id), id);
     let (resolved, diags) = resolve_includes(&model, id, &mut map, &mut FsLoader::new());

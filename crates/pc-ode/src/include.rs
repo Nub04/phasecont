@@ -122,21 +122,50 @@ impl SourceLoader for MapLoader {
 /// The display name therefore always names the opened file, and the file's
 /// own includes are taken relative to it. The identity of a file is its
 /// canonical path, where the system can give one.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct FsLoader;
+///
+/// A path that is not valid UTF-8 gets a lossy display name. The loader
+/// remembers the real path of every such file, so the file's own includes
+/// and its identity still use the real path.
+#[derive(Debug, Clone, Default)]
+pub struct FsLoader {
+    real: HashMap<String, PathBuf>,
+}
 
 impl FsLoader {
     pub fn new() -> FsLoader {
-        FsLoader
+        FsLoader::default()
+    }
+
+    /// Records the real path behind `shown` when the display name lost
+    /// bytes, and returns `shown`.
+    fn remember(&mut self, shown: PathBuf) -> String {
+        let name = shown.display().to_string();
+        if shown.to_str().is_none() {
+            self.real.insert(name.clone(), shown);
+        }
+        name
+    }
+
+    /// The real path of the file shown as `name`.
+    fn real_path(&self, name: &str) -> PathBuf {
+        self.real
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| PathBuf::from(name))
     }
 
     /// Reads the top file, stores it in `map` under its path with `.`
     /// components dropped and returns its id. Only this path may be relative to the working
     /// directory.
-    pub fn load_top(&self, map: &mut SourceMap, path: impl AsRef<Path>) -> Result<FileId, String> {
+    pub fn load_top(
+        &mut self,
+        map: &mut SourceMap,
+        path: impl AsRef<Path>,
+    ) -> Result<FileId, String> {
         let path = path.as_ref();
         let text = read(path)?;
-        Ok(map.add(display_name(path).display().to_string(), text))
+        let name = self.remember(display_name(path));
+        Ok(map.add(name, text))
     }
 }
 
@@ -151,16 +180,18 @@ impl SourceLoader for FsLoader {
         if let Some(message) = drive_relative(path) {
             return Err(message);
         }
-        let dir = Path::new(from_name).parent().unwrap_or(Path::new(""));
+        let from = self.real_path(from_name);
+        let dir = from.parent().unwrap_or(Path::new(""));
         let full = dir.join(path);
         let text = read(&full)?;
-        Ok((display_name(&full).display().to_string(), text))
+        Ok((self.remember(display_name(&full)), text))
     }
 
     fn identity(&mut self, name: &str) -> String {
-        match std::fs::canonicalize(name) {
+        let real = self.real_path(name);
+        match std::fs::canonicalize(&real) {
             Ok(path) => path.display().to_string(),
-            Err(_) => normalize(Path::new(name)).display().to_string(),
+            Err(_) => normalize(&real).display().to_string(),
         }
     }
 }
