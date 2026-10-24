@@ -47,8 +47,25 @@ pub const TOO_MANY_COPIES: Code = Code(71);
 pub const MAX_ARRAY_COPIES: usize = 100_000;
 
 /// The most work one [`expand`] call does: each copy costs the weight of its
-/// template, 1 for the statement plus 1 per name, value and expression node.
+/// template, 1 for the statement plus 1 per name, value and expression node,
+/// plus 1 per started 64 bytes of the template statement.
 pub const MAX_ARRAY_WORK: usize = 2_000_000;
+
+/// The bytes of template text that cost one unit of work, so that long
+/// comments, names and unsupported text are charged too.
+const LENGTH_UNIT: u128 = 64;
+
+/// The work one copy of `stmt` costs: `nodes` (from [`occurrences`]) plus
+/// one unit per started [`LENGTH_UNIT`] bytes of its full span, trailing
+/// comment included.
+fn weight(stmt: &Stmt, nodes: u128) -> u128 {
+    let end = stmt
+        .comment
+        .as_ref()
+        .map_or(stmt.span.end, |c| c.span.end.max(stmt.span.end));
+    let bytes = end.saturating_sub(stmt.span.start) as u128;
+    nodes + bytes.div_ceil(LENGTH_UNIT)
+}
 
 /// The largest index: 2^53, so that every index is exact as a double.
 pub const MAX_INDEX: i64 = 1 << 53;
@@ -214,8 +231,9 @@ struct Occurrence {
     span: Span,
 }
 
-/// Every index form of `kind`, in source order, and the weight of one copy:
-/// 1 for the statement plus 1 per name, value and expression node.
+/// Every index form of `kind`, in source order, and the node part of the
+/// weight of one copy: 1 for the statement plus 1 per name, value and
+/// expression node. [`weight`] adds the length part.
 fn occurrences(kind: &StmtKind) -> (Vec<Occurrence>, u128) {
     let mut kind = kind.clone();
     let mut found = Vec::new();
@@ -379,7 +397,8 @@ impl Expander {
     /// A statement outside an array block. Returns false when it is
     /// dropped.
     fn line(&mut self, stmt: &Stmt) -> bool {
-        let (found, weight) = occurrences(&stmt.kind);
+        let (found, nodes) = occurrences(&stmt.kind);
+        let weight = weight(stmt, nodes);
         let ranges: Vec<&Occurrence> = found
             .iter()
             .filter(|o| matches!(o.index, Index::Range { .. }))
@@ -501,7 +520,7 @@ impl Expander {
             }
             if self.bounds_ok(&found, lo, hi) {
                 valid.push(stmt);
-                weight += w;
+                weight += self::weight(stmt, w);
             } else {
                 self.suppress(stmt);
             }

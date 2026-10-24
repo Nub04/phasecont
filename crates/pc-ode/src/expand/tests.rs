@@ -644,27 +644,31 @@ fn work_budget_stops_a_deep_expression() {
 
 #[test]
 fn work_budget_counts_names_values_and_nodes() {
-    // A `par` line with `n` entries weighs 1 + 2n per copy.
-    let line = |n: usize| {
-        let mut text = String::from("par p0[1..1000]=0");
+    // A `par` line with `n` entries weighs 1 + 2n per copy, plus one unit
+    // per started 64 bytes of the line.
+    let line = |n: usize, copies: usize| {
+        let mut text = format!("par p0[1..{copies}]=0");
         for k in 1..n {
             text.push_str(&format!(",p{k}[j]=0"));
         }
         text
     };
-    // 1000 copies of weight 1999: just under the budget.
-    let model = clean(&line(999));
-    assert_eq!(model.statements.len(), 1000);
-    // 1000 copies of weight 2001: just over it.
-    one(&line(1000), TOO_MANY_COPIES, "[1..1000]", 0);
-    // Expression nodes count: `x'=c+c` weighs 1 + 1 + 3.
+    // 999 entries: 9888 bytes, so 1999 + 155 = 2154 units per copy.
+    assert_eq!(line(999, 928).len(), 9888);
+    // 928 copies are 1998912 units: just under the budget.
+    let model = clean(&line(999, 928));
+    assert_eq!(model.statements.len(), 928);
+    // 929 copies are 2001066 units: just over it.
+    one(&line(999, 929), TOO_MANY_COPIES, "[1..929]", 0);
+    // Expression nodes count: `x'=c+c` weighs 1 + 1 + 3, plus its length.
     let rhs = vec!["c"; 100].join("+");
-    // 1 + 1 + 199 = 201 per copy; 9950 copies fit, 9951 do not.
-    clean(&format!("x[1..9950]'={rhs}"));
+    // 1 + 1 + 199 = 201 nodes and 211 bytes (4 units) = 205 per copy;
+    // 9756 copies fit, 9757 do not.
+    clean(&format!("x[1..9756]'={rhs}"));
     one(
-        &format!("x[1..9951]'={rhs}"),
+        &format!("x[1..9757]'={rhs}"),
         TOO_MANY_COPIES,
-        "[1..9951]",
+        "[1..9757]",
         0,
     );
     // A block weighs the sum of its body statements per index.
@@ -672,9 +676,45 @@ fn work_budget_counts_names_values_and_nodes() {
     let (_, d) = one(text, TOO_MANY_COPIES, "[1..400000]", 0);
     assert!(d.message.contains("statements"), "{d:#?}");
     let text = "%[1..60000]\nx[j]'=1\ny[j]'=-y[j]\n%";
-    // 60000 * (3 + 4) = 420000 units, 120000 statements.
+    // 60000 * (4 + 5) = 540000 units, 120000 statements.
     let (_, d) = one(text, TOO_MANY_COPIES, "[1..60000]", 0);
     assert!(d.message.contains("more than 100000 statements"), "{d:#?}");
+}
+
+#[test]
+fn work_budget_charges_template_length() {
+    // A comment line in a block weighs 1 plus one unit per started 64
+    // bytes: "# " and 4000 letters are 4002 bytes, so 1 + 63 = 64 units.
+    let long = "a".repeat(4000);
+    // 31250 copies are exactly 2000000 units.
+    let model = clean(&format!("%[1..31250]\n# {long}\n%"));
+    assert_eq!(model.statements.len(), 31250);
+    let text = format!("%[1..31251]\n# {long}\n%");
+    let (model, d) = one(&text, TOO_MANY_COPIES, "[1..31251]", 0);
+    assert!(d.message.contains("units of work"), "{d:#?}");
+    assert!(model.statements.is_empty());
+    // Each body statement is weighed by its own span: two 64-unit comments
+    // and `x[j]'=1` (3 nodes, 1 length unit) are 132 units per index.
+    let text = format!("%[1..15151]\n# {long}\nx[j]'=1\n# {long}\n%");
+    assert_eq!(clean(&text).statements.len(), 3 * 15151);
+    let text = format!("%[1..15152]\n# {long}\nx[j]'=1\n# {long}\n%");
+    one(&text, TOO_MANY_COPIES, "[1..15152]", 0);
+    // A trailing comment counts as part of its statement: this `par` line
+    // is 4020 bytes, so it weighs 3 + 63 = 66 units; 30303 copies fit.
+    let text = format!("par p[1..30303]=1 # {long}");
+    assert_eq!(text.len(), 4020);
+    assert_eq!(clean(&text).statements.len(), 30303);
+    let text = format!("par p[1..30304]=1 # {long}");
+    one(&text, TOO_MANY_COPIES, "[1..30304]", 0);
+}
+
+#[test]
+fn a_normal_chain_still_expands() {
+    // A 1000-cell chain is far under the budget once length is charged.
+    let text = "par k=1, d=0.1\nx0'=0\nx[1..1000]'=k*(x[j-1]-x[j])-d*x[j]\n\
+                %[1..1000]\naux e[j]=x[j]^2\n# energy of cell [j]\n%";
+    let model = clean(text);
+    assert_eq!(model.statements.len(), 2 + 1000 + 2000);
 }
 
 #[test]
