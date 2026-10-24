@@ -719,7 +719,7 @@ fn a_normal_chain_still_expands() {
 
 #[test]
 fn cap_message_counts() {
-    // The count is exact past 64 bits.
+    // The count is the exact product of the bound and the body length.
     let mut text = format!("%[0..{MAX_INDEX}]\n");
     for k in 0..2049 {
         text.push_str(&format!("v{k}[j]'=1\n"));
@@ -727,7 +727,6 @@ fn cap_message_counts() {
     text.push('%');
     let (_, d) = one(&text, TOO_MANY_COPIES, &format!("[0..{MAX_INDEX}]"), 0);
     let count = (MAX_INDEX as u128 + 1) * 2049;
-    assert!(count > u128::from(u64::MAX));
     assert!(
         d.message.contains(&format!("makes {count} statements")),
         "{d:#?}"
@@ -906,4 +905,25 @@ fn load_keeps_the_pass_order_at_one_start() {
         .collect();
     let at = nth(top, "q", 0).start;
     assert_eq!(got, vec![(at, PRECEDENCE), (at, UNDEFINED_NAME)]);
+}
+
+#[test]
+fn load_keeps_the_pass_order_at_many_equal_starts() {
+    use crate::parser::expr::PRECEDENCE;
+    // 200 lines, each with a parser warning and a `check` error at the same
+    // start. A sort that is not stable would swap some of these pairs: short
+    // inputs (under 20 items) are sorted by insertion, which is stable by
+    // accident, so the input has to be long.
+    let top: String = (0..200).map(|i| format!("y{i}'=u{i}^2^3\n")).collect();
+    let (loaded, _) = load_text(&top, &[]);
+    let got: Vec<(usize, Code)> = loaded
+        .diagnostics
+        .iter()
+        .map(|d| (d.span.start, d.code))
+        .collect();
+    assert_eq!(got.len(), 400);
+    for (i, pair) in got.chunks(2).enumerate() {
+        let at = nth(&top, &format!("u{i}^"), 0).start;
+        assert_eq!(pair, [(at, PRECEDENCE), (at, UNDEFINED_NAME)], "line {i}");
+    }
 }

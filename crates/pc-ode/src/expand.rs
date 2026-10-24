@@ -67,8 +67,8 @@ fn weight(stmt: &Stmt, nodes: u128) -> u128 {
     nodes + bytes.div_ceil(LENGTH_UNIT)
 }
 
-/// The largest index: 2^53, so that every index is exact as a double.
-pub const MAX_INDEX: i64 = 1 << 53;
+/// The largest index: `u32::MAX` = 4294967295, the same limit as the integers of a range line.
+pub const MAX_INDEX: i64 = u32::MAX as i64;
 
 /// Expands every range line and array block of `model`. Statements without
 /// an array form are kept as they are; a bad array block (`BadBlock`) is
@@ -437,6 +437,8 @@ impl Expander {
             }
             [range] => {
                 let Index::Range { start, end, span } = range.index else {
+                    // Invariant: `ranges` was filtered to entries whose index is
+                    // `Index::Range`.
                     unreachable!("filtered to ranges");
                 };
                 let (start, end) = (i64::from(start), i64::from(end));
@@ -640,6 +642,8 @@ fn copy(stmt: &Stmt, j: i64, template: u32) -> Stmt {
     let mut out = stmt.clone();
     out.array_index = Some(j);
     out.array_template = Some(template);
+    // Invariant: `bounds_ok` ran on this statement and rejected every index that
+    // is out of range or overflows, so each value here is in range.
     let value = |index: &Index| index_value(index, j).expect("index checked before copying");
     visit(&mut out.kind, &mut |slot| match slot {
         Slot::Name(id) => {
