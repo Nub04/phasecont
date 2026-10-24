@@ -2,7 +2,7 @@
 
 ## Phase
 
-P1 (the `pc-ode` parser, diagnostics and writer, and `pc-cli parse`; SPEC section 14) is implemented on the `phase1-pc-ode` branch. It waits for the final whole-branch review and for the owner's acceptance. The plan was approved on 2026-10-22.
+P1 (the `pc-ode` parser, diagnostics and writer, and `pc-cli parse`; SPEC section 14) was accepted on 2026-10-24 and merged into `main`. The plan was approved on 2026-10-22.
 
 ## Done
 
@@ -27,12 +27,12 @@ P1 (the numbers below were measured on 2026-10-23 at the head of the branch):
 
 ## In progress
 
-- The final fix round (R37) of P1 is done; the owner decides on acceptance.
+- Nothing. P2 starts with a plan for approval.
 
 ## Next
 
-- Owner acceptance of P1, then P2 (`pc-ir`) in plan mode.
-- P7a: the `pc-ffi` worker thread. Parsing at depth 200 needs about 800 KB of stack in a debug build, so `pc-ffi` must parse on a worker thread with an explicit stack size (for example 8 MB), not on MATLAB's thread (parked P1).
+- P2 (`pc-ir`) in plan mode.
+- P7a: the `pc-ffi` worker thread. Parsing at depth 200 needs about 800 KB of stack in a debug build, so `pc-ffi` must parse on a worker thread with an explicit stack size (for example 8 MB), not on MATLAB's thread (parked P1). It must also cap the input size, since parse diagnostics grow with the input (about 253 MB for 300000 bad lines in a debug build).
 - P2: the macOS arm64 JIT check in SPEC section 4, on a Mac with MATLAB or on the macOS runner of the MATLAB CI job.
 - P8a: confirm on the File Exchange submission form that it accepts an Apache-2.0 toolbox linked to GitHub.
 
