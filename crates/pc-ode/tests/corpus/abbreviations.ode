@@ -3,8 +3,8 @@ PAR Om=1.2,Gam=0.3
 P delta=0.2 alpha=-1
 pzz beta=1
 NUMBER eps=0.5
-!w2=Om*Om
-drag=2delta*Y
+!w2=2Om*Om
+drag=delta*Y
 Aux Ener=Y^2/2+alpha*X^2/2
 dX/Dt=Y
 DY/dT=-drag-alpha*X-beta*X^3 \

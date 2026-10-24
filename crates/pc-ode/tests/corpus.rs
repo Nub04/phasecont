@@ -248,7 +248,14 @@ fn corpus_files_round_trip_through_the_writer() {
             assert_round_trip(&loaded.template);
             assert_expanded_round_trip(&loaded.expanded);
         }));
-        assert!(result.is_ok(), "{name}: round trip failed (see above)");
+        if let Err(payload) = result {
+            let text = payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                .unwrap_or_else(|| "non-text panic".to_string());
+            panic!("{name}: round trip failed: {text}");
+        }
     }
 }
 
@@ -476,6 +483,19 @@ fn corpus_files_match_their_golden_files() {
         assert!(
             !actual.contains(env!("CARGO_MANIFEST_DIR")),
             "{}: the golden text names an absolute path",
+            file_name(&path)
+        );
+        assert!(
+            !actual.contains('\\'),
+            "{}: the golden text has a backslash",
+            file_name(&path)
+        );
+        let b = actual.as_bytes();
+        assert!(
+            !b.windows(3).any(|w| {
+                w[0].is_ascii_alphabetic() && w[1] == b':' && (w[2] == b'/' || w[2] == b'\\')
+            }),
+            "{}: the golden text has a drive letter path",
             file_name(&path)
         );
         let golden = path.with_extension("golden");

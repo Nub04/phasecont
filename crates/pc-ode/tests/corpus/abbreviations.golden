@@ -1,6 +1,6 @@
 diagnostics
-abbreviations.ode:7:6: warning[ODE0013]: XPPAUT 8.0 rejects implicit multiplication; write `2*delta`
-  fix-it: abbreviations.ode:7:7: replace "" with "*"
+abbreviations.ode:6:5: warning[ODE0013]: XPPAUT 8.0 rejects implicit multiplication; write `2*Om`
+  fix-it: abbreviations.ode:6:6: replace "" with "*"
 summary
 kind: Ode
 smooth: true

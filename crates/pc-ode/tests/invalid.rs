@@ -63,14 +63,20 @@ fn code_in_file_name(name: &str) -> Option<u16> {
     }
 }
 
-fn codes_from_file(path: &Path) -> BTreeSet<u16> {
+fn load_file(path: &Path) -> pc_ode::Loaded {
     let mut map = SourceMap::new();
     let top = FsLoader::new()
         .load_top(&mut map, path)
         .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
-    let loaded = load(top, &mut map, &mut FsLoader::new());
-    loaded.diagnostics.iter().map(|d| d.code.0).collect()
+    load(top, &mut map, &mut FsLoader::new())
 }
+
+/// Files whose named code is not the first diagnostic of its severity, each
+/// with the reason.
+const NOT_FIRST: &[(&str, &str)] = &[(
+    "ode0057.ode",
+    "the special line that makes the name possibly declared gives its own ODE0031 warning",
+)];
 
 #[test]
 fn every_code_has_an_invalid_file_that_produces_it() {
@@ -96,10 +102,23 @@ fn every_code_has_an_invalid_file_that_produces_it() {
             problems.push(format!("{name}: ODE{named:04} is not in CODES"));
             continue;
         }
-        if codes_from_file(&path).contains(&named) {
-            covered.insert(named);
-        } else {
+        let loaded = load_file(&path);
+        let Some(first) = loaded.diagnostics.iter().find(|d| d.code.0 == named) else {
             problems.push(format!("{name}: did not produce ODE{named:04}"));
+            continue;
+        };
+        covered.insert(named);
+        let lead = loaded
+            .diagnostics
+            .iter()
+            .find(|d| d.severity == first.severity)
+            .unwrap();
+        let exempt = NOT_FIRST.iter().any(|(f, _)| *f == name);
+        if lead.code.0 != named && !exempt {
+            problems.push(format!(
+                "{name}: ODE{:04} comes before ODE{named:04} among the {:?} diagnostics",
+                lead.code.0, first.severity
+            ));
         }
     }
 
@@ -148,4 +167,33 @@ fn invalid_files_are_lf_and_helpers_are_not_listed_as_cases() {
             .iter()
             .all(|p| p.parent() == Some(invalid_dir().as_path()))
     );
+}
+
+#[test]
+fn helper_files_under_include_are_lf() {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(&invalid_dir().join("include"), &mut files);
+    assert!(!files.is_empty());
+    for p in files {
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(!text.contains('\r'), "{} has a CR", p.display());
+    }
+}
+
+#[test]
+fn not_first_table_names_existing_files() {
+    for (f, reason) in NOT_FIRST {
+        assert!(!reason.is_empty());
+        assert!(invalid_dir().join(f).is_file(), "{f} does not exist");
+    }
 }

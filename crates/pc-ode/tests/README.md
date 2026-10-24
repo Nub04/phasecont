@@ -69,12 +69,12 @@ Each row of the table and each rule in section 2 of `docs/SPEC.md` is mapped to 
 
 | Rule | Tests and files |
 |---|---|
-| Keywords: first letter only for the nine declarations | `src/parser/stmt/tests.rs::every_keyword_abbreviation`, `src/parser/stmt/tests.rs::keyword_letter_names_are_formulas`, `round_trip.rs::round_trip_keyword_letter_names`, `corpus/abbreviations.ode` |
+| Keywords: first letter only for the nine declarations | `src/parser/stmt/tests.rs::every_keyword_abbreviation`, `src/parser/stmt/tests.rs::keyword_letter_names_are_formulas`, `round_trip.rs::round_trip_keyword_letter_names` |
 | Keywords: full word for `number`, `set`, `options`, `only`, `special`, `solv`, `export`, `volt`, `hom_bcs`; `p=3` is a fixed quantity | `src/parser/stmt/tests.rs::keyword_letter_names_are_formulas`, `src/parser/stmt/tests.rs::unsupported_families`, `src/parser/stmt/tests.rs::options_and_set`, `corpus/unsupported.ode`, `corpus/sets_include.ode` |
 | Case is ignored | `src/check/tests.rs::case_is_ignored`, `src/lexer.rs::names_keep_dots_and_fold_case`, `corpus/abbreviations.ode` |
-| Names over 10 characters warn | `src/check/tests.rs::long_names`, `src/check/tests.rs::long_name_notes`, `invalid/ode0013.ode` |
+| Names over 10 characters warn | `src/check/tests.rs::long_names`, `src/check/tests.rs::long_name_notes`, `invalid/ode0013_b.ode` |
 | Line continuation | `src/lexer.rs::continuation_is_a_blank`, `src/parser/stmt/tests.rs::continued_option_is_not_spaced`, `corpus/abbreviations.ode` |
-| Order: names usable before declaration, fixed quantities in file order | `src/check/tests.rs::fixed_quantity_forward_reference`, `src/check/tests.rs::fixed_forward_through_functions`, `src/check/tests.rs::undefined_names`, `invalid/ode0042.ode`, `invalid/ode0039.ode`, `corpus/morris_lecar.ode` |
+| Order: names usable before declaration, fixed quantities in file order | `src/check/tests.rs::fixed_quantity_forward_reference`, `src/check/tests.rs::fixed_forward_through_functions`, `src/check/tests.rs::undefined_names`, `invalid/ode0042.ode`, `invalid/ode0039.ode` |
 | Spaces around `=` in lists and formulas; ignored option warns | `src/parser/stmt/tests.rs::entry_lists`, `src/parser/stmt/tests.rs::spaced_option`, `invalid/ode0025.ode` |
 | Declared values are signed number literals; a repeated `par` is an error | `src/parser/stmt/tests.rs::bad_values`, `src/parser/stmt/tests.rs::literal_values_keep_their_text`, `src/parser/stmt/tests.rs::spaced_sign_is_one_bad_value`, `src/check/tests.rs::duplicates`, `invalid/ode0023.ode`, `invalid/ode0041.ode` |
 | Comments: `#` at line start, trailing comment after `par`, `number`, `@`, error elsewhere | `src/parser/stmt/tests.rs::trailing_comments_after_par_number_and_options_are_kept`, `src/parser/stmt/tests.rs::trailing_comment_is_an_error_but_the_statement_stays`, `round_trip.rs::trailing_comments_are_kept`, `invalid/ode0022.ode` |
@@ -109,7 +109,7 @@ Each row of the table and each rule in section 2 of `docs/SPEC.md` is mapped to 
 
 | Rule | Tests and files |
 |---|---|
-| Operators and XPPAUT precedence, with warnings where the reading is surprising | `src/parser/expr/tests.rs::measured_precedence_table`, `src/parser/expr/tests.rs::levels_are_left_associative`, `src/parser/expr/tests.rs::precedence_warning_spans_and_fix_its`, `corpus/brusselator.ode`, `invalid/ode0014.ode`, `invalid/ode0010.ode`, `invalid/ode0011.ode` |
+| Operators and XPPAUT precedence, with warnings where the reading is surprising | `src/parser/expr/tests.rs::measured_precedence_table`, `src/parser/expr/tests.rs::levels_are_left_associative`, `src/parser/expr/tests.rs::precedence_warning_spans_and_fix_its`, `invalid/ode0014.ode`, `invalid/ode0010.ode`, `invalid/ode0011.ode` |
 | Implicit multiplication (`2v`) with a portability warning | `src/parser/expr/tests.rs::implicit_multiplication_binds_at_level_two`, `src/parser/expr/tests.rs::implicit_multiplication_warning`, `round_trip.rs::implicit_multiplication_is_written_as_juxtaposition`, `corpus/abbreviations.ode`, `invalid/ode0013.ode` |
 | Builtin functions and their arity; `ceil` warns | `src/builtins.rs::lookup_and_special_entries`, `src/check/tests.rs::argument_counts`, `src/check/tests.rs::ceil_portability`, `corpus/morris_lecar.ode`, `corpus/hodgkin_huxley.ode`, `invalid/ode0048.ode` |
 | `ran`, `normal`, `poisson`, `markov`, `wiener`, `global` make a model simulation only | `src/check/tests.rs::simulation_only_flag`, `corpus.rs::simulation_only_and_smooth_flags_follow_the_constructs`, `corpus/stochastic.ode` |
