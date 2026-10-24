@@ -65,6 +65,69 @@ impl Diagnostic {
     }
 }
 
+/// More diagnostics than [`MAX_DIAGNOSTICS`].
+pub const TOO_MANY_DIAGNOSTICS: Code = Code(73);
+
+/// The most diagnostics one pass keeps, and the most [`load`](crate::load)
+/// returns before its summary. A pass that finds more counts the rest
+/// without storing them.
+pub const MAX_DIAGNOSTICS: usize = 10_000;
+
+/// Collects up to [`MAX_DIAGNOSTICS`] diagnostics and counts the rest, so
+/// that a hostile input cannot make a pass hold millions of them.
+#[derive(Debug, Default)]
+pub(crate) struct Sink {
+    items: Vec<Diagnostic>,
+    dropped: usize,
+}
+
+impl Sink {
+    pub(crate) fn push(&mut self, d: Diagnostic) {
+        if self.items.len() < MAX_DIAGNOSTICS {
+            self.items.push(d);
+        } else {
+            self.dropped += 1;
+        }
+    }
+
+    /// The number of stored diagnostics.
+    pub(crate) fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    pub(crate) fn get_mut(&mut self, i: usize) -> &mut Diagnostic {
+        &mut self.items[i]
+    }
+
+    /// The stored diagnostics and the number that were not stored.
+    pub(crate) fn finish(self) -> (Vec<Diagnostic>, usize) {
+        (self.items, self.dropped)
+    }
+}
+
+/// `diags` with the "N more diagnostics not shown" error added at the end
+/// when `dropped` is not 0. The error sits at the end of the last
+/// diagnostic, or at the start of file `file` when there is none.
+pub(crate) fn with_summary(
+    mut diags: Vec<Diagnostic>,
+    dropped: usize,
+    file: crate::span::FileId,
+) -> Vec<Diagnostic> {
+    if dropped > 0 {
+        let at = diags.last().map_or(0, |d| d.span.end);
+        let file = diags.last().map_or(file, |d| d.span.file);
+        let message = format!(
+            "{dropped} more diagnostics not shown; the limit is {MAX_DIAGNOSTICS} per pass"
+        );
+        diags.push(Diagnostic::new(
+            TOO_MANY_DIAGNOSTICS,
+            Span::new(file, at, at),
+            message,
+        ));
+    }
+    diags
+}
+
 /// Every diagnostic code with its default severity and a one-line summary.
 ///
 /// Entries are in increasing code order. New codes are appended and existing
@@ -263,6 +326,12 @@ pub const CODES: &[(Code, Severity, &str)] = &[
         Severity::Error,
         "arrays expand past the statement or work limit",
     ),
+    (
+        Code(72),
+        Severity::Error,
+        "included files add more statements or text than the limit",
+    ),
+    (Code(73), Severity::Error, "more diagnostics than the limit"),
 ];
 
 #[cfg(test)]

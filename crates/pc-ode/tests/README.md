@@ -10,7 +10,7 @@ This folder holds the integration tests, the model corpus and the invalid files.
 | `corpus/include/` | Files that only another corpus file includes. The `*.ode` glob does not reach them. |
 | `corpus/*.golden` | The expected diagnostics and model summary of the matching `.ode` file. |
 | `invalid/odeNNNN.ode` | One file per diagnostic code. The first line is a comment `# ODEnnnn ...` naming the code. A second file for a code is `odeNNNN_b.ode`. |
-| `invalid/include/` | Helper files for the include codes (cycle, depth, count). |
+| `invalid/include/` | Helper files for the include codes (cycle, depth, count, size). |
 | `common/mod.rs` | Round trip helpers used by `round_trip.rs` and `corpus.rs`. |
 | `corpus.rs` | Corpus tests: load, round trip, golden files, the two chain files. |
 | `invalid.rs` | Checks that every code in `CODES` has a file that produces it. |
@@ -129,3 +129,15 @@ Each row of the table and each rule in section 2 of `docs/SPEC.md` is mapped to 
 |---|---|
 | Each diagnostic has a code, a line and column, a message and an optional fix-it | `src/diag.rs::code_table_is_unique_and_sorted`, `invalid.rs::every_code_has_an_invalid_file_that_produces_it`, `corpus.rs::corpus_files_match_their_golden_files`, `src/parser/expr/tests.rs::applying_a_fix_it_removes_the_diagnostic` |
 | `parse(write(parse(s)))` equals `parse(s)` | `round_trip.rs::round_trip_generated_models`, `round_trip.rs::round_trip_survives_surface_noise`, `corpus.rs::corpus_files_round_trip_through_the_writer`, `corpus.rs::written_corpus_text_loads_with_the_same_diagnostics` |
+
+## Limits
+
+`limits.rs` tests the caps on work and output. Source of each cap and the test that covers it:
+
+| Limit | Value | Test |
+|---|---|---|
+| `#include` statements reached in one load (ODE0064) | 4096 | `src/include/tests.rs`, `invalid/ode0064.ode` |
+| Statements added by included files (ODE0072) | 100000 | `limits.rs::small_file_included_many_times_stops_at_the_statement_cap`, `invalid/ode0072.ode` |
+| Text added by included files (ODE0072) | 1 MiB | `limits.rs::text_cap_stops_a_few_long_statements`, `invalid/include/bulk/` |
+| Diagnostics per pass and per load (ODE0073) | 10000 | `limits.rs::load_keeps_at_most_the_limit_and_says_how_many_more`, `check_alone_keeps_at_most_the_limit`, `expand_alone_keeps_at_most_the_limit`, `include_pass_alone_keeps_at_most_the_limit`, `invalid/ode0073.ode` |
+| Copies of one array line collapse while diagnostics arrive | none | `limits.rs::copies_of_one_line_do_not_fill_the_list`, `a_full_list_still_collapses_nothing_wrongly` |

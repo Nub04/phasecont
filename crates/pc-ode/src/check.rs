@@ -26,10 +26,10 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::{Expr, Ident, MarkovLine, Model, StmtKind, UnaryOp, Unsupported};
 use crate::builtins::{Status, builtin};
-use crate::diag::{Code, Diagnostic};
+use crate::diag::{Code, Diagnostic, MAX_DIAGNOSTICS, Sink, with_summary};
 use crate::parser::expr::PORTABILITY;
 use crate::parser::stmt::UNSUPPORTED_SUM_OF;
-use crate::span::Span;
+use crate::span::{FileId, Span};
 
 /// A name that is used but never declared.
 pub const UNDEFINED_NAME: Code = Code(39);
@@ -201,7 +201,18 @@ fn bad_arg_message(id: &Ident, k: usize) -> String {
 
 /// Checks `model` and returns what it learned plus the diagnostics, sorted
 /// by where they start.
+///
+/// The list holds at most [`MAX_DIAGNOSTICS`] diagnostics; if there were
+/// more, an error ends it that counts the rest.
 pub fn check(model: &Model) -> (ModelInfo, Vec<Diagnostic>) {
+    let (info, diags, dropped) = check_counted(model);
+    let file = model.statements.first().map_or(FileId(0), |s| s.span.file);
+    (info, with_summary(diags, dropped, file))
+}
+
+/// [`check()`] without the summary error; also returns the number of
+/// diagnostics that were not stored.
+pub(crate) fn check_counted(model: &Model) -> (ModelInfo, Vec<Diagnostic>, usize) {
     let mut c = Checker::new(model);
     c.declare_all();
     c.at(None);
@@ -211,7 +222,8 @@ pub fn check(model: &Model) -> (ModelInfo, Vec<Diagnostic>) {
     c.at(None);
     c.report_graph();
     c.report_long_names();
-    let mut diags = collapse_copies(c.diags, &c.templates);
+    c.add_collapse_notes();
+    let (mut diags, dropped) = c.diags.finish();
     diags.sort_by_key(|d| d.span.start);
     let info = ModelInfo {
         kind: c.kind.map_or(ModelKind::None, |k| k.0),
@@ -220,61 +232,11 @@ pub fn check(model: &Model) -> (ModelInfo, Vec<Diagnostic>) {
         symbols: c.symbols,
         index: c.index,
     };
-    (info, diags)
+    (info, diags, dropped)
 }
 
 /// The start of the note that names the copy a diagnostic comes from.
 const COPY_NOTE: &str = "in the copy with j = ";
-
-/// Collapses the diagnostics from array copies. `templates` gives, for each
-/// diagnostic, the template id of the copy it comes from, if any.
-///
-/// - The name length warnings (ODE0013) from copies of one template at one
-///   span collapse to the first, which gets a note that counts the others.
-/// - Of the other diagnostics from copies of one template that agree in
-///   code, severity, span and message, only the first is kept.
-///
-/// Diagnostics outside copies are kept.
-fn collapse_copies(diags: Vec<Diagnostic>, templates: &[Option<u32>]) -> Vec<Diagnostic> {
-    let mut out: Vec<Diagnostic> = Vec::new();
-    let mut seen = HashSet::new();
-    // For each (template, span) of a name length warning: the position of
-    // the kept one, how many others it stands for and the template line.
-    let mut long: HashMap<_, (usize, usize, Span)> = HashMap::new();
-    debug_assert_eq!(diags.len(), templates.len());
-    for (d, &template) in diags.into_iter().zip(templates) {
-        let Some((copy_span, _)) = d.notes.iter().find(|(_, m)| m.starts_with(COPY_NOTE)) else {
-            out.push(d);
-            continue;
-        };
-        let copy_span = *copy_span;
-        let span = (d.span.file.0, d.span.start, d.span.end);
-        if d.code == PORTABILITY {
-            match long.get_mut(&(template, span)) {
-                Some((_, others, _)) => *others += 1,
-                None => {
-                    long.insert((template, span), (out.len(), 0, copy_span));
-                    out.push(d);
-                }
-            }
-            continue;
-        }
-        if seen.insert((template, d.code, d.severity as u8, span, d.message.clone())) {
-            out.push(d);
-        }
-    }
-    for (kept, others, line) in long.into_values() {
-        if others > 0 {
-            let message = if others == 1 {
-                "1 more copy of this array line gives the same warning".to_string()
-            } else {
-                format!("{others} more copies of this array line give the same warning")
-            };
-            out[kept].notes.push((line, message));
-        }
-    }
-    out
-}
 
 /// Where a name is used, which decides what it may refer to.
 #[derive(Clone, Copy)]
@@ -295,9 +257,14 @@ enum Owner<'a> {
 /// the name as written, what it is, and where it is used.
 type BadUse = (String, &'static str, Span);
 
+/// Template, code, severity, span and message of a kept copy diagnostic.
+type SeenKey = (Option<u32>, Code, u8, (u32, usize, usize), String);
+/// Template and span of a name length warning from a copy.
+type LongKey = (Option<u32>, (u32, usize, usize));
+
 struct Checker<'a> {
     model: &'a Model,
-    diags: Vec<Diagnostic>,
+    diags: Sink,
     symbols: Vec<Symbol>,
     index: HashMap<String, usize>,
     /// The first ODE or map statement.
@@ -325,9 +292,13 @@ struct Checker<'a> {
     /// The statement being checked, when it is an array copy: its index in
     /// the model. [`Checker::report`] adds the copy note for it.
     current: Option<usize>,
-    /// For each diagnostic in `diags`, the template id of the copy it
-    /// comes from.
-    templates: Vec<Option<u32>>,
+    /// Diagnostics from copies that were already kept: template, code,
+    /// severity, span and message. A repeat is dropped as it is reported.
+    seen: HashSet<SeenKey>,
+    /// For each (template, span) of a name length warning from a copy: the
+    /// position of the kept one in `diags`, how many others it stands for and
+    /// the template line.
+    long: HashMap<LongKey, (usize, usize, Span)>,
     /// Keys that a statement dropped by `expand` would have declared.
     suppressed_plain: HashSet<String>,
     /// Roots of indexed names that a dropped statement would have declared.
@@ -338,7 +309,7 @@ impl<'a> Checker<'a> {
     fn new(model: &'a Model) -> Self {
         Checker {
             model,
-            diags: Vec::new(),
+            diags: Sink::default(),
             symbols: Vec::new(),
             index: HashMap::new(),
             kind: None,
@@ -352,7 +323,8 @@ impl<'a> Checker<'a> {
             edges: Vec::new(),
             fn_bad: HashMap::new(),
             current: None,
-            templates: Vec::new(),
+            seen: HashSet::new(),
+            long: HashMap::new(),
             suppressed_plain: model
                 .suppressed
                 .iter()
@@ -368,6 +340,16 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Reports a diagnostic. One from an array copy is collapsed as it
+    /// arrives, so that the copies of one line cannot fill the list:
+    ///
+    /// - The name length warnings (ODE0013) from copies of one template at
+    ///   one span collapse to the first, which gets a note that counts the
+    ///   others (see [`Checker::add_collapse_notes`]).
+    /// - Of the other diagnostics from copies of one template that agree in
+    ///   code, severity, span and message, only the first is kept.
+    ///
+    /// Diagnostics outside copies are kept.
     fn report(&mut self, code: Code, span: Span, message: String, notes: Vec<(Span, String)>) {
         let mut d = Diagnostic::new(code, span, message);
         d.notes = notes;
@@ -376,13 +358,49 @@ impl<'a> Checker<'a> {
             if let Some(j) = stmt.array_index {
                 d.notes
                     .push((stmt.span, format!("{COPY_NOTE}{j} of this array line")));
+                let template = stmt.array_template;
+                let line = stmt.span;
+                let at = (d.span.file.0, d.span.start, d.span.end);
+                if d.code == PORTABILITY {
+                    if let Some((_, others, _)) = self.long.get_mut(&(template, at)) {
+                        *others += 1;
+                    } else {
+                        if self.diags.len() < MAX_DIAGNOSTICS {
+                            self.long
+                                .insert((template, at), (self.diags.len(), 0, line));
+                        }
+                        self.diags.push(d);
+                    }
+                    return;
+                }
+                if self.diags.len() >= MAX_DIAGNOSTICS {
+                    // Full: count it without remembering it.
+                    self.diags.push(d);
+                    return;
+                }
+                let key = (template, d.code, d.severity as u8, at, d.message.clone());
+                if self.seen.insert(key) {
+                    self.diags.push(d);
+                }
+                return;
             }
         }
-        let template = self
-            .current
-            .and_then(|i| self.model.statements[i].array_template);
-        self.templates.push(template);
         self.diags.push(d);
+    }
+
+    /// Adds to each kept name length warning from copies the note that
+    /// counts the other copies it stands for.
+    fn add_collapse_notes(&mut self) {
+        for (kept, others, line) in std::mem::take(&mut self.long).into_values() {
+            if others > 0 {
+                let message = if others == 1 {
+                    "1 more copy of this array line gives the same warning".to_string()
+                } else {
+                    format!("{others} more copies of this array line give the same warning")
+                };
+                self.diags.get_mut(kept).notes.push((line, message));
+            }
+        }
     }
 
     /// Makes statement `i` the one whose copy note [`Checker::report`]

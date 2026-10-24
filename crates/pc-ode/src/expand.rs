@@ -24,8 +24,8 @@
 use crate::ast::{
     Expr, Ident, Index, IndexOp, MarkovLine, Model, Stmt, StmtKind, SuppressedName, Value,
 };
-use crate::diag::{Code, Diagnostic};
-use crate::span::Span;
+use crate::diag::{Code, Diagnostic, Sink, with_summary};
+use crate::span::{FileId, Span};
 
 /// A statement with more than one range `[i1..i2]`.
 pub const MULTIPLE_RANGES: Code = Code(65);
@@ -74,6 +74,14 @@ pub const MAX_INDEX: i64 = 1 << 53;
 /// an array form are kept as they are; a bad array block (`BadBlock`) is
 /// kept too, since the parser already reported it.
 pub fn expand(model: &Model) -> (Model, Vec<Diagnostic>) {
+    let (expanded, diags, dropped) = expand_counted(model);
+    let file = model.statements.first().map_or(FileId(0), |s| s.span.file);
+    (expanded, with_summary(diags, dropped, file))
+}
+
+/// [`expand()`] without the summary error; also returns the number of
+/// diagnostics that were not stored.
+pub(crate) fn expand_counted(model: &Model) -> (Model, Vec<Diagnostic>, usize) {
     let mut x = Expander {
         suppressed: model.suppressed.clone(),
         ..Expander::default()
@@ -81,12 +89,14 @@ pub fn expand(model: &Model) -> (Model, Vec<Diagnostic>) {
     for stmt in &model.statements {
         x.statement(stmt);
     }
+    let (diags, dropped) = x.diags.finish();
     (
         Model {
             statements: x.out,
             suppressed: x.suppressed,
         },
-        x.diags,
+        diags,
+        dropped,
     )
 }
 
@@ -325,7 +335,7 @@ fn declared_names(kind: &StmtKind) -> Vec<&Ident> {
 #[derive(Default)]
 struct Expander {
     out: Vec<Stmt>,
-    diags: Vec<Diagnostic>,
+    diags: Sink,
     /// Copies made so far.
     produced: u128,
     /// Work done so far, in the units of [`MAX_ARRAY_WORK`].
@@ -341,9 +351,8 @@ struct Expander {
 }
 
 impl Expander {
-    fn report(&mut self, code: Code, span: Span, message: String) -> &mut Diagnostic {
+    fn report(&mut self, code: Code, span: Span, message: String) {
         self.diags.push(Diagnostic::new(code, span, message));
-        self.diags.last_mut().expect("just pushed")
     }
 
     /// Records the names that `stmt`, which is dropped, would have
@@ -450,9 +459,9 @@ impl Expander {
                     second.text
                 );
                 let note = first_range_note(first.index.span());
-                self.report(MULTIPLE_RANGES, second.index.span(), message)
-                    .notes
-                    .push(note);
+                let mut d = Diagnostic::new(MULTIPLE_RANGES, second.index.span(), message);
+                d.notes.push(note);
+                self.diags.push(d);
                 false
             }
         }

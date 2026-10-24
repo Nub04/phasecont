@@ -31,10 +31,11 @@ pub use ast::{
     Value,
 };
 pub use check::{ModelInfo, ModelKind, StateKind, Symbol, SymbolKind, check};
-pub use diag::{CODES, Code, Diagnostic, FixIt, Severity};
+pub use diag::{CODES, Code, Diagnostic, FixIt, MAX_DIAGNOSTICS, Severity, TOO_MANY_DIAGNOSTICS};
 pub use expand::{MAX_ARRAY_COPIES, MAX_ARRAY_WORK, MAX_INDEX, expand};
 pub use include::{
-    FsLoader, MAX_INCLUDE_DEPTH, MAX_INCLUDES, MapLoader, SourceLoader, resolve_includes,
+    FsLoader, MAX_INCLUDE_DEPTH, MAX_INCLUDED_BYTES, MAX_INCLUDED_STATEMENTS, MAX_INCLUDES,
+    MapLoader, SourceLoader, resolve_includes,
 };
 pub use lexer::{Token, TokenKind, lex};
 pub use parser::parse;
@@ -56,7 +57,10 @@ pub struct Loaded {
     pub info: ModelInfo,
     /// The diagnostics of every pass, sorted by file and then by start
     /// offset. The sort is stable, so diagnostics that start at the same
-    /// place keep the order of the passes.
+    /// place keep the order of the passes. There are at most
+    /// [`MAX_DIAGNOSTICS`] of them, followed by one error
+    /// ([`TOO_MANY_DIAGNOSTICS`]) that counts the rest when there were
+    /// more.
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -65,13 +69,21 @@ pub struct Loaded {
 /// checks the result.
 pub fn load(file: FileId, map: &mut SourceMap, loader: &mut dyn SourceLoader) -> Loaded {
     let (template, mut diagnostics) = parse(map.text(file), file);
-    let (resolved, include_diags) = resolve_includes(&template, file, map, loader);
+    let (resolved, include_diags, mut dropped) =
+        include::resolve_counted(&template, file, map, loader);
     diagnostics.extend(include_diags);
-    let (expanded, expand_diags) = expand(&resolved);
+    let (expanded, expand_diags, n) = expand::expand_counted(&resolved);
     diagnostics.extend(expand_diags);
-    let (info, check_diags) = check(&expanded);
+    dropped += n;
+    let (info, check_diags, n) = check::check_counted(&expanded);
     diagnostics.extend(check_diags);
+    dropped += n;
     diagnostics.sort_by_key(|d| (d.span.file.0, d.span.start));
+    if diagnostics.len() > MAX_DIAGNOSTICS {
+        dropped += diagnostics.len() - MAX_DIAGNOSTICS;
+        diagnostics.truncate(MAX_DIAGNOSTICS);
+    }
+    let diagnostics = diag::with_summary(diagnostics, dropped, file);
     Loaded {
         template,
         expanded,

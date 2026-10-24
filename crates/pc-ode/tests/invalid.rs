@@ -73,10 +73,16 @@ fn load_file(path: &Path) -> pc_ode::Loaded {
 
 /// Files whose named code is not the first diagnostic of its severity, each
 /// with the reason.
-const NOT_FIRST: &[(&str, &str)] = &[(
-    "ode0057.ode",
-    "the special line that makes the name possibly declared gives its own ODE0031 warning",
-)];
+const NOT_FIRST: &[(&str, &str)] = &[
+    (
+        "ode0057.ode",
+        "the special line that makes the name possibly declared gives its own ODE0031 warning",
+    ),
+    (
+        "ode0073.ode",
+        "the summary comes last, after the diagnostics that filled the list",
+    ),
+];
 
 #[test]
 fn every_code_has_an_invalid_file_that_produces_it() {

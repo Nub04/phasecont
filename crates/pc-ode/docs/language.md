@@ -267,7 +267,8 @@ Arrays are expanded while loading, after includes and before `check` (manual v8,
 - **Unreadable file.** A file the loader cannot read is an error at the `#include` line (PhaseCont choice; XPPAUT 8.0 ignores a missing include file without a message, measured). The include is dropped.
 - **Cycles.** A file that includes itself, directly or through other files, is an error at the `#include` line that closes the cycle (PhaseCont choice; XPPAUT 8.0 loops forever, measured). Files are compared by the loader's identity key: `FsLoader` uses the canonical path where the system can give one and the display name with `dir/..` folded as text otherwise, so this is best effort; `MapLoader` uses the name as written. With `MapLoader`, a top file whose map name differs from the key it is included under (top `/m/model.ode` including `model.ode`) is copied in once before the cycle is found one level down. The include is dropped.
 - **Depth.** The top file is at depth 0 and a file it includes is at depth 1. An include that would open a file at depth 17 or more is an error, and that file is not read (PhaseCont choice). The depth is checked before the file is read, so a cycle that would close at depth 17 is reported as too deep, not as a cycle.
-- **Count.** One `resolve_includes` call reaches at most 4096 `#include` statements (`MAX_INCLUDES`), so a file included twice in each of many levels cannot blow up (PhaseCont choice). Every statement reached counts, resolved or not: unreadable files, cycles, quoted and empty names, includes in array blocks and every repeat of a file included more than once. The first statement past the limit is an error (ODE0064), reported once per call; it and every later include statement are dropped with no other diagnostic and nothing loaded.
+- **Count.** One `resolve_includes` call reaches at most 4096 `#include` statements (`MAX_INCLUDES`), which bounds the number of files read and the number of include sites (PhaseCont choice). Every statement reached counts, resolved or not: unreadable files, cycles, quoted and empty names, includes in array blocks and every repeat of a file included more than once. The first statement past the limit is an error (ODE0064), reported once per call; it and every later include statement are dropped with no other diagnostic and nothing loaded.
+- **Size.** The statements that included files add are also bounded, counted once per copy: at most 100000 statements (`MAX_INCLUDED_STATEMENTS`) and 1 MiB of statement text (`MAX_INCLUDED_BYTES`; both PhaseCont choices). The include whose file would pass either limit is an error (ODE0072), reported once per call; it and every later include are not resolved. The 4096 count alone does not bound the work, since a file with many statements included 4096 times is large. At the limits, a debug-build `pc-cli parse` took 0.1 to 0.8 s and 120 to 430 MB.
 - **Same file twice.** Including one file twice without a cycle is allowed; `check` then reports the duplicate names as usual (PhaseCont choice).
 - **Array blocks.** An `#include` inside a `%[..]` block is an error and is not resolved, since the block would copy the file once per index (PhaseCont choice).
 - The errors for an unreadable file, a cycle and too deep a nesting name the chain of files, as in `a.ode -> b.ode -> a.ode`, and carry a note at each `#include` line that led to the file. Every include error in a nested file carries those notes. Control characters in names are escaped in messages (a tab shows as `\t`).
@@ -329,6 +330,8 @@ Operator semantics (measured):
 ## Diagnostic codes
 
 Every diagnostic has a stable code, `ODE` plus four digits. The table lists them in order, with the default severity from the `CODES` table in `crates/pc-ode/src/diag.rs`. New codes are appended and a code is never renumbered or reused. A test checks that this table and `CODES` have the same codes, in the same order, with the same severities. Each code has a sample file under `crates/pc-ode/tests/invalid/`, except ODE0018.
+
+Each pass (include, expand, check) keeps at most 10000 diagnostics (`MAX_DIAGNOSTICS`, a PhaseCont choice) and counts the rest without storing them, so a hostile file cannot use memory through its diagnostics. `load` keeps at most 10000 in total, sorted by position, and ends with one error, ODE0073, "N more diagnostics not shown". The summary can push the list to 10001. Copies of one array line that give the same diagnostic collapse as they arrive, so they do not fill the list. Lexer and parser diagnostics are bounded by the input size and have no cap of their own.
 
 | Code | Severity | Meaning |
 |---|---|---|
@@ -395,7 +398,7 @@ Every diagnostic has a stable code, `ODE` plus four digits. The table lists them
 | ODE0061 | error | A file that includes itself, directly or through other files ([Includes](#includes)). |
 | ODE0062 | error | Includes nested more than 16 levels deep ([Includes](#includes)). |
 | ODE0063 | error | An `#include` inside a `%[..]` array block ([Includes](#includes)). |
-| ODE0064 | error | More than 4096 `#include` statements reached in one load ([Includes](#includes)). |
+| ODE0064 | error | More than 4096 `#include` statements reached in one load ([Includes](#includes)). The statement and size limits give ODE0072. |
 | ODE0065 | error | More than one range in a statement ([Arrays](#arrays)). |
 | ODE0066 | error | A range inside a `%[..]` array block ([Arrays](#arrays)). |
 | ODE0067 | error | An index form such as `[j]` with no range in scope ([Arrays](#arrays)). |
@@ -403,3 +406,5 @@ Every diagnostic has a stable code, `ODE` plus four digits. The table lists them
 | ODE0069 | error | A block bound, or an index form at some `j`, above 2^53 ([Arrays](#arrays)). |
 | ODE0070 | error | A `markov` statement inside an array block or with a range ([Arrays](#arrays)). |
 | ODE0071 | error | Array expansion would pass the copy limit or the work limit ([Arrays](#arrays)). |
+| ODE0072 | error | The included files add more than 100000 statements or 1 MiB of text in one load ([Includes](#includes)). |
+| ODE0073 | error | More than 10000 diagnostics in one pass or one load. The message gives the number not shown ([Diagnostic codes](#diagnostic-codes)). |

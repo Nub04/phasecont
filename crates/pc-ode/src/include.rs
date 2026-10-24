@@ -13,9 +13,10 @@
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
+use std::rc::Rc;
 
 use crate::ast::{Model, Stmt, StmtKind};
-use crate::diag::{Code, Diagnostic, FixIt};
+use crate::diag::{Code, Diagnostic, FixIt, Sink, with_summary};
 use crate::parser::parse;
 use crate::parser::stmt::MALFORMED_STATEMENT;
 use crate::span::{FileId, SourceMap, Span};
@@ -32,6 +33,9 @@ pub const INCLUDE_TOO_DEEP: Code = Code(62);
 pub const INCLUDE_IN_BLOCK: Code = Code(63);
 /// More than [`MAX_INCLUDES`] includes in one model.
 pub const INCLUDE_TOO_MANY: Code = Code(64);
+/// Included files that add more than [`MAX_INCLUDED_STATEMENTS`] statements
+/// or [`MAX_INCLUDED_BYTES`] bytes of statement text.
+pub const INCLUDE_TOO_MUCH: Code = Code(72);
 
 /// The deepest an included file may sit. The top file is at depth 0 and a
 /// file it includes is at depth 1.
@@ -40,6 +44,19 @@ pub const MAX_INCLUDE_DEPTH: usize = 16;
 /// The most includes one [`resolve_includes`] call resolves, counting every
 /// `#include` line each time it is reached.
 pub const MAX_INCLUDES: usize = 4096;
+
+/// The most statements the included files of one [`resolve_includes`] call
+/// add, counting each statement of an included file once per copy. A block
+/// counts as 1 plus the statements of its body. The top file's own
+/// statements are not counted.
+pub const MAX_INCLUDED_STATEMENTS: usize = 100_000;
+
+/// The most bytes of statement text the included files of one
+/// [`resolve_includes`] call add, counted once per copy: from the start of
+/// each statement to the end of its trailing comment. A statement count alone
+/// does not bound the work, since one statement can be a megabyte long; the
+/// syntax tree takes several hundred bytes of memory per byte of text.
+pub const MAX_INCLUDED_BYTES: usize = 1024 * 1024;
 
 /// Supplies the text of included files.
 pub trait SourceLoader {
@@ -200,6 +217,29 @@ fn normalize(path: &Path) -> PathBuf {
     parts.iter().collect()
 }
 
+/// What one copy of a file with `statements` adds, as (statements, bytes):
+/// every statement except an `#include` (which is replaced by its file) plus
+/// the body of each block, and the text those statements cover.
+fn added_by(statements: &[Stmt]) -> (usize, usize) {
+    let mut count = 0;
+    let mut bytes = 0;
+    for s in statements {
+        if matches!(s.kind, StmtKind::Include { .. }) {
+            continue;
+        }
+        count += match &s.kind {
+            StmtKind::Block { body, .. } | StmtKind::BadBlock { body } => 1 + body.len(),
+            _ => 1,
+        };
+        let end = s
+            .comment
+            .as_ref()
+            .map_or(s.span.end, |c| c.span.end.max(s.span.end));
+        bytes += end.saturating_sub(s.span.start);
+    }
+    (count, bytes)
+}
+
 /// `text` with control characters escaped (a tab shows as `\t`), so a
 /// message stays on one line. Backslashes and quotes are left alone.
 fn show(text: &str) -> String {
@@ -234,18 +274,38 @@ fn show(text: &str) -> String {
 /// file included more than once. The first one past the limit is reported
 /// once; it and every later one are dropped with no other diagnostic and no
 /// loader call.
+///
+/// The statements the included files add, and their text, are counted too,
+/// once per copy ([`MAX_INCLUDED_STATEMENTS`], [`MAX_INCLUDED_BYTES`]). An include whose file would take the total
+/// past the limit is reported once ([`INCLUDE_TOO_MUCH`]); it and every
+/// later include are dropped, with no other diagnostic and no loader call.
+///
+/// The list holds at most [`crate::diag::MAX_DIAGNOSTICS`] diagnostics; if there were
+/// more, an error ends it that counts the rest.
 pub fn resolve_includes(
     model: &Model,
     file: FileId,
     map: &mut SourceMap,
     loader: &mut dyn SourceLoader,
 ) -> (Model, Vec<Diagnostic>) {
+    let (resolved, diags, dropped) = resolve_counted(model, file, map, loader);
+    (resolved, with_summary(diags, dropped, file))
+}
+
+/// [`resolve_includes`] without the summary error; also returns the number
+/// of diagnostics that were not stored.
+pub(crate) fn resolve_counted(
+    model: &Model,
+    file: FileId,
+    map: &mut SourceMap,
+    loader: &mut dyn SourceLoader,
+) -> (Model, Vec<Diagnostic>, usize) {
     let name = map.name(file).to_string();
     let key = loader.identity(&name);
     let mut resolver = Resolver {
         map,
         loader,
-        diags: Vec::new(),
+        diags: Sink::default(),
         stack: vec![Open {
             file,
             name,
@@ -256,15 +316,19 @@ pub fn resolve_includes(
         parsed: HashMap::new(),
         count: 0,
         too_many: false,
+        emitted: (0, 0),
+        too_much: false,
     };
     let mut statements = Vec::new();
     resolver.statements(&model.statements, &mut statements);
+    let (diags, dropped) = resolver.diags.finish();
     (
         Model {
             statements,
             suppressed: Vec::new(),
         },
-        resolver.diags,
+        diags,
+        dropped,
     )
 }
 
@@ -281,10 +345,14 @@ struct Open {
 /// key and text, or the loader's error.
 type Loaded = Result<(String, String, String), String>;
 
+/// A parsed file: its id, its statements and what one copy adds (statements,
+/// bytes).
+type ParsedFile = (FileId, Rc<Model>, (usize, usize));
+
 struct Resolver<'a> {
     map: &'a mut SourceMap,
     loader: &'a mut dyn SourceLoader,
-    diags: Vec<Diagnostic>,
+    diags: Sink,
     /// The chain of files from the top file to the one being read.
     stack: Vec<Open>,
     /// Load results by the including site's display name and the path as
@@ -292,12 +360,17 @@ struct Resolver<'a> {
     /// the file id, is the key: one file id can stand for two names whose
     /// relative paths lead to different files.
     loads: HashMap<(String, String), Loaded>,
-    /// Each parsed file by identity key, with its `done` removed.
-    parsed: HashMap<String, (FileId, Model)>,
+    /// Each parsed file by identity key, with its `done` removed and the
+    /// number of statements one copy of it adds.
+    parsed: HashMap<String, ParsedFile>,
     /// `#include` statements reached so far, resolved or not.
     count: usize,
     /// Whether the include count limit was reported.
     too_many: bool,
+    /// Statements and bytes of text added by included files so far.
+    emitted: (usize, usize),
+    /// Whether the statement limit was reached.
+    too_much: bool,
 }
 
 impl Resolver<'_> {
@@ -326,6 +399,9 @@ impl Resolver<'_> {
     /// within [`MAX_INCLUDES`]. The first one past the limit is reported;
     /// it and every later one get no other diagnostic and no loader call.
     fn counted(&mut self, stmt: &Stmt) -> bool {
+        if self.too_much {
+            return false;
+        }
         self.count += 1;
         if self.count <= MAX_INCLUDES {
             return true;
@@ -378,24 +454,38 @@ impl Resolver<'_> {
             self.report(INCLUDE_CYCLE, stmt.span, message, None);
             return;
         }
-        let (id, model) = match self.parsed.get(&key) {
-            Some((id, model)) => (*id, model.clone()),
-            None => {
-                let id = self.map.add(name.clone(), text);
-                let (mut model, diags) = parse(self.map.text(id), id);
-                self.diags.extend(diags);
-                // `done` ends this file only (the parser stops there).
-                if model
-                    .statements
-                    .last()
-                    .is_some_and(|s| s.kind == StmtKind::Done)
-                {
-                    model.statements.pop();
-                }
-                self.parsed.insert(key.clone(), (id, model.clone()));
-                (id, model)
+        if !self.parsed.contains_key(&key) {
+            let id = self.map.add(name.clone(), text);
+            let (mut model, diags) = parse(self.map.text(id), id);
+            for d in diags {
+                self.diags.push(d);
             }
-        };
+            // `done` ends this file only (the parser stops there).
+            if model
+                .statements
+                .last()
+                .is_some_and(|s| s.kind == StmtKind::Done)
+            {
+                model.statements.pop();
+            }
+            let weight = added_by(&model.statements);
+            self.parsed
+                .insert(key.clone(), (id, Rc::new(model), weight));
+        }
+        let (id, model, weight) = self.parsed[&key].clone();
+        if weight.0 > MAX_INCLUDED_STATEMENTS - self.emitted.0
+            || weight.1 > MAX_INCLUDED_BYTES - self.emitted.1
+        {
+            self.too_much = true;
+            let message = format!(
+                "the included files add more than {MAX_INCLUDED_STATEMENTS} statements or \
+                 {MAX_INCLUDED_BYTES} bytes of text in total; this `#include` and every later one are not resolved"
+            );
+            self.report(INCLUDE_TOO_MUCH, stmt.span, message, None);
+            return;
+        }
+        self.emitted.0 += weight.0;
+        self.emitted.1 += weight.1;
         // The stack keeps this site's own display name, even when the parse
         // is shared with another name for the same file, so nested includes
         // resolve against this site's directory.
