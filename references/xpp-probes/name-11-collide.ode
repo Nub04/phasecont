@@ -1,9 +1,9 @@
-# name-11-collide: Do names that agree in 10 characters collide?
-# xpp: error
+# name-11-collide: Do two declared names that agree in 10 characters collide when neither is used?
+# xpp: 17
 # pc: ODE0013
 x'=0
-x(0)=3
+x(0)=7
 par abcdefghijk=1
 par abcdefghijl=2
-aux v=abcdefghijk
+aux v=x+10
 @ total=0,dt=1

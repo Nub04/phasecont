@@ -2,7 +2,7 @@
 # xpp: 3
 # pc: ok
 x'=0
-x(0)=3
+x(0)=9
 aux v=1+\
 2
 @ total=0,dt=1

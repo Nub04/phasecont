@@ -5,18 +5,53 @@
 #   XPPAUT=/path/to/xppaut   XPPAUT program (default: xppaut on PATH)
 #   PC_CLI=/path/to/pc-cli   pc-cli binary (default: target/debug/pc-cli)
 #
-# Exit status 1 if any check fails, else 0.
+# Exit status 1 if any check fails or no probe is found, else 0. A half whose
+# program is missing is skipped with a message, and the last line says so.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 root=$(cd "$here/../.." && pwd)
-pc_cli=${PC_CLI:-$root/target/debug/pc-cli}
-xpp=${XPPAUT:-xppaut}
+
+# Resolve both programs to absolute paths now, before any cd.
+resolve() {
+  local p
+  p=$(command -v "$1" 2>/dev/null) || return 1
+  [ -x "$p" ] || return 1
+  realpath "$p"
+}
+xpp_bin=$(resolve "${XPPAUT:-xppaut}") || xpp_bin=
+pc_bin=$(resolve "${PC_CLI:-$root/target/debug/pc-cli}") || pc_bin=
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 fail=0
+skipped=""
+
+num_re='^[-+]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][-+]?[0-9]+)?$'
+special_re='^[-+]?(nan|inf)$'
+
+# A value is a number, or nan, inf or -inf (any case; -nan is nan).
+is_value() {
+  local s=${1,,}
+  [[ $s =~ $num_re || $s =~ $special_re ]]
+}
+
+# 0 if got matches expected: nan and inf by name, an expected 0 within an
+# absolute 1e-6, anything else within a relative 1e-6. Both must be values.
+same() {
+  is_value "$1" && is_value "$2" || return 1
+  awk -v e="$1" -v g="$2" '
+    function special(s) { s = tolower(s); if (s ~ /^[-+]?nan$/) return "nan"; if (s ~ /^\+?inf$/) return "inf"; if (s ~ /^-inf$/) return "-inf"; return "" }
+    function abs(x) { return x < 0 ? -x : x }
+    BEGIN {
+      se = special(e); sg = special(g)
+      if (se != "" || sg != "") exit !(se == sg)
+      d = abs(g - e)
+      if (e + 0 == 0) exit !(d <= 1e-6)
+      exit !(d <= 1e-6 * abs(e))
+    }'
+}
 
 # Names of the columns after t: states ("# states: N", default 1), then aux
 # names in file order. A range such as "aux w[1..2]" counts as w1, w2.
@@ -44,21 +79,32 @@ columns() {
     }' "$file"
 }
 
-# 0 if got matches expected: nan and inf by name, numbers by relative 1e-6
-# (absolute 1e-6 when the expected value is below 1 in size).
-same() {
-  awk -v e="$1" -v g="$2" '
-    function special(s) { s = tolower(s); if (s ~ /^[-+]?nan/) return "nan"; if (s ~ /^\+?inf/) return "inf"; if (s ~ /^-inf/) return "-inf"; return "" }
-    function abs(x) { return x < 0 ? -x : x }
-    BEGIN {
-      se = special(e); sg = special(g)
-      if (se != "" || sg != "") exit !(se == sg)
-      d = abs(g - e); m = abs(e); if (m < 1) m = 1
-      exit !(d <= 1e-6 * m)
-    }'
+# Runs XPPAUT on $1 in directory $2; leaves $2/out.txt (stdout and stderr) and
+# $2/o.dat, and sets xrc to the exit status.
+run_xpp() {
+  local src=$1 dir=$2
+  mkdir -p "$dir"
+  cp "$src" "$dir/p.ode"
+  xrc=0
+  (cd "$dir" && timeout 10 "$xpp_bin" p.ode -silent -outfile o.dat >out.txt 2>&1) || xrc=$?
 }
 
+# XPPAUT 8.0 refuses a bad file with exit status 0, no output file and a
+# message on stdout (measured: "illegal expression", "Illegal syntax", "... is
+# a duplicate name", "ERROR compiling", "Must have at least one equation").
+error_re='illegal|duplicate|error|must have|probably not|no variable'
+
 # ---------------------------------------------------------------- XPPAUT half
+sanity_xpp() {
+  local dir="$work/sanity"
+  mkdir -p "$dir"
+  printf "# sanity\nx'=0\nx(0)=3\npar a=2\naux v=a\n@ total=0,dt=1\n" > "$dir/sanity.ode"
+  run_xpp "$dir/sanity.ode" "$dir/run"
+  local row
+  row=$(head -n 1 "$dir/run/o.dat" 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//') || row=
+  [ "$xrc" = 0 ] && [ "$row" = "0 3 2" ]
+}
+
 check_xpp() {
   local file=$1 id spec
   id=$(basename "$file" .ode)
@@ -69,59 +115,63 @@ check_xpp() {
     return
   fi
   local dir="$work/x-$id"
-  mkdir -p "$dir"
-  cp "$file" "$dir/p.ode"
-  local rc=0
-  (cd "$dir" && timeout 10 "$xpp_bin" p.ode -silent -outfile o.dat >/dev/null 2>&1) || rc=$?
-  local have=1
-  if [ ! -s "$dir/o.dat" ]; then have=0; fi
+  run_xpp "$file" "$dir"
+
+  if [ "$xrc" = 124 ]; then
+    echo "FAIL $id expected $spec got timeout"; fail=1; return
+  elif [ "$xrc" != 0 ]; then
+    echo "FAIL $id expected $spec got exit $xrc"; fail=1; return
+  fi
 
   if [ "$spec" = "error" ]; then
-    if [ "$have" = 0 ]; then
-      echo "PASS $id expected error got error"
-    else
+    if [ -s "$dir/o.dat" ]; then
       echo "FAIL $id expected error got $(head -n 1 "$dir/o.dat" | tr -s ' ' | sed 's/^ //;s/ $//')"
       fail=1
+    elif grep -Eiq "$error_re" "$dir/out.txt"; then
+      echo "PASS $id expected error got error"
+    else
+      echo "FAIL $id expected error got no output and no XPPAUT message"
+      fail=1
     fi
-    return
-  fi
-  if [ "$have" = 0 ]; then
-    echo "FAIL $id expected $spec got error"
-    fail=1
     return
   fi
 
   local cols
   cols=$(columns "$file")
-  local ok=1 gots="" tok key val row colname idx got
+  local ok=1 gots="" tok key val row idx got why
   for tok in $spec; do
-    case $tok in
-      *=*) key=${tok%%=*}; val=${tok#*=} ;;
-      *) key=; val=$tok ;;
-    esac
+    key=; val=$tok
+    if [[ $tok == *=* ]]; then key=${tok%%=*}; val=${tok#*=}; fi
+    if ! is_value "$val"; then
+      echo "FAIL $id expected $spec got - (malformed # xpp: value '$tok')"
+      fail=1
+      return
+    fi
     row=1
-    if [[ $key == *@* ]]; then row=${key#*@}; key=${key%@*}; fi
+    if [[ $key == *@* ]]; then
+      row=${key#*@}; key=${key%@*}
+      if ! [[ $row =~ ^[1-9][0-9]*$ ]]; then
+        echo "FAIL $id expected $spec got - (malformed row in '$tok')"
+        fail=1
+        return
+      fi
+    fi
     if [ -z "$key" ]; then
-      # single value: the first aux column
       idx=$(printf '%s\n' "$cols" | awk '!/^@state/ { print NR + 1; exit }')
     elif [ "$key" = t ]; then
       idx=1
     else
-      colname=$key
-      idx=$(printf '%s\n' "$cols" | awk -v n="$colname" '$0 == n { print NR + 1; exit }')
+      idx=$(printf '%s\n' "$cols" | awk -v n="$key" '$0 == n { print NR + 1; exit }')
     fi
+    why=
     if [ -z "${idx:-}" ]; then
-      got="nocolumn"
+      why=nocolumn; got=nocolumn
     else
       got=$(awk -v r="$row" -v c="$idx" 'NR == r { print $c; exit }' "$dir/o.dat")
-      [ -n "$got" ] || got="norow"
+      if [ -z "$got" ]; then why=norow; got=norow; fi
     fi
-    if [ -n "$key" ]; then
-      gots="$gots ${tok%%=*}=$got"
-    else
-      gots="$gots $got"
-    fi
-    if ! same "$val" "$got" 2>/dev/null; then ok=0; fi
+    if [ -n "$key" ]; then gots="$gots ${tok%%=*}=$got"; else gots="$gots $got"; fi
+    if [ -n "$why" ] || ! same "$val" "$got"; then ok=0; fi
   done
   gots=${gots# }
   if [ "$ok" = 1 ]; then
@@ -133,6 +183,8 @@ check_xpp() {
 }
 
 # -------------------------------------------------------------------- pc half
+# The codes come from the pretty-printed JSON of "pc-cli parse --json"; the
+# patterns allow any blanks around the colon.
 check_pc() {
   local file=$1 id want json rc=0 codes got
   id=$(basename "$file" .ode)
@@ -142,11 +194,11 @@ check_pc() {
     fail=1
     return
   fi
-  json=$("$pc_cli" parse "$file" --json 2>/dev/null) || rc=$?
-  codes=$(printf '%s\n' "$json" | grep -o '"code": "ODE[0-9]*"' | grep -o 'ODE[0-9]*' | awk '!seen[$0]++' | paste -sd, -) || true
+  json=$("$pc_bin" parse "$file" --json 2>/dev/null) || rc=$?
+  codes=$(printf '%s\n' "$json" | grep -Eo '"code" *: *"ODE[0-9]+"' | grep -Eo 'ODE[0-9]+' | awk '!seen[$0]++' | paste -sd, -) || true
   got=${codes:-ok}
   local want_rc=0
-  if printf '%s\n' "$json" | grep -q '"severity": "error"'; then want_rc=1; fi
+  if printf '%s\n' "$json" | grep -Eq '"severity" *: *"error"'; then want_rc=1; fi
   if [ "$got" = "$want" ] && [ "$rc" = "$want_rc" ]; then
     echo "PASS $id pc expected $want got $got"
   else
@@ -158,20 +210,32 @@ check_pc() {
 shopt -s nullglob
 files=("$here"/*.ode)
 echo "${#files[@]} probes"
+if [ "${#files[@]}" = 0 ]; then
+  echo "FAIL no probes found in $here"
+  exit 1
+fi
 
-xpp_bin=
-if command -v "$xpp" >/dev/null 2>&1; then
-  xpp_bin=$(command -v "$xpp")
+if [ -z "$xpp_bin" ]; then
+  echo "SKIP xppaut not found (${XPPAUT:-xppaut}); the XPPAUT half is not run"
+  skipped="xpp half skipped: xppaut not found"
+elif ! sanity_xpp; then
+  echo "FAIL xppaut sanity: $xpp_bin did not run a known-good model (exit $xrc); the XPPAUT half is not run"
+  fail=1
+  skipped="xpp half skipped: xppaut sanity run failed"
+else
   for f in "${files[@]}"; do check_xpp "$f"; done
-else
-  echo "SKIP xppaut not found ($xpp); the XPPAUT half is not run"
 fi
 
-if [ -x "$pc_cli" ]; then
+if [ -z "$pc_bin" ]; then
+  echo "SKIP pc-cli not found (${PC_CLI:-$root/target/debug/pc-cli}); run 'cargo build -p pc-cli' or set PC_CLI"
+  skipped="${skipped:+$skipped; }pc half skipped: pc-cli not found"
+else
   for f in "${files[@]}"; do check_pc "$f"; done
-else
-  echo "SKIP pc-cli not found at $pc_cli; run 'cargo build -p pc-cli' or set PC_CLI"
 fi
 
-if [ "$fail" = 0 ]; then echo "all checks passed"; else echo "some checks failed"; fi
+if [ "$fail" = 0 ]; then
+  echo "all checks passed${skipped:+ ($skipped)}"
+else
+  echo "some checks failed${skipped:+ ($skipped)}"
+fi
 exit "$fail"

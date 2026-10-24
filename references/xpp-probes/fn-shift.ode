@@ -1,8 +1,8 @@
 # fn-shift: Does shift(x,0) evaluate?
-# xpp: 3
+# xpp: 30
 # pc: ODE0055
 x'=0
 x(0)=3
 par a=2
-aux v=shift(x,0)
+aux v=10*shift(x,0)
 @ total=0,dt=1

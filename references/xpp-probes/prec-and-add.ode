@@ -1,0 +1,8 @@
+# prec-and-add: Does a&b+c read as (a&b)+c?
+# xpp: 4
+# pc: ODE0014
+x'=0
+x(0)=7
+par a=1,b=2,c=3
+aux v=a&b+c
+@ total=0,dt=1

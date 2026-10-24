@@ -1,0 +1,7 @@
+# blank-num-name: Does a blank between a number and a name join them (2 x)?
+# xpp: error
+# pc: ODE0012
+x'=0
+x(0)=7
+aux v=2 x
+@ total=0,dt=1

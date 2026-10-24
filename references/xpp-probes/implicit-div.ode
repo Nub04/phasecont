@@ -1,0 +1,8 @@
+# implicit-div: Is implicit multiplication after a division accepted (a/2v)?
+# xpp: error
+# pc: ODE0013
+x'=0
+x(0)=7
+par a=8,v0=3
+aux v=a/2v0
+@ total=0,dt=1

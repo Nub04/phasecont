@@ -1,8 +1,8 @@
 # cont-ode: Does a backslash continue an ODE line (not line 1)?
-# xpp: 3
+# xpp: 13
 # pc: ok
 x'=0+\
 0
 x(0)=3
-aux v=x
+aux v=x+10
 @ total=0,dt=1

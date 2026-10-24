@@ -1,7 +1,7 @@
 # decl-init-expr: What does x(0)=1+2 declare?
-# xpp: 1
+# xpp: 11
 # pc: ODE0023
 x'=0
 x(0)=1+2
-aux v=x
+aux v=x+10
 @ total=0,dt=1

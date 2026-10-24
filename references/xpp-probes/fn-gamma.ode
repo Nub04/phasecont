@@ -1,0 +1,8 @@
+# fn-gamma: Is gamma a builtin (gamma(3))?
+# xpp: error
+# pc: ODE0039
+x'=0
+x(0)=3
+par a=2
+aux v=gamma(3)
+@ total=0,dt=1

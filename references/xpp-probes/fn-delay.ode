@@ -1,8 +1,8 @@
 # fn-delay: Does delay(x,1) evaluate at t=0?
-# xpp: 3
+# xpp: 30
 # pc: ODE0054
 x'=0
 x(0)=3
 par a=2
-aux v=delay(x,1)
+aux v=10*delay(x,1)
 @ total=0,dt=1

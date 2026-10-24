@@ -1,8 +1,8 @@
 # name-10: Is a 10-character name accepted?
-# xpp: 3
+# xpp: 9
 # pc: ok
 x'=0
 x(0)=3
-par abcdefghij=3
+par abcdefghij=9
 aux v=abcdefghij
 @ total=0,dt=1

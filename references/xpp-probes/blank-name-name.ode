@@ -1,0 +1,8 @@
+# blank-name-name: Does a blank between two names join them (a x)?
+# xpp: 11
+# pc: ODE0012
+x'=0
+x(0)=7
+par a=2,ax=11
+aux v=a x
+@ total=0,dt=1

@@ -1,7 +1,7 @@
 # eqspace-dxdt: Are blanks around = accepted in dx/dt=?
-# xpp: v@2=4
+# xpp: v@2=14
 # pc: ok
 dx/dt = 1
 x(0)=3
-aux v=x
+aux v=x+10
 @ total=1,dt=1
