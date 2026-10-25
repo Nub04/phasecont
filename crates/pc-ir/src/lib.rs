@@ -3,4 +3,6 @@
 //! `math` holds the scalar functions every evaluator shares (interpreter, JIT, AOT C)
 //! and the `#[repr(C)]` shim table that compiled code calls through.
 
+pub mod dag;
+pub mod eval;
 pub mod math;
