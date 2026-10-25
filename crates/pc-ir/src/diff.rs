@@ -48,7 +48,7 @@ fn term(dag: &mut Dag, tangent: NodeId, partial: impl FnOnce(&mut Dag) -> NodeId
 }
 
 /// The children of `op` whose derivatives the rule for `op` reads.
-fn diff_children(op: &Op, f: &mut dyn FnMut(NodeId)) {
+pub(crate) fn diff_children(op: &Op, f: &mut dyn FnMut(NodeId)) {
     match *op {
         Op::Cmp(..) | Op::And(..) | Op::Or(..) | Op::Not(_) | Op::TableSlope(..) => {}
         Op::Call1(Fn1::Floor | Fn1::Ceil | Fn1::Heav | Fn1::Sign, _) => {}

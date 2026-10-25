@@ -166,7 +166,7 @@ fn jac_hand_derived_predator_prey() {
 }
 
 #[test]
-fn entry_f_aux_cached_and_dir_refused() {
+fn entry_f_aux_cached_and_empty_dir_refused() {
     let (_fb, mut ir) = setup("x'=-x*y\ny'=x\naux s=x+y\ndone\n");
     let f = ir.entry(&EntryKind::F).unwrap();
     assert_eq!(f.outputs, ir.f);
@@ -177,7 +177,7 @@ fn entry_f_aux_cached_and_dir_refused() {
     let j2 = ir.entry(&EntryKind::JacU).unwrap();
     assert_eq!(j1, j2);
     assert_eq!(ir.dag.len(), len);
-    let e = ir.entry(&EntryKind::Dir(vec![crate::Slot::U])).unwrap_err();
+    let e = ir.entry(&EntryKind::Dir(vec![])).unwrap_err();
     assert_eq!(e.kind, crate::IrErrorKind::Unsupported);
 }
 

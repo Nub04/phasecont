@@ -54,8 +54,9 @@ pub struct Entry {
 impl IrModel {
     /// Builds (or returns the cached) DAG entry for `kind`. `F` and `Aux` reuse the
     /// lowered right sides; `JacU` and `JacP` differentiate them symbolically, column by
-    /// column. `Dir` is not available yet and returns an `Unsupported` error. The error is
-    /// `TooLarge` when the DAG passes its node limit.
+    /// column. `Dir` builds the multilinear form (see `multi`) and refuses a slot count
+    /// outside 1..=5 with an `Unsupported` error. The error is `TooLarge` when the DAG
+    /// passes its node limit.
     pub fn entry(&mut self, kind: &EntryKind) -> Result<Entry, IrError> {
         if let Some(e) = self.entries.get(kind) {
             return Ok(e.clone());
@@ -65,12 +66,16 @@ impl IrModel {
             EntryKind::Aux => self.aux.clone(),
             EntryKind::JacU => self.jacobian(self.n(), true),
             EntryKind::JacP => self.jacobian(self.n_p(), false),
-            EntryKind::Dir(_) => {
-                return Err(IrError::new(
-                    IrErrorKind::Unsupported,
-                    DUMMY_SPAN,
-                    "directional entries are not built yet",
-                ));
+            EntryKind::Dir(slots) => {
+                if slots.is_empty() || slots.len() > 5 {
+                    return Err(IrError::new(
+                        IrErrorKind::Unsupported,
+                        DUMMY_SPAN,
+                        "a directional entry takes 1 to 5 slots",
+                    ));
+                }
+                let (n, n_p) = (self.n(), self.n_p());
+                crate::multi::build(&mut self.dag, &mut self.diff_memo, &self.f, n, n_p, slots)
             }
         };
         if self.dag.exceeded() {
