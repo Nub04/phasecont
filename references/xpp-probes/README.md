@@ -197,6 +197,7 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `sqrt-neg` | What is sqrt(-1)? | `sqrt(-1)` | nan | no diagnostic; computes nan | matches |
 | `stmt-abbrev` | Does only the first letter of par count (pzz a=2)? | `pzz a=2` | 2 | no diagnostic; computes 2 | matches |
 | `table-inline` | Does table h % 11 0 1 2*t define h(0.5)=1? | `table h % 11 0 1 2*t` | 1 | no diagnostic | matches |
+| `table-range` | Does an inline table interpolate linearly and extrapolate from its end segments? | `table h % 3 0 2 t^2`, then `h(0.5)`, `h(1.5)`, `h(0)`, `h(2)`, `h(-1)`, `h(3)`, `h(10)` | 0.5 2.5 0 4 -1 7 28 | no diagnostic | matches |
 | `truth-and-half` | Is 0.5 true for & (0.5&1)? | `0.5&1` | 1 | no diagnostic; computes 1 | matches |
 | `truth-and-neghalf` | Is -0.5 true for & (-0.5&1)? | `-0.5&1` | 1 | no diagnostic; computes 1 | matches |
 | `truth-if-neg` | Is -1 true for if (if(-1)then(7)else(8))? | `if(-1)then(7)else(8)` | 7 | no diagnostic; computes 7 | matches |

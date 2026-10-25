@@ -105,7 +105,7 @@ These rules fix what the parser does where the manual is silent. Each rule says 
   - `markov name n` is followed by `n` rows, each with `n` `{expr}` groups (manual).
   - XPPAUT ignores extra text after `n`, as in `markov z 2 1` (measured: probe `markov-extra`; probe `markov-rows` checks the 0/1 rows). PhaseCont reports it with a fix-it that deletes it (PhaseCont choice). Missing rows are an error too (PhaseCont choice).
   - Blank lines and comment lines may sit between the rows. The comments are kept inside the `markov` statement in source order, and the blank lines are not stored (PhaseCont choice). An `#include` line ends the rows.
-- `table name % npts lo hi expr`: `table h % 11 0 1 2*t` loads and works (measured: probe `table-inline`). A missing or bad field is one error that names the field, and the rest of the line is skipped (PhaseCont choice).
+- `table name % npts lo hi expr`: `table h % 11 0 1 2*t` loads and works (measured: probe `table-inline`). The table holds `expr` at `npts` evenly spaced values of `t` from `lo` to `hi`. A call interpolates linearly between them and, outside `[lo, hi]`, extrapolates the first or last segment: with `table h % 3 0 2 t^2`, `h(1.5)` = 2.5, `h(-1)` = -1 and `h(10)` = 28 (measured: probe `table-range`). The derivative of a table call is the slope of the segment that holds the argument; at an interior node it is the slope of the segment to the right (PhaseCont choice). A missing or bad field is one error that names the field, and the rest of the line is skipped (PhaseCont choice).
 - User functions.
   - A user function has at least one parameter (PhaseCont choice).
   - Neither its name nor its parameters carry an index (PhaseCont choice).
