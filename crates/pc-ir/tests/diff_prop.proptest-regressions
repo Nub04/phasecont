@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5aecf3e0adea93741724340de9283d01c4cb560b800f7e32207f7dc6b6055999 # shrinks to f0 = Pow(C(0.0), 0.5), f1 = Sq(Cube(Neg(Y))), c = -2.0, x = 1.9627574957745315, y = -0.08091991755666729
+cc c5c81fee51480ef80a9a4d751b171638d9923f1a8cc22e08235bef270bf66fca # shrinks to f0 = Neg(Y), f1 = Min(Tanh(C(0.0)), C(0.0)), c = 0.0, x = 0.0, y = 0.0

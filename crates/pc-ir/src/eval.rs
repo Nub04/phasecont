@@ -134,7 +134,7 @@ pub fn eval_op(
     }
 }
 
-fn children(op: &Op, f: &mut dyn FnMut(NodeId)) {
+pub(crate) fn children(op: &Op, f: &mut dyn FnMut(NodeId)) {
     match *op {
         Op::Const(_) | Op::Var(_) | Op::Param(_) | Op::Dir(_) => {}
         Op::Neg(a)

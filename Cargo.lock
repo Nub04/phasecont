@@ -121,6 +121,7 @@ version = "0.0.0"
 dependencies = [
  "libm",
  "pc-ode",
+ "proptest",
 ]
 
 [[package]]

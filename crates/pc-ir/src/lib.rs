@@ -6,6 +6,7 @@
 //! and serves as the independent f64 fallback.
 
 pub mod dag;
+pub mod diff;
 pub mod entry;
 pub mod error;
 pub mod eval;
@@ -13,7 +14,8 @@ pub mod interp;
 pub mod lower;
 pub mod math;
 
-pub use entry::{EntryKind, Slot};
+pub use diff::{Wrt, d};
+pub use entry::{Entry, EntryKind, Slot};
 pub use error::{IrError, IrErrorKind};
 pub use interp::{Dual, Fallback, Interp, Scalar};
 pub use lower::{IrModel, lower};

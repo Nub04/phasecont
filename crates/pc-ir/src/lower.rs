@@ -36,6 +36,8 @@ pub struct IrModel {
     /// False when a formula reachable from `f` or `aux` reads `t`.
     pub autonomous: bool,
     pub smooth: bool,
+    pub(crate) entries: std::collections::HashMap<crate::entry::EntryKind, crate::entry::Entry>,
+    pub(crate) diff_memo: std::collections::HashMap<(NodeId, crate::diff::Wrt), NodeId>,
 }
 
 impl IrModel {
@@ -643,6 +645,8 @@ pub(crate) fn lower_with_cap(
         par_values: env.par_values.clone(),
         autonomous,
         smooth: info.smooth,
+        entries: HashMap::new(),
+        diff_memo: HashMap::new(),
     })
 }
 
