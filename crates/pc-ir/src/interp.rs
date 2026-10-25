@@ -18,8 +18,30 @@ use pc_ode::{BinaryOp, Expr, Ident, Model, ModelInfo, Stmt, StmtKind, UnaryOp, V
 use std::collections::{HashMap, HashSet};
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
-/// Deepest expression or function nesting the walker follows.
+/// Deepest expression or function nesting the walker follows, for a small scalar.
 const MAX_DEPTH: usize = 1000;
+
+/// Stack the recursive walk may use, in bytes. The Windows main thread has 1 MiB.
+const STACK_BUDGET: usize = 768 * 1024;
+
+/// Bytes of stack one nesting level costs: a fixed part plus a multiple of the scalar size
+/// (each level holds several scalars in `ev`, `ev_inner`, `binary` and `call`). Measured
+/// from stack addresses on a user-function chain: release 256 bytes for `f64` and 2344 for
+/// `Dual^5`; debug 1110 and 7400. The constants round up.
+#[cfg(debug_assertions)]
+const LEVEL_FIXED: usize = 900;
+#[cfg(debug_assertions)]
+const LEVEL_PER_SCALAR: usize = 29;
+#[cfg(not(debug_assertions))]
+const LEVEL_FIXED: usize = 190;
+#[cfg(not(debug_assertions))]
+const LEVEL_PER_SCALAR: usize = 9;
+
+/// Nesting limit for scalar type `S`: 1000 for `f64`, smaller for nested duals.
+pub(crate) fn depth_limit<S>() -> usize {
+    let per_level = LEVEL_FIXED + LEVEL_PER_SCALAR * std::mem::size_of::<S>();
+    (STACK_BUDGET / per_level).clamp(1, MAX_DEPTH)
+}
 
 /// A number type the interpreter can compute with.
 ///
@@ -431,7 +453,11 @@ impl<T: Scalar> Scalar for Dual<T> {
             re: r,
             eps: Self::sum(
                 Self::term(x.eps, || y.re * x.re.pow(y.re - Self::one())),
-                Self::term(y.eps, || r * x.re.ln()),
+                if r.value() == 0.0 {
+                    None
+                } else {
+                    Self::term(y.eps, || r * x.re.ln())
+                },
             ),
         }
     }
@@ -660,6 +686,7 @@ impl Interp {
             cache: HashMap::new(),
             visiting: HashSet::new(),
             depth: 0,
+            max_depth: depth_limit::<S>(),
             failed: false,
         };
         for (i, o) in out_f.iter_mut().enumerate() {
@@ -699,6 +726,7 @@ struct Ctx<'a, S: Scalar> {
     cache: HashMap<&'a str, V<S>>,
     visiting: HashSet<&'a str>,
     depth: usize,
+    max_depth: usize,
     failed: bool,
 }
 
@@ -716,7 +744,7 @@ impl<'a, S: Scalar> Ctx<'a, S> {
     }
 
     fn ev(&mut self, e: &'a Expr) -> V<S> {
-        if self.depth >= MAX_DEPTH {
+        if self.depth >= self.max_depth {
             self.failed = true;
             return Self::nan();
         }
@@ -844,7 +872,7 @@ impl<'a, S: Scalar> Ctx<'a, S> {
                 return Self::nan();
             }
             let vals: Vec<V<S>> = args.iter().map(|a| self.ev(a)).collect();
-            if self.frames.len() >= MAX_DEPTH {
+            if self.frames.len() >= self.max_depth {
                 self.failed = true;
                 return Self::nan();
             }
@@ -982,6 +1010,7 @@ impl Fallback {
 
     /// Columns of the Jacobian with respect to the states (`wrt_u`) or the parameters.
     fn jac(&self, x: &[f64], p: &[f64], out: &mut [f64], cols: usize, wrt_u: bool) {
+        out.fill(0.0);
         let c = |v: f64| Dual { re: v, eps: 0.0 };
         let mut xs: Vec<Dual<f64>> = x.iter().take(self.n).map(|&v| c(v)).collect();
         let mut ps: Vec<Dual<f64>> = p.iter().take(self.n_p + 1).map(|&v| c(v)).collect();

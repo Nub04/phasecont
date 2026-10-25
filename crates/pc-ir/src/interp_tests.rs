@@ -679,3 +679,88 @@ fn deep_user_function_nesting_gives_nan_not_a_panic() {
     fb.eval(&EntryKind::F, &[0.5], &[0.0], &[], &mut out);
     assert_eq!(out[0], 300.5);
 }
+
+/// Fallback for a chain model; the lowering of `x'=-x` stands in, since a chain past the
+/// lowering limit does not lower.
+fn deep_fb(levels: usize) -> Fallback {
+    let (_, ir) = setup("x'=-x\ndone\n");
+    let l = loaded(&chain_src(levels));
+    Fallback::new(&l.expanded, &l.info, &ir)
+}
+
+fn chain_src(levels: usize) -> String {
+    let mut src = String::from("f0(u)=u+1\n");
+    for i in 1..levels {
+        src.push_str(&format!("f{i}(u)=f{}(u)+1\n", i - 1));
+    }
+    src.push_str(&format!("x'=f{}(x)\ndone\n", levels - 1));
+    src
+}
+
+/// Runs `body` on a 1 MiB stack, the Windows main-thread default.
+fn on_small_stack(body: impl FnOnce() + Send + 'static) {
+    let h = std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(body)
+        .unwrap();
+    h.join().expect("the evaluation overflowed or panicked");
+}
+
+#[test]
+fn depth_limit_shrinks_with_scalar_size() {
+    let l1 = depth_limit::<f64>();
+    let l2 = depth_limit::<Dual<f64>>();
+    let l5 = depth_limit::<Dual<Dual<Dual<Dual<Dual<f64>>>>>>();
+    assert!(l1 >= 600, "{l1}");
+    assert!(l5 < l2 && l2 <= l1 && l5 >= 20, "{l1} {l2} {l5}");
+}
+
+#[test]
+fn deep_chains_fit_a_one_mib_stack() {
+    on_small_stack(|| {
+        // Each chain level costs two nesting units (the call and the body sum).
+        let five = vec![Slot::U; 5];
+        let lim = depth_limit::<Dual<Dual<Dual<Dual<Dual<f64>>>>>>() / 2;
+        for (levels, finite) in [(lim - 3, true), (lim + 3, false)] {
+            let fb = deep_fb(levels);
+            let mut out = [0.0];
+            fb.eval(
+                &EntryKind::Dir(five.clone()),
+                &[0.5],
+                &[0.0],
+                &[1.0; 5],
+                &mut out,
+            );
+            assert_eq!(out[0].is_finite(), finite, "dir, {levels} levels: {out:?}");
+        }
+        let lim = depth_limit::<f64>() / 2;
+        for (levels, finite) in [(lim - 3, true), (lim + 3, false)] {
+            let fb = deep_fb(levels);
+            let mut out = [0.0];
+            fb.eval(&EntryKind::F, &[0.5], &[0.0], &[], &mut out);
+            assert_eq!(out[0].is_finite(), finite, "F, {levels} levels: {out:?}");
+            if finite {
+                assert_eq!(out[0], levels as f64 + 0.5);
+            }
+        }
+    });
+}
+
+#[test]
+fn pow_with_zero_primal_has_no_exponent_tangent() {
+    let r = Scalar::pow(d(0.0, 0.0), d(2.0, 1.0));
+    assert_eq!((r.re, r.eps), (0.0, 0.0));
+    let r = Scalar::pow(d(0.0, 1.0), d(2.0, 1.0));
+    assert_eq!((r.re, r.eps), (0.0, 0.0));
+}
+
+#[test]
+fn jacobian_writes_every_output_slot() {
+    let (fb, _) = setup("par a=2\nx'=a*x\ndone\n");
+    let mut out = [f64::NAN; 5];
+    fb.eval(&EntryKind::JacU, &[3.0], &[2.0, 0.0], &[], &mut out);
+    assert_eq!(out, [2.0, 0.0, 0.0, 0.0, 0.0]);
+    let mut out = [f64::NAN; 3];
+    fb.eval(&EntryKind::JacP, &[3.0], &[2.0, 0.0], &[], &mut out);
+    assert_eq!(out, [3.0, 0.0, 0.0]);
+}
