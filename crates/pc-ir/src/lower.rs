@@ -318,19 +318,9 @@ impl<'e, 'a> Lw<'e, 'a> {
                 format!("`{}` is not a function", name.text),
             );
         };
-        match key {
-            "delay" => {
-                // The pre-scan reported every delay call already.
-                return self.dag.konst(f64::NAN);
-            }
-            "ran" | "normal" | "poisson" => {
-                return self.fail(
-                    IrErrorKind::SimulationOnly,
-                    span,
-                    format!("`{}` is for simulation only", name.text),
-                );
-            }
-            _ => {}
+        if key == "delay" {
+            // The pre-scan reported every delay call already.
+            return self.dag.konst(f64::NAN);
         }
         if b.arity != Some(args.len()) {
             return self.fail(
@@ -459,15 +449,21 @@ fn prescan(model: &Model, info: &ModelInfo, errors: &mut Vec<IrError>) {
             _ => {}
         }
         for e in formulas(&s.kind) {
-            each_call(e, &mut |name, span| {
-                if name.key == "delay" {
+            each_call(e, &mut |name, span| match name.key.as_str() {
+                "delay" => {
                     let msg = "delay(...) is not supported";
                     errors.push(IrError::new(IrErrorKind::Delay, span, msg));
                 }
+                "ran" | "normal" | "poisson" => {
+                    let msg = format!("`{}` is for simulation only", name.text);
+                    errors.push(IrError::new(IrErrorKind::SimulationOnly, span, msg));
+                }
+                _ => {}
             });
         }
     });
-    if info.simulation_only {
+    let reported = errors.iter().any(|e| e.kind == IrErrorKind::SimulationOnly);
+    if info.simulation_only && !reported {
         let span = sim_span.unwrap_or(DUMMY_SPAN);
         let msg = "the model is for simulation only";
         errors.push(IrError::new(IrErrorKind::SimulationOnly, span, msg));

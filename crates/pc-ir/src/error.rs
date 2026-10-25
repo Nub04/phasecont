@@ -35,3 +35,11 @@ impl IrError {
         }
     }
 }
+
+impl std::fmt::Display for IrError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({:?})", self.message, self.kind)
+    }
+}
+
+impl std::error::Error for IrError {}

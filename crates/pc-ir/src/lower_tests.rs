@@ -56,8 +56,12 @@ fn refuses_no_equations() {
 fn refuses_simulation_only() {
     let k = kinds("x'=-x\nglobal 1 x-1 {x=0}\ndone\n");
     assert_eq!(k, vec![K::SimulationOnly]);
-    let k = kinds("x'=-x+ran(1)\ndone\n");
-    assert_eq!(k, vec![K::SimulationOnly]);
+    let src = "x'=-x+ran(1)\ndone\n";
+    let e = errs(src);
+    assert_eq!(e.len(), 1);
+    assert_eq!(e[0].kind, K::SimulationOnly);
+    assert_eq!(&src[e[0].span.start..e[0].span.end], "ran(1)");
+    assert!(e[0].to_string().contains("SimulationOnly"));
 }
 
 #[test]
