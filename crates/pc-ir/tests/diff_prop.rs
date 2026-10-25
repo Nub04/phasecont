@@ -112,16 +112,16 @@ fn g_strategy() -> impl Strategy<Value = G> {
     })
 }
 
-fn build(f0: &G, f1: &G) -> Option<(Fallback, IrModel)> {
+fn build(f0: &G, f1: &G) -> Result<(Fallback, IrModel), String> {
     let src = format!("par a=0.7\nx'={}\ny'={}\ndone\n", text(f0), text(f1));
     let mut map = SourceMap::new();
     let top = map.add("t.ode", &src);
     let l = load(top, &mut map, &mut MapLoader::new());
     if l.diagnostics.iter().any(|d| d.severity == Severity::Error) {
-        return None;
+        return Err(format!("check error in {src}"));
     }
-    let ir = lower(&l.expanded, &l.info).ok()?;
-    Some((Fallback::new(&l.expanded, &l.info, &ir), ir))
+    let ir = lower(&l.expanded, &l.info).map_err(|e| format!("lower error {e:?} in {src}"))?;
+    Ok((Fallback::new(&l.expanded, &l.info, &ir), ir))
 }
 
 fn ulp(x: f64) -> f64 {
@@ -164,10 +164,10 @@ proptest! {
         y in -2.0..2.0f64,
         a in 0.1..1.5f64,
     ) {
-        let Some((fb, mut ir)) = build(&f0, &f1) else { return Ok(()); };
+        let (fb, mut ir) = build(&f0, &f1).map_err(TestCaseError::fail)?;
         let (xs, ps) = ([x, y], [a, 0.0]);
         for (kind, len) in [(EntryKind::JacU, 4), (EntryKind::JacP, 2)] {
-            let Ok(e) = ir.entry(&kind) else { return Ok(()); };
+            let e = ir.entry(&kind).map_err(|e| TestCaseError::fail(e.to_string()))?;
             prop_assert_eq!(e.outputs.len(), len);
             let got = run(&ir, &e.outputs, &xs, &ps);
             let mut want = vec![0.0; len];
@@ -187,7 +187,7 @@ proptest! {
         x in -2.0..2.0f64,
         y in -2.0..2.0f64,
     ) {
-        let Some((_fb, mut ir)) = build(&f0, &f1) else { return Ok(()); };
+        let (fb, mut ir) = build(&f0, &f1).map_err(TestCaseError::fail)?;
         let (g0, g1) = (ir.f[0], ir.f[1]);
         let mut memo = HashMap::new();
         let w = Wrt::U(0);
@@ -214,16 +214,20 @@ proptest! {
         let want_scaled = ir.dag.mul(d0, k);
         prop_assert!(dscaled == want_scaled || same_const(&ir.dag, dscaled, want_scaled));
 
-        // Product rule against evaluation.
+        // Product rule against the interpreter: the DAG derivative of f0*f1 against
+        // J0j*f1 + f0*J1j, with f and the Jacobian taken from Fallback (Dual<f64>).
         let prod = ir.dag.mul(g0, g1);
-        let dprod = d(&mut ir.dag, &mut memo, prod, w);
-        let t1 = ir.dag.mul(d0, g1);
-        let t2 = ir.dag.mul(g0, d1);
-        let rule = ir.dag.add(t1, t2);
+        let dprod = [Wrt::U(0), Wrt::U(1)].map(|wj| d(&mut ir.dag, &mut memo, prod, wj));
         let (xs, ps) = ([x, y], [0.7, 0.0]);
-        let got = run(&ir, &[dprod], &xs, &ps);
-        let want = run(&ir, &[rule], &xs, &ps);
-        prop_assume!(small(&got) && small(&want));
+        let got = run(&ir, &dprod, &xs, &ps);
+        let (mut fv, mut jac) = ([0.0; 2], [0.0; 4]);
+        fb.eval(&EntryKind::F, &xs, &ps, &[], &mut fv);
+        fb.eval(&EntryKind::JacU, &xs, &ps, &[], &mut jac);
+        let want = [
+            jac[0] * fv[1] + fv[0] * jac[1],
+            jac[2] * fv[1] + fv[0] * jac[3],
+        ];
+        prop_assume!(small(&want) && small(&got) && small(&fv) && small(&jac));
         prop_assert!(within(&got, &want), "{:?} vs {:?}", got, want);
 
         // Building again with a fresh memo adds no node and returns the same ids.

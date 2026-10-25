@@ -183,12 +183,18 @@ fn entry_f_aux_cached_and_dir_refused() {
 
 #[test]
 fn entry_reports_too_large() {
-    let mut ir = setup("x'=sin(x)*cos(x)+x*x\ndone\n").1;
-    ir.dag = Dag::new(0);
-    // The old ids point into the empty DAG; the derivative still has to add nodes.
-    ir.f = vec![ir.dag.var(0)];
-    let sin = ir.dag.call1(Fn1::Sin, ir.f[0]);
-    ir.f = vec![sin];
+    let src = "x'=sin(x)*cos(x)+x*x\ndone\n";
+    let mut map = SourceMap::new();
+    let top = map.add("t.ode", src);
+    let l = load(top, &mut map, &mut MapLoader::new());
+    let full = lower(&l.expanded, &l.info).unwrap().dag.len();
+    // A cap equal to the lowered size lets F through; JacU then crosses it inside `entry`.
+    let mut ir = match crate::lower::lower_with_cap(&l.expanded, &l.info, full) {
+        Ok(m) => m,
+        Err(e) => panic!("lowering at the exact size must pass: {e:?}"),
+    };
+    assert!(!ir.dag.exceeded());
+    assert!(ir.entry(&EntryKind::F).is_ok());
     let e = ir.entry(&EntryKind::JacU).unwrap_err();
     assert_eq!(e.kind, crate::IrErrorKind::TooLarge);
 }
