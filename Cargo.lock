@@ -120,6 +120,7 @@ name = "pc-ir"
 version = "0.0.0"
 dependencies = [
  "libm",
+ "pc-ode",
 ]
 
 [[package]]
