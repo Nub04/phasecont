@@ -61,7 +61,7 @@ Parsing rules:
 - A number followed directly by a name or `(` (`2v`) multiplies, with a portability warning, since XPPAUT 8.0 rejects it.
 - Built-in functions: `sin cos tan asin acos atan atan2 sinh cosh tanh exp ln log log10 sqrt abs heav sign mod min max flr ceil erf erfc lgamma besselj bessely`, and `if(c)then(a)else(b)`. `ceil` gets a portability warning.
 - `ran`, `normal` and `poisson` make a model simulation-only, as do `markov`, `wiener` and `global`.
-- The exact meaning of each function (for example that `log` is natural and `atan2(y,x)` uses C's order), with its source, is in the semantics table in `language.md`. Division by zero and whether `if` evaluates both branches are open questions for P2.
+- The exact meaning of each function (for example that `log` is natural and `atan2(y,x)` uses C's order), with its source, is in the semantics table in `language.md`. Division follows IEEE (`1/0` is inf, `0/0` is NaN), unlike XPPAUT's guarded division. `mod(x,y)` is `r = fmod(x,y)`, plus `y` when `r < 0`. `if` evaluates both branches and selects one with the test `c != 0`. Constant folding in `pc-ir` drops NaN and inf from terms it removes (`x*0` is 0); `language.md` lists the rules.
 
 **Non-smooth models.**
 - Any of `heav sign abs mod flr ceil min max if`, a comparison (`< <= > >= ==`), `&`, `|`, `not`, or a table, marks a model as non-smooth.
@@ -77,8 +77,11 @@ Parsing rules:
 ## 3. IR and derivatives (pc-ir)
 
 **DAG structure.**
-- A hash-consed DAG of `f64` operations, with constant folding and common subexpression elimination.
-- Fixed quantities and user functions are inlined.
+- A hash-consed DAG of `f64` operations, with constant folding and common subexpression elimination. Folding happens when a node is built, so hash-consing gives CSE for free. The algebraic rules and their effect on NaN are in `language.md`; there is no reassociation.
+- Fixed quantities and user functions are inlined. Inline formula tables are tabulated when the model is lowered and read with linear interpolation.
+- Time `t` is a hidden parameter slot `p[n_p]`, so every entry keeps the same signature. The IR records whether the model is autonomous.
+- Every transcendental goes through one table of shims in `pc-ir`, backed by the `libm` crate. The interpreter, the DAG evaluator, the JIT and the AOT code all call the same functions.
+- `pc-ir` refuses simulation-only models, `delay` and unsupported statements with an error that points at the source. A DAG over 1,000,000 nodes is an error.
 
 **Derivatives produced by symbolic forward differentiation on the DAG.** Each one is a new DAG that goes through CSE again:
 - $f(u,\alpha)$
@@ -88,11 +91,13 @@ Parsing rules:
 - directional derivatives up to order 5, for normal forms
 - the mixed parameter derivatives needed by branch switching
 
-**Complex directions.** Directional derivatives must accept complex direction vectors, because $q$ and $p$ in the normal forms are complex. Do this either by splitting real and imaginary parts and using multilinearity, or by emitting a complex-valued entry point.
+$A$ and $f_\alpha$ come from first-order symbolic differentiation. Orders 2 to 5 use a multilinear (hyper-dual) expansion on the DAG: each node gets one component per subset of the $k$ direction slots, a product splits over subsets, and a call $g(w)$ uses Faà di Bruno's formula over set partitions, with $g^{(m)}$ from repeated symbolic differentiation. The result is exact, with no polarization. Directions live in the extended space $(u,\alpha)$ of length $n+n_p$, so one mechanism gives $B$, $C$, the order 4 and 5 forms, and mixed forms such as $A_\alpha v = D^2 f[(v,0),(0,e_j)]$. Each slot is marked as $u$ only, $\alpha$ only or full, so zero blocks fold away. Non-smooth builtins use the derivative of the active branch (`language.md` lists the rules).
+
+**Complex directions.** Directional derivatives must accept complex direction vectors, because $q$ and $p$ in the normal forms are complex. PhaseCont splits each complex direction into its real and imaginary parts and uses multilinearity, so an order $k$ form takes at most $2^k$ real evaluations. There is no complex-valued entry point.
 
 **Validation uses two independent evaluators:**
-1. A tree-walking dual-number interpreter on the AST. Its results must match the generated derivatives to within 4 ulp per entry, or $10^{-13}$ relative error.
-2. Central finite differences on random inputs, with relative error at most $10^{-6}$ for $A$ and at most $10^{-4}$ for $B$ and $C$.
+1. A tree-walking dual-number interpreter on the AST, using nested dual numbers up to depth 5. Its results must match the generated derivatives to within 4 ulp per entry, or $10^{-13}$ relative error. An entry passes when $|a-b| \le 4\,\mathrm{ulp}(\max(|a|,|b|))$ or $|a-b| \le 10^{-13} s$, where $s$ is the largest magnitude in that output vector.
+2. Central finite differences on random inputs, with relative error at most $10^{-6}$ for $A$ and at most $10^{-4}$ for $B$ and $C$, measured against the same scale $s$.
 
 ## 4. JIT and AOT (pc-jit, pc-codegen)
 
@@ -100,13 +105,13 @@ Parsing rules:
 
 **Code generation flags.** Set `is_pic` only on x86_64 and set `use_colocated_libcalls` to false, as `JITBuilder::new` does. Set `enable_probestack` to true and `probestack_strategy` to `inline`. Cranelift leaves stack probes off by default, Windows needs them for frames over 4096 bytes, and the default `outline` strategy calls `__cranelift_probestack`, which `pckern` does not provide.
 
-**Transcendentals.** Call Rust `extern "C"` shims around the `f64` methods (`sin`, `exp`, and so on). Register every shim with `JITBuilder::symbol`. Shim bodies must not panic: a panic that leaves an `extern "C"` function aborts the process, JIT frames have no unwind information, and the panic barrier sits outside the JIT call.
+**Transcendentals.** Call the `extern "C"` shims of `pc-ir` (section 3), which wrap the `libm` crate, not the `f64` methods of std. Register every shim with `JITBuilder::symbol`. Shim bodies must not panic: a panic that leaves an `extern "C"` function aborts the process, JIT frames have no unwind information, and the panic barrier sits outside the JIT call.
 
 **Ownership.** Each compiled model owns its `JITModule`. Dropping a `JITModule` leaves its code pages mapped, so the model handle calls `JITModule::free_memory` when it is freed and on every error path after `JITModule::new`, and only when no thread can still call the compiled functions.
 
-**Equivalence.** JIT output must match the dual-number interpreter to within 4 ulp. Exact equality is not expected, because of fused multiply-add.
+**Equivalence.** JIT output for $f$ must match the dual-number interpreter to within 4 ulp. For derivatives the two use different algorithms, so they are compared with the tolerance of section 3. JIT output must also match a Rust evaluator of the same DAG exactly (0 ulp), since Cranelift emits no fused multiply-add unless asked.
 
-**AOT path.** `pc-codegen` emits C with the same signatures. It is compiled through `mex` when a compiler exists and selected with `phasecont.config("Codegen","aot")`. AOT output must match JIT output to within 4 ulp. Compile AOT code with floating-point contraction turned off, as the spike's gcc build does with `-ffp-contract=off`, and store the compiler, its version and its flags with every benchmark or test result that uses AOT code.
+**AOT path.** `pc-codegen` emits C with the same signatures. The C does not call the C library: it declares `const pc_math_t *pc_math` and exports `pc_aot_init(const pc_math_t *)`, and the loader passes the `pc-ir` shim table, so AOT and JIT call the same math functions. It is compiled through `mex` when a compiler exists and selected with `phasecont.config("Codegen","aot")`. AOT output must match JIT output to within 4 ulp. Compile AOT code with floating-point contraction turned off, as the spike's gcc build does with `-ffp-contract=off`, and store the compiler, its version and its flags with every benchmark or test result that uses AOT code.
 
 **macOS arm64.** Confirm that JIT pages can be mapped executable inside the MATLAB process. Phase 0 ran only on Windows and WSL, so this check moves to Phase 2, which runs it on a Mac with MATLAB or on the macOS runner of the MATLAB job in section 12. `cranelift-jit` 0.137.0 accepts `is_pic=true` only on x86_64. Its default `SystemMemoryProvider` maps code pages read-write without `MAP_JIT` and makes them read-execute with `mprotect`, which the hardened runtime allows only with `com.apple.security.cs.allow-unsigned-executable-memory` or `com.apple.security.cs.disable-executable-page-protection`. `codesign -d --entitlements - <matlabroot>/bin/maca64/MATLAB`, where `<matlabroot>` is the folder that `matlabroot` returns, lists the entitlements MATLAB has. Without either entitlement, `pc-jit` needs its own `JITMemoryProvider`, set with `JITBuilder::memory_provider`, that maps pages with `MAP_JIT`, which needs `com.apple.security.cs.allow-jit`, and switches them with `pthread_jit_write_protect_np`. With none of the three, rule 5 of `CLAUDE.md` still holds: models run on an `f64` evaluator in Rust built from the same code as the dual-number interpreter of section 3, and PhaseCont warns that this is slower than compiled code. The AOT path stays the optional speed-up on Macs that have the Xcode Command Line Tools, selected with `phasecont.config("Codegen","aot")`. No Mac user is required to install a compiler.
 

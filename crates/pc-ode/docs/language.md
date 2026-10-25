@@ -9,7 +9,6 @@ Each rule carries one of these sources:
 - **manual**: the XPPAUT documentation (online help pages, the v5.0 and v5.41 PDF manuals, the v8 notes). Only the documentation was read, never XPPAUT source code.
 - **measured**: XPPAUT 8.0 run headless (`xppaut file.ode -silent -outfile o.dat`) on our own probe files in `references/xpp-probes/`. Each rule marked measured below names the probe that checks it, or falls under the probes in the README table of that folder (`run.sh` compares XPPAUT with `pc-cli`). XPPAUT writes its output file with float32 precision, so measured values carry about 7 significant digits (`0.15` prints as `0.15000001`).
 - **PhaseCont choice**: a rule we picked where XPPAUT gives no usable answer, or where we deliberately differ.
-- **open**: not settled. These do not affect parsing; they block P2, where `pc-ir` evaluates expressions.
 
 Where XPPAUT 8.0 and the manual disagree, the measured behavior wins unless a rule says otherwise.
 
@@ -291,7 +290,7 @@ Arity `n` means the function takes exactly `n` arguments. "Smooth" means the fun
 | `abs` | 1 | absolute value | no | no | manual, measured |
 | `heav` | 1 | 1 for `x >= 0`, else 0 | no | no | manual, measured (`heav(0)` = `heav(-0)` = 1) |
 | `sign` | 1 | -1, 0 or 1 | no | no | manual, measured (`sign(0)` = 0) |
-| `mod` | 2 | `r = fmod(x,y)`, plus `y` when `r < 0` | no | no | measured (`mod(-7,3)` = 2, `mod(7,-3)` = 1, `mod(-7,-3)` = -4, `mod(-7.5,2)` = 0.5, `mod(1,0)` is NaN); formula fits the data, open for P2 |
+| `mod` | 2 | `r = fmod(x,y)`, plus `y` when `r < 0` | no | no | measured (`mod(-7,3)` = 2, `mod(7,-3)` = 1, `mod(-7,-3)` = -4, `mod(-7.5,2)` = 0.5, `mod(1,0)` is NaN; probe `fn-mod-more`: `mod(-0.1,1)` = 0.9, `mod(2.5,-1)` = 0.5, `mod(-2.5,-1)` = -1.5, `mod(-123456.75,7)` = 2.25, `mod(0.75,-1)` = 0.75) |
 | `min max` | 2 | minimum, maximum | no | no | manual, measured |
 | `flr` | 1 | floor | no | no | measured (`flr(-2.5)` = -3, `flr(-2)` = -2) |
 | `ceil` | 1 | ceiling | no | no | manual; XPPAUT 8.0 rejects it, so portability warning |
@@ -312,8 +311,9 @@ Operator semantics (measured):
 - Comparisons return 1 or 0. `&`, `|`, `not` and `if` treat any nonzero value as true (`0.5&1` = 1, `-0.5&1` = 1).
 - `**` is the same as `^`. `0^0` = 1, `(-2)^3` = -8, `(-8)^(1/3)` is NaN.
 - `t` and `arg1` read as 0 outside the context that defines them.
-- Division: XPPAUT 8.0 guards it (`1/0` = 4.4843049e14, `0/0` = 0). PhaseCont keeps IEEE division for now. **Open for P2.**
-- Whether `if` evaluates both branches cannot be seen from values, since XPPAUT has no traps. **Open for P2.**
+- Division: XPPAUT 8.0 guards it (`1/0` = 4.4843049e14, `0/0` = 0). PhaseCont uses IEEE division, so `1/0` is inf and `0/0` is NaN (PhaseCont choice). XPPAUT's guard puts a jump with an undocumented constant into the model.
+- `if(c)then(a)else(b)` evaluates both branches and picks one, which cannot be told apart from lazy evaluation since there are no floating-point traps (PhaseCont choice). The test is `c != 0`, so a NaN condition takes `then`. `min(x,y)` is `x < y ? x : y` and `max(x,y)` is `x > y ? x : y`, so a NaN in `x` returns `y`.
+- `pc-ir` folds `x*0` to 0, `x*1` and `x+0` to `x`, `x-x` to 0 and `-(-x)` to `x`, and picks the branch of an `if` whose condition is constant (PhaseCont choice). A NaN or inf in a term that folding removes therefore does not reach the result: `x*0` gives 0 even when `x` is inf. Folding never reorders operations, so a finite result keeps its bits.
 
 ## Writer
 
