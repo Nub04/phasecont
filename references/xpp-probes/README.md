@@ -104,6 +104,7 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `fn-log10` | What is log10(100)? | `log10(100)` | 2 | no diagnostic; computes 2 | matches |
 | `fn-log` | Is log natural (log(100))? | `log(100)` | 4.6051702 | no diagnostic; computes 4.6051702 | matches |
 | `fn-mod` | What does mod give for negative, fractional and zero arguments? | `mod(-7,3)`, `mod(7,-3)`, `mod(-7,-3)`, `mod(7.5,2)`, `mod(-7.5,2)`, `mod(5,2.5)`, `mod(1,0)` | v1=2 v2=1 v3=-4 v4=1.5 v5=0.5 v6=0 v7=nan | no diagnostic; computes v1=2 v2=1 v3=-4 v4=1.5 v5=0.5 v6=0 v7=nan | matches |
+| `fn-mod-more` | Does mod follow fmod plus y when the remainder is negative, for more signs and sizes? | `mod(-0.1,1)`, `mod(2.5,-1)`, `mod(-2.5,-1)`, `mod(0,-3)`, `mod(-3,3)`, `mod(123456.75,7)`, `mod(-123456.75,7)`, `mod(0.75,-1)` | v1=0.89999998 v2=0.5 v3=-1.5 v4=0 v5=-0 v6=4.75 v7=2.25 v8=0.75 | no diagnostic; computes the same values with `r = fmod(x, y)`, plus `y` when `r < 0` | matches |
 | `fn-random` | What do ran(0) and poisson(0) give? | `ran(0)`, `poisson(0)` | 0 and 0 | no diagnostic | matches |
 | `fn-shift` | Does shift(x,0) evaluate? | `10*shift(x,0)` | 30 | ODE0055 warning, `shift` unsupported | PhaseCont choice |
 | `global-braces` | Does global 1 {t-0.5} {x=5} work like the form without braces? | `global 1 {t-0.5} {x=5}`, `aux v=x` | v@2=5 | no diagnostic | matches |
