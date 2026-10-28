@@ -1,0 +1,6 @@
+# Right side with abs and heav, so the model is not smooth.
+par a=0.8
+x'=y
+y'=-a*x-abs(y)+0.1*heav(x)
+init x=0.4,y=0.3
+done

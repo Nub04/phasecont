@@ -6,7 +6,8 @@
 
 use std::fmt::Write as _;
 
-use pc_ode::{Diagnostic, Loaded, Severity, SourceMap, Span};
+use pc_ir::{IrError, IrErrorKind};
+use pc_ode::{DUMMY_SPAN, Diagnostic, Loaded, Severity, SourceMap, Span};
 
 use crate::summary::Summary;
 
@@ -124,6 +125,51 @@ fn diagnostic(out: &mut String, map: &SourceMap, d: &Diagnostic) {
     for (span, message) in &d.notes {
         let _ = writeln!(out, "  note: {}: {}", at(map, *span), plain(message));
     }
+}
+
+/// The diagnostics of a load, as `render` prints them, without the summary.
+pub fn diagnostics(map: &SourceMap, loaded: &Loaded) -> String {
+    let mut out = String::new();
+    for d in &loaded.diagnostics {
+        diagnostic(&mut out, map, d);
+    }
+    out
+}
+
+fn ir_kind(kind: IrErrorKind) -> &'static str {
+    match kind {
+        IrErrorKind::NoEquations => "no-equations",
+        IrErrorKind::SimulationOnly => "simulation-only",
+        IrErrorKind::Delay => "delay",
+        IrErrorKind::Unsupported => "unsupported",
+        IrErrorKind::BadTable => "bad-table",
+        IrErrorKind::TooLarge => "too-large",
+    }
+}
+
+/// Lowering errors in the layout of `diagnostic`. An error with the dummy span
+/// (it belongs to the whole model) is named by `shown`, the file as given.
+pub fn ir_errors(map: &SourceMap, shown: &str, errors: &[IrError]) -> String {
+    let mut out = String::new();
+    for e in errors {
+        let head = if e.span == DUMMY_SPAN {
+            plain(shown)
+        } else {
+            at(map, e.span)
+        };
+        let _ = writeln!(
+            out,
+            "{head}: error[ir:{}]: {}",
+            ir_kind(e.kind),
+            plain(&e.message)
+        );
+        if e.span != DUMMY_SPAN
+            && let Some(s) = snippet(map, e.span)
+        {
+            out.push_str(&s);
+        }
+    }
+    out
 }
 
 /// The whole text report: diagnostics, a blank line, the summary.

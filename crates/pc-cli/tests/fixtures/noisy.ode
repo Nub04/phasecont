@@ -1,0 +1,4 @@
+# Simulation only: ran() has no derivative.
+x'=-x+0.1*ran(1)
+init x=1
+done

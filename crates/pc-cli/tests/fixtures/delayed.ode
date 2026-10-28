@@ -1,0 +1,5 @@
+# A delay call: the IR refuses it.
+par tau=1
+x'=-delay(x,tau)
+init x=1
+done

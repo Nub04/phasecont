@@ -1,6 +1,7 @@
 //! Headless runner: parse models, run session JSON files, run benchmarks.
 
 mod args;
+mod ircmd;
 mod json;
 mod summary;
 mod text;
@@ -10,14 +11,18 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use args::{Command, HELP, PARSE_HELP, USAGE, parse_args};
-use pc_ode::{FsLoader, Severity, SourceMap, load};
+use pc_ode::{FsLoader, Loaded, Severity, SourceMap, load};
 
 fn main() -> ExitCode {
     match parse_args(std::env::args_os().skip(1)) {
         Ok(Command::Help) => out(HELP, 0),
         Ok(Command::ParseHelp) => out(PARSE_HELP, 0),
+        Ok(Command::ToolHelp(text)) => out(text, 0),
         Ok(Command::Version) => out(concat!("pc-cli ", env!("CARGO_PKG_VERSION"), "\n"), 0),
         Ok(Command::Parse { file, json }) => parse(&file, json),
+        Ok(Command::Ir { file }) => ircmd::ir(&file),
+        Ok(Command::CheckDerivs { file, points, seed }) => ircmd::check_derivs(&file, points, seed),
+        Ok(Command::EmitC { file, out }) => ircmd::emit_c(&file, out.as_deref()),
         Err(e) => {
             eprintln!("pc-cli: {}", e.0);
             eprintln!("{USAGE}");
@@ -42,8 +47,9 @@ fn out(text: &str, code: u8) -> ExitCode {
     }
 }
 
-fn parse(file: &Path, json: bool) -> ExitCode {
-    let shown = file.to_string_lossy();
+/// Reads and loads `file` and its includes. An unreadable file prints a
+/// message on stderr and gives exit code 1 as the error.
+fn load_file(file: &Path) -> Result<(SourceMap, Loaded), ExitCode> {
     let mut map = SourceMap::new();
     let mut loader = FsLoader::new();
     // One read path for the top file and its includes: strict UTF-8, so
@@ -52,10 +58,19 @@ fn parse(file: &Path, json: bool) -> ExitCode {
         Ok(id) => id,
         Err(e) => {
             eprintln!("pc-cli: cannot read {e}");
-            return ExitCode::from(1);
+            return Err(ExitCode::from(1));
         }
     };
     let loaded = load(top, &mut map, &mut loader);
+    Ok((map, loaded))
+}
+
+fn parse(file: &Path, json: bool) -> ExitCode {
+    let shown = file.to_string_lossy();
+    let (map, loaded) = match load_file(file) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
     let report = if json {
         json::render(&shown, &map, &loaded)
     } else {

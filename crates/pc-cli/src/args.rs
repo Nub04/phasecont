@@ -6,6 +6,11 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+/// Random points per entry when `--points` is not given.
+pub const DEFAULT_POINTS: usize = 20;
+/// Seed when `--seed` is not given.
+pub const DEFAULT_SEED: u64 = 1;
+
 /// What the command line asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -13,10 +18,22 @@ pub enum Command {
     Help,
     /// Print the help for `parse` to stdout.
     ParseHelp,
+    /// Print the help for `ir`, `check-derivs` or `emit-c` to stdout.
+    ToolHelp(&'static str),
     /// Print `pc-cli <version>`.
     Version,
     /// Parse one file.
     Parse { file: PathBuf, json: bool },
+    /// Print the shape and the DAG sizes of one model.
+    Ir { file: PathBuf },
+    /// Check the derivative entries of one model.
+    CheckDerivs {
+        file: PathBuf,
+        points: usize,
+        seed: u64,
+    },
+    /// Write C code for F, JacU and JacP.
+    EmitC { file: PathBuf, out: Option<PathBuf> },
 }
 
 /// Why the command line is not valid. The text is a short usage line for
@@ -24,19 +41,27 @@ pub enum Command {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsageError(pub String);
 
-pub const USAGE: &str =
-    "usage: pc-cli parse [--json] [--] <file.ode> | pc-cli --help | pc-cli --version";
+pub const USAGE: &str = "usage: pc-cli parse [--json] [--] <file.ode> | pc-cli ir <file.ode> | \
+pc-cli check-derivs [--points N] [--seed S] <file.ode> | pc-cli emit-c [-o out.c] <file.ode> | \
+pc-cli --help | pc-cli --version";
 
 pub const HELP: &str = "\
 pc-cli: headless runner for PhaseCont
 
 usage:
   pc-cli parse <file.ode> [--json]
+  pc-cli ir <file.ode>
+  pc-cli check-derivs <file.ode> [--points N] [--seed S]
+  pc-cli emit-c <file.ode> [-o out.c]
   pc-cli --help
   pc-cli --version
 
 commands:
-  parse    read an XPPAUT .ode file and report its diagnostics and a summary
+  parse         read an XPPAUT .ode file and report its diagnostics and a summary
+  ir            print the size of the model and of each derivative entry
+  check-derivs  compare the derivative entries of the DAG, the JIT and the
+                f64 fallback, and with finite differences
+  emit-c        write C code for F, JacU and JacP
 ";
 
 pub const PARSE_HELP: &str = "\
@@ -56,6 +81,59 @@ order mark before the span can shift the caret on screen.
 exit codes: 0 no errors, 1 errors (or the file cannot be read), 2 usage error
 ";
 
+pub const IR_HELP: &str = "\
+usage: pc-cli ir [--] <file.ode>
+
+Loads and lowers the model, then prints n, n_p, n_aux, whether the model is
+autonomous and smooth, and the number of live DAG nodes of each entry: F, Aux,
+JacU, JacP and the directional entries of orders 2 to 5 with U slots. An entry
+that cannot be built (too large, unsupported) gets its own line with the
+reason. Diagnostics and refusals go to stderr with their source position.
+
+options:
+  --         the next argument is the file, even if it starts with `-`
+  -h, --help print this help
+
+exit codes: 0 the model was lowered, 1 the model has errors, is refused by the
+IR or cannot be read, 2 usage error
+";
+
+pub const CHECK_HELP: &str = "\
+usage: pc-cli check-derivs [--points N] [--seed S] [--] <file.ode>
+
+Evaluates every entry at N random points near the initial state and checks
+  - the DAG entries against the f64 fallback and against finite differences,
+  - the JIT entries against the DAG (bit for bit; a NaN matches any NaN),
+  - the JIT entries against the f64 fallback (SPEC section 3 tolerance).
+Prints one line per check. For a model that is not smooth, the finite
+difference lines are printed as information and do not set the exit code,
+since a kink between the two sides of a difference makes them unreliable.
+
+options:
+  --points N  random points per entry, at least 1 (default 20)
+  --seed S    seed of the point generator, an unsigned integer (default 1)
+  --          the next argument is the file, even if it starts with `-`
+  -h, --help  print this help
+
+exit codes: 0 every counted check passes, 1 a check fails, the model has
+errors, is refused by the IR or cannot be read, 2 usage error
+";
+
+pub const EMIT_HELP: &str = "\
+usage: pc-cli emit-c [-o out.c] [--] <file.ode>
+
+Writes C code with the functions F, JacU and JacP (JacP has no outputs when
+the model has no parameters) and pc_aot_init. Without -o the code goes to
+stdout. Diagnostics and refusals go to stderr.
+
+options:
+  -o FILE    write the code to FILE instead of stdout
+  --         the next argument is the file, even if it starts with `-`
+  -h, --help print this help
+
+exit codes: 0 the code was written, 1 the model has errors, is refused by the
+IR, an entry cannot be built, or a file cannot be read or written, 2 usage error
+";
 fn utf8(arg: &OsString) -> Result<&str, UsageError> {
     arg.to_str().ok_or_else(|| {
         UsageError(format!(
@@ -79,6 +157,9 @@ where
         "-h" | "--help" if args.len() == 1 => Ok(Command::Help),
         "-V" | "--version" if args.len() == 1 => Ok(Command::Version),
         "parse" => parse_command(&args[1..]),
+        "ir" => ir_command(&args[1..]),
+        "check-derivs" => check_command(&args[1..]),
+        "emit-c" => emit_command(&args[1..]),
         "-h" | "--help" | "-V" | "--version" => {
             Err(UsageError(format!("unexpected argument after {first}")))
         }
@@ -87,17 +168,66 @@ where
     }
 }
 
-fn parse_command(rest: &[OsString]) -> Result<Command, UsageError> {
-    let mut file: Option<PathBuf> = None;
-    let mut json = false;
-    let mut help = false;
+/// What one command's arguments held, before the command checks them.
+#[derive(Default)]
+struct Parts {
+    file: Option<PathBuf>,
+    json: bool,
+    help: bool,
+    points: Option<usize>,
+    seed: Option<u64>,
+    out: Option<PathBuf>,
+}
+
+/// Which flags a command accepts.
+#[derive(Clone, Copy, Default)]
+struct Accepts {
+    json: bool,
+    points_seed: bool,
+    out: bool,
+}
+
+/// The value after a flag that takes one.
+fn value<'a>(
+    flag: &str,
+    it: &mut impl Iterator<Item = &'a OsString>,
+) -> Result<&'a OsString, UsageError> {
+    it.next()
+        .ok_or_else(|| UsageError(format!("{flag} needs a value")))
+}
+
+fn number<T: std::str::FromStr>(flag: &str, arg: &OsString) -> Result<T, UsageError> {
+    let text = utf8(arg)?;
+    text.parse().map_err(|_| {
+        UsageError(format!(
+            "{flag} needs an unsigned integer, got {}",
+            arg.to_string_lossy()
+        ))
+    })
+}
+
+/// Splits the arguments of one command into its flags and its file.
+fn split(rest: &[OsString], ok: Accepts) -> Result<Parts, UsageError> {
+    let mut parts = Parts::default();
     let mut only_files = false;
-    for arg in rest {
+    let mut it = rest.iter();
+    while let Some(arg) = it.next() {
         let flag = if only_files { None } else { arg.to_str() };
         match flag {
             Some("--") => only_files = true,
-            Some("--json") => json = true,
-            Some("-h" | "--help") => help = true,
+            Some("--json") if ok.json => parts.json = true,
+            Some("-h" | "--help") => parts.help = true,
+            Some("--points") if ok.points_seed => {
+                let n: usize = number("--points", value("--points", &mut it)?)?;
+                if n == 0 {
+                    return Err(UsageError("--points must be at least 1".to_string()));
+                }
+                parts.points = Some(n);
+            }
+            Some("--seed") if ok.points_seed => {
+                parts.seed = Some(number("--seed", value("--seed", &mut it)?)?);
+            }
+            Some("-o") if ok.out => parts.out = Some(PathBuf::from(value("-o", &mut it)?)),
             Some(other) if other.starts_with('-') && other.len() > 1 => {
                 return Err(UsageError(format!("unknown option {other}")));
             }
@@ -112,22 +242,88 @@ fn parse_command(rest: &[OsString]) -> Result<Command, UsageError> {
                         arg.to_string_lossy()
                     )));
                 }
-                if file.is_some() {
+                if parts.file.is_some() {
                     return Err(UsageError(format!(
                         "unexpected extra argument {}",
                         arg.to_string_lossy()
                     )));
                 }
-                file = Some(PathBuf::from(arg));
+                parts.file = Some(PathBuf::from(arg));
             }
         }
     }
-    if help {
+    Ok(parts)
+}
+
+fn parse_command(rest: &[OsString]) -> Result<Command, UsageError> {
+    let parts = split(
+        rest,
+        Accepts {
+            json: true,
+            ..Accepts::default()
+        },
+    )?;
+    if parts.help {
         return Ok(Command::ParseHelp);
     }
-    match file {
-        Some(file) => Ok(Command::Parse { file, json }),
+    match parts.file {
+        Some(file) => Ok(Command::Parse {
+            file,
+            json: parts.json,
+        }),
         None => Err(UsageError("parse needs a file".to_string())),
+    }
+}
+
+fn ir_command(rest: &[OsString]) -> Result<Command, UsageError> {
+    let parts = split(rest, Accepts::default())?;
+    if parts.help {
+        return Ok(Command::ToolHelp(IR_HELP));
+    }
+    match parts.file {
+        Some(file) => Ok(Command::Ir { file }),
+        None => Err(UsageError("ir needs a file".to_string())),
+    }
+}
+
+fn check_command(rest: &[OsString]) -> Result<Command, UsageError> {
+    let parts = split(
+        rest,
+        Accepts {
+            points_seed: true,
+            ..Accepts::default()
+        },
+    )?;
+    if parts.help {
+        return Ok(Command::ToolHelp(CHECK_HELP));
+    }
+    match parts.file {
+        Some(file) => Ok(Command::CheckDerivs {
+            file,
+            points: parts.points.unwrap_or(DEFAULT_POINTS),
+            seed: parts.seed.unwrap_or(DEFAULT_SEED),
+        }),
+        None => Err(UsageError("check-derivs needs a file".to_string())),
+    }
+}
+
+fn emit_command(rest: &[OsString]) -> Result<Command, UsageError> {
+    let parts = split(
+        rest,
+        Accepts {
+            out: true,
+            ..Accepts::default()
+        },
+    )?;
+    if parts.help {
+        return Ok(Command::ToolHelp(EMIT_HELP));
+    }
+    match parts.file {
+        Some(file) => Ok(Command::EmitC {
+            file,
+            out: parts.out,
+        }),
+        None => Err(UsageError("emit-c needs a file".to_string())),
     }
 }
 
@@ -172,6 +368,76 @@ mod tests {
         assert_eq!(p(&["-V"]), Ok(Command::Version));
         assert_eq!(p(&["parse", "--help"]), Ok(Command::ParseHelp));
         assert_eq!(p(&["parse", "x.ode", "-h"]), Ok(Command::ParseHelp));
+    }
+
+    #[test]
+    fn ir_check_and_emit_commands() {
+        assert_eq!(
+            p(&["ir", "a.ode"]),
+            Ok(Command::Ir {
+                file: "a.ode".into()
+            })
+        );
+        assert_eq!(
+            p(&["check-derivs", "a.ode"]),
+            Ok(Command::CheckDerivs {
+                file: "a.ode".into(),
+                points: DEFAULT_POINTS,
+                seed: DEFAULT_SEED
+            })
+        );
+        assert_eq!(
+            p(&["check-derivs", "--seed", "7", "a.ode", "--points", "3"]),
+            Ok(Command::CheckDerivs {
+                file: "a.ode".into(),
+                points: 3,
+                seed: 7
+            })
+        );
+        assert_eq!(
+            p(&["emit-c", "a.ode"]),
+            Ok(Command::EmitC {
+                file: "a.ode".into(),
+                out: None
+            })
+        );
+        assert_eq!(
+            p(&["emit-c", "-o", "o.c", "a.ode"]),
+            Ok(Command::EmitC {
+                file: "a.ode".into(),
+                out: Some("o.c".into())
+            })
+        );
+        assert_eq!(p(&["ir", "--help"]), Ok(Command::ToolHelp(IR_HELP)));
+        assert_eq!(
+            p(&["check-derivs", "x.ode", "-h"]),
+            Ok(Command::ToolHelp(CHECK_HELP))
+        );
+        assert_eq!(p(&["emit-c", "-h"]), Ok(Command::ToolHelp(EMIT_HELP)));
+    }
+
+    #[test]
+    fn bad_flags_and_values_are_usage_errors() {
+        for args in [
+            &["ir"][..],
+            &["ir", "a.ode", "--json"],
+            &["ir", "a.ode", "b.ode"],
+            &["check-derivs"],
+            &["check-derivs", "a.ode", "--points"],
+            &["check-derivs", "a.ode", "--points", "0"],
+            &["check-derivs", "a.ode", "--points", "-3"],
+            &["check-derivs", "a.ode", "--points", "x"],
+            &["check-derivs", "a.ode", "--points", "1.5"],
+            &["check-derivs", "a.ode", "--seed", "-1"],
+            &["check-derivs", "a.ode", "--seed"],
+            &["check-derivs", "a.ode", "-o", "x.c"],
+            &["emit-c"],
+            &["emit-c", "a.ode", "-o"],
+            &["emit-c", "a.ode", "--points", "3"],
+            &["parse", "a.ode", "--points", "3"],
+        ] {
+            assert!(p(args).is_err(), "{args:?}");
+        }
     }
 
     #[test]

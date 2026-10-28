@@ -1,0 +1,7 @@
+# Van der Pol oscillator with one parameter and one aux quantity.
+par mu=1.5
+x'=y
+y'=mu*(1-x^2)*y-x
+aux energy=x*x+y*y
+init x=0.5,y=0.2
+done

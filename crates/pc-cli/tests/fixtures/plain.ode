@@ -1,0 +1,4 @@
+# One variable and no parameters.
+x'=-x+x^2
+init x=0.3
+done
