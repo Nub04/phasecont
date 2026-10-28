@@ -2,7 +2,7 @@
 
 ## Phase
 
-P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching; SPEC section 14) is implemented on branch `phase3-pc-engine` and waits for the review of the whole branch and for acceptance; its plan was approved on 2026-10-28. P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
+P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching; SPEC section 14) is implemented on branch `phase3-pc-engine` and reviewed, and waits for acceptance; its plan was approved on 2026-10-28. P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
 
 ## Done
 
@@ -63,7 +63,8 @@ P3 (the numbers below were measured on 2026-10-28 at `fb14bdb` plus the SPEC and
 - `besselj` and `bessely` with an order of magnitude above 10000 give NaN in every evaluator, as `language.md` states. This bounds the time of one evaluation, which a cancel cannot interrupt.
 - The fold coefficient a is computed with q oriented so that p^T F_α > 0, so its sign follows the normal form of Kuznetsov's Theorem 3.1; SPEC section 6 states it and the stored normalization string is `|q|=1, p'q=1, p'F_alpha>0`.
 - ψ_H is the sign of the plain product times its smallest scaled factor (SPEC section 5), so it does not underflow on models with many slow modes (`a451941`). The zero search along a step uses the plain product divided by its modulus at the step start, so a tiny, nearly constant factor does not make the search stop on the wrong pair (`d7cc8fb`).
-- 738 tests pass in `cargo test`: 372 in `pc-ode`, 139 in `pc-ir`, 26 in `pc-jit`, 8 in `pc-codegen`, 16 in `pc-linalg`, 98 in `pc-engine` and 79 in `pc-cli`.
+- The review of the whole branch (2026-10-28) found eight minor defects. One fix round (`12fd0e1` to `9894938`) fixed them together with the minor items parked during the task reviews. Among them: the bound landing now uses `tol_refine` in both of its checks, options with an infinite step size are refused, a refined point that moved more than twice the step from its secant estimate is not used, a BP whose state Jacobian does not have the expected rank is refused for n = 1 too, switch names ignore case, and `EngineError::Panicked`, which nothing built, is gone.
+- 754 tests pass in `cargo test`: 372 in `pc-ode`, 139 in `pc-ir`, 26 in `pc-jit`, 8 in `pc-codegen`, 16 in `pc-linalg`, 113 in `pc-engine` and 80 in `pc-cli`.
 - `cargo test -p pc-engine --release --test acceptance -- --nocapture` runs SPEC section 9 tests 1, 2, 5 and 6 with the JIT and with `Fallback`, and both give the same numbers:
   - Test 1: one LP, at x = 0 and α = 1.7e-41, with a = 1 exactly.
   - Test 2: H at α = 0 with ω = 1, and l1 = 2c for c = 1 and c = -1 with an error of 4.4e-16. No NSA.
@@ -74,7 +75,7 @@ P3 (the numbers below were measured on 2026-10-28 at `fb14bdb` plus the SPEC and
 
 ## In progress
 
-- P3: all 14 plan tasks are done. The review of the whole branch, its fix round and the owner's acceptance remain.
+- P3: all 14 plan tasks, the review of the whole branch and its fix round are done. The owner's acceptance remains.
 
 ## Next
 
