@@ -1,5 +1,8 @@
 # SPEC section 4: the JIT on macOS arm64. The probe runs once without signing changes
 # and then under the hardened runtime with each entitlement that allows JIT code.
+# GitHub's macOS runners have SIP disabled and do not enforce the hardened runtime
+# (the dyld column of the summary shows this), so the matrix only shows that the
+# JIT runs. The MATLAB job checks how MATLAB itself is signed.
 name: macos-jit
 
 on:
@@ -19,6 +22,8 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --no-fail-fast
+      - name: Show the compiler the AOT test used
+        run: cargo test -p pc-codegen --test aot -- --nocapture 2>&1 | grep -iE "gcc|clang|skip|flags" || true
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
@@ -69,7 +74,6 @@ jobs:
 
   matlab-entitlements:
     runs-on: macos-latest
-    continue-on-error: true
     steps:
       - uses: matlab-actions/setup-matlab@v2
         with:
@@ -85,3 +89,24 @@ jobs:
             ents=$(codesign -d --entitlements - "$f" 2>/dev/null || true)
             echo "entitlements: ${ents:-(none)}"
           done
+      - name: Fail if MATLAB adopts the hardened runtime without an entitlement for JIT code
+        run: |
+          # cranelift-jit maps pages read-write and then makes them executable, without
+          # MAP_JIT. A hardened MATLAB needs allow-unsigned-executable-memory or
+          # disable-executable-page-protection for that; allow-jit alone needs MAP_JIT.
+          root=$(dirname "$(dirname "$(realpath "$(command -v matlab)")")")
+          f="$root/bin/maca64/MATLAB"
+          flags=$(codesign -dv "$f" 2>&1 | grep -o 'flags=[^ ]*')
+          ents=$(codesign -d --entitlements - "$f" 2>/dev/null || true)
+          echo "$f: $flags"
+          case "$flags" in
+            *runtime*)
+              if echo "$ents" | grep -qE 'allow-unsigned-executable-memory|disable-executable-page-protection'; then
+                echo "hardened, with an entitlement that allows the JIT"
+              else
+                echo "::error::MATLAB uses the hardened runtime without an entitlement that allows cranelift-jit's memory"
+                exit 1
+              fi
+              ;;
+            *) echo "not hardened: cranelift-jit's default memory provider works" ;;
+          esac
