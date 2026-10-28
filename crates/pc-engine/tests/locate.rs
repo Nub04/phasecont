@@ -168,3 +168,21 @@ fn a_zero_on_the_step_that_lands_on_a_bound_is_located() {
         assert!((b.points[1].alpha - 0.03).abs() < 1e-10);
     }
 }
+
+#[test]
+fn hopf_with_many_slow_modes_is_found() {
+    // Before psi_H was rescaled its value underflowed to 0 on this model and the H was
+    // skipped without a warning.
+    for which in BOTH {
+        let setup = EpSetup::new(0, vec![-0.5], vec![0.0; 30]);
+        let opts = Options {
+            bounds: (-0.5, 0.5),
+            ..Options::default()
+        };
+        let b = run("hopf_slow30", which, &setup, &opts);
+        assert_eq!(labels(&b), ["H"], "{which:?}");
+        assert!(b.specials[0].point.alpha.abs() < 1e-8, "{which:?}");
+        assert!(b.warnings.is_empty(), "{which:?}: {:?}", b.warnings);
+        assert!(b.points.iter().all(|p| p.tests[2] != 0.0), "{which:?}");
+    }
+}

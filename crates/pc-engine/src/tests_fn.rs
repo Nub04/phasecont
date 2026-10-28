@@ -3,14 +3,18 @@
 //! At every accepted point the engine stores `[psi_LP, psi_BP, psi_H]`. `psi_LP` is the
 //! parameter component of the unit tangent and `psi_BP` is the determinant of the bordered
 //! tangent matrix; both come from the tangent computation (the caller passes them in).
-//! `psi_H` is computed here from the eigenvalues of A = F_u as
-//! `Re prod_{i<j} (l_i + l_j) / max(1, |l_i| + |l_j|)`. The product over all pairs of a real
-//! matrix is real, so the real part only drops rounding noise. The divisors are positive
-//! and continuous in A, so `psi_H` has the sign and the zeros of the plain product
-//! (Kuznetsov, Elements of Applied Bifurcation Theory, 3rd ed., Sec. 10.2, where Hopf
-//! points are the zeros of the bialternate product 2A (.) I). Each factor has modulus at
-//! most 1, so the product cannot overflow; for very many factors of small modulus it can
-//! underflow to 0.
+//! `psi_H` is computed here from the eigenvalues of A = F_u. Hopf points are the zeros of
+//! the bialternate product 2A (.) I, whose determinant is `prod_{i<j} (l_i + l_j)`
+//! (Kuznetsov, Elements of Applied Bifurcation Theory, 3rd ed., Sec. 10.2). The rescaling
+//! below is our own choice. With `s_ij = (l_i + l_j) / max(1, |l_i| + |l_j|)` and `s_k`
+//! the factor of smallest modulus, `psi_H = Re(s_k prod_{ij != k} s_ij / |s_ij|)`, which
+//! is the plain product divided by the positive number
+//! `prod max(1, |l_i| + |l_j|) * prod_{ij != k} |s_ij|`. That divisor is continuous in A
+//! (at a tie for the smallest modulus both choices give the same value), so `psi_H` has
+//! the sign and the zeros of the plain product. Its modulus is `|s_k| <= 1`, so it
+//! neither overflows nor underflows to 0 away from a zero, however many small factors
+//! there are. The product over all pairs of a real matrix is real, so the real part only
+//! drops rounding noise.
 
 use crate::branch::Options;
 use crate::error::EngineError;
@@ -28,13 +32,33 @@ pub(crate) const H: usize = 2;
 /// `psi_H` of a list of eigenvalues given as (re, im). With fewer than two eigenvalues
 /// there are no pairs and the result is 1. NaN in the input gives NaN.
 pub(crate) fn psi_h(eigs: &[(f64, f64)]) -> f64 {
-    let (mut pr, mut pi) = (1.0_f64, 0.0_f64);
+    if eigs.iter().any(|&(r, i)| r.is_nan() || i.is_nan()) {
+        return f64::NAN;
+    }
+    let mut s = Vec::with_capacity(eigs.len() * eigs.len().saturating_sub(1) / 2);
     for (i, &(ar, ai)) in eigs.iter().enumerate() {
         for &(br, bi) in &eigs[i + 1..] {
             let d = 1.0_f64.max(ar.hypot(ai) + br.hypot(bi));
-            let (sr, si) = ((ar + br) / d, (ai + bi) / d);
-            (pr, pi) = (pr * sr - pi * si, pr * si + pi * sr);
+            s.push(((ar + br) / d, (ai + bi) / d));
         }
+    }
+    // The smallest factor keeps its modulus; every other factor contributes its phase.
+    let Some(k) =
+        (0..s.len()).min_by(|&a, &b| s[a].0.hypot(s[a].1).total_cmp(&s[b].0.hypot(s[b].1)))
+    else {
+        return 1.0;
+    };
+    let (mut pr, mut pi) = s[k];
+    for (j, &(sr, si)) in s.iter().enumerate() {
+        if j == k {
+            continue;
+        }
+        let m = sr.hypot(si);
+        if m == 0.0 {
+            return 0.0;
+        }
+        let (ur, ui) = (sr / m, si / m);
+        (pr, pi) = (pr * ur - pi * ui, pr * ui + pi * ur);
     }
     pr
 }
@@ -193,22 +217,54 @@ mod tests {
         for _ in 0..20 {
             let a: Vec<f64> = (0..36).map(|_| 3.0 * g.next()).collect();
             let e = eigenvalues(&a, 6).unwrap();
-            let (mut pr, mut pi, mut den) = (1.0_f64, 0.0_f64, 1.0_f64);
+            let (mut pr, mut pi, mut smin) = (1.0_f64, 0.0_f64, f64::INFINITY);
             for i in 0..6 {
                 for j in i + 1..6 {
                     let (sr, si) = (e[i].0 + e[j].0, e[i].1 + e[j].1);
                     (pr, pi) = (pr * sr - pi * si, pr * si + pi * sr);
-                    den *= 1.0_f64.max(e[i].0.hypot(e[i].1) + e[j].0.hypot(e[j].1));
+                    let d = 1.0_f64.max(e[i].0.hypot(e[i].1) + e[j].0.hypot(e[j].1));
+                    smin = smin.min(sr.hypot(si) / d);
                 }
             }
             let scaled = psi_h(&e);
-            assert_eq!(scaled.signum(), pr.signum(), "{scaled} {pr}");
+            assert!(scaled * pr > 0.0, "{scaled} {pr}");
+            // The modulus is that of the smallest scaled factor.
             assert!(
-                (scaled - pr / den).abs() <= 1e-10 * (pr / den).abs() + 1e-300,
-                "{scaled} {}",
-                pr / den
+                (scaled.abs() - smin).abs() <= 1e-10 * smin,
+                "{scaled} {smin}"
             );
         }
+    }
+
+    #[test]
+    fn many_small_factors_do_not_underflow() {
+        // A pair mu +- i and 38 slow real modes near -1e-3: 703 slow pairs whose plain
+        // scaled product is far below the smallest f64.
+        for mu in [-1e-3, -1e-9, 1e-9, 1e-3] {
+            let mut e = vec![(mu, 1.0), (mu, -1.0)];
+            e.extend((0..38).map(|k| (-1e-3 * (1.0 + k as f64 / 100.0), 0.0)));
+            let v = psi_h(&e);
+            // The smallest factor is 2 mu / max(1, 2 |mu + i|). The 703 negative slow
+            // factors flip the sign and the cross factors pair up to a positive phase.
+            let want = -mu / (mu * mu + 1.0).sqrt();
+            assert!((v - want).abs() <= 1e-8 * want.abs(), "mu {mu}: {v}");
+            if mu < 0.0 {
+                assert!(v > 0.0, "mu {mu}: {v}");
+            } else {
+                assert!(v < 0.0, "mu {mu}: {v}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_tie_for_the_smallest_factor_gives_one_value() {
+        // Two conjugate pairs with the same real part: two factors of equal modulus.
+        let e = [(0.1, 1.0), (0.1, -1.0), (0.1, 2.0), (0.1, -2.0)];
+        let v = psi_h(&e);
+        let mut r = e;
+        r.reverse();
+        assert_eq!(v, psi_h(&r));
+        assert!(v > 0.0);
     }
 
     #[test]
