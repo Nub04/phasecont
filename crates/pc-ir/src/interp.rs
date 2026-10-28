@@ -527,12 +527,15 @@ fn erf_slope<T: Scalar>(x: T) -> T {
     T::from_f64(std::f64::consts::FRAC_2_SQRT_PI) * (-(x * x)).exp()
 }
 
+/// `trunc(n) - 1` as a constant: DLMF 10.6.1 shifts the order `k = trunc(n)` that
+/// `besselj` and `bessely` use. The order has no tangent.
 fn n_minus<T: Scalar>(n: T) -> T {
-    n - T::from_f64(1.0)
+    T::from_f64(n.value().trunc() - 1.0)
 }
 
+/// `trunc(n) + 1` as a constant, see [`n_minus`].
 fn n_plus<T: Scalar>(n: T) -> T {
-    n + T::from_f64(1.0)
+    T::from_f64(n.value().trunc() + 1.0)
 }
 
 /// A scalar built from nested duals by seeding directions, for directional derivatives.

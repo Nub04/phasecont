@@ -866,3 +866,54 @@ mod compiled {
         assert!(out[0] != 0.0 || out[1] != 0.0);
     }
 }
+
+#[test]
+fn bessel_derivative_with_truncated_orders_matches_eval_and_finite_differences() {
+    let src = "par a=0.5\nx'=besselj(a,x)+bessely(-1.5,x+3)+besselj(0.9,x)\ndone\n";
+    let mut ir = build_model(src);
+    let kinds = [
+        EntryKind::F,
+        EntryKind::JacU,
+        EntryKind::Dir(vec![Slot::U, Slot::U]),
+    ];
+    let es: Vec<Entry> = kinds.iter().map(|k| ir.entry(k).expect("entry")).collect();
+    let pairs: Vec<(EntryKind, &Entry)> = kinds.iter().cloned().zip(es.iter()).collect();
+    let jit = compile(&pairs, &ir.dag).expect("compile");
+    let f: PlainFn = jit.plain(&EntryKind::F).expect("F");
+    let ju: PlainFn = jit.plain(&EntryKind::JacU).expect("JacU");
+    let d2: DirFn = jit.dir(&kinds[2]).expect("Dir");
+    for a in [0.5, -0.5, 0.9, -0.9, 1.5, -1.5, 2.0, 0.0] {
+        for x in [0.7, 1.3, 2.9] {
+            let p = [a, 0.0];
+            let (mut got, mut want) = ([0.0], [0.0]);
+            // SAFETY: x has 1 value, p has 2 and out has 1.
+            unsafe { ju([x].as_ptr(), p.as_ptr(), got.as_mut_ptr()) };
+            eval(&ir.dag, &es[1].outputs, &[x], &p, &[], &mut want);
+            assert!(
+                same(got[0], want[0]),
+                "JacU a={a} x={x}: {got:?} vs {want:?}"
+            );
+            let h = 1e-5;
+            let at = |x: f64| {
+                let mut o = [0.0];
+                // SAFETY: as above.
+                unsafe { f([x].as_ptr(), p.as_ptr(), o.as_mut_ptr()) };
+                o[0]
+            };
+            let fd = (at(x + h) - at(x - h)) / (2.0 * h);
+            assert!(
+                (got[0] - fd).abs() <= 1e-7 * fd.abs().max(1.0),
+                "JacU a={a} x={x}: jit {} vs fd {fd}",
+                got[0]
+            );
+            let v = [1.0, 1.0];
+            // SAFETY: v has the packed length of two U slots.
+            unsafe { d2([x].as_ptr(), p.as_ptr(), v.as_ptr(), got.as_mut_ptr()) };
+            eval(&ir.dag, &es[2].outputs, &[x], &p, &v, &mut want);
+            assert!(
+                same(got[0], want[0]),
+                "Dir a={a} x={x}: {got:?} vs {want:?}"
+            );
+        }
+    }
+}

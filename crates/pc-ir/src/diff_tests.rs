@@ -336,3 +336,97 @@ fn deep_chain_does_not_recurse() {
     let r = d(&mut dag, &mut memo, n, Wrt::U(0));
     assert!(val(&dag, r, &[0.3], &[0.0]).is_finite());
 }
+
+// ---- Bessel x-derivative with the order truncated toward zero (DLMF 10.6.1) ----
+
+const BESSEL_ORDERS: [f64; 8] = [0.5, -0.5, 0.9, -0.9, 1.5, -1.5, 2.0, 0.0];
+const BESSEL_XS: [f64; 4] = [0.7, 1.3, 2.9, 5.1];
+
+/// Central difference of `fb`'s `F` entry (one state) in `x`, with the parameters `p`.
+fn fd_in_x(fb: &Fallback, x: f64, p: &[f64]) -> f64 {
+    let h = 1e-5 * x.abs().max(1.0);
+    let at = |x: f64| {
+        let mut o = [0.0];
+        fb.eval(&EntryKind::F, &[x], p, &[], &mut o);
+        o[0]
+    };
+    (at(x + h) - at(x - h)) / (2.0 * h)
+}
+
+fn assert_fd(what: &str, got: f64, want: f64) {
+    assert!(
+        (got - want).abs() <= 1e-7 * want.abs().max(1.0),
+        "{what}: {got:?} vs finite difference {want:?}"
+    );
+}
+
+#[test]
+fn bessel_x_derivative_with_a_literal_order() {
+    for name in ["besselj", "bessely"] {
+        for k in BESSEL_ORDERS {
+            let src = format!("x'={name}({k:?},x)\ndone\n");
+            let (fb, mut ir) = setup(&src);
+            let e = ir.entry(&EntryKind::JacU).unwrap();
+            for x in BESSEL_XS {
+                let want = fd_in_x(&fb, x, &[0.0]);
+                let dag = run(&ir, &e.outputs, &[x], &[0.0])[0];
+                assert_fd(&format!("{name}({k}, {x}) DAG"), dag, want);
+                let mut o = [0.0];
+                fb.eval(&EntryKind::JacU, &[x], &[0.0], &[], &mut o);
+                assert_fd(&format!("{name}({k}, {x}) Fallback"), o[0], want);
+            }
+        }
+    }
+}
+
+#[test]
+fn bessel_x_derivative_with_the_order_from_a_parameter() {
+    for name in ["besselj", "bessely"] {
+        let src = format!("par a=0.5\nx'={name}(a,x)\ndone\n");
+        let (fb, mut ir) = setup(&src);
+        let e = ir.entry(&EntryKind::JacU).unwrap();
+        for k in BESSEL_ORDERS {
+            let p = [k, 0.0];
+            for x in BESSEL_XS {
+                let want = fd_in_x(&fb, x, &p);
+                let dag = run(&ir, &e.outputs, &[x], &p)[0];
+                assert_fd(&format!("{name}(a={k}, {x}) DAG"), dag, want);
+                let mut o = [0.0];
+                fb.eval(&EntryKind::JacU, &[x], &p, &[], &mut o);
+                assert_fd(&format!("{name}(a={k}, {x}) Fallback"), o[0], want);
+            }
+        }
+    }
+}
+
+#[test]
+fn bessel_order_derivative_stays_zero_and_bad_orders_stay_nan() {
+    // d/da of besselj(a, x) is 0 for every a (the order is truncated).
+    let (_fb, mut ir) = setup("par a=0.5\nx'=besselj(a,x)\ndone\n");
+    let e = ir.entry(&EntryKind::JacP).unwrap();
+    assert_eq!(run(&ir, &e.outputs, &[1.3], &[0.5, 0.0]), [0.0]);
+    let e = ir.entry(&EntryKind::JacU).unwrap();
+    for bad in [f64::NAN, f64::INFINITY, 3e9, -3e9] {
+        assert!(
+            run(&ir, &e.outputs, &[1.3], &[bad, 0.0])[0].is_nan(),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn bessel_second_derivative_with_a_fractional_order() {
+    // besselj(0.5, x) is J_0(x), and J_0'' = -J_0 - J_0'/x = -J_0 + J_1/x.
+    let (_fb, mut ir) = setup("x'=besselj(0.5,x)\ndone\n");
+    let e = ir
+        .entry(&EntryKind::Dir(vec![
+            crate::entry::Slot::U,
+            crate::entry::Slot::U,
+        ]))
+        .unwrap();
+    let x = 1.3_f64;
+    let mut out = [0.0];
+    eval(&ir.dag, &e.outputs, &[x], &[0.0], &[1.0, 1.0], &mut out);
+    let want = -libm::j0(x) + libm::j1(x) / x;
+    assert!((out[0] - want).abs() < 1e-13, "{} vs {want}", out[0]);
+}

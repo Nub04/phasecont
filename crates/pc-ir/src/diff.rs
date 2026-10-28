@@ -293,10 +293,13 @@ fn call2_rule(
             });
             dag.add(da, dy)
         }
+        // DLMF 10.6.1 for the order k = trunc(a) that `besselj` and `bessely` use. The order
+        // has no tangent, since a truncated order is piecewise constant.
         Fn2::BesselJ | Fn2::BesselY => term(dag, db, |g| {
             let one = g.konst(1.0);
-            let nm = g.sub(a, one);
-            let np = g.add(a, one);
+            let k = trunc(g, a);
+            let nm = g.sub(k, one);
+            let np = g.add(k, one);
             let jm = g.call2(f, nm, b);
             let jp = g.call2(f, np, b);
             let diff = g.sub(jm, jp);
@@ -325,6 +328,16 @@ fn call2_rule(
             dag.select(c, da, db)
         }
     }
+}
+
+/// `a` truncated toward zero: `floor(a)` for `a >= 0`, else `ceil(a)` (so NaN stays NaN).
+/// A constant folds when the node is built.
+fn trunc(g: &mut Dag, a: NodeId) -> NodeId {
+    let zero = g.konst(0.0);
+    let nonneg = g.cmp(Cmp::Ge, a, zero);
+    let down = g.call1(Fn1::Floor, a);
+    let up = g.call1(Fn1::Ceil, a);
+    g.select(nonneg, down, up)
 }
 
 /// `y*y + x*x`, the denominator of the `atan2` partials.
