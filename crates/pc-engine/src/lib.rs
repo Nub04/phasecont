@@ -12,6 +12,7 @@ mod locate;
 mod model;
 mod palc;
 mod problem;
+mod refine;
 mod tests_fn;
 
 pub use branch::{Branch, Extras, Options, Point, SpecialPoint, StopReason};
@@ -20,4 +21,8 @@ pub use error::EngineError;
 pub use model::{Evaluator, ModelEval, build};
 pub use palc::continue_branch;
 pub use problem::Problem;
+pub use refine::{
+    BpSystem, DefiningSystem, HopfSystem, LpSystem, MAX_REFINE_ITERS, NewtonResult, NewtonStep,
+    Refined, newton, refine_special, refine_specials,
+};
 pub use tests_fn::{HopfZero, classify_h_zero};

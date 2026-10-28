@@ -5,6 +5,7 @@ use crate::error::EngineError;
 use crate::model::ModelEval;
 use crate::palc::run_branch;
 use crate::problem::Problem;
+use crate::refine::refine_specials;
 use pc_ir::EntryKind;
 use pc_linalg::Lu;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -164,7 +165,9 @@ pub fn equilibrium(
     })
 }
 
-/// Continues the equilibrium found from `setup.u0` along parameter `setup.free`.
+/// Continues the equilibrium found from `setup.u0` along parameter `setup.free`. Each LP,
+/// BP and H found on the way is refined with its defining system afterwards (see
+/// `refine_specials`).
 pub fn continue_ep(
     model: &mut dyn ModelEval,
     setup: &EpSetup,
@@ -181,12 +184,15 @@ pub fn continue_ep(
     let mut x = u;
     x.push(setup.params[setup.free]);
     let mut problem = EpProblem::new(model, &start)?;
-    run_branch(
+    let mut branch = run_branch(
         &mut problem,
         &x,
         opts,
         setup.start_is_special,
         cancel,
         on_point,
-    )
+    )?;
+    drop(problem);
+    refine_specials(model, &setup.params, setup.free, opts, cancel, &mut branch);
+    Ok(branch)
 }

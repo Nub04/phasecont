@@ -37,7 +37,7 @@ fn labels(b: &Branch) -> Vec<&str> {
 }
 
 #[test]
-fn fold_lp_is_located_before_refinement() {
+fn fold_lp_is_located_and_refined() {
     for which in BOTH {
         let setup = EpSetup::new(0, vec![-1.0], vec![-1.0]);
         let opts = Options {
@@ -53,7 +53,7 @@ fn fold_lp_is_located_before_refinement() {
             s.point.alpha
         );
         assert!(s.point.u[0].abs() < 1e-3);
-        assert!(!s.extras.refined);
+        assert!(s.extras.refined);
         // The sign change is at the fold, not at the start.
         assert!(s.index >= 2, "index {}", s.index);
         assert!(b.points[s.index - 1].tests[0] > 0.0 && b.points[s.index].tests[0] < 0.0);
