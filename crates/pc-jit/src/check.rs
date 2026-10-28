@@ -42,15 +42,30 @@ pub fn jit_kinds(ir: &IrModel) -> Vec<(EntryKind, String)> {
     kinds
 }
 
+/// Which comparison a [`Row`] reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowKind {
+    /// The JIT against the DAG evaluator, bit for bit.
+    JitVsDag,
+    /// The JIT against the f64 fallback, within the SPEC section 3 tolerance.
+    JitVsFallback,
+}
+
 /// One printed check line.
 pub struct Row {
+    /// Which comparison this line is.
+    pub kind: RowKind,
+    /// Whether every value passed.
     pub pass: bool,
+    /// The line to print: label, verdict and detail.
     pub text: String,
 }
 
-pub fn row(label: &str, pass: bool, detail: &str) -> Row {
+/// Builds a row of the given kind: the label, a `pass` or `FAIL` verdict and the detail.
+pub fn row(kind: RowKind, label: &str, pass: bool, detail: &str) -> Row {
     let verdict = if pass { "pass" } else { "FAIL" };
     Row {
+        kind,
         pass,
         text: format!("{label:<36} {verdict}  {detail}"),
     }
@@ -58,22 +73,31 @@ pub fn row(label: &str, pass: bool, detail: &str) -> Row {
 
 /// Same bits, except that a NaN matches any NaN: IEEE leaves the sign of a NaN
 /// unspecified.
-pub fn same_bits(a: f64, b: f64) -> bool {
+pub(crate) fn same_bits(a: f64, b: f64) -> bool {
     a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan())
 }
 
 /// The mismatches of one comparison: how many values differ and where the
 /// first one was.
 #[derive(Default)]
-pub struct Mismatch {
+pub(crate) struct Mismatch {
+    /// How many values differ.
     pub bad: usize,
+    /// Where the first one was, as a printable line (empty when none differ).
     pub first: String,
 }
 
 impl Mismatch {
     /// Records the output `i` of the JIT, `jit`, against `other` (named
     /// `name`) at the point `x`, `p`.
-    pub fn note(&mut self, i: usize, (x, p): (&[f64], &[f64]), jit: f64, other: f64, name: &str) {
+    pub(crate) fn note(
+        &mut self,
+        i: usize,
+        (x, p): (&[f64], &[f64]),
+        jit: f64,
+        other: f64,
+        name: &str,
+    ) {
         self.bad += 1;
         if self.first.is_empty() {
             self.first = format!(
@@ -84,13 +108,14 @@ impl Mismatch {
         }
     }
 
-    pub fn row(&self, label: &str, points: usize, values: usize) -> Row {
+    /// The row for this comparison over `points` points and `values` values in all.
+    pub(crate) fn row(&self, kind: RowKind, label: &str, points: usize, values: usize) -> Row {
         let detail = if self.bad == 0 {
             format!("{points} points, {values} values")
         } else {
             format!("{} of {values} values differ; {}", self.bad, self.first)
         };
-        row(label, self.bad == 0, &detail)
+        row(kind, label, self.bad == 0, &detail)
     }
 }
 
@@ -115,8 +140,8 @@ pub fn jit_rows(mut ir: IrModel, fb: &Fallback, points: usize, seed: u64, hw: f6
             Ok(e) => e,
             Err(msg) => {
                 let d = format!("entry not built: {msg}");
-                rows.push(row(&l_dag, false, &d));
-                rows.push(row(&l_fb, false, &d));
+                rows.push(row(RowKind::JitVsDag, &l_dag, false, &d));
+                rows.push(row(RowKind::JitVsFallback, &l_fb, false, &d));
                 continue;
             }
         };
@@ -162,12 +187,12 @@ pub fn jit_rows(mut ir: IrModel, fb: &Fallback, points: usize, seed: u64, hw: f6
         }
         if let Some(msg) = call_error {
             let d = format!("JIT call failed: {msg}");
-            rows.push(row(&l_dag, false, &d));
-            rows.push(row(&l_fb, false, &d));
+            rows.push(row(RowKind::JitVsDag, &l_dag, false, &d));
+            rows.push(row(RowKind::JitVsFallback, &l_fb, false, &d));
             continue;
         }
-        rows.push(vs_dag.row(&l_dag, points, values));
-        rows.push(vs_fb.row(&l_fb, points, values));
+        rows.push(vs_dag.row(RowKind::JitVsDag, &l_dag, points, values));
+        rows.push(vs_fb.row(RowKind::JitVsFallback, &l_fb, points, values));
     }
     rows
 }
@@ -202,14 +227,14 @@ mod tests {
             m.first
         );
         assert!(m.first.contains("jit 2e0, dag 3e0"), "{}", m.first);
-        let r = m.row("F (JIT vs DAG, 0 ulp)", 4, 8);
+        let r = m.row(RowKind::JitVsDag, "F (JIT vs DAG, 0 ulp)", 4, 8);
         assert!(!r.pass);
         assert!(
             r.text.contains("2 of 8 values differ; first at output 1"),
             "{}",
             r.text
         );
-        let ok = Mismatch::default().row("F (JIT vs DAG, 0 ulp)", 4, 8);
+        let ok = Mismatch::default().row(RowKind::JitVsDag, "F (JIT vs DAG, 0 ulp)", 4, 8);
         assert!(ok.pass);
         assert!(ok.text.ends_with("pass  4 points, 8 values"), "{}", ok.text);
     }

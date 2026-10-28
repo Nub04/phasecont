@@ -22,7 +22,7 @@ use pc_codegen::emit_c;
 use pc_ir::check::{Options, Rng, check_model, draw_point};
 use pc_ir::{Entry, EntryKind, Fallback, IrErrorKind, IrModel, lower};
 use pc_jit::CompiledModel;
-use pc_jit::check::{jit_kinds, jit_rows};
+use pc_jit::check::{RowKind, jit_kinds, jit_rows};
 use pc_ode::{FsLoader, Loaded, Severity, SourceMap, load};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -34,6 +34,10 @@ use std::time::{Duration, Instant};
 /// `pc-cli check-derivs <file> --points 6 --seed 1`.
 const POINTS: usize = 6;
 const SEED: u64 = 1;
+
+/// How many of the models in the two folders `lower` accepts. A new model file, or a model
+/// that starts or stops being refused, changes this and the test says so.
+const EXPECTED_ACCEPTED: usize = 28;
 
 /// The models this test adds under `crates/pc-ir/tests/models/`.
 const REQUIRED_MODELS: [&str; 9] = [
@@ -48,8 +52,8 @@ const REQUIRED_MODELS: [&str; 9] = [
     "table.ode",
 ];
 
-/// The corpus models `lower` refuses, with the distinct error kinds in the order they
-/// first occur in the model.
+/// The corpus models `lower` refuses, with the set of distinct error kinds (compared as a
+/// sorted set, so the order of the errors in a model does not matter).
 const EXPECTED_REFUSED: [(&str, &[IrErrorKind]); 2] = [
     ("corpus/stochastic.ode", &[IrErrorKind::SimulationOnly]),
     (
@@ -93,7 +97,7 @@ fn load_path(path: &Path) -> Result<Loaded, String> {
 }
 
 /// What the AOT comparison did.
-enum Aot {
+enum AotResult {
     /// gcc is missing.
     Skipped,
     /// The largest distance in ulp over `values` finite and non-finite outputs.
@@ -111,7 +115,7 @@ struct Stats {
     /// Largest ratio of the exact rows and of the FD rows of `check_model`, with labels.
     worst_exact: (f64, String),
     worst_fd: (f64, String),
-    aot: Aot,
+    aot: AotResult,
     failures: Vec<String>,
 }
 
@@ -245,7 +249,7 @@ fn run_model_inner(name: &str, path: &Path, have_gcc: bool) -> Status {
         by_check: [0; 3],
         worst_exact: (0.0, "-".into()),
         worst_fd: (0.0, "-".into()),
-        aot: Aot::Skipped,
+        aot: AotResult::Skipped,
         failures: Vec::new(),
     };
     for e in &report.entries {
@@ -270,14 +274,17 @@ fn run_model_inner(name: &str, path: &Path, have_gcc: bool) -> Status {
     }
     for r in jit_rows(ir, &fb, POINTS, SEED, opt.half_width) {
         st.counted += 1;
-        st.by_check[if r.text.contains("JIT vs DAG") { 1 } else { 2 }] += 1;
+        st.by_check[match r.kind {
+            RowKind::JitVsDag => 1,
+            RowKind::JitVsFallback => 2,
+        }] += 1;
         if !r.pass {
             st.failures.push(format!("{name}: {}", r.text));
         }
     }
     if have_gcc {
         match aot_vs_jit(name, &loaded, opt.half_width, &mut st.failures) {
-            Ok((max_ulp, values)) => st.aot = Aot::Compared { max_ulp, values },
+            Ok((max_ulp, values)) => st.aot = AotResult::Compared { max_ulp, values },
             Err(e) => st.failures.push(format!("{name}: AOT: {e}")),
         }
     }
@@ -318,6 +325,14 @@ fn run_all(files: &[(String, PathBuf)], have_gcc: bool) -> Vec<ModelResult> {
     all.into_iter().map(|(_, r)| r).collect()
 }
 
+/// The distinct error kinds as sorted names, so two lists compare as sets.
+fn kind_set(kinds: &[IrErrorKind]) -> Vec<String> {
+    let mut names: Vec<String> = kinds.iter().map(|k| format!("{k:?}")).collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 fn table(results: &[ModelResult]) -> String {
     use std::fmt::Write as _;
     let mut s = String::new();
@@ -338,8 +353,8 @@ fn table(results: &[ModelResult]) -> String {
         match &r.status {
             Status::Accepted(st) => {
                 let aot = match st.aot {
-                    Aot::Skipped => "skipped".to_string(),
-                    Aot::Compared { max_ulp, .. } => max_ulp.to_string(),
+                    AotResult::Skipped => "skipped".to_string(),
+                    AotResult::Compared { max_ulp, .. } => max_ulp.to_string(),
                 };
                 let fd = if st.smooth {
                     format!("{:.2e} {}", st.worst_fd.0, st.worst_fd.1)
@@ -397,16 +412,16 @@ fn section_3_and_4_checks_pass_on_the_model_set() {
     print!("{}", table(&results));
 
     // The refused set must be exactly the expected one.
-    let refused: BTreeMap<&str, Vec<IrErrorKind>> = results
+    let refused: BTreeMap<&str, Vec<String>> = results
         .iter()
         .filter_map(|r| match &r.status {
-            Status::Refused(kinds, _) => Some((r.name.as_str(), kinds.clone())),
+            Status::Refused(kinds, _) => Some((r.name.as_str(), kind_set(kinds))),
             _ => None,
         })
         .collect();
-    let expected: BTreeMap<&str, Vec<IrErrorKind>> = EXPECTED_REFUSED
+    let expected: BTreeMap<&str, Vec<String>> = EXPECTED_REFUSED
         .into_iter()
-        .map(|(n, k)| (n, k.to_vec()))
+        .map(|(n, k)| (n, kind_set(k)))
         .collect();
     if refused != expected {
         problems.push(format!(
@@ -422,7 +437,7 @@ fn section_3_and_4_checks_pass_on_the_model_set() {
                 for (t, c) in totals.iter_mut().zip(st.by_check) {
                     *t += c;
                 }
-                if let Aot::Compared { values, .. } = st.aot {
+                if let AotResult::Compared { values, .. } = st.aot {
                     aot_models += 1;
                     aot_values += values;
                 }
@@ -451,5 +466,5 @@ fn section_3_and_4_checks_pass_on_the_model_set() {
         problems.len(),
         problems.join("\n")
     );
-    assert!(accepted >= REQUIRED_MODELS.len());
+    assert_eq!(accepted, EXPECTED_ACCEPTED, "accepted model count");
 }

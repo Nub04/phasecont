@@ -42,27 +42,32 @@ pub const ERR_FACTOR: f64 = 8.0;
 /// `|a-b| <= 4 ulp(max(|a|,|b|))`, or `|a-b| <= 1e-13 * scale` (the largest magnitude of the
 /// output vector), or `|a-b| <= ABS_FLOOR`.
 pub fn close(a: f64, b: f64, scale: f64) -> bool {
-    close_err(a, b, scale, f64::NAN)
+    close_with(a, b, scale, None)
 }
 
 /// SPEC section 3: [`close`], or `|a-b| <= ERR_FACTOR * eps * err`, where `err` is the running
 /// error bound of the DAG evaluation of this output ([`crate::eval::eval_err`]). A NaN or
 /// infinite `err` adds nothing.
 pub fn close_err(a: f64, b: f64, scale: f64, err: f64) -> bool {
+    close_with(a, b, scale, Some(err))
+}
+
+fn close_with(a: f64, b: f64, scale: f64, err: Option<f64>) -> bool {
     if a.is_nan() && b.is_nan() || a == b {
         return true;
     }
-    (a - b).abs() <= allowed(a, b, scale, err)
+    (a - b).abs() <= allowed_diff(a, b, scale, err)
 }
 
-/// The largest `|a-b|` that [`close_err`] accepts for these values (NaN when `a` or `b` is
-/// not finite and no other term applies).
-pub fn allowed(a: f64, b: f64, scale: f64, err: f64) -> f64 {
+/// The largest `|a-b|` that [`close`] (`err` is `None`) or [`close_err`] (`err` is `Some`)
+/// accepts. The 4 ulp term ignores a non-finite value, so the result is always finite and at
+/// least [`ABS_FLOOR`]. A `Some` bound that is NaN or infinite adds nothing.
+pub fn allowed_diff(a: f64, b: f64, scale: f64, err: Option<f64>) -> f64 {
     let mut m = (4.0 * ulp(a.abs().max(b.abs())))
         .max(1e-13 * scale)
         .max(ABS_FLOOR);
-    if err.is_finite() {
-        m = m.max(ERR_FACTOR * f64::EPSILON * err);
+    if let Some(e) = err.filter(|e| e.is_finite()) {
+        m = m.max(ERR_FACTOR * f64::EPSILON * e);
     }
     m
 }
@@ -82,14 +87,11 @@ fn ratio(a: f64, b: f64, scale: f64, err: f64) -> f64 {
         return 0.0;
     }
     let diff = (a - b).abs();
-    let allowed = allowed(a, b, scale, err);
-    if diff.is_nan() || allowed.is_nan() {
+    if diff.is_nan() {
+        // Exactly one of the two is NaN.
         return f64::INFINITY;
     }
-    if allowed == 0.0 {
-        return f64::INFINITY;
-    }
-    diff / allowed
+    diff / allowed_diff(a, b, scale, Some(err))
 }
 
 /// SplitMix64: a small deterministic generator, so a seed reproduces a check run.

@@ -1,4 +1,4 @@
-//! Loads and lowers an `.ode` text; shared by the unit tests and the integration tests.
+//! Loads and lowers an `.ode` text for the integration tests (not a cargo build script).
 
 use pc_ir::IrModel;
 

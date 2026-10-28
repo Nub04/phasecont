@@ -68,7 +68,7 @@ fn product_quotient_and_negation() {
 fn integer_powers() {
     let mut d = Dag::new(MAX_NODES);
     let (a, b) = (d.var(0), d.var(1));
-    // x^3: two multiplications; x^-2: one multiplication and the reciprocal.
+    // x^3: two roundings; x^-2: one rounding and the reciprocal.
     let p3 = d.powi(a, 3);
     let (v, e) = run(&d, p3, [2.0, 0.0, 0.0]);
     assert_eq!((v, e), (8.0, 16.0));
@@ -80,9 +80,16 @@ fn integer_powers() {
     let q = d.powi(ab, 3);
     let (v, e) = run(&d, q, [2.0, 1.5, 0.0]);
     assert!(near(e, 5.0 * v.abs()), "{e:e}");
-    // x^5 takes three multiplications.
+    // The roundings compound: x^n has (|n| - 1) |r|, so x^5 has 4 |r| and x^8 has 7 |r|.
     let p5 = d.powi(a, 5);
-    assert_eq!(run(&d, p5, [2.0, 0.0, 0.0]).1, 3.0 * 32.0);
+    assert_eq!(run(&d, p5, [2.0, 0.0, 0.0]), (32.0, 4.0 * 32.0));
+    let p8 = d.powi(a, 8);
+    assert_eq!(run(&d, p8, [2.0, 0.0, 0.0]), (256.0, 7.0 * 256.0));
+    // x^-4: three roundings and the reciprocal, 4 |r| in all.
+    let pm4 = d.powi(a, -4);
+    assert_eq!(run(&d, pm4, [2.0, 0.0, 0.0]), (0.0625, 4.0 * 0.0625));
+    let p1 = d.powi(a, 1);
+    assert_eq!(run(&d, p1, [2.0, 0.0, 0.0]), (2.0, 0.0));
     // An exact zero base has no error to scale; a zero base that carries one has no bound.
     assert_eq!(run(&d, p3, [0.0, 0.0, 0.0]).1, 0.0);
     let c = d.var(2);

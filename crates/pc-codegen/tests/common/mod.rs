@@ -3,12 +3,12 @@
 
 #![allow(dead_code)]
 
-#[path = "build.rs"]
-mod build;
+#[path = "lower_text.rs"]
+mod lower_text;
 
-#[allow(unused_imports)]
-pub use build::build_model;
 use libloading::{Library, Symbol};
+#[allow(unused_imports)]
+pub use lower_text::build_model;
 use pc_ir::math::{MATH, MathTable};
 use std::path::PathBuf;
 use std::process::Command;
@@ -80,11 +80,13 @@ impl Drop for Temp {
     }
 }
 
-/// Compiles `c` with gcc and loads it. The temp dir lives as long as the library.
+/// A compiled and loaded AOT library. The temp dir holding the files lives as long as the
+/// library.
 pub struct Aot {
     pub lib: Library,
     pub _tmp: Temp,
 }
+
 /// Compiles `c` with `cc` and loads it. `Err` carries the compiler output.
 pub fn try_compile_c(cc: &str, tag: &str, c: &str) -> Result<Aot, String> {
     let tmp = Temp::new(tag);
@@ -117,6 +119,7 @@ pub fn try_compile_c(cc: &str, tag: &str, c: &str) -> Result<Aot, String> {
     Ok(Aot { lib, _tmp: tmp })
 }
 
+/// Like [`try_compile_c`], but panics with the compiler output and the C text on failure.
 pub fn compile_c(cc: &str, tag: &str, c: &str) -> Aot {
     match try_compile_c(cc, tag, c) {
         Ok(a) => a,

@@ -6,9 +6,9 @@ use crate::emit_c;
 use pc_ir::EntryKind;
 use pc_ir::math::MathTable;
 
-#[path = "../tests/common/build.rs"]
-mod build;
-use build::build_model;
+#[path = "../tests/common/lower_text.rs"]
+mod lower_text;
+use lower_text::build_model;
 
 #[test]
 fn math_fields_follow_the_math_table_order() {

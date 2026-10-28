@@ -265,15 +265,6 @@ fn slope2(f: Fn2, a: f64, b: f64) -> (f64, f64) {
     }
 }
 
-/// Multiplications `powi` performs for `|n|`: one per squaring and one per extra set bit.
-fn powi_mults(n: i32) -> f64 {
-    let m = n.unsigned_abs();
-    if m == 0 {
-        return 0.0;
-    }
-    f64::from(m.ilog2() + m.count_ones() - 1)
-}
-
 /// The running error bound of one op, given its computed value `r`. `val` and `err` give
 /// the value and the bound of a child. See [`eval_err`].
 fn err_op(
@@ -292,7 +283,10 @@ fn err_op(
         Op::Div(a, b) => (err(a) + mulz(ar, err(b))) / val(b).abs() + ar,
         Op::PowI(a, n) => {
             let (av, ea) = (val(a).abs(), err(a));
-            let mut e = powi_mults(n) * ar + if n < 0 { ar } else { 0.0 };
+            // Binary powering compounds by the `Mul` rule: `|n| - 1` roundings of size `|r|`,
+            // plus one for the reciprocal of a negative power.
+            let mut e =
+                (f64::from(n.unsigned_abs()) - 1.0).max(0.0) * ar + if n < 0 { ar } else { 0.0 };
             if ea != 0.0 {
                 // The relative error of the base is multiplied by |n|.
                 e += f64::from(n.unsigned_abs()) * ar * ea / av;

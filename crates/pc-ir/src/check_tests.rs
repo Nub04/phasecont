@@ -193,7 +193,7 @@ fn a_finite_error_bound_adds_a_pass_condition() {
     assert!(close_err(a, b, 1.0, 1e13));
     // E = 1e11 allows 1.8e-4, not enough.
     assert!(!close_err(a, b, 1.0, 1e11));
-    let m = allowed(a, b, 1.0, 1e13);
+    let m = allowed_diff(a, b, 1.0, Some(1e13));
     assert!(
         (m - ERR_FACTOR * f64::EPSILON * 1e13).abs() <= 1e-18,
         "{m:e}"
@@ -205,7 +205,10 @@ fn a_non_finite_error_bound_adds_nothing() {
     let (a, b) = (1.0, 1.0 + 1e-3);
     for e in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         assert!(!close_err(a, b, 1.0, e), "{e}");
-        assert_eq!(allowed(a, b, 1.0, e), allowed(a, b, 1.0, f64::NAN));
+        assert_eq!(
+            allowed_diff(a, b, 1.0, Some(e)),
+            allowed_diff(a, b, 1.0, None)
+        );
     }
     // The old conditions still apply with a non-finite bound.
     assert!(close_err(1.0, 1.0 + 1e-15, 1.0, f64::NAN));
@@ -213,8 +216,43 @@ fn a_non_finite_error_bound_adds_nothing() {
 }
 
 #[test]
-fn close_ignores_the_error_bound() {
-    for (a, b, s) in [(1.0, 1.0 + 1e-3, 1.0), (0.0, 1e-16, 1.0), (2.0, 2.0, 0.0)] {
-        assert_eq!(close(a, b, s), close_err(a, b, s, f64::NAN));
+fn close_pins_the_conditions_without_a_bound() {
+    // 4 ulp passes, 5 ulp does not (scale 0, so only the ulp term and the floor apply).
+    // Near 8 the spacing is 8 eps, so 4 ulp is 32 eps, well above the absolute floor.
+    let u = ulp(8.0);
+    assert_eq!(u, 8.0 * f64::EPSILON);
+    assert!(close(8.0, 8.0 + 4.0 * u, 0.0));
+    assert!(!close(8.0, 8.0 + 5.0 * u, 0.0));
+    assert!(close(8.0 + 4.0 * u, 8.0, 0.0));
+    // 1e-13 of the scale, exactly and just above.
+    for s in [1.0, 37.5, 1e6] {
+        assert!(close(0.0, 1e-13 * s, s), "{s}");
+        assert!(!close(0.0, 1.000_001e-13 * s, s), "{s}");
     }
+    // The absolute floor, with a scale too small to matter.
+    assert!(close(0.0, 1e-15, 1e-20));
+    assert!(!close(0.0, 1.000_001e-15, 1e-20));
+    // The allowed difference is the largest of the three terms, and `None` adds no fourth.
+    assert_eq!(allowed_diff(0.0, 0.0, 1e-20, None), ABS_FLOOR);
+    assert_eq!(allowed_diff(0.0, 0.0, 10.0, None), 1e-13 * 10.0);
+    assert_eq!(allowed_diff(8.0, 8.0, 0.0, None), 4.0 * u);
+}
+
+#[test]
+fn a_vector_that_passes_only_through_the_bound_has_a_ratio_below_one() {
+    // The model computes x' = (x + 1e6) - 1e6, which loses about 1e-10 to rounding. The
+    // reference is x' = x. The error is far above 1e-13 s and 4 ulp, so only the running
+    // error bound (E about 1e6, so 8 eps E about 2e-9) lets the row pass.
+    let (_, mut ir) = setup("init x=0.5\nx'=(x+1000000)-1000000\ndone\n");
+    let (fb, _) = setup("init x=0.5\nx'=x\ndone\n");
+    let rep = check_model_with(&mut ir, &fb, &low_order(8, 3, 1));
+    let f = rep.find("F").unwrap();
+    assert!(f.pass, "{rep}");
+    assert!(f.ratio <= 1.0 && f.ratio > 0.0, "{}", f.ratio);
+    assert!(
+        f.worst_err > 100.0 * 1e-13 * f.scale,
+        "the old rule would fail: err {:e}, scale {:e}",
+        f.worst_err,
+        f.scale
+    );
 }

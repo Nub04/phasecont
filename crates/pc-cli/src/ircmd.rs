@@ -193,6 +193,7 @@ pub fn check_derivs(file: &Path, points: usize, seed: u64) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pc_jit::check::RowKind;
 
     fn entry(label: &str, pass: bool, note: Option<&str>) -> EntryReport {
         EntryReport {
@@ -209,7 +210,7 @@ mod tests {
     }
 
     fn jit(label: &str, pass: bool, detail: &str) -> Row {
-        pc_jit::check::row(label, pass, detail)
+        pc_jit::check::row(RowKind::JitVsDag, label, pass, detail)
     }
 
     #[test]
