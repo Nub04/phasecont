@@ -1,8 +1,12 @@
 //! Runs `pc-cli ir`, `check-derivs` and `emit-c` on the models in
 //! `tests/fixtures`.
 
+mod common;
+
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
+
+use common::{code, stderr, stdout};
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
@@ -10,23 +14,29 @@ fn fixtures() -> PathBuf {
 
 /// Runs the binary in the fixtures directory with `args`.
 fn run(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_pc-cli"))
-        .args(args)
-        .current_dir(fixtures())
-        .output()
-        .expect("cannot run pc-cli")
+    common::run(&fixtures(), args)
 }
 
-fn stdout(o: &Output) -> String {
-    String::from_utf8(o.stdout.clone()).expect("stdout is UTF-8")
+/// A scratch directory that is removed when it goes out of scope, also when
+/// the test fails.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new(tag: &str) -> TempDir {
+        let dir = std::env::temp_dir().join(format!("pc-cli-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        TempDir(dir)
+    }
+
+    fn file(&self, name: &str) -> String {
+        self.0.join(name).to_str().unwrap().to_string()
+    }
 }
 
-fn stderr(o: &Output) -> String {
-    String::from_utf8(o.stderr.clone()).expect("stderr is UTF-8")
-}
-
-fn code(o: &Output) -> i32 {
-    o.status.code().expect("pc-cli was killed by a signal")
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 /// The number after `name` on the line of `text` that starts with `name`.
@@ -83,6 +93,54 @@ fn ir_reports_a_model_that_is_not_smooth() {
     let o = run(&["ir", "kinked.ode"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert!(stdout(&o).contains("smooth: false\n"), "{}", stdout(&o));
+}
+
+#[test]
+fn ir_live_node_counts_of_a_one_variable_model_match_a_count_by_hand() {
+    // x' = a*x. F is {a, x, a*x}. dF/dx is {a} and dF/da is {x}. Every
+    // higher derivative with respect to x is the constant 0, one node.
+    let o = run(&["ir", "tiny.ode"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let t = stdout(&o);
+    assert!(t.starts_with("n: 1\nn_p: 1\nn_aux: 0\n"), "{t}");
+    for (name, nodes) in [
+        ("F ", 3),
+        ("Aux ", 0),
+        ("JacU ", 1),
+        ("JacP ", 1),
+        ("Dir[U,U] ", 1),
+        ("Dir[U,U,U] ", 1),
+        ("Dir[U,U,U,U] ", 1),
+        ("Dir[U,U,U,U,U] ", 1),
+    ] {
+        assert_eq!(count_after(&t, name), nodes, "{name}: {t}");
+    }
+}
+
+#[test]
+fn ir_reports_a_model_that_uses_t_as_not_autonomous() {
+    let o = run(&["ir", "forced.ode"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    assert!(stdout(&o).contains("autonomous: false\n"), "{}", stdout(&o));
+}
+
+#[test]
+fn check_derivs_passes_on_a_model_without_parameters() {
+    let o = run(&["check-derivs", "plain.ode", "--points", "5"]);
+    assert_eq!(code(&o), 0, "{}\n{}", stdout(&o), stderr(&o));
+    let t = stdout(&o);
+    assert!(t.trim_end().ends_with("checks pass"), "{t}");
+    assert!(!t.contains("FAIL"), "{t}");
+    assert!(t.lines().any(|l| l.starts_with("F (JIT vs DAG, 0 ulp)")));
+}
+
+#[test]
+fn check_derivs_passes_on_a_model_that_uses_t() {
+    let o = run(&["check-derivs", "forced.ode", "--points", "5"]);
+    assert_eq!(code(&o), 0, "{}\n{}", stdout(&o), stderr(&o));
+    let t = stdout(&o);
+    assert!(t.trim_end().ends_with("checks pass"), "{t}");
+    assert!(!t.contains("FAIL"), "{t}");
 }
 
 #[test]
@@ -219,26 +277,33 @@ fn emit_c_writes_to_stdout_without_o() {
 }
 
 #[test]
-fn emit_c_writes_the_file_given_with_o() {
-    let dir = std::env::temp_dir().join(format!("pc-cli-emit-c-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let target = dir.join("vdp.c");
-    let o = run(&["emit-c", "vdp.ode", "-o", target.to_str().unwrap()]);
+fn emit_c_o_writes_the_file_and_nothing_to_stdout() {
+    let dir = TempDir::new("emit-c-file");
+    let target = dir.file("vdp.c");
+    let o = run(&["emit-c", "vdp.ode", "-o", &target]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     assert!(stdout(&o).is_empty(), "{}", stdout(&o));
-    let c = std::fs::read_to_string(&target).unwrap();
-    assert_c_text(&c);
-    // The flag may come first, and the text is the same as on stdout.
-    let again = run(&["emit-c", "-o", target.to_str().unwrap(), "vdp.ode"]);
-    assert_eq!(code(&again), 0);
-    assert_eq!(std::fs::read_to_string(&target).unwrap(), c);
-    assert_eq!(stdout(&run(&["emit-c", "vdp.ode"])), c);
-    // An unwritable target is an error, not a panic.
-    let bad = dir.join("no_such_dir").join("x.c");
-    let o = run(&["emit-c", "vdp.ode", "-o", bad.to_str().unwrap()]);
+    assert_c_text(&std::fs::read_to_string(&target).unwrap());
+}
+
+#[test]
+fn emit_c_o_may_come_before_the_file_and_writes_the_stdout_text() {
+    let dir = TempDir::new("emit-c-order");
+    let target = dir.file("vdp.c");
+    let o = run(&["emit-c", "-o", &target, "vdp.ode"]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let on_stdout = stdout(&run(&["emit-c", "vdp.ode"]));
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), on_stdout);
+}
+
+#[test]
+fn emit_c_o_into_a_missing_directory_is_an_error_not_a_panic() {
+    let dir = TempDir::new("emit-c-missing");
+    let bad = dir.file("no_such_dir/x.c");
+    let o = run(&["emit-c", "vdp.ode", "-o", &bad]);
     assert_eq!(code(&o), 1);
     assert!(stderr(&o).contains("cannot write"), "{}", stderr(&o));
-    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(!stderr(&o).contains("panicked"), "{}", stderr(&o));
 }
 
 #[test]
@@ -263,6 +328,8 @@ fn bad_flags_are_usage_errors() {
         &["check-derivs", "vdp.ode", "-o", "x.c"],
         &["emit-c"],
         &["emit-c", "vdp.ode", "-o"],
+        &["emit-c", "vdp.ode", "-o", "--"],
+        &["emit-c", "vdp.ode", "-o", "-x.c"],
         &["emit-c", "vdp.ode", "--bogus"],
         &["emit-c", "vdp.ode", "extra.ode"],
     ] {

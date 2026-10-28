@@ -4,9 +4,12 @@
 //! `PC_BLESS=1 cargo test -p pc-cli --test cli` to rewrite them after a
 //! change that is meant to alter the JSON, and read the diff.
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+mod common;
 
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use common::{code, run, stderr, stdout};
 use serde_json::Value;
 
 fn ode_tests() -> PathBuf {
@@ -15,27 +18,6 @@ fn ode_tests() -> PathBuf {
 
 fn golden_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden")
-}
-
-/// Runs the binary in `dir` with `args`.
-fn run(dir: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_pc-cli"))
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("cannot run pc-cli")
-}
-
-fn stdout(o: &Output) -> String {
-    String::from_utf8(o.stdout.clone()).expect("stdout is UTF-8")
-}
-
-fn stderr(o: &Output) -> String {
-    String::from_utf8(o.stderr.clone()).expect("stderr is UTF-8")
-}
-
-fn code(o: &Output) -> i32 {
-    o.status.code().expect("pc-cli was killed by a signal")
 }
 
 /// Sorted names of the `*.ode` files directly in `dir`.

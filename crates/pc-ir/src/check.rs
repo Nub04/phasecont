@@ -204,7 +204,8 @@ impl Report {
     }
 }
 
-fn fmt_vec(v: &[f64]) -> String {
+/// A vector as `[1.000000e0, ...]`, the form the report lines use.
+pub fn fmt_vec(v: &[f64]) -> String {
     let parts: Vec<String> = v.iter().map(|x| format!("{x:.6e}")).collect();
     format!("[{}]", parts.join(", "))
 }
@@ -263,7 +264,8 @@ pub fn slot_mixes(k: usize) -> Vec<Vec<Slot>> {
     all
 }
 
-fn slot_label(slots: &[Slot]) -> String {
+/// The label of a `Dir` entry, such as `Dir[U,P,Full]`.
+pub fn slot_label(slots: &[Slot]) -> String {
     let names: Vec<&str> = slots
         .iter()
         .map(|s| match s {
@@ -276,8 +278,8 @@ fn slot_label(slots: &[Slot]) -> String {
 }
 
 /// A random point in the box around the model's init and parameter values. `p` has `t`
-/// last, drawn in [0, 1).
-fn draw_point(ir: &IrModel, rng: &mut Rng, hw: f64) -> (Vec<f64>, Vec<f64>) {
+/// last, drawn in [0, 1). `hw` is the half-width of the box around `init` (`Options::half_width`).
+pub fn draw_point(ir: &IrModel, rng: &mut Rng, hw: f64) -> (Vec<f64>, Vec<f64>) {
     let (n, n_p) = (ir.n(), ir.n_p());
     let x = (0..n)
         .map(|j| ir.init.get(j).copied().unwrap_or(0.0) + hw * rng.range(-1.0, 1.0))

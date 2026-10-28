@@ -16,9 +16,7 @@ pub const DEFAULT_SEED: u64 = 1;
 pub enum Command {
     /// Print the top-level help to stdout.
     Help,
-    /// Print the help for `parse` to stdout.
-    ParseHelp,
-    /// Print the help for `ir`, `check-derivs` or `emit-c` to stdout.
+    /// Print the help text of a command to stdout.
     ToolHelp(&'static str),
     /// Print `pc-cli <version>`.
     Version,
@@ -41,9 +39,12 @@ pub enum Command {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsageError(pub String);
 
-pub const USAGE: &str = "usage: pc-cli parse [--json] [--] <file.ode> | pc-cli ir <file.ode> | \
-pc-cli check-derivs [--points N] [--seed S] <file.ode> | pc-cli emit-c [-o out.c] <file.ode> | \
-pc-cli --help | pc-cli --version";
+pub const USAGE: &str = "\
+usage: pc-cli parse [--json] [--] <file.ode>
+       pc-cli ir [--] <file.ode>
+       pc-cli check-derivs [--points N] [--seed S] [--] <file.ode>
+       pc-cli emit-c [-o out.c] [--] <file.ode>
+       pc-cli --help | pc-cli --version";
 
 pub const HELP: &str = "\
 pc-cli: headless runner for PhaseCont
@@ -88,13 +89,15 @@ Loads and lowers the model, then prints n, n_p, n_aux, whether the model is
 autonomous and smooth, and the number of live DAG nodes of each entry: F, Aux,
 JacU, JacP and the directional entries of orders 2 to 5 with U slots. An entry
 that cannot be built (too large, unsupported) gets its own line with the
-reason. Diagnostics and refusals go to stderr with their source position.
+reason; that does not change the exit code, since `ir` only reports. Diagnostics
+and refusals go to stderr with their source position.
 
 options:
   --         the next argument is the file, even if it starts with `-`
   -h, --help print this help
 
-exit codes: 0 the model was lowered, 1 the model has errors, is refused by the
+exit codes: 0 the model was lowered (even if an entry could not be built), 1 the
+model has errors, is refused by the
 IR or cannot be read, 2 usage error
 ";
 
@@ -134,6 +137,7 @@ options:
 exit codes: 0 the code was written, 1 the model has errors, is refused by the
 IR, an entry cannot be built, or a file cannot be read or written, 2 usage error
 ";
+
 fn utf8(arg: &OsString) -> Result<&str, UsageError> {
     arg.to_str().ok_or_else(|| {
         UsageError(format!(
@@ -227,7 +231,16 @@ fn split(rest: &[OsString], ok: Accepts) -> Result<Parts, UsageError> {
             Some("--seed") if ok.points_seed => {
                 parts.seed = Some(number("--seed", value("--seed", &mut it)?)?);
             }
-            Some("-o") if ok.out => parts.out = Some(PathBuf::from(value("-o", &mut it)?)),
+            Some("-o") if ok.out => {
+                let v = value("-o", &mut it)?;
+                if v.as_encoded_bytes().first() == Some(&b'-') {
+                    return Err(UsageError(format!(
+                        "-o needs a file name, got {}",
+                        v.to_string_lossy()
+                    )));
+                }
+                parts.out = Some(PathBuf::from(v));
+            }
             Some(other) if other.starts_with('-') && other.len() > 1 => {
                 return Err(UsageError(format!("unknown option {other}")));
             }
@@ -264,7 +277,7 @@ fn parse_command(rest: &[OsString]) -> Result<Command, UsageError> {
         },
     )?;
     if parts.help {
-        return Ok(Command::ParseHelp);
+        return Ok(Command::ToolHelp(PARSE_HELP));
     }
     match parts.file {
         Some(file) => Ok(Command::Parse {
@@ -366,8 +379,11 @@ mod tests {
         assert_eq!(p(&["-h"]), Ok(Command::Help));
         assert_eq!(p(&["--version"]), Ok(Command::Version));
         assert_eq!(p(&["-V"]), Ok(Command::Version));
-        assert_eq!(p(&["parse", "--help"]), Ok(Command::ParseHelp));
-        assert_eq!(p(&["parse", "x.ode", "-h"]), Ok(Command::ParseHelp));
+        assert_eq!(p(&["parse", "--help"]), Ok(Command::ToolHelp(PARSE_HELP)));
+        assert_eq!(
+            p(&["parse", "x.ode", "-h"]),
+            Ok(Command::ToolHelp(PARSE_HELP))
+        );
     }
 
     #[test]
@@ -433,6 +449,8 @@ mod tests {
             &["check-derivs", "a.ode", "-o", "x.c"],
             &["emit-c"],
             &["emit-c", "a.ode", "-o"],
+            &["emit-c", "a.ode", "-o", "--"],
+            &["emit-c", "a.ode", "-o", "-x.c"],
             &["emit-c", "a.ode", "--points", "3"],
             &["parse", "a.ode", "--points", "3"],
         ] {

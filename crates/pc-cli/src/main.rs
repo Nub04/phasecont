@@ -10,13 +10,13 @@ use std::io::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
 
-use args::{Command, HELP, PARSE_HELP, USAGE, parse_args};
+use args::{Command, HELP, USAGE, parse_args};
 use pc_ode::{FsLoader, Loaded, Severity, SourceMap, load};
 
 fn main() -> ExitCode {
     match parse_args(std::env::args_os().skip(1)) {
         Ok(Command::Help) => out(HELP, 0),
-        Ok(Command::ParseHelp) => out(PARSE_HELP, 0),
+
         Ok(Command::ToolHelp(text)) => out(text, 0),
         Ok(Command::Version) => out(concat!("pc-cli ", env!("CARGO_PKG_VERSION"), "\n"), 0),
         Ok(Command::Parse { file, json }) => parse(&file, json),

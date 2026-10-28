@@ -1,0 +1,5 @@
+# One variable and one parameter, for hand-counted node numbers.
+par a=0.7
+x'=a*x
+init x=1
+done

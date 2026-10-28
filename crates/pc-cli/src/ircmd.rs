@@ -10,7 +10,9 @@ use std::io::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
 
-use pc_ir::check::{EntryReport, Rng, check_model, close, scale};
+use pc_ir::check::{
+    EntryReport, Options, Rng, check_model, close, draw_point, fmt_vec, scale, slot_label,
+};
 use pc_ir::eval::{eval, live_set};
 use pc_ir::{Entry, EntryKind, Fallback, IrModel, Slot, lower};
 use pc_jit::CompiledModel;
@@ -47,18 +49,6 @@ fn prepare(file: &Path) -> Result<Prepared, ExitCode> {
             Err(ExitCode::from(1))
         }
     }
-}
-
-fn slot_label(slots: &[Slot]) -> String {
-    let names: Vec<&str> = slots
-        .iter()
-        .map(|s| match s {
-            Slot::U => "U",
-            Slot::P => "P",
-            Slot::Full => "Full",
-        })
-        .collect();
-    format!("Dir[{}]", names.join(","))
 }
 
 fn dir(slots: &[Slot]) -> (EntryKind, String) {
@@ -121,7 +111,7 @@ pub fn emit_c(file: &Path, target: Option<&Path>) -> ExitCode {
         match ir.entry(&kind) {
             Ok(e) => entries.push((name.to_string(), e)),
             Err(e) => {
-                eprintln!("pc-cli: cannot build entry {name}: {e}");
+                to_stderr(&format!("pc-cli: cannot build entry {name}: {e}\n"));
                 return ExitCode::from(1);
             }
         }
@@ -133,36 +123,11 @@ pub fn emit_c(file: &Path, target: Option<&Path>) -> ExitCode {
         Some(path) => match std::fs::write(path, &code) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
-                eprintln!("pc-cli: cannot write {}: {e}", path.display());
+                to_stderr(&format!("pc-cli: cannot write {}: {e}\n", path.display()));
                 ExitCode::from(1)
             }
         },
     }
-}
-
-fn fmt_vec(v: &[f64]) -> String {
-    let parts: Vec<String> = v.iter().map(|x| format!("{x:.6e}")).collect();
-    format!("[{}]", parts.join(", "))
-}
-
-/// A random point in the box around the model's initial state and parameters,
-/// with `t` last in `p`. It follows the points of `pc_ir::check`.
-fn draw_point(ir: &IrModel, rng: &mut Rng) -> (Vec<f64>, Vec<f64>) {
-    let x = (0..ir.n())
-        .map(|j| ir.init.get(j).copied().unwrap_or(0.0) + 0.5 * rng.range(-1.0, 1.0))
-        .collect();
-    let mut p: Vec<f64> = (0..ir.n_p())
-        .map(|j| {
-            let b = ir.par_values.get(j).copied().unwrap_or(0.0);
-            if b == 0.0 {
-                0.2 * rng.range(-1.0, 1.0)
-            } else {
-                b * rng.range(0.9, 1.1)
-            }
-        })
-        .collect();
-    p.push(rng.unit());
-    (x, p)
 }
 
 /// The entries the JIT is checked on: F, Aux (if the model has any), JacU, JacP
@@ -204,7 +169,7 @@ fn row(label: &str, pass: bool, detail: &str) -> Row {
     let verdict = if pass { "pass" } else { "FAIL" };
     Row {
         pass,
-        text: format!("{label:<30} {verdict}  {detail}"),
+        text: format!("{label:<36} {verdict}  {detail}"),
     }
 }
 
@@ -214,9 +179,42 @@ fn same_bits(a: f64, b: f64) -> bool {
     a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan())
 }
 
+/// The mismatches of one comparison: how many values differ and where the
+/// first one was.
+#[derive(Default)]
+struct Mismatch {
+    bad: usize,
+    first: String,
+}
+
+impl Mismatch {
+    /// Records the output `i` of the JIT, `jit`, against `other` (named
+    /// `name`) at the point `x`, `p`.
+    fn note(&mut self, i: usize, (x, p): (&[f64], &[f64]), jit: f64, other: f64, name: &str) {
+        self.bad += 1;
+        if self.first.is_empty() {
+            self.first = format!(
+                "first at output {i}, x = {}, p = {}: jit {jit:e}, {name} {other:e}",
+                fmt_vec(x),
+                fmt_vec(p)
+            );
+        }
+    }
+
+    fn row(&self, label: &str, points: usize, values: usize) -> Row {
+        let detail = if self.bad == 0 {
+            format!("{points} points, {values} values")
+        } else {
+            format!("{} of {values} values differ; {}", self.bad, self.first)
+        };
+        row(label, self.bad == 0, &detail)
+    }
+}
+
 /// Compares the JIT with the DAG evaluator (bit for bit) and with the f64
-/// fallback (the SPEC section 3 tolerance), two rows per entry.
-fn jit_rows(mut ir: IrModel, fb: &Fallback, points: usize, seed: u64) -> Vec<Row> {
+/// fallback (the SPEC section 3 tolerance), two rows per entry. Points come
+/// from the box of `check_model` with half-width `hw`.
+fn jit_rows(mut ir: IrModel, fb: &Fallback, points: usize, seed: u64, hw: f64) -> Vec<Row> {
     let built: Vec<(EntryKind, String, Result<Entry, String>)> = jit_kinds(&ir)
         .into_iter()
         .map(|(k, l)| {
@@ -244,12 +242,11 @@ fn jit_rows(mut ir: IrModel, fb: &Fallback, points: usize, seed: u64) -> Vec<Row
             EntryKind::Dir(slots) => slots.iter().map(|s| s.len(n, n_p)).sum(),
             _ => 0,
         };
-        let (mut bit_bad, mut fb_bad, mut values) = (0_usize, 0_usize, 0_usize);
-        let mut first_bit = String::new();
-        let mut first_fb = String::new();
+        let (mut vs_dag, mut vs_fb) = (Mismatch::default(), Mismatch::default());
+        let mut values = 0_usize;
         let mut call_error = None;
         for _ in 0..points {
-            let (x, p) = draw_point(cm.ir(), &mut rng);
+            let (x, p) = draw_point(cm.ir(), &mut rng, hw);
             let v: Vec<f64> = (0..v_len).map(|_| rng.range(-1.0, 1.0)).collect();
             let mut want = vec![f64::NAN; entry.outputs.len()];
             eval(&cm.ir().dag, &entry.outputs, &x, &p, &v, &mut want);
@@ -264,24 +261,10 @@ fn jit_rows(mut ir: IrModel, fb: &Fallback, points: usize, seed: u64) -> Vec<Row
             for (i, ((&g, &w), &f)) in got.iter().zip(&want).zip(&fbv).enumerate() {
                 values += 1;
                 if !same_bits(g, w) {
-                    bit_bad += 1;
-                    if first_bit.is_empty() {
-                        first_bit = format!(
-                            "first at output {i}, x = {}, p = {}: jit {g:e}, dag {w:e}",
-                            fmt_vec(&x),
-                            fmt_vec(&p)
-                        );
-                    }
+                    vs_dag.note(i, (&x, &p), g, w, "dag");
                 }
                 if !close(g, f, s) {
-                    fb_bad += 1;
-                    if first_fb.is_empty() {
-                        first_fb = format!(
-                            "first at output {i}, x = {}, p = {}: jit {g:e}, fallback {f:e}",
-                            fmt_vec(&x),
-                            fmt_vec(&p)
-                        );
-                    }
+                    vs_fb.note(i, (&x, &p), g, f, "fallback");
                 }
             }
         }
@@ -291,14 +274,8 @@ fn jit_rows(mut ir: IrModel, fb: &Fallback, points: usize, seed: u64) -> Vec<Row
             rows.push(row(&l_fb, false, &d));
             continue;
         }
-        for (l, bad, first) in [(&l_dag, bit_bad, first_bit), (&l_fb, fb_bad, first_fb)] {
-            let detail = if bad == 0 {
-                format!("{points} points, {values} values")
-            } else {
-                format!("{bad} of {values} values differ; {first}")
-            };
-            rows.push(row(l, bad == 0, &detail));
-        }
+        rows.push(vs_dag.row(&l_dag, points, values));
+        rows.push(vs_fb.row(&l_fb, points, values));
     }
     rows
 }
@@ -311,23 +288,15 @@ fn info_row(e: &EntryReport) -> String {
     )
 }
 
-/// `check-derivs`: `check_model` plus the JIT against the DAG and the fallback.
-pub fn check_derivs(file: &Path, points: usize, seed: u64) -> ExitCode {
-    let Prepared { loaded, mut ir } = match prepare(file) {
-        Ok(p) => p,
-        Err(code) => return code,
-    };
-    let fb = Fallback::new(&loaded.expanded, &loaded.info, &ir);
-    let report = check_model(&mut ir, &fb, points, seed);
-    let smooth = ir.smooth;
+/// The printed rows and the final line of `check-derivs`, and how many counted
+/// checks failed. The finite-difference rows of `check_model` (labels ending
+/// in `(FD)`) do not count when the model is not smooth, since a kink between
+/// the two sides of a difference makes them unreliable; every other row, and
+/// every JIT row, counts.
+fn tally(entries: &[EntryReport], jit: &[Row], smooth: bool) -> (String, usize) {
     let mut s = String::new();
-    let _ = writeln!(
-        s,
-        "{} points per entry, seed {}",
-        report.points, report.seed
-    );
     let (mut counted, mut bad, mut skipped) = (0_usize, 0_usize, 0_usize);
-    for e in &report.entries {
+    for e in entries {
         if !smooth && e.label.ends_with("(FD)") {
             skipped += 1;
             let _ = writeln!(s, "{}", info_row(e));
@@ -337,7 +306,7 @@ pub fn check_derivs(file: &Path, points: usize, seed: u64) -> ExitCode {
         bad += usize::from(!e.pass);
         let _ = writeln!(s, "{e}");
     }
-    for r in jit_rows(ir, &fb, points, seed) {
+    for r in jit {
         counted += 1;
         bad += usize::from(!r.pass);
         let _ = writeln!(s, "{}", r.text);
@@ -354,7 +323,23 @@ pub fn check_derivs(file: &Path, points: usize, seed: u64) -> ExitCode {
         );
     }
     s.push('\n');
-    out(&s, u8::from(bad > 0))
+    (s, bad)
+}
+
+/// `check-derivs`: `check_model` plus the JIT against the DAG and the fallback.
+pub fn check_derivs(file: &Path, points: usize, seed: u64) -> ExitCode {
+    let Prepared { loaded, mut ir } = match prepare(file) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let fb = Fallback::new(&loaded.expanded, &loaded.info, &ir);
+    let opt = Options::new(points, seed);
+    let report = check_model(&mut ir, &fb, points, seed);
+    let smooth = ir.smooth;
+    let jit = jit_rows(ir, &fb, points, seed, opt.half_width);
+    let (body, bad) = tally(&report.entries, &jit, smooth);
+    let head = format!("{} points per entry, seed {}\n", report.points, report.seed);
+    out(&(head + &body), u8::from(bad > 0))
 }
 
 #[cfg(test)]
@@ -375,8 +360,115 @@ mod tests {
         assert!(!same_bits(f64::INFINITY, f64::NEG_INFINITY));
     }
 
+    fn entry(label: &str, pass: bool, note: Option<&str>) -> EntryReport {
+        EntryReport {
+            label: label.to_string(),
+            pass,
+            worst_err: 0.0,
+            scale: 1.0,
+            ratio: if pass { 0.0 } else { 2.0 },
+            x: vec![0.5],
+            p: vec![1.0],
+            points: 3,
+            note: note.map(str::to_string),
+        }
+    }
+
+    fn jit(label: &str, pass: bool, detail: &str) -> Row {
+        row(label, pass, detail)
+    }
+
     #[test]
-    fn slot_labels() {
-        assert_eq!(slot_label(&[Slot::U, Slot::P, Slot::Full]), "Dir[U,P,Full]");
+    fn all_rows_passing_gives_no_failures() {
+        let entries = [entry("F", true, None), entry("A (FD)", true, None)];
+        let rows = [jit("F (JIT vs DAG, 0 ulp)", true, "3 points")];
+        for smooth in [true, false] {
+            let (text, bad) = tally(&entries, &rows, smooth);
+            assert_eq!(bad, 0);
+            assert!(text.contains("pass"), "{text}");
+        }
+        let (text, _) = tally(&entries, &rows, true);
+        assert!(text.ends_with("all 3 checks pass\n"), "{text}");
+        let (text, _) = tally(&entries, &rows, false);
+        assert!(
+            text.ends_with(
+                "all 2 checks pass; 1 finite-difference lines not counted (the model is not smooth)\n"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_failing_exact_row_counts_on_smooth_and_non_smooth_models() {
+        for smooth in [true, false] {
+            let (text, bad) = tally(&[entry("JacU", false, None)], &[], smooth);
+            assert_eq!(bad, 1, "smooth {smooth}");
+            assert!(text.ends_with("1 of 1 checks FAIL\n"), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_failing_fd_row_counts_only_on_a_smooth_model() {
+        for label in ["A (FD)", "f_alpha (FD)", "B (FD)", "C (FD)"] {
+            let entries = [entry("F", true, None), entry(label, false, None)];
+            let (text, bad) = tally(&entries, &[], true);
+            assert_eq!(bad, 1, "{label}");
+            assert!(text.contains("FAIL"), "{text}");
+            let (text, bad) = tally(&entries, &[], false);
+            assert_eq!(bad, 0, "{label}");
+            assert!(text.contains("info (non-smooth, not counted)"), "{text}");
+            assert!(!text.contains("FAIL"), "{text}");
+            assert!(text.starts_with("F "), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_plain_fd_row_for_an_unbuilt_entry_counts_on_a_non_smooth_model() {
+        let r = entry("FD", false, Some("entry not built: too large"));
+        let (_, bad) = tally(&[r], &[], false);
+        assert_eq!(bad, 1);
+    }
+
+    #[test]
+    fn unbuilt_entries_and_failed_jit_calls_count() {
+        let unbuilt = entry("Dir[U,U]", false, Some("entry not built: too large"));
+        let (text, bad) = tally(&[unbuilt], &[], true);
+        assert_eq!(bad, 1);
+        assert!(text.contains("entry not built"), "{text}");
+        let rows = [
+            jit("F (JIT vs DAG, 0 ulp)", false, "entry not built: x"),
+            jit("F (JIT vs Fallback)", false, "JIT call failed: bad length"),
+            jit("JacU (JIT vs DAG, 0 ulp)", true, "3 points"),
+        ];
+        for smooth in [true, false] {
+            let (text, bad) = tally(&[], &rows, smooth);
+            assert_eq!(bad, 2, "smooth {smooth}");
+            assert!(text.ends_with("2 of 3 checks FAIL\n"), "{text}");
+            assert!(text.contains("JIT call failed"), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_mismatch_keeps_the_first_point_and_counts_all() {
+        let mut m = Mismatch::default();
+        m.note(1, (&[0.5], &[1.0, 0.25]), 2.0, 3.0, "dag");
+        m.note(0, (&[9.0], &[9.0]), 5.0, 6.0, "dag");
+        assert_eq!(m.bad, 2);
+        assert!(
+            m.first.starts_with("first at output 1, x = [5.000000e-1]"),
+            "{}",
+            m.first
+        );
+        assert!(m.first.contains("jit 2e0, dag 3e0"), "{}", m.first);
+        let r = m.row("F (JIT vs DAG, 0 ulp)", 4, 8);
+        assert!(!r.pass);
+        assert!(
+            r.text.contains("2 of 8 values differ; first at output 1"),
+            "{}",
+            r.text
+        );
+        let ok = Mismatch::default().row("F (JIT vs DAG, 0 ulp)", 4, 8);
+        assert!(ok.pass);
+        assert!(ok.text.ends_with("pass  4 points, 8 values"), "{}", ok.text);
     }
 }

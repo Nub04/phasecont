@@ -174,10 +174,7 @@ pub fn ir_errors(map: &SourceMap, shown: &str, errors: &[IrError]) -> String {
 
 /// The whole text report: diagnostics, a blank line, the summary.
 pub fn render(map: &SourceMap, loaded: &Loaded) -> String {
-    let mut out = String::new();
-    for d in &loaded.diagnostics {
-        diagnostic(&mut out, map, d);
-    }
+    let mut out = diagnostics(map, loaded);
     if !loaded.diagnostics.is_empty() {
         out.push('\n');
     }

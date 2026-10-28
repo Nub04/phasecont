@@ -1,0 +1,6 @@
+# A forced oscillator: the right-hand side uses t.
+par w=2
+x'=y
+y'=-w*x+sin(t)
+init x=0.1,y=0
+done
