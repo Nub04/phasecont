@@ -1,7 +1,7 @@
 # div-by-zero: What is 1/0?
 # xpp: 4.4843049e14
 # pc: ok
-# open: P2 division guard
+# ruling: PhaseCont uses IEEE division (see crates/pc-ode/docs/language.md)
 x'=0
 x(0)=3
 par a=2

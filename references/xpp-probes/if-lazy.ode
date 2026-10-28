@@ -1,7 +1,7 @@
 # if-lazy: Does if(1)then(1)else(1/0) evaluate both branches?
 # xpp: 1
 # pc: ok
-# open: P2 if evaluation
+# ruling: if evaluates both branches and selects (see crates/pc-ode/docs/language.md)
 x'=0
 x(0)=3
 par a=2

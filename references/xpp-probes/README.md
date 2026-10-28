@@ -27,13 +27,13 @@ Line 1 of every probe is a `#` comment, `# <id>: <question>`, because XPPAUT 8.0
 | `# states: N` | number of states, when it is not 1 (columns are `t`, states, then aux in file order) |
 | `# pc: ok` | `pc-cli parse` gives no diagnostic |
 | `# pc: ODE0010,ODE0014` | the diagnostic codes `pc-cli parse` gives, in order of first appearance |
-| `# open: ...` | a value that P2 still has to decide |
+| `# ruling: ...` | a note on how PhaseCont rules this case, with a pointer to `crates/pc-ode/docs/language.md`; the runner ignores it |
 
 The `inc/` folder and the `*.inc` files next to the probes hold the files that the `include-*` probes include. `run.sh` copies them into the run folder, since XPPAUT reads an include relative to its working directory. A `markov` variable counts as one more state column.
 
 ## Results
 
-In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, or both reject the input), "PhaseCont choice" means PhaseCont deliberately differs or adds a diagnostic, and "mismatch, see report" means a measured value contradicts a ruling, and "open for P2" means the rule is not settled. `nan` and `inf` are matched by name. The PhaseCont column gives the diagnostic that `pc-cli parse` prints today, or, for a probe with no diagnostic, the value `pc-ode` will compute once P2 evaluates expressions.
+In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, or both reject the input), "PhaseCont choice" means PhaseCont deliberately differs or adds a diagnostic, and "mismatch, see report" means a measured value contradicts a ruling. `nan` and `inf` are matched by name. The PhaseCont column gives the diagnostic that `pc-cli parse` prints today, or, for a probe with no diagnostic, the value `pc-ode` computes.
 
 | Probe | Question | Construct | XPPAUT 8.0 | PhaseCont | Status |
 |---|---|---|---|---|---|
@@ -75,8 +75,8 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `derived-func-state` | What does a derived parameter get from a function that reads a state? | `!d=g(1)`, `g(u)=u*a+x` | 5 (the initial value of x) | ODE0053 error | PhaseCont choice |
 | `derived-later` | Can an aux read a derived parameter defined on a later line? | `aux v=d`, then `!d=a+1` | 4 | no diagnostic; computes 4 | matches |
 | `derived-state` | What does a derived parameter read from a state? | `!d=a*x` | 6 (the initial value of x) | ODE0053 error | PhaseCont choice |
-| `div-by-zero` | What is 1/0? | `1/0` | 4.4843049e14 | no diagnostic; keeps IEEE for now | open for P2 |
-| `div-zero-zero` | What is 0/0? | `0/0` | 0 | no diagnostic; keeps IEEE for now | open for P2 |
+| `div-by-zero` | What is 1/0? | `1/0` | 4.4843049e14 | no diagnostic; IEEE division gives inf (`language.md`) | PhaseCont choice |
+| `div-zero-zero` | What is 0/0? | `0/0` | 0 | no diagnostic; IEEE division gives NaN (`language.md`) | PhaseCont choice |
 | `eqspace-aux` | Are blanks around = accepted in aux? | `aux v = 2` | 2 | no diagnostic; computes 2 | matches |
 | `eqspace-dxdt` | Are blanks around = accepted in dx/dt=? | `dx/dt = 1` | v@2=14 | no diagnostic; computes v@2=14 | matches |
 | `eqspace-func` | Are blanks around = accepted in a function definition? | `f(u) = u*2` | 8 | no diagnostic; computes 8 | matches |
@@ -115,7 +115,7 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `heav-negzero` | What is heav(-0)? | `heav(-0)` | 1 | no diagnostic; computes 1 | matches |
 | `heav-zero` | What is heav(0)? | `heav(0)` | 1 | no diagnostic; computes 1 | matches |
 | `hom-bcs` | Does XPPAUT 8.0 accept a hom_bcs line? | `hom_bcs 1` | 5 | ODE0035 warning, `hom_bcs` unsupported | PhaseCont choice |
-| `if-lazy` | Does if(1)then(1)else(1/0) evaluate both branches? | `if(1)then(1)else(1/0)` | 1 | no diagnostic; keeps IEEE for now | open for P2 |
+| `if-lazy` | Does if(1)then(1)else(1/0) evaluate both branches? | `if(1)then(1)else(1/0)` | 1 | no diagnostic; both branches are evaluated and one is selected, so the result is 1 (`language.md`) | matches |
 | `implicit-div` | Is implicit multiplication after a division accepted (a/2v)? | `a/2v0`, a=8 | error (no output) | ODE0013 warning, XPPAUT 8.0 rejects this | PhaseCont choice |
 | `implicit-num-name` | Is implicit multiplication of a number and a name accepted (2x)? | `2x` | error (no output) | ODE0013 warning, XPPAUT 8.0 rejects this | PhaseCont choice |
 | `implicit-num-paren` | Is implicit multiplication before a parenthesis accepted (2(x))? | `2(x)` | error (no output) | ODE0013 warning, XPPAUT 8.0 rejects this | PhaseCont choice |
