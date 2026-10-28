@@ -2,7 +2,7 @@
 
 ## Phase
 
-P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching; SPEC section 14) is next; its plan was approved on 2026-10-28. P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
+P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching; SPEC section 14) is in progress on branch `phase3-pc-engine`; its plan was approved on 2026-10-28. P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
 
 ## Done
 
@@ -56,7 +56,7 @@ P2 (accepted on 2026-10-28; the numbers below were measured that day at `765fc3c
 
 ## In progress
 
-- Nothing yet. P3 starts on branch `phase3-pc-engine`.
+- P3, task 1 of 14: SPEC sections 5, 6 and 9 (test 5) now state the P3 choices: the scaled ψ_H and the `NSA` label, Hopf detection off for n > 100 until P4, locating along the step, the defining systems used to refine LP, H and BP points, the branching equation, the worker that lowers and compiles its own model, and b = 8/3 exactly in test 5. `language.md` states the Bessel order cap that task 3 adds.
 
 ## Next
 
