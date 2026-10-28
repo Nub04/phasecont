@@ -5,7 +5,11 @@
 all-features = true
 
 [advisories]
-ignore = []
+ignore = [
+    # paste 1.0.15 is unmaintained and has no fixed release. It is a build-time proc-macro that
+    # faer 0.24.4 pulls in through gemm and pulp, so no paste code runs in pckern.
+    { id = "RUSTSEC-2024-0436", reason = "unmaintained build-time proc-macro under faer; no upgrade" },
+]
 
 [licenses]
 # CLAUDE.md rule 2. Ask before adding anything to this list.

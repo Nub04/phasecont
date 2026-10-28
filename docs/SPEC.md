@@ -139,25 +139,36 @@ $$G(x) = \begin{pmatrix} F(x) \\ v_k^\top (x - x_k) - h \end{pmatrix} = 0.$$
 - If Newton converges in 3 or fewer iterations, set $h \leftarrow \min(1.3h, h_{\max})$.
 - If it fails after 6 iterations (configurable), set $h \leftarrow h/2$ and retry.
 - Below $h_{\min}$, stop the branch and report the reason.
+- A branch also stops at the maximum step count, at a bound on $\alpha$ (the last step is cut back so that $\alpha$ lands on the bound), when the bordered matrix is singular, and on cancel. Each stop records its reason.
+
+**Starting point.** The `init` values of a model are rarely an equilibrium, so a branch starts with Newton's method on $F(u) = 0$ at fixed parameters, with the same tolerances as the corrector. The first tangent solves the system above with $e_\alpha$ in place of $v_{k-1}$, and its sign is chosen by the requested direction. Models that depend on $t$ are refused, and so are models with a formula table that reads a parameter, since `lower` tabulates it once from the declared values.
 
 **Test functions on equilibrium branches.** $\lambda_i$ are the eigenvalues of $A$.
 - **LP:** $\psi_{LP} = v_{k,\alpha}$, the parameter component of the tangent.
-- **BP:** $\psi_{BP} = \det \begin{pmatrix} F_x \\ v^\top \end{pmatrix}$.
-- **H:** $\psi_H = \prod_{i<j} (\lambda_i + \lambda_j)$, which equals $\det(2A \odot I)$. It vanishes at Hopf points and at neutral saddles. Check the eigenvalues to tell them apart and label neutral saddles but do not report them as Hopf. For $n > 100$, switch to the minimally augmented test function from Govaerts.
+- **BP:** $\psi_{BP} = \det \begin{pmatrix} F_x \\ v^\top \end{pmatrix}$, taken from the LU factors of the tangent solve.
+- **H:** the zeros of $\prod_{i<j} (\lambda_i + \lambda_j)$, which equals $\det(2A \odot I)$. Let $s_{ij} = (\lambda_i + \lambda_j) / \max(1, |\lambda_i| + |\lambda_j|)$ and let $s_k$ be the factor of smallest modulus. The engine computes
+  $$\psi_H = \operatorname{sign}\Big( \prod_{i<j} s_{ij} \Big)\, |s_k|.$$
+  It is continuous in $A$, it has the sign of the plain product, and it is 0 exactly where some factor is 0 (two factors vanishing together also give 0). Its modulus is at most 1, so it neither overflows nor underflows to 0 away from a zero, even with many slow modes. For $n = 1$ there are no pairs and $\psi_H = 1$. Near a zero, $\psi_H$ can be nearly flat when another factor is tiny and hardly changes, so the zero search along a step uses the plain product divided by its modulus at point $k$, computed through logarithms.
+- $\psi_H$ vanishes at Hopf points and at neutral saddles. At a zero, the pair with the smallest scaled $|\lambda_i + \lambda_j|$ decides: a complex conjugate pair is a Hopf point (`H`), a real pair $\pm\lambda$ is a neutral saddle, labeled `NSA` and not reported as Hopf. (`NS` is Neimark-Sacker.)
+- For $n > 100$, Phase 3 runs with Hopf detection off and puts a warning in the run status. Phase 4 adds the minimally augmented test function from Govaerts.
 
 **Locating special points.**
-1. When a test function changes sign between $x_k$ and $x_{k+1}$, find the zero along the step with the secant method, using a bisection safeguard.
-2. Refine the point by solving its defining system (Section 6) with Newton's method.
-3. Store the refined point, its eigenvalues and its normal form coefficient on the branch.
+1. When a test function changes sign strictly between $x_k$ and $x_{k+1}$, find $s \in (0,1)$ where it vanishes. Each trial point is corrected from $x_k + s h v_k$ on the hyperplane $v_k^\top(x - x_k) = s h$. The iteration is a secant method with a bisection safeguard (Illinois regula falsi), at most 30 iterations.
+2. Refine the point by solving its defining system (Section 6) with Newton's method. If that Newton fails, the located point is kept and marked as not refined.
+3. Store the point, its eigenvalues and its normal form coefficient on the branch.
+4. A branch that starts at a special point (after branch switching) skips detection on its first step.
 
 **Branch storage.** Columns are $u$, $\alpha$, tangent, eigenvalues (or multipliers), test function values, step size and Newton iteration count. Special points carry a label, an index and a struct of extras.
 
-**Background runs.** A continuation runs on a Rust background thread. MATLAB polls for new points with `pc_run_poll` from a `timer`, so plots update live, and `pc_run_cancel` stops the run. A panic on the background thread is caught on that thread, with its message and source location, and the next `pc_run_poll` reports it as an error.
+**Background runs.** A continuation runs on a Rust background thread. MATLAB polls for new points with `pc_run_poll` from a `timer`, so plots update live, and `pc_run_cancel` stops the run. Cancel is checked between Newton iterations and between steps. A panic on the background thread is caught on that thread, with its message and source location, and the next `pc_run_poll` reports it as an error.
+- A compiled model is not `Send` (it holds code pointers), and the lowered `IrModel` is not `Clone`. A run therefore takes copies of the checked model and its `ModelInfo`, and the worker lowers and compiles them on its own thread.
+- `pc-engine` owns the panic hook. It is installed once, stores the message and `file:line:col` of a panic on an engine worker in a thread local, and prints nothing, since stderr is lost inside MATLAB. `pc-ffi` reuses it in Phase 7a.
 
 ## 6. Equilibrium bifurcations and normal forms
 
 **Fold (LP).** With $Aq = 0$, $A^\top p = 0$, $p^\top q = 1$ and $\|q\| = 1$, the quadratic coefficient is
 $$a = \tfrac{1}{2}\, p^\top B(q,q).$$
+The sign of $q$ is chosen so that $p^\top F_\alpha > 0$. The normal form is then $\dot w = \beta + a w^2$ with $\beta$ increasing in $\alpha$ (Kuznetsov, Theorem 3.1), so the sign of $a$ tells on which side of the fold the two equilibria lie. If $p^\top F_\alpha$ is exactly 0, the fold is not generic and $q$ keeps the sign of the null vector solve.
 
 **Minimally augmented LP curve** (Govaerts 2000). Solve
 $$\begin{pmatrix} A & w_{\text{bor}} \\ v_{\text{bor}}^\top & 0 \end{pmatrix}\begin{pmatrix} q \\ g \end{pmatrix} = \begin{pmatrix} 0 \\ 1 \end{pmatrix}.$$
@@ -165,16 +176,21 @@ The LP curve is $F = 0$, $g = 0$ with two free parameters. Update the borders $v
 
 **Hopf.** The eigenvectors satisfy $Aq = i\omega q$ and $A^\top p = -i\omega p$. Use the normalization $\langle q,q\rangle = 1$ and $\langle p,q\rangle = 1$, where $\langle a,b\rangle = \bar a^\top b$. The first Lyapunov coefficient (Kuznetsov) is
 $$l_1 = \frac{1}{2\omega}\,\mathrm{Re}\Big(\langle p, C(q,q,\bar q)\rangle - 2\langle p, B(q, A^{-1}B(q,\bar q))\rangle + \langle p, B(\bar q, (2i\omega I - A)^{-1}B(q,q))\rangle\Big).$$
-The value of $l_1$ depends on the normalization of $q$; only its sign is invariant. Always report which normalization was used.
+The value of $l_1$ depends on the normalization of $q$; only its sign is invariant. Always report which normalization was used. Every stored LP and H point records its normalization as a string (`|q|=1, p'q=1, p'F_alpha>0` and `<q,q>=1, <p,q>=1`). The complex solve with $2i\omega I - A$ runs in the real form $\begin{pmatrix} A - \sigma I & \omega I \\ -\omega I & A - \sigma I \end{pmatrix}$ of $A - (\sigma + i\omega) I$, so only real LU is needed.
 
-**Minimally augmented Hopf curve.** Use the bordered $A^2 + \kappa I$ formulation from Govaerts (2000), with $\kappa = \omega^2$ as an extra unknown. The extra test function $\kappa \to 0$ detects BT.
+**Refining points on an equilibrium branch.** Newton's method on these systems, with exact Jacobians from the `JacU`, `JacP` and `Dir` entries:
+- LP: $F = 0$, $g = 0$ in $(u, \alpha)$, with $g$ from the bordered system above and borders from the null vectors of $A$ at the located point. The derivative of $g$ with respect to a component $z$ of $(u,\alpha)$ is $g_z = -w^\top (A_z q)$, where $w$ solves the adjoint system $\begin{pmatrix} A^\top & v_{\text{bor}} \\ w_{\text{bor}}^\top & 0 \end{pmatrix}\begin{pmatrix} w \\ h \end{pmatrix} = \begin{pmatrix} 0 \\ 1 \end{pmatrix}$.
+- H: the standard extended system in $(u, \alpha, q_r, q_i, \omega)$ with $3n + 2$ equations: $F = 0$, $A q_r + \omega q_i = 0$, $A q_i - \omega q_r = 0$, $c^\top q_r = 1$, $c^\top q_i = 0$, where $c$ is the real part of the eigenvector at the located point. It needs only first and second derivatives.
+- BP: $F(x) + b\varphi = 0$, $F_x^\top \varphi = 0$, $\varphi^\top \varphi = 1$ in $(x, b, \varphi)$, with $2n + 2$ equations; $b = 0$ at the solution.
+
+**Minimally augmented Hopf curve.** Phase 4 continues Hopf curves with the bordered $A^2 + \kappa I$ formulation from Govaerts (2000), with $\kappa = \omega^2$ as an extra unknown. The extra test function $\kappa \to 0$ detects BT.
 
 **Codim-2 points.**
 - On LP curves: CP ($a = 0$), BT, ZH.
 - On H curves: GH ($l_1 = 0$), BT, ZH, HH.
 - Normal form coefficients come from Kuznetsov (1999), "Numerical normalization techniques for all codim 2 bifurcations of equilibria in ODEs."
 
-**Branch switching at BP.** Compute the second tangent from the null space of the extended Jacobian and the algebraic branching equation (Allgower and Georg; Govaerts).
+**Branch switching at BP.** Compute the second tangent from the null space of the extended Jacobian and the algebraic branching equation (Allgower and Georg; Govaerts). At a simple BP $x^*$, $\varphi_1, \varphi_2$ span the kernel of the $n \times (n+1)$ matrix $F_x$ and $\psi$ spans its left kernel. With $c_{ij} = \psi^\top F_{xx}[\varphi_i, \varphi_j]$, the tangents of the two branches are $\beta_1\varphi_1 + \beta_2\varphi_2$ for the roots of $c_{11}\beta_1^2 + 2c_{12}\beta_1\beta_2 + c_{22}\beta_2^2 = 0$. The new branch takes the root farther from the current tangent. A negative discriminant or a double root means the BP is not simple, and switching stops with an error.
 
 ## 7. Limit cycles
 
@@ -232,8 +248,9 @@ $$\dot x = \alpha x - y + c\,x(x^2+y^2), \qquad \dot y = x + \alpha y + c\,y(x^2
    - period $2\pi$ within $10^{-10}$
    - nontrivial Floquet multiplier $e^{-4\pi\alpha}$ within $10^{-8}$
 4. **Collocation convergence** on test 3: the mesh-point error must scale like $O(N^{-2m})$, with the observed order within 0.5 of $2m$ for $m = 2, 3, 4$.
-5. **Lorenz**, $\sigma = 10$, $b = 8/3$:
-   - BP of the origin at $r = 1$
+5. **Lorenz**, $\sigma = 10$, $b = 8/3$ (set to `8.0/3.0` exactly, not a rounded literal such as `2.6666667`, which moves the Hopf value by about $2 \cdot 10^{-7}$):
+   - BP of the origin at $r = 1$ within $10^{-10}$
+   - switching at that BP gives the nontrivial branch, whose points satisfy $x = y$ and $z = x^2/b$
    - Hopf on the nontrivial equilibria at $r = \sigma(\sigma+b+3)/(\sigma-b-1) = 470/19$, within $10^{-9}$
    - $l_1 > 0$ there (subcritical)
 6. **Brusselator** $\dot x = a - (b+1)x + x^2 y$, $\dot y = bx - x^2 y$: the equilibrium $(a, b/a)$ has its Hopf point at $b = 1 + a^2$ with $\omega = a$, within $10^{-9}$.

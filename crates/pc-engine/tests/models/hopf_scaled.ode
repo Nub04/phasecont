@@ -1,0 +1,6 @@
+# hopf_c in the coordinates X = 2x, Y = 2y. The cubic coefficient becomes c/4.
+par al=0.1,c=-1
+x'=al*x-y+c*x*(x^2+y^2)/4
+y'=x+al*y+c*y*(x^2+y^2)/4
+init x=0.2,y=0
+done

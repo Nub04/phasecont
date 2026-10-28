@@ -1,0 +1,5 @@
+# Saddle-node normal form: fold at a=0.
+par a=-1
+x'=a+x^2
+init x=1
+done

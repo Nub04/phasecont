@@ -1,0 +1,6 @@
+# Planar Hopf normal form with cubic coefficient c.
+par al=0.1,c=-1
+x'=al*x-y+c*x*(x^2+y^2)
+y'=x+al*y+c*y*(x^2+y^2)
+init x=0.1,y=0
+done

@@ -73,16 +73,23 @@ pub fn lgamma(x: f64) -> f64 {
     libm::lgamma_r(x).0
 }
 
+/// Largest order `|trunc(n)|` that the Bessel shims evaluate. The cap bounds the time of one
+/// call, which a cancel cannot interrupt. The derivative of `J_n` and `Y_n` in `x` uses the
+/// orders `n - 1` and `n + 1` (DLMF 10.6.1), so at the cap that derivative is NaN.
+const BESSEL_ORDER_CAP: f64 = 10000.0;
+
+/// `trunc(n)` as a C `int`, or `None` when `n` is not finite or `|trunc(n)|` is above
+/// [`BESSEL_ORDER_CAP`]. The shims return NaN for `None`.
 fn order(n: f64) -> Option<i32> {
     let t = n.trunc();
-    if t.is_finite() && t.abs() <= 2147483647.0 {
+    if t.is_finite() && t.abs() <= BESSEL_ORDER_CAP {
         Some(t as i32)
     } else {
         None
     }
 }
 
-/// `J_n(x)` with the order truncated toward zero.
+/// `J_n(x)` with the order truncated toward zero. `|trunc(n)| > 10000` gives NaN.
 pub fn besselj(n: f64, x: f64) -> f64 {
     match order(n) {
         Some(k) => libm::jn(k, x),
@@ -90,7 +97,7 @@ pub fn besselj(n: f64, x: f64) -> f64 {
     }
 }
 
-/// `Y_n(x)` with the order truncated toward zero.
+/// `Y_n(x)` with the order truncated toward zero. `|trunc(n)| > 10000` gives NaN.
 pub fn bessely(n: f64, x: f64) -> f64 {
     match order(n) {
         Some(k) => libm::yn(k, x),
@@ -539,6 +546,28 @@ mod tests {
         assert!(bessely(3e9, 1.0).is_nan());
         assert!((besselj(0.0, 1.0) - 0.765_197_686_557_966_6).abs() < 1e-15);
         assert!((bessely(0.0, 1.0) - 0.088_256_964_215_676_96).abs() < 1e-15);
+    }
+
+    #[test]
+    fn bessel_order_cap() {
+        // The cap is 10000 in absolute value, after truncation toward zero. Y_10000 is finite
+        // only from about x = 9000 up; below that it overflows to -inf.
+        for x in [9990.0, 10000.0, 12000.0] {
+            assert!(besselj(10000.0, x).is_finite());
+            assert!(besselj(-10000.0, x).is_finite());
+            assert!(bessely(10000.0, x).is_finite());
+            assert!(bessely(-10000.0, x).is_finite());
+            assert!(besselj(10000.9, x).is_finite());
+            assert!(besselj(-10000.9, x).is_finite());
+            assert!(besselj(10001.0, x).is_nan());
+            assert!(besselj(-10001.0, x).is_nan());
+            assert!(besselj(10001.5, x).is_nan());
+            assert!(bessely(10001.0, x).is_nan());
+            assert!(bessely(-10001.0, x).is_nan());
+        }
+        assert!(besselj(1e300, 1.0).is_nan());
+        assert!(bessely(-1e300, 1.0).is_nan());
+        assert!(bessely(f64::NEG_INFINITY, 1.0).is_nan());
     }
 
     #[test]

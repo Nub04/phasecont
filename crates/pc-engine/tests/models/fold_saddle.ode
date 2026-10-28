@@ -1,0 +1,6 @@
+# Fold with an indefinite second derivative: at (0,0) F_x = [0, 1] has rank 1,
+# while F_xx = diag(2, -2) would give the branching equation two real roots.
+par a=-1
+x'=a+x^2-a^2
+init x=1
+done

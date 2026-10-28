@@ -484,6 +484,48 @@ fn model_entries_match_eval() {
     }
 }
 
+/// `x' = besselj(n, x)` and `bessely` with `par n` at the order cap. The JIT matches the DAG
+/// `eval` bit for bit at orders 10000 and -10000 (and at the cap minus one), and gives NaN at
+/// 10001 and -10001. The x-derivative needs `n + 1` or `n - 1`, so it is NaN at the cap.
+#[test]
+fn bessel_order_cap_matches_eval() {
+    for f in ["besselj", "bessely"] {
+        let src = format!("par n=1\ninit x=1\nx'={f}(n,x)\ndone\n");
+        let mut ir = build_model(&src);
+        let kinds = [EntryKind::F, EntryKind::JacU];
+        let es: Vec<Entry> = kinds.iter().map(|k| ir.entry(k).expect("entry")).collect();
+        let pairs: Vec<(EntryKind, &Entry)> = kinds.iter().cloned().zip(es.iter()).collect();
+        let jit = compile(&pairs, &ir.dag).expect("compile");
+        let f_fn: PlainFn = jit.plain(&EntryKind::F).expect("F");
+        let ju: PlainFn = jit.plain(&EntryKind::JacU).expect("JacU");
+        for n in [9999.0, 10000.0, 10001.0, -10000.0, -10001.0] {
+            for x in [9990.0, 10000.0, 12000.0] {
+                let p = [n, 0.0];
+                let xs = [x];
+                let (mut got, mut want) = ([0.0], [0.0]);
+                // SAFETY: x has 1 value, p has 2 and out has 1 element.
+                unsafe { f_fn(xs.as_ptr(), p.as_ptr(), got.as_mut_ptr()) };
+                eval(&ir.dag, &es[0].outputs, &xs, &p, &[], &mut want);
+                assert!(
+                    same(got[0], want[0]),
+                    "{f} F n={n} x={x}: {got:?} vs {want:?}"
+                );
+                let capped = n.abs() > 10000.0;
+                assert_eq!(got[0].is_nan(), capped, "{f} F n={n} x={x}: {got:?}");
+                // SAFETY: as above.
+                unsafe { ju(xs.as_ptr(), p.as_ptr(), got.as_mut_ptr()) };
+                eval(&ir.dag, &es[1].outputs, &xs, &p, &[], &mut want);
+                assert!(
+                    same(got[0], want[0]),
+                    "{f} JacU n={n} x={x}: {got:?} vs {want:?}"
+                );
+                // n + 1 or n - 1 is past the cap at n = 10000 and n = -10000.
+                assert_eq!(got[0].is_nan(), n.abs() >= 10000.0, "{f} JacU n={n} x={x}");
+            }
+        }
+    }
+}
+
 // ---- random expressions ----
 
 #[derive(Clone, Debug)]

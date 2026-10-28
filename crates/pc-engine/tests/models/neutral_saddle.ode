@@ -1,0 +1,6 @@
+# Linear system with eigenvalues al+1 and al-1, a neutral saddle at al=0.
+par al=0.2
+x'=al*x+y
+y'=x+al*y
+init x=0.1,y=0.1
+done

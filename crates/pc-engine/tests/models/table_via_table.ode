@@ -1,0 +1,7 @@
+# Table formula that reads a parameter through another table, so it must be refused.
+par a=1
+table g % 11 0 1 a*t
+table h % 11 0 1 g(t)
+x'=-x+h(x)
+init x=0.2
+done

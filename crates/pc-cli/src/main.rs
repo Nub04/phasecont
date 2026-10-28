@@ -1,6 +1,7 @@
 //! Headless runner: parse models, run session JSON files, run benchmarks.
 
 mod args;
+mod cont;
 mod ircmd;
 mod json;
 mod summary;
@@ -23,6 +24,11 @@ fn main() -> ExitCode {
         Ok(Command::Ir { file }) => ircmd::ir(&file),
         Ok(Command::CheckDerivs { file, points, seed }) => ircmd::check_derivs(&file, points, seed),
         Ok(Command::EmitC { file, out }) => ircmd::emit_c(&file, out.as_deref()),
+        Ok(Command::Cont {
+            file,
+            problem,
+            fallback,
+        }) => cont::cont(&file, &problem, fallback),
         Err(e) => {
             eprintln!("pc-cli: {}", e.0);
             eprintln!("{USAGE}");

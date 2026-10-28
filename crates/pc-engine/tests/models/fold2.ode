@@ -1,0 +1,6 @@
+# Two-variable fold at a=0, u=(0,0), with a non-symmetric Jacobian.
+par a=-0.5
+x'=a+x^2+y
+y'=-y+x*y
+init x=-0.7,y=0
+done

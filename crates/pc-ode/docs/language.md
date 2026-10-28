@@ -296,7 +296,7 @@ Arity `n` means the function takes exactly `n` arguments. "Smooth" means the fun
 | `ceil` | 1 | ceiling | no | no | manual; XPPAUT 8.0 rejects it, so portability warning |
 | `erf erfc` | 1 | error function, complement | yes | no | manual, measured (`erf(1)` = 0.84270078) |
 | `lgamma` | 1 | `ln\|Γ(x)\|` | yes, away from poles | no | measured (`lgamma(5)` = 3.1780539, `lgamma(-0.5)` = 1.2655121) |
-| `besselj bessely` | 2 | `J_n(x)`, `Y_n(x)`; order truncated toward zero | yes in `x` | no | manual, measured (`besselj(1.5,1)` = `besselj(1,1)`, `besselj(-0.5,1)` = `besselj(0,1)`) |
+| `besselj bessely` | 2 | `J_n(x)`, `Y_n(x)`; order truncated toward zero; `\|order\| > 10000` gives NaN | yes in `x` | no | manual, measured (`besselj(1.5,1)` = `besselj(1,1)`, `besselj(-0.5,1)` = `besselj(0,1)`) |
 | `ran` | 1 | uniform on `[0, a]` | no | yes | manual, measured only at 0 (probe `fn-random`: `ran(0)` = 0; the draws cannot be compared) |
 | `normal` | 2 | normal with mean `m` and variance `v` | no | yes | manual |
 | `poisson` | 1 | Poisson sample | no | yes | manual, measured only at 0 (probe `fn-random`: `poisson(0)` = 0) |

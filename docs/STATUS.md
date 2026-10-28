@@ -2,7 +2,7 @@
 
 ## Phase
 
-P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching; SPEC section 14) is next; its plan was approved on 2026-10-28. P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
+P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching; SPEC section 14) is implemented on branch `phase3-pc-engine` and reviewed, and waits for acceptance; its plan was approved on 2026-10-28. P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
 
 ## Done
 
@@ -52,14 +52,35 @@ P2 (accepted on 2026-10-28; the numbers below were measured that day at `765fc3c
   - A table formula that reads parameters, states or fixed quantities is tabulated from their default and initial values when the model is lowered (`language.md`, statement details). Changing them needs a new lowering; P3 sessions must do that.
   - At a singular point, where a partial is infinite or NaN and the tangent is 0 at run time, the DAG and the JIT can give NaN while `Fallback` gives a finite value. The interpreter skips a zero tangent at run time and the DAG folds only constant zeros. Both are right at regular points, and the checks use regular points.
   - In JIT, DAG and AOT comparisons a NaN matches any NaN, since IEEE 754 leaves the sign and payload of a NaN result unspecified. DAG constants and table data are still compared bit for bit.
-- Parked minor findings, none affecting results: `pc-jit` and `pc-codegen` keep their own copies of `children` and `live_set`; `jit_rows` repeats `compare_kind` across the crate boundary; the running error bound of a table ignores the roundings inside `math::table` (all evaluators share it); user-function re-lowering can grow exponentially with nesting; sanitized C entry names can collide (the compile then fails); the module guard's error-path counter covers one injection point; `math::besselj` and `math::bessely` take time linear in the order (about 0.5 s at order 1e8 and 10 s near 2^31 per call), so P3 should cap the order or warn.
+- Parked minor findings, none affecting results: `pc-jit` and `pc-codegen` keep their own copies of `children` and `live_set`; `jit_rows` repeats `compare_kind` across the crate boundary; the running error bound of a table ignores the roundings inside `math::table` (all evaluators share it); user-function re-lowering can grow exponentially with nesting; sanitized C entry names can collide (the compile then fails); the module guard's error-path counter covers one injection point; `math::besselj` and `math::bessely` take time linear in the order (about 0.5 s at order 1e8 and 10 s near 2^31 per call), which P3 bounds by capping the order at 10000 (see P3 below).
+
+P3 (the numbers below were measured on 2026-10-28 at `fb14bdb` plus the SPEC and status commit):
+
+- `crates/pc-linalg` has `dense` (LU solve with a singularity check, transpose solve, determinant), `eig` (eigenvalues of a real matrix as sorted `(re, im)` pairs), `null` (null vectors of A and A^T, kernel of an n x (n+1) matrix) and `block` (the real 2n x 2n form of complex shifted solves). No faer type leaves the crate.
+- `crates/pc-engine` has `model` (the `ModelEval` trait for `CompiledModel` and `Fallback`), `error`, `problem`, `ep` (the EP problem and the equilibrium solve), `palc` (tangent, predictor, corrector and step control), `tests_fn` (ψ_LP, ψ_BP, ψ_H and the neutral saddle check), `locate` (secant with a bisection safeguard along the step), `refine` (the LP, BP and Hopf defining systems), `normal` (a and l1), `switch` (the algebraic branching equation), `branch`, `run` (the worker thread with poll, cancel and stop) and `panic` (the hook that `pc-ffi` reuses in P7a).
+- `pc-cli cont FILE PROBLEM.json [--fallback]` runs a continuation and prints the branches as JSON, then one line per special point. On `crates/pc-engine/tests/models/lorenz.ode` with `crates/pc-engine/tests/problems/lorenz.json` it prints BP at r = 1 and NSA at r = 4.644444 on the origin branch, and H at r = 24.73684 with l1 = 2.655190e-4 and ω = 9.624530 on the switched branch. The NSA is real: there the eigenvalue 8/3 pairs with -b, which gives r = 1 + 328/90.
+- New dependency, as approved in the plan: `faer` 0.24.4 in `pc-linalg`, without default features and without rayon. `cargo deny check` passes with one ignore in `deny.toml`, RUSTSEC-2024-0436, an unmaintained build-time proc-macro under faer with no upgrade.
+- `besselj` and `bessely` with an order of magnitude above 10000 give NaN in every evaluator, as `language.md` states. This bounds the time of one evaluation, which a cancel cannot interrupt.
+- The fold coefficient a is computed with q oriented so that p^T F_α > 0, so its sign follows the normal form of Kuznetsov's Theorem 3.1; SPEC section 6 states it and the stored normalization string is `|q|=1, p'q=1, p'F_alpha>0`.
+- ψ_H is the sign of the plain product times its smallest scaled factor (SPEC section 5), so it does not underflow on models with many slow modes (`a451941`). The zero search along a step uses the plain product divided by its modulus at the step start, so a tiny, nearly constant factor does not make the search stop on the wrong pair (`d7cc8fb`).
+- The review of the whole branch (2026-10-28) found eight minor defects. One fix round (`12fd0e1` to `9894938`) fixed them together with the minor items parked during the task reviews. Among them: the bound landing now uses `tol_refine` in both of its checks, options with an infinite step size are refused, a refined point that moved more than twice the step from its secant estimate is not used, a BP whose state Jacobian does not have the expected rank is refused for n = 1 too, switch names ignore case, and `EngineError::Panicked`, which nothing built, is gone.
+- 754 tests pass in `cargo test`: 372 in `pc-ode`, 139 in `pc-ir`, 26 in `pc-jit`, 8 in `pc-codegen`, 16 in `pc-linalg`, 113 in `pc-engine` and 80 in `pc-cli`.
+- `cargo test -p pc-engine --release --test acceptance -- --nocapture` runs SPEC section 9 tests 1, 2, 5 and 6 with the JIT and with `Fallback`, and both give the same numbers:
+  - Test 1: one LP, at x = 0 and α = 1.7e-41, with a = 1 exactly.
+  - Test 2: H at α = 0 with ω = 1, and l1 = 2c for c = 1 and c = -1 with an error of 4.4e-16. No NSA.
+  - Test 5: BP at r = 1 exactly. On the switched branch x = y exactly and z = x²/b within 7.1e-15, H at r = 470/19 within 3.6e-15, and l1 = 2.655189725836717e-4 > 0.
+  - Test 6: H at b = 1 + a² exactly for a = 1 and a = 2, with ω = a within 6.7e-16.
+- `cargo build --target x86_64-pc-windows-gnu -p pc-engine` passes. The four checks pass.
+- Known limit: on a long step across a branch crossing, the trial corrector of the zero search can jump to the other branch, which puts the BP at the wrong place (α = 0.04 instead of 0 in one case). `hmax` bounds it; the test models use 0.1 or 0.5.
 
 ## In progress
 
-- Nothing yet. P3 starts on branch `phase3-pc-engine`.
+- P3: all 14 plan tasks, the review of the whole branch and its fix round are done. The owner's acceptance remains.
 
 ## Next
 
+- P4: Hopf detection for n > 100 with the minimally augmented test function (Govaerts), and the LP and Hopf curves. Each step now evaluates `JacU` and all eigenvalues even when Hopf detection is off; P4 should reuse F_u from the step's Jacobian.
+- P4 and later: a continuation that changes a parameter or state read by a table formula needs a new lowering of the model (P2 known difference).
 - P7a: the `pc-ffi` worker thread. Parsing at depth 200 needs about 800 KB of stack in a debug build, so `pc-ffi` must parse on a worker thread with an explicit stack size (for example 8 MB), not on MATLAB's thread (parked P1). It must also cap the input size, since parse diagnostics grow with the input (about 253 MB for 300000 bad lines in a debug build).
 - P7a: the JIT and AOT inside MATLAB on Windows, which P2 could not test here.
   - Run a model whose frame passes 4 KiB inside MATLAB, so the inline stack probes run on Windows.

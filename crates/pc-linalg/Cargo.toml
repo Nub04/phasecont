@@ -8,3 +8,4 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+faer = { version = "0.24.4", default-features = false, features = ["std", "linalg"] }

@@ -1,0 +1,5 @@
+# Isolated point: F_xx = 2I at the origin, so the branching form is definite.
+par a=0.5
+x'=a^2+x^2
+init x=0.1
+done
