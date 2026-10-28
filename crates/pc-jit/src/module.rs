@@ -69,7 +69,8 @@ impl Drop for JitEntries {
         if let Some(m) = self.module.take() {
             #[cfg(test)]
             FREED.with(|c| c.set(c.get() + 1));
-            // SAFETY: the function pointers die with self.
+            // SAFETY: callers of `plain` and `dir` must not call the returned function
+            // pointers after the JitEntries is dropped; this frees their code.
             unsafe { m.free_memory() };
         }
     }

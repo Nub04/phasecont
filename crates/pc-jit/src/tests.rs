@@ -164,7 +164,7 @@ fn heav_and_sign_edge_values() {
     assert_eq!((hn.to_bits(), sn.to_bits()), (1.0f64.to_bits(), 0));
     let [hnan, snan] = run(f64::NAN);
     assert_eq!(hnan.to_bits(), 0);
-    assert!(snan.is_nan());
+    assert_eq!(snan.to_bits(), f64::NAN.to_bits());
     assert_eq!(run(-3.0), [0.0, -1.0]);
     assert_eq!(run(f64::INFINITY), [1.0, 1.0]);
     assert_eq!(run(f64::NEG_INFINITY), [0.0, -1.0]);
@@ -285,6 +285,8 @@ fn tables_survive_dropping_the_dag() {
     let t = dag.add_table(vec![5.0, -1.0, 1.0, 0.0, 1.0, 4.0, 9.0, 16.0]);
     let bad_short = dag.add_table(vec![5.0, 0.0, 1.0]);
     let bad_empty = dag.add_table(vec![]);
+    let bad_n = dag.add_table(vec![1.0, 0.0, 1.0, 0.0]);
+    let bad_nan = dag.add_table(vec![f64::NAN, 0.0, 1.0, 0.0, 1.0]);
     let x = dag.var(0);
     let outs = vec![
         dag.table(t, x),
@@ -292,6 +294,8 @@ fn tables_survive_dropping_the_dag() {
         dag.table(bad_short, x),
         dag.table_slope(bad_empty, x),
         dag.table(77, x),
+        dag.table(bad_n, x),
+        dag.table_slope(bad_nan, x),
     ];
     let e = entry(outs.clone());
     let pts: Vec<f64> = vec![
@@ -334,7 +338,10 @@ fn tables_survive_dropping_the_dag() {
         }
     }
     drop(junk);
-    assert!(want[3][0] == 0.0 || want[3][0].is_finite());
+    // Malformed blocks give NaN from both evaluators (outputs 2 and up).
+    for w in &want {
+        assert!((2..outs.len()).all(|k| w[k].is_nan()), "{w:?}");
+    }
 }
 
 #[test]

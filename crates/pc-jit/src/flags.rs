@@ -1,12 +1,8 @@
 //! Cranelift settings and the host ISA.
 
-use crate::JitError;
+use crate::{JitError, cl};
 use cranelift_codegen::isa::OwnedTargetIsa;
 use cranelift_codegen::settings::{self, Configurable};
-
-fn cl<T, E: std::fmt::Display>(what: &str, r: Result<T, E>) -> Result<T, JitError> {
-    r.map_err(|e| JitError::Cranelift(format!("{what}: {e}")))
-}
 
 /// The host ISA with the flags from spike S2. Nothing here enables a fused multiply-add.
 pub(crate) fn host_isa() -> Result<OwnedTargetIsa, JitError> {

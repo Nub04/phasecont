@@ -22,27 +22,36 @@ use pc_ir::{Entry, EntryKind};
 use std::collections::HashMap;
 
 /// `F`, `Aux`, `JacU` and `JacP` entries: `(x, p, out)`.
+///
+/// `x` has n values, `p` has n_p + 1 (time last) and `out` has `outputs.len()` values.
+/// `out` must not alias `x` or `p`.
 pub type PlainFn = unsafe extern "C" fn(*const f64, *const f64, *mut f64);
 /// `Dir` entries: `(x, p, v, out)`.
+///
+/// `x` has n values, `p` has n_p + 1 (time last), `v` has the packed length of the slots
+/// and `out` has `outputs.len()` values. `out` must not alias `x`, `p` or `v`.
 pub type DirFn = unsafe extern "C" fn(*const f64, *const f64, *const f64, *mut f64);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum JitError {
     /// Cranelift refused a setting, a function or the finished module.
     Cranelift(String),
+    /// The lowering needs a shim that the module did not import.
+    MissingImport(String),
 }
 
 impl std::fmt::Display for JitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             JitError::Cranelift(m) => write!(f, "cranelift: {m}"),
+            JitError::MissingImport(m) => write!(f, "missing import: {m}"),
         }
     }
 }
 
 impl std::error::Error for JitError {}
 
-fn cl<T, E: std::fmt::Display>(what: &str, r: Result<T, E>) -> Result<T, JitError> {
+pub(crate) fn cl<T, E: std::fmt::Display>(what: &str, r: Result<T, E>) -> Result<T, JitError> {
     r.map_err(|e| JitError::Cranelift(format!("{what}: {e}")))
 }
 
@@ -110,9 +119,10 @@ pub fn compile(entries: &[(EntryKind, &Entry)], dag: &Dag) -> Result<JitEntries,
         let live = lower::live_set(dag, &entry.outputs);
         let mut refs = HashMap::new();
         for n in lower::imports_needed(dag, &live) {
-            if let Some(&fid) = imports.get(n) {
-                refs.insert(n, module.declare_func_in_func(fid, &mut ctx.func));
-            }
+            let Some(&fid) = imports.get(n) else {
+                return Err(JitError::MissingImport(n.to_string()));
+            };
+            refs.insert(n, module.declare_func_in_func(fid, &mut ctx.func));
         }
         let mut table_ptrs = HashMap::new();
         for (j, &l) in live.iter().enumerate() {
@@ -136,7 +146,7 @@ pub fn compile(entries: &[(EntryKind, &Entry)], dag: &Dag) -> Result<JitEntries,
                 ptr,
                 target: module.target_config(),
             },
-        );
+        )?;
         cl(&name, module.define_function(id, &mut ctx))?;
         #[cfg(test)]
         if let Some(fl) = ctx.compiled_code().and_then(|c| c.buffer.frame_layout()) {

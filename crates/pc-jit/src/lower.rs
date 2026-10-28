@@ -3,6 +3,7 @@
 //! Every op copies the rule in `pc_ir::eval::eval_op`. Nodes are lowered once each in
 //! increasing id order. No `fma` is emitted.
 
+use crate::JitError;
 use cranelift_codegen::ir::condcodes::FloatCC;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, Type, types};
 use cranelift_codegen::isa::TargetFrontendConfig;
@@ -243,7 +244,11 @@ fn powi(b: &mut FunctionBuilder, x: ir::Value, n: i32) -> ir::Value {
 }
 
 /// Builds the body of one entry into `func`, whose signature is already set.
-pub(crate) fn build(func: &mut ir::Function, fbc: &mut FunctionBuilderContext, c: Ctx) {
+pub(crate) fn build(
+    func: &mut ir::Function,
+    fbc: &mut FunctionBuilderContext,
+    c: Ctx,
+) -> Result<(), JitError> {
     let mut b = FunctionBuilder::new(func, fbc);
     let block = b.create_block();
     b.append_block_params_for_function_params(block);
@@ -307,11 +312,11 @@ pub(crate) fn build(func: &mut ir::Function, fbc: &mut FunctionBuilderContext, c
             }
             Op::Call1(f, a) => {
                 let a = arg(&mut b, &vals, a);
-                call1(&mut b, &c, f, a)
+                call1(&mut b, &c, f, a)?
             }
             Op::Call2(f, l, r) => {
                 let (l, r) = (arg(&mut b, &vals, l), arg(&mut b, &vals, r));
-                call2(&mut b, &c, f, l, r)
+                call2(&mut b, &c, f, l, r)?
             }
             Op::Cmp(k, l, r) => {
                 let (l, r) = (arg(&mut b, &vals, l), arg(&mut b, &vals, r));
@@ -354,11 +359,11 @@ pub(crate) fn build(func: &mut ir::Function, fbc: &mut FunctionBuilderContext, c
             }
             Op::Table(id, a) => {
                 let a = arg(&mut b, &vals, a);
-                table(&mut b, &c, "pc_table", id, a)
+                table(&mut b, &c, "pc_table", id, a)?
             }
             Op::TableSlope(id, a) => {
                 let a = arg(&mut b, &vals, a);
-                table(&mut b, &c, "pc_table_slope", id, a)
+                table(&mut b, &c, "pc_table_slope", id, a)?
             }
         };
         if let Some(slot) = vals.get_mut(i) {
@@ -377,23 +382,27 @@ pub(crate) fn build(func: &mut ir::Function, fbc: &mut FunctionBuilderContext, c
     }
     b.ins().return_(&[]);
     b.finalize(c.target);
+    Ok(())
 }
 
-fn call_shim(b: &mut FunctionBuilder, c: &Ctx, name: &str, args: &[ir::Value]) -> ir::Value {
-    match c.refs.get(name) {
-        Some(&f) => {
-            let call = b.ins().call(f, args);
-            match b.inst_results(call).first() {
-                Some(&r) => r,
-                None => b.ins().f64const(f64::NAN),
-            }
-        }
-        None => b.ins().f64const(f64::NAN),
+fn call_shim(
+    b: &mut FunctionBuilder,
+    c: &Ctx,
+    name: &str,
+    args: &[ir::Value],
+) -> Result<ir::Value, JitError> {
+    let Some(&f) = c.refs.get(name) else {
+        return Err(JitError::MissingImport(name.to_string()));
+    };
+    let call = b.ins().call(f, args);
+    match b.inst_results(call).first() {
+        Some(&r) => Ok(r),
+        None => Err(JitError::Cranelift(format!("{name} returned no value"))),
     }
 }
 
-fn call1(b: &mut FunctionBuilder, c: &Ctx, f: Fn1, x: ir::Value) -> ir::Value {
-    match f {
+fn call1(b: &mut FunctionBuilder, c: &Ctx, f: Fn1, x: ir::Value) -> Result<ir::Value, JitError> {
+    Ok(match f {
         Fn1::Sqrt => b.ins().sqrt(x),
         Fn1::Abs => b.ins().fabs(x),
         // 1 when x >= 0, else 0 (NaN gives 0).
@@ -402,27 +411,34 @@ fn call1(b: &mut FunctionBuilder, c: &Ctx, f: Fn1, x: ir::Value) -> ir::Value {
             let t = b.ins().fcmp(FloatCC::GreaterThanOrEqual, x, zero);
             b2f(b, t)
         }
-        // 1, -1, +0.0 for either zero, and x itself (NaN) otherwise.
+        // 1, -1, +0.0 for either zero, and the canonical NaN for NaN, as math::sign.
         Fn1::Sign => {
             let zero = b.ins().f64const(0.0);
             let one = b.ins().f64const(1.0);
             let minus = b.ins().f64const(-1.0);
+            let nan = b.ins().f64const(f64::NAN);
             let is_zero = b.ins().fcmp(FloatCC::Equal, x, zero);
             let neg = b.ins().fcmp(FloatCC::LessThan, x, zero);
             let pos = b.ins().fcmp(FloatCC::GreaterThan, x, zero);
-            let rest = b.ins().select(is_zero, zero, x);
+            let rest = b.ins().select(is_zero, zero, nan);
             let rest = b.ins().select(neg, minus, rest);
             b.ins().select(pos, one, rest)
         }
         other => match shim1(other) {
-            Some(name) => call_shim(b, c, name, &[x]),
-            None => b.ins().f64const(f64::NAN),
+            Some(name) => call_shim(b, c, name, &[x])?,
+            None => return Err(JitError::MissingImport(format!("{other:?}"))),
         },
-    }
+    })
 }
 
-fn call2(b: &mut FunctionBuilder, c: &Ctx, f: Fn2, x: ir::Value, y: ir::Value) -> ir::Value {
-    match f {
+fn call2(
+    b: &mut FunctionBuilder,
+    c: &Ctx,
+    f: Fn2,
+    x: ir::Value,
+    y: ir::Value,
+) -> Result<ir::Value, JitError> {
+    Ok(match f {
         // x < y ? x : y
         Fn2::Min => {
             let t = b.ins().fcmp(FloatCC::LessThan, x, y);
@@ -434,18 +450,25 @@ fn call2(b: &mut FunctionBuilder, c: &Ctx, f: Fn2, x: ir::Value, y: ir::Value) -
             b.ins().select(t, x, y)
         }
         other => match shim2(other) {
-            Some(name) => call_shim(b, c, name, &[x, y]),
-            None => b.ins().f64const(f64::NAN),
+            Some(name) => call_shim(b, c, name, &[x, y])?,
+            None => return Err(JitError::MissingImport(format!("{other:?}"))),
         },
-    }
+    })
 }
 
-fn table(b: &mut FunctionBuilder, c: &Ctx, name: &str, id: u32, x: ir::Value) -> ir::Value {
+fn table(
+    b: &mut FunctionBuilder,
+    c: &Ctx,
+    name: &str,
+    id: u32,
+    x: ir::Value,
+) -> Result<ir::Value, JitError> {
     match c.table_ptrs.get(&id).copied().flatten() {
         Some(ptr) => {
             let addr = b.ins().iconst(c.ptr, ptr as usize as i64);
             call_shim(b, c, name, &[addr, x])
         }
-        None => b.ins().f64const(f64::NAN),
+        // A missing or malformed table reads as NaN, like the interpreter.
+        None => Ok(b.ins().f64const(f64::NAN)),
     }
 }
