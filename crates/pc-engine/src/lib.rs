@@ -11,6 +11,7 @@ mod error;
 mod model;
 mod palc;
 mod problem;
+mod tests_fn;
 
 pub use branch::{Branch, Extras, Options, Point, SpecialPoint, StopReason};
 pub use ep::{EpProblem, EpSetup, continue_ep, equilibrium};
@@ -18,3 +19,4 @@ pub use error::EngineError;
 pub use model::{Evaluator, ModelEval, build};
 pub use palc::continue_branch;
 pub use problem::Problem;
+pub use tests_fn::{HopfZero, classify_h_zero};

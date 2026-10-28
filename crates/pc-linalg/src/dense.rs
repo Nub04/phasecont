@@ -52,6 +52,11 @@ impl Lu {
     /// Factors the n-by-n column-major matrix `a`.
     ///
     /// Returns `Singular` when a pivot is 0 or min |u_ii| <= n * EPSILON * max |u_ii|.
+    ///
+    /// At a branch point the bordered tangent matrix of a continuation is singular, and the
+    /// threshold is relative, so the result there is `Singular` and not a tiny determinant.
+    /// Callers on a branch treat `Singular` from that matrix as a zero of the branch-point
+    /// test function, not as a failure of the run.
     pub fn new(a: &[f64], n: usize) -> Result<Lu, LinalgError> {
         let len = n.checked_mul(n).ok_or(LinalgError::BadShape)?;
         if a.len() != len {

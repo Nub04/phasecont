@@ -11,9 +11,11 @@ pub struct Point {
     pub alpha: f64,
     /// Unit tangent, `u.len() + 1` values.
     pub tangent: Vec<f64>,
-    /// Eigenvalues (or multipliers) as (re, im). Empty until Task 6.
+    /// Eigenvalues (or multipliers) of A = F_u as (re, im); empty for problems without a
+    /// state block.
     pub eigenvalues: Vec<(f64, f64)>,
-    /// Test function values (LP, BP, H). NaN until Task 6.
+    /// Test function values in the order `[psi_LP, psi_BP, psi_H]`. A test that is off
+    /// (`Options::detect_*`) or not defined at the point is NaN.
     pub tests: [f64; 3],
     /// Step length that reached this point (0 for the first point).
     pub h: f64,
@@ -67,6 +69,8 @@ pub struct Branch {
     pub points: Vec<Point>,
     pub specials: Vec<SpecialPoint>,
     pub stop: StopReason,
+    /// Messages about the run, for example that Hopf detection is off.
+    pub warnings: Vec<String>,
 }
 
 /// Settings of a continuation run.

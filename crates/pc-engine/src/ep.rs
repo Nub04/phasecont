@@ -106,6 +106,14 @@ impl Problem for EpProblem<'_> {
         out[n * n..].copy_from_slice(&self.jac_p[self.free * n..(self.free + 1) * n]);
         Ok(())
     }
+
+    fn state_jacobian(&mut self, x: &[f64]) -> Result<Option<Vec<f64>>, EngineError> {
+        let n = self.model.n();
+        self.p[self.free] = x[n];
+        self.model
+            .eval(&EntryKind::JacU, &x[..n], &self.p, &[], &mut self.jac_u)?;
+        Ok(Some(self.jac_u.clone()))
+    }
 }
 
 /// Newton's method on F(u) = 0 at the parameters of `setup`, from `setup.u0`. Uses the

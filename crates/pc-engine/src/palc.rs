@@ -8,6 +8,8 @@
 use crate::branch::{Branch, Options, Point, StopReason};
 use crate::error::EngineError;
 use crate::problem::Problem;
+use crate::tests_fn::{self, MAX_HOPF_DIM};
+use pc_linalg::{null_right, singular_values};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Maps an error met during a run to the reason the branch stops. Every error that ends a
@@ -20,8 +22,16 @@ pub(crate) fn classify(e: EngineError) -> StopReason {
     }
 }
 
+/// Inf-norm that propagates NaN: any NaN element gives NaN, so `norm_inf(v) <= tol` is
+/// false for a vector with a NaN in it.
 fn norm_inf(v: &[f64]) -> f64 {
-    v.iter().fold(0.0, |m, x| m.max(x.abs()))
+    v.iter().fold(0.0, |m, x| {
+        if m.is_nan() || x.is_nan() {
+            f64::NAN
+        } else {
+            m.max(x.abs())
+        }
+    })
 }
 
 fn dot(a: &[f64], b: &[f64]) -> f64 {
@@ -81,8 +91,16 @@ fn correct(
         rhs[n - 1] = -(off - hh);
         match p.bordered_solve(&jac, v, &rhs, &mut dx) {
             Ok(_) => {}
+            // A predictor that already solves G(x) = 0 to the residual tolerance on a
+            // singular matrix is a branch point met exactly (ruling P2-1): accept it.
+            Err(EngineError::Singular(_)) if norm_inf(&rhs) <= opts.tol_f => {
+                return Corrected::Done { x, iters: it };
+            }
             Err(EngineError::NotFinite(_)) => return Corrected::Failed,
             Err(e) => return Corrected::Stop(classify(e)),
+        }
+        if norm_inf(&dx).is_nan() {
+            return Corrected::Failed;
         }
         for i in 0..n {
             x[i] += dx[i];
@@ -119,7 +137,84 @@ fn tangent(p: &mut dyn Problem, x: &[f64], border: &[f64]) -> Result<(Vec<f64>, 
     Ok((v, det))
 }
 
-fn make_point(x: &[f64], v: Vec<f64>, h: f64, iters: usize) -> Point {
+/// Like [`tangent`], but a singular bordered matrix is not an error. At a branch point the
+/// matrix is singular, which is a zero of psi_BP (ruling P2-1): the determinant is then 0
+/// and the tangent comes from [`kernel_tangent`].
+fn tangent_or_kernel(
+    p: &mut dyn Problem,
+    x: &[f64],
+    border: &[f64],
+) -> Result<(Vec<f64>, f64), EngineError> {
+    match tangent(p, x, border) {
+        Err(EngineError::Singular(_)) => Ok((kernel_tangent(p, x, border)?, 0.0)),
+        r => r,
+    }
+}
+
+/// Tangent from the null space of the n-1 by n Jacobian at `x`, for a point where the
+/// bordered matrix is singular. With a one-dimensional null space (a fold met exactly, or
+/// a border orthogonal to it) it is that null vector, signed so that `vᵀ prev > 0`. With
+/// a two-dimensional null space (a branch point) it is `prev` projected onto the null
+/// space, so the run goes straight through along the old direction.
+fn kernel_tangent(p: &mut dyn Problem, x: &[f64], prev: &[f64]) -> Result<Vec<f64>, EngineError> {
+    let n = p.dim();
+    let mut jac = vec![0.0; (n - 1) * n];
+    p.jacobian(x, &mut jac)?;
+    let s = singular_values(&jac, n - 1, n)?;
+    let two = s[n - 2] <= 1e-8 * s[0];
+    let z = null_right(&jac, n - 1, n, if two { 2 } else { 1 })?;
+    let mut v = vec![0.0; n];
+    if two {
+        for q in &z {
+            let c = dot(q, prev);
+            for (vi, qi) in v.iter_mut().zip(q) {
+                *vi += c * qi;
+            }
+        }
+    } else {
+        v.copy_from_slice(&z[0]);
+        if dot(&v, prev) < 0.0 {
+            for t in v.iter_mut() {
+                *t = -*t;
+            }
+        }
+    }
+    let nrm = dot(&v, &v).sqrt();
+    if !nrm.is_finite() || nrm == 0.0 {
+        return Err(EngineError::NotFinite("tangent".into()));
+    }
+    for t in v.iter_mut() {
+        *t /= nrm;
+    }
+    Ok(v)
+}
+
+/// Builds an accepted point with its eigenvalues and test values. `det` is the determinant
+/// of the bordered tangent solve at `x`.
+fn make_point(
+    p: &mut dyn Problem,
+    x: &[f64],
+    v: Vec<f64>,
+    det: f64,
+    h: f64,
+    iters: usize,
+    opts: &Options,
+) -> Result<Point, EngineError> {
+    let n = x.len() - 1;
+    let t = tests_fn::evaluate(p, x, &v, det, opts)?;
+    Ok(Point {
+        u: x[..n].to_vec(),
+        alpha: x[n],
+        tangent: v,
+        eigenvalues: t.eigenvalues,
+        tests: t.tests,
+        h,
+        newton_iters: iters,
+    })
+}
+
+/// A point without test values, for a landing point whose tangent could not be computed.
+fn bare_point(x: &[f64], v: Vec<f64>, h: f64, iters: usize) -> Point {
     let n = x.len() - 1;
     Point {
         u: x[..n].to_vec(),
@@ -230,14 +325,18 @@ pub fn continue_branch(
     }
     let mut border = vec![0.0; n];
     border[n - 1] = 1.0;
-    let (mut v, _det) = tangent(p, x0, &border)?;
+    let (mut v, det) = tangent(p, x0, &border)?;
     if v[n - 1] * opts.direction < 0.0 {
         for t in v.iter_mut() {
             *t = -*t;
         }
     }
+    let mut warnings = Vec::new();
+    if opts.detect_h && n - 1 > MAX_HOPF_DIM {
+        warnings.push("Hopf detection is off for n > 100".to_string());
+    }
     let mut x = x0.to_vec();
-    let first = make_point(&x, v.clone(), 0.0, 0);
+    let first = make_point(p, &x, v.clone(), det, 0.0, 0, opts)?;
     on_point(&first);
     let mut points = vec![first];
     let (lo, hi) = opts.bounds;
@@ -274,26 +373,26 @@ pub fn continue_branch(
                 }
                 match land_on_bound(p, &x, &v, h, &x1, bound, sgn, opts, cancel) {
                     Ok(l) => {
-                        let reason = match tangent(p, &l.x, &v) {
-                            Ok((vn, _)) => {
-                                let pt = make_point(&l.x, vn, l.s * h, l.iters);
-                                on_point(&pt);
-                                points.push(pt);
-                                StopReason::Bounds
-                            }
-                            Err(e) => classify(e),
-                        };
-                        break 'run reason;
+                        // The landed point is kept even when its tangent or tests fail.
+                        let built = tangent_or_kernel(p, &l.x, &v)
+                            .and_then(|(vn, d)| make_point(p, &l.x, vn, d, l.s * h, l.iters, opts));
+                        let pt =
+                            built.unwrap_or_else(|_| bare_point(&l.x, v.clone(), l.s * h, l.iters));
+                        on_point(&pt);
+                        points.push(pt);
+                        break 'run StopReason::Bounds;
                     }
                     Err(r) => break 'run r,
                 }
             }
-            let (vn, _det) = match tangent(p, &x1, &v) {
-                Ok(t) => t,
+            let built = tangent_or_kernel(p, &x1, &v)
+                .and_then(|(vn, d)| make_point(p, &x1, vn, d, h, iters, opts));
+            let pt = match built {
+                Ok(pt) => pt,
                 Err(e) => break 'run classify(e),
             };
-            let pt = make_point(&x1, vn.clone(), h, iters);
             on_point(&pt);
+            let vn = pt.tangent.clone();
             points.push(pt);
             x = x1;
             v = vn;
@@ -306,5 +405,6 @@ pub fn continue_branch(
         points,
         specials: Vec::new(),
         stop,
+        warnings,
     })
 }

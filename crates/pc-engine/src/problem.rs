@@ -15,6 +15,13 @@ pub trait Problem {
     /// Writes the (N-1) by N Jacobian of F at `x` to `out`, column-major.
     fn jacobian(&mut self, x: &[f64], out: &mut [f64]) -> Result<(), EngineError>;
 
+    /// The (dim-1) by (dim-1) state Jacobian A = F_u at `x`, column-major, for problems on
+    /// equilibrium branches. The engine takes the eigenvalues of A for the Hopf test
+    /// function. The default is `None`: no state block, no eigenvalues, no Hopf test.
+    fn state_jacobian(&mut self, _x: &[f64]) -> Result<Option<Vec<f64>>, EngineError> {
+        Ok(None)
+    }
+
     /// Solves `[jac; borderᵀ] sol = rhs` for the N by N matrix made of `jac` (N-1 rows,
     /// column-major) and one extra row `border`. Returns the determinant of that matrix.
     /// A singular matrix gives `EngineError::Singular`.

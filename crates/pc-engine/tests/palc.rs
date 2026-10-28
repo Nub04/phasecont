@@ -5,7 +5,8 @@ mod common;
 
 use common::load;
 use pc_engine::{
-    Branch, EngineError, EpSetup, Evaluator, Options, StopReason, build, continue_ep, equilibrium,
+    Branch, EngineError, EpSetup, Evaluator, Options, Problem, StopReason, build, continue_branch,
+    continue_ep, equilibrium,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -85,8 +86,14 @@ fn circle_with_default_steps_stays_on_the_circle() {
         assert_eq!(b.stop, StopReason::MaxSteps);
         assert_eq!(b.points.len(), 201);
         on_circle(&b);
-        assert!(b.points.iter().all(|p| p.tests.iter().all(|t| t.is_nan())));
-        assert!(b.points.iter().all(|p| p.eigenvalues.is_empty()));
+        // One state variable: one eigenvalue, no pairs, so psi_H = 1.
+        assert!(b.points.iter().all(|p| p.eigenvalues.len() == 1));
+        assert!(b.points.iter().all(|p| p.tests[2] == 1.0));
+        assert!(
+            b.points
+                .iter()
+                .all(|p| p.tests[..2].iter().all(|t| t.is_finite()))
+        );
         // The first tangent points toward growing alpha.
         assert!(b.points[0].tangent[1] > 0.99);
     }
@@ -254,21 +261,94 @@ fn cancel_before_and_during_a_run() {
 }
 
 #[test]
-fn singular_bordered_matrix_stops_the_branch() {
+fn branch_point_hit_exactly_does_not_stop_the_run() {
     for which in BOTH {
         // x = 0 of x' = al x - x^2 meets the transcritical point at al = 0. With h = 0.25
-        // the steps land on it exactly, and the corrector matrix there is singular.
+        // the steps land on it exactly, and the corrector matrix there is singular. The run
+        // accepts the point, records psi_BP = 0 and goes on (ruling P2-1).
         let setup = EpSetup::new(0, vec![-1.0], vec![0.0]);
         let opts = Options {
             h0: 0.25,
             hmax: 0.25,
+            bounds: (f64::NEG_INFINITY, 1.0),
             ..Options::default()
         };
         let b = run("transcritical", which, &setup, &opts).unwrap();
-        assert_eq!(b.stop, StopReason::Singular, "{which:?}");
-        assert_eq!(b.points.len(), 4);
-        assert_eq!(b.points[3].alpha, -0.25);
+        assert_eq!(b.stop, StopReason::Bounds, "{which:?}");
+        assert_eq!(b.points.len(), 9, "{which:?}");
+        assert_eq!(b.points[4].alpha, 0.0);
+        assert_eq!(b.points[4].tests[1], 0.0);
+        assert!(b.points[3].tests[1] * b.points[5].tests[1] < 0.0);
+        // The tangent goes straight through along the old direction.
+        assert!(b.points[4].tangent[1] > 0.999);
+        assert_eq!(b.points[8].alpha, 1.0);
     }
+}
+
+/// The circle x^2 + al^2 = 1 as a hand-written problem whose first corrector solve
+/// returns NaN, to check that a NaN update is a failed step and not a converged one.
+struct PoisonedCircle {
+    poison: usize,
+}
+
+impl Problem for PoisonedCircle {
+    fn dim(&self) -> usize {
+        2
+    }
+    fn residual(&mut self, x: &[f64], out: &mut [f64]) -> Result<(), EngineError> {
+        out[0] = x[0] * x[0] + x[1] * x[1] - 1.0;
+        Ok(())
+    }
+    fn jacobian(&mut self, x: &[f64], out: &mut [f64]) -> Result<(), EngineError> {
+        out[0] = 2.0 * x[0];
+        out[1] = 2.0 * x[1];
+        Ok(())
+    }
+    fn bordered_solve(
+        &mut self,
+        jac: &[f64],
+        border: &[f64],
+        rhs: &[f64],
+        sol: &mut [f64],
+    ) -> Result<f64, EngineError> {
+        // Tangent solves have rhs = (0, 1); corrector solves do not.
+        if rhs[1] != 1.0 && self.poison > 0 {
+            self.poison -= 1;
+            sol[0] = f64::NAN;
+            sol[1] = 0.0;
+            return Ok(1.0);
+        }
+        let det = jac[0] * border[1] - jac[1] * border[0];
+        sol[0] = (rhs[0] * border[1] - jac[1] * rhs[1]) / det;
+        sol[1] = (jac[0] * rhs[1] - rhs[0] * border[0]) / det;
+        Ok(det)
+    }
+}
+
+#[test]
+fn nan_update_counts_as_a_failed_step() {
+    let mut p = PoisonedCircle { poison: 1 };
+    let opts = Options {
+        h0: 0.02,
+        max_steps: 3,
+        ..Options::default()
+    };
+    let b = continue_branch(
+        &mut p,
+        &[-1.0, 0.0],
+        &opts,
+        &AtomicBool::new(false),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(b.stop, StopReason::MaxSteps);
+    // The poisoned first solve failed the step, so it was retried with half the length.
+    assert_eq!(b.points[1].h, 0.01);
+    assert!(
+        b.points
+            .iter()
+            .all(|q| q.alpha.is_finite() && q.u[0].is_finite())
+    );
 }
 
 #[test]
