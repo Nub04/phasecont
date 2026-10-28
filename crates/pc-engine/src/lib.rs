@@ -8,6 +8,7 @@
 mod branch;
 mod ep;
 mod error;
+mod locate;
 mod model;
 mod palc;
 mod problem;

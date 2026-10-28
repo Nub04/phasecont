@@ -7,6 +7,7 @@
 
 use crate::branch::{Branch, Options, Point, StopReason};
 use crate::error::EngineError;
+use crate::locate::detect_step;
 use crate::problem::Problem;
 use crate::tests_fn;
 use pc_linalg::{null_right, singular_values};
@@ -42,7 +43,7 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
 }
 
 /// Outcome of one corrector call.
-enum Corrected {
+pub(crate) enum Corrected {
     Done {
         x: Vec<f64>,
         iters: usize,
@@ -54,7 +55,7 @@ enum Corrected {
 
 /// Newton on G(x) = 0 for the hyperplane `vᵀ(x - xk) = hh`, starting at `start`.
 #[allow(clippy::too_many_arguments)]
-fn correct(
+pub(crate) fn correct(
     p: &mut dyn Problem,
     xk: &[f64],
     v: &[f64],
@@ -143,7 +144,7 @@ fn tangent(p: &mut dyn Problem, x: &[f64], border: &[f64]) -> Result<(Vec<f64>, 
 /// Like [`tangent`], but a singular bordered matrix is not an error. At a branch point the
 /// matrix is singular, which is a zero of psi_BP (ruling P2-1): the determinant is then 0
 /// and the tangent comes from [`kernel_tangent`].
-fn tangent_or_kernel(
+pub(crate) fn tangent_or_kernel(
     p: &mut dyn Problem,
     x: &[f64],
     border: &[f64],
@@ -319,6 +320,19 @@ pub fn continue_branch(
     cancel: &AtomicBool,
     on_point: &mut dyn FnMut(&Point),
 ) -> Result<Branch, EngineError> {
+    run_branch(p, x0, opts, false, cancel, on_point)
+}
+
+/// [`continue_branch`] with the flag of `EpSetup::start_is_special`: when set, no special
+/// point is looked for on the first step.
+pub(crate) fn run_branch(
+    p: &mut dyn Problem,
+    x0: &[f64],
+    opts: &Options,
+    start_is_special: bool,
+    cancel: &AtomicBool,
+    on_point: &mut dyn FnMut(&Point),
+) -> Result<Branch, EngineError> {
     let n = p.dim();
     if n < 2 || x0.len() != n {
         return Err(EngineError::BadProblem(
@@ -330,7 +344,7 @@ pub fn continue_branch(
     }
     let mut border = vec![0.0; n];
     border[n - 1] = 1.0;
-    let (mut v, mut det) = tangent(p, x0, &border)?;
+    let (mut v, mut det) = tangent_or_kernel(p, x0, &border)?;
     if v[n - 1] * opts.direction < 0.0 {
         for t in v.iter_mut() {
             *t = -*t;
@@ -343,6 +357,7 @@ pub fn continue_branch(
     let first = make_point(p, &x, v.clone(), det, 0.0, 0, opts, &mut warnings)?;
     on_point(&first);
     let mut points = vec![first];
+    let mut specials = Vec::new();
     let (lo, hi) = opts.bounds;
     let stop = 'run: {
         if x[n - 1] < lo || x[n - 1] > hi {
@@ -396,7 +411,22 @@ pub fn continue_branch(
                         };
                         on_point(&pt);
                         points.push(pt);
-                        break 'run reason;
+                        let found = if start_is_special && points.len() == 2 {
+                            Ok(())
+                        } else {
+                            detect_step(
+                                p,
+                                &x,
+                                &v,
+                                l.s * h,
+                                &points,
+                                opts,
+                                cancel,
+                                &mut warnings,
+                                &mut specials,
+                            )
+                        };
+                        break 'run found.err().unwrap_or(reason);
                     }
                     Err(r) => break 'run r,
                 }
@@ -410,6 +440,22 @@ pub fn continue_branch(
             on_point(&pt);
             let vn = pt.tangent.clone();
             points.push(pt);
+            let skip = start_is_special && points.len() == 2;
+            if !skip
+                && let Err(r) = detect_step(
+                    p,
+                    &x,
+                    &v,
+                    h,
+                    &points,
+                    opts,
+                    cancel,
+                    &mut warnings,
+                    &mut specials,
+                )
+            {
+                break 'run r;
+            }
             x = x1;
             v = vn;
             if iters <= 3 {
@@ -419,7 +465,7 @@ pub fn continue_branch(
     };
     Ok(Branch {
         points,
-        specials: Vec::new(),
+        specials,
         stop,
         warnings,
     })

@@ -3,7 +3,7 @@
 use crate::branch::{Branch, Options, Point};
 use crate::error::EngineError;
 use crate::model::ModelEval;
-use crate::palc::continue_branch;
+use crate::palc::run_branch;
 use crate::problem::Problem;
 use pc_ir::EntryKind;
 use pc_linalg::Lu;
@@ -18,12 +18,20 @@ pub struct EpSetup {
     pub params: Vec<f64>,
     /// Guess for the starting equilibrium.
     pub u0: Vec<f64>,
+    /// Set when the start is a special point; no special point is looked for on the first
+    /// step. Default false.
+    pub start_is_special: bool,
 }
 
 impl EpSetup {
     /// Setup with the defaults of every later field.
     pub fn new(free: usize, params: Vec<f64>, u0: Vec<f64>) -> EpSetup {
-        EpSetup { free, params, u0 }
+        EpSetup {
+            free,
+            params,
+            u0,
+            start_is_special: false,
+        }
     }
 }
 
@@ -173,5 +181,12 @@ pub fn continue_ep(
     let mut x = u;
     x.push(setup.params[setup.free]);
     let mut problem = EpProblem::new(model, &start)?;
-    continue_branch(&mut problem, &x, opts, cancel, on_point)
+    run_branch(
+        &mut problem,
+        &x,
+        opts,
+        setup.start_is_special,
+        cancel,
+        on_point,
+    )
 }
