@@ -18,7 +18,7 @@ jobs:
       - run: uname -a && rustc -vV
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      - run: cargo test --no-fail-fast
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
@@ -34,9 +34,10 @@ jobs:
         run: |
           set -u
           bin=target/release/examples/jit_probe
+          sw_vers; csrutil status || true; nvram boot-args 2>/dev/null || echo "no boot-args"
           mkdir -p probe
-          echo "| Signing | Exit status | Last line |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Signing | Exit status | dyld lines with DYLD_PRINT_LIBRARIES=1 | Last line |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
           for ent in unchanged none allow-jit allow-unsigned-executable-memory disable-executable-page-protection; do
             cp "$bin" "probe/$ent"
             case "$ent" in
@@ -60,7 +61,10 @@ jobs:
             set -e
             echo "$out"
             echo "exit status $status"
-            echo "| $ent | $status | $(echo "$out" | tail -n 1) |" >> "$GITHUB_STEP_SUMMARY"
+            # The hardened runtime strips DYLD_ variables, so 0 here shows it is enforced.
+            dyld=$(DYLD_PRINT_LIBRARIES=1 "probe/$ent" 2>&1 >/dev/null | grep -c dyld || true)
+            echo "dyld lines $dyld"
+            echo "| $ent | $status | $dyld | $(echo "$out" | tail -n 1) |" >> "$GITHUB_STEP_SUMMARY"
           done
 
   matlab-entitlements:
@@ -78,5 +82,6 @@ jobs:
           find "$root" -maxdepth 4 -type f -perm -u+x \( -name MATLAB -o -name matlab_helper -o -name MATLABWindow \) -print | while read -r f; do
             echo "== $f"
             codesign -dv "$f" 2>&1 | grep -E "flags|Identifier|TeamIdentifier" || true
-            codesign -d --entitlements - "$f" || true
+            ents=$(codesign -d --entitlements - "$f" 2>/dev/null || true)
+            echo "entitlements: ${ents:-(none)}"
           done
