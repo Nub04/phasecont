@@ -19,9 +19,9 @@ use pc_ode::{Loaded, Severity};
 use crate::{load_file, out, text};
 
 /// A loaded and lowered model.
-struct Prepared {
-    loaded: Loaded,
-    ir: IrModel,
+pub(crate) struct Prepared {
+    pub(crate) loaded: Loaded,
+    pub(crate) ir: IrModel,
 }
 
 fn to_stderr(text: &str) {
@@ -30,7 +30,7 @@ fn to_stderr(text: &str) {
 
 /// Loads `file`, prints its diagnostics and lowers it. `Err` carries the exit
 /// code when the model has errors, cannot be read or is refused by the IR.
-fn prepare(file: &Path) -> Result<Prepared, ExitCode> {
+pub(crate) fn prepare(file: &Path) -> Result<Prepared, ExitCode> {
     let (map, loaded) = load_file(file)?;
     to_stderr(&text::diagnostics(&map, &loaded));
     if loaded

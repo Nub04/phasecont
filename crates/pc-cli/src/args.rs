@@ -32,6 +32,12 @@ pub enum Command {
     },
     /// Write C code for F, JacU and JacP.
     EmitC { file: PathBuf, out: Option<PathBuf> },
+    /// Follow equilibrium branches described by a problem file.
+    Cont {
+        file: PathBuf,
+        problem: PathBuf,
+        fallback: bool,
+    },
 }
 
 /// Why the command line is not valid. The text is a short usage line for
@@ -44,6 +50,7 @@ usage: pc-cli parse [--json] [--] <file.ode>
        pc-cli ir [--] <file.ode>
        pc-cli check-derivs [--points N] [--seed S] [--] <file.ode>
        pc-cli emit-c [-o out.c] [--] <file.ode>
+       pc-cli cont [--fallback] [--] <file.ode> <problem.json>
        pc-cli --help | pc-cli --version";
 
 pub const HELP: &str = "\
@@ -54,6 +61,7 @@ usage:
   pc-cli ir <file.ode>
   pc-cli check-derivs <file.ode> [--points N] [--seed S]
   pc-cli emit-c <file.ode> [-o out.c]
+  pc-cli cont <file.ode> <problem.json> [--fallback]
   pc-cli --help
   pc-cli --version
 
@@ -63,6 +71,7 @@ commands:
   check-derivs  compare the derivative entries of the DAG, the JIT and the
                 f64 fallback, and with finite differences
   emit-c        write C code for F, JacU and JacP
+  cont          follow an equilibrium branch and print its points and special points
 ";
 
 pub const PARSE_HELP: &str = "\
@@ -123,6 +132,33 @@ exit codes: 0 every counted check passes, 1 a check fails, the model has
 errors, is refused by the IR or cannot be read, 2 usage error
 ";
 
+pub const CONT_HELP: &str = "\
+usage: pc-cli cont [--fallback] [--] <file.ode> <problem.json>
+
+Follows an equilibrium branch of the model and prints the branches as JSON on
+stdout: for each branch its points, its special points (LP, BP, H) and why it
+stopped. Stderr gets one line per special point.
+
+The problem file is a JSON object:
+  type      \"EP\" (required)
+  free      name of the continuation parameter (required)
+  u0        starting state, one number per state (default: the model's init)
+  params    object of parameter values by name (default: the model's values)
+  options   h0, hmin, hmax, max_steps, tol_x, tol_f, max_newton, direction,
+            bounds [lo, hi], detect {lp, bp, h}; engine defaults for the rest
+  switch    name of a special point of the first branch, for example \"BP1\":
+            the run switches there and follows the second branch
+
+options:
+  --fallback  evaluate the model with the f64 interpreter instead of the JIT
+  --          the next argument is the file, even if it starts with `-`
+  -h, --help  print this help
+
+exit codes: 0 the run finished, 1 the run failed, panicked or was cancelled, or
+the model cannot be read, has errors or is refused, 2 usage error or bad
+problem file (the message names the key)
+";
+
 pub const EMIT_HELP: &str = "\
 usage: pc-cli emit-c [-o out.c] [--] <file.ode>
 
@@ -165,6 +201,7 @@ where
         "ir" => ir_command(&args[1..]),
         "check-derivs" => check_command(&args[1..]),
         "emit-c" => emit_command(&args[1..]),
+        "cont" => cont_command(&args[1..]),
         "-h" | "--help" | "-V" | "--version" => {
             Err(UsageError(format!("unexpected argument after {first}")))
         }
@@ -182,6 +219,8 @@ struct Parts {
     points: Option<usize>,
     seed: Option<u64>,
     out: Option<PathBuf>,
+    problem: Option<PathBuf>,
+    fallback: bool,
 }
 
 /// Which flags a command accepts.
@@ -190,6 +229,7 @@ struct Accepts {
     json: bool,
     points_seed: bool,
     out: bool,
+    cont: bool,
 }
 
 /// The value after a flag that takes one.
@@ -221,6 +261,7 @@ fn split(rest: &[OsString], ok: Accepts) -> Result<Parts, UsageError> {
         match flag {
             Some("--") => only_files = true,
             Some("--json") if ok.json => parts.json = true,
+            Some("--fallback") if ok.cont => parts.fallback = true,
             Some("-h" | "--help") => parts.help = true,
             Some("--points") if ok.points_seed => {
                 let n: usize = number("--points", value("--points", &mut it)?)?;
@@ -255,6 +296,10 @@ fn split(rest: &[OsString], ok: Accepts) -> Result<Parts, UsageError> {
                         "argument {} is not valid UTF-8",
                         arg.to_string_lossy()
                     )));
+                }
+                if parts.file.is_some() && ok.cont && parts.problem.is_none() {
+                    parts.problem = Some(PathBuf::from(arg));
+                    continue;
                 }
                 if parts.file.is_some() {
                     return Err(UsageError(format!(
@@ -338,6 +383,29 @@ fn emit_command(rest: &[OsString]) -> Result<Command, UsageError> {
             out: parts.out,
         }),
         None => Err(UsageError("emit-c needs a file".to_string())),
+    }
+}
+
+fn cont_command(rest: &[OsString]) -> Result<Command, UsageError> {
+    let parts = split(
+        rest,
+        Accepts {
+            cont: true,
+            ..Accepts::default()
+        },
+    )?;
+    if parts.help {
+        return Ok(Command::ToolHelp(CONT_HELP));
+    }
+    match (parts.file, parts.problem) {
+        (Some(file), Some(problem)) => Ok(Command::Cont {
+            file,
+            problem,
+            fallback: parts.fallback,
+        }),
+        _ => Err(UsageError(
+            "cont needs a model file and a problem file".to_string(),
+        )),
     }
 }
 
@@ -431,6 +499,34 @@ mod tests {
             Ok(Command::ToolHelp(CHECK_HELP))
         );
         assert_eq!(p(&["emit-c", "-h"]), Ok(Command::ToolHelp(EMIT_HELP)));
+    }
+
+    #[test]
+    fn cont_command_takes_two_files_and_a_flag() {
+        let want = Command::Cont {
+            file: "a.ode".into(),
+            problem: "p.json".into(),
+            fallback: false,
+        };
+        assert_eq!(p(&["cont", "a.ode", "p.json"]), Ok(want));
+        assert_eq!(
+            p(&["cont", "--fallback", "a.ode", "p.json"]),
+            Ok(Command::Cont {
+                file: "a.ode".into(),
+                problem: "p.json".into(),
+                fallback: true
+            })
+        );
+        assert_eq!(p(&["cont", "-h"]), Ok(Command::ToolHelp(CONT_HELP)));
+        for args in [
+            &["cont"][..],
+            &["cont", "a.ode"],
+            &["cont", "a.ode", "p.json", "x"],
+            &["cont", "a.ode", "p.json", "--json"],
+            &["parse", "a.ode", "--fallback"],
+        ] {
+            assert!(p(args).is_err(), "{args:?}");
+        }
     }
 
     #[test]

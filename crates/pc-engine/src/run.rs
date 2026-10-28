@@ -149,8 +149,10 @@ fn follow(
     let b = continue_ep(model, setup, opts, &shared.cancel, &mut |p: &Point| {
         shared.lock().branches[idx].points.push(p.clone());
     });
-    if let Ok(branch) = &b {
-        shared.lock().branches[idx] = branch.clone();
+    match &b {
+        Ok(branch) => shared.lock().branches[idx] = branch.clone(),
+        // Keep the streamed points and say that the branch did not finish.
+        Err(e) => shared.lock().branches[idx].stop = StopReason::Error(e.clone()),
     }
     b
 }
@@ -275,6 +277,16 @@ impl Run {
             .get(branch)
             .map(|b| b.specials.clone())
             .unwrap_or_default()
+    }
+
+    /// Why `branch` stopped. After a failed branch this is `StopReason::Error`. While the
+    /// branch is running it is a placeholder. `None` when the branch does not exist.
+    pub fn stop(&self, branch: usize) -> Option<StopReason> {
+        self.shared
+            .lock()
+            .branches
+            .get(branch)
+            .map(|b| b.stop.clone())
     }
 
     /// Asks the worker to stop. Returns at once.
