@@ -183,3 +183,38 @@ fn close_has_an_absolute_floor() {
     assert!(close(0.0, ABS_FLOOR, 1e-20));
     assert!(!close(0.0, 2e-15, 1e-20));
 }
+
+#[test]
+fn a_finite_error_bound_adds_a_pass_condition() {
+    // 1e-3 apart with scale 1: far outside 4 ulp, 1e-13 and 1e-15.
+    let (a, b) = (1.0, 1.0 + 1e-3);
+    assert!(!close(a, b, 1.0));
+    // E = 1e13 allows 8 * eps * 1e13 = 8 * 2.2e-16 * 1e13 = 1.8e-2.
+    assert!(close_err(a, b, 1.0, 1e13));
+    // E = 1e11 allows 1.8e-4, not enough.
+    assert!(!close_err(a, b, 1.0, 1e11));
+    let m = allowed(a, b, 1.0, 1e13);
+    assert!(
+        (m - ERR_FACTOR * f64::EPSILON * 1e13).abs() <= 1e-18,
+        "{m:e}"
+    );
+}
+
+#[test]
+fn a_non_finite_error_bound_adds_nothing() {
+    let (a, b) = (1.0, 1.0 + 1e-3);
+    for e in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert!(!close_err(a, b, 1.0, e), "{e}");
+        assert_eq!(allowed(a, b, 1.0, e), allowed(a, b, 1.0, f64::NAN));
+    }
+    // The old conditions still apply with a non-finite bound.
+    assert!(close_err(1.0, 1.0 + 1e-15, 1.0, f64::NAN));
+    assert!(close_err(f64::NAN, f64::NAN, 1.0, f64::INFINITY));
+}
+
+#[test]
+fn close_ignores_the_error_bound() {
+    for (a, b, s) in [(1.0, 1.0 + 1e-3, 1.0), (0.0, 1e-16, 1.0), (2.0, 2.0, 0.0)] {
+        assert_eq!(close(a, b, s), close_err(a, b, s, f64::NAN));
+    }
+}

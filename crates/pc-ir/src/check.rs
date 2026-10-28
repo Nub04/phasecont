@@ -1,12 +1,12 @@
 //! Shared tolerance and checker for derivative entries.
 //!
-//! [`close`] is the SPEC section 3 test and the only one the DAG, JIT and corpus tests use
+//! [`close_err`] is the SPEC section 3 test and the only one the DAG, JIT and corpus tests use
 //! to compare two evaluators. [`check_model`] runs the DAG entries against the f64
 //! fallback and against central finite differences, and returns a [`Report`] that
 //! `pc-cli check-derivs` prints.
 
 use crate::entry::{EntryKind, Slot};
-use crate::eval::eval;
+use crate::eval::{eval, eval_err};
 use crate::interp::Fallback;
 use crate::lower::IrModel;
 use std::fmt;
@@ -35,15 +35,36 @@ pub fn scale(v: &[f64]) -> f64 {
 /// Absolute floor of [`close`]: values near zero carry rounding from larger intermediate terms.
 pub const ABS_FLOOR: f64 = 1e-15;
 
-/// SPEC section 3: both NaN, or equal, or `|a-b| <= 4 ulp(max(|a|,|b|))`, or
-/// `|a-b| <= 1e-13 * scale` (the largest magnitude of the output vector), or
-/// `|a-b| <= ABS_FLOOR`.
+/// Factor of the running-error term of [`close_err`]: `8 eps E`, which is `16 u` for `u = eps / 2`.
+pub const ERR_FACTOR: f64 = 8.0;
+
+/// SPEC section 3 without a running error bound: both NaN, or equal, or
+/// `|a-b| <= 4 ulp(max(|a|,|b|))`, or `|a-b| <= 1e-13 * scale` (the largest magnitude of the
+/// output vector), or `|a-b| <= ABS_FLOOR`.
 pub fn close(a: f64, b: f64, scale: f64) -> bool {
+    close_err(a, b, scale, f64::NAN)
+}
+
+/// SPEC section 3: [`close`], or `|a-b| <= ERR_FACTOR * eps * err`, where `err` is the running
+/// error bound of the DAG evaluation of this output ([`crate::eval::eval_err`]). A NaN or
+/// infinite `err` adds nothing.
+pub fn close_err(a: f64, b: f64, scale: f64, err: f64) -> bool {
     if a.is_nan() && b.is_nan() || a == b {
         return true;
     }
-    let diff = (a - b).abs();
-    diff <= 4.0 * ulp(a.abs().max(b.abs())) || diff <= 1e-13 * scale || diff <= ABS_FLOOR
+    (a - b).abs() <= allowed(a, b, scale, err)
+}
+
+/// The largest `|a-b|` that [`close_err`] accepts for these values (NaN when `a` or `b` is
+/// not finite and no other term applies).
+pub fn allowed(a: f64, b: f64, scale: f64, err: f64) -> f64 {
+    let mut m = (4.0 * ulp(a.abs().max(b.abs())))
+        .max(1e-13 * scale)
+        .max(ABS_FLOOR);
+    if err.is_finite() {
+        m = m.max(ERR_FACTOR * f64::EPSILON * err);
+    }
+    m
 }
 
 /// `|a-b| <= tol * scale`, for comparisons against finite differences or closed forms.
@@ -54,16 +75,14 @@ pub fn within(a: f64, b: f64, scale: f64, tol: f64) -> bool {
     (a - b).abs() <= tol * scale
 }
 
-/// How far `a` is from passing [`close`]: the ratio of `|a-b|` to the allowed difference.
+/// How far `a` is from passing [`close_err`]: the ratio of `|a-b|` to the allowed difference.
 /// At most 1 means a pass; infinite when exactly one of the two is NaN or non-finite.
-fn ratio(a: f64, b: f64, scale: f64) -> f64 {
+fn ratio(a: f64, b: f64, scale: f64, err: f64) -> f64 {
     if a.is_nan() && b.is_nan() || a == b {
         return 0.0;
     }
     let diff = (a - b).abs();
-    let allowed = (4.0 * ulp(a.abs().max(b.abs())))
-        .max(1e-13 * scale)
-        .max(ABS_FLOOR);
+    let allowed = allowed(a, b, scale, err);
     if diff.is_nan() || allowed.is_nan() {
         return f64::INFINITY;
     }
@@ -335,14 +354,16 @@ fn compare_kind(
         let (x, p) = draw_point(ir, rng, opt.half_width);
         let v: Vec<f64> = (0..vlen).map(|_| rng.range(-1.0, 1.0)).collect();
         let mut got = vec![f64::NAN; entry.outputs.len()];
-        eval(&ir.dag, &entry.outputs, &x, &p, &v, &mut got);
+        let mut err = vec![f64::NAN; entry.outputs.len()];
+        eval_err(&ir.dag, &entry.outputs, &x, &p, &v, &mut got, &mut err);
         let mut want = vec![f64::NAN; entry.outputs.len()];
         fb.eval(kind, &x, &p, &v, &mut want);
         let s = scale(&want);
         let it = got
             .iter()
             .zip(&want)
-            .map(|(&a, &b)| ((a - b).abs(), ratio(a, b, s)));
+            .zip(&err)
+            .map(|((&a, &b), &e)| ((a - b).abs(), ratio(a, b, s, e)));
         rep.record(it, s, &x, &p);
     }
     rep

@@ -1,11 +1,12 @@
 //! The JIT checks of SPEC section 4: the JIT against the DAG evaluator bit for bit, and
-//! against the f64 fallback within the section 3 tolerance.
+//! against the f64 fallback within the section 3 tolerance, with the running error bound of
+//! the DAG evaluation of the same entry.
 //!
 //! `pc-cli check-derivs` and the corpus test share this code.
 
 use crate::CompiledModel;
-use pc_ir::check::{Rng, close, draw_point, fmt_vec, scale, slot_label};
-use pc_ir::eval::eval;
+use pc_ir::check::{Rng, close_err, draw_point, fmt_vec, scale, slot_label};
+use pc_ir::eval::eval_err;
 use pc_ir::{Entry, EntryKind, Fallback, IrModel, Slot};
 
 fn dir(slots: &[Slot]) -> (EntryKind, String) {
@@ -131,7 +132,16 @@ pub fn jit_rows(mut ir: IrModel, fb: &Fallback, points: usize, seed: u64, hw: f6
             let (x, p) = draw_point(cm.ir(), &mut rng, hw);
             let v: Vec<f64> = (0..v_len).map(|_| rng.range(-1.0, 1.0)).collect();
             let mut want = vec![f64::NAN; entry.outputs.len()];
-            eval(&cm.ir().dag, &entry.outputs, &x, &p, &v, &mut want);
+            let mut err = vec![f64::NAN; entry.outputs.len()];
+            eval_err(
+                &cm.ir().dag,
+                &entry.outputs,
+                &x,
+                &p,
+                &v,
+                &mut want,
+                &mut err,
+            );
             let mut got = vec![f64::NAN; entry.outputs.len()];
             if let Err(e) = cm.call(&kind, &x, &p, &v, &mut got) {
                 call_error = Some(e.to_string());
@@ -140,12 +150,12 @@ pub fn jit_rows(mut ir: IrModel, fb: &Fallback, points: usize, seed: u64, hw: f6
             let mut fbv = vec![f64::NAN; entry.outputs.len()];
             fb.eval(&kind, &x, &p, &v, &mut fbv);
             let s = scale(&fbv);
-            for (i, ((&g, &w), &f)) in got.iter().zip(&want).zip(&fbv).enumerate() {
+            for (i, (((&g, &w), &f), &e)) in got.iter().zip(&want).zip(&fbv).zip(&err).enumerate() {
                 values += 1;
                 if !same_bits(g, w) {
                     vs_dag.note(i, (&x, &p), g, w, "dag");
                 }
-                if !close(g, f, s) {
+                if !close_err(g, f, s, e) {
                     vs_fb.note(i, (&x, &p), g, f, "fallback");
                 }
             }
