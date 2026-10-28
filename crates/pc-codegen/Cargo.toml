@@ -8,3 +8,9 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+pc-ir = { path = "../pc-ir" }
+
+[dev-dependencies]
+libloading = "0.9.0"
+pc-jit = { path = "../pc-jit" }
+pc-ode = { path = "../pc-ode" }

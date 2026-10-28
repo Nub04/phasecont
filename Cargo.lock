@@ -336,6 +336,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
+name = "libloading"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
+
+[[package]]
 name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -397,6 +407,12 @@ dependencies = [
 [[package]]
 name = "pc-codegen"
 version = "0.0.0"
+dependencies = [
+ "libloading",
+ "pc-ir",
+ "pc-jit",
+ "pc-ode",
+]
 
 [[package]]
 name = "pc-engine"
