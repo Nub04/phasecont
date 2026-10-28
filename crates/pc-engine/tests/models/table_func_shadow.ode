@@ -1,0 +1,7 @@
+# The formal parameter u of g has the name of a parameter but does not read it.
+par a=1,u=3
+g(u)=u*u
+table h % 11 0 1 g(t)
+x'=-a*x+h(x)
+init x=0.2
+done

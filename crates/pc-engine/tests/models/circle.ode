@@ -1,0 +1,5 @@
+# Fold of x'=x^2+al^2-1 at al=1, a circle of equilibria in (al, x).
+par al=0.5
+x'=x^2+al^2-1
+init x=0.5
+done

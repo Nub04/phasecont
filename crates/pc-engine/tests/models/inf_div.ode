@@ -1,0 +1,4 @@
+# 1/x gives infinity at x=0.
+x'=1/x
+init x=1
+done

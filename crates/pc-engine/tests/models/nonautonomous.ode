@@ -1,0 +1,4 @@
+# Forced decay, depends on t.
+x'=-x+sin(t)
+init x=0
+done

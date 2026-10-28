@@ -1,0 +1,5 @@
+# Pitchfork normal form at al=0.
+par al=0.5
+x'=al*x-x^3
+init x=0.1
+done

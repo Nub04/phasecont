@@ -1,0 +1,7 @@
+# Lorenz system.
+par s=10,r=28,b=2.6666667
+x'=s*(y-x)
+y'=r*x-y-x*z
+z'=x*y-b*z
+init x=1,y=1,z=1
+done

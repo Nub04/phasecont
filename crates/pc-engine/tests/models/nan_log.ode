@@ -1,0 +1,4 @@
+# log of a negative number gives NaN.
+x'=log(x)
+init x=1
+done

@@ -1,0 +1,6 @@
+# Table formula that reads only its index variable t.
+par a=1
+table h % 11 0 1 t^2
+x'=-a*x+h(x)
+init x=0.2
+done
