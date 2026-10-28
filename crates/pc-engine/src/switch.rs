@@ -58,6 +58,7 @@ pub fn special_index(branch: &Branch, name: &str) -> Option<usize> {
 /// `tangent0` and `start_is_special` set. `BadProblem` when `special` is out of range, is
 /// not a BP or is not refined, and `BadProblem("BP is not simple")` when the kernel of
 /// `F_x` is larger than two, the form has no pair of real roots or the roots coincide.
+/// `opts` is reserved for later use and is not read now.
 pub fn switch_bp(
     model: &mut dyn ModelEval,
     setup: &EpSetup,

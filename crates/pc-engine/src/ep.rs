@@ -186,6 +186,7 @@ pub fn continue_ep(
     // With a first tangent the start is a branch point, where A is singular, so Newton on
     // F(u) = 0 is skipped and the start must already be an equilibrium.
     let u = if setup.tangent0.is_some() {
+        check_setup(model, setup)?;
         setup.u0.clone()
     } else {
         equilibrium(model, setup, opts)?

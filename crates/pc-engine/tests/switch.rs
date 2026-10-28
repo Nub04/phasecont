@@ -91,6 +91,8 @@ fn pitchfork_switches_to_x_squared_equals_alpha() {
         let t = next.tangent0.clone().unwrap();
         assert!(t[1].abs() < 1e-8 && t[0] > 0.9, "{t:?}");
         let nb = run("pitchfork", which, &next, &switched_opts(1.0)).unwrap();
+        let d = reach(&nb, &next);
+        assert!(d > 1.0, "{d}");
         assert!(nb.points.len() > 20);
         for p in &nb.points {
             assert!(
@@ -110,6 +112,8 @@ fn lorenz_switches_to_the_convective_branch() {
         let setup = EpSetup::new(1, vec![10.0, 0.5, b_par], vec![0.0; 3]);
         let (_, _, next) = bp_setup("lorenz", which, &setup, 1.5);
         let nb = run("lorenz", which, &next, &switched_opts(1.0)).unwrap();
+        let d = reach(&nb, &next);
+        assert!(d > 1.0, "{d}");
         assert!(nb.points.len() > 20);
         for p in &nb.points {
             assert!((p.u[0] - p.u[1]).abs() < 1e-9, "{which:?}: {p:?}");
@@ -221,4 +225,54 @@ fn special_index_counts_per_label() {
     ] {
         assert_eq!(special_index(&b, bad), None, "{bad:?}");
     }
+}
+
+#[test]
+fn switching_a_bp_with_a_definite_form_is_not_simple() {
+    for which in BOTH {
+        // x' = a^2 + x^2 at the origin: F_x = 0 and c = 2 I, so there is no real root pair.
+        let setup = EpSetup::new(0, vec![0.0], vec![0.0]);
+        let mut sp = named("BP");
+        sp.extras.refined = true;
+        let b = Branch {
+            points: Vec::new(),
+            specials: vec![sp],
+            stop: StopReason::MaxSteps,
+            warnings: Vec::new(),
+        };
+        let mut m = model_of("isola", which);
+        let r = switch_bp(m.as_mut(), &setup, &b, 0, &Options::default());
+        assert!(
+            matches!(&r, Err(EngineError::BadProblem(m)) if m == "BP is not simple"),
+            "{which:?}: {r:?}"
+        );
+    }
+}
+
+#[test]
+fn a_tangent0_start_is_validated_before_use() {
+    for which in BOTH {
+        let mut s = EpSetup::new(5, vec![0.0], vec![0.0]);
+        s.tangent0 = Some(vec![1.0, 1.0]);
+        let r = run("transcritical", which, &s, &Options::default());
+        assert!(matches!(r, Err(EngineError::BadProblem(_))), "{r:?}");
+        let mut s = EpSetup::new(0, vec![0.0], vec![0.0, 0.0]);
+        s.tangent0 = Some(vec![1.0, 1.0]);
+        let r = run("transcritical", which, &s, &Options::default());
+        assert!(matches!(r, Err(EngineError::BadProblem(_))), "{r:?}");
+        let mut s = EpSetup::new(0, vec![], vec![0.0]);
+        s.tangent0 = Some(vec![1.0, 1.0]);
+        let r = run("transcritical", which, &s, &Options::default());
+        assert!(matches!(r, Err(EngineError::BadProblem(_))), "{r:?}");
+    }
+}
+
+/// Inf-norm distance of the last point of `b` from the start of `s` in (u, alpha).
+fn reach(b: &Branch, s: &EpSetup) -> f64 {
+    let p = b.points.last().unwrap();
+    let mut d = (p.alpha - s.params[s.free]).abs();
+    for (a, c) in p.u.iter().zip(&s.u0) {
+        d = d.max((a - c).abs());
+    }
+    d
 }
