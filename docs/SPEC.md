@@ -61,7 +61,7 @@ Parsing rules:
 - A number followed directly by a name or `(` (`2v`) multiplies, with a portability warning, since XPPAUT 8.0 rejects it.
 - Built-in functions: `sin cos tan asin acos atan atan2 sinh cosh tanh exp ln log log10 sqrt abs heav sign mod min max flr ceil erf erfc lgamma besselj bessely`, and `if(c)then(a)else(b)`. `ceil` gets a portability warning.
 - `ran`, `normal` and `poisson` make a model simulation-only, as do `markov`, `wiener` and `global`.
-- The exact meaning of each function (for example that `log` is natural and `atan2(y,x)` uses C's order), with its source, is in the semantics table in `language.md`. Division follows IEEE (`1/0` is inf, `0/0` is NaN), unlike XPPAUT's guarded division. `mod(x,y)` is `r = fmod(x,y)`, plus `y` when `r < 0`. `if` evaluates both branches and selects one with the test `c != 0`. Constant folding in `pc-ir` drops NaN and inf from terms it removes (`x*0` is 0); `language.md` lists the rules.
+- The exact meaning of each function (for example that `log` is natural and `atan2(y,x)` uses C's order), with its source, is in the semantics table in `language.md`. Division follows IEEE (`1/0` is inf, `0/0` is NaN), unlike XPPAUT's guarded division. `mod(x,y)` is `r = fmod(x,y)`, plus `y` when `r < 0`. `if` evaluates both branches and selects one with the test `c != 0`. Constant folding in `pc-ir` drops NaN and inf from terms it removes (`x*0` is 0), and it can change the sign of a zero (`x*0` is `+0`, so `atan2(x*0,-1)` at `x = -1` is `+pi` in the DAG and `-pi` in the interpreter); `language.md` lists the rules.
 
 **Non-smooth models.**
 - Any of `heav sign abs mod flr ceil min max if`, a comparison (`< <= > >= ==`), `&`, `|`, `not`, or a table, marks a model as non-smooth.

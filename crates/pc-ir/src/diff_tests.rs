@@ -538,3 +538,29 @@ fn a_too_large_jacu_does_not_poison_f() {
     assert_eq!(ir.dag.len(), full);
     assert!(ir.entry(&EntryKind::F).is_ok());
 }
+
+// ---- the sign of a zero under folding (documented in language.md) ----
+
+fn f_both(src: &str, x: &[f64], p: &[f64]) -> (f64, f64) {
+    let (fb, mut ir) = setup(src);
+    let e = ir.entry(&EntryKind::F).unwrap();
+    let dag = run(&ir, &e.outputs, x, p)[0];
+    let mut o = [0.0];
+    fb.eval(&EntryKind::F, x, p, &[], &mut o);
+    (dag, o[0])
+}
+
+#[test]
+fn folding_may_change_the_sign_of_a_zero_but_not_a_nonzero_result() {
+    // `x*0` folds to +0, so atan2 sees +0 in the DAG and -0 in the interpreter.
+    let (dag, fb) = f_both("x'=atan2(x*0,-1)\ndone\n", &[-1.0], &[0.0]);
+    assert_eq!(dag, std::f64::consts::PI);
+    assert_eq!(fb, -std::f64::consts::PI);
+    // `0-a` folds to `-a`: -0 for a = +0 in the DAG, +0 from 0 - 0 in the interpreter.
+    let (dag, fb) = f_both("par a=0\nx'=0-a\ndone\n", &[0.0], &[0.0, 0.0]);
+    assert_eq!(dag.to_bits(), (-0.0_f64).to_bits());
+    assert_eq!(fb.to_bits(), 0.0_f64.to_bits());
+    // A finite nonzero result keeps its bits.
+    let (dag, fb) = f_both("par a=0.3\nx'=(0-a)+x*1+0\ndone\n", &[0.7], &[0.3, 0.0]);
+    assert_eq!(dag.to_bits(), fb.to_bits());
+}
