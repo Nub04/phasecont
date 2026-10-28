@@ -430,3 +430,111 @@ fn bessel_second_derivative_with_a_fractional_order() {
     let want = -libm::j0(x) + libm::j1(x) / x;
     assert!((out[0] - want).abs() < 1e-13, "{} vs {want}", out[0]);
 }
+
+// ---- a failed entry leaves the model as it was ----
+
+const CAP_SRC: &str = "par a=1.3\nx'=sin(x)*cos(y)+a*x*y\ny'=exp(x*y)-tanh(a*y)\ndone\n";
+
+fn lower_capped(src: &str, cap: usize) -> IrModel {
+    let mut map = SourceMap::new();
+    let top = map.add("t.ode", src);
+    let l = load(top, &mut map, &mut MapLoader::new());
+    match crate::lower::lower_with_cap(&l.expanded, &l.info, cap) {
+        Ok(m) => m,
+        Err(e) => panic!("lower failed: {e:?}"),
+    }
+}
+
+/// Builds `F`, then `small` on a model without a tight cap and returns its node count and the
+/// values of both at a point.
+fn fresh_reference(small: &EntryKind, x: &[f64], p: &[f64]) -> (usize, Vec<f64>, Vec<f64>) {
+    let mut ir = lower_capped(CAP_SRC, crate::dag::MAX_NODES);
+    let f = ir.entry(&EntryKind::F).unwrap();
+    let s = ir.entry(small).unwrap();
+    let v = [0.3, -0.6, 0.9, 0.2, -0.4, 0.8];
+    let n_v = if matches!(small, EntryKind::Dir(_)) {
+        2
+    } else {
+        0
+    };
+    let mut fo = vec![0.0; f.outputs.len()];
+    eval(&ir.dag, &f.outputs, x, p, &v[..n_v], &mut fo);
+    let mut so = vec![0.0; s.outputs.len()];
+    eval(&ir.dag, &s.outputs, x, p, &v[..n_v], &mut so);
+    (ir.dag.len(), fo, so)
+}
+
+fn too_large_then_small_entries_still_build(small: EntryKind) {
+    let (x, p) = ([0.4, -0.7], [1.3, 0.0]);
+    let (cap, want_f, want_s) = fresh_reference(&small, &x, &p);
+    let big = EntryKind::Dir(vec![crate::entry::Slot::U; 5]);
+    {
+        let mut ir = lower_capped(CAP_SRC, crate::dag::MAX_NODES);
+        ir.entry(&big).unwrap();
+        assert!(
+            ir.dag.len() > cap,
+            "the big entry must not fit under the cap"
+        );
+    }
+    let mut ir = lower_capped(CAP_SRC, cap);
+    let before = ir.dag.len();
+    for _ in 0..2 {
+        let e = ir.entry(&big).unwrap_err();
+        assert_eq!(e.kind, crate::IrErrorKind::TooLarge);
+        assert!(
+            !ir.dag.exceeded(),
+            "the failed request must not stay flagged"
+        );
+        assert_eq!(
+            ir.dag.len(),
+            before,
+            "the failed request must leave no nodes"
+        );
+    }
+    let f = ir.entry(&EntryKind::F).expect("F after a failed request");
+    let s = ir
+        .entry(&small)
+        .expect("small entry after a failed request");
+    assert_eq!(ir.dag.len(), cap, "same nodes as a model that never failed");
+    let v = [0.3, -0.6, 0.9, 0.2, -0.4, 0.8];
+    let n_v = if matches!(small, EntryKind::Dir(_)) {
+        2
+    } else {
+        0
+    };
+    let mut fo = vec![0.0; f.outputs.len()];
+    eval(&ir.dag, &f.outputs, &x, &p, &v[..n_v], &mut fo);
+    let mut so = vec![0.0; s.outputs.len()];
+    eval(&ir.dag, &s.outputs, &x, &p, &v[..n_v], &mut so);
+    assert_eq!(fo, want_f);
+    assert_eq!(so, want_s);
+}
+
+#[test]
+fn a_too_large_dir_does_not_poison_jacu() {
+    too_large_then_small_entries_still_build(EntryKind::JacU);
+}
+
+#[test]
+fn a_too_large_dir_does_not_poison_a_small_dir() {
+    too_large_then_small_entries_still_build(EntryKind::Dir(vec![crate::entry::Slot::U]));
+}
+
+#[test]
+fn a_too_large_jacu_does_not_poison_f() {
+    let src = "x'=sin(x)*cos(x)+x*x\ndone\n";
+    let full = {
+        let mut map = SourceMap::new();
+        let top = map.add("t.ode", src);
+        let l = load(top, &mut map, &mut MapLoader::new());
+        lower(&l.expanded, &l.info).unwrap().dag.len()
+    };
+    let mut ir = lower_capped(src, full);
+    assert_eq!(
+        ir.entry(&EntryKind::JacU).unwrap_err().kind,
+        crate::IrErrorKind::TooLarge
+    );
+    assert!(!ir.dag.exceeded());
+    assert_eq!(ir.dag.len(), full);
+    assert!(ir.entry(&EntryKind::F).is_ok());
+}

@@ -106,6 +106,25 @@ pub enum Op {
     TableSlope(u32, NodeId),
 }
 
+/// The size of a [`Dag`] at one moment, from [`Dag::checkpoint`].
+#[derive(Clone, Copy, Debug)]
+pub struct Checkpoint {
+    nodes: usize,
+    tables: usize,
+    exceeded: bool,
+}
+
+impl Checkpoint {
+    /// The node count at the checkpoint: ids below it stay valid after a restore.
+    pub fn len(&self) -> usize {
+        self.nodes
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.nodes == 0
+    }
+}
+
 pub struct Dag {
     nodes: Vec<Op>,
     map: HashMap<Op, NodeId>,
@@ -127,6 +146,28 @@ impl Dag {
 
     pub fn len(&self) -> usize {
         self.nodes.len()
+    }
+
+    /// Records the current size so [`Dag::restore`] can drop everything added later.
+    pub fn checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            nodes: self.nodes.len(),
+            tables: self.tables.len(),
+            exceeded: self.exceeded,
+        }
+    }
+
+    /// Drops every node and table added since `cp` and resets the limit flag to its value
+    /// then. Ids returned after `cp` are invalid afterwards, and a caller that keeps a memo
+    /// keyed on node ids must drop its entries past [`Checkpoint::len`].
+    pub fn restore(&mut self, cp: &Checkpoint) {
+        if cp.nodes < self.nodes.len() {
+            for op in self.nodes.drain(cp.nodes..) {
+                self.map.remove(&op);
+            }
+        }
+        self.tables.truncate(cp.tables);
+        self.exceeded = cp.exceeded;
     }
 
     pub fn is_empty(&self) -> bool {

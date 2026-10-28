@@ -61,6 +61,7 @@ impl IrModel {
         if let Some(e) = self.entries.get(kind) {
             return Ok(e.clone());
         }
+        let cp = self.dag.checkpoint();
         let outputs = match kind {
             EntryKind::F => self.f.clone(),
             EntryKind::Aux => self.aux.clone(),
@@ -79,6 +80,13 @@ impl IrModel {
             }
         };
         if self.dag.exceeded() {
+            // Put the model back as it was before this request: drop the nodes it added,
+            // the flag, and the memo entries that point past them. Later requests then
+            // see the same DAG as on a model that never got this one.
+            self.dag.restore(&cp);
+            let keep = cp.len();
+            self.diff_memo
+                .retain(|&(k, _), v| (k.0 as usize) < keep && (v.0 as usize) < keep);
             return Err(IrError::new(
                 IrErrorKind::TooLarge,
                 DUMMY_SPAN,
