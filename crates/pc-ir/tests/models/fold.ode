@@ -1,0 +1,5 @@
+# Fold (saddle-node) normal form x'=a+x^2, written for the section 3 and 4 checks.
+par a=-1
+x'=a+x^2
+init x=-1
+done

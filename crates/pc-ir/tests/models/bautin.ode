@@ -1,0 +1,10 @@
+# Generalized Hopf (Bautin) normal form, Kuznetsov, Elements of Applied Bifurcation
+# Theory, 3rd ed., section 8.3, in Cartesian coordinates with z=x+i*y:
+#   dz/dt = (b1+i)*z + b2*z*|z|^2 + s*z*|z|^4, with s=-1.
+par b1=0.1,b2=0.5
+s=-1
+r2=x^2+y^2
+x'=b1*x-y+b2*x*r2+s*x*r2^2
+y'=x+b1*y+b2*y*r2+s*y*r2^2
+init x=0.2,y=0.1
+done

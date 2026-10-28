@@ -5,6 +5,7 @@
 //! the `pc_ir::math` shims, the rest is lowered in line, and no fused multiply-add is
 //! used.
 
+pub mod check;
 mod compiled;
 mod flags;
 mod lower;

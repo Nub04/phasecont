@@ -1,0 +1,7 @@
+# Damped oscillator whose restoring force is an inline table of tanh on [-3, 3].
+par a=2,k=0.5
+table s % 41 -3 3 tanh(t)
+x'=y
+y'=-a*s(x)-k*y+0.1
+init x=0.4,y=0
+done

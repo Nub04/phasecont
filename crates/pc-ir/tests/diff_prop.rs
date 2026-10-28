@@ -152,8 +152,18 @@ fn small(v: &[f64]) -> bool {
     v.iter().all(|x| x.is_finite() && x.abs() < BIG)
 }
 
+/// 300 cases, or the number in `PROPTEST_CASES`. `ProptestConfig::with_cases` would ignore the
+/// variable.
+fn config() -> ProptestConfig {
+    let cases = std::env::var("PROPTEST_CASES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(300);
+    ProptestConfig::with_cases(cases)
+}
+
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(300))]
+    #![proptest_config(config())]
 
     /// JacU and JacP of the DAG against the interpreter's dual-number columns.
     #[test]

@@ -1,0 +1,7 @@
+# Lorenz system with sigma=10, r=28, b=8/3.
+par sigma=10,r=28,b=2.6666667
+x'=sigma*(y-x)
+y'=r*x-y-x*z
+z'=x*y-b*z
+init x=1,y=1,z=1
+done

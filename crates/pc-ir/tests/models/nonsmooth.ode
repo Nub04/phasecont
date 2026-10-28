@@ -1,0 +1,7 @@
+# Non-smooth right-hand side: max, min, abs, sign, if, atan2 and erf. The kinks lie
+# inside the box that the checks draw their points from.
+par a=0.8,b=1.5,c=0.3
+init x=0.4,y=-0.3
+x'=max(x,a*y)-b*abs(y)+if(x>c)then(sin(y))else(cos(x))+erf(x*y)
+y'=min(x,y)+sign(x-c)*a+atan2(y,x+2)-x
+done

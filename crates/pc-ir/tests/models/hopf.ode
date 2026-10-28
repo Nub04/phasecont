@@ -1,0 +1,7 @@
+# Hopf normal form in Cartesian coordinates with a negative first Lyapunov coefficient.
+par mu=0.1
+r2=x^2+y^2
+x'=mu*x-y-x*r2
+y'=x+mu*y-y*r2
+init x=0.1,y=0
+done

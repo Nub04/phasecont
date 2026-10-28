@@ -1,0 +1,6 @@
+# Brusselator with A=1 and B=3.
+par A=1,B=3
+x'=A+x^2*y-(B+1)*x
+y'=B*x-x^2*y
+init x=1,y=3
+done
