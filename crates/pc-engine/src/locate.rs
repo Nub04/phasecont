@@ -29,7 +29,7 @@ enum Trial {
 }
 
 /// Corrects at `s` on the step and evaluates the tests there. A failed corrector, a failed
-/// tangent or a NaN value of test `t` is `Failed`; only a cancel is a `Stop`.
+/// tangent or a NaN value of test `t` is `Failed`; only a cancel is a `Stop`; every other error of the corrector is `Failed`.
 fn trial(
     p: &mut dyn Problem,
     st: &Step,
@@ -48,7 +48,10 @@ fn trial(
     let (x, iters) = match correct(p, st.xk, st.v, s * st.h, start, opts, cancel) {
         Corrected::Done { x, iters } => (x, iters),
         Corrected::Failed => return Trial::Failed,
-        Corrected::Stop(r) => return Trial::Stop(r),
+        Corrected::Stop(StopReason::Cancelled) => return Trial::Stop(StopReason::Cancelled),
+        // Any other stop reason is a failure of this trial only (ruling: never stop the run
+        // because of a locate failure).
+        Corrected::Stop(_) => return Trial::Failed,
     };
     let built = tangent_or_kernel(p, &x, st.v)
         .and_then(|(vn, d)| tests_fn::evaluate(p, &x, &vn, d, opts, warnings).map(|r| (vn, r)));
@@ -107,7 +110,6 @@ fn locate_one(
     let (mut lo, mut hi, mut flo, mut fhi) = (0.0, 1.0, fa, fb);
     let mut side = 0i8;
     let mut best: Option<(f64, f64, Point)> = None;
-    let mut failed = false;
     for _ in 0..opts.max_locate {
         if (hi - lo) * st.h <= 1e-13 {
             break;
@@ -126,7 +128,6 @@ fn locate_one(
                     Trial::Ok(pt) => (m, pt),
                     Trial::Stop(r) => return Err(r),
                     Trial::Failed => {
-                        failed = true;
                         break;
                     }
                 }
@@ -155,9 +156,7 @@ fn locate_one(
             side = 1;
         }
     }
-    if failed || best.is_none() {
-        return Ok(None);
-    }
+    // A search that ended on a failed trial still returns the best valid trial so far.
     Ok(best.map(|(s, _, pt)| (s, pt)))
 }
 
@@ -175,6 +174,41 @@ pub(crate) fn detect_step(
     points: &[Point],
     opts: &Options,
     cancel: &AtomicBool,
+    warnings: &mut Vec<String>,
+    specials: &mut Vec<SpecialPoint>,
+) -> Result<(), StopReason> {
+    // Trials write to a scratch vector; its entries are merged without repeats.
+    let mut scratch = Vec::new();
+    let r = detect_inner(
+        p,
+        xk,
+        v,
+        h,
+        points,
+        opts,
+        cancel,
+        &mut scratch,
+        warnings,
+        specials,
+    );
+    for w in scratch {
+        if !warnings.contains(&w) {
+            warnings.push(w);
+        }
+    }
+    r
+}
+
+#[allow(clippy::too_many_arguments)]
+fn detect_inner(
+    p: &mut dyn Problem,
+    xk: &[f64],
+    v: &[f64],
+    h: f64,
+    points: &[Point],
+    opts: &Options,
+    cancel: &AtomicBool,
+    scratch: &mut Vec<String>,
     warnings: &mut Vec<String>,
     specials: &mut Vec<SpecialPoint>,
 ) -> Result<(), StopReason> {
@@ -196,7 +230,7 @@ pub(crate) fn detect_step(
                 found.push((1.0, special(l, k + 1, pk1.clone())));
             }
         } else if a * b < 0.0 {
-            match locate_one(p, &st, t, (a, b), opts, cancel, warnings)? {
+            match locate_one(p, &st, t, (a, b), opts, cancel, scratch)? {
                 Some((s, pt)) => match label(t, &pt.eigenvalues) {
                     Some(l) => found.push((s, special(l, k + 1, pt))),
                     None => warn(warnings, t, &pk1.eigenvalues, k),
@@ -225,6 +259,8 @@ mod tests {
     /// Two unknowns, one equation x0 = 0, or an equation that never evaluates.
     struct Dummy {
         broken: bool,
+        /// Fails with a model error that is not NotFinite when alpha exceeds this.
+        fail_above: f64,
     }
     impl Problem for Dummy {
         fn dim(&self) -> usize {
@@ -233,6 +269,9 @@ mod tests {
         fn residual(&mut self, x: &[f64], out: &mut [f64]) -> Result<(), EngineError> {
             if self.broken {
                 return Err(EngineError::NotFinite("residual".into()));
+            }
+            if x[1] > self.fail_above {
+                return Err(EngineError::BadProblem("model error".into()));
             }
             out[0] = x[0];
             Ok(())
@@ -258,7 +297,10 @@ mod tests {
     fn run(broken: bool, pts: &[Point]) -> (Vec<String>, Vec<SpecialPoint>) {
         let (mut w, mut sp) = (Vec::new(), Vec::new());
         detect_step(
-            &mut Dummy { broken },
+            &mut Dummy {
+                broken,
+                fail_above: f64::INFINITY,
+            },
             &[0.0, 0.0],
             &[0.0, 1.0],
             0.1,
@@ -312,5 +354,169 @@ mod tests {
             w,
             vec!["could not locate LP between points 0 and 1".to_string()]
         );
+    }
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::*;
+
+    struct Failing {
+        fail_above: f64,
+    }
+    impl Problem for Failing {
+        fn dim(&self) -> usize {
+            2
+        }
+        fn residual(&mut self, x: &[f64], out: &mut [f64]) -> Result<(), EngineError> {
+            if x[1] > self.fail_above {
+                return Err(EngineError::BadProblem("model error".into()));
+            }
+            out[0] = x[0];
+            Ok(())
+        }
+        fn jacobian(&mut self, _x: &[f64], out: &mut [f64]) -> Result<(), EngineError> {
+            out.copy_from_slice(&[1.0, 0.0]);
+            Ok(())
+        }
+    }
+
+    fn pt(tests: [f64; 3]) -> Point {
+        Point {
+            u: vec![0.0],
+            alpha: 0.0,
+            tangent: vec![0.0, 1.0],
+            eigenvalues: Vec::new(),
+            tests,
+            h: 0.1,
+            newton_iters: 1,
+        }
+    }
+
+    fn run(fail_above: f64) -> (Vec<String>, Vec<SpecialPoint>) {
+        let n = f64::NAN;
+        let (mut w, mut sp) = (Vec::new(), Vec::new());
+        detect_step(
+            &mut Failing { fail_above },
+            &[0.0, 0.0],
+            &[0.0, 1.0],
+            0.1,
+            &[pt([1.0, n, n]), pt([-1.0, n, n])],
+            &Options::default(),
+            &AtomicBool::new(false),
+            &mut w,
+            &mut sp,
+        )
+        .unwrap();
+        (w, sp)
+    }
+
+    #[test]
+    fn a_model_error_at_a_trial_does_not_stop_the_run() {
+        // Every trial hits the error: warning, no special, and an Ok result.
+        let (w, sp) = run(-1.0);
+        assert!(sp.is_empty());
+        assert_eq!(
+            w,
+            vec!["could not locate LP between points 0 and 1".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_best_trial_is_kept_when_a_later_one_fails() {
+        // The first trial (s = 0.5, alpha = 0.05) works, the second (alpha = 0.075) fails.
+        let (w, sp) = run(0.06);
+        assert!(w.is_empty());
+        assert_eq!(sp.len(), 1);
+        assert!(!sp[0].extras.refined);
+        assert!((sp[0].point.alpha - 0.05).abs() < 1e-12);
+    }
+}
+
+#[cfg(test)]
+mod two_zero_tests {
+    use super::*;
+
+    /// Two unknowns and the equation x0 = 0. The tangent solve (right-hand side e_2)
+    /// returns (1, a - 0.07) with determinant a - 0.03, where a is the alpha of the last
+    /// residual call, so psi_BP vanishes at alpha = 0.03 and psi_LP at alpha = 0.07. Other
+    /// solves are the identity.
+    struct TwoZeros {
+        alpha: f64,
+    }
+    impl Problem for TwoZeros {
+        fn dim(&self) -> usize {
+            2
+        }
+        fn residual(&mut self, x: &[f64], out: &mut [f64]) -> Result<(), EngineError> {
+            self.alpha = x[1];
+            out[0] = x[0];
+            Ok(())
+        }
+        fn jacobian(&mut self, x: &[f64], out: &mut [f64]) -> Result<(), EngineError> {
+            self.alpha = x[1];
+            out.copy_from_slice(&[1.0, 0.0]);
+            Ok(())
+        }
+        fn bordered_solve(
+            &mut self,
+            _jac: &[f64],
+            _border: &[f64],
+            rhs: &[f64],
+            sol: &mut [f64],
+        ) -> Result<f64, EngineError> {
+            if rhs == [0.0, 1.0] {
+                sol.copy_from_slice(&[1.0, self.alpha - 0.07]);
+                Ok(self.alpha - 0.03)
+            } else {
+                sol.copy_from_slice(rhs);
+                Ok(1.0)
+            }
+        }
+    }
+
+    fn pt(alpha: f64) -> Point {
+        Point {
+            u: vec![0.0],
+            alpha,
+            tangent: vec![1.0, 0.0],
+            eigenvalues: Vec::new(),
+            tests: [alpha - 0.07, alpha - 0.03, f64::NAN],
+            h: 0.1,
+            newton_iters: 1,
+        }
+    }
+
+    #[test]
+    fn two_tests_on_one_step_are_both_located_in_order() {
+        let (mut w, mut sp) = (Vec::new(), Vec::new());
+        detect_step(
+            &mut TwoZeros { alpha: 0.0 },
+            &[0.0, 0.0],
+            &[0.0, 1.0],
+            0.1,
+            &[pt(0.0), pt(0.1)],
+            &Options::default(),
+            &AtomicBool::new(false),
+            &mut w,
+            &mut sp,
+        )
+        .unwrap();
+        assert!(w.is_empty(), "{w:?}");
+        let names: Vec<&str> = sp.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(names, ["BP", "LP"]);
+        assert!(sp.iter().all(|s| s.index == 1 && !s.extras.refined));
+        // Tests are ordered LP, BP, H in the loop; the specials are ordered by s.
+        assert!(
+            (sp[0].point.alpha - 0.03).abs() < 1e-10,
+            "{}",
+            sp[0].point.alpha
+        );
+        assert!(
+            (sp[1].point.alpha - 0.07).abs() < 1e-10,
+            "{}",
+            sp[1].point.alpha
+        );
+        assert!(sp[0].point.h < sp[1].point.h);
     }
 }

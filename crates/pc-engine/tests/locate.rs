@@ -148,3 +148,23 @@ fn start_is_special_skips_the_first_step_only() {
         assert!(b.specials.is_empty(), "{which:?}");
     }
 }
+
+#[test]
+fn a_zero_on_the_step_that_lands_on_a_bound_is_located() {
+    for which in BOTH {
+        // From al = -0.01 the first step would reach 0.06; the bound at 0.03 cuts it, and
+        // the BP at 0 lies inside the cut step.
+        let setup = EpSetup::new(0, vec![-0.01], vec![0.0]);
+        let opts = Options {
+            bounds: (f64::NEG_INFINITY, 0.03),
+            ..line_opts()
+        };
+        let b = run("transcritical", which, &setup, &opts);
+        assert_eq!(b.stop, StopReason::Bounds);
+        assert_eq!(b.points.len(), 2, "{which:?}");
+        assert_eq!(labels(&b), ["BP"]);
+        assert_eq!(b.specials[0].index, 1);
+        assert!(b.specials[0].point.alpha.abs() < 1e-8);
+        assert!((b.points[1].alpha - 0.03).abs() < 1e-10);
+    }
+}
