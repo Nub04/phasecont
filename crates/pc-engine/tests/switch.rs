@@ -220,9 +220,12 @@ fn special_index_counts_per_label() {
     assert_eq!(special_index(&b, "BP2"), Some(3));
     assert_eq!(special_index(&b, "BP3"), Some(5));
     assert_eq!(special_index(&b, "H2"), Some(4));
-    for bad in [
-        "BP0", "BP4", "BP", "XX1", "1", "", "BP1x", "BP-1", "bp1", "H3",
-    ] {
+    for name in ["bp1", "Bp2", "h2", "lp1"] {
+        let upper = name.to_ascii_uppercase();
+        assert_eq!(special_index(&b, name), special_index(&b, &upper), "{name}");
+        assert!(special_index(&b, name).is_some(), "{name}");
+    }
+    for bad in ["BP0", "BP4", "BP", "XX1", "1", "", "BP1x", "BP-1", "H3"] {
         assert_eq!(special_index(&b, bad), None, "{bad:?}");
     }
 }
@@ -241,6 +244,30 @@ fn switching_a_bp_with_a_definite_form_is_not_simple() {
             warnings: Vec::new(),
         };
         let mut m = model_of("isola", which);
+        let r = switch_bp(m.as_mut(), &setup, &b, 0, &Options::default());
+        assert!(
+            matches!(&r, Err(EngineError::BadProblem(m)) if m == "BP is not simple"),
+            "{which:?}: {r:?}"
+        );
+    }
+}
+
+#[test]
+fn a_one_dimensional_bp_needs_a_zero_state_block() {
+    for which in BOTH {
+        // The fold point of x' = a + x^2 has F_x = [0, 1]: rank 1, so the kernel is
+        // one-dimensional and a BP label there is refused.
+        let setup = EpSetup::new(0, vec![0.0], vec![0.0]);
+        let mut sp = named("BP");
+        sp.extras.refined = true;
+        sp.point.tangent = vec![1.0, 0.0];
+        let b = Branch {
+            points: Vec::new(),
+            specials: vec![sp],
+            stop: StopReason::MaxSteps,
+            warnings: Vec::new(),
+        };
+        let mut m = model_of("fold", which);
         let r = switch_bp(m.as_mut(), &setup, &b, 0, &Options::default());
         assert!(
             matches!(&r, Err(EngineError::BadProblem(m)) if m == "BP is not simple"),

@@ -62,7 +62,8 @@ fn jit_and_fallback_agree() {
                     );
                 }
             }
-            // One directional entry, to cover the `v` argument.
+            // One directional entry, to cover the `v` argument. The two evaluators differ by
+            // at most 1 ulp here (measured over these models); 4 matches the other entries.
             let kind = EntryKind::Dir(vec![Slot::U, Slot::U]);
             let v: Vec<f64> = (0..2 * n).map(|i| 0.1 + 0.2 * i as f64).collect();
             let (mut a, mut b) = (vec![0.0; n], vec![0.0; n]);
@@ -71,7 +72,7 @@ fn jit_and_fallback_agree() {
             for (i, (u, w)) in a.iter().zip(&b).enumerate() {
                 let d = ulp_dist(*u, *w);
                 assert!(
-                    d <= 64,
+                    d <= 4,
                     "{name} Dir[{i}]: jit {u:e} fallback {w:e} ({d} ulp)"
                 );
             }
@@ -92,7 +93,12 @@ fn nonautonomous_is_refused() {
 
 #[test]
 fn table_that_reads_a_parameter_is_refused() {
-    for name in ["table_par", "table_derived"] {
+    for name in [
+        "table_par",
+        "table_derived",
+        "table_via_table",
+        "table_fixed_par",
+    ] {
         let (model, info) = load(name);
         for which in [Evaluator::Jit, Evaluator::Fallback] {
             match build(&model, &info, which) {
@@ -105,7 +111,7 @@ fn table_that_reads_a_parameter_is_refused() {
 
 #[test]
 fn table_that_reads_only_t_is_accepted() {
-    for name in ["table_t", "table_func_shadow"] {
+    for name in ["table_t", "table_func_shadow", "table_fixed_const"] {
         let (model, info) = load(name);
         for which in [Evaluator::Jit, Evaluator::Fallback] {
             assert!(build(&model, &info, which).is_ok(), "{name}");

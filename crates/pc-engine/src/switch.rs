@@ -19,7 +19,7 @@ const SIGN_TOL: f64 = 1e-12;
 
 /// Index into `branch.specials` of the special point named `name`: a label followed by a
 /// 1-based ordinal among the specials with that label. "BP1" is the first BP, "H2" the
-/// second H. `None` for an unknown name, an ordinal of 0 or too large, a name without an
+/// second H. The label is matched without regard to case ("bp1" is "BP1"). `None` for an unknown name, an ordinal of 0 or too large, a name without an
 /// ordinal ("BP") and a name without a label ("1").
 pub fn special_index(branch: &Branch, name: &str) -> Option<usize> {
     let cut = name.find(|c: char| c.is_ascii_digit())?;
@@ -35,7 +35,7 @@ pub fn special_index(branch: &Branch, name: &str) -> Option<usize> {
         .specials
         .iter()
         .enumerate()
-        .filter(|(_, s)| s.label == label)
+        .filter(|(_, s)| s.label.eq_ignore_ascii_case(label))
         .nth(ordinal - 1)
         .map(|(i, _)| i)
 }
@@ -91,10 +91,11 @@ pub fn switch_bp(
     }
     ctx.set_alpha(alpha);
     let fx = ctx.f_x(u)?;
-    // Kernel of F_x must be exactly two-dimensional: the n-th singular value is the
-    // smallest of the n, the (n-1)-th must be clearly nonzero.
+    // Kernel of F_x must be exactly two-dimensional: the smallest singular value (the
+    // n-th) must be about zero and, for n >= 2, the (n-1)-th clearly nonzero.
     let sv = singular_values(&fx, n, n + 1)?;
-    if n >= 2 && sv[n - 2] <= 1e-8 * sv[0] {
+    let not_simple = n >= 1 && sv[n - 1] > 1e-6 * sv[0].max(1.0);
+    if not_simple || (n >= 2 && sv[n - 2] <= 1e-8 * sv[0]) {
         return Err(EngineError::BadProblem("BP is not simple".into()));
     }
     let phi = null_right(&fx, n, n + 1, 2)?;
@@ -177,4 +178,35 @@ fn branching_root(c: &[[f64; 2]; 2], phi: &[Vec<f64>], v: &[f64]) -> Result<Vec<
         }
     }
     Ok(t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn basis() -> Vec<Vec<f64>> {
+        vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]]
+    }
+
+    #[test]
+    fn two_separate_roots_give_a_unit_tangent() {
+        // b1^2 - b2^2 = 0 has the roots b = (1, 1) and (1, -1).
+        let c = [[1.0, 0.0], [0.0, -1.0]];
+        let t = branching_root(&c, &basis(), &[1.0, 0.0, 0.0]).unwrap();
+        let nrm: f64 = t.iter().map(|x| x * x).sum::<f64>().sqrt();
+        assert!((nrm - 1.0).abs() < 1e-14);
+        assert!((t[0].abs() - t[1].abs()).abs() < 1e-14 && t[2] == 0.0);
+    }
+
+    #[test]
+    fn coincident_roots_are_not_simple() {
+        // c11 = 1, c22 = -1e-13: the discriminant is positive but the two root directions
+        // are about 6e-7 apart, below ROOT_TOL, so the coincident-root branch is taken.
+        let c = [[1.0, 0.0], [0.0, -1e-13]];
+        let r = branching_root(&c, &basis(), &[1.0, 0.0, 0.0]);
+        assert_eq!(r, Err(EngineError::BadProblem("BP is not simple".into())));
+        // Just outside the tolerance the roots are accepted.
+        let c = [[1.0, 0.0], [0.0, -1e-9]];
+        assert!(branching_root(&c, &basis(), &[1.0, 0.0, 0.0]).is_ok());
+    }
 }

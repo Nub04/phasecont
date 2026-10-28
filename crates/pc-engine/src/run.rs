@@ -34,9 +34,10 @@ pub struct RunSpec {
     /// Name of a special point of the first branch, for example `"BP1"`. When set, the
     /// run switches there and follows the second branch.
     pub switch_at: Option<String>,
-    /// Test hook: wraps the evaluator in one that panics in `eval`.
+    /// Test hook: wraps the evaluator in one that panics in `eval` after this many
+    /// successful calls.
     #[cfg(test)]
-    pub(crate) panic_in_eval: bool,
+    pub(crate) panic_after: Option<usize>,
 }
 
 impl RunSpec {
@@ -56,7 +57,7 @@ impl RunSpec {
             opts,
             switch_at: None,
             #[cfg(test)]
-            panic_in_eval: false,
+            panic_after: None,
         }
     }
 }
@@ -115,25 +116,32 @@ fn placeholder() -> Branch {
 }
 
 #[cfg(test)]
-struct PanicEval(Box<dyn crate::model::ModelEval>);
+struct PanicEval {
+    inner: Box<dyn crate::model::ModelEval>,
+    left: usize,
+}
 
 #[cfg(test)]
 impl crate::model::ModelEval for PanicEval {
     fn n(&self) -> usize {
-        self.0.n()
+        self.inner.n()
     }
     fn n_p(&self) -> usize {
-        self.0.n_p()
+        self.inner.n_p()
     }
     fn eval(
         &mut self,
-        _kind: &pc_ir::EntryKind,
-        _x: &[f64],
-        _p: &[f64],
-        _v: &[f64],
-        _out: &mut [f64],
+        kind: &pc_ir::EntryKind,
+        x: &[f64],
+        p: &[f64],
+        v: &[f64],
+        out: &mut [f64],
     ) -> Result<(), EngineError> {
-        panic!("{}", String::from("eval blew up on purpose"));
+        if self.left == 0 {
+            panic!("{}", String::from("eval blew up on purpose"));
+        }
+        self.left -= 1;
+        self.inner.eval(kind, x, p, v, out)
     }
 }
 
@@ -163,10 +171,9 @@ fn body(shared: &Shared, spec: RunSpec) -> RunState {
         Err(e) => return finish(shared, Err(e)),
     };
     #[cfg(test)]
-    let model: Box<dyn crate::model::ModelEval> = if spec.panic_in_eval {
-        Box::new(PanicEval(model))
-    } else {
-        model
+    let model: Box<dyn crate::model::ModelEval> = match spec.panic_after {
+        Some(left) => Box::new(PanicEval { inner: model, left }),
+        None => model,
     };
     let mut model = model;
     let first = match follow(shared, model.as_mut(), &spec.setup, &spec.opts, 0) {
@@ -180,9 +187,12 @@ fn body(shared: &Shared, spec: RunSpec) -> RunState {
         return finish(shared, Ok(&first));
     }
     let Some(k) = special_index(&first, name) else {
-        return RunState::Failed(EngineError::BadProblem(format!(
-            "no special point {name} to switch at"
-        )));
+        return finish(
+            shared,
+            Err(EngineError::BadProblem(format!(
+                "no special point {name} to switch at"
+            ))),
+        );
     };
     let next = match switch_bp(model.as_mut(), &spec.setup, &first, k, &spec.opts) {
         Ok(s) => s,
@@ -253,9 +263,20 @@ impl Run {
 
     /// A snapshot of the run. Does not block on the worker.
     pub fn poll(&self) -> Status {
+        // Read the finished flag first: the worker sets the state before it ends, so a
+        // finished worker with a state of Running never wrote one.
+        let ended = self.handle.as_ref().is_some_and(|h| h.is_finished());
         let g = self.shared.lock();
+        let state = if ended && g.state == RunState::Running {
+            RunState::Panicked {
+                message: "worker ended without a state".into(),
+                location: "unknown".into(),
+            }
+        } else {
+            g.state.clone()
+        };
         Status {
-            state: g.state.clone(),
+            state,
             points: g.branches.iter().map(|b| b.points.len()).collect(),
             specials: g.branches.iter().map(|b| b.specials.len()).collect(),
         }
@@ -304,14 +325,17 @@ impl Run {
         if let Some(h) = self.handle.take() {
             // The body catches panics itself; an error here would mean the thread
             // died outside it, and the state would still say Running.
-            if h.join().is_err() {
-                let mut g = self.shared.lock();
-                if g.state == RunState::Running {
-                    g.state = RunState::Panicked {
-                        message: "worker thread died".into(),
-                        location: "unknown".into(),
-                    };
-                }
+            let died = h.join().is_err();
+            let mut g = self.shared.lock();
+            if g.state == RunState::Running {
+                g.state = RunState::Panicked {
+                    message: if died {
+                        "worker thread died".into()
+                    } else {
+                        "worker ended without a state".into()
+                    },
+                    location: "unknown".into(),
+                };
             }
         }
     }
@@ -356,7 +380,7 @@ mod tests {
     #[test]
     fn a_panic_in_eval_becomes_panicked_and_later_runs_work() {
         let mut spec = lorenz_spec();
-        spec.panic_in_eval = true;
+        spec.panic_after = Some(0);
         let st = Run::start(spec).join();
         match st.state {
             RunState::Panicked { message, location } => {
@@ -402,7 +426,8 @@ mod tests {
     #[test]
     fn poll_after_panicked_keeps_the_streamed_points() {
         let mut spec = lorenz_spec();
-        spec.panic_in_eval = true;
+        // Enough successful evaluations for a few points to stream before the panic.
+        spec.panic_after = Some(40);
         let run = Run::start(spec);
         let t0 = std::time::Instant::now();
         while run.poll().state == RunState::Running {
@@ -413,11 +438,38 @@ mod tests {
         let b = run.poll();
         assert!(matches!(a.state, RunState::Panicked { .. }));
         assert_eq!(a, b);
-        assert_eq!(
-            run.points(0, 0, 10).len(),
-            a.points.first().copied().unwrap_or(0).min(10)
-        );
+        let streamed = a.points.first().copied().unwrap_or(0);
+        assert!(streamed > 0, "no point streamed before the panic");
+        assert_eq!(run.points(0, 0, 10).len(), streamed.min(10));
         assert!(run.specials(0).is_empty());
+    }
+
+    #[test]
+    fn a_worker_that_ends_without_a_state_is_reported() {
+        let shared = Arc::new(Shared {
+            inner: Mutex::new(Inner {
+                branches: Vec::new(),
+                state: RunState::Running,
+            }),
+            cancel: AtomicBool::new(false),
+        });
+        let handle = std::thread::spawn(|| {});
+        let run = Run {
+            shared,
+            handle: Some(handle),
+        };
+        let t0 = std::time::Instant::now();
+        loop {
+            let st = run.poll();
+            if let RunState::Panicked { message, .. } = &st.state {
+                assert_eq!(message, "worker ended without a state");
+                break;
+            }
+            assert!(t0.elapsed().as_secs() < 30, "{st:?}");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let st = run.join();
+        assert!(matches!(st.state, RunState::Panicked { .. }));
     }
 
     #[test]

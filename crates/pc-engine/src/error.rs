@@ -22,8 +22,6 @@ pub enum EngineError {
     StepTooSmall { h: f64 },
     /// The caller cancelled the run.
     Cancelled,
-    /// A panic was caught and turned into an error.
-    Panicked { message: String, location: String },
 }
 
 impl std::fmt::Display for EngineError {
@@ -32,7 +30,7 @@ impl std::fmt::Display for EngineError {
             EngineError::NonAutonomous => f.write_str("the model depends on t"),
             EngineError::BadProblem(m) => write!(f, "bad problem: {m}"),
             EngineError::Model(m) => write!(f, "model error: {m}"),
-            EngineError::NotFinite(k) => write!(f, "entry {k} gave NaN or infinity"),
+            EngineError::NotFinite(k) => write!(f, "NaN or infinity in {k}"),
             EngineError::Singular(m) => write!(f, "singular matrix: {m}"),
             EngineError::NewtonFailed { iters, residual } => {
                 write!(
@@ -42,9 +40,6 @@ impl std::fmt::Display for EngineError {
             }
             EngineError::StepTooSmall { h } => write!(f, "step length {h:e} is below the minimum"),
             EngineError::Cancelled => f.write_str("cancelled"),
-            EngineError::Panicked { message, location } => {
-                write!(f, "panic at {location}: {message}")
-            }
         }
     }
 }
@@ -55,9 +50,11 @@ impl From<LinalgError> for EngineError {
     fn from(e: LinalgError) -> Self {
         match e {
             LinalgError::BadShape => EngineError::BadProblem(e.to_string()),
-            LinalgError::NotFinite => EngineError::NotFinite("linear algebra".into()),
+            LinalgError::NotFinite => EngineError::NotFinite("a linear algebra result".into()),
             LinalgError::Singular => EngineError::Singular(e.to_string()),
-            LinalgError::NoConvergence => EngineError::Singular(e.to_string()),
+            LinalgError::NoConvergence => EngineError::Singular(
+                "the factorization did not converge, so the matrix is treated as singular".into(),
+            ),
         }
     }
 }

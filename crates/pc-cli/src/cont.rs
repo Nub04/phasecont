@@ -123,10 +123,18 @@ fn report(run: &Run, state: &RunState) -> ExitCode {
         {
             let _ = writeln!(err, "branch {b} stopped: {e}");
         }
+        // A panic leaves the placeholder stop on the branch it cut short.
+        let cut_short =
+            b + 1 == counts.len() && matches!(state, RunState::Panicked { .. } | RunState::Running);
+        let stop_text = if cut_short {
+            "error"
+        } else {
+            stop.as_ref().map_or("none", stop_name)
+        };
         branches.push(json!({
             "points": points,
             "specials": specials.iter().map(special_json).collect::<Vec<_>>(),
-            "stop": stop.as_ref().map_or("none", stop_name),
+            "stop": stop_text,
         }));
     }
     let code = match state {

@@ -476,3 +476,54 @@ fn landed_point_is_kept_when_its_tests_fail() {
     assert_eq!(c.stop, StopReason::Cancelled);
     assert!((c.points.last().unwrap().alpha - 0.5).abs() < 1e-10);
 }
+
+#[test]
+fn landing_accepts_the_tol_refine_it_stopped_on() {
+    for which in BOTH {
+        // The fold branch x = sqrt(-a) runs towards the bound at a = -0.3.
+        let setup = EpSetup::new(0, vec![-1.0], vec![1.0]);
+        let opts = Options {
+            bounds: (-5.0, -0.3),
+            tol_refine: 1e-4,
+            ..Options::default()
+        };
+        let b = run("fold", which, &setup, &opts).unwrap();
+        assert_eq!(b.stop, StopReason::Bounds, "{which:?}");
+        let last = b.points.last().unwrap();
+        assert!((last.alpha + 0.3).abs() <= 1e-4, "{}", last.alpha);
+    }
+}
+
+#[test]
+fn infinite_step_options_are_refused() {
+    for which in BOTH {
+        let opts = Options {
+            h0: f64::INFINITY,
+            hmax: f64::INFINITY,
+            ..Options::default()
+        };
+        let r = run("circle", which, &circle_setup(), &opts);
+        assert!(matches!(r, Err(EngineError::BadProblem(_))), "{r:?}");
+    }
+}
+
+#[test]
+fn step_does_not_grow_after_a_slow_corrector() {
+    for which in BOTH {
+        let opts = Options {
+            h0: 0.5,
+            hmax: 2.0,
+            max_newton: 12,
+            max_steps: 12,
+            ..Options::default()
+        };
+        let b = run("circle", which, &circle_setup(), &opts).unwrap();
+        let slow: Vec<usize> = (1..b.points.len() - 1)
+            .filter(|&k| b.points[k].newton_iters > 3)
+            .collect();
+        assert!(!slow.is_empty(), "no step needed more than 3 iterations");
+        for k in slow {
+            assert!(b.points[k + 1].h <= b.points[k].h, "{which:?} step {k}");
+        }
+    }
+}

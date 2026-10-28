@@ -40,7 +40,8 @@ pub struct Extras {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpecialPoint {
     pub label: String,
-    /// Index of the branch point just before it.
+    /// Index of the first branch point after the special point (the stored k + 1 of the
+    /// step k to k + 1 that contained it).
     pub index: usize,
     pub point: Point,
     pub extras: Extras,
@@ -88,7 +89,8 @@ pub struct Options {
     pub tol_f: f64,
     /// Newton iterations per corrector call.
     pub max_newton: usize,
-    /// Sign of the alpha component of the first tangent.
+    /// Sets the sign of the alpha component of the first tangent from the bordered solve.
+    /// With a supplied `tangent0` it multiplies that whole vector by the sign instead.
     pub direction: f64,
     /// Bounds on alpha; a run stops when it reaches one.
     pub bounds: (f64, f64),

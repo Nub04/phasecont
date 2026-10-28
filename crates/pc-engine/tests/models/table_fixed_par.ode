@@ -1,0 +1,7 @@
+# Table formula that reads a parameter through a fixed quantity alone, so it must be refused.
+par a=1
+!d=2*a
+table h % 11 0 1 d*t
+x'=-x+h(x)
+init x=0.2
+done

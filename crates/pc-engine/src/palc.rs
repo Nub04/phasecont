@@ -244,6 +244,9 @@ struct Landed {
 /// bound and -1 for a lower one, so that g(s) = sgn (alpha(s) - bound) is negative inside.
 /// Illinois regula falsi on s in [0, 1]; each trial is corrected on the hyperplane
 /// `vᵀ(x - xk) = s h` from the predictor point, like the locating of SPEC section 5.
+///
+/// The best trial (smallest `|g|`) is kept and accepted when `|g| <= opts.tol_refine`. A
+/// corrector failure inside the landing returns `NewtonFailed`; it does not shrink `s`.
 #[allow(clippy::too_many_arguments)]
 fn land_on_bound(
     p: &mut dyn Problem,
@@ -277,7 +280,10 @@ fn land_on_bound(
         };
         let fs = g(&x);
         let hit = fs.abs() <= opts.tol_refine;
-        best = Some(Landed { x, s, iters });
+        let better = best.as_ref().is_none_or(|l| fs.abs() < g(&l.x).abs());
+        if better {
+            best = Some(Landed { x, s, iters });
+        }
         if hit {
             break;
         }
@@ -298,7 +304,7 @@ fn land_on_bound(
         }
     }
     match best {
-        Some(l) if g(&l.x).abs() <= 1e-10 => Ok(l),
+        Some(l) if g(&l.x).abs() <= opts.tol_refine => Ok(l),
         Some(l) => Err(StopReason::Error(EngineError::NewtonFailed {
             iters: opts.max_locate,
             residual: g(&l.x).abs(),
@@ -342,7 +348,13 @@ pub(crate) fn run_branch(
             "the start has the wrong length".into(),
         ));
     }
-    if !(opts.hmin > 0.0 && opts.h0 > 0.0 && opts.hmax >= opts.hmin && opts.max_newton >= 1) {
+    let finite = opts.h0.is_finite() && opts.hmin.is_finite() && opts.hmax.is_finite();
+    if !(finite
+        && opts.hmin > 0.0
+        && opts.h0 > 0.0
+        && opts.hmax >= opts.hmin
+        && opts.max_newton >= 1)
+    {
         return Err(EngineError::BadProblem("bad step control options".into()));
     }
     let (mut v, det) = match tangent0 {

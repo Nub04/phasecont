@@ -82,10 +82,12 @@ fn fold_prints_one_lp_at_zero() {
     let line = err.lines().find(|l| l.starts_with("LP ")).unwrap();
     assert!(line.contains("index "), "{line}");
     assert!(line.contains("a="), "{line}");
-    assert!(
-        line.contains("free=") && line.contains("e+00") || line.contains("e-"),
-        "{line}"
-    );
+    let free = line
+        .split("free=")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no free= in {line:?}"));
+    let free: f64 = free.trim().parse().unwrap();
+    assert!(free.abs() < TOL, "{line}");
 }
 
 #[test]
@@ -315,6 +317,23 @@ fn engine_and_model_failures_exit_one() {
     // A model file that does not exist.
     let o = run(&scratch(), &["cont", "no_such_model.ode", &problem("fold")]);
     assert_eq!(code(&o), 1, "{}", stderr(&o));
+}
+
+#[test]
+fn a_branch_that_fails_at_the_start_has_stop_error() {
+    // log of a negative number gives NaN at the start point.
+    let model = scratch().join("nan_start.ode");
+    std::fs::write(&model, "par a=1\nx'=a*log(x)\ninit x=-1\ndone\n").unwrap();
+    let path = scratch().join("nan_start.json");
+    std::fs::write(&path, r#"{"type":"EP","free":"a","u0":[-1]}"#).unwrap();
+    let o = run(
+        &scratch(),
+        &["cont", model.to_str().unwrap(), path.to_str().unwrap()],
+    );
+    assert_eq!(code(&o), 1, "{}", stderr(&o));
+    let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+    assert_eq!(v["branches"][0]["stop"], "error", "{v}");
+    assert!(stderr(&o).contains("run failed"), "{}", stderr(&o));
 }
 
 #[test]
