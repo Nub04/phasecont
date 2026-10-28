@@ -2,7 +2,7 @@
 
 ## Phase
 
-P2 (`pc-ir`, derivatives, `pc-jit` and the AOT C emitter; SPEC section 14) is in progress. P1 was accepted on 2026-10-24 and merged into `main`.
+P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching; SPEC section 14) is next; its plan was approved on 2026-10-28. P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
 
 ## Done
 
@@ -25,7 +25,7 @@ P1 (the numbers below were measured on 2026-10-23 at the head of the branch):
 - 162 XPPAUT 8.0 probe files in `references/xpp-probes/` at P1 acceptance (164 after the P2 probes `fn-mod-more` and `table-range`, with 328 PASS lines). `references/xpp-probes/run.sh` runs each through XPPAUT and `pc-cli`, gives 324 PASS lines and no FAIL, and ends with "all checks passed". The probes back the grammar rulings in SPEC section 2 and `language.md`.
 - The four checks pass: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and `cargo deny check`. `cargo build --target x86_64-pc-windows-gnu -p pc-cli` and `RUSTDOCFLAGS="-D warnings" cargo doc -p pc-ode -p pc-cli --no-deps` also pass.
 
-P2 (all 15 plan tasks are in; the numbers below were measured on 2026-10-28 at `765fc3c`; acceptance is pending, see "In progress"):
+P2 (accepted on 2026-10-28; the numbers below were measured that day at `765fc3c`):
 
 - `crates/pc-ir` has these modules: `math` (the shim table over `libm`, `polygamma`, tables), `dag` (hash-consed DAG with folding), `lower`, `entry`, `error`, `diff` (first-order symbolic derivatives), `multi` (multilinear forms up to order 5), `complex` (real and imaginary split of complex directions), `eval` (straight-line evaluator and running error bound), `interp` (the generic interpreter, nested dual numbers and `Fallback`) and `check` (tolerance and finite-difference checks). `crates/pc-jit` has `flags`, `lower`, `module` (the `JitEntries` guard), `compiled` (lazy, length-checked `CompiledModel::call`) and `check`. `crates/pc-codegen` has the C emitter `c`.
 - New dependencies, as approved in the plan: `libm` 0.2.16 and `proptest` 1.12.0 (dev) in `pc-ir`, Cranelift 0.137.0 (five crates) in `pc-jit`, `libloading` 0.9.0 (dev) in `pc-codegen`.
@@ -56,7 +56,7 @@ P2 (all 15 plan tasks are in; the numbers below were measured on 2026-10-28 at `
 
 ## In progress
 
-- P2 (`pc-ir`, derivatives, `pc-jit`, AOT C emitter; SPEC section 14) on branch `phase2-pc-ir`. The plan was approved on 2026-10-25. It settles the three open questions of P1 and the derivative method; SPEC sections 2 to 4 and `language.md` record the rulings. All plan tasks are done and the section 3 and 4 checks pass (see "Done"). The review of the whole branch and its fix round are done (see "Done"). Left: the owner's acceptance, and the decision on moving the in-MATLAB macOS check to P7a.
+- Nothing yet. P3 starts on branch `phase3-pc-engine`.
 
 ## Next
 
@@ -68,7 +68,7 @@ P2 (all 15 plan tasks are in; the numbers below were measured on 2026-10-28 at `
   - Run `Fallback` on the 8 MB worker thread too: its recursion budget is sized for a 1 MiB stack at five nested dual levels.
   - Lower models on that thread as well. `lower`'s depth limit of 1000 is not a stack bound: about 400 nested user functions overflow a 1 MiB stack in a debug build (a release build at 1 MiB and a debug build at 2 MiB return `TooLarge`).
   - AOT through `mex` with MSVC: compile with floating-point contraction off (the counterpart of `-ffp-contract=off`), call `pc_aot_init` with pckern's shim table before any entry, and compare NaNs by class, not by sign. The project test runs gcc only.
-- P7a: the JIT inside MATLAB on macOS arm64, on the macOS runner once the owner adds a MATLAB batch licensing token as a repository secret. The Rust side of the SPEC section 4 check passes there already (see "Done").
+- P7a: the JIT inside MATLAB on macOS arm64 (moved here from P2 by the owner on 2026-10-28), on the macOS runner once the owner adds a MATLAB batch licensing token as a repository secret. The Rust side of the SPEC section 4 check passes there already (see "Done").
 - P8a: confirm on the File Exchange submission form that it accepts an Apache-2.0 toolbox linked to GitHub.
 
 ## Blocked
@@ -77,5 +77,5 @@ P2 (all 15 plan tasks are in; the numbers below were measured on 2026-10-28 at `
 
 ## Open questions
 
-- For the owner: may the in-MATLAB part of the macOS arm64 check in SPEC section 4 move to P7a, where the MEX gateway first exists (see "Next")?
+- Settled on 2026-10-28: the in-MATLAB part of the macOS arm64 check in SPEC section 4 moves to P7a, where the MEX gateway first exists (see "Next").
 - The P1 questions are settled for P2: division follows IEEE; `mod` is `fmod(x,y)` plus `y` when the remainder is negative, which probe `fn-mod-more` confirmed on eight more cases; `if` evaluates both branches and selects one.
