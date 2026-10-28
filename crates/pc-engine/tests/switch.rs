@@ -255,8 +255,9 @@ fn switching_a_bp_with_a_definite_form_is_not_simple() {
 #[test]
 fn a_one_dimensional_bp_needs_a_zero_state_block() {
     for which in BOTH {
-        // The fold point of x' = a + x^2 has F_x = [0, 1]: rank 1, so the kernel is
-        // one-dimensional and a BP label there is refused.
+        // At (0,0), x' = a + x^2 - a^2 has F_x = [0, 1]: rank 1, so the kernel is
+        // one-dimensional. Its F_xx = diag(2, -2) is indefinite, so the branching
+        // equation alone would accept the point; only the rank check refuses it.
         let setup = EpSetup::new(0, vec![0.0], vec![0.0]);
         let mut sp = named("BP");
         sp.extras.refined = true;
@@ -267,7 +268,7 @@ fn a_one_dimensional_bp_needs_a_zero_state_block() {
             stop: StopReason::MaxSteps,
             warnings: Vec::new(),
         };
-        let mut m = model_of("fold", which);
+        let mut m = model_of("fold_saddle", which);
         let r = switch_bp(m.as_mut(), &setup, &b, 0, &Options::default());
         assert!(
             matches!(&r, Err(EngineError::BadProblem(m)) if m == "BP is not simple"),

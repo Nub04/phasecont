@@ -92,7 +92,9 @@ pub fn switch_bp(
     ctx.set_alpha(alpha);
     let fx = ctx.f_x(u)?;
     // Kernel of F_x must be exactly two-dimensional: the smallest singular value (the
-    // n-th) must be about zero and, for n >= 2, the (n-1)-th clearly nonzero.
+    // n-th) must be about zero and, for n >= 2, the (n-1)-th clearly nonzero. The floor
+    // max(sv0, 1) turns the first check off when sv0 < 1e-6; branching_root still refuses
+    // a point whose quadratic form has no pair of real roots.
     let sv = singular_values(&fx, n, n + 1)?;
     let not_simple = n >= 1 && sv[n - 1] > 1e-6 * sv[0].max(1.0);
     if not_simple || (n >= 2 && sv[n - 2] <= 1e-8 * sv[0]) {
