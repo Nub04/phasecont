@@ -5,8 +5,10 @@
 //! the Illinois modification of regula falsi). The trial point at s is the corrector
 //! solution on the hyperplane `v_kᵀ(x - x_k) = s h` started from the predictor
 //! `x_k + s h v_k`, and the tangent and psi_BP at it use the border `v_k`, as at the
-//! accepted point k+1. The values at s = 0 and s = 1 are the stored test values. A zero
-//! found here is not refined; the defining systems of Task 8 do that.
+//! accepted point k+1. The values at s = 0 and s = 1 are the stored test values, except
+//! for H, where every value is the plain product scaled by its modulus at point k
+//! (`psi_h_relative`). A zero found here is not refined; the defining systems of Task 8
+//! do that.
 
 use crate::branch::{Extras, Options, Point, SpecialPoint, StopReason};
 use crate::error::EngineError;
@@ -97,12 +99,16 @@ fn special(label: &str, index: usize, point: Point) -> SpecialPoint {
 }
 
 /// Finds the zero of test `t` on the step; `fa` and `fb` are its values at the ends, of
-/// opposite sign. Returns `Ok(None)` after pushing a warning when the search fails.
+/// opposite sign. With `href` set (test H) the trials are scored with `psi_h_relative`
+/// against that log reference instead of their stored values. Returns `Ok(None)` after
+/// pushing a warning when the search fails.
+#[allow(clippy::too_many_arguments)]
 fn locate_one(
     p: &mut dyn Problem,
     st: &Step,
     t: usize,
     (fa, fb): (f64, f64),
+    href: Option<f64>,
     opts: &Options,
     cancel: &AtomicBool,
     warnings: &mut Vec<String>,
@@ -133,7 +139,10 @@ fn locate_one(
                 }
             }
         };
-        let fs = pt.tests[t];
+        let fs = match href {
+            Some(l) => tests_fn::psi_h_relative(&pt.eigenvalues, l),
+            None => pt.tests[t],
+        };
         if best.as_ref().is_none_or(|(_, b, _)| fs.abs() < *b) {
             best = Some((s, fs.abs(), pt));
         }
@@ -230,7 +239,16 @@ fn detect_inner(
                 found.push((1.0, special(l, k + 1, pk1.clone())));
             }
         } else if a * b < 0.0 {
-            match locate_one(p, &st, t, (a, b), opts, cancel, scratch)? {
+            // The stored psi_H can be flat near its zero when another factor is tiny, so
+            // the search on H uses the plain product scaled by its modulus at point k.
+            let (ends, href) = if t == H {
+                let l = tests_fn::psi_h_log(&pk.eigenvalues);
+                let fb = tests_fn::psi_h_relative(&pk1.eigenvalues, l);
+                ((a.signum(), fb), Some(l))
+            } else {
+                ((a, b), None)
+            };
+            match locate_one(p, &st, t, ends, href, opts, cancel, scratch)? {
                 Some((s, pt)) => match label(t, &pt.eigenvalues) {
                     Some(l) => found.push((s, special(l, k + 1, pt))),
                     None => warn(warnings, t, &pk1.eigenvalues, k),

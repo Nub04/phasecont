@@ -147,8 +147,8 @@ $$G(x) = \begin{pmatrix} F(x) \\ v_k^\top (x - x_k) - h \end{pmatrix} = 0.$$
 - **LP:** $\psi_{LP} = v_{k,\alpha}$, the parameter component of the tangent.
 - **BP:** $\psi_{BP} = \det \begin{pmatrix} F_x \\ v^\top \end{pmatrix}$, taken from the LU factors of the tangent solve.
 - **H:** the zeros of $\prod_{i<j} (\lambda_i + \lambda_j)$, which equals $\det(2A \odot I)$. Let $s_{ij} = (\lambda_i + \lambda_j) / \max(1, |\lambda_i| + |\lambda_j|)$ and let $s_k$ be the factor of smallest modulus. The engine computes
-  $$\psi_H = \mathrm{Re}\Big( s_k \prod_{ij \ne k} \frac{s_{ij}}{|s_{ij}|} \Big).$$
-  This is the plain product divided by a positive number that is continuous in $A$ (a tie for the smallest modulus gives the same value either way), so $\psi_H$ has the sign and the zeros of the plain product. Its modulus is $|s_k| \le 1$, so it neither overflows nor underflows to 0 away from a zero, even with many slow modes. For $n = 1$ there are no pairs and $\psi_H = 1$.
+  $$\psi_H = \operatorname{sign}\Big( \prod_{i<j} s_{ij} \Big)\, |s_k|.$$
+  It is continuous in $A$, it has the sign of the plain product, and it is 0 exactly where some factor is 0 (two factors vanishing together also give 0). Its modulus is at most 1, so it neither overflows nor underflows to 0 away from a zero, even with many slow modes. For $n = 1$ there are no pairs and $\psi_H = 1$. Near a zero, $\psi_H$ can be nearly flat when another factor is tiny and hardly changes, so the zero search along a step uses the plain product divided by its modulus at point $k$, computed through logarithms.
 - $\psi_H$ vanishes at Hopf points and at neutral saddles. At a zero, the pair with the smallest scaled $|\lambda_i + \lambda_j|$ decides: a complex conjugate pair is a Hopf point (`H`), a real pair $\pm\lambda$ is a neutral saddle, labeled `NSA` and not reported as Hopf. (`NS` is Neimark-Sacker.)
 - For $n > 100$, Phase 3 runs with Hopf detection off and puts a warning in the run status. Phase 4 adds the minimally augmented test function from Govaerts.
 

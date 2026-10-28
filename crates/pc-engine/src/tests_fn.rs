@@ -7,14 +7,16 @@
 //! the bialternate product 2A (.) I, whose determinant is `prod_{i<j} (l_i + l_j)`
 //! (Kuznetsov, Elements of Applied Bifurcation Theory, 3rd ed., Sec. 10.2). The rescaling
 //! below is our own choice. With `s_ij = (l_i + l_j) / max(1, |l_i| + |l_j|)` and `s_k`
-//! the factor of smallest modulus, `psi_H = Re(s_k prod_{ij != k} s_ij / |s_ij|)`, which
-//! is the plain product divided by the positive number
-//! `prod max(1, |l_i| + |l_j|) * prod_{ij != k} |s_ij|`. That divisor is continuous in A
-//! (at a tie for the smallest modulus both choices give the same value), so `psi_H` has
-//! the sign and the zeros of the plain product. Its modulus is `|s_k| <= 1`, so it
-//! neither overflows nor underflows to 0 away from a zero, however many small factors
-//! there are. The product over all pairs of a real matrix is real, so the real part only
-//! drops rounding noise.
+//! the factor of smallest modulus, `psi_H = sign(prod s_ij) |s_k|`. Its modulus is at
+//! most 1, so it neither overflows nor underflows to 0 away from a zero, however many
+//! small factors there are. It is continuous, it has the sign of the plain product, and
+//! it is 0 exactly where some factor is 0 (two factors vanishing at once also give 0).
+//! The product over all pairs of a real matrix is real, so its sign is that of the real
+//! part of the product of the unit phases.
+//!
+//! `psi_H` can be nearly flat near its zero when another factor is tiny and hardly
+//! changes, so locating a zero of it on a step uses `psi_h_relative` instead: the plain
+//! product divided by its modulus at the step start, computed through logarithms.
 
 use crate::branch::Options;
 use crate::error::EngineError;
@@ -35,32 +37,59 @@ pub(crate) fn psi_h(eigs: &[(f64, f64)]) -> f64 {
     if eigs.iter().any(|&(r, i)| r.is_nan() || i.is_nan()) {
         return f64::NAN;
     }
-    let mut s = Vec::with_capacity(eigs.len() * eigs.len().saturating_sub(1) / 2);
+    let (sign, _) = product_sign_log(eigs);
+    if sign == 0.0 {
+        return 0.0;
+    }
+    let mut smin = f64::INFINITY;
     for (i, &(ar, ai)) in eigs.iter().enumerate() {
         for &(br, bi) in &eigs[i + 1..] {
             let d = 1.0_f64.max(ar.hypot(ai) + br.hypot(bi));
-            s.push(((ar + br) / d, (ai + bi) / d));
+            smin = smin.min((ar + br).hypot(ai + bi) / d);
         }
     }
-    // The smallest factor keeps its modulus; every other factor contributes its phase.
-    let Some(k) =
-        (0..s.len()).min_by(|&a, &b| s[a].0.hypot(s[a].1).total_cmp(&s[b].0.hypot(s[b].1)))
-    else {
-        return 1.0;
-    };
-    let (mut pr, mut pi) = s[k];
-    for (j, &(sr, si)) in s.iter().enumerate() {
-        if j == k {
-            continue;
+    if smin.is_infinite() { 1.0 } else { sign * smin }
+}
+
+/// Sign and natural logarithm of the modulus of the plain product
+/// `prod_{i<j} (l_i + l_j)`, which is real for the eigenvalues of a real matrix. The sign
+/// is that of the real part of the product of the unit phases. An exact zero factor gives
+/// `(0, -inf)`; no pairs give `(1, 0)`.
+fn product_sign_log(eigs: &[(f64, f64)]) -> (f64, f64) {
+    let (mut ur, mut ui, mut log) = (1.0_f64, 0.0_f64, 0.0_f64);
+    for (i, &(ar, ai)) in eigs.iter().enumerate() {
+        for &(br, bi) in &eigs[i + 1..] {
+            let (sr, si) = (ar + br, ai + bi);
+            let m = sr.hypot(si);
+            if m == 0.0 {
+                return (0.0, f64::NEG_INFINITY);
+            }
+            log += m.ln();
+            let (pr, pi) = (sr / m, si / m);
+            (ur, ui) = (ur * pr - ui * pi, ur * pi + ui * pr);
         }
-        let m = sr.hypot(si);
-        if m == 0.0 {
-            return 0.0;
-        }
-        let (ur, ui) = (sr / m, si / m);
-        (pr, pi) = (pr * ur - pi * ui, pr * ui + pi * ur);
     }
-    pr
+    (if ur < 0.0 { -1.0 } else { 1.0 }, log)
+}
+
+/// Log modulus of the plain product at a point, the reference for `psi_h_relative`.
+pub(crate) fn psi_h_log(eigs: &[(f64, f64)]) -> f64 {
+    product_sign_log(eigs).1
+}
+
+/// The plain product divided by `exp(log_ref)`, with the exponent capped at 700 so it
+/// stays finite. With a fixed `log_ref` this is a positive multiple of the product, so
+/// near a simple zero it is linear in the crossing factor however small the other
+/// factors are. Same sign as `psi_h`; NaN in the input gives NaN.
+pub(crate) fn psi_h_relative(eigs: &[(f64, f64)], log_ref: f64) -> f64 {
+    if eigs.iter().any(|&(r, i)| r.is_nan() || i.is_nan()) {
+        return f64::NAN;
+    }
+    let (sign, log) = product_sign_log(eigs);
+    if sign == 0.0 {
+        return 0.0;
+    }
+    sign * (log - log_ref).min(700.0).exp()
 }
 
 /// What a zero of `psi_H` is.
@@ -258,13 +287,61 @@ mod tests {
 
     #[test]
     fn a_tie_for_the_smallest_factor_gives_one_value() {
-        // Two conjugate pairs with the same real part: two factors of equal modulus.
-        let e = [(0.1, 1.0), (0.1, -1.0), (0.1, 2.0), (0.1, -2.0)];
+        // 0.2 / (2 |0.1 + i|) = 0.4 / (2 |0.2 + 2i|): the two conjugate pairs tie.
+        let e = [(0.1, 1.0), (0.1, -1.0), (0.2, 2.0), (0.2, -2.0)];
         let v = psi_h(&e);
         let mut r = e;
         r.reverse();
         assert_eq!(v, psi_h(&r));
-        assert!(v > 0.0);
+        let want = 0.1 / 0.1_f64.hypot(1.0);
+        assert!((v - want).abs() < 1e-15, "{v} {want}");
+    }
+
+    #[test]
+    fn an_exact_zero_factor_gives_zero() {
+        let e = [(0.0, 1.0), (0.0, -1.0), (0.0, 2.0), (0.0, -2.0)];
+        assert_eq!(psi_h(&e), 0.0);
+        assert_eq!(psi_h_relative(&e, 0.0), 0.0);
+        assert_eq!(psi_h_log(&e), f64::NEG_INFINITY);
+    }
+
+    #[test]
+    fn relative_value_is_the_plain_product_over_a_constant() {
+        // mu +- i next to the real pair 0.3, -(0.3 + c). The bounded psi_H has the size of
+        // the factor -c for |mu| > c, but the relative value stays linear in mu.
+        let c = 1e-12;
+        let eigs = |mu: f64| [(mu, 1.0), (mu, -1.0), (0.3, 0.0), (-(0.3 + c), 0.0)];
+        // The factor 0.3 - (0.3 + c) as f64 rounds it, so the reference uses the rounded value.
+        let ce = (0.3 + c) - 0.3;
+        let plain = |mu: f64| {
+            2.0 * mu * -ce * (mu + 0.3).hypot(1.0).powi(2) * (mu - 0.3 - c).hypot(1.0).powi(2)
+        };
+        let l = psi_h_log(&eigs(-0.05));
+        assert!((l - plain(-0.05).abs().ln()).abs() < 1e-12);
+        for mu in [-0.05, -1e-6, -1e-9, 1e-9, 0.02] {
+            let v = psi_h_relative(&eigs(mu), l);
+            let want = plain(mu) / plain(-0.05).abs();
+            assert!(
+                (v - want).abs() <= 1e-10 * want.abs(),
+                "mu {mu}: {v} {want}"
+            );
+            assert_eq!(v.signum(), psi_h(&eigs(mu)).signum(), "mu {mu}");
+        }
+        assert_eq!(psi_h(&eigs(-1e-6)), psi_h(&eigs(-1e-9)));
+    }
+
+    #[test]
+    fn relative_value_with_many_small_factors_is_finite() {
+        let eigs = |mu: f64| {
+            let mut e = vec![(mu, 1.0), (mu, -1.0)];
+            e.extend((0..38).map(|k| (-1e-3 * (1.0 + k as f64 / 100.0), 0.0)));
+            e
+        };
+        let l = psi_h_log(&eigs(-1e-3));
+        assert!(l.is_finite());
+        // About mu / -1e-3, since the slow factors barely move.
+        let v = psi_h_relative(&eigs(1e-9), l);
+        assert!(v < 0.0 && (v.abs() - 1e-6).abs() < 1e-8, "{v}");
     }
 
     #[test]

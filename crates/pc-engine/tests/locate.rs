@@ -186,3 +186,30 @@ fn hopf_with_many_slow_modes_is_found() {
         assert!(b.points.iter().all(|p| p.tests[2] != 0.0), "{which:?}");
     }
 }
+
+#[test]
+fn hopf_next_to_a_nearly_cancelling_pair_is_found() {
+    // The bounded psi_H is flat near this zero (its size is the other small factor), so
+    // the search must work with the product itself or it stalls and labels an NSA.
+    for which in BOTH {
+        for c in [1e-6, 1e-9, 1e-12] {
+            let setup = EpSetup::new(0, vec![-0.13, c], vec![0.0; 4]);
+            let opts = Options {
+                h0: 0.1,
+                hmax: 0.1,
+                bounds: (-0.13, 0.31),
+                ..Options::default()
+            };
+            let b = run("hopf_near_pair", which, &setup, &opts);
+            assert_eq!(labels(&b), ["H"], "{which:?} c={c}");
+            let s = &b.specials[0];
+            assert!(
+                s.point.alpha.abs() < 1e-8,
+                "{which:?} c={c}: {}",
+                s.point.alpha
+            );
+            assert!(s.extras.refined, "{which:?} c={c}");
+            assert!(b.warnings.is_empty(), "{which:?} c={c}: {:?}", b.warnings);
+        }
+    }
+}
