@@ -350,3 +350,44 @@ fn out_of_range_leaves_are_nan() {
     };
     check_against_eval("leaf_dir", &ir, &dir, &XS, &[2.5]);
 }
+
+/// `x' = besselj(n, x)` and `bessely` with `par n` at the order cap, compiled with every
+/// available compiler. The emitted C calls `pc_math->besselj` and `pc_math->bessely`, which
+/// `pc_aot_init` fills from `pc_ir::math::MATH`, so the cap applies there as well. The
+/// results match `eval` bit for bit at orders 10000 and -10000, and are NaN at 10001 and
+/// -10001. Skipped when gcc is not on PATH.
+#[test]
+fn bessel_order_cap_matches_eval_in_aot() {
+    if gcc_version().is_none() {
+        println!("skip: gcc not found, AOT Bessel cap test not run");
+        return;
+    }
+    const ORDERS: [f64; 4] = [10000.0, -10000.0, 10001.0, -10001.0];
+    const XS: [f64; 3] = [9990.0, 10000.0, 12000.0];
+    for f in ["besselj", "bessely"] {
+        let src = format!("par n=1\ninit x=1\nx'={f}(n,x)\ndone\n");
+        let mut ir = build_model(&src);
+        let e: Entry = ir.entry(&EntryKind::F).expect("entry");
+        let c = emit_c(&ir, &[("ent".to_string(), &e)]);
+        for cc in compilers() {
+            let aot = compile_c(cc, &format!("bessel_cap_{f}"), &c);
+            for n in ORDERS {
+                for x in XS {
+                    let p = [n, 0.0];
+                    let mut want = [f64::MAX];
+                    eval(&ir.dag, &e.outputs, &[x], &p, &[], &mut want);
+                    let mut got = [f64::MIN];
+                    aot.call("ent", &[x], &p, None, &mut got);
+                    assert_eq!(
+                        got[0].to_bits(),
+                        want[0].to_bits(),
+                        "{cc}/{f} n={n} x={x}: aot {:?} eval {:?}",
+                        got[0],
+                        want[0]
+                    );
+                    assert_eq!(got[0].is_nan(), n.abs() > 10000.0, "{cc}/{f} n={n} x={x}");
+                }
+            }
+        }
+    }
+}
