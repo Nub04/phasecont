@@ -252,6 +252,12 @@ fn polygamma_positive(n: u32, x: f64) -> f64 {
 // Lookup tables
 // ---------------------------------------------------------------------------
 
+/// True when the header is valid and the block is long enough for the C shims to read.
+/// Compiled code treats any other block as NaN, as the interpreter does.
+pub fn table_ok(data: &[f64]) -> bool {
+    table_npts(data).is_some()
+}
+
 /// Number of points of a table block, or `None` when the header is not valid.
 fn table_npts(data: &[f64]) -> Option<usize> {
     let n = *data.first()?;

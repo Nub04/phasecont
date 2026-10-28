@@ -9,6 +9,7 @@ use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, Type, types};
 use cranelift_codegen::isa::TargetFrontendConfig;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use pc_ir::dag::{Cmp, Dag, Fn1, Fn2, NodeId, Op};
+use pc_ir::math::table_ok;
 use std::collections::{BTreeSet, HashMap};
 
 /// The import name of the shim behind `f`, or `None` for ops lowered in line.
@@ -47,55 +48,6 @@ pub(crate) fn shim2(f: Fn2) -> Option<&'static str> {
     })
 }
 
-/// Marks the nodes reachable from `outputs`.
-pub(crate) fn live_set(dag: &Dag, outputs: &[NodeId]) -> Vec<bool> {
-    let n = dag.len();
-    let mut live = vec![false; n];
-    for o in outputs {
-        if let Some(l) = live.get_mut(o.0 as usize) {
-            *l = true;
-        }
-    }
-    for i in (0..n).rev() {
-        if live[i] {
-            children(dag.op(NodeId(i as u32)), &mut |c| {
-                if let Some(l) = live.get_mut(c.0 as usize) {
-                    *l = true;
-                }
-            });
-        }
-    }
-    live
-}
-
-fn children(op: &Op, f: &mut dyn FnMut(NodeId)) {
-    match *op {
-        Op::Const(_) | Op::Var(_) | Op::Param(_) | Op::Dir(_) => {}
-        Op::Neg(a)
-        | Op::PowI(a, _)
-        | Op::Call1(_, a)
-        | Op::Not(a)
-        | Op::Table(_, a)
-        | Op::TableSlope(_, a) => f(a),
-        Op::Add(a, b)
-        | Op::Sub(a, b)
-        | Op::Mul(a, b)
-        | Op::Div(a, b)
-        | Op::Call2(_, a, b)
-        | Op::Cmp(_, a, b)
-        | Op::And(a, b)
-        | Op::Or(a, b) => {
-            f(a);
-            f(b);
-        }
-        Op::Select(c, a, b) => {
-            f(c);
-            f(a);
-            f(b);
-        }
-    }
-}
-
 /// Import names the live nodes call.
 pub(crate) fn imports_needed(dag: &Dag, live: &[bool]) -> BTreeSet<&'static str> {
     let mut set = BTreeSet::new();
@@ -116,18 +68,6 @@ pub(crate) fn imports_needed(dag: &Dag, live: &[bool]) -> BTreeSet<&'static str>
         }
     }
     set
-}
-
-/// A table block is usable when the header is valid and the data is long enough for the
-/// shim to read; the shim trusts the header. Anything else lowers to NaN, like the
-/// interpreter's answer for a malformed block.
-pub(crate) fn table_ok(data: &[f64]) -> bool {
-    match data.first() {
-        Some(&n) if n.is_finite() && (2.0..=2147483647.0).contains(&n) => {
-            data.len() >= 3 + n as usize
-        }
-        _ => false,
-    }
 }
 
 /// Addresses of the table copies that the code reads, keyed by table id.

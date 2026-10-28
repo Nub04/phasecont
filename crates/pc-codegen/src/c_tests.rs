@@ -1,6 +1,7 @@
 //! The AOT C text is compiled with gcc, loaded, and compared bit for bit with the JIT.
 
-use crate::{MATH_FIELDS, emit_c};
+use crate::c::MATH_FIELDS;
+use crate::emit_c;
 use libloading::{Library, Symbol};
 use pc_ir::dag::{Dag, Fn1, Fn2, NodeId};
 use pc_ir::eval::eval;
@@ -36,8 +37,8 @@ fn build_model(src: &str) -> IrModel {
     }
 }
 
-fn gcc_version() -> Option<String> {
-    let o = Command::new("gcc").arg("--version").output().ok()?;
+fn cc_version(cc: &str) -> Option<String> {
+    let o = Command::new(cc).arg("--version").output().ok()?;
     if !o.status.success() {
         return None;
     }
@@ -45,12 +46,31 @@ fn gcc_version() -> Option<String> {
     Some(s.lines().next()?.trim().to_string())
 }
 
-/// Writes references/aot/compiler.txt (first line of `gcc --version`, then the flags).
+fn gcc_version() -> Option<String> {
+    cc_version("gcc")
+}
+
+/// Compilers the AOT text is checked with: gcc, and clang when installed.
+fn compilers() -> Vec<&'static str> {
+    ["gcc", "clang"]
+        .into_iter()
+        .filter(|cc| cc_version(cc).is_some())
+        .collect()
+}
+
+/// Writes references/aot/compiler.txt (first line of `gcc --version`, then the flags) when
+/// the content changed. A read-only checkout only gets a note.
 fn record_compiler(version: &str) {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../references/aot");
-    std::fs::create_dir_all(&dir).expect("mkdir references/aot");
+    let path = dir.join("compiler.txt");
     let text = format!("{version}\nflags: gcc {} -Werror\n", FLAGS.join(" "));
-    std::fs::write(dir.join("compiler.txt"), text).expect("write compiler.txt");
+    if std::fs::read_to_string(&path).is_ok_and(|old| old == text) {
+        return;
+    }
+    let r = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, text));
+    if let Err(e) = r {
+        println!("note: could not write {}: {e}", path.display());
+    }
 }
 
 struct Temp(PathBuf);
@@ -80,12 +100,12 @@ struct Aot {
     _tmp: Temp,
 }
 
-fn compile_c(tag: &str, c: &str) -> Aot {
+fn compile_c(cc: &str, tag: &str, c: &str) -> Aot {
     let tmp = Temp::new(tag);
     let src = tmp.0.join("model.c");
     let so = tmp.0.join("model.so");
     std::fs::write(&src, c).expect("write c");
-    let out = Command::new("gcc")
+    let out = Command::new(cc)
         .args(FLAGS)
         .arg("-Werror")
         .arg("-o")
@@ -95,7 +115,7 @@ fn compile_c(tag: &str, c: &str) -> Aot {
         .expect("run gcc");
     assert!(
         out.status.success(),
-        "gcc failed:\n{}\n{c}",
+        "{cc} failed:\n{}\n{c}",
         String::from_utf8_lossy(&out.stderr)
     );
     // SAFETY: loads the library this test just built; its initializers are empty.
@@ -147,7 +167,21 @@ fn ulp_dist(a: f64, b: f64) -> u64 {
     key(a).abs_diff(key(b))
 }
 
-const EDGES: [f64; 9] = [0.0, -0.0, 0.5, -1.3, 2.0, 1e-3, 7.25, f64::NAN, -2.5];
+const EDGES: [f64; 13] = [
+    0.0,
+    -0.0,
+    0.5,
+    -1.3,
+    2.0,
+    1e-3,
+    7.25,
+    f64::NAN,
+    -2.5,
+    f64::INFINITY,
+    f64::NEG_INFINITY,
+    1e300,
+    5e-324,
+];
 
 fn edge(k: usize) -> f64 {
     EDGES[k % EDGES.len()]
@@ -181,9 +215,8 @@ fn kinds_for() -> Vec<(String, EntryKind)> {
 }
 
 /// Compares every entry of `src` between the AOT library and the JIT. Returns the
-/// maximum ulp distance seen, or `None` when gcc is missing.
-fn compare_model(tag: &str, src: &str) -> Option<u64> {
-    gcc_version()?;
+/// maximum ulp distance seen.
+fn compare_model(cc: &str, tag: &str, src: &str) -> u64 {
     // Lowering is deterministic, so a second model gives the same node ids as the one
     // whose entries feed the emitter.
     let mut ir = build_model(src);
@@ -200,7 +233,7 @@ fn compare_model(tag: &str, src: &str) -> Option<u64> {
         .zip(entries.iter())
         .collect();
     let c = emit_c(&ir, &pairs);
-    let aot = compile_c(tag, &c);
+    let aot = compile_c(cc, tag, &c);
     let mut rng = Lcg(7);
     let mut max_ulp = 0u64;
     let mut finite = 0usize;
@@ -258,6 +291,10 @@ fn compare_model(tag: &str, src: &str) -> Option<u64> {
                 let d = ulp_dist(*a, *b);
                 finite += usize::from(a.is_finite());
                 max_ulp = max_ulp.max(if d == u64::MAX { 1 << 62 } else { d });
+                // A NaN matches any NaN: IEEE leaves the sign and payload of a NaN result
+                // unspecified, and gcc reorders commutative operands, so which input NaN
+                // (or the default NaN) wins can differ from the JIT. The strict tests below
+                // compare NaN bits.
                 assert!(
                     a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan() && d == 0),
                     "{tag}/{name} point {pt} out[{i}]: aot {a:e} ({:#x}) jit {b:e} ({:#x}), x={x:?} p={p:?}",
@@ -269,8 +306,8 @@ fn compare_model(tag: &str, src: &str) -> Option<u64> {
     }
     assert!(max_ulp <= 4, "{tag}: max ulp {max_ulp}");
     assert!(finite > 100, "{tag}: only {finite} finite values compared");
-    println!("aot {tag}: max ulp {max_ulp}, {finite} finite values");
-    Some(max_ulp)
+    println!("aot {cc} {tag}: max ulp {max_ulp}, {finite} finite values");
+    max_ulp
 }
 
 const MODELS: [(&str, &str); 9] = [
@@ -337,8 +374,10 @@ fn aot_matches_jit_on_every_model() {
     record_compiler(&v);
     println!("compiler: {v}");
     println!("flags: gcc {} -Werror", FLAGS.join(" "));
-    for (tag, src) in MODELS {
-        compare_model(tag, src);
+    for cc in compilers() {
+        for (tag, src) in MODELS {
+            compare_model(cc, tag, src);
+        }
     }
 }
 
@@ -391,14 +430,37 @@ fn entry_names_are_sanitized() {
     assert!(c.contains("void _(const double *x"), "{c}");
 }
 
-/// Hand-built DAG: infinite and NaN table data, a malformed table, a missing table,
-/// bit-exact constants (NaN payload, -0.0, subnormal) and an out-of-range output id.
+/// Compiles `e` with every available compiler and compares each output with `eval`,
+/// bit for bit (NaN sign and payload included), at the given `x` and `v` values.
+fn check_against_eval(tag: &str, ir: &IrModel, e: &Entry, xs: &[f64], v: &[f64]) {
+    let is_dir = matches!(e.kind, EntryKind::Dir(_));
+    let c = emit_c(ir, &[("ent".into(), e)]);
+    for cc in compilers() {
+        let aot = compile_c(cc, tag, &c);
+        for &xv in xs {
+            let mut want = vec![f64::MAX; e.outputs.len()];
+            eval(&ir.dag, &e.outputs, &[xv], &[0.0], v, &mut want);
+            let mut got = vec![f64::MIN; e.outputs.len()];
+            aot.call("ent", &[xv], &[0.0], is_dir.then_some(v), &mut got);
+            for (i, (a, b)) in got.iter().zip(&want).enumerate() {
+                assert!(
+                    a.to_bits() == b.to_bits(),
+                    "{cc}/{tag} x={xv:?} out[{i}]: aot {a:e} ({:#x}) eval {b:e} ({:#x})",
+                    a.to_bits(),
+                    b.to_bits()
+                );
+            }
+        }
+    }
+}
+
+const XS: [f64; 8] = [0.0, -0.0, 0.25, 0.75, -3.0, 2.0, f64::NAN, f64::INFINITY];
+
+/// Hand-built DAG: table data with infinities, -0.0 and a negative NaN that the lookups
+/// read, a malformed table, a missing table, bit-exact constants (NaN payload, -0.0,
+/// subnormal) and an out-of-range output id. Everything is compared bit for bit.
 #[test]
 fn awkward_constants_and_tables_match_eval() {
-    if gcc_version().is_none() {
-        println!("skip: gcc not found, AOT C test not run");
-        return;
-    }
     let mut ir = build_model("x'=-x\ndone\n");
     let dag: &mut Dag = &mut ir.dag;
     let t_inf = dag.add_table(vec![
@@ -409,10 +471,18 @@ fn awkward_constants_and_tables_match_eval() {
         f64::NEG_INFINITY,
         f64::NAN,
     ]);
+    // The second node is a NaN with the sign bit set; the lookup at x in [0.5, 1] reads it.
+    let neg_nan = f64::from_bits(0xfff8_0000_0000_0000);
+    let t_nan = dag.add_table(vec![3.0, 0.0, 1.0, -0.0, 1.0, neg_nan]);
+    let t_zero = dag.add_table(vec![2.0, 0.0, 1.0, -0.0, -0.0]);
     let t_bad = dag.add_table(vec![1.0, 0.0, 1.0, 5.0]);
     let t_short = dag.add_table(vec![4.0, 0.0, 1.0, 1.0]);
     let x = dag.var(0);
     let mut outs: Vec<NodeId> = vec![dag.table(t_inf, x), dag.table_slope(t_inf, x)];
+    outs.push(dag.table(t_nan, x));
+    outs.push(dag.table_slope(t_nan, x));
+    outs.push(dag.table(t_zero, x));
+    outs.push(dag.table_slope(t_zero, x));
     outs.push(dag.table(t_bad, x));
     outs.push(dag.table(t_short, x));
     outs.push(dag.table(99, x));
@@ -433,20 +503,57 @@ fn awkward_constants_and_tables_match_eval() {
         kind: EntryKind::F,
         outputs: outs,
     };
-    let c = emit_c(&ir, &[("awk".into(), &e)]);
-    let aot = compile_c("awk", &c);
-    for xv in [0.0, -0.0, 0.25, -3.0, 2.0, f64::NAN, f64::INFINITY] {
-        let mut want = vec![f64::MAX; e.outputs.len()];
-        eval(&ir.dag, &e.outputs, &[xv], &[0.0], &[], &mut want);
-        let mut got = vec![f64::MIN; e.outputs.len()];
-        aot.call("awk", &[xv], &[0.0], None, &mut got);
-        for (i, (a, b)) in got.iter().zip(&want).enumerate() {
-            assert!(
-                a.to_bits() == b.to_bits(),
-                "x={xv:?} out[{i}]: aot {a:e} ({:#x}) eval {b:e} ({:#x})",
-                a.to_bits(),
-                b.to_bits()
-            );
-        }
-    }
+    check_against_eval("awk", &ir, &e, &XS, &[]);
+    // The negative NaN really reaches an output (guards against a vacuous check).
+    let mut out = vec![0.0; e.outputs.len()];
+    eval(&ir.dag, &e.outputs, &[0.75], &[0.0], &[], &mut out);
+    assert_eq!(out[2].to_bits(), 0xfff8_0000_0000_0000);
+}
+
+/// A malformed or missing table lowers to NaN and its argument stays dead, so the C has
+/// no unused variable (the tests compile with -Werror).
+#[test]
+fn bad_table_argument_is_not_emitted() {
+    let mut ir = build_model("x'=-x\ndone\n");
+    let dag: &mut Dag = &mut ir.dag;
+    let t_bad = dag.add_table(vec![1.0, 0.0, 1.0, 5.0]);
+    let x = dag.var(0);
+    let s = dag.call1(Fn1::Sin, x);
+    let c = dag.call1(Fn1::Cos, x);
+    let outs = vec![dag.table(t_bad, s), dag.table_slope(99, c)];
+    let e = Entry {
+        kind: EntryKind::F,
+        outputs: outs,
+    };
+    let text = emit_c(&ir, &[("ent".into(), &e)]);
+    assert!(!text.contains("pc_math->sin"), "{text}");
+    assert!(!text.contains("pc_math->cos"), "{text}");
+    check_against_eval("badtab", &ir, &e, &XS, &[]);
+}
+
+/// Leaves outside the entry's arrays read as NaN, and a `Dir` leaf in a plain entry
+/// does not need a `v` parameter.
+#[test]
+fn out_of_range_leaves_are_nan() {
+    let mut ir = build_model("x'=-x\ndone\n");
+    let dag: &mut Dag = &mut ir.dag;
+    let x = dag.var(0);
+    let outs = vec![
+        x,
+        dag.var(5),
+        dag.param(0),
+        dag.param(9),
+        dag.dir(0),
+        dag.dir(3),
+    ];
+    let plain = Entry {
+        kind: EntryKind::F,
+        outputs: outs.clone(),
+    };
+    check_against_eval("leaf_plain", &ir, &plain, &XS, &[]);
+    let dir = Entry {
+        kind: EntryKind::Dir(vec![Slot::U]),
+        outputs: outs,
+    };
+    check_against_eval("leaf_dir", &ir, &dir, &XS, &[2.5]);
 }

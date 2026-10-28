@@ -134,7 +134,8 @@ pub fn eval_op(
     }
 }
 
-pub(crate) fn children(op: &Op, f: &mut dyn FnMut(NodeId)) {
+/// Calls `f` on each child of `op`, in operand order.
+pub fn children(op: &Op, f: &mut dyn FnMut(NodeId)) {
     match *op {
         Op::Const(_) | Op::Var(_) | Op::Param(_) | Op::Dir(_) => {}
         Op::Neg(a)
@@ -162,18 +163,15 @@ pub(crate) fn children(op: &Op, f: &mut dyn FnMut(NodeId)) {
     }
 }
 
-/// Evaluates every node reachable from `outputs` in increasing id order and writes
-/// `out[i] = value(outputs[i])`. `p` carries time at index `n_p`. Select evaluates both
-/// branches (no short circuit). Extra `out` slots and out-of-range outputs are NaN.
-pub fn eval(dag: &Dag, outputs: &[NodeId], x: &[f64], p: &[f64], v: &[f64], out: &mut [f64]) {
-    let n = dag.len();
-    let mut live = vec![false; n];
+/// Marks the nodes reachable from `outputs`. An output id outside the DAG is ignored.
+pub fn live_set(dag: &Dag, outputs: &[NodeId]) -> Vec<bool> {
+    let mut live = vec![false; dag.len()];
     for o in outputs {
         if let Some(l) = live.get_mut(o.0 as usize) {
             *l = true;
         }
     }
-    for i in (0..n).rev() {
+    for i in (0..dag.len()).rev() {
         if live[i] {
             children(dag.op(NodeId(i as u32)), &mut |c| {
                 if let Some(l) = live.get_mut(c.0 as usize) {
@@ -182,6 +180,15 @@ pub fn eval(dag: &Dag, outputs: &[NodeId], x: &[f64], p: &[f64], v: &[f64], out:
             });
         }
     }
+    live
+}
+
+/// Evaluates every node reachable from `outputs` in increasing id order and writes
+/// `out[i] = value(outputs[i])`. `p` carries time at index `n_p`. Select evaluates both
+/// branches (no short circuit). Extra `out` slots and out-of-range outputs are NaN.
+pub fn eval(dag: &Dag, outputs: &[NodeId], x: &[f64], p: &[f64], v: &[f64], out: &mut [f64]) {
+    let n = dag.len();
+    let live = live_set(dag, outputs);
     let mut vals = vec![f64::NAN; n];
     for i in 0..n {
         if live[i] {

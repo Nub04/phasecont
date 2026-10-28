@@ -6,16 +6,17 @@
 //! same bits as `pc_ir::eval::eval` and the JIT when the host passes `pc_ir::math::MATH`.
 //! Build it with `-ffp-contract=off`; a fused multiply-add would change the rounding.
 //!
-//! Constants are written from their bit patterns through `pc_bits`, because decimal text
-//! cannot spell NaN payloads or tell +0.0 from -0.0 in every compiler. Table data is
-//! written as decimal literals (static initializers cannot call `pc_bits`); an infinite
-//! entry becomes `PC_INF` and a NaN entry `PC_NAN`, which loses the NaN payload only.
-//! A table that the interpreter treats as malformed lowers to a NaN constant, as in the JIT.
+//! Constants and table data are written from their bit patterns (`pc_bits` for constants, a
+//! `uint64_t` view of each table), because decimal text cannot spell NaN payloads or tell
+//! +0.0 from -0.0 in every compiler. A table that the interpreter treats as malformed lowers
+//! to a NaN constant, as in the JIT.
 
 use pc_ir::Entry;
 use pc_ir::EntryKind;
 use pc_ir::IrModel;
 use pc_ir::dag::{Cmp, Dag, Fn1, Fn2, NodeId, Op};
+use pc_ir::eval::children;
+use pc_ir::math::table_ok;
 use std::fmt::Write;
 
 /// One field of `pc_math_t`: its name and the C parameter list.
@@ -49,7 +50,8 @@ const FIELDS: [(&str, &str); 26] = [
 ];
 
 /// The field names of `pc_math_t` in order; the same order as `pc_ir::math::MathTable`.
-pub const MATH_FIELDS: [&str; 26] = {
+#[cfg(test)]
+pub(crate) const MATH_FIELDS: [&str; 26] = {
     let mut names = [""; 26];
     let mut i = 0;
     while i < FIELDS.len() {
@@ -64,44 +66,56 @@ const NAN_BITS: u64 = 0x7ff8_0000_0000_0000;
 const PRELUDE: &str = "\
 #include <stdint.h>
 
+#if defined(_MSC_VER)
+#pragma fp_contract(off)
+#elif defined(__clang__)
+#pragma STDC FP_CONTRACT OFF
+#endif
+
 #ifdef _WIN32
 #define PC_EXPORT __declspec(dllexport)
 #else
 #define PC_EXPORT __attribute__((visibility(\"default\")))
 #endif
 
-static inline double pc_bits(uint64_t b) {
+#if defined(__GNUC__) || defined(__clang__)
+#define PC_UNUSED __attribute__((unused))
+#else
+#define PC_UNUSED
+#endif
+
+PC_UNUSED static inline double pc_bits(uint64_t b) {
     union { uint64_t u; double d; } c;
     c.u = b;
     return c.d;
 }
 
-static inline double pc_fabs(double x) {
+PC_UNUSED static inline double pc_fabs(double x) {
     union { uint64_t u; double d; } c;
     c.d = x;
     c.u &= 0x7fffffffffffffffULL;
     return c.d;
 }
 
-static inline double pc_heav(double x) { return x >= 0.0 ? 1.0 : 0.0; }
+PC_UNUSED static inline double pc_heav(double x) { return x >= 0.0 ? 1.0 : 0.0; }
 
-static inline double pc_sign(double x) {
+PC_UNUSED static inline double pc_sign(double x) {
     if (x > 0.0) return 1.0;
     if (x < 0.0) return -1.0;
     if (x == 0.0) return 0.0;
     return pc_bits(0x7ff8000000000000ULL);
 }
 
-static inline double pc_min(double x, double y) { return x < y ? x : y; }
+PC_UNUSED static inline double pc_min(double x, double y) { return x < y ? x : y; }
 
-static inline double pc_max(double x, double y) { return x > y ? x : y; }
+PC_UNUSED static inline double pc_max(double x, double y) { return x > y ? x : y; }
 
 ";
 
 /// A C identifier for `name`: other characters become `_`, and a leading digit (or an
-/// empty name) gets a `_` in front. The caller keeps names distinct and away from C
-/// keywords and from the `pc_` and `t<digits>` names this file uses.
-fn c_ident(name: &str) -> String {
+/// empty name) gets a `_` in front. [`emit_c`] uses this for every entry function, so a
+/// host looks the symbol up under `c_ident(name)`.
+pub fn c_ident(name: &str) -> String {
     let mut s: String = name
         .chars()
         .map(|c| {
@@ -124,58 +138,12 @@ fn konst(bits: u64) -> String {
     format!("pc_bits(0x{bits:016x}ULL) /* {x:e} */")
 }
 
-/// A decimal literal for a table entry.
-fn table_lit(x: f64) -> String {
-    if x.is_nan() {
-        "PC_NAN".to_string()
-    } else if x == f64::INFINITY {
-        "PC_INF".to_string()
-    } else if x == f64::NEG_INFINITY {
-        "(-PC_INF)".to_string()
-    } else {
-        format!("{x:e}")
-    }
+fn nan_const() -> String {
+    konst(NAN_BITS)
 }
 
-/// A table the shim can read, as in the JIT: valid header and enough data.
-fn table_ok(data: &[f64]) -> bool {
-    match data.first() {
-        Some(&n) if n.is_finite() && (2.0..=2147483647.0).contains(&n) => {
-            data.len() >= 3 + n as usize
-        }
-        _ => false,
-    }
-}
-
-fn children(op: &Op, f: &mut dyn FnMut(NodeId)) {
-    match *op {
-        Op::Const(_) | Op::Var(_) | Op::Param(_) | Op::Dir(_) => {}
-        Op::Neg(a)
-        | Op::PowI(a, _)
-        | Op::Call1(_, a)
-        | Op::Not(a)
-        | Op::Table(_, a)
-        | Op::TableSlope(_, a) => f(a),
-        Op::Add(a, b)
-        | Op::Sub(a, b)
-        | Op::Mul(a, b)
-        | Op::Div(a, b)
-        | Op::Call2(_, a, b)
-        | Op::Cmp(_, a, b)
-        | Op::And(a, b)
-        | Op::Or(a, b) => {
-            f(a);
-            f(b);
-        }
-        Op::Select(c, a, b) => {
-            f(c);
-            f(a);
-            f(b);
-        }
-    }
-}
-
-/// The nodes reachable from `outputs`, as `eval` marks them.
+/// The nodes this entry emits: those reachable from `outputs`, except that a table node
+/// whose table is unusable becomes a NaN constant and keeps its argument dead.
 fn live_set(dag: &Dag, outputs: &[NodeId]) -> Vec<bool> {
     let mut live = vec![false; dag.len()];
     for o in outputs {
@@ -184,13 +152,20 @@ fn live_set(dag: &Dag, outputs: &[NodeId]) -> Vec<bool> {
         }
     }
     for i in (0..dag.len()).rev() {
-        if live[i] {
-            children(dag.op(NodeId(i as u32)), &mut |c| {
-                if let Some(l) = live.get_mut(c.0 as usize) {
-                    *l = true;
-                }
-            });
+        if !live[i] {
+            continue;
         }
+        let op = dag.op(NodeId(i as u32));
+        if let Op::Table(t, _) | Op::TableSlope(t, _) = *op
+            && !dag.tables.get(t as usize).is_some_and(|d| table_ok(d))
+        {
+            continue;
+        }
+        children(op, &mut |c| {
+            if let Some(l) = live.get_mut(c.0 as usize) {
+                *l = true;
+            }
+        });
     }
     live
 }
@@ -271,13 +246,28 @@ fn powi(out: &mut String, id: NodeId, a: NodeId, n: i32) {
     let _ = writeln!(out, "    const double {} = {expr};", var(id));
 }
 
-fn node(out: &mut String, dag: &Dag, id: NodeId, tables_ok: &dyn Fn(u32) -> bool) {
+/// Array lengths of one entry: leaf indices at or past them read as NaN, as in `eval`.
+struct Lens {
+    x: usize,
+    p: usize,
+    v: usize,
+}
+
+fn leaf(name: &str, i: u32, len: usize) -> String {
+    if (i as usize) < len {
+        format!("{name}[{i}]")
+    } else {
+        nan_const()
+    }
+}
+
+fn node(out: &mut String, dag: &Dag, id: NodeId, lens: &Lens, table_ok: &dyn Fn(u32) -> bool) {
     let t = var(id);
     let expr = match *dag.op(id) {
         Op::Const(b) => konst(b),
-        Op::Var(i) => format!("x[{i}]"),
-        Op::Param(j) => format!("p[{j}]"),
-        Op::Dir(k) => format!("v[{k}]"),
+        Op::Var(i) => leaf("x", i, lens.x),
+        Op::Param(j) => leaf("p", j, lens.p),
+        Op::Dir(k) => leaf("v", k, lens.v),
         Op::Neg(a) => format!("-{}", var(a)),
         Op::Add(a, b) => format!("{} + {}", var(a), var(b)),
         Op::Sub(a, b) => format!("{} - {}", var(a), var(b)),
@@ -303,13 +293,13 @@ fn node(out: &mut String, dag: &Dag, id: NodeId, tables_ok: &dyn Fn(u32) -> bool
         Op::Or(a, b) => format!("({} != 0.0 || {} != 0.0) ? 1.0 : 0.0", var(a), var(b)),
         Op::Not(a) => format!("({} == 0.0) ? 1.0 : 0.0", var(a)),
         Op::Select(c, a, b) => format!("({} != 0.0) ? {} : {}", var(c), var(a), var(b)),
-        Op::Table(tid, a) if tables_ok(tid) => {
-            format!("pc_math->table(pc_table_{tid}, {})", var(a))
+        Op::Table(tid, a) if table_ok(tid) => {
+            format!("pc_math->table(pc_table_{tid}.d, {})", var(a))
         }
-        Op::TableSlope(tid, a) if tables_ok(tid) => {
-            format!("pc_math->table_slope(pc_table_{tid}, {})", var(a))
+        Op::TableSlope(tid, a) if table_ok(tid) => {
+            format!("pc_math->table_slope(pc_table_{tid}.d, {})", var(a))
         }
-        Op::Table(..) | Op::TableSlope(..) => konst(NAN_BITS),
+        Op::Table(..) | Op::TableSlope(..) => nan_const(),
     };
     let _ = writeln!(out, "    const double {t} = {expr};");
 }
@@ -318,17 +308,28 @@ fn node(out: &mut String, dag: &Dag, id: NodeId, tables_ok: &dyn Fn(u32) -> bool
 ///
 /// Plain entries (`F`, `Aux`, `JacU`, `JacP`) get `void name(const double *x, const double
 /// *p, double *out)`; `Dir` entries get `void name(const double *x, const double *p, const
-/// double *v, double *out)`. The array lengths are the contract in `pc_ir::entry`. The
-/// host must call `pc_aot_init` with a `pc_math_t` table before any entry. Names are
-/// sanitized with c_ident rules: other characters become `_` and a leading digit gets
-/// a `_` prefix.
+/// double *v, double *out)`. The array lengths are the contract in `pc_ir::entry`.
+///
+/// Rules for the caller:
+/// - Each function is named `c_ident(name)`. Those names must be distinct, must not be C
+///   keywords and must not start with `pc_`.
+/// - The host calls `pc_aot_init` with a `pc_math_t` table (for example
+///   `pc_ir::math::MATH`) before any entry; `pc_math` is NULL until then.
+/// - Build with `-ffp-contract=off` under gcc (it ignores the pragma that the file carries
+///   for clang and MSVC), or the compiler may fuse multiplies and adds and change bits.
+///
+/// A leaf index outside the array lengths of its entry, and a table node whose table is
+/// missing or malformed, give a NaN constant, as `pc_ir::eval::eval` does. Table data is
+/// written as bit patterns, so every value (NaN payloads, -0.0, infinities) is exact.
 pub fn emit_c(ir: &IrModel, entries: &[(String, &Entry)]) -> String {
     let dag = &ir.dag;
+    let (n, n_p) = (ir.n(), ir.n_p());
     let lives: Vec<Vec<bool>> = entries
         .iter()
         .map(|(_, e)| live_set(dag, &e.outputs))
         .collect();
-    // Tables that some live node reads and that the shim can use.
+    let usable = |t: u32| dag.tables.get(t as usize).is_some_and(|d| table_ok(d));
+    // Tables that some emitted node reads.
     let mut used = vec![false; dag.tables.len()];
     for live in &lives {
         for (i, l) in live.iter().enumerate() {
@@ -336,52 +337,54 @@ pub fn emit_c(ir: &IrModel, entries: &[(String, &Entry)]) -> String {
                 continue;
             }
             if let Op::Table(t, _) | Op::TableSlope(t, _) = *dag.op(NodeId(i as u32))
+                && usable(t)
                 && let Some(u) = used.get_mut(t as usize)
             {
                 *u = true;
             }
         }
     }
-    let tables_ok = |t: u32| {
-        dag.tables
-            .get(t as usize)
-            .is_some_and(|d| table_ok(d) && used.get(t as usize).copied().unwrap_or(false))
-    };
 
     let mut s = String::from(PRELUDE);
     s.push_str("typedef struct pc_math_t {\n");
     for (name, args) in FIELDS {
         let _ = writeln!(s, "    double (*{name})({args});");
     }
-    s.push_str("} pc_math_t;\n\nstatic const pc_math_t *pc_math;\n\n");
+    s.push_str("} pc_math_t;\n\nPC_UNUSED static const pc_math_t *pc_math;\n\n");
     s.push_str("PC_EXPORT void pc_aot_init(const pc_math_t *m) { pc_math = m; }\n\n");
 
-    let mut need_special = false;
-    let mut arrays = String::new();
     for (id, data) in dag.tables.iter().enumerate() {
-        if !tables_ok(id as u32) {
+        if !used.get(id).copied().unwrap_or(false) {
             continue;
         }
-        let lits: Vec<String> = data.iter().map(|&x| table_lit(x)).collect();
-        need_special |= data.iter().any(|x| !x.is_finite());
+        let words: Vec<String> = data
+            .iter()
+            .map(|x| format!("0x{:016x}ULL", x.to_bits()))
+            .collect();
         let _ = writeln!(
-            arrays,
-            "static const double pc_table_{id}[] = {{\n    {}\n}};\n",
-            lits.join(", ")
+            s,
+            "static const union {{ uint64_t u[{len}]; double d[{len}]; }} pc_table_{id} = {{{{\n    {}\n}}}};\n",
+            words.join(", "),
+            len = data.len()
         );
     }
-    if need_special {
-        s.push_str("#define PC_INF (1e308 * 10.0)\n#define PC_NAN (PC_INF - PC_INF)\n\n");
-    }
-    s.push_str(&arrays);
 
     for ((name, e), live) in entries.iter().zip(&lives) {
         let name = c_ident(name);
+        let is_dir = matches!(e.kind, EntryKind::Dir(_));
+        let v_len = match &e.kind {
+            EntryKind::Dir(slots) => slots.iter().map(|sl| sl.len(n, n_p)).sum(),
+            _ => 0,
+        };
+        let lens = Lens {
+            x: n,
+            p: n_p + 1,
+            v: v_len,
+        };
         let _ = write!(
             s,
             "PC_EXPORT void {name}(const double *x, const double *p, "
         );
-        let is_dir = matches!(e.kind, EntryKind::Dir(_));
         if is_dir {
             s.push_str("const double *v, ");
         }
@@ -392,14 +395,14 @@ pub fn emit_c(ir: &IrModel, entries: &[(String, &Entry)]) -> String {
         s.push_str("    (void)out;\n");
         for (i, l) in live.iter().enumerate() {
             if *l {
-                node(&mut s, dag, NodeId(i as u32), &tables_ok);
+                node(&mut s, dag, NodeId(i as u32), &lens, &usable);
             }
         }
         for (k, o) in e.outputs.iter().enumerate() {
             if (o.0 as usize) < dag.len() {
                 let _ = writeln!(s, "    out[{k}] = {};", var(*o));
             } else {
-                let _ = writeln!(s, "    out[{k}] = {};", konst(NAN_BITS));
+                let _ = writeln!(s, "    out[{k}] = {};", nan_const());
             }
         }
         s.push_str("}\n\n");

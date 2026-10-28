@@ -124,7 +124,7 @@ pub fn compile(entries: &[(EntryKind, &Entry)], dag: &Dag) -> Result<JitEntries,
         ctx.func.signature = sig.clone();
         ctx.func.name = UserFuncName::user(0, id.as_u32());
 
-        let live = lower::live_set(dag, &entry.outputs);
+        let live = pc_ir::eval::live_set(dag, &entry.outputs);
         let mut refs = HashMap::new();
         for n in lower::imports_needed(dag, &live) {
             let Some(&fid) = imports.get(n) else {
