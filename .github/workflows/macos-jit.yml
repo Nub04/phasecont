@@ -1,0 +1,82 @@
+# SPEC section 4: the JIT on macOS arm64. The probe runs once without signing changes
+# and then under the hardened runtime with each entitlement that allows JIT code.
+name: macos-jit
+
+on:
+  push:
+    branches: [main, phase2-pc-ir]
+  workflow_dispatch:
+
+jobs:
+  rust:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: uname -a && rustc -vV
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny check
+
+  hardened-runtime:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release -p pc-jit --example jit_probe
+      - name: Run the probe with each entitlement set
+        run: |
+          set -u
+          bin=target/release/examples/jit_probe
+          mkdir -p probe
+          echo "| Signing | Exit status | Last line |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          for ent in unchanged none allow-jit allow-unsigned-executable-memory disable-executable-page-protection; do
+            cp "$bin" "probe/$ent"
+            case "$ent" in
+              unchanged) ;;
+              none) codesign -s - -f --options runtime "probe/$ent" ;;
+              *)
+                printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+                  '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+                  '<plist version="1.0"><dict>' \
+                  "<key>com.apple.security.cs.$ent</key><true/>" \
+                  '</dict></plist>' > "probe/$ent.plist"
+                codesign -s - -f --options runtime --entitlements "probe/$ent.plist" "probe/$ent"
+                ;;
+            esac
+            echo "== $ent"
+            codesign -dv "probe/$ent" 2>&1 | grep -E 'flags|Signature' || true
+            codesign -d --entitlements - "probe/$ent" 2>/dev/null || true
+            set +e
+            out=$("probe/$ent" 2>&1)
+            status=$?
+            set -e
+            echo "$out"
+            echo "exit status $status"
+            echo "| $ent | $status | $(echo "$out" | tail -n 1) |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+  matlab-entitlements:
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: matlab-actions/setup-matlab@v2
+        with:
+          release: latest
+      - name: Print the entitlements of the MATLAB binary
+        run: |
+          root=$(dirname "$(dirname "$(realpath "$(command -v matlab)")")")
+          echo "matlabroot guess: $root"
+          ls "$root" || true
+          find "$root" -maxdepth 4 -type f -perm -u+x \( -name MATLAB -o -name matlab_helper -o -name MATLABWindow \) -print | while read -r f; do
+            echo "== $f"
+            codesign -dv "$f" 2>&1 | grep -E "flags|Identifier|TeamIdentifier" || true
+            codesign -d --entitlements - "$f" || true
+          done
