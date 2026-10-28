@@ -96,7 +96,7 @@ $A$ and $f_\alpha$ come from first-order symbolic differentiation. Orders 2 to 5
 **Complex directions.** Directional derivatives must accept complex direction vectors, because $q$ and $p$ in the normal forms are complex. PhaseCont splits each complex direction into its real and imaginary parts and uses multilinearity, so an order $k$ form takes at most $2^k$ real evaluations. There is no complex-valued entry point.
 
 **Validation uses two independent evaluators:**
-1. A tree-walking dual-number interpreter on the AST, using nested dual numbers up to depth 5. Its results must match the generated derivatives to within 4 ulp per entry, or $10^{-13}$ relative error. An entry passes when $|a-b| \le 4\,\mathrm{ulp}(\max(|a|,|b|))$ or $|a-b| \le 10^{-13} s$, where $s$ is the largest magnitude in that output vector.
+1. A tree-walking dual-number interpreter on the AST, using nested dual numbers up to depth 5. Its results must match the generated derivatives to within 4 ulp per entry, or $10^{-13}$ relative error. An entry passes when $|a-b| \le 4\,\mathrm{ulp}(\max(|a|,|b|))$ $|a-b| \le 10^{-13} s$, where $s$ is the largest magnitude in that output vector, or $|a-b| \le 10^{-15}$, because values near zero carry rounding from larger intermediate terms.
 2. Central finite differences on random inputs, with relative error at most $10^{-6}$ for $A$ and at most $10^{-4}$ for $B$ and $C$, measured against the same scale $s$.
 
 ## 4. JIT and AOT (pc-jit, pc-codegen)

@@ -29,8 +29,10 @@ fn same(a: f64, b: f64) -> bool {
     a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan())
 }
 
+/// Hand-derived and finite-difference comparisons with a stated relative tolerance;
+/// the comparison itself is `check::within`.
 fn close(a: f64, b: f64, tol: f64) -> bool {
-    (a - b).abs() <= tol * (1.0 + b.abs())
+    crate::check::within(a, b, 1.0 + b.abs(), tol)
 }
 
 /// F and aux of the fallback against `eval.rs`, bit for bit.

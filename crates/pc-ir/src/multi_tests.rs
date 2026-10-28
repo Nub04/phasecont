@@ -1,3 +1,4 @@
+use crate::check;
 use crate::complex::dir_complex;
 use crate::entry::{EntryKind, Slot};
 use crate::eval::eval;
@@ -22,57 +23,25 @@ fn setup(src: &str) -> (Fallback, IrModel) {
     (Fallback::new(&l.expanded, &l.info, &ir), ir)
 }
 
-fn ulp(x: f64) -> f64 {
-    if !x.is_finite() {
-        return f64::NAN;
-    }
-    f64::from_bits(x.abs().to_bits() + 1) - x.abs()
-}
-
 /// Section 3 tolerance for one output vector; `want` is the reference.
 fn within(got: &[f64], want: &[f64]) -> Result<(), String> {
-    within_floor(got, want, 0.0)
+    within_allowing(got, want, 0.0)
 }
 
-/// As [`within`], with the scale `s` raised to at least `floor`. Used where the true value
-/// is 0 and the reference holds rounding noise (second derivative of `mod` in its divisor).
-fn within_floor(got: &[f64], want: &[f64], floor: f64) -> Result<(), String> {
+/// As [`within`], with `allow` as an extra absolute allowance. Only the tests that name a
+/// known cancellation pass a nonzero value.
+fn within_allowing(got: &[f64], want: &[f64], allow: f64) -> Result<(), String> {
     if got.len() != want.len() {
         return Err(format!("length {} vs {}", got.len(), want.len()));
     }
-    let s = want
-        .iter()
-        .filter(|v| v.is_finite())
-        .fold(0.0_f64, |m, v| m.max(v.abs()))
-        .max(floor)
-        .max(f64::MIN_POSITIVE);
+    let s = check::scale(want);
     for (i, (&a, &b)) in got.iter().zip(want).enumerate() {
-        if (a.is_nan() && b.is_nan()) || a == b {
-            continue;
+        let off = (a - b).abs();
+        if !check::close(a, b, s) && (off.is_nan() || off > allow) {
+            return Err(format!("entry {i}: {a:?} vs {b:?} (scale {s:e})"));
         }
-        let diff = (a - b).abs();
-        let m = a.abs().max(b.abs());
-        if diff <= 4.0 * ulp(m) || diff <= 1e-13 * s {
-            continue;
-        }
-        return Err(format!("entry {i}: {a:?} vs {b:?} (scale {s:e})"));
     }
     Ok(())
-}
-
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> f64 {
-        self.0 = self
-            .0
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
-    }
-    fn range(&mut self, lo: f64, hi: f64) -> f64 {
-        lo + (hi - lo) * self.next()
-    }
 }
 
 fn dir_out(ir: &mut IrModel, slots: &[Slot], x: &[f64], p: &[f64], v: &[f64]) -> Vec<f64> {
@@ -85,42 +54,36 @@ fn dir_out(ir: &mut IrModel, slots: &[Slot], x: &[f64], p: &[f64], v: &[f64]) ->
     out
 }
 
-fn all_mixes(k: usize) -> Vec<Vec<Slot>> {
-    let mut all = vec![vec![]];
-    for _ in 0..k {
-        let mut next = Vec::new();
-        for m in &all {
-            for s in [Slot::U, Slot::P, Slot::Full] {
-                let mut m2: Vec<Slot> = m.clone();
-                m2.push(s);
-                next.push(m2);
-            }
-        }
-        all = next;
-    }
-    all
+/// Runs `check::check_model_with` over the points `init +- half_width` (the model's `init`
+/// line sets the center) and fails with the printed report. Every slot mix up to order 5
+/// is compared with the fallback under the unchanged SPEC tolerance.
+fn check_src(src: &str, half_width: f64, npts: usize, seed: u64) {
+    let (fb, mut ir) = setup(src);
+    let opt = check::Options {
+        half_width,
+        ..check::Options::new(npts, seed)
+    };
+    let rep = check::check_model_with(&mut ir, &fb, &opt);
+    assert!(rep.passed(), "{rep}");
 }
 
-/// Every slot mix for k = 1..=kmax against the fallback at `npts` random points.
-fn check_model(src: &str, xr: (f64, f64), p_base: &[f64], kmax: usize, npts: usize, seed: u64) {
-    check_model_floor(src, xr, p_base, kmax, npts, seed, 0.0);
-}
-
-fn check_model_floor(
+/// Every slot mix for k in `orders` against the fallback at `npts` random points, with
+/// `allow` as an absolute allowance on top of the SPEC tolerance.
+fn check_allowing(
     src: &str,
     xr: (f64, f64),
     p_base: &[f64],
-    kmax: usize,
+    orders: std::ops::RangeInclusive<usize>,
+    allow: f64,
     npts: usize,
     seed: u64,
-    floor: f64,
 ) {
     let (fb, mut ir) = setup(src);
     let (n, n_p) = (ir.n(), ir.n_p());
     assert_eq!(p_base.len(), n_p + 1);
-    let mut rng = Rng(seed);
-    for k in 1..=kmax {
-        for slots in all_mixes(k) {
+    let mut rng = check::Rng(seed);
+    for k in orders {
+        for slots in check::slot_mixes(k) {
             for _ in 0..npts {
                 let x: Vec<f64> = (0..n).map(|_| rng.range(xr.0, xr.1)).collect();
                 let p: Vec<f64> = p_base.iter().map(|&b| b * rng.range(0.9, 1.1)).collect();
@@ -129,7 +92,7 @@ fn check_model_floor(
                 let got = dir_out(&mut ir, &slots, &x, &p, &v);
                 let mut want = vec![0.0; n];
                 fb.eval(&EntryKind::Dir(slots.clone()), &x, &p, &v, &mut want);
-                if let Err(m) = within_floor(&got, &want, floor) {
+                if let Err(m) = within_allowing(&got, &want, allow) {
                     panic!("{slots:?} at x={x:?} p={p:?} v={v:?}: {m}");
                 }
             }
@@ -139,11 +102,9 @@ fn check_model_floor(
 
 #[test]
 fn polynomial_all_mixes_k1_to_5() {
-    check_model(
+    check_src(
         "par a=1.3, b=0.7\nx'=a*x*y-x^3+b*y^2-x\ny'=x^2*y-y^4+a*b*x\ndone\n",
-        (-1.0, 1.0),
-        &[1.3, 0.7, 0.0],
-        5,
+        1.0,
         2,
         11,
     );
@@ -151,14 +112,13 @@ fn polynomial_all_mixes_k1_to_5() {
 
 #[test]
 fn transcendental_all_mixes_k1_to_5() {
-    check_model(
-        "x'=sin(x)*cos(y)+tan(y/3)+asin(x/4)+acos(y/4)+atan(x*y)+sinh(x)+cosh(y)+tanh(x*y)\n\
+    check_src(
+        "init x=0.55, y=0.55\n\
+         x'=sin(x)*cos(y)+tan(y/3)+asin(x/4)+acos(y/4)+atan(x*y)+sinh(x)+cosh(y)+tanh(x*y)\n\
          y'=exp(x)*ln(1+y*y)+log10(2+x*x)+sqrt(1+x*x)+abs(x-y)+erf(x)+erfc(y)+lgamma(2+x*x)\
          +heav(x)+sign(y)+flr(x)+ceil(y)\n\
          done\n",
-        (0.2, 0.9),
-        &[0.0],
-        5,
+        0.35,
         1,
         12,
     );
@@ -166,15 +126,13 @@ fn transcendental_all_mixes_k1_to_5() {
 
 #[test]
 fn pow_and_division_all_mixes_k1_to_5() {
-    check_model(
-        "par a=2, b=0.5\n\
+    check_src(
+        "par a=2, b=0.5\ninit x=0.9, y=0.9\n\
          x'=(1+x*x)^1.5+(1+y*y)^a+2^x+x^3+y^(-2)+(1+x*x)^(0.5+y*y)+x^20+x/(1+y*y)\
          +(y+2)/(x*x+1)/(a+y)\n\
          y'=(2+x)^b*y+(3+y)**a+x^a*y^b+x^(y+0.3)\n\
          done\n",
-        (0.4, 1.4),
-        &[2.0, 0.5, 0.0],
-        5,
+        0.5,
         1,
         13,
     );
@@ -182,31 +140,36 @@ fn pow_and_division_all_mixes_k1_to_5() {
 
 #[test]
 fn branches_and_special_functions_all_mixes_k1_to_5() {
-    // The reference holds rounding noise where the true value is 0 (second derivative of `mod`
-    // in its divisor) or cancels heavily (order-5 `atan2`, see the closed-form test below);
-    // the scale floor of 1 suits these O(1) outputs.
-    check_model_floor(
-        "par a=2, b=0.5\n\
-         x'=atan2(y,x)+mod(x*7,a+1)+min(x,y)+max(x,b*y)+besselj(2,x)+bessely(1,abs(x)+0.5)\n\
+    // atan2 and mod are in the next test. Everything here uses the unchanged SPEC tolerance.
+    check_src(
+        "par a=2, b=0.5\ninit x=0.55, y=0.55\n\
+         x'=min(x,y)+max(x,b*y)+besselj(2,x)+bessely(1,abs(x)+0.5)\n\
          y'=if(x>y)then(x*a)else(y*b)+if(x<0.5&y>0)then(sin(y))else(x*x)\n\
          done\n",
-        (0.3, 0.8),
-        &[2.0, 0.5, 0.0],
-        5,
+        0.25,
         2,
         14,
-        1.0,
     );
+}
+
+/// The reference holds rounding noise where `atan2` cancels heavily at orders 4 and 5 (the
+/// closed-form test below pins the order-5 value) and where `mod` has a true derivative of
+/// exactly 0 (its second derivative in the divisor). The measured error was about 2e-14
+/// absolute on values near 6e-2, so orders 4 and 5 get an absolute allowance of 1e-13.
+#[test]
+fn atan2_and_mod_all_mixes_k1_to_5() {
+    let src = "par a=2, b=0.5\nx'=atan2(y,x)+mod(x*7,a+1)\ny'=mod(y*5,a+b)*atan2(x,y)\ndone\n";
+    let (xr, p) = ((0.3, 0.8), [2.0, 0.5, 0.0]);
+    check_allowing(src, xr, &p, 1..=3, 0.0, 2, 14);
+    check_allowing(src, xr, &p, 4..=5, 1e-13, 2, 14);
 }
 
 #[test]
 fn tables_all_mixes_k1_to_5() {
-    check_model(
-        "par a=1.5\ntable h % 9 -2 2 sin(2*t)\n\
+    check_src(
+        "par a=1.5\ninit x=0.6, y=0.6\ntable h % 9 -2 2 sin(2*t)\n\
          x'=h(x)+h(y)*x\ny'=-y+a*x*h(x*y)\ndone\n",
-        (0.3, 0.9),
-        &[1.5, 0.0],
-        5,
+        0.3,
         2,
         15,
     );
@@ -216,14 +179,12 @@ fn tables_all_mixes_k1_to_5() {
 /// no time component and the result still equals the fallback.
 #[test]
 fn nonautonomous_parameter_model_all_mixes_k1_to_5() {
-    check_model(
-        "par a=1.2, b=-0.4, c=0.9\n\
+    check_src(
+        "par a=1.2, b=-0.4, c=0.9\ninit x=0.7, y=0.7\n\
          x'=a*x*sin(t)+b*y*y+c*exp(-x*a)+cos(t)*x\n\
          y'=x*y*b-c*a*y+t*x^2\n\
          done\n",
-        (0.3, 1.1),
-        &[1.2, -0.4, 0.9, 0.7],
-        5,
+        0.4,
         2,
         16,
     );
@@ -236,7 +197,7 @@ fn pow_zero_base_matches_the_interpreter() {
     // where the two evaluators may differ in inf versus NaN.)
     let (fb, mut ir) = setup("x'=x^y\ny'=x^(y-0.5)*y\ndone\n");
     for k in 1..=3usize {
-        for slots in all_mixes(k)
+        for slots in check::slot_mixes(k)
             .into_iter()
             .filter(|s| s.iter().all(|t| *t == Slot::U))
         {
@@ -267,10 +228,6 @@ fn lgamma_order_five_stays_finite() {
 
 // ---- hand-derived values ----
 
-fn close(a: f64, b: f64, tol: f64) -> bool {
-    (a - b).abs() <= tol * (1.0 + b.abs())
-}
-
 fn dot(a: [f64; 2], b: [f64; 2]) -> f64 {
     a[0] * b[0] + a[1] * b[1]
 }
@@ -286,7 +243,8 @@ fn fold_f_uu_is_two() {
     let slots = [Slot::U, Slot::U];
     for (x, v, w) in [(0.3, 1.0, 1.0), (-1.7, 0.5, -2.0), (0.0, 3.0, 0.25)] {
         let out = dir_out(&mut ir, &slots, &[x], &[0.4, 0.0], &[v, w]);
-        assert!(close(out[0], 2.0 * v * w, 1e-15), "{out:?}");
+        let want = 2.0 * v * w;
+        assert!(check::close(out[0], want, want.abs()), "{out:?}");
     }
     // The second derivative of x^2 does not depend on x: the output has no state input.
     let e = ir.entry(&EntryKind::Dir(slots.to_vec())).unwrap();
@@ -525,8 +483,9 @@ fn complex_split_k3_against_complex_arithmetic() {
     );
     for i in 0..2 {
         let p = vs[i] * ws[i] * zs[i];
-        assert!(close(re[i], 6.0 * p.0, 1e-14), "{re:?}");
-        assert!(close(im[i], 6.0 * p.1, 1e-14), "{im:?}");
+        let s = 6.0 * p.0.abs().max(p.1.abs());
+        assert!(check::close(re[i], 6.0 * p.0, s), "{re:?}");
+        assert!(check::close(im[i], 6.0 * p.1, s), "{im:?}");
     }
 }
 
@@ -548,7 +507,7 @@ fn complex_split_matches_dag_entry_with_real_directions_only() {
         &mut im,
     );
     assert_eq!(calls, 1);
-    assert!(close(re[0], 36.0, 1e-14));
+    assert!(check::close(re[0], 36.0, 36.0));
     assert_eq!(im[0], 0.0);
 }
 
@@ -602,9 +561,14 @@ fn atan2_order_five_against_complex_log() {
     let q = C(w5.0 / den, -w5.1 / den);
     let z = prod * q;
     let truth = 24.0 * z.1;
-    assert!(close(got[0], truth, 1e-12), "dag {:e} vs {truth:e}", got[0]);
+    let s = truth.abs();
     assert!(
-        close(want[0], truth, 1e-12),
+        check::within(got[0], truth, s, 1e-12),
+        "dag {:e} vs {truth:e}",
+        got[0]
+    );
+    assert!(
+        check::within(want[0], truth, s, 1e-12),
         "interp {:e} vs {truth:e}",
         want[0]
     );

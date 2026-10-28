@@ -5,6 +5,7 @@
 //! checked `.ode` model into a DAG. `interp` walks the model directly with dual numbers
 //! and serves as the independent f64 fallback.
 
+pub mod check;
 pub mod complex;
 pub mod dag;
 pub mod diff;
