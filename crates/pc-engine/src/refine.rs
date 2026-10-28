@@ -37,9 +37,9 @@ pub trait DefiningSystem {
 
 /// Model access shared by the three systems: parameters with t appended, and helpers for
 /// the entries they need.
-struct Ctx<'a> {
-    model: &'a mut dyn ModelEval,
-    n: usize,
+pub(crate) struct Ctx<'a> {
+    pub(crate) model: &'a mut dyn ModelEval,
+    pub(crate) n: usize,
     n_p: usize,
     free: usize,
     /// Parameter values with t = 0 appended; entry `free` follows alpha.
@@ -47,7 +47,7 @@ struct Ctx<'a> {
 }
 
 impl<'a> Ctx<'a> {
-    fn new(
+    pub(crate) fn new(
         model: &'a mut dyn ModelEval,
         params: &[f64],
         free: usize,
@@ -69,7 +69,7 @@ impl<'a> Ctx<'a> {
         })
     }
 
-    fn set_alpha(&mut self, alpha: f64) {
+    pub(crate) fn set_alpha(&mut self, alpha: f64) {
         self.p[self.free] = alpha;
     }
 
@@ -95,7 +95,7 @@ impl<'a> Ctx<'a> {
     }
 
     /// `[A | F_alpha]`, n rows and n + 1 columns.
-    fn f_x(&mut self, u: &[f64]) -> Result<Vec<f64>, EngineError> {
+    pub(crate) fn f_x(&mut self, u: &[f64]) -> Result<Vec<f64>, EngineError> {
         let mut m = self.jac_u(u)?;
         m.extend(self.f_alpha(u)?);
         Ok(m)
@@ -117,6 +117,32 @@ impl<'a> Ctx<'a> {
         let mut out = vec![0.0; self.n];
         self.model.eval(
             &EntryKind::Dir(vec![Slot::U, Slot::Full]),
+            u,
+            &self.p,
+            &v,
+            &mut out,
+        )?;
+        Ok(out)
+    }
+
+    /// `F_xx[a, b]` for directions a and b in x = (u, alpha) space (n + 1 values each).
+    pub(crate) fn f_xx_dir(
+        &mut self,
+        u: &[f64],
+        a: &[f64],
+        b: &[f64],
+    ) -> Result<Vec<f64>, EngineError> {
+        let embed = |d: &[f64]| {
+            let mut e = vec![0.0; self.n + self.n_p];
+            e[..self.n].copy_from_slice(&d[..self.n]);
+            e[self.n + self.free] = d[self.n];
+            e
+        };
+        let mut v = embed(a);
+        v.extend(embed(b));
+        let mut out = vec![0.0; self.n];
+        self.model.eval(
+            &EntryKind::Dir(vec![Slot::Full, Slot::Full]),
             u,
             &self.p,
             &v,

@@ -22,6 +22,10 @@ pub struct EpSetup {
     /// Set when the start is a special point; no special point is looked for on the first
     /// step. Default false.
     pub start_is_special: bool,
+    /// First tangent (u, alpha), `n + 1` values, set by `switch_bp`. When present the run
+    /// starts at `u0` without the equilibrium solve and leaves along this tangent
+    /// (normalized; `Options::direction` -1 reverses it). Default `None`.
+    pub tangent0: Option<Vec<f64>>,
 }
 
 impl EpSetup {
@@ -32,6 +36,7 @@ impl EpSetup {
             params,
             u0,
             start_is_special: false,
+            tangent0: None,
         }
     }
 }
@@ -178,15 +183,32 @@ pub fn continue_ep(
     if cancel.load(Ordering::Relaxed) {
         return Err(EngineError::Cancelled);
     }
-    let u = equilibrium(model, setup, opts)?;
+    // With a first tangent the start is a branch point, where A is singular, so Newton on
+    // F(u) = 0 is skipped and the start must already be an equilibrium.
+    let u = if setup.tangent0.is_some() {
+        setup.u0.clone()
+    } else {
+        equilibrium(model, setup, opts)?
+    };
     let mut start = setup.clone();
     start.u0 = u.clone();
     let mut x = u;
     x.push(setup.params[setup.free]);
     let mut problem = EpProblem::new(model, &start)?;
+    if setup.tangent0.is_some() {
+        let mut f = vec![0.0; x.len() - 1];
+        problem.residual(&x, &mut f)?;
+        let res = f.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+        if res.is_nan() || res > opts.tol_f {
+            return Err(EngineError::BadProblem(
+                "the start of the switched branch is not an equilibrium".into(),
+            ));
+        }
+    }
     let mut branch = run_branch(
         &mut problem,
         &x,
+        setup.tangent0.as_deref(),
         opts,
         setup.start_is_special,
         cancel,

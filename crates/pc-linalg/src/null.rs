@@ -118,6 +118,60 @@ mod tests {
     }
 
     #[test]
+    fn null_right_orders_from_the_smallest_singular_value() {
+        // diag(5, 3, 0.5) mixed by a rotation on the left: right vectors are the unit
+        // vectors, singular values 5, 3, 0.5.
+        let (c, s) = (0.6_f64, 0.8_f64);
+        let d = [5.0, 3.0, 0.5];
+        let a = [
+            c * d[0],
+            s * d[0],
+            0.0,
+            -s * d[1],
+            c * d[1],
+            0.0,
+            0.0,
+            0.0,
+            d[2],
+        ];
+        let sv = singular_values(&a, 3, 3).unwrap();
+        for (x, y) in sv.iter().zip(&d) {
+            assert!((x - y).abs() < 1e-13, "{sv:?}");
+        }
+        let v = null_right(&a, 3, 3, 3).unwrap();
+        for (t, k) in [2usize, 1, 0].iter().enumerate() {
+            assert!((v[t][*k].abs() - 1.0).abs() < 1e-13, "{v:?}");
+            let av: Vec<f64> = (0..3)
+                .map(|i| (0..3).map(|j| a[i + 3 * j] * v[t][j]).sum::<f64>())
+                .collect();
+            assert!((norm(&av) - d[*k]).abs() < 1e-13);
+        }
+        // The first vector alone is the one of the smallest value.
+        let one = null_right(&a, 3, 3, 1).unwrap();
+        assert!((one[0][2].abs() - 1.0).abs() < 1e-13);
+    }
+
+    #[test]
+    fn rank_deficient_n_by_n_plus_one_spans_the_kernel() {
+        // Rows [1 0 0 1], [0 1 0 1], [1 1 0 2] (rank 2, 3 by 4, column-major). The kernel is
+        // span{(0,0,1,0), (1,1,0,-1)}.
+        let a = [1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 2.0];
+        let v = null_right(&a, 3, 4, 2).unwrap();
+        assert_eq!(v.len(), 2);
+        let k1 = [0.0, 0.0, 1.0, 0.0];
+        let k2 = [1.0, 1.0, 0.0, -1.0].map(|x| x / 3.0_f64.sqrt());
+        let dot = |p: &[f64], q: &[f64]| p.iter().zip(q).map(|(x, y)| x * y).sum::<f64>();
+        for x in &v {
+            assert!(residual(&a, 3, 4, x, false) <= 1e-12);
+            assert!((norm(x) - 1.0).abs() <= 1e-12);
+            // Inside the kernel: the projection on its orthonormal basis keeps the norm.
+            let proj = dot(x, &k1).powi(2) + dot(x, &k2).powi(2);
+            assert!((proj - 1.0).abs() <= 1e-12, "{proj}");
+        }
+        assert!(dot(&v[0], &v[1]).abs() <= 1e-12);
+    }
+
+    #[test]
     fn errors() {
         let a = [1.0, 1.0, 1.0, 1.0];
         assert_eq!(null_right(&a, 2, 2, 3).err(), Some(LinalgError::BadShape));

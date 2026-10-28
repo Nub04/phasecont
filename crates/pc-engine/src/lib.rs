@@ -14,6 +14,7 @@ mod normal;
 mod palc;
 mod problem;
 mod refine;
+mod switch;
 mod tests_fn;
 
 pub use branch::{Branch, Extras, Options, Point, SpecialPoint, StopReason};
@@ -30,4 +31,5 @@ pub use refine::{
     BpSystem, DefiningSystem, HopfSystem, LpSystem, MAX_REFINE_ITERS, NewtonResult, NewtonStep,
     Refined, newton, refine_special, refine_specials,
 };
+pub use switch::{special_index, switch_bp};
 pub use tests_fn::{HopfZero, classify_h_zero};

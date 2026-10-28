@@ -320,14 +320,17 @@ pub fn continue_branch(
     cancel: &AtomicBool,
     on_point: &mut dyn FnMut(&Point),
 ) -> Result<Branch, EngineError> {
-    run_branch(p, x0, opts, false, cancel, on_point)
+    run_branch(p, x0, None, opts, false, cancel, on_point)
 }
 
 /// [`continue_branch`] with the flag of `EpSetup::start_is_special`: when set, no special
-/// point is looked for on the first step.
+/// point is looked for on the first step. With `tangent0` the first tangent is that vector
+/// (normalized, times the sign of `opts.direction`) instead of the bordered solve; this is
+/// how a run leaves a branch point on the other branch.
 pub(crate) fn run_branch(
     p: &mut dyn Problem,
     x0: &[f64],
+    tangent0: Option<&[f64]>,
     opts: &Options,
     start_is_special: bool,
     cancel: &AtomicBool,
@@ -342,16 +345,40 @@ pub(crate) fn run_branch(
     if !(opts.hmin > 0.0 && opts.h0 > 0.0 && opts.hmax >= opts.hmin && opts.max_newton >= 1) {
         return Err(EngineError::BadProblem("bad step control options".into()));
     }
-    let mut border = vec![0.0; n];
-    border[n - 1] = 1.0;
-    let (mut v, mut det) = tangent_or_kernel(p, x0, &border)?;
-    if v[n - 1] * opts.direction < 0.0 {
-        for t in v.iter_mut() {
-            *t = -*t;
+    let (mut v, det) = match tangent0 {
+        Some(t0) => {
+            if t0.len() != n {
+                return Err(EngineError::BadProblem(
+                    "the initial tangent has the wrong length".into(),
+                ));
+            }
+            let nrm = dot(t0, t0).sqrt();
+            if !nrm.is_finite() || nrm == 0.0 {
+                return Err(EngineError::BadProblem(
+                    "the initial tangent is zero or not finite".into(),
+                ));
+            }
+            let s = if opts.direction < 0.0 { -1.0 } else { 1.0 } / nrm;
+            let v: Vec<f64> = t0.iter().map(|c| c * s).collect();
+            // Only the determinant is wanted; at a branch point it is about 0.
+            let (_, det) = tangent_or_kernel(p, x0, &v)?;
+            (v, det)
         }
-        // det[J; w] is linear in the border w, so a flipped tangent flips the determinant.
-        det = -det;
-    }
+        None => {
+            let mut border = vec![0.0; n];
+            border[n - 1] = 1.0;
+            let (mut v, mut det) = tangent_or_kernel(p, x0, &border)?;
+            if v[n - 1] * opts.direction < 0.0 {
+                for t in v.iter_mut() {
+                    *t = -*t;
+                }
+                // det[J; w] is linear in the border w, so a flipped tangent flips the
+                // determinant.
+                det = -det;
+            }
+            (v, det)
+        }
+    };
     let mut warnings = Vec::new();
     let mut x = x0.to_vec();
     let first = make_point(p, &x, v.clone(), det, 0.0, 0, opts, &mut warnings)?;
