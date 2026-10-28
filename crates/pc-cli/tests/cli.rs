@@ -315,7 +315,10 @@ fn non_utf8_arguments_do_not_panic() {
     assert!(stderr(&o).starts_with("pc-cli: cannot read "));
     let dir = std::env::temp_dir().join(format!("pc-cli-nonutf8-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join(bad), "x'=-x\ndone\n").unwrap();
+    if std::fs::write(dir.join(bad), "x'=-x\ndone\n").is_err() {
+        std::fs::remove_dir_all(&dir).ok();
+        return; // The file system refuses non-UTF-8 names (APFS on macOS).
+    }
     let o = Command::new(bin)
         .arg("parse")
         .arg(bad)
@@ -354,8 +357,11 @@ fn non_utf8_top_path_still_resolves_relative_includes() {
     use std::os::unix::ffi::OsStrExt;
     let bin = env!("CARGO_BIN_EXE_pc-cli");
     let dir = std::env::temp_dir().join(format!("pc-cli-nonutf8-inc-{}", std::process::id()));
-    std::fs::create_dir_all(dir.join(OsStr::from_bytes(b"d\xff"))).unwrap();
     let sub = dir.join(OsStr::from_bytes(b"d\xff"));
+    if std::fs::create_dir_all(&sub).is_err() {
+        std::fs::remove_dir_all(&dir).ok();
+        return; // The file system refuses non-UTF-8 names (APFS on macOS).
+    }
     std::fs::write(sub.join("top.ode"), "#include inc.ode\ndone\n").unwrap();
     std::fs::write(sub.join("inc.ode"), "x'=-x\n").unwrap();
     // The working directory is not the folder of the model, so a lossy
