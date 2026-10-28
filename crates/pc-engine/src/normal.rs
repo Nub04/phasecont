@@ -21,7 +21,7 @@ use pc_ir::{EntryKind, Slot};
 use pc_linalg::{Lu, eigvec, null_left, null_right, solve_shifted};
 
 /// Normalization string stored with an LP coefficient.
-pub const LP_NORMALIZATION: &str = "|q|=1, p'q=1";
+pub const LP_NORMALIZATION: &str = "|q|=1, p'q=1, p'F_alpha>0";
 /// Normalization string stored with an H coefficient.
 pub const H_NORMALIZATION: &str = "<q,q>=1, <p,q>=1";
 
@@ -107,9 +107,11 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
 /// Quadratic coefficient `a = (1/2) p^T B(q, q)` of the fold at `(u, alpha)`.
 ///
 /// `q` is the unit right null vector of A and `p` the left null vector with `p^T q = 1`.
-/// `a` changes sign with `q`, so the sign is fixed by `p^T f_alpha > 0` (the unfolding
-/// parameter then enters `w'` with a plus sign and the sign of `a` gives the side of the
-/// fold). When `p^T f_alpha` is zero to rounding, `q` keeps the sign it came with.
+/// `a` changes sign with `q`, so the sign is fixed by `p^T F_alpha > 0`: the fold then has
+/// the normal form `w' = beta + a w^2` with `beta` increasing in alpha (Kuznetsov, Elements
+/// of Applied Bifurcation Theory, Thm 3.1), and the sign of `a` tells on which side of the
+/// fold the equilibria exist. When `p^T F_alpha` is exactly 0, `q` keeps the sign that
+/// `null_right` returned.
 pub fn fold_coefficient(
     model: &mut dyn ModelEval,
     params: &[f64],
@@ -148,6 +150,15 @@ pub fn fold_coefficient(
 /// `<x,y> = conj(x)^T y`. Returned as `(q, p)`, each as (real part, imaginary part).
 pub fn hopf_eigenvectors(a: &[f64], n: usize, omega: f64) -> Result<(Cv, Cv), EngineError> {
     let q = eigvec(a, n, (0.0, omega))?;
+    // Normalize explicitly to <q,q> = 1 instead of relying on eigvec.
+    let nq = q.0.iter().chain(&q.1).map(|v| v * v).sum::<f64>().sqrt();
+    if !(nq.is_finite() && nq > 0.0) {
+        return Err(EngineError::Singular("eigenvector has zero norm".into()));
+    }
+    let q: Cv = (
+        q.0.iter().map(|v| v / nq).collect(),
+        q.1.iter().map(|v| v / nq).collect(),
+    );
     let mut at_mat = vec![0.0; n * n];
     for j in 0..n {
         for i in 0..n {

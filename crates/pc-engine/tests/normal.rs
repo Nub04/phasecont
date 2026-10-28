@@ -55,7 +55,7 @@ fn fold_coefficient_is_one() {
         let (a, norm) = coefficient(&b, "LP");
         println!("fold {which:?}: a = {a:.16}");
         assert!((a - 1.0).abs() < 1e-12, "{which:?}: a = {a}");
-        assert_eq!(norm, "|q|=1, p'q=1");
+        assert_eq!(norm, "|q|=1, p'q=1, p'F_alpha>0");
         let mut m = model_of("fold", which);
         let a = fold_coefficient(m.as_mut(), &[0.0], 0, &[0.0], 0.0).unwrap();
         assert!((a - 1.0).abs() < 1e-12, "direct {which:?}: a = {a}");
@@ -114,6 +114,8 @@ fn lorenz_hopf_has_positive_l1() {
         println!("lorenz {which:?}: r = {:.14}, l1 = {l1:.10}", h.point.alpha);
         assert!((h.point.alpha - 470.0 / 19.0).abs() < 1e-9);
         assert!(l1 > 0.0, "{which:?}: l1 = {l1}");
+        let want = 2.6551897258e-4;
+        assert!(((l1 - want) / want).abs() < 1e-6, "{which:?}: l1 = {l1:e}");
     }
 }
 
@@ -210,5 +212,27 @@ fn near_identity_change_keeps_l1() {
             println!("hopf_nl c={c} {which:?}: l1 = {l1:.16}");
             assert!((l1 - 2.0 * c).abs() < 1e-10, "{which:?} c={c}: l1 = {l1}");
         }
+    }
+}
+
+#[test]
+fn fold_sign_follows_the_alpha_orientation() {
+    // fold: F_alpha = +1 gives a = 1. fold_neg: F_alpha = -1 gives a = -1. Whatever sign
+    // null_right returns, one of the two models takes the orientation flip.
+    for which in BOTH {
+        for (name, want) in [("fold", 1.0), ("fold_neg", -1.0)] {
+            let mut m = model_of(name, which);
+            let a = fold_coefficient(m.as_mut(), &[0.0], 0, &[0.0], 0.0).unwrap();
+            assert!((a - want).abs() < 1e-12, "{name} {which:?}: a = {a}");
+        }
+        let setup = EpSetup::new(0, vec![1.0], vec![-1.0]);
+        let opts = Options {
+            direction: -1.0,
+            max_steps: 150,
+            ..Options::default()
+        };
+        let b = run("fold_neg", which, &setup, &opts);
+        let (a, _) = coefficient(&b, "LP");
+        assert!((a + 1.0).abs() < 1e-12, "{which:?}: a = {a}");
     }
 }
