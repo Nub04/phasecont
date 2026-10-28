@@ -15,7 +15,7 @@
 use crate::branch::Options;
 use crate::error::EngineError;
 use crate::problem::Problem;
-use pc_linalg::eigenvalues;
+use pc_linalg::{LinalgError, eigenvalues};
 
 /// Largest state dimension for which Hopf detection runs.
 pub(crate) const MAX_HOPF_DIM: usize = 100;
@@ -77,6 +77,12 @@ pub fn classify_h_zero(eigs: &[(f64, f64)]) -> HopfZero {
     }
 }
 
+fn push_once(w: &mut Vec<String>, msg: &str) {
+    if !w.iter().any(|m| m == msg) {
+        w.push(msg.to_string());
+    }
+}
+
 /// Test values and eigenvalues at one point.
 pub(crate) struct PointTests {
     pub tests: [f64; 3],
@@ -86,17 +92,35 @@ pub(crate) struct PointTests {
 /// Evaluates the test functions at `x`. `tangent` is the unit tangent there and `det` the
 /// determinant of the bordered tangent solve (0 when that matrix was singular).
 /// A test whose `detect_*` option is off is NaN. Eigenvalues are stored whenever the
-/// problem has a state block. For a state dimension above `MAX_HOPF_DIM`, `psi_H` is NaN.
+/// problem has a state block. For a state dimension above `MAX_HOPF_DIM`, `psi_H` is NaN and
+/// a warning is added once. A failed eigenvalue computation gives no eigenvalues, NaN `psi_H`
+/// and a warning, and the run goes on.
 pub(crate) fn evaluate(
     p: &mut dyn Problem,
     x: &[f64],
     tangent: &[f64],
     det: f64,
     opts: &Options,
+    warnings: &mut Vec<String>,
 ) -> Result<PointTests, EngineError> {
     let n = p.dim() - 1;
+    let mut eig_failed = false;
     let eigs = match p.state_jacobian(x)? {
-        Some(a) => eigenvalues(&a, n)?,
+        Some(a) => {
+            if opts.detect_h && n > MAX_HOPF_DIM {
+                push_once(warnings, "Hopf detection is off for n > 100");
+            }
+            match eigenvalues(&a, n) {
+                Ok(e) => e,
+                // The run goes on without eigenvalues at this point.
+                Err(LinalgError::NoConvergence) => {
+                    eig_failed = true;
+                    push_once(warnings, "eigenvalues did not converge at some points");
+                    Vec::new()
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
         None => Vec::new(),
     };
     let mut tests = [f64::NAN; 3];
@@ -106,7 +130,7 @@ pub(crate) fn evaluate(
     if opts.detect_bp {
         tests[BP] = det;
     }
-    if opts.detect_h && n <= MAX_HOPF_DIM && !eigs.is_empty() {
+    if opts.detect_h && n <= MAX_HOPF_DIM && !eig_failed && !eigs.is_empty() {
         tests[H] = psi_h(&eigs);
     }
     Ok(PointTests {
@@ -177,7 +201,6 @@ mod tests {
                     den *= 1.0_f64.max(e[i].0.hypot(e[i].1) + e[j].0.hypot(e[j].1));
                 }
             }
-            let _ = pi;
             let scaled = psi_h(&e);
             assert_eq!(scaled.signum(), pr.signum(), "{scaled} {pr}");
             assert!(

@@ -8,12 +8,15 @@
 use crate::branch::{Branch, Options, Point, StopReason};
 use crate::error::EngineError;
 use crate::problem::Problem;
-use crate::tests_fn::{self, MAX_HOPF_DIM};
+use crate::tests_fn;
 use pc_linalg::{null_right, singular_values};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Maps an error met during a run to the reason the branch stops. Every error that ends a
-/// run goes through here, so the treatment of singular matrices lives in one place.
+/// run goes through here, so this is the only place where errors become a `StopReason`.
+/// A singular bordered matrix at a branch point is not an error of the run: `correct` accepts
+/// a predictor that already solves the system, and `tangent_or_kernel` turns it into a zero
+/// of psi_BP. Other singular matrices reach here and stop the run.
 pub(crate) fn classify(e: EngineError) -> StopReason {
     match e {
         EngineError::Singular(_) => StopReason::Singular,
@@ -191,6 +194,7 @@ fn kernel_tangent(p: &mut dyn Problem, x: &[f64], prev: &[f64]) -> Result<Vec<f6
 
 /// Builds an accepted point with its eigenvalues and test values. `det` is the determinant
 /// of the bordered tangent solve at `x`.
+#[allow(clippy::too_many_arguments)]
 fn make_point(
     p: &mut dyn Problem,
     x: &[f64],
@@ -199,9 +203,10 @@ fn make_point(
     h: f64,
     iters: usize,
     opts: &Options,
+    warnings: &mut Vec<String>,
 ) -> Result<Point, EngineError> {
     let n = x.len() - 1;
-    let t = tests_fn::evaluate(p, x, &v, det, opts)?;
+    let t = tests_fn::evaluate(p, x, &v, det, opts, warnings)?;
     Ok(Point {
         u: x[..n].to_vec(),
         alpha: x[n],
@@ -325,18 +330,17 @@ pub fn continue_branch(
     }
     let mut border = vec![0.0; n];
     border[n - 1] = 1.0;
-    let (mut v, det) = tangent(p, x0, &border)?;
+    let (mut v, mut det) = tangent(p, x0, &border)?;
     if v[n - 1] * opts.direction < 0.0 {
         for t in v.iter_mut() {
             *t = -*t;
         }
+        // det[J; w] is linear in the border w, so a flipped tangent flips the determinant.
+        det = -det;
     }
     let mut warnings = Vec::new();
-    if opts.detect_h && n - 1 > MAX_HOPF_DIM {
-        warnings.push("Hopf detection is off for n > 100".to_string());
-    }
     let mut x = x0.to_vec();
-    let first = make_point(p, &x, v.clone(), det, 0.0, 0, opts)?;
+    let first = make_point(p, &x, v.clone(), det, 0.0, 0, opts, &mut warnings)?;
     on_point(&first);
     let mut points = vec![first];
     let (lo, hi) = opts.bounds;
@@ -374,19 +378,31 @@ pub fn continue_branch(
                 match land_on_bound(p, &x, &v, h, &x1, bound, sgn, opts, cancel) {
                     Ok(l) => {
                         // The landed point is kept even when its tangent or tests fail.
-                        let built = tangent_or_kernel(p, &l.x, &v)
-                            .and_then(|(vn, d)| make_point(p, &l.x, vn, d, l.s * h, l.iters, opts));
-                        let pt =
-                            built.unwrap_or_else(|_| bare_point(&l.x, v.clone(), l.s * h, l.iters));
+                        let built = tangent_or_kernel(p, &l.x, &v).and_then(|(vn, d)| {
+                            make_point(p, &l.x, vn, d, l.s * h, l.iters, opts, &mut warnings)
+                        });
+                        let (pt, reason) = match built {
+                            Ok(pt) => (pt, StopReason::Bounds),
+                            Err(e) => {
+                                let bare = bare_point(&l.x, v.clone(), l.s * h, l.iters);
+                                if e == EngineError::Cancelled {
+                                    (bare, StopReason::Cancelled)
+                                } else {
+                                    warnings
+                                        .push(format!("tests at the bound point are missing: {e}"));
+                                    (bare, StopReason::Bounds)
+                                }
+                            }
+                        };
                         on_point(&pt);
                         points.push(pt);
-                        break 'run StopReason::Bounds;
+                        break 'run reason;
                     }
                     Err(r) => break 'run r,
                 }
             }
             let built = tangent_or_kernel(p, &x1, &v)
-                .and_then(|(vn, d)| make_point(p, &x1, vn, d, h, iters, opts));
+                .and_then(|(vn, d)| make_point(p, &x1, vn, d, h, iters, opts, &mut warnings));
             let pt = match built {
                 Ok(pt) => pt,
                 Err(e) => break 'run classify(e),

@@ -175,3 +175,23 @@ fn hopf_detection_is_off_above_100_variables() {
         assert!(run("linear101", which, &setup, &off).warnings.is_empty());
     }
 }
+
+#[test]
+fn negative_direction_keeps_the_sign_of_psi_bp() {
+    for which in BOTH {
+        // From al = 1 down to -1 along x = 0: the tangent is flipped at the start, and
+        // psi_BP must not change sign between points 0 and 1 (only at the real BP).
+        let setup = EpSetup::new(0, vec![1.0], vec![0.0]);
+        let opts = Options {
+            direction: -1.0,
+            bounds: (-1.0, f64::INFINITY),
+            ..line_opts()
+        };
+        let b = run("transcritical", which, &setup, &opts);
+        assert_eq!(b.stop, StopReason::Bounds);
+        assert!(b.points[0].tests[BP] * b.points[1].tests[BP] > 0.0);
+        let ch = sign_changes(&b, BP);
+        assert_eq!(ch.len(), 1, "{which:?}: {ch:?}");
+        assert!(b.points[ch[0]].alpha > 0.0 && b.points[ch[0] + 1].alpha < 0.0);
+    }
+}

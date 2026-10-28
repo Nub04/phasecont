@@ -422,3 +422,57 @@ fn bad_setups_are_refused() {
         assert!(matches!(r, Err(EngineError::BadProblem(_))), "{r:?}");
     }
 }
+
+/// The circle with a state block whose evaluation fails only at alpha = 0.5, the bound.
+struct FailsAtBound {
+    error: EngineError,
+}
+
+impl Problem for FailsAtBound {
+    fn dim(&self) -> usize {
+        2
+    }
+    fn residual(&mut self, x: &[f64], out: &mut [f64]) -> Result<(), EngineError> {
+        out[0] = x[0] * x[0] + x[1] * x[1] - 1.0;
+        Ok(())
+    }
+    fn jacobian(&mut self, x: &[f64], out: &mut [f64]) -> Result<(), EngineError> {
+        out[0] = 2.0 * x[0];
+        out[1] = 2.0 * x[1];
+        Ok(())
+    }
+    fn state_jacobian(&mut self, x: &[f64]) -> Result<Option<Vec<f64>>, EngineError> {
+        if (x[1] - 0.5).abs() < 1e-9 {
+            return Err(self.error.clone());
+        }
+        Ok(Some(vec![2.0 * x[0]]))
+    }
+}
+
+#[test]
+fn landed_point_is_kept_when_its_tests_fail() {
+    let opts = Options {
+        bounds: (f64::NEG_INFINITY, 0.5),
+        ..Options::default()
+    };
+    let run = |error: EngineError| {
+        continue_branch(
+            &mut FailsAtBound { error },
+            &[-1.0, 0.0],
+            &opts,
+            &AtomicBool::new(false),
+            &mut |_| {},
+        )
+        .unwrap()
+    };
+    let b = run(EngineError::NotFinite("JacU".into()));
+    assert_eq!(b.stop, StopReason::Bounds);
+    let last = b.points.last().unwrap();
+    assert!((last.alpha - 0.5).abs() < 1e-10);
+    assert!(last.eigenvalues.is_empty() && last.tests.iter().all(|t| t.is_nan()));
+    assert_eq!(b.warnings.len(), 1);
+    assert!(b.warnings[0].contains("JacU"), "{:?}", b.warnings);
+    let c = run(EngineError::Cancelled);
+    assert_eq!(c.stop, StopReason::Cancelled);
+    assert!((c.points.last().unwrap().alpha - 0.5).abs() < 1e-10);
+}
