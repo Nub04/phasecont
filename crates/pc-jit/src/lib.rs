@@ -5,6 +5,7 @@
 //! the `pc_ir::math` shims, the rest is lowered in line, and no fused multiply-add is
 //! used.
 
+mod compiled;
 mod flags;
 mod lower;
 mod module;
@@ -12,6 +13,7 @@ mod module;
 #[cfg(test)]
 mod tests;
 
+pub use compiled::{CompiledModel, EntryFn};
 pub use module::JitEntries;
 
 use cranelift_codegen::ir::{AbiParam, UserFuncName, types};
@@ -38,6 +40,10 @@ pub enum JitError {
     Cranelift(String),
     /// The lowering needs a shim that the module did not import.
     MissingImport(String),
+    /// The IR could not build the entry.
+    Ir(pc_ir::IrError),
+    /// An argument of `CompiledModel::call` has the wrong length.
+    BadLength(String),
 }
 
 impl std::fmt::Display for JitError {
@@ -45,6 +51,8 @@ impl std::fmt::Display for JitError {
         match self {
             JitError::Cranelift(m) => write!(f, "cranelift: {m}"),
             JitError::MissingImport(m) => write!(f, "missing import: {m}"),
+            JitError::Ir(e) => write!(f, "ir: {e}"),
+            JitError::BadLength(m) => write!(f, "bad length: {m}"),
         }
     }
 }

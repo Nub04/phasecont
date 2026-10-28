@@ -623,3 +623,246 @@ proptest! {
         }
     }
 }
+
+// ---- CompiledModel ----
+
+mod compiled {
+    use crate::{CompiledModel, EntryFn, JitError, module};
+    use pc_ir::check::{close, scale, ulp};
+    use pc_ir::{EntryKind, Fallback, Slot};
+    use pc_ode::{MapLoader, Severity, SourceMap, load};
+
+    use super::Lcg;
+
+    fn setup(src: &str) -> (CompiledModel, Fallback) {
+        let mut map = SourceMap::new();
+        let top = map.add("t.ode", src);
+        let l = load(top, &mut map, &mut MapLoader::new());
+        assert!(
+            l.diagnostics.iter().all(|d| d.severity != Severity::Error),
+            "{:?}",
+            l.diagnostics
+        );
+        let ir = match pc_ir::lower(&l.expanded, &l.info) {
+            Ok(m) => m,
+            Err(e) => panic!("lower failed: {e:?}"),
+        };
+        let fb = Fallback::new(&l.expanded, &l.info, &ir);
+        (CompiledModel::new(ir), fb)
+    }
+
+    const SIMPLE: &str = "par a=1.3, b=0.7\ninit x=0.4, y=0.3\naux s=x*y+a\n\
+        x'=a*x*y-x^3+b*y^2-x\ny'=x^2*y-y^4+a*b*x\ndone\n";
+    /// Nonautonomous with parameters and a trig/exp mix.
+    const NONAUTO: &str = "par a=1.3, b=0.7, w=2\ninit x=0.4, y=0.3\naux s=x*y+sin(a*t)\n\
+        x'=a*sin(w*t)*x-x^3+b*y^2+exp(-y)/(1+x^2)\ny'=b*cos(t)-y+tanh(a*y)+x*y\ndone\n";
+    /// Aux and a lookup table.
+    const TABLES: &str = "par a=2, c=0.5\ntable h % 5 -2 2 t^2+sin(t)\ninit x=0.5, y=0.2\n\
+        aux s=h(x)+c*y\nx'=-a*x+h(y)+c\ny'=x-y^3+h(x)*c\ndone\n";
+
+    fn ulp_close(a: f64, b: f64) -> bool {
+        (a.is_nan() && b.is_nan()) || a == b || (a - b).abs() <= 4.0 * ulp(a.abs().max(b.abs()))
+    }
+
+    fn all_kinds() -> Vec<EntryKind> {
+        let mut k = vec![
+            EntryKind::F,
+            EntryKind::Aux,
+            EntryKind::JacU,
+            EntryKind::JacP,
+            EntryKind::Dir(vec![Slot::U]),
+            EntryKind::Dir(vec![Slot::U, Slot::U]),
+            EntryKind::Dir(vec![Slot::Full, Slot::P]),
+            EntryKind::Dir(vec![Slot::U, Slot::P, Slot::Full]),
+            EntryKind::Dir(vec![Slot::P, Slot::U, Slot::U, Slot::Full]),
+            EntryKind::Dir(vec![Slot::U; 5]),
+        ];
+        k.shrink_to_fit();
+        k
+    }
+
+    fn vs_fallback(src: &str, seed: u64) {
+        let (mut cm, fb) = setup(src);
+        let (n, n_p) = (cm.ir().n(), cm.ir().n_p());
+        let mut r = Lcg(seed);
+        for _ in 0..8 {
+            let x: Vec<f64> = (0..n).map(|_| r.range(-1.5, 1.5)).collect();
+            let mut p: Vec<f64> = (0..n_p).map(|_| r.range(0.3, 2.0)).collect();
+            p.push(r.range(0.0, 2.0));
+            for kind in all_kinds() {
+                if matches!(kind, EntryKind::Aux) && cm.ir().aux.is_empty() {
+                    continue;
+                }
+                let len = match &kind {
+                    EntryKind::Dir(s) => s.iter().map(|s| s.len(n, n_p)).sum(),
+                    _ => 0,
+                };
+                let v: Vec<f64> = (0..len).map(|_| r.range(-1.0, 1.0)).collect();
+                let out_len = cm.ir.entry(&kind).expect("entry").outputs.len();
+                let mut got = vec![f64::MAX; out_len];
+                let mut want = vec![f64::NAN; out_len];
+                cm.call(&kind, &x, &p, &v, &mut got).expect("call");
+                fb.eval(&kind, &x, &p, &v, &mut want);
+                let s = scale(&want);
+                for (k, (a, b)) in got.iter().zip(&want).enumerate() {
+                    let ok = if matches!(kind, EntryKind::F) {
+                        ulp_close(*a, *b)
+                    } else {
+                        close(*a, *b, s)
+                    };
+                    assert!(
+                        ok,
+                        "{kind:?} out {k} at x={x:?} p={p:?}: jit {a:?} vs fb {b:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn jit_matches_fallback_on_a_simple_model() {
+        vs_fallback(SIMPLE, 1);
+    }
+
+    #[test]
+    fn jit_matches_fallback_on_a_nonautonomous_model() {
+        vs_fallback(NONAUTO, 2);
+    }
+
+    #[test]
+    fn jit_matches_fallback_with_aux_and_tables() {
+        vs_fallback(TABLES, 3);
+    }
+
+    #[test]
+    fn the_second_request_returns_the_same_pointer() {
+        let (mut cm, _) = setup(SIMPLE);
+        let a = cm.entry(&EntryKind::F).expect("F");
+        let sets = cm.sets.len();
+        let b = cm.entry(&EntryKind::F).expect("F again");
+        assert_eq!(a, b);
+        assert!(matches!(a, EntryFn::Plain(_)));
+        assert_eq!(cm.sets.len(), sets, "no recompilation");
+        let d = EntryKind::Dir(vec![Slot::U, Slot::P]);
+        let c = cm.entry(&d).expect("Dir");
+        assert!(matches!(c, EntryFn::Dir(_)));
+        assert_eq!(c, cm.entry(&d).expect("Dir again"));
+    }
+
+    #[test]
+    fn many_kinds_get_distinct_functions() {
+        let (mut cm, _) = setup(SIMPLE);
+        let kinds = all_kinds();
+        let mut fns = Vec::new();
+        for k in &kinds {
+            fns.push(cm.entry(k).expect("entry"));
+        }
+        assert_eq!(cm.sets.len(), kinds.len());
+        for i in 0..fns.len() {
+            for j in i + 1..fns.len() {
+                assert_ne!(fns[i], fns[j], "{:?} vs {:?}", kinds[i], kinds[j]);
+            }
+        }
+        for (k, f) in kinds.iter().zip(&fns) {
+            assert_eq!(*f, cm.entry(k).expect("again"));
+        }
+    }
+
+    #[test]
+    fn dropping_the_model_frees_every_module() {
+        let before = module::FREED.with(|c| c.get());
+        let (mut cm, _) = setup(SIMPLE);
+        let kinds = all_kinds();
+        for k in &kinds {
+            cm.entry(k).expect("entry");
+        }
+        assert_eq!(module::FREED.with(|c| c.get()), before);
+        drop(cm);
+        assert_eq!(module::FREED.with(|c| c.get()), before + kinds.len());
+    }
+
+    #[test]
+    fn a_failed_compile_keeps_the_cache() {
+        let (mut cm, _) = setup(SIMPLE);
+        let f = cm.entry(&EntryKind::F).expect("F");
+        let before = module::FREED.with(|c| c.get());
+        module::FAIL_AFTER_NEW.with(|x| x.set(true));
+        let r = cm.entry(&EntryKind::JacU);
+        module::FAIL_AFTER_NEW.with(|x| x.set(false));
+        assert!(matches!(r, Err(JitError::Cranelift(_))));
+        assert_eq!(module::FREED.with(|c| c.get()), before + 1);
+        assert_eq!(cm.entry(&EntryKind::F).expect("F"), f);
+        assert_eq!(cm.sets.len(), 1);
+        // The failed kind compiles later, and the old function still works.
+        cm.entry(&EntryKind::JacU).expect("retry");
+        let mut out = [0.0; 2];
+        cm.call(&EntryKind::F, &[0.4, 0.3], &[1.3, 0.7, 0.0], &[], &mut out)
+            .expect("call");
+        assert!(out.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn an_ir_error_is_reported_and_leaves_the_cache() {
+        let (mut cm, _) = setup(SIMPLE);
+        cm.entry(&EntryKind::F).expect("F");
+        let r = cm.entry(&EntryKind::Dir(vec![]));
+        assert!(matches!(r, Err(JitError::Ir(_))), "{r:?}");
+        assert_eq!(cm.sets.len(), 1);
+    }
+
+    #[test]
+    fn call_checks_every_length() {
+        let (mut cm, _) = setup(SIMPLE);
+        let (x, p) = ([0.4, 0.3], [1.3, 0.7, 0.0]);
+        let mut out = [0.0; 2];
+        let bad = |r: Result<(), JitError>, name: &str, msg: &str| match r {
+            Err(JitError::BadLength(m)) => {
+                assert!(m.starts_with(name) && m.contains(msg), "{m}");
+            }
+            other => panic!("expected BadLength({name}), got {other:?}"),
+        };
+        let f = EntryKind::F;
+        bad(
+            cm.call(&f, &x[..1], &p, &[], &mut out),
+            "x",
+            "has 1 values, expected 2",
+        );
+        bad(
+            cm.call(&f, &x, &p[..2], &[], &mut out),
+            "p",
+            "has 2 values, expected 3",
+        );
+        bad(
+            cm.call(&f, &x, &p, &[1.0], &mut out),
+            "v",
+            "has 1 values, expected 0",
+        );
+        bad(
+            cm.call(&f, &x, &p, &[], &mut out[..1]),
+            "out",
+            "has 1 values, expected 2",
+        );
+        // Dir [U, P] needs v of 2 + 2 = 4.
+        let d = EntryKind::Dir(vec![Slot::U, Slot::P]);
+        bad(
+            cm.call(&d, &x, &p, &[0.0; 3], &mut out),
+            "v",
+            "has 3 values, expected 4",
+        );
+        bad(
+            cm.call(&d, &x, &p, &[], &mut out),
+            "v",
+            "has 0 values, expected 4",
+        );
+        bad(
+            cm.call(&d, &x, &p, &[0.0; 4], &mut out[..0]),
+            "out",
+            "has 0 values, expected 2",
+        );
+        cm.call(&d, &x, &p, &[0.0; 4], &mut out)
+            .expect("Dir happy path");
+        assert_eq!(out, [0.0, 0.0]);
+        cm.call(&f, &x, &p, &[], &mut out).expect("F happy path");
+        assert!(out[0] != 0.0 || out[1] != 0.0);
+    }
+}
