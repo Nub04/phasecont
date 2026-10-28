@@ -107,7 +107,8 @@ usage: pc-cli check-derivs [--points N] [--seed S] [--] <file.ode>
 Evaluates every entry at N random points near the initial state and checks
   - the DAG entries against the f64 fallback and against finite differences,
   - the JIT entries against the DAG (bit for bit; a NaN matches any NaN),
-  - the JIT entries against the f64 fallback (SPEC section 3 tolerance).
+  - the JIT entries against the f64 fallback (4 ulp for F and Aux, SPEC section 3 tolerance
+    for derivatives).
 Prints one line per check. For a model that is not smooth, the finite
 difference lines are printed as information and do not set the exit code,
 since a kink between the two sides of a difference makes them unreliable.

@@ -256,3 +256,27 @@ fn a_vector_that_passes_only_through_the_bound_has_a_ratio_below_one() {
         f.scale
     );
 }
+
+#[test]
+fn close_ulps_is_four_ulp_with_nan_and_zero_rules() {
+    assert!(close_ulps(1.0, 1.0));
+    assert!(close_ulps(1.0, 1.0 + 4.0 * f64::EPSILON));
+    assert!(!close_ulps(1.0, 1.0 + 5.0 * f64::EPSILON));
+    // The spacing is taken at the larger magnitude, as in SPEC section 3.
+    assert!(close_ulps(2.0, 2.0 + 4.0 * ulp(2.0)));
+    assert!(!close_ulps(2.0, 2.0 + 5.0 * ulp(2.0)));
+    // A NaN matches any NaN and nothing else.
+    assert!(close_ulps(f64::NAN, -f64::NAN));
+    assert!(!close_ulps(f64::NAN, 1.0));
+    assert!(!close_ulps(1.0, f64::NAN));
+    // Zeros of either sign are equal, and a tiny value is not close to a normal one.
+    assert!(close_ulps(0.0, -0.0));
+    assert!(!close_ulps(1e-300, 2e-300));
+    // Infinities match only themselves.
+    assert!(close_ulps(f64::INFINITY, f64::INFINITY));
+    assert!(!close_ulps(f64::INFINITY, f64::NEG_INFINITY));
+    assert!(!close_ulps(f64::INFINITY, f64::MAX));
+    // Unlike the section 3 rule, no scale or absolute floor widens it.
+    assert!(close(1e-14, 2e-14, 1.0));
+    assert!(!close_ulps(1e-14, 2e-14));
+}

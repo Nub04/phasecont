@@ -1,11 +1,11 @@
 //! The JIT checks of SPEC section 4: the JIT against the DAG evaluator bit for bit, and
-//! against the f64 fallback within the section 3 tolerance, with the running error bound of
-//! the DAG evaluation of the same entry.
+//! against the f64 fallback. `F` and `Aux` must agree within 4 ulp; derivatives use the section 3
+//! tolerance, with the running error bound of the DAG evaluation of the same entry.
 //!
 //! `pc-cli check-derivs` and the corpus test share this code.
 
 use crate::CompiledModel;
-use pc_ir::check::{Rng, close_err, draw_point, fmt_vec, scale, slot_label};
+use pc_ir::check::{Rng, close_err, close_ulps, draw_point, fmt_vec, scale, slot_label};
 use pc_ir::eval::eval_err;
 use pc_ir::{Entry, EntryKind, Fallback, IrModel, Slot};
 
@@ -47,7 +47,8 @@ pub fn jit_kinds(ir: &IrModel) -> Vec<(EntryKind, String)> {
 pub enum RowKind {
     /// The JIT against the DAG evaluator, bit for bit.
     JitVsDag,
-    /// The JIT against the f64 fallback, within the SPEC section 3 tolerance.
+    /// The JIT against the f64 fallback: 4 ulp for `F` and `Aux` (SPEC section 4), the section 3
+    /// tolerance for derivatives.
     JitVsFallback,
 }
 
@@ -119,8 +120,18 @@ impl Mismatch {
     }
 }
 
+/// The JIT-versus-fallback test for one value. `f` and `aux` follow SPEC section 4 (4 ulp, a NaN
+/// matches any NaN, `+0` equals `-0`); derivative kinds use the section 3 tolerance with the
+/// running error bound `err` of the DAG evaluation.
+pub(crate) fn fallback_close(kind: &EntryKind, jit: f64, fb: f64, scale: f64, err: f64) -> bool {
+    match kind {
+        EntryKind::F | EntryKind::Aux => close_ulps(jit, fb),
+        _ => close_err(jit, fb, scale, err),
+    }
+}
+
 /// Compares the JIT with the DAG evaluator (bit for bit) and with the f64
-/// fallback (the SPEC section 3 tolerance), two rows per entry. Points come
+/// fallback (see [`fallback_close`]), two rows per entry. Points come
 /// from the box of `check_model` with half-width `hw`.
 pub fn jit_rows(mut ir: IrModel, fb: &Fallback, points: usize, seed: u64, hw: f64) -> Vec<Row> {
     let built: Vec<(EntryKind, String, Result<Entry, String>)> = jit_kinds(&ir)
@@ -180,7 +191,7 @@ pub fn jit_rows(mut ir: IrModel, fb: &Fallback, points: usize, seed: u64, hw: f6
                 if !same_bits(g, w) {
                     vs_dag.note(i, (&x, &p), g, w, "dag");
                 }
-                if !close_err(g, f, s, e) {
+                if !fallback_close(&kind, g, f, s, e) {
                     vs_fb.note(i, (&x, &p), g, f, "fallback");
                 }
             }
@@ -200,6 +211,34 @@ pub fn jit_rows(mut ir: IrModel, fb: &Fallback, points: usize, seed: u64, hw: f6
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn f_and_aux_use_four_ulp_and_derivatives_use_the_section_3_tolerance() {
+        // 1e-14 apart at a scale of 1 is far over 4 ulp but inside 1e-13 * scale.
+        let (a, b) = (0.5, 0.5 + 1e-14);
+        let derivs = [
+            EntryKind::JacU,
+            EntryKind::JacP,
+            EntryKind::Dir(vec![Slot::U]),
+        ];
+        for kind in derivs {
+            assert!(fallback_close(&kind, a, b, 1.0, 0.0), "{kind:?}");
+        }
+        for kind in [EntryKind::F, EntryKind::Aux] {
+            assert!(!fallback_close(&kind, a, b, 1.0, 0.0), "{kind:?}");
+            // The running error bound does not widen it either.
+            assert!(!fallback_close(&kind, a, b, 1.0, 1e6), "{kind:?}");
+            assert!(fallback_close(
+                &kind,
+                a,
+                a + 4.0 * pc_ir::check::ulp(a),
+                1.0,
+                0.0
+            ));
+            assert!(fallback_close(&kind, f64::NAN, f64::NAN, 1.0, 0.0));
+            assert!(fallback_close(&kind, 0.0, -0.0, 1.0, 0.0));
+        }
+    }
 
     #[test]
     fn same_bits_is_exact_except_for_nan() {

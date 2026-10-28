@@ -7,7 +7,8 @@
 //!    the finite-difference rows (labels ending in `(FD)`) are printed but not counted,
 //!    since a kink between the two sides of a difference makes them unreliable.
 //! 2. The JIT against the DAG evaluator, bit for bit (a NaN matches any NaN).
-//! 3. The JIT against the fallback, within the section 3 tolerance.
+//! 3. The JIT against the fallback: `F` and `Aux` within 4 ulp (SPEC section 4), derivatives
+//!    within the section 3 tolerance.
 //! 4. The AOT C code, compiled with gcc, against the JIT, within 4 ulp. Skipped with a
 //!    note when gcc is missing.
 //!

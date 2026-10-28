@@ -52,6 +52,15 @@ pub fn close_err(a: f64, b: f64, scale: f64, err: f64) -> bool {
     close_with(a, b, scale, Some(err))
 }
 
+/// SPEC section 4 for `f`: both NaN, or equal (so `+0` equals `-0`), or
+/// `|a-b| <= 4 ulp(max(|a|,|b|))`. There is no scale term and no absolute floor.
+pub fn close_ulps(a: f64, b: f64) -> bool {
+    if a.is_nan() && b.is_nan() || a == b {
+        return true;
+    }
+    (a - b).abs() <= 4.0 * ulp(a.abs().max(b.abs()))
+}
+
 fn close_with(a: f64, b: f64, scale: f64, err: Option<f64>) -> bool {
     if a.is_nan() && b.is_nan() || a == b {
         return true;
