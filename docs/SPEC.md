@@ -168,6 +168,7 @@ $$G(x) = \begin{pmatrix} F(x) \\ v_k^\top (x - x_k) - h \end{pmatrix} = 0.$$
 
 **Fold (LP).** With $Aq = 0$, $A^\top p = 0$, $p^\top q = 1$ and $\|q\| = 1$, the quadratic coefficient is
 $$a = \tfrac{1}{2}\, p^\top B(q,q).$$
+The sign of $q$ is chosen so that $p^\top F_\alpha > 0$. The normal form is then $\dot w = \beta + a w^2$ with $\beta$ increasing in $\alpha$ (Kuznetsov, Theorem 3.1), so the sign of $a$ tells on which side of the fold the two equilibria lie. If $p^\top F_\alpha$ is exactly 0, the fold is not generic and $q$ keeps the sign of the null vector solve.
 
 **Minimally augmented LP curve** (Govaerts 2000). Solve
 $$\begin{pmatrix} A & w_{\text{bor}} \\ v_{\text{bor}}^\top & 0 \end{pmatrix}\begin{pmatrix} q \\ g \end{pmatrix} = \begin{pmatrix} 0 \\ 1 \end{pmatrix}.$$
@@ -175,7 +176,7 @@ The LP curve is $F = 0$, $g = 0$ with two free parameters. Update the borders $v
 
 **Hopf.** The eigenvectors satisfy $Aq = i\omega q$ and $A^\top p = -i\omega p$. Use the normalization $\langle q,q\rangle = 1$ and $\langle p,q\rangle = 1$, where $\langle a,b\rangle = \bar a^\top b$. The first Lyapunov coefficient (Kuznetsov) is
 $$l_1 = \frac{1}{2\omega}\,\mathrm{Re}\Big(\langle p, C(q,q,\bar q)\rangle - 2\langle p, B(q, A^{-1}B(q,\bar q))\rangle + \langle p, B(\bar q, (2i\omega I - A)^{-1}B(q,q))\rangle\Big).$$
-The value of $l_1$ depends on the normalization of $q$; only its sign is invariant. Always report which normalization was used. Every stored LP and H point records its normalization as a string (`|q|=1, p'q=1` and `<q,q>=1, <p,q>=1`). The complex solve with $2i\omega I - A$ runs in the real form $\begin{pmatrix} A - \sigma I & \omega I \\ -\omega I & A - \sigma I \end{pmatrix}$ of $A - (\sigma + i\omega) I$, so only real LU is needed.
+The value of $l_1$ depends on the normalization of $q$; only its sign is invariant. Always report which normalization was used. Every stored LP and H point records its normalization as a string (`|q|=1, p'q=1, p'F_alpha>0` and `<q,q>=1, <p,q>=1`). The complex solve with $2i\omega I - A$ runs in the real form $\begin{pmatrix} A - \sigma I & \omega I \\ -\omega I & A - \sigma I \end{pmatrix}$ of $A - (\sigma + i\omega) I$, so only real LU is needed.
 
 **Refining points on an equilibrium branch.** Newton's method on these systems, with exact Jacobians from the `JacU`, `JacP` and `Dir` entries:
 - LP: $F = 0$, $g = 0$ in $(u, \alpha)$, with $g$ from the bordered system above and borders from the null vectors of $A$ at the located point. The derivative of $g$ with respect to a component $z$ of $(u,\alpha)$ is $g_z = -w^\top (A_z q)$, where $w$ solves the adjoint system $\begin{pmatrix} A^\top & v_{\text{bor}} \\ w_{\text{bor}}^\top & 0 \end{pmatrix}\begin{pmatrix} w \\ h \end{pmatrix} = \begin{pmatrix} 0 \\ 1 \end{pmatrix}$.
