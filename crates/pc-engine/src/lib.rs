@@ -10,6 +10,7 @@ mod ep;
 mod error;
 mod locate;
 mod model;
+mod normal;
 mod palc;
 mod problem;
 mod refine;
@@ -19,6 +20,10 @@ pub use branch::{Branch, Extras, Options, Point, SpecialPoint, StopReason};
 pub use ep::{EpProblem, EpSetup, continue_ep, equilibrium};
 pub use error::EngineError;
 pub use model::{Evaluator, ModelEval, build};
+pub use normal::{
+    H_NORMALIZATION, LP_NORMALIZATION, first_lyapunov, fold_coefficient, hopf_eigenvectors,
+    special_coefficient,
+};
 pub use palc::continue_branch;
 pub use problem::Problem;
 pub use refine::{

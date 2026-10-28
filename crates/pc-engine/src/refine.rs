@@ -17,6 +17,7 @@
 use crate::branch::{Branch, Options, SpecialPoint, StopReason};
 use crate::error::EngineError;
 use crate::model::ModelEval;
+use crate::normal::special_coefficient;
 use pc_ir::{EntryKind, Slot};
 use pc_linalg::{Lu, eigenvalues, eigvec, null_left, null_right};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -692,6 +693,27 @@ pub fn refine_specials(
                 sp.point.eigenvalues = r.eigenvalues;
                 sp.extras.omega = r.omega;
                 sp.extras.refined = true;
+                // LP and H also get their normal form coefficient at the refined point.
+                let sp = &branch.specials[k];
+                match special_coefficient(model, params, free, sp) {
+                    Ok(Some((c, norm))) => {
+                        let ex = &mut branch.specials[k].extras;
+                        ex.coefficient = Some(c);
+                        ex.normalization = Some(norm.to_string());
+                    }
+                    Ok(None) => {}
+                    Err(EngineError::Cancelled) => {
+                        branch.stop = StopReason::Cancelled;
+                        return;
+                    }
+                    Err(_) => {
+                        let msg = format!(
+                            "could not compute the <a|l1> coefficient near point {}",
+                            sp.index
+                        );
+                        branch.warnings.push(msg);
+                    }
+                }
             }
             Ok(None) => {}
             Err(EngineError::Cancelled) => {

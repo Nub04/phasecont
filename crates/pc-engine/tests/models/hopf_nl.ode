@@ -1,0 +1,8 @@
+# hopf_c after the near-identity change u = x + x^2/2, v = y, so x = sqrt(1+2u)-1.
+# The linear part at the origin is unchanged, B is not zero, and l1 stays 2c.
+par al=0.1,c=-1
+w=sqrt(1+2*u)-1
+u'=(1+w)*(al*w-v+c*w*(w^2+v^2))
+v'=w+al*v+c*v*(w^2+v^2)
+init u=0.1,v=0
+done
