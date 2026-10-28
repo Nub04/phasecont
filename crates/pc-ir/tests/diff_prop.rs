@@ -2,9 +2,10 @@
 //! text, loaded and lowered; `d` is compared with the interpreter (`Fallback`) and
 //! checked structurally on the DAG.
 
-use pc_ir::dag::{NodeId, Op};
+use pc_ir::check::{close, close_err, close_ulps, scale};
+use pc_ir::dag::{Dag, NodeId, Op};
 use pc_ir::diff::{Wrt, d};
-use pc_ir::eval::eval;
+use pc_ir::eval::{eval, eval_err};
 use pc_ir::{EntryKind, Fallback, IrModel, lower};
 use pc_ode::{MapLoader, Severity, SourceMap, load};
 use proptest::prelude::*;
@@ -124,26 +125,61 @@ fn build(f0: &G, f1: &G) -> Result<(Fallback, IrModel), String> {
     Ok((Fallback::new(&l.expanded, &l.info, &ir), ir))
 }
 
-fn ulp(x: f64) -> f64 {
-    f64::from_bits(x.abs().to_bits() + 1) - x.abs()
-}
-
-/// Section 3 tolerance (replaced by `check::close` in Task 9).
-fn within(got: &[f64], want: &[f64]) -> bool {
-    let s = want
-        .iter()
-        .fold(0.0_f64, |m, v| m.max(v.abs()))
-        .max(f64::MIN_POSITIVE);
-    got.iter().zip(want).all(|(&a, &b)| {
-        let diff = (a - b).abs();
-        a == b || diff <= 4.0 * ulp(a.abs().max(b.abs())) || diff <= 1e-13 * s
-    })
+/// `pc_ir::check::close` (SPEC section 3 without a running error bound) on every value.
+fn all_close(got: &[f64], want: &[f64]) -> bool {
+    let s = scale(want);
+    got.iter().zip(want).all(|(&a, &b)| close(a, b, s))
 }
 
 fn run(ir: &IrModel, outs: &[NodeId], x: &[f64], p: &[f64]) -> Vec<f64> {
     let mut out = vec![0.0; outs.len()];
     eval(&ir.dag, outs, x, p, &[], &mut out);
     out
+}
+
+/// Value and running error bound of each output.
+fn run_err(ir: &IrModel, outs: &[NodeId], x: &[f64], p: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    let (mut v, mut e) = (vec![0.0; outs.len()], vec![0.0; outs.len()]);
+    eval_err(&ir.dag, outs, x, p, &[], &mut v, &mut e);
+    (v, e)
+}
+
+/// Rebuilds every node of `src` in a fresh DAG, in id order, through the folding
+/// constructors. Every node is already canonical, so each one must come back at its own id.
+fn rebuild(src: &Dag) -> Result<Dag, String> {
+    let mut dst = Dag::new(usize::MAX);
+    dst.tables = src.tables.clone();
+    for i in 0..src.len() {
+        let new = match *src.op(NodeId(i as u32)) {
+            Op::Const(b) => dst.konst(f64::from_bits(b)),
+            Op::Var(k) => dst.var(k),
+            Op::Param(k) => dst.param(k),
+            Op::Dir(k) => dst.dir(k),
+            Op::Neg(a) => dst.neg(a),
+            Op::Add(a, b) => dst.add(a, b),
+            Op::Sub(a, b) => dst.sub(a, b),
+            Op::Mul(a, b) => dst.mul(a, b),
+            Op::Div(a, b) => dst.div(a, b),
+            Op::PowI(a, n) => dst.powi(a, n),
+            Op::Call1(f, a) => dst.call1(f, a),
+            Op::Call2(f, a, b) => dst.call2(f, a, b),
+            Op::Cmp(c, a, b) => dst.cmp(c, a, b),
+            Op::And(a, b) => dst.and(a, b),
+            Op::Or(a, b) => dst.or(a, b),
+            Op::Not(a) => dst.not(a),
+            Op::Select(c, a, b) => dst.select(c, a, b),
+            Op::Table(t, x) => dst.table(t, x),
+            Op::TableSlope(t, x) => dst.table_slope(t, x),
+        };
+        if new != NodeId(i as u32) {
+            return Err(format!(
+                "node {i} {:?} came back as {new:?} ({:?})",
+                src.op(NodeId(i as u32)),
+                dst.op(new)
+            ));
+        }
+    }
+    Ok(dst)
 }
 
 const BIG: f64 = 1e8;
@@ -153,13 +189,17 @@ fn small(v: &[f64]) -> bool {
 }
 
 /// 300 cases, or the number in `PROPTEST_CASES`. `ProptestConfig::with_cases` would ignore the
-/// variable.
+/// variable. The `prop_assume!(small(..))` calls reject cases with huge or non-finite values, so
+/// the reject budget scales with the case count (the default of 1024 stops a large run).
 fn config() -> ProptestConfig {
-    let cases = std::env::var("PROPTEST_CASES")
+    let cases: u32 = std::env::var("PROPTEST_CASES")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(300);
-    ProptestConfig::with_cases(cases)
+    ProptestConfig {
+        max_global_rejects: cases.saturating_mul(100).max(1024),
+        ..ProptestConfig::with_cases(cases)
+    }
 }
 
 proptest! {
@@ -179,12 +219,64 @@ proptest! {
         for (kind, len) in [(EntryKind::JacU, 4), (EntryKind::JacP, 2)] {
             let e = ir.entry(&kind).map_err(|e| TestCaseError::fail(e.to_string()))?;
             prop_assert_eq!(e.outputs.len(), len);
-            let got = run(&ir, &e.outputs, &xs, &ps);
+            let (got, err) = run_err(&ir, &e.outputs, &xs, &ps);
             let mut want = vec![0.0; len];
             fb.eval(&kind, &xs, &ps, &[], &mut want);
             prop_assume!(small(&want) && small(&got));
-            prop_assert!(within(&got, &want), "{:?}: {:?} vs {:?}", kind, got, want);
+            let s = scale(&want);
+            let ok = got
+                .iter()
+                .zip(&want)
+                .zip(&err)
+                .all(|((&a, &b), &e)| close_err(a, b, s, e));
+            prop_assert!(ok, "{:?}: {:?} vs {:?}", kind, got, want);
         }
+    }
+
+    /// `F` of the DAG against the interpreter: 4 ulp (SPEC section 4), a NaN matches any
+    /// NaN, and `+0` equals `-0`.
+    #[test]
+    fn f_matches_the_interpreter_within_4_ulp(
+        f0 in g_strategy(),
+        f1 in g_strategy(),
+        x in -2.0..2.0f64,
+        y in -2.0..2.0f64,
+        a in 0.1..1.5f64,
+    ) {
+        let (fb, mut ir) = build(&f0, &f1).map_err(TestCaseError::fail)?;
+        let (xs, ps) = ([x, y], [a, 0.0]);
+        let e = ir.entry(&EntryKind::F).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let got = run(&ir, &e.outputs, &xs, &ps);
+        let mut want = vec![0.0; 2];
+        fb.eval(&EntryKind::F, &xs, &ps, &[], &mut want);
+        prop_assume!(small(&want) && small(&got));
+        let ok = got.iter().zip(&want).all(|(&a, &b)| close_ulps(a, b));
+        prop_assert!(ok, "F: {:?} vs {:?}", got, want);
+    }
+
+    /// Building the nodes of a model again through the folding constructors changes nothing:
+    /// each node comes back at its own id, and the outputs are bit for bit the same.
+    #[test]
+    fn a_second_folding_pass_changes_nothing(
+        f0 in g_strategy(),
+        f1 in g_strategy(),
+        x in -2.0..2.0f64,
+        y in -2.0..2.0f64,
+    ) {
+        let (_fb, mut ir) = build(&f0, &f1).map_err(TestCaseError::fail)?;
+        let mut outs = ir.f.clone();
+        for kind in [EntryKind::JacU, EntryKind::JacP] {
+            let e = ir.entry(&kind).map_err(|e| TestCaseError::fail(e.to_string()))?;
+            outs.extend(e.outputs);
+        }
+        let again = rebuild(&ir.dag).map_err(TestCaseError::fail)?;
+        prop_assert_eq!(again.len(), ir.dag.len());
+        let (xs, ps) = ([x, y], [0.7, 0.0]);
+        let (mut a, mut b) = (vec![0.0; outs.len()], vec![0.0; outs.len()]);
+        eval(&ir.dag, &outs, &xs, &ps, &[], &mut a);
+        eval(&again, &outs, &xs, &ps, &[], &mut b);
+        let same = a.iter().zip(&b).all(|(p, q)| p.to_bits() == q.to_bits() || (p.is_nan() && q.is_nan()));
+        prop_assert!(same, "{:?} vs {:?}", a, b);
     }
 
     /// d(const) = 0, d(x)/dx = 1, linearity (structural), product rule (numeric), and one
@@ -238,7 +330,7 @@ proptest! {
             jac[2] * fv[1] + fv[0] * jac[3],
         ];
         prop_assume!(small(&want) && small(&got) && small(&fv) && small(&jac));
-        prop_assert!(within(&got, &want), "{:?} vs {:?}", got, want);
+        prop_assert!(all_close(&got, &want), "{:?} vs {:?}", got, want);
 
         // Building again with a fresh memo adds no node and returns the same ids.
         let len = ir.dag.len();
