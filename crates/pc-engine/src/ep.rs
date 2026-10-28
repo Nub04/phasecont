@@ -1,6 +1,6 @@
 //! Equilibrium branches: the EP problem over a model.
 
-use crate::branch::{Branch, Options, Point};
+use crate::branch::{Branch, Options, Point, StopReason};
 use crate::error::EngineError;
 use crate::model::ModelEval;
 use crate::palc::run_branch;
@@ -216,6 +216,8 @@ pub fn continue_ep(
         on_point,
     )?;
     drop(problem);
-    refine_specials(model, &setup.params, setup.free, opts, cancel, &mut branch);
+    if branch.stop != StopReason::Cancelled {
+        refine_specials(model, &setup.params, setup.free, opts, cancel, &mut branch);
+    }
     Ok(branch)
 }

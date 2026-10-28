@@ -231,14 +231,19 @@ fn cases(which: Evaluator) -> Vec<Case> {
     ]
 }
 
-/// Steps of a log after the first few must shrink at least quadratically.
-fn assert_quadratic(log: &[NewtonStep], what: &str) {
+/// Steps of a log, once below 0.1 and above rounding level, must shrink at least
+/// quadratically. Returns how many pairs of steps it checked; the caller requires at
+/// least one, so a log too short to test cannot pass.
+fn assert_quadratic(log: &[NewtonStep], what: &str) -> usize {
+    let mut checked = 0;
     for w in log.windows(2) {
         let (s0, s1) = (w[0].step, w[1].step);
-        if s0 < 1e-2 && s1 > 1e-14 {
+        if s0 < 0.1 && s1 > 1e-14 {
             assert!(s1 <= 20.0 * s0 * s0, "{what}: step {s0:e} then {s1:e}");
+            checked += 1;
         }
     }
+    checked
 }
 
 fn show(log: &[NewtonStep]) -> String {
@@ -272,7 +277,12 @@ fn newton_converges_quadratically_with_a_regular_jacobian() {
             );
             assert!(sv > 1e-3, "{what}: smallest singular value {sv:e}");
             assert!(log.len() <= 8, "{what}");
-            assert_quadratic(&log, &what);
+            let checked = assert_quadratic(&log, &what);
+            assert!(
+                checked >= 1,
+                "{what}: no pair of steps was checked: {}",
+                show(&log)
+            );
             if !c.exact.is_empty() {
                 for (a, b) in z.iter().zip(&c.exact) {
                     assert!((a - b).abs() < 1e-12, "{what}: {z:?}");
@@ -500,5 +510,210 @@ fn cancel_ends_the_run_as_cancelled() {
         assert_eq!(b.stop, StopReason::Cancelled);
         assert!(b.warnings.is_empty());
         assert_eq!(b.specials[0], sp);
+    }
+}
+
+fn fold_lp_branch(u: f64, alpha: f64, h: f64) -> Branch {
+    let mut sp = fake("LP", &[u], alpha, Vec::new());
+    sp.index = 1;
+    sp.point.h = h;
+    let mut start = sp.point.clone();
+    start.h = 0.0;
+    let mut reached = sp.point.clone();
+    reached.h = h;
+    Branch {
+        points: vec![start, reached],
+        specials: vec![sp],
+        stop: StopReason::MaxSteps,
+        warnings: Vec::new(),
+    }
+}
+
+#[test]
+fn a_refinement_that_moves_far_from_the_located_point_is_rejected() {
+    for which in BOTH {
+        let mut m = model_of("fold", which);
+        let cancel = AtomicBool::new(false);
+        // Near the fold the refined point is the origin and the move is small.
+        let mut near = fold_lp_branch(0.001, -1e-6, 0.01);
+        refine_specials(
+            m.as_mut(),
+            &[0.0],
+            0,
+            &Options::default(),
+            &cancel,
+            &mut near,
+        );
+        assert!(near.specials[0].extras.refined, "{which:?}");
+        assert!(near.warnings.is_empty());
+        // Started at (u, alpha) = (-0.7, -0.49) on the same curve, Newton also reaches
+        // the origin, which is 0.7 away: more than twice the step length 0.01.
+        let mut far = fold_lp_branch(-0.7, -0.49, 0.01);
+        let before = far.specials[0].clone();
+        refine_specials(
+            m.as_mut(),
+            &[0.0],
+            0,
+            &Options::default(),
+            &cancel,
+            &mut far,
+        );
+        assert!(!far.specials[0].extras.refined, "{which:?}");
+        assert_eq!(far.specials[0], before);
+        assert_eq!(far.warnings, ["could not refine LP near point 1"]);
+    }
+}
+
+/// A model that sets the cancel flag at its first `Dir` entry, which only the defining
+/// systems of the refinement ask for.
+struct CancelsInRefine<'a> {
+    inner: Box<dyn ModelEval>,
+    cancel: &'a AtomicBool,
+}
+
+impl ModelEval for CancelsInRefine<'_> {
+    fn n(&self) -> usize {
+        self.inner.n()
+    }
+    fn n_p(&self) -> usize {
+        self.inner.n_p()
+    }
+    fn eval(
+        &mut self,
+        kind: &EntryKind,
+        x: &[f64],
+        p: &[f64],
+        v: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), EngineError> {
+        if matches!(kind, EntryKind::Dir(_)) {
+            self.cancel.store(true, Ordering::Relaxed);
+        }
+        self.inner.eval(kind, x, p, v, out)
+    }
+}
+
+#[test]
+fn a_cancel_during_refinement_ends_with_cancelled() {
+    for which in BOTH {
+        let cancel = AtomicBool::new(false);
+        let mut m = CancelsInRefine {
+            inner: model_of("fold", which),
+            cancel: &cancel,
+        };
+        let setup = EpSetup::new(0, vec![-1.0], vec![-1.0]);
+        let opts = Options {
+            max_steps: 150,
+            ..Options::default()
+        };
+        let b = continue_ep(&mut m, &setup, &opts, &cancel, &mut |_| {}).unwrap();
+        assert!(cancel.load(Ordering::Relaxed), "refinement never started");
+        assert_eq!(b.stop, StopReason::Cancelled, "{which:?}");
+        assert_eq!(b.specials.len(), 1);
+    }
+}
+
+#[test]
+fn a_run_cancelled_before_refinement_skips_it() {
+    for which in BOTH {
+        let cancel = AtomicBool::new(false);
+        let mut m = model_of("fold", which);
+        let setup = EpSetup::new(0, vec![-1.0], vec![-1.0]);
+        let mut seen = 0;
+        let b = continue_ep(
+            m.as_mut(),
+            &setup,
+            &Options::default(),
+            &cancel,
+            &mut |_| {
+                seen += 1;
+                if seen == 100 {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(b.stop, StopReason::Cancelled);
+        assert!(b.specials.iter().all(|s| !s.extras.refined));
+        assert!(b.warnings.is_empty());
+    }
+}
+
+/// Fails the `fail_at`-th `Dir` evaluation (counting from 0) with `err`.
+struct FailsDirAt {
+    inner: Box<dyn ModelEval>,
+    seen: usize,
+    fail_at: usize,
+    err: fn() -> EngineError,
+}
+
+impl ModelEval for FailsDirAt {
+    fn n(&self) -> usize {
+        self.inner.n()
+    }
+    fn n_p(&self) -> usize {
+        self.inner.n_p()
+    }
+    fn eval(
+        &mut self,
+        kind: &EntryKind,
+        x: &[f64],
+        p: &[f64],
+        v: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), EngineError> {
+        if matches!(kind, EntryKind::Dir(_)) {
+            self.seen += 1;
+            if self.seen - 1 == self.fail_at {
+                return Err((self.err)());
+            }
+        }
+        self.inner.eval(kind, x, p, v, out)
+    }
+}
+
+#[test]
+fn a_failed_coefficient_keeps_the_refined_point_and_warns() {
+    for which in BOTH {
+        let cancel = AtomicBool::new(false);
+        let opts = Options::default();
+        // Count the Dir evaluations of a clean pass; the coefficient step makes the last.
+        let mut counter = FailsDirAt {
+            inner: model_of("fold", which),
+            seen: 0,
+            fail_at: usize::MAX,
+            err: || EngineError::Singular("unused".into()),
+        };
+        let mut b = fold_lp_branch(0.001, -1e-6, 0.01);
+        refine_specials(&mut counter, &[0.0], 0, &opts, &cancel, &mut b);
+        assert!(b.specials[0].extras.coefficient.is_some(), "{which:?}");
+        let total = counter.seen;
+
+        let mut m = FailsDirAt {
+            inner: model_of("fold", which),
+            seen: 0,
+            fail_at: total - 1,
+            err: || EngineError::Singular("injected".into()),
+        };
+        let mut b = fold_lp_branch(0.001, -1e-6, 0.01);
+        refine_specials(&mut m, &[0.0], 0, &opts, &cancel, &mut b);
+        let ex = &b.specials[0].extras;
+        assert!(ex.refined && ex.coefficient.is_none(), "{which:?}");
+        assert_eq!(b.stop, StopReason::MaxSteps);
+        assert_eq!(
+            b.warnings,
+            ["could not compute the <a|l1> coefficient near point 1"]
+        );
+
+        let mut m = FailsDirAt {
+            inner: model_of("fold", which),
+            seen: 0,
+            fail_at: total - 1,
+            err: || EngineError::Cancelled,
+        };
+        let mut b = fold_lp_branch(0.001, -1e-6, 0.01);
+        refine_specials(&mut m, &[0.0], 0, &opts, &cancel, &mut b);
+        assert_eq!(b.stop, StopReason::Cancelled, "{which:?}");
+        assert!(b.warnings.is_empty());
     }
 }

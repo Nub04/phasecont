@@ -136,6 +136,22 @@ fn push_once(w: &mut Vec<String>, msg: &str) {
     }
 }
 
+/// `Ok(None)` when the eigenvalue computation did not converge: the run goes on without
+/// eigenvalues at this point and a warning is added once. Other errors are passed on.
+fn settle_eigenvalues(
+    r: Result<Vec<(f64, f64)>, LinalgError>,
+    warnings: &mut Vec<String>,
+) -> Result<Option<Vec<(f64, f64)>>, EngineError> {
+    match r {
+        Ok(e) => Ok(Some(e)),
+        Err(LinalgError::NoConvergence) => {
+            push_once(warnings, "eigenvalues did not converge at some points");
+            Ok(None)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Test values and eigenvalues at one point.
 pub(crate) struct PointTests {
     pub tests: [f64; 3],
@@ -163,15 +179,12 @@ pub(crate) fn evaluate(
             if opts.detect_h && n > MAX_HOPF_DIM {
                 push_once(warnings, "Hopf detection is off for n > 100");
             }
-            match eigenvalues(&a, n) {
-                Ok(e) => e,
-                // The run goes on without eigenvalues at this point.
-                Err(LinalgError::NoConvergence) => {
+            match settle_eigenvalues(eigenvalues(&a, n), warnings)? {
+                Some(e) => e,
+                None => {
                     eig_failed = true;
-                    push_once(warnings, "eigenvalues did not converge at some points");
                     Vec::new()
                 }
-                Err(e) => return Err(e.into()),
             }
         }
         None => Vec::new(),
@@ -195,6 +208,63 @@ pub(crate) fn evaluate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stub with a state block whose Jacobian is a fixed 2 by 2 matrix.
+    struct Stub(Vec<f64>);
+    impl Problem for Stub {
+        fn dim(&self) -> usize {
+            3
+        }
+        fn residual(&mut self, _: &[f64], _: &mut [f64]) -> Result<(), EngineError> {
+            Ok(())
+        }
+        fn jacobian(&mut self, _: &[f64], _: &mut [f64]) -> Result<(), EngineError> {
+            Ok(())
+        }
+        fn state_jacobian(&mut self, _: &[f64]) -> Result<Option<Vec<f64>>, EngineError> {
+            Ok(Some(self.0.clone()))
+        }
+    }
+
+    #[test]
+    fn a_failed_eigenvalue_computation_is_a_warning_not_an_error() {
+        let mut w = Vec::new();
+        for _ in 0..2 {
+            let r = settle_eigenvalues(Err(LinalgError::NoConvergence), &mut w);
+            assert_eq!(r.unwrap(), None);
+        }
+        assert_eq!(w, ["eigenvalues did not converge at some points"]);
+        assert!(settle_eigenvalues(Err(LinalgError::NotFinite), &mut w).is_err());
+        let ok = settle_eigenvalues(Ok(vec![(1.0, 0.0)]), &mut w).unwrap();
+        assert_eq!(ok, Some(vec![(1.0, 0.0)]));
+    }
+
+    #[test]
+    fn evaluate_passes_a_non_finite_jacobian_on_as_an_error() {
+        let mut p = Stub(vec![f64::NAN, 0.0, 0.0, 1.0]);
+        let mut w = Vec::new();
+        let r = evaluate(
+            &mut p,
+            &[0.0; 3],
+            &[0.0, 0.0, 1.0],
+            1.0,
+            &Options::default(),
+            &mut w,
+        );
+        assert!(r.is_err());
+        let mut p = Stub(vec![-1.0, 0.0, 0.0, -2.0]);
+        let r = evaluate(
+            &mut p,
+            &[0.0; 3],
+            &[0.0, 0.0, 1.0],
+            1.0,
+            &Options::default(),
+            &mut w,
+        )
+        .unwrap();
+        assert_eq!(r.eigenvalues.len(), 2);
+        assert!(w.is_empty());
+    }
 
     /// Small linear congruential generator, values in [-1, 1).
     struct Lcg(u64);

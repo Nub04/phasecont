@@ -30,8 +30,9 @@ enum Trial {
     Stop(StopReason),
 }
 
-/// Corrects at `s` on the step and evaluates the tests there. A failed corrector, a failed
-/// tangent or a NaN value of test `t` is `Failed`; only a cancel is a `Stop`; every other error of the corrector is `Failed`.
+/// Corrects at `s` on the step and evaluates the tests there. A cancel is a `Stop`. A
+/// failed corrector, a failed tangent or a NaN value of test `t` is `Failed`, and so is
+/// any other error: a locate failure never stops the run.
 fn trial(
     p: &mut dyn Problem,
     st: &Step,
@@ -251,8 +252,10 @@ fn detect_inner(
             match locate_one(p, &st, t, ends, href, opts, cancel, scratch)? {
                 Some((s, pt)) => match label(t, &pt.eigenvalues) {
                     Some(l) => found.push((s, special(l, k + 1, pt))),
-                    None => warn(warnings, t, &pk1.eigenvalues, k),
+                    None => warn(warnings, t, &pt.eigenvalues, k),
                 },
+                // No point was located, so the end of the step is the nearest guide to
+                // which kind of zero (H or NSA) was being looked for.
                 None => warn(warnings, t, &pk1.eigenvalues, k),
             }
         }
@@ -277,8 +280,6 @@ mod tests {
     /// Two unknowns, one equation x0 = 0, or an equation that never evaluates.
     struct Dummy {
         broken: bool,
-        /// Fails with a model error that is not NotFinite when alpha exceeds this.
-        fail_above: f64,
     }
     impl Problem for Dummy {
         fn dim(&self) -> usize {
@@ -287,9 +288,6 @@ mod tests {
         fn residual(&mut self, x: &[f64], out: &mut [f64]) -> Result<(), EngineError> {
             if self.broken {
                 return Err(EngineError::NotFinite("residual".into()));
-            }
-            if x[1] > self.fail_above {
-                return Err(EngineError::BadProblem("model error".into()));
             }
             out[0] = x[0];
             Ok(())
@@ -315,10 +313,7 @@ mod tests {
     fn run(broken: bool, pts: &[Point]) -> (Vec<String>, Vec<SpecialPoint>) {
         let (mut w, mut sp) = (Vec::new(), Vec::new());
         detect_step(
-            &mut Dummy {
-                broken,
-                fail_above: f64::INFINITY,
-            },
+            &mut Dummy { broken },
             &[0.0, 0.0],
             &[0.0, 1.0],
             0.1,
@@ -536,5 +531,111 @@ mod two_zero_tests {
             sp[1].point.alpha
         );
         assert!(sp[0].point.h < sp[1].point.h);
+    }
+}
+
+#[cfg(test)]
+mod curved_tests {
+    use super::*;
+
+    /// Like the two-zero problem, with det = exp(40 (alpha - 0.01)) - 1, so psi_BP is
+    /// convex in alpha with its zero at 0.01. Plain regula falsi crawls on it.
+    struct Curved {
+        alpha: f64,
+    }
+    impl Problem for Curved {
+        fn dim(&self) -> usize {
+            2
+        }
+        fn residual(&mut self, x: &[f64], out: &mut [f64]) -> Result<(), EngineError> {
+            self.alpha = x[1];
+            out[0] = x[0];
+            Ok(())
+        }
+        fn jacobian(&mut self, x: &[f64], out: &mut [f64]) -> Result<(), EngineError> {
+            self.alpha = x[1];
+            out.copy_from_slice(&[1.0, 0.0]);
+            Ok(())
+        }
+        fn bordered_solve(
+            &mut self,
+            _jac: &[f64],
+            _border: &[f64],
+            rhs: &[f64],
+            sol: &mut [f64],
+        ) -> Result<f64, EngineError> {
+            sol.copy_from_slice(rhs);
+            Ok(psi(self.alpha))
+        }
+    }
+
+    fn psi(alpha: f64) -> f64 {
+        (40.0 * (alpha - 0.01)).exp() - 1.0
+    }
+
+    fn pt(alpha: f64) -> Point {
+        Point {
+            u: vec![0.0],
+            alpha,
+            tangent: vec![0.0, 1.0],
+            eigenvalues: Vec::new(),
+            tests: [f64::NAN, psi(alpha), f64::NAN],
+            h: 0.1,
+            newton_iters: 1,
+        }
+    }
+
+    fn run(max_locate: usize) -> (Vec<String>, Vec<SpecialPoint>) {
+        let (mut w, mut sp) = (Vec::new(), Vec::new());
+        let opts = Options {
+            max_locate,
+            ..Options::default()
+        };
+        detect_step(
+            &mut Curved { alpha: 0.0 },
+            &[0.0, 0.0],
+            &[0.0, 1.0],
+            0.1,
+            &[pt(0.0), pt(0.1)],
+            &opts,
+            &AtomicBool::new(false),
+            &mut w,
+            &mut sp,
+        )
+        .unwrap();
+        (w, sp)
+    }
+
+    #[test]
+    fn max_locate_caps_the_trials_and_keeps_the_best() {
+        let (w, sp) = run(2);
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(sp.len(), 1);
+        assert!(
+            sp[0].point.tests[1].abs() > 1e-3,
+            "{}",
+            sp[0].point.tests[1]
+        );
+        // No trials at all is a failed search.
+        let (w, sp) = run(0);
+        assert!(sp.is_empty());
+        assert_eq!(
+            w,
+            vec!["could not locate BP between points 0 and 1".to_string()]
+        );
+    }
+
+    #[test]
+    fn illinois_halving_converges_on_a_convex_test() {
+        // Plain regula falsi keeps one end fixed on a convex function and gains only a
+        // fixed factor per trial; with halving 12 trials reach 1e-10.
+        let (w, sp) = run(12);
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(sp.len(), 1);
+        assert!(
+            (sp[0].point.alpha - 0.01).abs() < 1e-10,
+            "{}",
+            sp[0].point.alpha
+        );
     }
 }

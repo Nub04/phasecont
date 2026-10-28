@@ -333,6 +333,17 @@ impl<'a> HopfSystem<'a> {
         ctx.set_alpha(alpha);
         let a = ctx.jac_u(u)?;
         let (re, im) = eigvec(&a, n, lambda)?;
+        // The eigenvector has an arbitrary phase. Rotate it so that its component of
+        // largest modulus is real; then Re has an entry of at least 1/sqrt(n) and c is
+        // never close to zero.
+        let big = (0..n)
+            .max_by(|&i, &j| re[i].hypot(im[i]).total_cmp(&re[j].hypot(im[j])))
+            .unwrap_or(0);
+        let theta = im[big].atan2(re[big]);
+        let (sn, cs) = theta.sin_cos();
+        let rot_re: Vec<f64> = (0..n).map(|i| re[i] * cs + im[i] * sn).collect();
+        let rot_im: Vec<f64> = (0..n).map(|i| im[i] * cs - re[i] * sn).collect();
+        let (re, im) = (rot_re, rot_im);
         let c = re.clone();
         let s: f64 = c.iter().zip(&re).map(|(a, b)| a * b).sum();
         let t: f64 = c.iter().zip(&im).map(|(a, b)| a * b).sum();
@@ -700,7 +711,10 @@ pub fn refine_special(
 /// `(u, alpha)` and the eigenvalues of A there, and gets `refined = true` (and `omega`
 /// for H); its tangent and tests stay those of the located point. A failure keeps the
 /// located point and pushes "could not refine <label> near point <index>" to
-/// `branch.warnings`. `Cancelled` sets `branch.stop` to `Cancelled` and ends the loop.
+/// `branch.warnings`. A result that moved the point by more than twice the step length
+/// (the larger of the located point's and the step that reached it) counts as a failure,
+/// since Newton then found a different solution. `Cancelled` sets `branch.stop` to
+/// `Cancelled` and ends the loop.
 pub fn refine_specials(
     model: &mut dyn ModelEval,
     params: &[f64],
@@ -710,9 +724,30 @@ pub fn refine_specials(
     branch: &mut Branch,
 ) {
     for k in 0..branch.specials.len() {
+        if cancel.load(Ordering::Relaxed) {
+            branch.stop = StopReason::Cancelled;
+            return;
+        }
         let sp = &branch.specials[k];
         match refine_special(model, params, free, sp, opts, cancel) {
             Ok(Some(r)) => {
+                let reach = 2.0
+                    * branch
+                        .points
+                        .get(sp.index)
+                        .map_or(0.0, |q| q.h)
+                        .max(sp.point.h);
+                let moved =
+                    r.u.iter()
+                        .zip(&sp.point.u)
+                        .chain(std::iter::once((&r.alpha, &sp.point.alpha)))
+                        .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()));
+                // A zero reach means a hand-made point without a step; nothing to compare.
+                if reach > 0.0 && (moved.is_nan() || moved > reach) {
+                    let msg = format!("could not refine {} near point {}", sp.label, sp.index);
+                    branch.warnings.push(msg);
+                    continue;
+                }
                 let sp = &mut branch.specials[k];
                 sp.point.u = r.u;
                 sp.point.alpha = r.alpha;
@@ -751,6 +786,9 @@ pub fn refine_specials(
                 branch.warnings.push(msg);
             }
         }
+    }
+    if cancel.load(Ordering::Relaxed) {
+        branch.stop = StopReason::Cancelled;
     }
 }
 
