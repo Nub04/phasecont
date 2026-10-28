@@ -15,7 +15,7 @@ use crate::branch::{Branch, Options, Point, SpecialPoint, StopReason};
 use crate::ep::{EpSetup, continue_ep};
 use crate::error::EngineError;
 use crate::model::{Evaluator, build};
-use crate::panic::{install_hook, mark_worker, payload_message, take_last_panic};
+use crate::panic::{clear_last_panic, install_hook, mark_worker, payload_message, take_last_panic};
 use crate::switch::{special_index, switch_bp};
 use pc_ode::{Model, ModelInfo};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -184,7 +184,7 @@ fn body(shared: &Shared, spec: RunSpec) -> RunState {
     };
     let next = match switch_bp(model.as_mut(), &spec.setup, &first, k, &spec.opts) {
         Ok(s) => s,
-        Err(e) => return RunState::Failed(e),
+        Err(e) => return finish(shared, Err(e)),
     };
     match follow(shared, model.as_mut(), &next, &spec.opts, 1) {
         Ok(b) => finish(shared, Ok(&b)),
@@ -196,7 +196,8 @@ fn body(shared: &Shared, spec: RunSpec) -> RunState {
 fn finish(shared: &Shared, r: Result<&Branch, EngineError>) -> RunState {
     let cancelled = shared.cancel.load(Ordering::Relaxed);
     match r {
-        Ok(b) if cancelled || b.stop == StopReason::Cancelled => RunState::Cancelled,
+        _ if cancelled => RunState::Cancelled,
+        Ok(b) if b.stop == StopReason::Cancelled => RunState::Cancelled,
         Ok(_) => RunState::Done,
         Err(EngineError::Cancelled) => RunState::Cancelled,
         Err(e) => RunState::Failed(e),
@@ -205,6 +206,7 @@ fn finish(shared: &Shared, r: Result<&Branch, EngineError>) -> RunState {
 
 fn worker(shared: Arc<Shared>, spec: RunSpec) {
     mark_worker();
+    clear_last_panic();
     let state = match catch_unwind(AssertUnwindSafe(|| body(&shared, spec))) {
         Ok(s) => s,
         Err(payload) => {
@@ -217,6 +219,9 @@ fn worker(shared: Arc<Shared>, spec: RunSpec) {
 }
 
 impl Run {
+    /// Installs the panic hook on first use. That replaces the process-wide hook and chains
+    /// to the previous one for every thread that is not an engine worker.
+    ///
     /// Spawns the worker thread (named "pc-engine-run", 8 MiB stack) and returns at once.
     /// If the thread cannot be spawned the run is `Failed` from the start.
     pub fn start(spec: RunSpec) -> Run {
@@ -344,7 +349,10 @@ mod tests {
         match st.state {
             RunState::Panicked { message, location } => {
                 assert_eq!(message, "eval blew up on purpose");
-                assert!(location.contains("src/run.rs:"), "{location}");
+                assert!(
+                    location.replace('\\', "/").contains("src/run.rs:"),
+                    "{location}"
+                );
                 let mut parts = location.rsplitn(3, ':');
                 assert!(parts.next().unwrap().parse::<u32>().is_ok());
                 assert!(parts.next().unwrap().parse::<u32>().is_ok());
@@ -355,6 +363,49 @@ mod tests {
         let st = Run::start(lorenz_spec()).join();
         assert_eq!(st.state, RunState::Done);
         assert!(st.points[0] > 10);
+    }
+
+    #[test]
+    fn finish_maps_cancel_per_r15c() {
+        let sh = Shared {
+            inner: Mutex::new(Inner {
+                branches: Vec::new(),
+                state: RunState::Running,
+            }),
+            cancel: AtomicBool::new(false),
+        };
+        assert_eq!(
+            finish(&sh, Err(EngineError::Cancelled)),
+            RunState::Cancelled
+        );
+        let other = EngineError::BadProblem("x".into());
+        assert_eq!(
+            finish(&sh, Err(other.clone())),
+            RunState::Failed(other.clone())
+        );
+        sh.cancel.store(true, Ordering::Relaxed);
+        assert_eq!(finish(&sh, Err(other)), RunState::Cancelled);
+    }
+
+    #[test]
+    fn poll_after_panicked_keeps_the_streamed_points() {
+        let mut spec = lorenz_spec();
+        spec.panic_in_eval = true;
+        let run = Run::start(spec);
+        let t0 = std::time::Instant::now();
+        while run.poll().state == RunState::Running {
+            assert!(t0.elapsed().as_secs() < 30);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let a = run.poll();
+        let b = run.poll();
+        assert!(matches!(a.state, RunState::Panicked { .. }));
+        assert_eq!(a, b);
+        assert_eq!(
+            run.points(0, 0, 10).len(),
+            a.points.first().copied().unwrap_or(0).min(10)
+        );
+        assert!(run.specials(0).is_empty());
     }
 
     #[test]

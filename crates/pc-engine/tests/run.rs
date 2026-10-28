@@ -38,13 +38,23 @@ fn poll_sees_points_grow_during_a_long_run() {
     let a = wait_for(&run, |s| s.points.first().is_some_and(|&n| n > 0));
     assert_eq!(a.state, RunState::Running);
     let n1 = a.points[0];
-    let b = wait_for(&run, |s| s.points[0] > n1 + 50);
+    let mut last = n1;
+    let b = wait_for(&run, |s| {
+        assert!(s.points[0] >= last, "point count went down");
+        last = s.points[0];
+        s.points[0] > n1 + 50
+    });
     assert_eq!(b.state, RunState::Running);
     assert_eq!(b.specials[0], 0, "specials appear only at the end");
     let pts = run.points(0, 0, 3);
     assert_eq!(pts.len(), 3);
     assert!(run.points(5, 0, 3).is_empty());
     run.cancel();
+    let fin = run.join();
+    assert!(
+        fin.points[0] >= b.points[0],
+        "final count below a streamed count"
+    );
 }
 
 #[test]
@@ -101,6 +111,9 @@ fn switching_at_bp1_follows_a_second_branch() {
     assert_eq!(st.state, RunState::Done, "{st:?}");
     assert_eq!(st.points.len(), 2);
     assert!(st.points[1] > 0);
+    // The Lorenz nontrivial branch has x = y = +-sqrt(b (r - 1)).
+    let pts = run.points(1, 0, usize::MAX);
+    assert!(pts.iter().any(|p| p.u[0].abs() > 1e-3), "stayed on x = 0");
 }
 
 #[test]
@@ -132,4 +145,23 @@ fn a_bad_model_setup_fails() {
     spec.setup.u0 = vec![0.0];
     let st = Run::start(spec).join();
     assert!(matches!(st.state, RunState::Failed(_)), "{st:?}");
+}
+
+#[test]
+fn cancel_right_after_start_ends_cancelled() {
+    let run = Run::start(long_spec());
+    run.cancel();
+    assert_eq!(run.join().state, RunState::Cancelled);
+}
+
+#[test]
+fn cancel_after_done_leaves_done() {
+    let mut spec = long_spec();
+    spec.opts.h0 = 0.05;
+    spec.opts.hmax = 0.05;
+    spec.opts.bounds = (f64::NEG_INFINITY, 0.8);
+    let run = Run::start(spec);
+    wait_for(&run, |s| s.state != RunState::Running);
+    run.cancel();
+    assert_eq!(run.join().state, RunState::Done);
 }

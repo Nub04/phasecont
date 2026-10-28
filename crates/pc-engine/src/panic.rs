@@ -1,9 +1,9 @@
 //! A panic hook that records where an engine worker panicked.
 //!
-//! The hook stores the message and `file:line:col` in a thread local. On a thread marked
-//! as an engine worker it prints nothing, because the worker turns the panic into a
+//! The hook stores the message and `file:line:col` in a thread local on engine worker
+//! threads and prints nothing there, because the worker turns the panic into a
 //! `Panicked` state. On every other thread it calls the hook that was installed before,
-//! so the test harness and other code still report their panics.
+//! so the test harness and the host process still report their panics.
 
 use std::cell::{Cell, RefCell};
 use std::panic::PanicHookInfo;
@@ -34,28 +34,39 @@ fn record(info: &PanicHookInfo<'_>) {
         Some(l) => format!("{}:{}:{}", l.file(), l.line(), l.column()),
         None => "unknown".to_string(),
     };
-    LAST.with(|c| *c.borrow_mut() = Some((message, location)));
+    // try_with: a panic during thread-local teardown must not panic inside the hook.
+    let _ = LAST.try_with(|c| *c.borrow_mut() = Some((message, location)));
 }
 
-/// Installs the hook. Safe to call many times; only the first call has an effect.
+/// Installs the hook. The first call replaces the process-wide panic hook and chains to
+/// the previous one on every thread that is not an engine worker, so a host process
+/// keeps its own reporting. Panics are recorded only on worker threads. Later calls do
+/// nothing.
 pub fn install_hook() {
     INSTALL.call_once(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            record(info);
-            if !IS_WORKER.with(Cell::get) {
+            if IS_WORKER.try_with(Cell::get).unwrap_or(false) {
+                record(info);
+            } else {
                 previous(info);
             }
         }));
     });
 }
 
-/// Takes the message and `file:line:col` of the last panic on the calling thread.
+/// Takes the message and `file:line:col` of the last panic recorded on the calling
+/// thread. Only engine worker threads record.
 pub fn take_last_panic() -> Option<(String, String)> {
-    LAST.with(|c| c.borrow_mut().take())
+    LAST.try_with(|c| c.borrow_mut().take()).ok().flatten()
 }
 
-/// Marks the calling thread as an engine worker, so the hook stays silent on it.
+/// Forgets any recorded panic on the calling thread.
+pub(crate) fn clear_last_panic() {
+    let _ = LAST.try_with(|c| *c.borrow_mut() = None);
+}
+
+/// Marks the calling thread as an engine worker, so the hook records and stays silent.
 pub(crate) fn mark_worker() {
     IS_WORKER.with(|c| c.set(true));
 }
