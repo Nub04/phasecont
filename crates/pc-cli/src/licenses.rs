@@ -18,6 +18,14 @@ struct Krate {
 }
 
 /// Writes the license texts of the closure of `package` for `target` to `out`.
+///
+/// Crates with several versions are ordered by name, then by version as plain
+/// text, so 0.10.0 sorts before 0.9.0. With `overrides`, a crate that ships no
+/// license file of its own takes the `LICENSE*` files and the `SOURCE` note
+/// from `overrides/<crate name>/`. The override applies to every version of
+/// that crate that ships no license file. A missing, unreadable or empty
+/// `SOURCE`, a license file that is not UTF-8, and an `overrides` path that is
+/// not a folder are errors.
 pub fn licenses(target: &str, package: &str, out: &Path, overrides: Option<&Path>) -> ExitCode {
     match run(target, package, out, overrides) {
         Ok(()) => ExitCode::SUCCESS,
@@ -29,6 +37,9 @@ pub fn licenses(target: &str, package: &str, out: &Path, overrides: Option<&Path
 }
 
 fn run(target: &str, package: &str, out: &Path, overrides: Option<&Path>) -> Result<(), String> {
+    if let Some(o) = overrides.filter(|o| !o.is_dir()) {
+        return Err(format!("overrides folder not found: {}", o.display()));
+    }
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let output = Command::new(&cargo)
         .args(["metadata", "--format-version", "1", "--filter-platform"])
@@ -48,14 +59,18 @@ fn run(target: &str, package: &str, out: &Path, overrides: Option<&Path>) -> Res
     let mut text = String::new();
     let mut missing: Vec<String> = Vec::new();
     for k in &krates {
-        let mut files =
-            license_files(&k.dir).map_err(|e| format!("cannot read {}: {e}", k.dir.display()))?;
+        let mut files = license_files(&k.dir)
+            .map_err(|e| format!("{} {}: {e}", k.name, k.version))?;
         let mut note = String::new();
         let fallback = overrides.map(|o| o.join(&k.name)).filter(|d| d.is_dir());
         if let (true, Some(dir)) = (files.is_empty(), fallback) {
-            files =
-                license_files(&dir).map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
-            let source = std::fs::read_to_string(dir.join("SOURCE")).unwrap_or_default();
+            files = license_files(&dir).map_err(|e| format!("{} override: {e}", k.name))?;
+            let path = dir.join("SOURCE");
+            let source = std::fs::read_to_string(&path)
+                .map_err(|e| format!("{}: cannot read {}: {e}", k.name, path.display()))?;
+            if source.trim().is_empty() {
+                return Err(format!("{}: {} is empty", k.name, path.display()));
+            }
             note = format!(
                 "(license files supplied by PhaseCont, taken from: {})\n",
                 source.trim().replace("\r\n", "\n").replace('\n', "; ")
@@ -167,16 +182,19 @@ fn closure(meta: &Value, package: &str) -> Result<Vec<Krate>, String> {
 }
 
 /// Name and text of each license file in `dir`, sorted by name. Line endings
-/// become LF and bytes that are not UTF-8 are replaced.
-fn license_files(dir: &Path) -> std::io::Result<Vec<(String, String)>> {
+/// become LF. A file that is not UTF-8 is an error, so no byte is rewritten.
+fn license_files(dir: &Path) -> Result<Vec<(String, String)>, String> {
+    let io = |e: std::io::Error| format!("cannot read {}: {e}", dir.display());
     let mut files = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
+    for entry in std::fs::read_dir(dir).map_err(io)? {
+        let entry = entry.map_err(io)?;
         let name = entry.file_name().to_string_lossy().into_owned();
         let lower = name.to_ascii_lowercase();
         if entry.path().is_file() && PREFIXES.iter().any(|p| lower.starts_with(p)) {
-            let bytes = std::fs::read(entry.path())?;
-            let body = String::from_utf8_lossy(&bytes).replace("\r\n", "\n");
+            let bytes = std::fs::read(entry.path()).map_err(io)?;
+            let body = String::from_utf8(bytes)
+                .map_err(|_| format!("{} is not UTF-8 ({})", name, dir.display()))?
+                .replace("\r\n", "\n");
             files.push((name, body));
         }
     }
