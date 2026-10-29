@@ -13,7 +13,7 @@ const BOTH: [Evaluator; 2] = [Evaluator::Jit, Evaluator::Fallback];
 
 fn model_of(name: &str, which: Evaluator) -> Box<dyn ModelEval> {
     let (model, info) = load(name);
-    build(&model, &info, which).unwrap()
+    build(&model, &info, which.clone()).unwrap()
 }
 
 fn run(
@@ -22,7 +22,7 @@ fn run(
     setup: &EpSetup,
     opts: &Options,
 ) -> Result<Branch, EngineError> {
-    let mut m = model_of(name, which);
+    let mut m = model_of(name, which.clone());
     continue_ep(
         m.as_mut(),
         setup,
@@ -54,9 +54,9 @@ fn switched_opts(direction: f64) -> Options {
 
 /// The first branch of a model through its BP and the switch setup.
 fn bp_setup(name: &str, which: Evaluator, setup: &EpSetup, hi: f64) -> (Branch, usize, EpSetup) {
-    let b = run(name, which, setup, &first_opts(hi)).unwrap();
+    let b = run(name, which.clone(), setup, &first_opts(hi)).unwrap();
     let k = special_index(&b, "BP1").unwrap_or_else(|| panic!("{name}: no BP"));
-    let mut m = model_of(name, which);
+    let mut m = model_of(name, which.clone());
     let next = switch_bp(m.as_mut(), setup, &b, k, &Options::default()).unwrap();
     (b, k, next)
 }
@@ -70,11 +70,11 @@ fn no_bp(b: &Branch) {
 fn transcritical_switches_to_x_equals_alpha() {
     for which in BOTH {
         let setup = EpSetup::new(0, vec![-1.0], vec![0.0]);
-        let (b, k, next) = bp_setup("transcritical", which, &setup, 1.0);
+        let (b, k, next) = bp_setup("transcritical", which.clone(), &setup, 1.0);
         let bp = &b.specials[k].point;
         assert!(next.start_is_special && next.tangent0.is_some());
         assert!((next.params[0] - bp.alpha).abs() < 1e-15 && next.u0 == bp.u);
-        let nb = run("transcritical", which, &next, &switched_opts(1.0)).unwrap();
+        let nb = run("transcritical", which.clone(), &next, &switched_opts(1.0)).unwrap();
         assert!(nb.points.len() > 20, "{which:?}: {}", nb.points.len());
         for p in &nb.points {
             assert!((p.u[0] - p.alpha).abs() < 1e-10, "{which:?}: {p:?}");
@@ -87,10 +87,10 @@ fn transcritical_switches_to_x_equals_alpha() {
 fn pitchfork_switches_to_x_squared_equals_alpha() {
     for which in BOTH {
         let setup = EpSetup::new(0, vec![-1.0], vec![0.0]);
-        let (_, _, next) = bp_setup("pitchfork", which, &setup, 1.0);
+        let (_, _, next) = bp_setup("pitchfork", which.clone(), &setup, 1.0);
         let t = next.tangent0.clone().unwrap();
         assert!(t[1].abs() < 1e-8 && t[0] > 0.9, "{t:?}");
-        let nb = run("pitchfork", which, &next, &switched_opts(1.0)).unwrap();
+        let nb = run("pitchfork", which.clone(), &next, &switched_opts(1.0)).unwrap();
         let d = reach(&nb, &next);
         assert!(d > 1.0, "{d}");
         assert!(nb.points.len() > 20);
@@ -110,8 +110,8 @@ fn lorenz_switches_to_the_convective_branch() {
     let b_par = 8.0 / 3.0;
     for which in BOTH {
         let setup = EpSetup::new(1, vec![10.0, 0.5, b_par], vec![0.0; 3]);
-        let (_, _, next) = bp_setup("lorenz", which, &setup, 1.5);
-        let nb = run("lorenz", which, &next, &switched_opts(1.0)).unwrap();
+        let (_, _, next) = bp_setup("lorenz", which.clone(), &setup, 1.5);
+        let nb = run("lorenz", which.clone(), &next, &switched_opts(1.0)).unwrap();
         let d = reach(&nb, &next);
         assert!(d > 1.0, "{d}");
         assert!(nb.points.len() > 20);
@@ -130,9 +130,9 @@ fn lorenz_switches_to_the_convective_branch() {
 fn direction_minus_one_reverses_the_switched_branch() {
     for which in BOTH {
         let setup = EpSetup::new(0, vec![-1.0], vec![0.0]);
-        let (_, _, next) = bp_setup("transcritical", which, &setup, 1.0);
-        let fwd = run("transcritical", which, &next, &switched_opts(1.0)).unwrap();
-        let rev = run("transcritical", which, &next, &switched_opts(-1.0)).unwrap();
+        let (_, _, next) = bp_setup("transcritical", which.clone(), &setup, 1.0);
+        let fwd = run("transcritical", which.clone(), &next, &switched_opts(1.0)).unwrap();
+        let rev = run("transcritical", which.clone(), &next, &switched_opts(-1.0)).unwrap();
         let (tf, tr) = (&fwd.points[0].tangent, &rev.points[0].tangent);
         for (a, b) in tf.iter().zip(tr) {
             assert!((a + b).abs() < 1e-12, "{tf:?} {tr:?}");
@@ -148,8 +148,8 @@ fn direction_minus_one_reverses_the_switched_branch() {
 fn switching_refuses_bad_specials() {
     for which in BOTH {
         let setup = EpSetup::new(0, vec![-1.0], vec![0.0]);
-        let (b, k, _) = bp_setup("transcritical", which, &setup, 1.0);
-        let mut m = model_of("transcritical", which);
+        let (b, k, _) = bp_setup("transcritical", which.clone(), &setup, 1.0);
+        let mut m = model_of("transcritical", which.clone());
         let opts = Options::default();
         let bad = |r: Result<EpSetup, EngineError>| {
             assert!(matches!(r, Err(EngineError::BadProblem(_))), "{r:?}");
@@ -164,10 +164,10 @@ fn switching_refuses_bad_specials() {
 
         // A real LP from the fold model.
         let fold = EpSetup::new(0, vec![-1.0], vec![-1.0]);
-        let fb = run("fold", which, &fold, &first_opts(1.5)).unwrap();
+        let fb = run("fold", which.clone(), &fold, &first_opts(1.5)).unwrap();
         let i = special_index(&fb, "LP1").expect("fold has an LP");
         assert!(fb.specials[i].extras.refined);
-        let mut mf = model_of("fold", which);
+        let mut mf = model_of("fold", which.clone());
         bad(switch_bp(mf.as_mut(), &fold, &fb, i, &opts));
     }
 }
@@ -177,7 +177,7 @@ fn a_start_that_is_not_an_equilibrium_is_refused() {
     for which in BOTH {
         let mut s = EpSetup::new(0, vec![-1.0], vec![0.5]);
         s.tangent0 = Some(vec![1.0, 1.0]);
-        let r = run("transcritical", which, &s, &Options::default());
+        let r = run("transcritical", which.clone(), &s, &Options::default());
         assert!(
             matches!(&r, Err(EngineError::BadProblem(m)) if m.contains("not an equilibrium")),
             "{r:?}"
@@ -185,7 +185,7 @@ fn a_start_that_is_not_an_equilibrium_is_refused() {
         s.u0 = vec![0.0];
         s.params = vec![0.0];
         s.tangent0 = Some(vec![1.0, 1.0, 1.0]);
-        let r = run("transcritical", which, &s, &Options::default());
+        let r = run("transcritical", which.clone(), &s, &Options::default());
         assert!(matches!(r, Err(EngineError::BadProblem(_))), "{r:?}");
     }
 }
@@ -243,7 +243,7 @@ fn switching_a_bp_with_a_definite_form_is_not_simple() {
             stop: StopReason::MaxSteps,
             warnings: Vec::new(),
         };
-        let mut m = model_of("isola", which);
+        let mut m = model_of("isola", which.clone());
         let r = switch_bp(m.as_mut(), &setup, &b, 0, &Options::default());
         assert!(
             matches!(&r, Err(EngineError::BadProblem(m)) if m == "BP is not simple"),
@@ -268,7 +268,7 @@ fn a_one_dimensional_bp_needs_a_zero_state_block() {
             stop: StopReason::MaxSteps,
             warnings: Vec::new(),
         };
-        let mut m = model_of("fold_saddle", which);
+        let mut m = model_of("fold_saddle", which.clone());
         let r = switch_bp(m.as_mut(), &setup, &b, 0, &Options::default());
         assert!(
             matches!(&r, Err(EngineError::BadProblem(m)) if m == "BP is not simple"),
@@ -282,15 +282,15 @@ fn a_tangent0_start_is_validated_before_use() {
     for which in BOTH {
         let mut s = EpSetup::new(5, vec![0.0], vec![0.0]);
         s.tangent0 = Some(vec![1.0, 1.0]);
-        let r = run("transcritical", which, &s, &Options::default());
+        let r = run("transcritical", which.clone(), &s, &Options::default());
         assert!(matches!(r, Err(EngineError::BadProblem(_))), "{r:?}");
         let mut s = EpSetup::new(0, vec![0.0], vec![0.0, 0.0]);
         s.tangent0 = Some(vec![1.0, 1.0]);
-        let r = run("transcritical", which, &s, &Options::default());
+        let r = run("transcritical", which.clone(), &s, &Options::default());
         assert!(matches!(r, Err(EngineError::BadProblem(_))), "{r:?}");
         let mut s = EpSetup::new(0, vec![], vec![0.0]);
         s.tangent0 = Some(vec![1.0, 1.0]);
-        let r = run("transcritical", which, &s, &Options::default());
+        let r = run("transcritical", which.clone(), &s, &Options::default());
         assert!(matches!(r, Err(EngineError::BadProblem(_))), "{r:?}");
     }
 }

@@ -15,11 +15,11 @@ const BOTH: [Evaluator; 2] = [Evaluator::Jit, Evaluator::Fallback];
 
 fn model_of(name: &str, which: Evaluator) -> Box<dyn ModelEval> {
     let (model, info) = load(name);
-    build(&model, &info, which).unwrap()
+    build(&model, &info, which.clone()).unwrap()
 }
 
 fn run(name: &str, which: Evaluator, setup: &EpSetup, opts: &Options) -> Branch {
-    let mut m = model_of(name, which);
+    let mut m = model_of(name, which.clone());
     continue_ep(
         m.as_mut(),
         setup,
@@ -51,12 +51,12 @@ fn fold_coefficient_is_one() {
             max_steps: 150,
             ..Options::default()
         };
-        let b = run("fold", which, &setup, &opts);
+        let b = run("fold", which.clone(), &setup, &opts);
         let (a, norm) = coefficient(&b, "LP");
         println!("fold {which:?}: a = {a:.16}");
         assert!((a - 1.0).abs() < 1e-12, "{which:?}: a = {a}");
         assert_eq!(norm, "|q|=1, p'q=1, p'F_alpha>0");
-        let mut m = model_of("fold", which);
+        let mut m = model_of("fold", which.clone());
         let a = fold_coefficient(m.as_mut(), &[0.0], 0, &[0.0], 0.0).unwrap();
         assert!((a - 1.0).abs() < 1e-12, "direct {which:?}: a = {a}");
     }
@@ -68,14 +68,14 @@ fn hopf_run(name: &str, c: f64, which: Evaluator) -> Branch {
         bounds: (-0.5, 0.5),
         ..Options::default()
     };
-    run(name, which, &setup, &opts)
+    run(name, which.clone(), &setup, &opts)
 }
 
 #[test]
 fn hopf_c_l1_is_two_c() {
     for which in BOTH {
         for c in [-1.0, 1.0] {
-            let b = hopf_run("hopf_c", c, which);
+            let b = hopf_run("hopf_c", c, which.clone());
             let (l1, norm) = coefficient(&b, "H");
             println!("hopf_c c={c} {which:?}: l1 = {l1:.16}");
             assert!((l1 - 2.0 * c).abs() < 1e-10, "{which:?} c={c}: l1 = {l1}");
@@ -88,7 +88,7 @@ fn hopf_c_l1_is_two_c() {
 fn scaled_coordinates_give_l1_c_over_two() {
     for which in BOTH {
         for c in [-1.0, 1.0] {
-            let b = hopf_run("hopf_scaled", c, which);
+            let b = hopf_run("hopf_scaled", c, which.clone());
             let (l1, _) = coefficient(&b, "H");
             println!("hopf_scaled c={c} {which:?}: l1 = {l1:.16}");
             assert!((l1 - 0.5 * c).abs() < 1e-10, "{which:?} c={c}: l1 = {l1}");
@@ -108,7 +108,7 @@ fn lorenz_hopf_has_positive_l1() {
             bounds: (r0, 30.0),
             ..Options::default()
         };
-        let br = run("lorenz", which, &setup, &opts);
+        let br = run("lorenz", which.clone(), &setup, &opts);
         let (l1, _) = coefficient(&br, "H");
         let h = br.specials.iter().find(|s| s.label == "H").unwrap();
         println!("lorenz {which:?}: r = {:.14}, l1 = {l1:.10}", h.point.alpha);
@@ -131,7 +131,7 @@ fn hopf_eigenvectors_satisfy_their_equations() {
         let om = (2.0 * 10.0 * b_par * (10.0 + 1.0) / (10.0 - b_par - 1.0)).sqrt();
         cases.push(("lorenz", vec![10.0, r, b_par], vec![c, c, r - 1.0], om));
         for (name, params, u, omega) in cases {
-            let mut m = model_of(name, which);
+            let mut m = model_of(name, which.clone());
             let n = m.n();
             let mut p = params.clone();
             p.push(0.0);
@@ -176,7 +176,7 @@ fn hopf_eigenvectors_satisfy_their_equations() {
 fn singular_a_makes_l1_an_error() {
     // At the fold point A = [0], so A^-1 does not exist and l1 is an error, not a number.
     for which in BOTH {
-        let mut m = model_of("fold", which);
+        let mut m = model_of("fold", which.clone());
         let r = first_lyapunov(m.as_mut(), &[0.0], 0, &[0.0], 0.0, 1.0);
         assert!(r.is_err(), "{which:?}: {r:?}");
     }
@@ -192,7 +192,7 @@ fn bp_gets_no_coefficient() {
             hmax: 0.07,
             ..Options::default()
         };
-        let b = run("pitchfork", which, &setup, &opts);
+        let b = run("pitchfork", which.clone(), &setup, &opts);
         assert_eq!(b.specials.len(), 1);
         assert_eq!(b.specials[0].label, "BP");
         assert_eq!(b.specials[0].extras.coefficient, None);
@@ -207,7 +207,7 @@ fn near_identity_change_keeps_l1() {
     // this tests the B terms of the formula.
     for which in BOTH {
         for c in [-1.0, 1.0] {
-            let b = hopf_run("hopf_nl", c, which);
+            let b = hopf_run("hopf_nl", c, which.clone());
             let (l1, _) = coefficient(&b, "H");
             println!("hopf_nl c={c} {which:?}: l1 = {l1:.16}");
             assert!((l1 - 2.0 * c).abs() < 1e-10, "{which:?} c={c}: l1 = {l1}");
@@ -221,7 +221,7 @@ fn fold_sign_follows_the_alpha_orientation() {
     // null_right returns, one of the two models takes the orientation flip.
     for which in BOTH {
         for (name, want) in [("fold", 1.0), ("fold_neg", -1.0)] {
-            let mut m = model_of(name, which);
+            let mut m = model_of(name, which.clone());
             let a = fold_coefficient(m.as_mut(), &[0.0], 0, &[0.0], 0.0).unwrap();
             assert!((a - want).abs() < 1e-12, "{name} {which:?}: a = {a}");
         }
@@ -231,7 +231,7 @@ fn fold_sign_follows_the_alpha_orientation() {
             max_steps: 150,
             ..Options::default()
         };
-        let b = run("fold_neg", which, &setup, &opts);
+        let b = run("fold_neg", which.clone(), &setup, &opts);
         let (a, _) = coefficient(&b, "LP");
         assert!((a + 1.0).abs() < 1e-12, "{which:?}: a = {a}");
     }

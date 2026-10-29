@@ -19,7 +19,7 @@ fn run(
     opts: &Options,
 ) -> Result<Branch, EngineError> {
     let (model, info) = load(name);
-    let mut m = build(&model, &info, which).unwrap();
+    let mut m = build(&model, &info, which.clone()).unwrap();
     continue_ep(
         m.as_mut(),
         setup,
@@ -54,7 +54,7 @@ fn circle_goes_round_and_returns() {
             max_steps: 6500,
             ..Options::default()
         };
-        let b = run("circle", which, &circle_setup(), &opts).unwrap();
+        let b = run("circle", which.clone(), &circle_setup(), &opts).unwrap();
         assert_eq!(b.stop, StopReason::MaxSteps, "{which:?}");
         on_circle(&b);
         // Closure: after leaving the start (distance > 0.5), a point comes back within
@@ -82,7 +82,7 @@ fn circle_with_default_steps_stays_on_the_circle() {
             max_steps: 200,
             ..Options::default()
         };
-        let b = run("circle", which, &circle_setup(), &opts).unwrap();
+        let b = run("circle", which.clone(), &circle_setup(), &opts).unwrap();
         assert_eq!(b.stop, StopReason::MaxSteps);
         assert_eq!(b.points.len(), 201);
         on_circle(&b);
@@ -107,7 +107,7 @@ fn direction_flips_the_first_tangent() {
             max_steps: 3,
             ..Options::default()
         };
-        let b = run("circle", which, &circle_setup(), &opts).unwrap();
+        let b = run("circle", which.clone(), &circle_setup(), &opts).unwrap();
         assert!(b.points[0].tangent[1] < -0.99);
         assert!(b.points[3].alpha < 0.0);
     }
@@ -125,7 +125,7 @@ fn step_grows_by_1_3_up_to_hmax() {
             bounds: (f64::NEG_INFINITY, 5.0),
             ..Options::default()
         };
-        let b = run("transcritical", which, &setup, &opts).unwrap();
+        let b = run("transcritical", which.clone(), &setup, &opts).unwrap();
         assert_eq!(b.stop, StopReason::MaxSteps);
         let h: Vec<f64> = b.points.iter().map(|p| p.h).collect();
         assert_eq!(h[0], 0.0);
@@ -149,7 +149,7 @@ fn step_halves_when_newton_fails() {
             max_steps: 20,
             ..Options::default()
         };
-        let b = run("circle", which, &circle_setup(), &opts).unwrap();
+        let b = run("circle", which.clone(), &circle_setup(), &opts).unwrap();
         assert_eq!(b.stop, StopReason::MaxSteps);
         let h1 = b.points[1].h;
         assert!(h1 < 0.01 / 2.0, "h1 = {h1}");
@@ -167,7 +167,7 @@ fn small_steps_give_step_too_small() {
             hmin: 1e-3,
             ..Options::default()
         };
-        let b = run("circle", which, &circle_setup(), &opts).unwrap();
+        let b = run("circle", which.clone(), &circle_setup(), &opts).unwrap();
         assert_eq!(b.stop, StopReason::StepTooSmall);
         assert_eq!(b.points.len(), 1);
     }
@@ -180,7 +180,7 @@ fn max_steps_counts_accepted_steps() {
             max_steps: 5,
             ..Options::default()
         };
-        let b = run("circle", which, &circle_setup(), &opts).unwrap();
+        let b = run("circle", which.clone(), &circle_setup(), &opts).unwrap();
         assert_eq!(b.stop, StopReason::MaxSteps);
         assert_eq!(b.points.len(), 6);
     }
@@ -198,7 +198,7 @@ fn upper_and_lower_bounds_land_on_alpha() {
                 bounds,
                 ..Options::default()
             };
-            let b = run("circle", which, &circle_setup(), &opts).unwrap();
+            let b = run("circle", which.clone(), &circle_setup(), &opts).unwrap();
             assert_eq!(b.stop, StopReason::Bounds, "{which:?} {dir}");
             let last = b.points.last().unwrap();
             assert!((last.alpha - want).abs() <= 1e-10, "{}", last.alpha);
@@ -218,7 +218,7 @@ fn start_on_the_bound_stops_at_once() {
             bounds: (f64::NEG_INFINITY, 0.0),
             ..Options::default()
         };
-        let b = run("circle", which, &circle_setup(), &opts).unwrap();
+        let b = run("circle", which.clone(), &circle_setup(), &opts).unwrap();
         assert_eq!(b.stop, StopReason::Bounds);
         assert_eq!(b.points.len(), 1);
     }
@@ -228,7 +228,7 @@ fn start_on_the_bound_stops_at_once() {
 fn cancel_before_and_during_a_run() {
     for which in BOTH {
         let (model, info) = load("circle");
-        let mut m = build(&model, &info, which).unwrap();
+        let mut m = build(&model, &info, which.clone()).unwrap();
         // Set after the fifth point: the run keeps those five and stops.
         let cancel = AtomicBool::new(false);
         let mut seen = 0;
@@ -273,7 +273,7 @@ fn branch_point_hit_exactly_does_not_stop_the_run() {
             bounds: (f64::NEG_INFINITY, 1.0),
             ..Options::default()
         };
-        let b = run("transcritical", which, &setup, &opts).unwrap();
+        let b = run("transcritical", which.clone(), &setup, &opts).unwrap();
         assert_eq!(b.stop, StopReason::Bounds, "{which:?}");
         assert_eq!(b.points.len(), 9, "{which:?}");
         assert_eq!(b.points[4].alpha, 0.0);
@@ -356,7 +356,7 @@ fn singular_start_is_an_error() {
     for which in BOTH {
         // The pitchfork origin at al = 0 has a singular state Jacobian.
         let setup = EpSetup::new(0, vec![0.0], vec![0.0]);
-        let r = run("pitchfork", which, &setup, &Options::default());
+        let r = run("pitchfork", which.clone(), &setup, &Options::default());
         assert!(matches!(r, Err(EngineError::Singular(_))), "{r:?}");
     }
 }
@@ -369,7 +369,7 @@ fn fold_branch_turns_and_comes_back() {
             max_steps: 150,
             ..Options::default()
         };
-        let b = run("fold", which, &setup, &opts).unwrap();
+        let b = run("fold", which.clone(), &setup, &opts).unwrap();
         assert_eq!(b.stop, StopReason::MaxSteps);
         for p in &b.points {
             assert!((p.alpha + p.u[0] * p.u[0]).abs() <= 1e-10);
@@ -398,7 +398,7 @@ fn fold_branch_turns_and_comes_back() {
 fn equilibrium_converges_and_reports_failure() {
     for which in BOTH {
         let (model, info) = load("circle");
-        let mut m = build(&model, &info, which).unwrap();
+        let mut m = build(&model, &info, which.clone()).unwrap();
         let opts = Options::default();
         let u = equilibrium(m.as_mut(), &EpSetup::new(0, vec![0.0], vec![-0.5]), &opts).unwrap();
         assert!((u[0] + 1.0).abs() < 1e-12);
@@ -487,7 +487,7 @@ fn landing_accepts_the_tol_refine_it_stopped_on() {
             tol_refine: 1e-4,
             ..Options::default()
         };
-        let b = run("fold", which, &setup, &opts).unwrap();
+        let b = run("fold", which.clone(), &setup, &opts).unwrap();
         assert_eq!(b.stop, StopReason::Bounds, "{which:?}");
         let last = b.points.last().unwrap();
         assert!((last.alpha + 0.3).abs() <= 1e-4, "{}", last.alpha);
@@ -502,7 +502,7 @@ fn infinite_step_options_are_refused() {
             hmax: f64::INFINITY,
             ..Options::default()
         };
-        let r = run("circle", which, &circle_setup(), &opts);
+        let r = run("circle", which.clone(), &circle_setup(), &opts);
         assert!(matches!(r, Err(EngineError::BadProblem(_))), "{r:?}");
     }
 }
@@ -517,7 +517,7 @@ fn step_does_not_grow_after_a_slow_corrector() {
             max_steps: 12,
             ..Options::default()
         };
-        let b = run("circle", which, &circle_setup(), &opts).unwrap();
+        let b = run("circle", which.clone(), &circle_setup(), &opts).unwrap();
         let slow: Vec<usize> = (1..b.points.len() - 1)
             .filter(|&k| b.points[k].newton_iters > 3)
             .collect();

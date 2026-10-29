@@ -6,6 +6,7 @@
 //! pseudo-arclength continuation. [`Run`] does the same on a worker thread with poll and
 //! cancel, and [`install_hook`] makes worker panics quiet and recoverable.
 
+mod aot;
 mod branch;
 mod ep;
 mod error;
@@ -20,6 +21,7 @@ mod run;
 mod switch;
 mod tests_fn;
 
+pub use aot::{AotEval, engine_kinds, entry_symbol};
 pub use branch::{Branch, Extras, Options, Point, SpecialPoint, StopReason};
 pub use ep::{EpProblem, EpSetup, continue_ep, equilibrium};
 pub use error::EngineError;

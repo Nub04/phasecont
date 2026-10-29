@@ -46,7 +46,7 @@ fn spot(name: &'static str, params: &[f64], free: usize, u: &[f64]) -> Spot {
 
 fn model_of(name: &str, which: Evaluator) -> Box<dyn ModelEval> {
     let (model, info) = load(name);
-    build(&model, &info, which).unwrap()
+    build(&model, &info, which.clone()).unwrap()
 }
 
 fn with_system<T>(
@@ -55,7 +55,7 @@ fn with_system<T>(
     which: Evaluator,
     f: impl FnOnce(&mut dyn DefiningSystem, Vec<f64>) -> T,
 ) -> T {
-    let mut m = model_of(s.name, which);
+    let mut m = model_of(s.name, which.clone());
     match kind {
         Kind::Lp => {
             let mut sys = LpSystem::new(m.as_mut(), &s.params, s.free, &s.u, s.alpha).unwrap();
@@ -109,7 +109,7 @@ fn wiggle(z: &[f64], amp: f64) -> Vec<f64> {
 }
 
 fn jac_eigs(name: &str, params: &[f64], u: &[f64], which: Evaluator) -> Vec<(f64, f64)> {
-    let mut m = model_of(name, which);
+    let mut m = model_of(name, which.clone());
     let n = m.n();
     let mut p = params.to_vec();
     p.push(0.0);
@@ -123,7 +123,7 @@ fn lorenz_hopf_spot(which: Evaluator) -> Spot {
     let c = (b * (r - 1.0)).sqrt();
     let params = [s, r, b];
     let u = [c, c, r - 1.0];
-    let eigs = jac_eigs("lorenz", &params, &u, which);
+    let eigs = jac_eigs("lorenz", &params, &u, which.clone());
     let lambda = *eigs.iter().find(|e| e.1 > 0.0).unwrap();
     Spot {
         lambda,
@@ -158,14 +158,14 @@ fn jacobians_match_central_differences() {
         hc.lambda = (0.3, 1.0);
         cases.push((Kind::H, hc));
         let mut br = spot("brusselator", &[1.0, 1.5], 1, &[1.0, 1.5]);
-        br.lambda = jac_eigs("brusselator", &[1.0, 1.5], &[1.0, 1.5], which)
+        br.lambda = jac_eigs("brusselator", &[1.0, 1.5], &[1.0, 1.5], which.clone())
             .into_iter()
             .find(|e| e.1 > 0.0)
             .unwrap();
         cases.push((Kind::H, br));
-        cases.push((Kind::H, lorenz_hopf_spot(which)));
+        cases.push((Kind::H, lorenz_hopf_spot(which.clone())));
         for (kind, s) in cases {
-            let err = with_system(kind, &s, which, |sys, z0| {
+            let err = with_system(kind, &s, which.clone(), |sys, z0| {
                 let z1 = wiggle(&z0, 0.05);
                 (fd_error(sys, &z0), fd_error(sys, &z1))
             });
@@ -225,7 +225,7 @@ fn cases(which: Evaluator) -> Vec<Case> {
         },
         Case {
             kind: Kind::H,
-            spot: lorenz_hopf_spot(which),
+            spot: lorenz_hopf_spot(which.clone()),
             exact: Vec::new(),
         },
     ]
@@ -258,8 +258,8 @@ fn newton_converges_quadratically_with_a_regular_jacobian() {
     let opts = Options::default();
     let cancel = AtomicBool::new(false);
     for which in BOTH {
-        for c in cases(which) {
-            let (z, log, sv) = with_system(c.kind, &c.spot, which, |sys, z0| {
+        for c in cases(which.clone()) {
+            let (z, log, sv) = with_system(c.kind, &c.spot, which.clone(), |sys, z0| {
                 // Start away from the solution.
                 let start = wiggle(&z0, 0.02);
                 let r = newton(sys, &start, &opts, &cancel).unwrap();
@@ -293,7 +293,7 @@ fn newton_converges_quadratically_with_a_regular_jacobian() {
 }
 
 fn run(name: &str, which: Evaluator, setup: &EpSetup, opts: &Options) -> Branch {
-    let mut m = model_of(name, which);
+    let mut m = model_of(name, which.clone());
     continue_ep(
         m.as_mut(),
         setup,
@@ -322,7 +322,7 @@ fn fold_lp_is_refined_to_the_origin() {
                 max_steps: 150,
                 ..Options::default()
             };
-            let b = run(name, which, &setup, &opts);
+            let b = run(name, which.clone(), &setup, &opts);
             let lps: Vec<_> = b.specials.iter().filter(|s| s.label == "LP").collect();
             assert_eq!(lps.len(), 1, "{name} {which:?}");
             let s = lps[0];
@@ -361,7 +361,7 @@ fn hopf_c_h_is_refined_with_omega_one() {
             bounds: (-0.5, 0.5),
             ..Options::default()
         };
-        let b = run("hopf_c", which, &setup, &opts);
+        let b = run("hopf_c", which.clone(), &setup, &opts);
         assert_eq!(b.specials.len(), 1);
         let s = &b.specials[0];
         assert_eq!(s.label, "H");
@@ -390,7 +390,7 @@ fn bp_is_refined_on_transcritical_pitchfork_and_lorenz() {
                 bounds: (f64::NEG_INFINITY, 1.0),
                 ..line_opts()
             };
-            let b = run(name, which, &setup, &opts);
+            let b = run(name, which.clone(), &setup, &opts);
             assert_eq!(b.specials.len(), 1, "{name} {which:?}");
             let s = &b.specials[0];
             assert_eq!(s.label, "BP");
@@ -401,7 +401,7 @@ fn bp_is_refined_on_transcritical_pitchfork_and_lorenz() {
             );
         }
         let setup = EpSetup::new(1, vec![10.0, 0.5, 8.0 / 3.0], vec![0.0; 3]);
-        let b = run("lorenz", which, &setup, &line_opts());
+        let b = run("lorenz", which.clone(), &setup, &line_opts());
         let bps: Vec<_> = b.specials.iter().filter(|s| s.label == "BP").collect();
         assert_eq!(
             bps.len(),
@@ -427,7 +427,7 @@ fn nsa_is_not_refined() {
             bounds: (-0.5, 0.5),
             ..Options::default()
         };
-        let b = run("neutral_saddle", which, &setup, &opts);
+        let b = run("neutral_saddle", which.clone(), &setup, &opts);
         assert_eq!(b.specials.len(), 1);
         assert_eq!(b.specials[0].label, "NSA");
         assert!(!b.specials[0].extras.refined);
@@ -466,7 +466,7 @@ fn empty_branch(specials: Vec<SpecialPoint>) -> Branch {
 #[test]
 fn a_failed_refinement_keeps_the_point_and_warns() {
     for which in BOTH {
-        let mut m = model_of("fold", which);
+        let mut m = model_of("fold", which.clone());
         // An H label with no complex pair cannot be refined.
         let sp = fake("H", &[0.3], 0.1, vec![(-0.6, 0.0)]);
         let mut b = empty_branch(vec![sp.clone()]);
@@ -501,7 +501,7 @@ fn a_failed_refinement_keeps_the_point_and_warns() {
 #[test]
 fn cancel_ends_the_run_as_cancelled() {
     for which in BOTH {
-        let mut m = model_of("fold", which);
+        let mut m = model_of("fold", which.clone());
         let sp = fake("LP", &[0.01], 0.0, Vec::new());
         let mut b = empty_branch(vec![sp.clone()]);
         let flag = AtomicBool::new(false);
@@ -532,7 +532,7 @@ fn fold_lp_branch(u: f64, alpha: f64, h: f64) -> Branch {
 #[test]
 fn a_refinement_that_moves_far_from_the_located_point_is_rejected() {
     for which in BOTH {
-        let mut m = model_of("fold", which);
+        let mut m = model_of("fold", which.clone());
         let cancel = AtomicBool::new(false);
         // Near the fold the refined point is the origin and the move is small.
         let mut near = fold_lp_branch(0.001, -1e-6, 0.01);
@@ -598,7 +598,7 @@ fn a_cancel_during_refinement_ends_with_cancelled() {
     for which in BOTH {
         let cancel = AtomicBool::new(false);
         let mut m = CancelsInRefine {
-            inner: model_of("fold", which),
+            inner: model_of("fold", which.clone()),
             cancel: &cancel,
         };
         let setup = EpSetup::new(0, vec![-1.0], vec![-1.0]);
@@ -617,7 +617,7 @@ fn a_cancel_during_refinement_ends_with_cancelled() {
 fn a_run_cancelled_before_refinement_skips_it() {
     for which in BOTH {
         let cancel = AtomicBool::new(false);
-        let mut m = model_of("fold", which);
+        let mut m = model_of("fold", which.clone());
         let setup = EpSetup::new(0, vec![-1.0], vec![-1.0]);
         let mut seen = 0;
         let b = continue_ep(
@@ -679,7 +679,7 @@ fn a_failed_coefficient_keeps_the_refined_point_and_warns() {
         let opts = Options::default();
         // Count the Dir evaluations of a clean pass; the coefficient step makes the last.
         let mut counter = FailsDirAt {
-            inner: model_of("fold", which),
+            inner: model_of("fold", which.clone()),
             seen: 0,
             fail_at: usize::MAX,
             err: || EngineError::Singular("unused".into()),
@@ -690,7 +690,7 @@ fn a_failed_coefficient_keeps_the_refined_point_and_warns() {
         let total = counter.seen;
 
         let mut m = FailsDirAt {
-            inner: model_of("fold", which),
+            inner: model_of("fold", which.clone()),
             seen: 0,
             fail_at: total - 1,
             err: || EngineError::Singular("injected".into()),
@@ -706,7 +706,7 @@ fn a_failed_coefficient_keeps_the_refined_point_and_warns() {
         );
 
         let mut m = FailsDirAt {
-            inner: model_of("fold", which),
+            inner: model_of("fold", which.clone()),
             seen: 0,
             fail_at: total - 1,
             err: || EngineError::Cancelled,

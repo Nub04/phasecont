@@ -85,7 +85,7 @@ fn nonautonomous_is_refused() {
     let (model, info) = load("nonautonomous");
     for which in [Evaluator::Jit, Evaluator::Fallback] {
         assert!(matches!(
-            build(&model, &info, which),
+            build(&model, &info, which.clone()),
             Err(EngineError::NonAutonomous)
         ));
     }
@@ -96,10 +96,10 @@ fn build_allowing_t_accepts_a_model_that_uses_t() {
     let (model, info) = load("nonautonomous");
     for which in [Evaluator::Jit, Evaluator::Fallback] {
         assert!(matches!(
-            build(&model, &info, which),
+            build(&model, &info, which.clone()),
             Err(EngineError::NonAutonomous)
         ));
-        let mut m = build_allowing_t(&model, &info, which).unwrap();
+        let mut m = build_allowing_t(&model, &info, which.clone()).unwrap();
         let n_p = m.n_p();
         let mut out = vec![0.0; m.n()];
         let mut p = vec![0.5; n_p];
@@ -123,7 +123,7 @@ fn table_that_reads_a_parameter_is_refused() {
     ] {
         let (model, info) = load(name);
         for which in [Evaluator::Jit, Evaluator::Fallback] {
-            match build(&model, &info, which) {
+            match build(&model, &info, which.clone()) {
                 Err(EngineError::BadProblem(m)) => assert!(m.contains("table"), "{name}: {m}"),
                 other => panic!("{name}: expected BadProblem, got {:?}", other.err()),
             }
@@ -136,7 +136,7 @@ fn table_that_reads_only_t_is_accepted() {
     for name in ["table_t", "table_func_shadow", "table_fixed_const"] {
         let (model, info) = load(name);
         for which in [Evaluator::Jit, Evaluator::Fallback] {
-            assert!(build(&model, &info, which).is_ok(), "{name}");
+            assert!(build(&model, &info, which.clone()).is_ok(), "{name}");
         }
     }
 }
@@ -146,7 +146,7 @@ fn non_finite_output_is_an_error() {
     for name in ["nan_log", "inf_div"] {
         let (model, info) = load(name);
         for which in [Evaluator::Jit, Evaluator::Fallback] {
-            let mut m = build(&model, &info, which).unwrap();
+            let mut m = build(&model, &info, which.clone()).unwrap();
             let mut out = [0.0];
             let (x, p) = if name == "nan_log" {
                 (-1.0, 0.0)
@@ -168,7 +168,7 @@ fn non_finite_output_is_an_error() {
 fn wrong_length_is_an_error() {
     let (model, info) = load("fold");
     for which in [Evaluator::Jit, Evaluator::Fallback] {
-        let mut m = build(&model, &info, which).unwrap();
+        let mut m = build(&model, &info, which.clone()).unwrap();
         let mut out = [0.0];
         assert!(
             m.eval(&EntryKind::F, &[1.0, 2.0], &[0.0, 0.0], &[], &mut out)

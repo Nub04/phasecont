@@ -14,7 +14,7 @@ const BOTH: [Evaluator; 2] = [Evaluator::Jit, Evaluator::Fallback];
 
 fn model_of(name: &str, which: Evaluator) -> Box<dyn ModelEval> {
     let (model, info) = load(name);
-    build(&model, &info, which).unwrap()
+    build(&model, &info, which.clone()).unwrap()
 }
 
 fn run(
@@ -23,7 +23,7 @@ fn run(
     setup: &EpSetup,
     opts: &Options,
 ) -> Result<Branch, EngineError> {
-    let mut m = model_of(name, which);
+    let mut m = model_of(name, which.clone());
     continue_ep(
         m.as_mut(),
         setup,
@@ -41,7 +41,7 @@ fn first_run(name: &str, which: Evaluator, setup: &EpSetup, lo: f64, hi: f64) ->
         bounds: (lo, hi),
         ..Options::default()
     };
-    run(name, which, setup, &opts).unwrap()
+    run(name, which.clone(), setup, &opts).unwrap()
 }
 
 /// A setup that starts at the special point `label` of `b`.
@@ -70,12 +70,12 @@ fn opts(direction: f64, lo: f64, hi: f64) -> Options {
 fn lp_start_leaves_on_both_sides_of_the_fold() {
     for which in BOTH {
         let setup = EpSetup::new(0, vec![-1.0], vec![-1.0]);
-        let b = first_run("fold", which, &setup, -5.0, 5.0);
+        let b = first_run("fold", which.clone(), &setup, -5.0, 5.0);
         let (s, lp) = start_at(&setup, &b, "LP1");
         let mut sides = Vec::new();
         for dir in [1.0, -1.0] {
             let o = opts(dir, -5.0, 5.0);
-            let nb = run("fold", which, &s, &o).unwrap();
+            let nb = run("fold", which.clone(), &s, &o).unwrap();
             assert!(nb.points.len() > 10, "{which:?} dir {dir}");
             let p0 = &nb.points[0];
             assert!((p0.alpha - lp.point.alpha).abs() < 1e-10, "{which:?}");
@@ -101,11 +101,11 @@ fn lp_start_leaves_on_both_sides_of_the_fold() {
 fn h_start_keeps_the_hopf_equilibrium_branch_going() {
     for which in BOTH {
         let setup = EpSetup::new(0, vec![-0.5, 1.0], vec![0.0, 0.0]);
-        let b = first_run("hopf_c", which, &setup, -1.0, 1.0);
+        let b = first_run("hopf_c", which.clone(), &setup, -1.0, 1.0);
         let (s, h) = start_at(&setup, &b, "H1");
         for dir in [1.0, -1.0] {
             let o = opts(dir, -1.0, 1.0);
-            let nb = run("hopf_c", which, &s, &o).unwrap();
+            let nb = run("hopf_c", which.clone(), &s, &o).unwrap();
             assert!(nb.points.len() > 10, "{which:?} dir {dir}");
             assert!((nb.points[0].alpha - h.point.alpha).abs() < 1e-10);
             let last = nb.points.last().unwrap();
@@ -123,9 +123,9 @@ fn bp_start_is_refused_and_names_switch() {
     let b_par = 8.0 / 3.0;
     for which in BOTH {
         let setup = EpSetup::new(1, vec![10.0, 0.5, b_par], vec![0.0; 3]);
-        let b = first_run("lorenz", which, &setup, 0.0, 5.0);
+        let b = first_run("lorenz", which.clone(), &setup, 0.0, 5.0);
         let (s, _) = start_at(&setup, &b, "BP1");
-        let r = run("lorenz", which, &s, &opts(1.0, 0.0, 5.0));
+        let r = run("lorenz", which.clone(), &s, &opts(1.0, 0.0, 5.0));
         assert!(
             matches!(&r, Err(EngineError::BadProblem(m)) if m.contains("Switch")),
             "{which:?}: {r:?}"
@@ -134,9 +134,9 @@ fn bp_start_is_refused_and_names_switch() {
     // Pitchfork too (one variable).
     for which in BOTH {
         let setup = EpSetup::new(0, vec![-1.0], vec![0.0]);
-        let b = first_run("pitchfork", which, &setup, -5.0, 1.0);
+        let b = first_run("pitchfork", which.clone(), &setup, -5.0, 1.0);
         let (s, _) = start_at(&setup, &b, "BP1");
-        let r = run("pitchfork", which, &s, &opts(1.0, -5.0, 5.0));
+        let r = run("pitchfork", which.clone(), &s, &opts(1.0, -5.0, 5.0));
         assert!(
             matches!(&r, Err(EngineError::BadProblem(m)) if m.contains("Switch")),
             "{which:?}: {r:?}"
@@ -149,7 +149,7 @@ fn a_special_start_that_is_not_an_equilibrium_is_refused() {
     for which in BOTH {
         let mut s = EpSetup::new(0, vec![-1.0], vec![0.5]);
         s.start_is_special = true;
-        let r = run("fold", which, &s, &Options::default());
+        let r = run("fold", which.clone(), &s, &Options::default());
         assert!(
             matches!(&r, Err(EngineError::BadProblem(m))
                 if m == "the special start point is not an equilibrium"),
@@ -163,7 +163,7 @@ fn a_regular_start_still_runs_newton() {
     for which in BOTH {
         // Not special: Newton moves u0 = -0.9 onto x^2 = 1.
         let s = EpSetup::new(0, vec![-1.0], vec![-0.9]);
-        let nb = run("fold", which, &s, &opts(1.0, -5.0, 5.0)).unwrap();
+        let nb = run("fold", which.clone(), &s, &opts(1.0, -5.0, 5.0)).unwrap();
         assert!((nb.points[0].u[0] + 1.0).abs() < 1e-9, "{which:?}");
     }
 }

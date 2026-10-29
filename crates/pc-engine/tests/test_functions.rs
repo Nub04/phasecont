@@ -15,7 +15,7 @@ const H: usize = 2;
 
 fn run(name: &str, which: Evaluator, setup: &EpSetup, opts: &Options) -> Branch {
     let (model, info) = load(name);
-    let mut m = build(&model, &info, which).unwrap();
+    let mut m = build(&model, &info, which.clone()).unwrap();
     continue_ep(
         m.as_mut(),
         setup,
@@ -47,7 +47,7 @@ fn bp_changes_sign_across_transcritical_and_pitchfork() {
     for which in BOTH {
         for name in ["transcritical", "pitchfork"] {
             let setup = EpSetup::new(0, vec![-1.0], vec![0.0]);
-            let b = run(name, which, &setup, &line_opts());
+            let b = run(name, which.clone(), &setup, &line_opts());
             assert_eq!(b.stop, StopReason::Bounds);
             let ch = sign_changes(&b, BP);
             assert_eq!(ch.len(), 1, "{name} {which:?}: {ch:?}");
@@ -69,7 +69,7 @@ fn lp_changes_sign_across_the_fold() {
             max_steps: 150,
             ..Options::default()
         };
-        let b = run("fold", which, &setup, &opts);
+        let b = run("fold", which.clone(), &setup, &opts);
         let ch = sign_changes(&b, LP);
         assert_eq!(ch.len(), 1, "{which:?}: {ch:?}");
         let k = ch[0];
@@ -88,7 +88,7 @@ fn h_changes_sign_across_the_hopf_of_hopf_c() {
             bounds: (-0.5, 0.5),
             ..Options::default()
         };
-        let b = run("hopf_c", which, &setup, &opts);
+        let b = run("hopf_c", which.clone(), &setup, &opts);
         assert_eq!(b.stop, StopReason::Bounds);
         let ch = sign_changes(&b, H);
         assert_eq!(ch.len(), 1, "{which:?}: {ch:?}");
@@ -111,7 +111,7 @@ fn h_changes_sign_across_the_neutral_saddle() {
             bounds: (-0.5, 0.5),
             ..Options::default()
         };
-        let b = run("neutral_saddle", which, &setup, &opts);
+        let b = run("neutral_saddle", which.clone(), &setup, &opts);
         assert_eq!(b.stop, StopReason::Bounds);
         let ch = sign_changes(&b, H);
         assert_eq!(ch.len(), 1, "{which:?}: {ch:?}");
@@ -139,7 +139,7 @@ fn detect_flags_turn_tests_into_nan() {
                 detect_h: h,
                 ..Options::default()
             };
-            let b = run("hopf_c", which, &setup, &opts);
+            let b = run("hopf_c", which.clone(), &setup, &opts);
             for p in &b.points {
                 for (t, on) in [lp, bp, h].into_iter().enumerate() {
                     assert_eq!(p.tests[t].is_nan(), !on, "test {t}");
@@ -160,7 +160,7 @@ fn hopf_detection_is_off_above_100_variables() {
             bounds: (-1.0, 1.0),
             ..Options::default()
         };
-        let b = run("linear101", which, &setup, &opts);
+        let b = run("linear101", which.clone(), &setup, &opts);
         assert_eq!(
             b.warnings,
             vec!["Hopf detection is off for n > 100".to_string()]
@@ -172,7 +172,11 @@ fn hopf_detection_is_off_above_100_variables() {
             detect_h: false,
             ..opts
         };
-        assert!(run("linear101", which, &setup, &off).warnings.is_empty());
+        assert!(
+            run("linear101", which.clone(), &setup, &off)
+                .warnings
+                .is_empty()
+        );
     }
 }
 
@@ -187,7 +191,7 @@ fn negative_direction_keeps_the_sign_of_psi_bp() {
             bounds: (-1.0, f64::INFINITY),
             ..line_opts()
         };
-        let b = run("transcritical", which, &setup, &opts);
+        let b = run("transcritical", which.clone(), &setup, &opts);
         assert_eq!(b.stop, StopReason::Bounds);
         assert!(b.points[0].tests[BP] * b.points[1].tests[BP] > 0.0);
         let ch = sign_changes(&b, BP);

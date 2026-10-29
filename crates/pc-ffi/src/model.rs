@@ -228,6 +228,11 @@ struct Context {
 fn handle(req: Request, ctx: &Context, ev: &mut Option<Box<dyn ModelEval>>) -> Result<Reply> {
     match req {
         Request::Compile(which) => {
+            let code = match &which {
+                Evaluator::Jit => 1,
+                Evaluator::Fallback => 2,
+                Evaluator::Aot { .. } => 3,
+            };
             let mut built = build_allowing_t(&ctx.model, &ctx.info, which)?;
             // The JIT compiles an entry on its first call. Run `F` once so that the
             // compile happens here and `jit_max_frame` is set. The value does not matter,
@@ -237,7 +242,6 @@ fn handle(req: Request, ctx: &Context, ev: &mut Option<Box<dyn ModelEval>>) -> R
             let mut out = vec![0.0; built.n()];
             let _ = built.eval(&EntryKind::F, &ctx.warm_x, &p, &[], &mut out);
             *ev = Some(built);
-            let code = if which == Evaluator::Jit { 1 } else { 2 };
             ctx.evaluator.store(code, Ordering::Relaxed);
             Ok(Reply::Compiled)
         }

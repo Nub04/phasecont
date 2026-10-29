@@ -12,7 +12,7 @@ const BOTH: [Evaluator; 2] = [Evaluator::Jit, Evaluator::Fallback];
 
 fn run(name: &str, which: Evaluator, setup: &EpSetup, opts: &Options) -> Branch {
     let (model, info) = load(name);
-    let mut m = build(&model, &info, which).unwrap();
+    let mut m = build(&model, &info, which.clone()).unwrap();
     continue_ep(
         m.as_mut(),
         setup,
@@ -44,7 +44,7 @@ fn fold_lp_is_located_and_refined() {
             max_steps: 150,
             ..Options::default()
         };
-        let b = run("fold", which, &setup, &opts);
+        let b = run("fold", which.clone(), &setup, &opts);
         assert_eq!(labels(&b), ["LP"], "{which:?}");
         let s = &b.specials[0];
         assert!(
@@ -69,7 +69,7 @@ fn bp_is_located_on_transcritical_and_pitchfork() {
     for which in BOTH {
         for name in ["transcritical", "pitchfork"] {
             let setup = EpSetup::new(0, vec![-1.0], vec![0.0]);
-            let b = run(name, which, &setup, &line_opts());
+            let b = run(name, which.clone(), &setup, &line_opts());
             assert_eq!(b.stop, StopReason::Bounds);
             assert_eq!(labels(&b), ["BP"], "{name} {which:?}");
             let s = &b.specials[0];
@@ -89,7 +89,7 @@ fn hopf_c_gives_one_h() {
             bounds: (-0.5, 0.5),
             ..Options::default()
         };
-        let b = run("hopf_c", which, &setup, &opts);
+        let b = run("hopf_c", which.clone(), &setup, &opts);
         assert_eq!(labels(&b), ["H"], "{which:?}");
         let s = &b.specials[0];
         assert!(s.point.alpha.abs() < 1e-8, "alpha {}", s.point.alpha);
@@ -106,7 +106,7 @@ fn neutral_saddle_gives_nsa_and_no_h() {
             bounds: (-0.5, 0.5),
             ..Options::default()
         };
-        let b = run("neutral_saddle", which, &setup, &opts);
+        let b = run("neutral_saddle", which.clone(), &setup, &opts);
         assert_eq!(labels(&b), ["NSA"], "{which:?}");
         assert!(b.specials[0].point.alpha.abs() < 1e-8);
     }
@@ -116,7 +116,7 @@ fn neutral_saddle_gives_nsa_and_no_h() {
 fn start_at_a_branch_point_works() {
     for which in BOTH {
         let (model, info) = load("transcritical");
-        let mut m = build(&model, &info, which).unwrap();
+        let mut m = build(&model, &info, which.clone()).unwrap();
         let setup = EpSetup::new(0, vec![0.0], vec![0.0]);
         let mut p = EpProblem::new(m.as_mut(), &setup).unwrap();
         let b = continue_branch(
@@ -140,11 +140,11 @@ fn start_is_special_skips_the_first_step_only() {
         // The first step from al = -0.01 crosses the BP at 0.
         let mut setup = EpSetup::new(0, vec![-0.01], vec![0.0]);
         assert!(!setup.start_is_special);
-        let b = run("transcritical", which, &setup, &line_opts());
+        let b = run("transcritical", which.clone(), &setup, &line_opts());
         assert_eq!(labels(&b), ["BP"], "{which:?}");
         assert_eq!(b.specials[0].index, 1);
         setup.start_is_special = true;
-        let b = run("transcritical", which, &setup, &line_opts());
+        let b = run("transcritical", which.clone(), &setup, &line_opts());
         assert!(b.specials.is_empty(), "{which:?}");
     }
 }
@@ -159,7 +159,7 @@ fn a_zero_on_the_step_that_lands_on_a_bound_is_located() {
             bounds: (f64::NEG_INFINITY, 0.03),
             ..line_opts()
         };
-        let b = run("transcritical", which, &setup, &opts);
+        let b = run("transcritical", which.clone(), &setup, &opts);
         assert_eq!(b.stop, StopReason::Bounds);
         assert_eq!(b.points.len(), 2, "{which:?}");
         assert_eq!(labels(&b), ["BP"]);
@@ -179,7 +179,7 @@ fn hopf_with_many_slow_modes_is_found() {
             bounds: (-0.5, 0.5),
             ..Options::default()
         };
-        let b = run("hopf_slow30", which, &setup, &opts);
+        let b = run("hopf_slow30", which.clone(), &setup, &opts);
         assert_eq!(labels(&b), ["H"], "{which:?}");
         assert!(b.specials[0].point.alpha.abs() < 1e-8, "{which:?}");
         assert!(b.warnings.is_empty(), "{which:?}: {:?}", b.warnings);
@@ -200,7 +200,7 @@ fn hopf_next_to_a_nearly_cancelling_pair_is_found() {
                 bounds: (-0.13, 0.31),
                 ..Options::default()
             };
-            let b = run("hopf_near_pair", which, &setup, &opts);
+            let b = run("hopf_near_pair", which.clone(), &setup, &opts);
             assert_eq!(labels(&b), ["H"], "{which:?} c={c}");
             let s = &b.specials[0];
             assert!(

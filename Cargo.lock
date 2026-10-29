@@ -818,6 +818,8 @@ dependencies = [
 name = "pc-engine"
 version = "0.0.0"
 dependencies = [
+ "libloading",
+ "pc-codegen",
  "pc-ir",
  "pc-jit",
  "pc-linalg",

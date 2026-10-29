@@ -16,11 +16,11 @@ const BOTH: [Evaluator; 2] = [Evaluator::Jit, Evaluator::Fallback];
 
 fn model_of(name: &str, which: Evaluator) -> Box<dyn ModelEval> {
     let (model, info) = load(name);
-    build(&model, &info, which).unwrap()
+    build(&model, &info, which.clone()).unwrap()
 }
 
 fn run(name: &str, which: Evaluator, setup: &EpSetup, opts: &Options) -> Branch {
-    let mut m = model_of(name, which);
+    let mut m = model_of(name, which.clone());
     continue_ep(
         m.as_mut(),
         setup,
@@ -59,14 +59,14 @@ fn acceptance_1_fold_has_one_lp_at_the_origin() {
             bounds: (-5.0, 5.0),
             ..Options::default()
         };
-        let b = run("fold", which, &setup, &opts);
+        let b = run("fold", which.clone(), &setup, &opts);
         let lp = with_label(&b, "LP");
         assert_eq!(lp.len(), 1, "{which:?}: {:?}", labels(&b));
         let p = &lp[0].point;
-        check("test1", which, "LP x", p.u[0], 0.0, 1e-10);
-        check("test1", which, "LP a", p.alpha, 0.0, 1e-10);
+        check("test1", which.clone(), "LP x", p.u[0], 0.0, 1e-10);
+        check("test1", which.clone(), "LP a", p.alpha, 0.0, 1e-10);
         let coef = lp[0].extras.coefficient.expect("LP coefficient");
-        check("test1", which, "LP coefficient a", coef, 1.0, 1e-12);
+        check("test1", which.clone(), "LP coefficient a", coef, 1.0, 1e-12);
     }
 }
 
@@ -81,7 +81,7 @@ fn acceptance_2_hopf_normal_form_has_l1_equal_2c() {
                 bounds: (-1.0, 1.0),
                 ..Options::default()
             };
-            let b = run("hopf_c", which, &setup, &opts);
+            let b = run("hopf_c", which.clone(), &setup, &opts);
             let h = with_label(&b, "H");
             assert_eq!(h.len(), 1, "{which:?} c={c}: {:?}", labels(&b));
             assert!(
@@ -92,16 +92,30 @@ fn acceptance_2_hopf_normal_form_has_l1_equal_2c() {
             let tag = format!("c={c}");
             check(
                 "test2",
-                which,
+                which.clone(),
                 &format!("{tag} H al"),
                 h[0].point.alpha,
                 0.0,
                 1e-10,
             );
             let omega = h[0].extras.omega.expect("H omega");
-            check("test2", which, &format!("{tag} omega"), omega, 1.0, 1e-10);
+            check(
+                "test2",
+                which.clone(),
+                &format!("{tag} omega"),
+                omega,
+                1.0,
+                1e-10,
+            );
             let l1 = h[0].extras.coefficient.expect("H l1");
-            check("test2", which, &format!("{tag} l1"), l1, 2.0 * c, 1e-10);
+            check(
+                "test2",
+                which.clone(),
+                &format!("{tag} l1"),
+                l1,
+                2.0 * c,
+                1e-10,
+            );
             assert_eq!(l1.signum(), c.signum(), "{which:?} {tag}: sign of l1");
         }
     }
@@ -119,20 +133,27 @@ fn acceptance_5_lorenz_pitchfork_and_hopf() {
             bounds: (0.0, 30.0),
             ..Options::default()
         };
-        let b0 = run("lorenz", which, &setup, &opts);
+        let b0 = run("lorenz", which.clone(), &setup, &opts);
         let bps = with_label(&b0, "BP");
         assert_eq!(bps.len(), 1, "{which:?}: {:?}", labels(&b0));
-        check("test5", which, "BP r", bps[0].point.alpha, 1.0, 1e-10);
+        check(
+            "test5",
+            which.clone(),
+            "BP r",
+            bps[0].point.alpha,
+            1.0,
+            1e-10,
+        );
 
         let k = special_index(&b0, "BP1").expect("BP1");
-        let mut m = model_of("lorenz", which);
+        let mut m = model_of("lorenz", which.clone());
         let next = switch_bp(m.as_mut(), &setup, &b0, k, &opts).unwrap();
-        let b1 = run("lorenz", which, &next, &opts);
+        let b1 = run("lorenz", which.clone(), &next, &opts);
         assert_eq!(b1.stop, StopReason::Bounds, "{which:?}: {:?}", b1.stop);
         let last = b1.points.last().unwrap();
         check(
             "test5",
-            which,
+            which.clone(),
             "switched branch end r",
             last.alpha,
             30.0,
@@ -144,12 +165,19 @@ fn acceptance_5_lorenz_pitchfork_and_hopf() {
             dxy = dxy.max((p.u[0] - p.u[1]).abs());
             dz = dz.max((p.u[2] - p.u[0] * p.u[0] / b_par).abs());
         }
-        check("test5", which, "max |x - y|", dxy, 0.0, 1e-9);
-        check("test5", which, "max |z - x^2/b|", dz, 0.0, 1e-9);
+        check("test5", which.clone(), "max |x - y|", dxy, 0.0, 1e-9);
+        check("test5", which.clone(), "max |z - x^2/b|", dz, 0.0, 1e-9);
 
         let h = with_label(&b1, "H");
         assert_eq!(h.len(), 1, "{which:?}: {:?}", labels(&b1));
-        check("test5", which, "H r", h[0].point.alpha, 470.0 / 19.0, 1e-9);
+        check(
+            "test5",
+            which.clone(),
+            "H r",
+            h[0].point.alpha,
+            470.0 / 19.0,
+            1e-9,
+        );
         let l1 = h[0].extras.coefficient.expect("H l1");
         println!("test5 [{which:?}] H l1 = {l1:.15e}");
         assert!(l1 > 0.0, "{which:?}: l1 = {l1}");
@@ -168,20 +196,27 @@ fn acceptance_6_brusselator_hopf() {
                 bounds: (0.0, 1.0 + a * a + 1.0),
                 ..Options::default()
             };
-            let b = run("brusselator", which, &setup, &opts);
+            let b = run("brusselator", which.clone(), &setup, &opts);
             let h = with_label(&b, "H");
             assert_eq!(h.len(), 1, "{which:?} a={a}: {:?}", labels(&b));
             let tag = format!("a={a}");
             check(
                 "test6",
-                which,
+                which.clone(),
                 &format!("{tag} H b"),
                 h[0].point.alpha,
                 1.0 + a * a,
                 1e-9,
             );
             let omega = h[0].extras.omega.expect("H omega");
-            check("test6", which, &format!("{tag} omega"), omega, a, 1e-9);
+            check(
+                "test6",
+                which.clone(),
+                &format!("{tag} omega"),
+                omega,
+                a,
+                1e-9,
+            );
         }
     }
 }

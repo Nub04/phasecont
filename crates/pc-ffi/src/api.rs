@@ -294,6 +294,7 @@ pub unsafe extern "C" fn model_info(model: u64, out_json: *mut *mut c_char) -> i
         let evaluator = h.evaluator().map(|e| match e {
             Evaluator::Jit => "jit",
             Evaluator::Fallback => "fallback",
+            Evaluator::Aot { .. } => "aot",
         });
         let names = &h.names;
         let v = json!({

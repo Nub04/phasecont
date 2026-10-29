@@ -1,10 +1,12 @@
 //! Evaluating model entries in f64, with the JIT or the interpreter fallback.
 
+use crate::aot::AotEval;
 use crate::error::EngineError;
 use pc_ir::{EntryKind, Fallback, IrModel, lower};
 use pc_jit::CompiledModel;
 use pc_ode::{Expr, Model, ModelInfo, StmtKind, SymbolKind};
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 /// Evaluates the entries of one model. Inputs and outputs follow the contract in
 /// `pc_ir::entry`: `x` has `n` values, `p` has `n_p + 1` (time last), `v` is empty except
@@ -23,7 +25,7 @@ pub trait ModelEval {
     ) -> Result<(), EngineError>;
 }
 
-fn check_finite(kind: &EntryKind, out: &[f64]) -> Result<(), EngineError> {
+pub(crate) fn check_finite(kind: &EntryKind, out: &[f64]) -> Result<(), EngineError> {
     if out.iter().all(|v| v.is_finite()) {
         Ok(())
     } else {
@@ -32,7 +34,7 @@ fn check_finite(kind: &EntryKind, out: &[f64]) -> Result<(), EngineError> {
 }
 
 /// Expected length of `out` and `v` for an entry.
-fn lengths(kind: &EntryKind, n: usize, n_p: usize, n_aux: usize) -> (usize, usize) {
+pub(crate) fn lengths(kind: &EntryKind, n: usize, n_p: usize, n_aux: usize) -> (usize, usize) {
     match kind {
         EntryKind::F => (n, 0),
         EntryKind::Aux => (n_aux, 0),
@@ -110,12 +112,15 @@ impl ModelEval for FallbackEval {
 }
 
 /// Which evaluator [`build`] makes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Evaluator {
     /// Cranelift-compiled native code.
     Jit,
     /// The f64 interpreter in `pc_ir`.
     Fallback,
+    /// A C library from `pc_codegen::emit_c`, built by the host, at this path. The entries
+    /// are named by [`crate::entry_symbol`].
+    Aot { lib: PathBuf },
 }
 
 /// Lowers `model` and returns an evaluator for it.
@@ -164,6 +169,7 @@ fn build_checked(
     }
     Ok(match which {
         Evaluator::Jit => Box::new(CompiledModel::new(ir)),
+        Evaluator::Aot { lib } => Box::new(AotEval::open(&lib, ir.n(), ir.n_p(), ir.aux.len())?),
         Evaluator::Fallback => {
             let fb = Fallback::new(model, info, &ir);
             Box::new(FallbackEval {
