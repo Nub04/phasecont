@@ -108,6 +108,9 @@ classdef Branch < handle
             for k = 1:numel(br)
                 h = [h; br(k).drawOne(ax, options.Var)]; %#ok<AGROW>
             end
+            if nargout == 0
+                clear h
+            end
         end
     end
 

@@ -526,7 +526,7 @@ static void cmd_model_compile(int nlhs, mxArray *plhs[], int nrhs, const mxArray
     m = get_handle(prhs[1]);
     if (nrhs == 3)
         opts = get_text(prhs[2], "opts");
-    rc = g_api->model_compile(m, opts);
+    rc = g_api->model_compile(m, opts && opts[0] ? opts : NULL);
     if (opts)
         mxFree(opts);
     check(rc);

@@ -125,4 +125,10 @@ P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; the commits are 
   - Variable lookup is duplicated in `Branch.m` and `continuation.m`.
   - The special-marker edge is black on dark themes.
   - The live line advances ColorOrderIndex, so the final plot uses the second color.
-  - `plot(br)` without a semicolon prints `ans`.
+  - From the final P7a review (2026-10-29):
+    - `Stable` is false for a point whose eigenvalues are NaN. The engine fills NaN only after an internal fault, and carrying the last value forward would be a silent default, so it stays.
+    - `run_copy` with `count == 0` does not reach the library, so a freed run id returns an empty matrix, and the gateway trusts the caller's `stride` instead of reading the run's.
+    - `dll-imports` accepts any `api-ms-win-` prefix and reads the whole file without a size limit.
+    - `scripts/build-pckern` and `buildfile.m` ignore `CARGO_TARGET_DIR`, and the `wsl.exe` command does not escape `$` or quotes in paths.
+    - A `Branch` keeps its `Model` handle, so variable lookup fails after the Model is deleted, and `continuation` rejects a start Point from another Model object with the same source.
+    - `BuildTest/gatewayIsBuiltIntoTheBinFolder` cannot fail when the gateway is missing.

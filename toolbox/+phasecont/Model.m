@@ -178,13 +178,6 @@ classdef Model < handle
                 end
                 error("phasecont:engine:model", "%s", text);
             end
-            for k = 1:numel(entries)
-                if string(entries(k).severity) == "warning"
-                    e = entries(k);
-                    warning("phasecont:model:parseWarning", "%s", ...
-                        sprintf("%s:%d:%d: %s", file, e.line, e.col, e.message));
-                end
-            end
             try
                 pckern("model_compile", id, ...
                     sprintf('{"evaluator":"%s"}', obj.Evaluator));
@@ -197,6 +190,14 @@ classdef Model < handle
                 rethrow(err);
             end
             obj.Id = id;
+            % Warn after obj.Id is set, so delete frees the handle if a warning throws.
+            for k = 1:numel(entries)
+                if string(entries(k).severity) == "warning"
+                    e = entries(k);
+                    warning("phasecont:model:parseWarning", "%s", ...
+                        sprintf("%s:%d:%d: %s", file, e.line, e.col, e.message));
+                end
+            end
             obj.Variables = phasecont.Model.toNames(info.variables);
             obj.Parameters = phasecont.Model.toNames(info.parameters);
             obj.ParameterValues = phasecont.Model.toColumn(info.values);
