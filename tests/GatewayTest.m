@@ -148,6 +148,26 @@ classdef GatewayTest < matlab.unittest.TestCase
                 ['x' char(0) 'y']), "phasecont:engine:badArg");
         end
 
+        function modelFromOdeReturnsTheLoweringMessage(testCase)
+            [m, ~, msg] = pckern("model_from_ode", testCase.Lorenz);
+            testCase.verifyNotEqual(m, uint64(0));
+            testCase.verifyClass(msg, "char");
+            testCase.verifyEmpty(msg);
+            pckern("free", m);
+            [m, ~, msg] = pckern("model_from_ode", "x'=-x" + newline + "foo(" + newline + "done");
+            testCase.verifyEqual(m, uint64(0));
+            testCase.verifyNotEmpty(msg);
+            [m, diag, msg] = pckern("model_from_ode", "par a=1" + newline + "done" + newline);
+            testCase.verifyEqual(m, uint64(0));
+            d = jsondecode(diag);
+            sev = strings(1, 0);
+            for e = reshape(d.diagnostics, 1, [])
+                sev(end+1) = string(e.severity); %#ok<AGROW>
+            end
+            testCase.verifyFalse(any(sev == "error"));
+            testCase.verifyNotEmpty(msg);
+        end
+
         function nonAutonomousModelIsRejected(testCase)
             % model_compile rejects a model that uses t, so run_start never
             % sees a compiled one (the library keeps a second guard there).
@@ -236,7 +256,7 @@ classdef GatewayTest < matlab.unittest.TestCase
         function tooManyOutputsAreBadArg(testCase)
             testCase.verifyError(@() GatewayTest.threeOutputs("version"), ...
                 "phasecont:engine:badArg");
-            testCase.verifyError(@() GatewayTest.threeOutputs("model_from_ode", "x"), ...
+            testCase.verifyError(@() GatewayTest.fourOutputs("model_from_ode", "x"), ...
                 "phasecont:engine:badArg");
             testCase.verifyError(@() GatewayTest.oneOutput("panic"), ...
                 "phasecont:engine:badArg");
@@ -312,6 +332,10 @@ classdef GatewayTest < matlab.unittest.TestCase
     methods (Static, Access = private)
         function threeOutputs(varargin)
             [~, ~, ~] = pckern(varargin{:});
+        end
+
+        function fourOutputs(varargin)
+            [~, ~, ~, ~] = pckern(varargin{:});
         end
 
         function oneOutput(varargin)

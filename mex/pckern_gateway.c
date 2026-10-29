@@ -13,7 +13,7 @@
  *   [v, lib] = pckern("version")
  *   pckern("panic")                       always raises phasecont:engine:panic
  *   r = pckern("panic_in_worker")         run_poll on r raises the panic
- *   [m, diag] = pckern("model_from_ode", text)
+ *   [m, diag, msg] = pckern("model_from_ode", text)   msg: last_error on a model error
  *   pckern("model_compile", m [, opts])
  *   info = pckern("model_info", m)
  *   f = pckern("model_rhs", m, x, p)
@@ -482,9 +482,10 @@ static void cmd_model_from_ode(int nlhs, mxArray *plhs[], int nrhs, const mxArra
 {
     char *text, *diag = NULL;
     uint64_t m = 0;
+    char *msg_copy = NULL;
     int32_t rc;
     need_args(nrhs, 2, 2, "model_from_ode");
-    need_outs(nlhs, 2, "model_from_ode");
+    need_outs(nlhs, 3, "model_from_ode");
     text = get_text(prhs[1], "the model text");
     rc = g_api->model_from_ode(text, strlen(text), &m, &diag);
     mxFree(text);
@@ -492,12 +493,25 @@ static void cmd_model_from_ode(int nlhs, mxArray *plhs[], int nrhs, const mxArra
         g_api->free_string(diag);
         check(rc);
     }
+    /* Read last_error before any other library call. A lowering failure
+     * has no error entry in the diagnostics, only this text. */
+    if (rc == PC_ERR_MODEL && nlhs > 2) {
+        const char *e = g_api->last_error();
+        size_t n = e ? strlen(e) : 0;
+        msg_copy = (char *)mxMalloc(n + 1);
+        memcpy(msg_copy, e ? e : "", n + 1);
+    }
     /* A model error is not raised: phasecont.Model formats the diagnostics. */
     plhs[0] = uint64_scalar(rc == PC_OK ? m : 0);
     if (nlhs > 1)
         plhs[1] = take_rust_string(diag);
     else
         g_api->free_string(diag);
+    if (nlhs > 2) {
+        plhs[2] = utf8_to_char(msg_copy ? msg_copy : "");
+        if (msg_copy)
+            mxFree(msg_copy);
+    }
 }
 
 static void cmd_model_compile(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
