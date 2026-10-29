@@ -29,7 +29,7 @@ pub use normal::{
     special_coefficient,
 };
 pub use palc::continue_branch;
-pub use panic::{install_hook, take_last_panic};
+pub use panic::{install_hook, payload_message, recording, take_last_panic};
 pub use problem::Problem;
 pub use refine::{
     BpSystem, DefiningSystem, HopfSystem, LpSystem, MAX_REFINE_ITERS, NewtonResult, NewtonStep,
