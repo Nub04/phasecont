@@ -4,12 +4,16 @@
 //! thread. The MATLAB side sends owned requests over a channel and waits for
 //! the reply, which also serializes calls from several threads.
 
-use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 
-use pc_engine::{EpSetup, Evaluator, ModelEval, Options, build_allowing_t, equilibrium};
+use pc_engine::{
+    EpSetup, Evaluator, ModelEval, Options, build_allowing_t, engine_kinds, entry_symbol,
+    equilibrium,
+};
 use pc_ir::{EntryKind, IrModel};
 use pc_ode::{Model, ModelInfo};
 
@@ -33,6 +37,7 @@ pub(crate) struct Names {
 
 enum Request {
     Compile(Evaluator),
+    EmitC(PathBuf),
     Rhs { x: Vec<f64>, p: Vec<f64>, t: f64 },
     Equilibrium { setup: EpSetup, opts: Options },
     Panic,
@@ -47,6 +52,7 @@ pub(crate) struct Equilibrium {
 
 enum Reply {
     Compiled,
+    CFile(PathBuf),
     Rhs(Vec<f64>),
     Equilibrium(Equilibrium),
 }
@@ -63,8 +69,11 @@ pub(crate) struct ModelHandle {
     /// The lowered model. A run reads its names and defaults to check a problem.
     pub ir: IrModel,
     pub names: Names,
-    /// The evaluator the model thread holds: 0 none, 1 jit, 2 fallback. Written by that thread.
-    evaluator: Arc<AtomicU8>,
+    /// The evaluator the model thread holds, with the library path for an AOT one.
+    /// Written by that thread after a successful compile.
+    evaluator: Arc<Mutex<Option<Evaluator>>>,
+    /// The C file of the last successful `emit_c`.
+    c_file: Mutex<Option<PathBuf>>,
     /// Written by the model thread after every request.
     max_frame: Arc<AtomicU32>,
     tx: Mutex<Option<Sender<Msg>>>,
@@ -89,7 +98,7 @@ impl ModelHandle {
     pub fn new(model: Model, info: ModelInfo, names: Names, ir: IrModel) -> Result<ModelHandle> {
         let (tx, rx) = mpsc::channel();
         let max_frame = Arc::new(AtomicU32::new(0));
-        let evaluator = Arc::new(AtomicU8::new(0));
+        let evaluator = Arc::new(Mutex::new(None));
         let ctx = Context {
             model: model.clone(),
             info: info.clone(),
@@ -109,6 +118,7 @@ impl ModelHandle {
             ir,
             names,
             evaluator,
+            c_file: Mutex::new(None),
             max_frame,
             tx: Mutex::new(Some(tx)),
             thread: Mutex::new(Some(thread)),
@@ -125,11 +135,12 @@ impl ModelHandle {
 
     /// The evaluator of the last successful compile, or None.
     pub fn evaluator(&self) -> Option<Evaluator> {
-        match self.evaluator.load(Ordering::Relaxed) {
-            1 => Some(Evaluator::Jit),
-            2 => Some(Evaluator::Fallback),
-            _ => None,
-        }
+        lock(&self.evaluator).clone()
+    }
+
+    /// The C file written by the last successful `emit_c`, or None.
+    pub fn c_file(&self) -> Option<PathBuf> {
+        lock(&self.c_file).clone()
     }
 
     /// The largest JIT frame the model thread has compiled, 0 before any.
@@ -151,6 +162,17 @@ impl ModelHandle {
         match self.call(Request::Compile(which))? {
             Reply::Compiled => Ok(()),
             _ => Err(Error::Internal("unexpected reply to compile".into())),
+        }
+    }
+
+    /// Writes the C library source for every engine entry into `dir` and records the path.
+    pub fn emit_c(&self, dir: PathBuf) -> Result<PathBuf> {
+        match self.call(Request::EmitC(dir))? {
+            Reply::CFile(path) => {
+                *lock(&self.c_file) = Some(path.clone());
+                Ok(path)
+            }
+            _ => Err(Error::Internal("unexpected reply to emit_c".into())),
         }
     }
 
@@ -222,18 +244,13 @@ struct Context {
     warm_x: Vec<f64>,
     warm_p: Vec<f64>,
     max_frame: Arc<AtomicU32>,
-    evaluator: Arc<AtomicU8>,
+    evaluator: Arc<Mutex<Option<Evaluator>>>,
 }
 
 fn handle(req: Request, ctx: &Context, ev: &mut Option<Box<dyn ModelEval>>) -> Result<Reply> {
     match req {
         Request::Compile(which) => {
-            let code = match &which {
-                Evaluator::Jit => 1,
-                Evaluator::Fallback => 2,
-                Evaluator::Aot { .. } => 3,
-            };
-            let mut built = build_allowing_t(&ctx.model, &ctx.info, which)?;
+            let mut built = build_allowing_t(&ctx.model, &ctx.info, which.clone())?;
             // The JIT compiles an entry on its first call. Run `F` once so that the
             // compile happens here and `jit_max_frame` is set. The value does not matter,
             // and a NaN at the declared start is not an error.
@@ -242,9 +259,10 @@ fn handle(req: Request, ctx: &Context, ev: &mut Option<Box<dyn ModelEval>>) -> R
             let mut out = vec![0.0; built.n()];
             let _ = built.eval(&EntryKind::F, &ctx.warm_x, &p, &[], &mut out);
             *ev = Some(built);
-            ctx.evaluator.store(code, Ordering::Relaxed);
+            *lock(&ctx.evaluator) = Some(which);
             Ok(Reply::Compiled)
         }
+        Request::EmitC(dir) => Ok(Reply::CFile(write_c(&ctx.model, &ctx.info, &dir)?)),
         Request::Rhs { x, mut p, t } => {
             let ev = compiled(ev)?;
             p.push(t);
@@ -267,4 +285,36 @@ fn handle(req: Request, ctx: &Context, ev: &mut Option<Box<dyn ModelEval>>) -> R
         }
         Request::Panic => panic!("debug model panic"),
     }
+}
+
+/// FNV-1a, 64 bit. It names the C file, so it must not change between releases.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+/// Lowers the model, emits C for every entry in `engine_kinds` and writes it to
+/// `<dir>/pc_model_<hash>.c`, creating `dir` if it is missing.
+fn write_c(model: &Model, info: &ModelInfo, dir: &Path) -> Result<PathBuf> {
+    let mut ir = pc_ir::lower(model, info).map_err(|errs| {
+        let msgs: Vec<&str> = errs.iter().map(|e| e.message.as_str()).collect();
+        Error::Model(msgs.join("; "))
+    })?;
+    let kinds = engine_kinds();
+    let mut entries = Vec::with_capacity(kinds.len());
+    for k in &kinds {
+        entries.push(
+            ir.entry(k)
+                .map_err(|e| Error::Model(format!("emit_c: {e}")))?,
+        );
+    }
+    let named: Vec<(String, &pc_ir::Entry)> =
+        kinds.iter().map(entry_symbol).zip(entries.iter()).collect();
+    let text = pc_codegen::emit_c(&ir, &named);
+    let path = dir.join(format!("pc_model_{:016x}.c", fnv1a64(text.as_bytes())));
+    std::fs::create_dir_all(dir)
+        .and_then(|()| std::fs::write(&path, &text))
+        .map_err(|e| bad_arg(format!("emit_c: cannot write {}: {e}", path.display())))?;
+    Ok(path)
 }

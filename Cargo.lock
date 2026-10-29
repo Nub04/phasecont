@@ -834,6 +834,7 @@ version = "0.0.0"
 name = "pc-ffi"
 version = "0.0.0"
 dependencies = [
+ "pc-codegen",
  "pc-engine",
  "pc-ir",
  "pc-jit",

@@ -6,6 +6,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 use std::ffi::c_char;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use pc_engine::{EngineError, EpSetup, Evaluator, Options, Run, RunSpec};
@@ -74,10 +75,32 @@ pub unsafe extern "C" fn model_from_ode(
     })
 }
 
-/// Reads the `model_compile` options: NULL or an object with only `evaluator`.
-fn evaluator_option(opts: *const c_char) -> Result<Evaluator> {
+/// What `model_compile` reads from its options.
+struct CompileOptions {
+    evaluator: Evaluator,
+    emit_c: Option<PathBuf>,
+}
+
+fn string_option<'a>(
+    map: &'a serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<&'a str>> {
+    match map.get(key) {
+        None => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s)),
+        Some(_) => Err(bad_arg(format!("{key}: expected a string"))),
+    }
+}
+
+/// Reads the `model_compile` options: NULL or an object with the keys `evaluator`
+/// ("jit", "fallback" or "aot"), `aot_lib` (required by "aot") and `emit_c` (a folder).
+fn compile_options(opts: *const c_char) -> Result<CompileOptions> {
+    let mut out = CompileOptions {
+        evaluator: Evaluator::Jit,
+        emit_c: None,
+    };
     if opts.is_null() {
-        return Ok(Evaluator::Jit);
+        return Ok(out);
     }
     let text = unsafe { str_arg(opts, "options") }?;
     let v: Value = serde_json::from_str(text)
@@ -85,24 +108,42 @@ fn evaluator_option(opts: *const c_char) -> Result<Evaluator> {
     let map = v
         .as_object()
         .ok_or_else(|| bad_arg("options: expected a JSON object"))?;
-    if let Some(key) = map.keys().find(|k| k.as_str() != "evaluator") {
+    if let Some(key) = map
+        .keys()
+        .find(|k| !["evaluator", "aot_lib", "emit_c"].contains(&k.as_str()))
+    {
         return Err(bad_arg(format!(
-            "{key}: unknown key; the only key is \"evaluator\""
+            "{key}: unknown key; the keys are \"evaluator\", \"aot_lib\" and \"emit_c\""
         )));
     }
-    match map.get("evaluator") {
-        None => Ok(Evaluator::Jit),
-        Some(Value::String(s)) if s == "jit" => Ok(Evaluator::Jit),
-        Some(Value::String(s)) if s == "fallback" => Ok(Evaluator::Fallback),
-        Some(_) => Err(bad_arg("evaluator: expected \"jit\" or \"fallback\"")),
+    let lib = string_option(map, "aot_lib")?;
+    out.evaluator = match string_option(map, "evaluator")? {
+        None | Some("jit") => Evaluator::Jit,
+        Some("fallback") => Evaluator::Fallback,
+        Some("aot") => Evaluator::Aot {
+            lib: PathBuf::from(lib.ok_or_else(|| bad_arg("evaluator \"aot\" needs \"aot_lib\""))?),
+        },
+        Some(_) => {
+            return Err(bad_arg(
+                "evaluator: expected \"jit\", \"fallback\" or \"aot\"",
+            ));
+        }
+    };
+    if lib.is_some() && !matches!(out.evaluator, Evaluator::Aot { .. }) {
+        return Err(bad_arg("aot_lib: only valid with evaluator \"aot\""));
     }
+    out.emit_c = string_option(map, "emit_c")?.map(PathBuf::from);
+    Ok(out)
 }
 
 pub unsafe extern "C" fn model_compile(model: u64, opts: *const c_char) -> i32 {
     barrier(|| {
         let h = model_handle(model)?;
-        let which = evaluator_option(opts)?;
-        h.compile(which)
+        let o = compile_options(opts)?;
+        if let Some(dir) = o.emit_c {
+            h.emit_c(dir)?;
+        }
+        h.compile(o.evaluator)
     })
 }
 
@@ -291,11 +332,17 @@ pub unsafe extern "C" fn model_info(model: u64, out_json: *mut *mut c_char) -> i
         let slot = unsafe { out_ptr(out_json, "info_json") }?;
         *slot = std::ptr::null_mut();
         let h = model_handle(model)?;
-        let evaluator = h.evaluator().map(|e| match e {
+        let evaluator = h.evaluator();
+        let name = evaluator.as_ref().map(|e| match e {
             Evaluator::Jit => "jit",
             Evaluator::Fallback => "fallback",
             Evaluator::Aot { .. } => "aot",
         });
+        let aot_lib = match &evaluator {
+            Some(Evaluator::Aot { lib }) => Some(lib.to_string_lossy().into_owned()),
+            _ => None,
+        };
+        let c_file = h.c_file().map(|p| p.to_string_lossy().into_owned());
         let names = &h.names;
         let v = json!({
             "n": h.n(),
@@ -306,7 +353,9 @@ pub unsafe extern "C" fn model_info(model: u64, out_json: *mut *mut c_char) -> i
             "init": names.init,
             "aux": names.aux,
             "autonomous": names.autonomous,
-            "evaluator": evaluator,
+            "evaluator": name,
+            "aot_lib": aot_lib,
+            "c_file": c_file,
             "jit_max_frame": h.max_frame(),
         });
         let s =

@@ -13,6 +13,7 @@ name = "pckern"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+pc-codegen = { path = "../pc-codegen" }
 pc-engine = { path = "../pc-engine" }
 pc-ir = { path = "../pc-ir" }
 pc-jit = { path = "../pc-jit" }

@@ -297,7 +297,7 @@ typedef struct {
   int32_t (*free_handle)(uint64_t handle);
   void    (*free_string)(char* s);
   const char* (*last_error)(void);                                        /* thread-local */
-  int32_t (*model_info)(uint64_t model, char** info_json);                /* names, values, init, n, n_p, evaluator, jit_max_frame */
+  int32_t (*model_info)(uint64_t model, char** info_json);                /* names, values, init, n, n_p, evaluator, aot_lib, c_file, jit_max_frame */
   int32_t (*model_equilibrium)(uint64_t model, const double* u0, size_t nu, const double* p, size_t np,
                                const char* opts_json, double* u_out, size_t nu_out,
                                double* eig_out, size_t neig_out);          /* eig as [re; im], 2n */
@@ -310,7 +310,7 @@ typedef struct {
 
 **Time.** `model_compile` accepts a model whose equations use `t`, and `model_info` reports `autonomous: false` for it. `model_rhs` on such a model returns nonAutonomous with the message `the model depends on t; call model_rhs_t`. `model_rhs_t` evaluates `f(x, p, t)` for any model, needs a finite `t` (badArg otherwise), and a model that does not use `t` ignores it. There is no default for `t`. `run_start` and `model_equilibrium` need an autonomous model and return nonAutonomous otherwise. Adding `model_rhs_t` grew the table from 120 to 128 bytes and left `abi_version` at 1.
 
-**`model_compile` keys (P8a).** `opts_json` takes `evaluator` (`jit`, `fallback` or `aot`). With `"emit_c":"<dir>"`, the call writes the model's C text into that folder and returns its path in `model_info`. With `"evaluator":"aot"`, the call also takes `"aot_lib":"<path>"`, the library that `mex` built from that C text. The engine opens it with `libloading` and calls `pc_aot_init` (section 4). These are JSON keys, so the table keeps its 17 members and 128 bytes, and `abi_version` stays 1.
+**`model_compile` keys (P8a).** `opts_json` takes `evaluator` (`jit`, `fallback` or `aot`). With `"emit_c":"<dir>"`, the call writes the model's C text into that folder and returns its path in `model_info` as `c_file`. With `"evaluator":"aot"`, the call also takes `"aot_lib":"<path>"`, the library that `mex` built from that C text. The engine opens it with `libloading` and calls `pc_aot_init` (section 4). These are JSON keys, so the table keeps its 17 members and 128 bytes, and `abi_version` stays 1.
 
 **Error codes.** 0 ok, 1 panic, 2 badArg, 3 badHandle, 4 internal, 5 model, 6 badProblem, 7 nonAutonomous, 8 numeric (`Singular`, `NewtonFailed`, `StepTooSmall`). The gateway alone raises `load` and `unknown`. MATLAB error IDs are `phasecont:engine:<kind>`.
 
