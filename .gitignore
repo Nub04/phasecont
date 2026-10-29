@@ -31,3 +31,5 @@ codegen/
 Thumbs.db
 
 !crates/pc-cli/tests/fixtures/pe/fixture.dll
+
+/toolbox/bin/

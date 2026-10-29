@@ -49,7 +49,7 @@ Commands: `rustc -vV`, `cargo -V`, `rustfmt -V`, `cargo clippy -V`, `rust-analyz
 | MinGW binutils | `mingw64-binutils` 2.46.0-2.fc45, which has `x86_64-w64-mingw32-dlltool` and `x86_64-w64-mingw32-objdump` |
 | MinGW runtime | `mingw64-crt` and `mingw64-winpthreads-static` 14.0.0-3.fc45, `mingw64-headers` 14.0.0-2.fc45 |
 
-The linker for `x86_64-pc-windows-gnu` is set in `spikes/.cargo/config.toml`. `x86_64-w64-mingw32-objdump -p pckern.dll | grep 'DLL Name'` lists the DLLs a build imports.
+`scripts/build-pckern` sets the linker for `x86_64-pc-windows-gnu` through `CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER` (default `x86_64-w64-mingw32-gcc`). `spikes/.cargo/config.toml` still sets it for the spike. `x86_64-w64-mingw32-objdump -p pckern.dll | grep 'DLL Name'` lists the DLLs a build imports.
 
 ## Cargo tools
 
@@ -134,7 +134,7 @@ The probe files and their runner are in `references/xpp-probes/`.
 
 ## Staging folder
 
-Windows MATLAB loads compiled binaries from the Windows file system, so Windows build outputs are staged under `/mnt/c/Users/<user>/phasecont-stage/` (`C:\Users\<user>\phasecont-stage\`). The spikes use its `spikes\` subfolder, which `spikes/stage.sh` creates.
+Windows MATLAB loads compiled binaries from the Windows file system, so Windows build outputs are staged under `/mnt/c/Users/<user>/phasecont-stage/` (`C:\Users\<user>\phasecont-stage\`). The spikes use its `spikes\` subfolder, which `spikes/stage.sh` creates. `scripts/build-pckern` and `buildtool cargo` stage `pckern.dll` in `C:\Users\<user>\phasecont-stage\bin\win64`.
 
 `cmd.exe` cannot use a `\\wsl.localhost\...` path as its working directory. Run from the repo folder, `scripts/matlab-win "[s,o]=system('cd'); disp(o)"` prints `UNC paths are not supported.  Defaulting to Windows directory.` followed by `C:\Windows`. MATLAB code that runs commands with `system` therefore changes to a folder on `C:` first. `mex` is not affected: spike S1 built the gateway from the repo folder with relative source paths, and the build succeeded (`spikes/results/s1_gateway_nodll.txt`).
 
