@@ -679,6 +679,7 @@ fn fs_loader_symlink_self_include_is_a_cycle() {
 
 /// `abs` as a path relative to the working directory, going up to the root
 /// first, so the result does not depend on where the tests run.
+#[cfg(unix)]
 fn relative_to_cwd(abs: &Path) -> PathBuf {
     let cwd = std::env::current_dir().unwrap();
     let mut rel = PathBuf::new();
@@ -863,6 +864,7 @@ fn display_names_drop_only_dot() {
 }
 
 /// Resolves the top file `top` with `FsLoader`.
+#[cfg(unix)]
 fn resolve_fs(top: &Path) -> (Model, Vec<Diagnostic>, SourceMap) {
     let mut map = SourceMap::new();
     let id = FsLoader::new().load_top(&mut map, top).unwrap();

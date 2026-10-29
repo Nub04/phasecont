@@ -82,11 +82,10 @@ jobs:
           name: pckern-win64
           path: prebuilt
       - name: Point the cargo task at the prebuilt DLL
-        shell: powershell
-        run: |
-          "PHASECONT_PREBUILT=$env:GITHUB_WORKSPACE\prebuilt" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        shell: cmd
+        run: echo PHASECONT_PREBUILT=%GITHUB_WORKSPACE%\prebuilt>>"%GITHUB_ENV%"
       - name: Run buildtool cargo mex test
-        shell: powershell
+        shell: cmd
         run: matlab -batch "buildtool cargo mex test"
       - uses: actions/upload-artifact@v4
         if: always()
