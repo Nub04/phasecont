@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 
 use pc_engine::{EpSetup, Evaluator, ModelEval, Options, build, equilibrium};
-use pc_ir::EntryKind;
+use pc_ir::{EntryKind, IrModel};
 use pc_ode::{Model, ModelInfo};
 
 use crate::barrier::guarded;
@@ -57,11 +57,11 @@ enum Msg {
 }
 
 pub(crate) struct ModelHandle {
-    /// The expanded model, cloned for each run (Task 7).
-    #[allow(dead_code)]
+    /// The expanded model, cloned for each run.
     pub model: Model,
-    #[allow(dead_code)]
     pub info: ModelInfo,
+    /// The lowered model. A run reads its names and defaults to check a problem.
+    pub ir: IrModel,
     pub names: Names,
     /// The evaluator the model thread holds: 0 none, 1 jit, 2 fallback. Written by that thread.
     evaluator: Arc<AtomicU8>,
@@ -86,7 +86,7 @@ fn gone() -> Error {
 
 impl ModelHandle {
     /// Starts the model thread. It owns a copy of the model.
-    pub fn new(model: Model, info: ModelInfo, names: Names) -> Result<ModelHandle> {
+    pub fn new(model: Model, info: ModelInfo, names: Names, ir: IrModel) -> Result<ModelHandle> {
         let (tx, rx) = mpsc::channel();
         let max_frame = Arc::new(AtomicU32::new(0));
         let evaluator = Arc::new(AtomicU8::new(0));
@@ -106,6 +106,7 @@ impl ModelHandle {
         Ok(ModelHandle {
             model,
             info,
+            ir,
             names,
             evaluator,
             max_frame,
@@ -197,10 +198,19 @@ fn serve(ctx: Context, rx: Receiver<Msg>) {
     }
 }
 
+/// The text of the error for a model that has no evaluator yet.
+pub(crate) const NOT_COMPILED: &str = "model is not compiled; call model_compile first";
+
+// A run reads the `IrModel` on the calling thread.
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<IrModel>();
+};
+
 fn compiled(ev: &mut Option<Box<dyn ModelEval>>) -> Result<&mut dyn ModelEval> {
     match ev {
         Some(b) => Ok(&mut **b),
-        None => Err(bad_arg("model is not compiled; call model_compile first")),
+        None => Err(bad_arg(NOT_COMPILED)),
     }
 }
 

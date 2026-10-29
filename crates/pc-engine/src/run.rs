@@ -321,6 +321,16 @@ impl Run {
             .map(|b| b.stop.clone())
     }
 
+    /// The warnings of `branch`; empty when the branch does not exist.
+    pub fn warnings(&self, branch: usize) -> Vec<String> {
+        self.shared
+            .lock()
+            .branches
+            .get(branch)
+            .map(|b| b.warnings.clone())
+            .unwrap_or_default()
+    }
+
     /// Asks the worker to stop. Returns at once.
     pub fn cancel(&self) {
         self.shared.cancel.store(true, Ordering::Relaxed);
@@ -493,6 +503,26 @@ mod tests {
         }
         let st = run.join();
         assert!(matches!(st.state, RunState::Panicked { .. }));
+    }
+
+    #[test]
+    fn warnings_come_from_the_branch_and_are_empty_for_a_missing_one() {
+        let mut b = placeholder();
+        b.warnings.push("first".into());
+        let shared = Arc::new(Shared {
+            inner: Mutex::new(Inner {
+                branches: vec![b, placeholder()],
+                state: RunState::Done,
+            }),
+            cancel: AtomicBool::new(false),
+        });
+        let run = Run {
+            shared,
+            handle: None,
+        };
+        assert_eq!(run.warnings(0), ["first"]);
+        assert!(run.warnings(1).is_empty());
+        assert!(run.warnings(2).is_empty());
     }
 
     #[test]

@@ -8,15 +8,16 @@
 use std::ffi::c_char;
 use std::panic::catch_unwind;
 
-pub mod api;
-pub mod barrier;
+mod api;
+mod barrier;
 pub mod error;
 pub mod json;
 mod model;
 pub mod parse;
-pub mod registry;
+mod registry;
+mod run;
 
-pub use api::debug_handle;
+pub use api::{debug_handle, debug_model_panic};
 
 pub const PC_ABI_VERSION: u32 = 1;
 

@@ -119,7 +119,9 @@ fn debug_panic_checks_its_arguments() {
     assert_eq!(unsafe { (t.debug_panic)(7, ptr::null_mut()) }, 2);
     assert_eq!(unsafe { (t.debug_panic)(1, ptr::null_mut()) }, 2);
     let mut run = 0u64;
-    assert_eq!(unsafe { (t.debug_panic)(1, &mut run) }, 4);
+    assert_eq!(unsafe { (t.debug_panic)(1, &mut run) }, 0);
+    assert_ne!(run, 0);
+    assert_eq!((t.free_handle)(run), 0);
 }
 
 #[test]
@@ -135,38 +137,4 @@ fn a_debug_handle_passed_as_a_model_is_a_bad_handle() {
         last_error()
     );
     assert_eq!((api().free_handle)(id), 0);
-}
-
-#[test]
-fn run_entries_are_stubs() {
-    let t = api();
-    let mut s: *mut c_char = ptr::null_mut();
-    let x = [0.0f64; 2];
-    let mut o = [0.0f64; 2];
-    let mut n = 0usize;
-    let mut run_id = 0u64;
-    unsafe {
-        let rcs = [
-            (
-                "run_start",
-                (t.run_start)(1, c"{}".as_ptr(), x.as_ptr(), 2, x.as_ptr(), 0, &mut run_id),
-            ),
-            ("run_poll", (t.run_poll)(1, &mut s)),
-            (
-                "run_copy",
-                (t.run_copy)(1, 0, 0, 0, 1, o.as_mut_ptr(), 2, &mut n),
-            ),
-            ("run_cancel", (t.run_cancel)(1)),
-        ];
-        for (name, rc) in rcs {
-            assert_eq!(rc, 4, "{name}");
-        }
-    }
-}
-
-#[test]
-fn stubs_name_themselves() {
-    let t = api();
-    assert_eq!((t.run_cancel)(1), 4);
-    assert_eq!(last_error(), "run_cancel is not implemented yet");
 }

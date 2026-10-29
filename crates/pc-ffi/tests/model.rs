@@ -403,7 +403,7 @@ fn a_model_without_parameters_cannot_run_equilibrium() {
 fn a_panic_on_the_model_thread_is_reported_and_survived() {
     let m = model(LORENZ);
     assert_eq!(compile(&m, None), 0);
-    assert_eq!(pckern::api::debug_model_panic(m.0), 1);
+    assert_eq!(pckern::debug_model_panic(m.0), 1);
     let e = last_error().replace('\\', "/");
     assert!(e.starts_with("panic: debug model panic (at "), "{e}");
     assert!(e.contains("model.rs:"), "{e}");

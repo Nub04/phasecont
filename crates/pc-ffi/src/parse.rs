@@ -24,6 +24,7 @@ pub(crate) struct Parsed {
     pub model: pc_ode::Model,
     pub info: pc_ode::ModelInfo,
     pub names: Names,
+    pub ir: pc_ir::IrModel,
 }
 
 /// The diagnostics come back whether or not the model loaded.
@@ -89,13 +90,14 @@ fn parse_inline(text: &str) -> Outcome {
     let result = match pc_ir::lower(&loaded.expanded, &loaded.info) {
         Ok(ir) => Ok(Parsed {
             names: Names {
-                states: ir.state_names,
-                parameters: ir.param_names,
-                aux: ir.aux_names,
-                init: ir.init,
-                par_values: ir.par_values,
+                states: ir.state_names.clone(),
+                parameters: ir.param_names.clone(),
+                aux: ir.aux_names.clone(),
+                init: ir.init.clone(),
+                par_values: ir.par_values.clone(),
                 autonomous: ir.autonomous,
             },
+            ir,
             model: loaded.expanded,
             info: loaded.info,
         }),
