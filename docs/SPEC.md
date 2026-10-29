@@ -371,7 +371,7 @@ plot(br, Var="x");                                        % stable solid, unstab
 **GitHub Actions.**
 - **Rust job:** fmt, clippy and test on Ubuntu, Windows and macOS, with `cargo deny` on Ubuntu only, since licenses do not depend on the OS.
 - **`pckern-win` job:** on Ubuntu, cross-builds `pckern.dll` with MinGW, checks its imports and uploads the DLL as an artifact.
-- **MATLAB job:** `matlab-actions/setup-matlab` and `matlab-actions/run-build` on all three operating systems. It uses the `MLM_LICENSE_TOKEN` secret for the batch license. The Windows job uses the `pckern-win` artifact, so the Windows runner needs no MinGW.
+- **MATLAB job:** runs on a self-hosted Windows runner (labels `self-hosted`, `windows`, `matlab`) that has its own MATLAB R2026b, so it needs no license secret. It downloads the `pckern-win` artifact, sets `PHASECONT_PREBUILT` to it and runs `matlab -batch "buildtool cargo mex test"`, so the runner needs no Rust or MinGW. Pull requests from forks skip it. Linux and macOS MATLAB jobs wait for a licensing route.
 - **Release job:** collects the per-platform binaries into one `.mltbx` and creates the GitHub Release with the `.mltbx` attached in the same step, so File Exchange serves the toolbox file.
 - **Linux binaries:** built against glibc 2.28.
 
