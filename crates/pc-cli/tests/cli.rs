@@ -7,6 +7,7 @@
 mod common;
 
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::Command;
 
 use common::{code, run, stderr, stdout};
