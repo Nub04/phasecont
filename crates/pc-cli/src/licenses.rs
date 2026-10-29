@@ -59,8 +59,8 @@ fn run(target: &str, package: &str, out: &Path, overrides: Option<&Path>) -> Res
     let mut text = String::new();
     let mut missing: Vec<String> = Vec::new();
     for k in &krates {
-        let mut files = license_files(&k.dir)
-            .map_err(|e| format!("{} {}: {e}", k.name, k.version))?;
+        let mut files =
+            license_files(&k.dir).map_err(|e| format!("{} {}: {e}", k.name, k.version))?;
         let mut note = String::new();
         let fallback = overrides.map(|o| o.join(&k.name)).filter(|d| d.is_dir());
         if let (true, Some(dir)) = (files.is_empty(), fallback) {
