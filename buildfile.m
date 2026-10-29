@@ -5,8 +5,9 @@ function plan = buildfile
 % From WSL:                       scripts/matlab-win "buildtool <task>"
 %
 % "buildtool -tasks" lists the tasks. The cargo and mex tasks write to the
-% folder that tests/+fixtures/binFolder.m names. The package task stops with
-% an error until P8a.
+% folder that tests/+fixtures/binFolder.m names. The package task builds
+% build/PhaseCont-0.3.0.mltbx from those binaries (win64 only, Windows MATLAB);
+% it needs the cargo and mex outputs and a THIRD_PARTY_LICENSES.txt (see packageTask).
 
 plan = buildplan(localfunctions);
 
@@ -94,10 +95,68 @@ end
 mex(args{:});
 end
 
-function packageTask(~)
-% Package the toolbox as a .mltbx with matlab.addons.toolbox.ToolboxOptions
-error("phasecont:build:notImplemented", ...
-    "The package task arrives in P8a. Toolbox UUID: %s", toolboxUuid());
+function packageTask(context)
+% Package the toolbox as build/PhaseCont-<version>.mltbx (win64 only in v0.3).
+% scripts/packageToolbox.m does the staging and packaging; this task gathers
+% the inputs. It needs the binaries from the cargo and mex tasks, and a
+% THIRD_PARTY_LICENSES.txt: made by pc-cli licenses, or with PHASECONT_PREBUILT
+% set, the file that PHASECONT_LICENSES names.
+root = context.Plan.RootFolder;
+if computer("arch") ~= "win64"
+    error("phasecont:package:platform", ...
+        "v0.3 packages win64 only; run the package task in Windows MATLAB (this is %s).", ...
+        computer("arch"));
+end
+cleanup = addTestsToPath(root); %#ok<NASGU>
+oldPath = path;
+addpath(fullfile(root, "scripts"));
+restorePath = onCleanup(@() path(oldPath)); %#ok<NASGU>
+
+version = toolboxVersion();
+packageToolbox( ...
+    Root = root, ...
+    StageFolder = fullfile(root, "build", "package", "PhaseCont"), ...
+    OutputFile = fullfile(root, "build", "PhaseCont-" + version + ".mltbx"), ...
+    Version = version, ...
+    Identifier = toolboxUuid(), ...
+    BinFolder = fixtures.binFolder(root), ...
+    LicensesFile = licensesFile(root));
+end
+
+function file = licensesFile(root)
+% Path of the third-party license text to ship. With PHASECONT_PREBUILT set it
+% is the file named by PHASECONT_LICENSES; otherwise pc-cli licenses writes it.
+if strlength(string(getenv("PHASECONT_PREBUILT"))) > 0
+    file = string(getenv("PHASECONT_LICENSES"));
+    if strlength(file) == 0 || ~isfile(file) || dir(file).bytes == 0
+        error("phasecont:package:licenses", ...
+            "With PHASECONT_PREBUILT set, set PHASECONT_LICENSES to a non-empty THIRD_PARTY_LICENSES.txt (the output of pc-cli licenses).");
+    end
+    return
+end
+outDir = fullfile(root, "build");
+if ~isfolder(outDir)
+    mkdir(outDir);
+end
+file = fullfile(outDir, "THIRD_PARTY_LICENSES.txt");
+args = "cargo run -q --locked -p pc-cli -- licenses --target x86_64-pc-windows-gnu" + ...
+    " --out build/THIRD_PARTY_LICENSES.txt --overrides licenses/overrides";
+if ispc && isWslPath(root)
+    [distro, linuxPath] = splitWslPath(root);
+    cmd = sprintf('wsl.exe -d %s --cd "%s" -- %s', distro, linuxPath, args);
+    status = runFromLocalFolder(cmd);
+else
+    status = system(sprintf('cd "%s" && %s', root, args), "-echo");
+end
+if status ~= 0
+    error("phasecont:build:licenses", ...
+        "pc-cli licenses failed (exit %d); see the output above", status);
+end
+end
+
+function v = toolboxVersion
+% Toolbox version, used for the package metadata and the .mltbx file name.
+v = "0.3.0";
 end
 
 function id = toolboxUuid
