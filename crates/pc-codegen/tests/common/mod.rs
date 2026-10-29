@@ -36,10 +36,12 @@ pub fn gcc_version() -> Option<String> {
     cc_version("gcc")
 }
 
-/// Compilers the AOT text is checked with: gcc, and clang when installed.
+/// Compilers the AOT text is checked with: gcc, and clang when installed. Clang is skipped
+/// on Windows, where it targets MSVC and rejects the `-fPIC` in `FLAGS`.
 pub fn compilers() -> Vec<&'static str> {
     ["gcc", "clang"]
         .into_iter()
+        .filter(|cc| !(cfg!(windows) && *cc == "clang"))
         .filter(|cc| cc_version(cc).is_some())
         .collect()
 }

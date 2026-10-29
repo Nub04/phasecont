@@ -560,7 +560,12 @@ fn fs_loader_resolves_against_the_including_file() {
     // R20 1: `..` is kept in the display name, so it names the opened file.
     assert_eq!(
         map.name(FileId(3)),
-        tmp.0.join("sub/../c.ode").display().to_string()
+        tmp.0
+            .join("sub")
+            .join("..")
+            .join("c.ode")
+            .display()
+            .to_string()
     );
 }
 
