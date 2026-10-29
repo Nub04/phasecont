@@ -106,14 +106,11 @@ P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; the commits are 
 - Settled on 2026-10-28: the in-MATLAB part of the macOS arm64 check in SPEC section 4 moved to P7a. P7a did not run it; it is deferred (see below).
 - The P1 questions are settled for P2: division follows IEEE; `mod` is `fmod(x,y)` plus `y` when the remainder is negative, which probe `fn-mod-more` confirmed on eight more cases; `if` evaluates both branches and selects one.
 - Open from P7a: `model_from_ode` parses one in-memory string with no file loader, so `#include` lines fail with a diagnostic. The MATLAB layer has to inline included files, or a later task adds a loader callback.
-- Carried into the open questions from the P1, P2 and P7a notes, status unchanged:
-  - The pc-ffi worker thread: parsing at depth 200 needs about 800 KB of stack in a debug build, so `pc-ffi` must parse on a worker thread with an explicit stack size (for example 8 MB), not on MATLAB's thread (parked P1). It must also cap the input size, since parse diagnostics grow with the input (about 253 MB for 300000 bad lines in a debug build).
-  - The JIT inside MATLAB on Windows, which P2 could not test here:
-    - Run a model whose frame passes 4 KiB inside MATLAB, so the inline stack probes run on Windows.
+- Carried into the open questions from the P1, P2 and P7a notes:
+  - Closed in P7a by c2ad18f: `pc-ffi` parses on an 8 MiB worker thread and rejects input over 16 MiB. Each Model handle owns an 8 MiB thread that lowers the model and runs either evaluator, so `JitEntries` never moves between threads and needs no `unsafe impl`. The diagnostics JSON keeps the first 1000 diagnostics.
+  - The JIT inside MATLAB on Windows:
+    - `ModelTest` evaluates a model whose JIT frame passes 4 KiB inside MATLAB (it asserts `jit_max_frame > 4096`), so the inline stack probes run on Windows.
     - `cranelift-jit` registers no Windows unwind information. No panic or exception may unwind through JIT code, which rule 7's `catch_unwind` on the Rust side of every call already requires.
-    - `JitEntries` is neither `Send` nor `Sync`. Moving a compiled model to the worker thread needs a justified `unsafe impl`.
-    - Run `Fallback` on the 8 MB worker thread too: its recursion budget is sized for a 1 MiB stack at five nested dual levels.
-    - Lower models on that thread as well. `lower`'s depth limit of 1000 is not a stack bound: about 400 nested user functions overflow a 1 MiB stack in a debug build (a release build at 1 MiB and a debug build at 2 MiB return `TooLarge`).
   - The JIT inside MATLAB on macOS arm64 (moved from P2 by the owner on 2026-10-28). The Rust side of the SPEC section 4 check passes on the macOS runner already (see "Done").
 - Deferred from P7a, with reasons:
   - (a) The MATLAB jobs on Linux and macOS, and the in-MATLAB macOS JIT check. MathWorks' batch token pilot was closed to new requests (checked 2026-10-29), and the repo is private. These resume when a token or a public repo exists.
