@@ -2,11 +2,12 @@
 
 ## Phase
 
-P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) is complete on branch `phase7a-matlab-api`, which is awaiting the owner's push and merge. It is not merged into `main`. P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
+P8a (package v0.3; SPEC section 14) is in progress on branch `phase8a-package`. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 as PR #2 (3748707). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
 
 ## Done
 
 - P3 merged into `main` on 2026-10-28 as PR #1 (dfcfdab).
+- P7a merged into `main` on 2026-10-29 as PR #2 (3748707).
 
 P0 (accepted on 2026-10-22, when the owner approved the decisions in `docs/spikes.md`):
 
@@ -75,7 +76,7 @@ P3 (the numbers below were measured on 2026-10-28 at `fb14bdb` plus the SPEC and
 - `cargo build --target x86_64-pc-windows-gnu -p pc-engine` passes. The four checks pass.
 - Known limit: on a long step across a branch crossing, the trial corrector of the zero search can jump to the other branch, which puts the BP at the wrong place (α = 0.04 instead of 0 in one case). `hmax` bounds it; the test models use 0.1 or 0.5.
 
-P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; the commits are in `git log --oneline dfcfdab..HEAD`; awaiting the owner's push and merge):
+P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; merged into `main` as PR #2, 3748707):
 
 - `pc-ffi` C ABI v1: 17 members in 128 bytes, with `model_rhs_t` appended at offset 120. It has the handle registry, the panic barrier, model threads and runs, and a hand-written `pckern.h` with a layout test.
 - `pc-cli dll-imports`, the build tasks `cargo` and `mex` with `scripts/build-pckern`, and the MEX gateway in `mex/pckern_gateway.c`.
@@ -87,7 +88,7 @@ P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; the commits are 
 
 ## In progress
 
-- Nothing. P7a is complete on `phase7a-matlab-api` and awaits the owner's push and merge.
+- P8a (package v0.3) on branch `phase8a-package`. The plan is `/home/nub04/.claude/plans/phase8a-package.md` (9 commits).
 
 ## Next
 
