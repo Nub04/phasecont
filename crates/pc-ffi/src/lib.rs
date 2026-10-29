@@ -12,6 +12,8 @@ pub mod api;
 pub mod barrier;
 pub mod error;
 pub mod json;
+mod model;
+pub mod parse;
 pub mod registry;
 
 pub use api::debug_handle;

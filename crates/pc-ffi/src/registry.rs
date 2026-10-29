@@ -31,14 +31,19 @@ fn objects() -> MutexGuard<'static, BTreeMap<u64, Entry>> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Stores `value` under a new id. `kind` is a short name ("model", "run")
+/// An object the registry can hold. `KIND` is a short name ("model", "run")
 /// that error messages use instead of a Rust type path.
-pub fn insert<T: Any + Send + Sync>(kind: &'static str, value: T) -> u64 {
+pub(crate) trait Handle: Any + Send + Sync {
+    const KIND: &'static str;
+}
+
+/// Stores `value` under a new id.
+pub(crate) fn insert<T: Handle>(value: T) -> u64 {
     let id = TAG | (NEXT.fetch_add(1, Ordering::Relaxed) << 1) | 1;
     objects().insert(
         id,
         Entry {
-            kind,
+            kind: T::KIND,
             object: Arc::new(value),
         },
     );
@@ -46,7 +51,7 @@ pub fn insert<T: Any + Send + Sync>(kind: &'static str, value: T) -> u64 {
 }
 
 /// Returns a shared reference, so a long computation does not hold the lock.
-pub fn get<T: Any + Send + Sync>(id: u64, kind: &'static str) -> Result<Arc<T>> {
+pub(crate) fn get<T: Handle>(id: u64) -> Result<Arc<T>> {
     let (actual, object) = {
         let map = objects();
         let e = map
@@ -54,9 +59,12 @@ pub fn get<T: Any + Send + Sync>(id: u64, kind: &'static str) -> Result<Arc<T>> 
             .ok_or_else(|| Error::BadHandle(format!("unknown handle 0x{id:016x}")))?;
         (e.kind, Arc::clone(&e.object))
     };
-    object
-        .downcast::<T>()
-        .map_err(|_| Error::BadHandle(format!("handle 0x{id:016x} is a {actual}, not a {kind}")))
+    object.downcast::<T>().map_err(|_| {
+        Error::BadHandle(format!(
+            "handle 0x{id:016x} is a {actual}, not a {}",
+            T::KIND
+        ))
+    })
 }
 
 /// Removes the entry. The object is dropped after the lock is released.
@@ -75,19 +83,33 @@ pub fn remove(id: u64) -> Result<()> {
 mod tests {
     use super::*;
 
+    struct Num(u32);
+    struct Flt;
+    struct Small(u8);
+
+    impl Handle for Num {
+        const KIND: &'static str = "number";
+    }
+    impl Handle for Flt {
+        const KIND: &'static str = "float";
+    }
+    impl Handle for Small {
+        const KIND: &'static str = "small";
+    }
+
     #[test]
     fn ids_are_tagged_typed_and_single_use() {
-        let id = insert("number", 42u32);
+        let id = insert(Num(42));
         assert_eq!(id & TAG, TAG);
         assert_eq!(id & 1, 1);
-        assert_eq!(*get::<u32>(id, "number").unwrap(), 42);
-        let e = get::<f64>(id, "float").unwrap_err();
+        assert_eq!(get::<Num>(id).unwrap().0, 42);
+        let e = get::<Flt>(id).err().unwrap();
         assert_eq!(
             e.to_string(),
             format!("handle 0x{id:016x} is a number, not a float")
         );
         remove(id).unwrap();
-        assert!(matches!(get::<u32>(id, "number"), Err(Error::BadHandle(_))));
+        assert!(matches!(get::<Num>(id), Err(Error::BadHandle(_))));
         assert!(matches!(remove(id), Err(Error::BadHandle(_))));
         assert!(matches!(remove(0), Err(Error::BadHandle(_))));
     }
@@ -101,8 +123,8 @@ mod tests {
         .join();
         assert!(r.is_err());
         assert!(OBJECTS.is_poisoned());
-        let id = insert("number", 7u8);
-        assert_eq!(*get::<u8>(id, "number").unwrap(), 7);
+        let id = insert(Small(7));
+        assert_eq!(get::<Small>(id).unwrap().0, 7);
         remove(id).unwrap();
     }
 }

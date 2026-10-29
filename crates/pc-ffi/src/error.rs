@@ -17,6 +17,8 @@ pub const PC_ERR_NUMERIC: i32 = 8;
 /// A failure that an export turns into an error code and a `last_error` text.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Error {
+    /// A panic that was caught; the text is already `panic: <msg> (at <loc>)`.
+    Panic(String),
     BadArg(String),
     BadHandle(String),
     Internal(String),
@@ -32,6 +34,7 @@ impl Error {
     /// The code the C caller sees.
     pub fn code(&self) -> i32 {
         match self {
+            Error::Panic(_) => PC_ERR_PANIC,
             Error::BadArg(_) => PC_ERR_BAD_ARG,
             Error::BadHandle(_) => PC_ERR_BAD_HANDLE,
             Error::Internal(_) => PC_ERR_INTERNAL,
@@ -46,7 +49,8 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::BadArg(m)
+            Error::Panic(m)
+            | Error::BadArg(m)
             | Error::BadHandle(m)
             | Error::Internal(m)
             | Error::Model(m)
@@ -112,6 +116,7 @@ mod tests {
     #[test]
     fn codes_are_distinct_and_fixed() {
         let all = [
+            Error::Panic(String::new()),
             Error::BadArg(String::new()),
             Error::BadHandle(String::new()),
             Error::Internal(String::new()),
@@ -121,6 +126,6 @@ mod tests {
             Error::Numeric(String::new()),
         ];
         let codes: Vec<i32> = all.iter().map(Error::code).collect();
-        assert_eq!(codes, [2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(codes, [1, 2, 3, 4, 5, 6, 7, 8]);
     }
 }

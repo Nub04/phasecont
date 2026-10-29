@@ -102,3 +102,4 @@ P3 (the numbers below were measured on 2026-10-28 at `fb14bdb` plus the SPEC and
 
 - Settled on 2026-10-28: the in-MATLAB part of the macOS arm64 check in SPEC section 4 moves to P7a, where the MEX gateway first exists (see "Next").
 - The P1 questions are settled for P2: division follows IEEE; `mod` is `fmod(x,y)` plus `y` when the remainder is negative, which probe `fn-mod-more` confirmed on eight more cases; `if` evaluates both branches and selects one.
+- Open (P7a): `model_from_ode` parses one in-memory string with no file loader, so `#include` lines fail with a diagnostic. The MATLAB layer has to inline included files, or a later task adds a loader callback.

@@ -834,6 +834,8 @@ version = "0.0.0"
 dependencies = [
  "pc-engine",
  "pc-ir",
+ "pc-jit",
+ "pc-linalg",
  "pc-ode",
  "serde_json",
 ]

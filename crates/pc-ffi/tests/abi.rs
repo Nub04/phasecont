@@ -123,19 +123,23 @@ fn debug_panic_checks_its_arguments() {
 }
 
 #[test]
-fn type_confusion_is_a_bad_handle() {
-    // A debug handle is not a model.
+fn a_debug_handle_passed_as_a_model_is_a_bad_handle() {
     let id = debug_handle();
     let mut out: *mut c_char = ptr::null_mut();
     let rc = unsafe { (api().model_info)(id, &mut out) };
-    assert_ne!(rc, 0);
+    assert_eq!(rc, 3);
+    assert!(out.is_null());
+    assert!(
+        last_error().contains("is a debug, not a model"),
+        "{}",
+        last_error()
+    );
     assert_eq!((api().free_handle)(id), 0);
 }
 
 #[test]
-fn model_and_run_entries_are_stubs() {
+fn run_entries_are_stubs() {
     let t = api();
-    let mut h = 0u64;
     let mut s: *mut c_char = ptr::null_mut();
     let x = [0.0f64; 2];
     let mut o = [0.0f64; 2];
@@ -143,15 +147,6 @@ fn model_and_run_entries_are_stubs() {
     let mut run_id = 0u64;
     unsafe {
         let rcs = [
-            (
-                "model_from_ode",
-                (t.model_from_ode)(c"x".as_ptr(), 1, &mut h, &mut s),
-            ),
-            ("model_compile", (t.model_compile)(1, c"jit".as_ptr())),
-            (
-                "model_rhs",
-                (t.model_rhs)(1, x.as_ptr(), 2, x.as_ptr(), 0, o.as_mut_ptr(), 2),
-            ),
             (
                 "run_start",
                 (t.run_start)(1, c"{}".as_ptr(), x.as_ptr(), 2, x.as_ptr(), 0, &mut run_id),
@@ -162,22 +157,6 @@ fn model_and_run_entries_are_stubs() {
                 (t.run_copy)(1, 0, 0, 0, 1, o.as_mut_ptr(), 2, &mut n),
             ),
             ("run_cancel", (t.run_cancel)(1)),
-            ("model_info", (t.model_info)(1, &mut s)),
-            (
-                "model_equilibrium",
-                (t.model_equilibrium)(
-                    1,
-                    x.as_ptr(),
-                    2,
-                    x.as_ptr(),
-                    0,
-                    c"{}".as_ptr(),
-                    o.as_mut_ptr(),
-                    2,
-                    o.as_mut_ptr(),
-                    2,
-                ),
-            ),
         ];
         for (name, rc) in rcs {
             assert_eq!(rc, 4, "{name}");
@@ -188,8 +167,6 @@ fn model_and_run_entries_are_stubs() {
 #[test]
 fn stubs_name_themselves() {
     let t = api();
-    assert_eq!(unsafe { (t.model_compile)(1, c"jit".as_ptr()) }, 4);
-    assert_eq!(last_error(), "model_compile is not implemented yet");
     assert_eq!((t.run_cancel)(1), 4);
     assert_eq!(last_error(), "run_cancel is not implemented yet");
 }
