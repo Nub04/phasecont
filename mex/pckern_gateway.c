@@ -37,6 +37,7 @@
 #else
 #include <dlfcn.h>
 #include <limits.h>
+#include <stdlib.h>
 #endif
 
 #include <stdarg.h>
@@ -71,10 +72,23 @@ static char g_lib_path[3 * PC_PATH_MAX]; /* UTF-8 path of the loaded library */
 static void fail(const char *id, const char *fmt, ...)
 {
     char buf[4096];
+    int n;
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(buf, sizeof buf, fmt, ap);
+    n = vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
+    if (n >= (int)sizeof buf) {
+        /* Truncated: drop a UTF-8 sequence that was cut in the middle. */
+        size_t i = sizeof buf - 1;
+        while (i > 0 && ((unsigned char)buf[i - 1] & 0xC0) == 0x80)
+            i--;
+        if (i > 0) {
+            unsigned char lead = (unsigned char)buf[i - 1];
+            size_t need = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+            if (need > 1 && sizeof buf - 1 - (i - 1) < need)
+                buf[i - 1] = '\0';
+        }
+    }
     mexErrMsgIdAndTxt(id, "%s", buf);
 }
 
@@ -189,21 +203,24 @@ static const pc_api_v1_t *open_library(void)
     void *self, *lib, *sym;
     void (*fn)(int, mxArray **, int, const mxArray **) = mexFunction;
     const char *name = PC_LIB_NAME;
-    const char *slash, *err;
+    static char resolved[PC_PATH_MAX];
+    const char *self_path, *slash, *err;
     size_t dir_len;
     pc_api_v1_fn entry;
 
     memcpy(&self, &fn, sizeof self);
     if (!dladdr(self, &info) || !info.dli_fname)
         fail("phasecont:engine:load", "cannot find the MEX file's own path");
-    slash = strrchr(info.dli_fname, '/');
+    /* Resolve symlinks and relative names so the sibling library is found
+     * next to the real file. */
+    self_path = realpath(info.dli_fname, resolved) ? resolved : info.dli_fname;
+    slash = strrchr(self_path, '/');
     if (!slash)
-        fail("phasecont:engine:load", "the MEX file's path \"%s\" has no folder",
-             info.dli_fname);
-    dir_len = (size_t)(slash + 1 - info.dli_fname);
+        fail("phasecont:engine:load", "the MEX file's path \"%s\" has no folder", self_path);
+    dir_len = (size_t)(slash + 1 - self_path);
     if (dir_len + strlen(name) + 1 > sizeof path)
         fail("phasecont:engine:load", "the MEX file's path is too long");
-    memcpy(path, info.dli_fname, dir_len);
+    memcpy(path, self_path, dir_len);
     strcpy(path + dir_len, name);
 
     lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
@@ -340,10 +357,68 @@ static mxArray *uint64_scalar(uint64_t v)
     return a;
 }
 
+/* Decodes one code point from UTF-8 and advances *p. Invalid, overlong,
+ * surrogate, out-of-range and truncated sequences give U+FFFD and consume
+ * the bytes that cannot belong to a valid sequence. */
+static uint32_t next_code_point(const unsigned char **p, const unsigned char *end)
+{
+    const unsigned char *q = *p;
+    unsigned char c = *q++;
+    uint32_t cp, min;
+    int extra, k;
+    if (c < 0x80) {
+        *p = q;
+        return c;
+    }
+    if (c >= 0xC2 && c <= 0xDF) { extra = 1; cp = c & 0x1F; min = 0x80; }
+    else if (c >= 0xE0 && c <= 0xEF) { extra = 2; cp = c & 0x0F; min = 0x800; }
+    else if (c >= 0xF0 && c <= 0xF4) { extra = 3; cp = c & 0x07; min = 0x10000; }
+    else { *p = q; return 0xFFFD; }
+    for (k = 0; k < extra; k++) {
+        if (q >= end || (*q & 0xC0) != 0x80) {
+            *p = q;
+            return 0xFFFD;
+        }
+        cp = (cp << 6) | (*q++ & 0x3F);
+    }
+    *p = q;
+    if (cp < min || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF))
+        return 0xFFFD;
+    return cp;
+}
+
+/* Builds a 1-by-N char row from UTF-8 text. Code points above U+FFFF become
+ * surrogate pairs. mxCreateString would read each byte as one character. */
+static mxArray *utf8_to_char(const char *s)
+{
+    const unsigned char *b = (const unsigned char *)s, *end = b + strlen(s), *q;
+    size_t units = 0;
+    mwSize dims[2];
+    mxArray *a;
+    mxChar *out;
+    for (q = b; q < end;)
+        units += next_code_point(&q, end) > 0xFFFF ? 2 : 1;
+    dims[0] = 1;
+    dims[1] = (mwSize)units;
+    a = mxCreateCharArray(2, dims);
+    out = mxGetChars(a);
+    for (q = b; q < end;) {
+        uint32_t cp = next_code_point(&q, end);
+        if (cp > 0xFFFF) {
+            cp -= 0x10000;
+            *out++ = (mxChar)(0xD800 + (cp >> 10));
+            *out++ = (mxChar)(0xDC00 + (cp & 0x3FF));
+        } else {
+            *out++ = (mxChar)cp;
+        }
+    }
+    return a;
+}
+
 /* Copies a Rust string into a MATLAB char array and frees the Rust copy. */
 static mxArray *take_rust_string(char *s)
 {
-    mxArray *a = mxCreateString(s ? s : "");
+    mxArray *a = utf8_to_char(s ? s : "");
     g_api->free_string(s);
     return a;
 }
@@ -378,9 +453,9 @@ static void cmd_version(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs
     v = g_api->version();
     if (!v)
         fail("phasecont:engine:internal", "version() returned NULL");
-    plhs[0] = mxCreateString(v);
+    plhs[0] = utf8_to_char(v);
     if (nlhs > 1)
-        plhs[1] = mxCreateString(g_lib_path);
+        plhs[1] = utf8_to_char(g_lib_path);
 }
 
 static void cmd_panic(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
@@ -419,7 +494,10 @@ static void cmd_model_from_ode(int nlhs, mxArray *plhs[], int nrhs, const mxArra
     }
     /* A model error is not raised: phasecont.Model formats the diagnostics. */
     plhs[0] = uint64_scalar(rc == PC_OK ? m : 0);
-    plhs[1] = take_rust_string(diag);
+    if (nlhs > 1)
+        plhs[1] = take_rust_string(diag);
+    else
+        g_api->free_string(diag);
 }
 
 static void cmd_model_compile(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
@@ -557,6 +635,8 @@ static void cmd_run_copy(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prh
     if (count > SIZE_MAX / stride)
         bad_arg("%s * stride overflows", "count");
     total = count * stride;
+    /* Callers clamp count to the point count from the status JSON. A huge
+     * count raises MATLAB's out-of-memory error, not a phasecont ID. */
     /* Each column is one C row: MATLAB is column-major and the rows are
      * contiguous. Shrink to the rows written after the call. */
     out = mxCreateDoubleMatrix(stride, count, mxREAL);

@@ -225,6 +225,68 @@ classdef GatewayTest < matlab.unittest.TestCase
             clear freeRun cleanup
         end
 
+        function oneOutputIsEnoughForModelFromOde(testCase)
+            m = pckern("model_from_ode", testCase.Lorenz);
+            testCase.verifyNotEqual(m, uint64(0));
+            pckern("free", m);
+            bad = pckern("model_from_ode", "x'=-x" + newline + "foo(" + newline + "done");
+            testCase.verifyEqual(bad, uint64(0));
+        end
+
+        function tooManyOutputsAreBadArg(testCase)
+            testCase.verifyError(@() GatewayTest.threeOutputs("version"), ...
+                "phasecont:engine:badArg");
+            testCase.verifyError(@() GatewayTest.threeOutputs("model_from_ode", "x"), ...
+                "phasecont:engine:badArg");
+            testCase.verifyError(@() GatewayTest.oneOutput("panic"), ...
+                "phasecont:engine:badArg");
+        end
+
+        function handleMustBeRealUint64(testCase)
+            testCase.verifyError(@() pckern("free", complex(uint64(1), uint64(1))), ...
+                "phasecont:engine:badArg");
+            testCase.verifyError(@() pckern("free", uint32(1)), ...
+                "phasecont:engine:badArg");
+            testCase.verifyError(@() pckern("free", uint64([1 2])), ...
+                "phasecont:engine:badArg");
+        end
+
+        function emptyVectorsMustMatchTheModel(testCase)
+            m = pckern("model_from_ode", testCase.Lorenz);
+            cleanup = onCleanup(@() pckern("free", m));
+            pckern("model_compile", m, "{""evaluator"":""fallback""}");
+            testCase.verifyError(@() pckern("model_rhs", m, [], testCase.P), ...
+                "phasecont:engine:badArg");
+            testCase.verifyError(@() pckern("model_equilibrium", m, zeros(1, 0), ...
+                testCase.P, ""), "phasecont:engine:badArg");
+            clear cleanup
+        end
+
+        function nonAsciiTextRoundTrips(testCase)
+            e = char(233);
+            omega = char(937);
+            smile = char([55357 56832]);   % U+1F600 as a surrogate pair
+            % Library to MATLAB: the diagnostics echo the stray character.
+            [~, diag] = pckern("model_from_ode", "x'=-x" + newline + "y'=x" + e + newline + "done");
+            d = jsondecode(diag);
+            testCase.verifySubstring(string(d.diagnostics(1).message), "'" + e + "'");
+            % MATLAB to library and back through an error message.
+            m = pckern("model_from_ode", testCase.Lorenz);
+            cleanup = onCleanup(@() pckern("free", m));
+            key = string(e) + string(omega) + string(smile);
+            try
+                pckern("model_compile", m, "{""" + key + """:1}");
+                testCase.verifyFail("model_compile accepted an unknown key");
+            catch err
+                testCase.verifySubstring(string(err.message), key);
+            end
+            clear cleanup
+            % Text with a comment in non-ASCII still parses.
+            m = pckern("model_from_ode", "# caf" + e + " " + omega + newline + testCase.Lorenz);
+            testCase.verifyNotEqual(m, uint64(0));
+            pckern("free", m);
+        end
+
         function argumentErrors(testCase)
             testCase.verifyError(@() pckern(), "phasecont:engine:badArg");
             testCase.verifyError(@() pckern(1), "phasecont:engine:badArg");
@@ -248,6 +310,14 @@ classdef GatewayTest < matlab.unittest.TestCase
     end
 
     methods (Static, Access = private)
+        function threeOutputs(varargin)
+            [~, ~, ~] = pckern(varargin{:});
+        end
+
+        function oneOutput(varargin)
+            [~] = pckern(varargin{:});
+        end
+
         function st = waitFor(r)
             % Polls until the state is not "running" (at most 20 s).
             t0 = tic;
