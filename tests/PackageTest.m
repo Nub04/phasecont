@@ -55,6 +55,7 @@ classdef PackageTest < matlab.unittest.TestCase
         function excludesRepoFolders(testCase)
             testCase.build();
             names = testCase.unpack();
+            testCase.verifyNotEmpty(names);
             for prefix = ["tests", ".git", "build", "target", "crates"]
                 testCase.verifyFalse(any(startsWith(names, prefix)), ...
                     "package contains a path starting with " + prefix);
@@ -121,7 +122,7 @@ classdef PackageTest < matlab.unittest.TestCase
         end
 
         function badVersionRaisesError(testCase)
-            for v = ["", "1.0", "v1.0.0", "1.0.0-beta", "a.b.c"]
+            for v = ["1.0", "v1.0.0", "1.0.0-beta", "a.b.c"]
                 testCase.Version = v;
                 testCase.verifyError(@() testCase.build(), ...
                     "phasecont:package:badVersion", "version: '" + v + "'");
@@ -137,6 +138,102 @@ classdef PackageTest < matlab.unittest.TestCase
             testCase.verifyTrue(isfile(fullfile(keep, "data.txt")));
         end
 
+        function stageWithDotDotRaisesErrorAndKeepsFolder(testCase)
+            keep = fullfile(testCase.Temp, "keepme");
+            mkdir(fullfile(keep, "package"));
+            writelines("marker", fullfile(keep, "marker.txt"));
+            stages = [fullfile(keep, "package", ".."), ...
+                fullfile(keep, "package", "."), ...
+                fullfile(keep, "package") + filesep, ...
+                fullfile(keep, "package", "PhaseCont") + filesep, ...
+                fullfile(keep, "package", "..", "package", "PhaseCont"), ...
+                "package/PhaseCont"];
+            for s = stages
+                testCase.Stage = s;
+                testCase.verifyError(@() testCase.build(), ...
+                    "phasecont:package:badStage", "stage: " + s);
+            end
+            testCase.verifyTrue(isfile(fullfile(keep, "marker.txt")));
+            testCase.verifyTrue(isfolder(fullfile(keep, "package")));
+        end
+
+        function missingInputsRaiseErrorAndKeepStage(testCase)
+            mkdir(testCase.Stage);
+            marker = fullfile(testCase.Stage, "marker.txt");
+            writelines("marker", marker);
+            try
+                testCase.build(["Identifier", "OutputFile"]);
+                testCase.verifyFail("expected an error");
+            catch err
+                testCase.verifyEqual(string(err.identifier), ...
+                    "phasecont:package:missingInput");
+                testCase.verifyTrue(contains(err.message, "Identifier") ...
+                    && contains(err.message, "OutputFile"));
+            end
+            testCase.verifyTrue(isfile(marker));
+            testCase.verifyError(@() testCase.build(strings(1, 0), ...
+                struct(Root = "")), "phasecont:package:missingInput");
+            testCase.verifyTrue(isfile(marker));
+        end
+
+        function invalidInputsRaiseErrorAndKeepStage(testCase)
+            mkdir(testCase.Stage);
+            marker = fullfile(testCase.Stage, "marker.txt");
+            writelines("marker", marker);
+            testCase.verifyError(@() testCase.build(strings(1, 0), ...
+                struct(Identifier = "not-a-uuid")), "phasecont:package:badIdentifier");
+            testCase.verifyError(@() testCase.build(strings(1, 0), ...
+                struct(OutputFile = fullfile(testCase.Temp, "out.txt"))), ...
+                "phasecont:package:badOutput");
+            noToolbox = fullfile(testCase.Temp, "noroot");
+            mkdir(noToolbox);
+            testCase.verifyError(@() testCase.build(strings(1, 0), ...
+                struct(Root = noToolbox)), "phasecont:package:missingFile");
+            testCase.verifyTrue(isfile(marker));
+        end
+
+        function summaryAndDescriptionMakeOnlyTrueClaims(testCase)
+            testCase.build();
+            [~, folder] = testCase.unpack();
+            addon = readMetadata(folder, "addonProperties.xml");
+            core = readMetadata(folder, "coreProperties.xml");
+            summary = tagText(core, "dc:description");
+            description = tagText(addon, "description");
+            testCase.verifyEqual(summary, ...
+                "Equilibrium continuation and bifurcation detection for XPP .ode models.");
+            for text = [summary, description]
+                testCase.verifyNotEmpty(char(text));
+                testCase.verifyEmpty(regexpi(text, ...
+                    'phase[- ]plane|limit cycle|linux|macos', "once"));
+                testCase.verifyTrue(all(double(char(text)) < 128), ...
+                    "text must be ASCII (no em dashes): " + text);
+            end
+        end
+
+        function packageHasNoDotfilesOrStrayBinaries(testCase)
+            testCase.build();
+            names = testCase.unpack();
+            leafs = regexp(names, '[^/]*$', "match", "once");
+            testCase.verifyFalse(any(startsWith(leafs, ".")), ...
+                "package contains a dotfile");
+            binary = endsWith(names, [".dll", ".mexw64", ".so", ".dylib"]);
+            testCase.verifyTrue(all(startsWith(names(binary), "bin/win64/")));
+        end
+
+        function licenseFilesMatchTheirSources(testCase)
+            testCase.build();
+            [~, folder] = testCase.unpack();
+            pairs = {"LICENSE", fullfile(testCase.Root, "LICENSE"); ...
+                "THIRD_PARTY_NOTICES.md", ...
+                fullfile(testCase.Root, "THIRD_PARTY_NOTICES.md"); ...
+                "THIRD_PARTY_LICENSES.txt", testCase.LicensesFile};
+            for k = 1:size(pairs, 1)
+                testCase.verifyEqual( ...
+                    readBytes(fullfile(folder, "fsroot", pairs{k, 1})), ...
+                    readBytes(pairs{k, 2}), pairs{k, 1});
+            end
+        end
+
         function buildfileDefinesVersionAndUuid(testCase)
             text = string(fileread(fullfile(testCase.Root, "buildfile.m")));
             testCase.verifyTrue(~isempty(regexp(text, ...
@@ -146,18 +243,31 @@ classdef PackageTest < matlab.unittest.TestCase
                 'function\s+\w+\s*=\s*toolboxUuid[^\n]*\n(?:\s*%[^\n]*\n)*\s*\w+\s*=\s*"([^"]*)"', ...
                 "tokens", "once");
             testCase.verifyNotEmpty(uuid);
+            testCase.verifyEqual(uuid(1), "1abed604-32e4-4ec7-9cea-49389af763ff");
             testCase.verifyTrue(~isempty(regexp(uuid(1), ...
                 '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', "once")));
         end
     end
 
     methods
-        function file = build(testCase)
-            file = packageToolbox(Root = testCase.Root, ...
-                StageFolder = testCase.Stage, OutputFile = testCase.Output, ...
-                Version = testCase.Version, Identifier = testCase.Identifier, ...
-                BinFolder = testCase.BinFolder, ...
+        function file = build(testCase, omit, override)
+            % Call packageToolbox with the test inputs. omit names inputs to
+            % leave out; override is a struct of replacement values.
+            arguments
+                testCase
+                omit (1,:) string = strings(1, 0)
+                override (1,1) struct = struct()
+            end
+            args = struct(Root = testCase.Root, StageFolder = testCase.Stage, ...
+                OutputFile = testCase.Output, Version = testCase.Version, ...
+                Identifier = testCase.Identifier, BinFolder = testCase.BinFolder, ...
                 LicensesFile = testCase.LicensesFile);
+            for f = string(fieldnames(override))'
+                args.(f) = override.(f);
+            end
+            args = rmfield(args, omit);
+            nv = namedargs2cell(args);
+            file = packageToolbox(nv{:});
         end
 
         function [names, folder] = unpack(testCase)

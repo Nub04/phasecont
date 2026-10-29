@@ -107,17 +107,16 @@ if computer("arch") ~= "win64"
         "v0.3 packages win64 only; run the package task in Windows MATLAB (this is %s).", ...
         computer("arch"));
 end
-cleanup = addTestsToPath(root); %#ok<NASGU>
 oldPath = path;
-addpath(fullfile(root, "scripts"));
 restorePath = onCleanup(@() path(oldPath)); %#ok<NASGU>
+addpath(fullfile(root, "tests"), fullfile(root, "scripts"));
 
-version = toolboxVersion();
+pkgVersion = toolboxVersion();
 packageToolbox( ...
     Root = root, ...
     StageFolder = fullfile(root, "build", "package", "PhaseCont"), ...
-    OutputFile = fullfile(root, "build", "PhaseCont-" + version + ".mltbx"), ...
-    Version = version, ...
+    OutputFile = fullfile(root, "build", "PhaseCont-" + pkgVersion + ".mltbx"), ...
+    Version = pkgVersion, ...
     Identifier = toolboxUuid(), ...
     BinFolder = fixtures.binFolder(root), ...
     LicensesFile = licensesFile(root));
@@ -139,6 +138,10 @@ if ~isfolder(outDir)
     mkdir(outDir);
 end
 file = fullfile(outDir, "THIRD_PARTY_LICENSES.txt");
+% Remove any old output so a failed run cannot leave a stale file in use.
+if isfile(file)
+    delete(file);
+end
 args = "cargo run -q --locked -p pc-cli -- licenses --target x86_64-pc-windows-gnu" + ...
     " --out build/THIRD_PARTY_LICENSES.txt --overrides licenses/overrides";
 if ispc && isWslPath(root)
@@ -146,11 +149,20 @@ if ispc && isWslPath(root)
     cmd = sprintf('wsl.exe -d %s --cd "%s" -- %s', distro, linuxPath, args);
     status = runFromLocalFolder(cmd);
 else
-    status = system(sprintf('cd "%s" && %s', root, args), "-echo");
+    if ispc
+        cdCmd = "cd /d";
+    else
+        cdCmd = "cd";
+    end
+    status = system(sprintf('%s "%s" && %s', cdCmd, root, args), "-echo");
 end
 if status ~= 0
-    error("phasecont:build:licenses", ...
+    error("phasecont:package:licenses", ...
         "pc-cli licenses failed (exit %d); see the output above", status);
+end
+if ~isfile(file) || dir(file).bytes == 0
+    error("phasecont:package:licenses", ...
+        "pc-cli licenses exited 0 but %s is missing or empty", file);
 end
 end
 
