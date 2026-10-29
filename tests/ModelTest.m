@@ -54,6 +54,28 @@ classdef ModelTest < matlab.unittest.TestCase
             testCase.verifyEqual(m.Evaluator, string(Evaluator));
             testCase.verifyNotEqual(m.Id, uint64(0));
             testCase.verifySize(m.Diagnostics, [0 1]);
+            testCase.verifyEqual(string(fieldnames(m.Diagnostics))', ...
+                ["code" "severity" "file" "line" "col" "end_line" ...
+                 "end_col" "message" "fix_it" "notes"]);
+        end
+
+        function paramVectorChecks(testCase)
+            f = testCase.write("lorenz.ode", testCase.Lorenz);
+            m = phasecont.Model(f);
+            bad = "phasecont:model:badParameter";
+            testCase.verifyError(@() m.paramVector(struct(r = NaN)), bad);
+            testCase.verifyError(@() m.paramVector(struct(r = Inf)), bad);
+            testCase.verifyError(@() m.paramVector([1 2]), bad);
+            testCase.verifyError(@() m.paramVector([]), bad);
+            testCase.verifyError(@() m.paramVector([1 2 NaN]), bad);
+            testCase.verifyError(@() m.paramVector([1 2 Inf]), bad);
+            testCase.verifyError(@() m.paramVector([1 2 3i]), bad);
+            testCase.verifyError(@() m.paramVector(ones(3)), bad);
+            testCase.verifyError(@() m.paramVector("abc"), bad);
+            p = m.paramVector([1 2 3]);
+            testCase.verifyEqual(p, [1; 2; 3]);
+            testCase.verifyEqual(m.paramVector(int8([1 2 3])), [1; 2; 3]);
+            testCase.verifyEqual(m.paramVector(struct(r = 5)), [10; 5; 8/3]);
         end
 
         function relativeFileIsResolved(testCase)
@@ -88,7 +110,7 @@ classdef ModelTest < matlab.unittest.TestCase
             m = phasecont.Model(f);
             testCase.verifyError(@() m.rhs([1 2]), "phasecont:engine:badArg");
             testCase.verifyError(@() m.rhs([1 2 3], [1 2]), ...
-                "phasecont:engine:badArg");
+                "phasecont:model:badParameter");
             testCase.verifyError(@() m.rhs([1 2 3], struct(q = 1)), ...
                 "phasecont:model:unknownParameter");
             testCase.verifyError(@() m.rhs([1 2 3], struct(r = "a")), ...

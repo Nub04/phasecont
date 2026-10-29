@@ -18,7 +18,9 @@ classdef Model < handle
         ParameterValues (:,1) double = zeros(0,1)
         Init (:,1) double = zeros(0,1)
         Evaluator (1,1) string = "jit"
-        Diagnostics (:,1) struct = repmat(struct(), 0, 1)
+        Diagnostics (:,1) struct = repmat(struct("code", [], "severity", [], ...
+            "file", [], "line", [], "col", [], "end_line", [], "end_col", [], ...
+            "message", [], "fix_it", [], "notes", []), 0, 1)
     end
 
     properties (Hidden, Transient, SetAccess = private)
@@ -96,18 +98,22 @@ classdef Model < handle
                             "The model has no parameter named ""%s"".", names(k));
                     end
                     val = p.(names(k));
-                    if ~(isnumeric(val) && isreal(val) && isscalar(val))
+                    if ~(isnumeric(val) && isreal(val) && isscalar(val) ...
+                            && isfinite(val))
                         error("phasecont:model:badParameter", ...
-                            "Parameter ""%s"" must be a real numeric scalar.", names(k));
+                            "Parameter ""%s"" must be a finite real numeric scalar.", ...
+                            names(k));
                     end
                     v(idx) = double(val);
                 end
                 p = v;
-            elseif isnumeric(p) && isreal(p)
-                p = double(p);
+            elseif isnumeric(p) && isreal(p) && (isvector(p) || isempty(p)) ...
+                    && all(isfinite(p), "all") && numel(p) == numel(obj.Parameters)
+                p = double(p(:));
             else
                 error("phasecont:model:badParameter", ...
-                    "Parameters must be a real numeric vector or a struct.");
+                    "Parameters must be a struct or a finite real numeric " + ...
+                    "vector with %d values.", numel(obj.Parameters));
             end
         end
 
@@ -211,7 +217,9 @@ classdef Model < handle
         function s = toStructs(v)
             % Diagnostics as a column struct array, 0-by-1 when empty.
             if isempty(v)
-                s = repmat(struct(), 0, 1);
+                s = repmat(struct("code", [], "severity", [], "file", [], ...
+                    "line", [], "col", [], "end_line", [], "end_col", [], ...
+                    "message", [], "fix_it", [], "notes", []), 0, 1);
             elseif iscell(v)
                 % Entries with different fields: give each the union.
                 names = strings(1, 0);

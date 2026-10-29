@@ -337,4 +337,48 @@ mod tests {
             assert_eq!(e, "start_is_special: expected true or false");
         }
     }
+
+    /// Doubles that MATLAB writes with `%.17g` must read back bit for bit.
+    #[test]
+    fn options_numbers_round_trip_bitwise() {
+        let mut values: Vec<f64> = vec![
+            1e-10,
+            8.0 / 3.0,
+            470.0 / 19.0,
+            0.1,
+            1.0 / 3.0,
+            5e-324,
+            f64::MAX,
+            2.6666666666666665,
+        ];
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        while values.len() < 1008 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let x = f64::from_bits(state);
+            if x.is_finite() {
+                values.push(x);
+            }
+        }
+        for &v in &values {
+            let text = format!("{v:.17e}");
+            // bounds [v, MAX] or [-MAX, v]
+            let b = if v < f64::MAX {
+                format!("[{text}, {:.17e}]", f64::MAX)
+            } else {
+                format!("[{:.17e}, {text}]", -f64::MAX)
+            };
+            let json = format!("{{\"bounds\": {b}}}");
+            let o = parse_options(&serde_json::from_str(&json).unwrap()).unwrap();
+            let got = if v < f64::MAX { o.bounds.0 } else { o.bounds.1 };
+            assert_eq!(got.to_bits(), v.to_bits(), "bounds {text}");
+            if v != 5e-324 && v != 0.0 {
+                let a = v.abs();
+                let json = format!("{{\"h0\": {a:.17e}}}");
+                let o = parse_options(&serde_json::from_str(&json).unwrap()).unwrap();
+                assert_eq!(o.h0.to_bits(), a.to_bits(), "h0 {a:.17e}");
+            }
+        }
+    }
 }

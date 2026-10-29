@@ -44,13 +44,17 @@ classdef PointTest < matlab.unittest.TestCase
         end
 
         function modelPropertyAcceptsModelOnly(testCase)
-            f = fullfile(tempname, "m.ode");
-            mkdir(fileparts(f));
-            cleanup = onCleanup(@() rmdir(fileparts(f), "s"));
-            fid = fopen(f, "w");
+            f = testCase.applyFixture(fixtures.BinFixture);
+            testCase.assumeTrue( ...
+                isfile(fullfile(f.Bin, "pckern." + mexext)), ...
+                "pckern has not been built (run buildtool mex)");
+            file = fullfile(tempname, "m.ode");
+            mkdir(fileparts(file));
+            cleanup = onCleanup(@() rmdir(fileparts(file), "s"));
+            fid = fopen(file, "w");
             fprintf(fid, "init x=1\nx'=-x\ndone\n");
             fclose(fid);
-            m = phasecont.Model(f);
+            m = phasecont.Model(file);
             p = phasecont.Point(Model = m);
             testCase.verifyTrue(p.Model == m);
             testCase.verifyError(@() phasecont.Point(Model = 3), ...
