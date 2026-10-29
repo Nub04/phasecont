@@ -34,6 +34,12 @@ pub enum Command {
     EmitC { file: PathBuf, out: Option<PathBuf> },
     /// List the DLLs a 64-bit PE file imports and check them against the allow-list.
     DllImports { file: PathBuf },
+    /// Write the license texts of the dependency closure of a package.
+    Licenses {
+        target: String,
+        package: String,
+        out: PathBuf,
+    },
     /// Follow equilibrium branches described by a problem file.
     Cont {
         file: PathBuf,
@@ -54,6 +60,7 @@ usage: pc-cli parse [--json] [--] <file.ode>
        pc-cli emit-c [-o out.c] [--] <file.ode>
        pc-cli cont [--fallback] [--] <file.ode> <problem.json>
        pc-cli dll-imports [--] <file.dll>
+       pc-cli licenses --target TRIPLE [--package NAME] --out FILE
        pc-cli --help | pc-cli --version";
 
 pub const HELP: &str = "\
@@ -66,6 +73,7 @@ usage:
   pc-cli emit-c <file.ode> [-o out.c]
   pc-cli cont <file.ode> <problem.json> [--fallback]
   pc-cli dll-imports <file.dll>
+  pc-cli licenses --target TRIPLE [--package NAME] --out FILE
   pc-cli --help
   pc-cli --version
 
@@ -77,6 +85,7 @@ commands:
   emit-c        write C code for F, JacU and JacP
   cont          follow an equilibrium branch and print its points and special points
   dll-imports   list the DLLs a 64-bit Windows PE file imports and check the allow-list
+  licenses      write the license texts of the crates a package links
 ";
 
 pub const PARSE_HELP: &str = "\
@@ -181,6 +190,26 @@ exit codes: 0 every import is allowed, 1 an import is outside the allow-list or
 the file cannot be read or is not a 64-bit PE file, 2 usage error
 ";
 
+pub const LICENSES_HELP: &str = "\
+usage: pc-cli licenses --target TRIPLE [--package NAME] --out FILE
+
+Runs `cargo metadata --locked --filter-platform TRIPLE`, takes the dependency
+closure of the package without dev-dependencies and writes, for each crate that
+is not a workspace member, a header line `== name version (SPDX) ==` and the
+text of every file named LICENSE*, LICENCE*, COPYING* or NOTICE* in the crate
+folder. Crates are sorted by name, then version. Workspace members are covered
+by the repo LICENSE and are left out.
+
+options:
+  --target TRIPLE  Rust target triple (required)
+  --package NAME   package whose closure is listed (default pc-ffi)
+  --out FILE       file to write (required); not written on failure
+  -h, --help       print this help
+
+exit codes: 0 the file was written, 1 cargo failed, the package is unknown, a
+crate ships no license file or the file cannot be written, 2 usage error
+";
+
 pub const EMIT_HELP: &str = "\
 usage: pc-cli emit-c [-o out.c] [--] <file.ode>
 
@@ -225,6 +254,7 @@ where
         "emit-c" => emit_command(&args[1..]),
         "cont" => cont_command(&args[1..]),
         "dll-imports" => dll_imports_command(&args[1..]),
+        "licenses" => licenses_command(&args[1..]),
         "-h" | "--help" | "-V" | "--version" => {
             Err(UsageError(format!("unexpected argument after {first}")))
         }
@@ -420,6 +450,36 @@ fn dll_imports_command(rest: &[OsString]) -> Result<Command, UsageError> {
     }
 }
 
+/// Parses the arguments of `licenses`. `--target` and `--out` are required.
+fn licenses_command(rest: &[OsString]) -> Result<Command, UsageError> {
+    let mut target: Option<String> = None;
+    let mut package: Option<String> = None;
+    let mut out: Option<PathBuf> = None;
+    let mut it = rest.iter();
+    while let Some(arg) = it.next() {
+        match utf8(arg)? {
+            "-h" | "--help" => return Ok(Command::ToolHelp(LICENSES_HELP)),
+            "--target" => target = Some(utf8(value("--target", &mut it)?)?.to_string()),
+            "--package" => package = Some(utf8(value("--package", &mut it)?)?.to_string()),
+            "--out" => out = Some(PathBuf::from(value("--out", &mut it)?)),
+            other if other.starts_with('-') => {
+                return Err(UsageError(format!("unknown option {other}")));
+            }
+            other => {
+                return Err(UsageError(format!("unexpected extra argument {other}")));
+            }
+        }
+    }
+    match (target, out) {
+        (Some(target), Some(out)) => Ok(Command::Licenses {
+            target,
+            package: package.unwrap_or_else(|| "pc-ffi".to_string()),
+            out,
+        }),
+        _ => Err(UsageError("licenses needs --target and --out".to_string())),
+    }
+}
+
 fn cont_command(rest: &[OsString]) -> Result<Command, UsageError> {
     let parts = split(
         rest,
@@ -557,6 +617,37 @@ mod tests {
             &["dll-imports"][..],
             &["dll-imports", "a.dll", "b.dll"],
             &["dll-imports", "--json", "a.dll"],
+        ] {
+            assert!(p(args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn licenses_command_needs_target_and_out() {
+        assert_eq!(
+            p(&["licenses", "--out", "o.txt", "--target", "t"]),
+            Ok(Command::Licenses {
+                target: "t".into(),
+                package: "pc-ffi".into(),
+                out: "o.txt".into()
+            })
+        );
+        assert_eq!(
+            p(&["licenses", "--target", "t", "--out", "o", "--package", "x"]),
+            Ok(Command::Licenses {
+                target: "t".into(),
+                package: "x".into(),
+                out: "o".into()
+            })
+        );
+        assert_eq!(p(&["licenses", "-h"]), Ok(Command::ToolHelp(LICENSES_HELP)));
+        for args in [
+            &["licenses"][..],
+            &["licenses", "--target", "t"],
+            &["licenses", "--out", "o"],
+            &["licenses", "--target"],
+            &["licenses", "--target", "t", "--out", "o", "x"],
+            &["licenses", "--target", "t", "--out", "o", "--frob"],
         ] {
             assert!(p(args).is_err(), "{args:?}");
         }

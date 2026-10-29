@@ -4,6 +4,7 @@ mod args;
 mod cont;
 mod dllimports;
 mod ircmd;
+mod licenses;
 mod pe;
 mod text;
 
@@ -25,6 +26,11 @@ fn main() -> ExitCode {
         Ok(Command::CheckDerivs { file, points, seed }) => ircmd::check_derivs(&file, points, seed),
         Ok(Command::EmitC { file, out }) => ircmd::emit_c(&file, out.as_deref()),
         Ok(Command::DllImports { file }) => dllimports::dll_imports(&file),
+        Ok(Command::Licenses {
+            target,
+            package,
+            out,
+        }) => licenses::licenses(&target, &package, &out),
         Ok(Command::Cont {
             file,
             problem,
