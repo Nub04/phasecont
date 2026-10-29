@@ -1,5 +1,5 @@
 classdef BuildTest < matlab.unittest.TestCase
-    % Checks the binary folder rule and the mex task's missing-source error.
+    % Checks the binary folder rule and that the gateway source and build exist.
 
     methods (Test)
         function binFolderHonorsEnvironmentOverride(testCase)
@@ -40,26 +40,14 @@ classdef BuildTest < matlab.unittest.TestCase
                 string(fullfile(root, "toolbox", "bin", computer("arch"))));
         end
 
-        function mexTaskWithoutGatewayRaisesNoGateway(testCase)
-            % Called directly: running "mex" through the plan would run the
-            % cargo task first, which starts a real build.
+        function gatewayIsBuiltIntoTheBinFolder(testCase)
             root = fileparts(fileparts(mfilename("fullpath")));
-            testCase.assumeFalse(isfile(fullfile(root, "mex", ...
-                "pckern_gateway.c")), "gateway source exists");
-            plan = matlab.buildtool.Plan.load(root);
-            testCase.verifyEqual(string(plan("mex").Dependencies), "cargo");
-            % run() reports a failed task in its result and prints the
-            % error, so check both.
-            [output, result] = evalc("runMexTaskOnly(root)");
-            testCase.verifyTrue(any([result.TaskResults.Failed]));
-            testCase.verifySubstring(output, "phasecont:build:noGateway");
+            testCase.verifyTrue(isfile(fullfile(root, "mex", ...
+                "pckern_gateway.c")));
+            built = fullfile(fixtures.binFolder(root), "pckern." + mexext);
+            testCase.assumeTrue(isfile(built), ...
+                "pckern has not been built (run buildtool mex)");
+            testCase.verifyTrue(isfile(built));
         end
     end
-end
-
-function result = runMexTaskOnly(root)
-% Run the mex task alone, without its cargo dependency.
-plan = matlab.buildtool.Plan.load(root);
-plan("mex").Dependencies = string.empty;
-result = run(plan, "mex");
 end

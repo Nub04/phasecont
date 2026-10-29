@@ -86,7 +86,8 @@ bin = fixtures.binFolder(root);
 if ~isfolder(bin)
     mkdir(bin);
 end
-args = {"-R2018a", "-outdir", char(bin), "-output", "pckern", src};
+inc = fullfile(root, "crates", "pc-ffi", "include");
+args = {"-R2018a", "-I" + inc, "-outdir", char(bin), "-output", "pckern", src};
 if isunix && ~ismac
     args{end+1} = "-ldl";
 end

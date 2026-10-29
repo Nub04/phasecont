@@ -74,7 +74,8 @@ extern "C" {
  *      "specials":[{"label":"H","index":57,"coefficient":0.1,"omega":9.6,
  *                   "normalization":"...","refined":true}]}]}
  * "specials" appear once the branch has stopped. "stop" is null for the last
- * branch while the run is running.
+ * branch while the run is running. Otherwise it is "MaxSteps", "Bounds",
+ * "StepTooSmall", "Singular", "Cancelled" or "Error".
  */
 
 typedef struct pc_api_v1_t {
@@ -128,8 +129,16 @@ typedef struct pc_api_v1_t {
   /* The message of the last failure on this thread. Not freed by the caller. */
   const char *(*last_error)(void);
 
-  /* Writes the model description JSON (names, values, init, aux, n, n_p,
-   * autonomous, evaluator, jit_max_frame). Free it with free_string. */
+  /* Writes the model description JSON (free it with free_string):
+   *   {"n":3,"n_p":3,"variables":[...],"parameters":[...],"values":[...],
+   *    "init":[...],"aux":[...],"autonomous":true,"evaluator":null,
+   *    "jit_max_frame":0}
+   * n and n_p are the state and parameter counts. variables and parameters
+   * are the names, values the parameter values from the file and init the
+   * initial values from the file. aux lists the names of the auxiliary quantities and
+   * autonomous is false when the right-hand side uses t. evaluator is "jit",
+   * "fallback" or null before model_compile. jit_max_frame is the largest
+   * JIT stack frame compiled so far (0 before model_compile). */
   int32_t (*model_info)(uint64_t model, char **info_json);
 
   /* Newton solve from u0 with the given parameters. opts_json is NULL or the
