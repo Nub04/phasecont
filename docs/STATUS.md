@@ -2,9 +2,11 @@
 
 ## Phase
 
-P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching; SPEC section 14) is implemented on branch `phase3-pc-engine` and reviewed, and waits for acceptance; its plan was approved on 2026-10-28. P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
+P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) is in progress on branch `phase7a-matlab-api`. P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
 
 ## Done
+
+- P3 merged into `main` on 2026-10-28 as PR #1 (dfcfdab).
 
 P0 (accepted on 2026-10-22, when the owner approved the decisions in `docs/spikes.md`):
 
@@ -75,22 +77,22 @@ P3 (the numbers below were measured on 2026-10-28 at `fb14bdb` plus the SPEC and
 
 ## In progress
 
-- P3: all 14 plan tasks, the review of the whole branch and its fix round are done. The owner's acceptance remains.
+- P7a, plan at `/home/nub04/.claude/plans/phase7a-matlab-api.md` (17 commits).
 
 ## Next
 
 - P4: Hopf detection for n > 100 with the minimally augmented test function (Govaerts), and the LP and Hopf curves. Each step now evaluates `JacU` and all eigenvalues even when Hopf detection is off; P4 should reuse F_u from the step's Jacobian.
 - P4 and later: a continuation that changes a parameter or state read by a table formula needs a new lowering of the model (P2 known difference).
 - P7a: the `pc-ffi` worker thread. Parsing at depth 200 needs about 800 KB of stack in a debug build, so `pc-ffi` must parse on a worker thread with an explicit stack size (for example 8 MB), not on MATLAB's thread (parked P1). It must also cap the input size, since parse diagnostics grow with the input (about 253 MB for 300000 bad lines in a debug build).
-- P7a: the JIT and AOT inside MATLAB on Windows, which P2 could not test here.
+- P7a: the JIT inside MATLAB on Windows, which P2 could not test here.
   - Run a model whose frame passes 4 KiB inside MATLAB, so the inline stack probes run on Windows.
   - `cranelift-jit` registers no Windows unwind information. No panic or exception may unwind through JIT code, which rule 7's `catch_unwind` on the Rust side of every call already requires.
   - `JitEntries` is neither `Send` nor `Sync`. Moving a compiled model to the worker thread needs a justified `unsafe impl`.
   - Run `Fallback` on the 8 MB worker thread too: its recursion budget is sized for a 1 MiB stack at five nested dual levels.
   - Lower models on that thread as well. `lower`'s depth limit of 1000 is not a stack bound: about 400 nested user functions overflow a 1 MiB stack in a debug build (a release build at 1 MiB and a debug build at 2 MiB return `TooLarge`).
-  - AOT through `mex` with MSVC: compile with floating-point contraction off (the counterpart of `-ffp-contract=off`), call `pc_aot_init` with pckern's shim table before any entry, and compare NaNs by class, not by sign. The project test runs gcc only.
 - P7a: the JIT inside MATLAB on macOS arm64 (moved here from P2 by the owner on 2026-10-28), on the macOS runner once the owner adds a MATLAB batch licensing token as a repository secret. The Rust side of the SPEC section 4 check passes there already (see "Done").
 - P8a: confirm on the File Exchange submission form that it accepts an Apache-2.0 toolbox linked to GitHub.
+- P8a: AOT through `mex` with MSVC (moved from P7a by the owner on 2026-10-28): compile with floating-point contraction off (the counterpart of `-ffp-contract=off`), call `pc_aot_init` with pckern's shim table before any entry, and compare NaNs by class, not by sign. The project test runs gcc only.
 
 ## Blocked
 
