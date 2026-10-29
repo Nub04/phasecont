@@ -197,10 +197,9 @@ fn many_diagnostics_are_capped_at_1000() {
     assert_eq!(id, 0);
     let d = diag.unwrap();
     assert_eq!(d["diagnostics"].as_array().unwrap().len(), 1000);
-    let omitted = d["omitted"].as_u64().unwrap();
-    assert!(omitted >= 500, "{omitted}");
-    let errors = d["summary"]["errors"].as_u64().unwrap();
-    assert!(errors >= 1000 + omitted - 1, "{errors} {omitted}");
+    // Each bad line gives exactly one error.
+    assert_eq!(d["omitted"], 500);
+    assert_eq!(d["summary"]["errors"], 1500);
 }
 
 #[test]
@@ -457,4 +456,109 @@ fn two_threads_can_share_one_model() {
             });
         }
     });
+}
+
+/// A model whose generated code needs a stack frame over 4096 bytes: 1500
+/// products x*c_i stay live until two sums over them are subtracted.
+fn big_frame_model() -> (String, Vec<f64>) {
+    const N: usize = 1500;
+    const CHUNK: usize = 100;
+    let mut t = String::new();
+    let vals: Vec<f64> = (1..=N).map(|i| 0.001 * i as f64).collect();
+    for (i, v) in vals.iter().enumerate() {
+        t += &format!("par c{}={}\n", i + 1, v);
+    }
+    t += "init x=0.5\n";
+    for i in 1..=N {
+        t += &format!("p{i}=x*c{i}\n");
+    }
+    let sum = |idx: Vec<usize>, tag: &str, t: &mut String| -> Vec<String> {
+        idx.chunks(CHUNK)
+            .enumerate()
+            .map(|(k, ch)| {
+                let terms: Vec<String> = ch.iter().map(|i| format!("p{i}")).collect();
+                t.push_str(&format!("{tag}{k}={}\n", terms.join("+")));
+                format!("{tag}{k}")
+            })
+            .collect()
+    };
+    let fwd = sum((1..=N).collect(), "s", &mut t);
+    let rev = sum((1..=N).rev().collect(), "r", &mut t);
+    t += &format!("x'=x+({})-({})\ndone\n", fwd.join("+"), rev.join("+"));
+    (t, vals)
+}
+
+#[test]
+fn jit_frame_size_is_read_from_the_model_thread() {
+    let (text, vals) = big_frame_model();
+    let m = model(&text);
+    assert_eq!(compile(&m, Some(r#"{"evaluator":"jit"}"#)), 0);
+    let frame = info(&m)["jit_max_frame"].as_u64().unwrap();
+    assert!(frame > 4096, "{frame}");
+    let mut jit = [f64::NAN];
+    assert_eq!(rhs(&m, &[0.5], &vals, &mut jit), 0);
+    assert!(jit[0].is_finite());
+
+    let f = model(&text);
+    assert_eq!(compile(&f, Some(r#"{"evaluator":"fallback"}"#)), 0);
+    assert_eq!(info(&f)["jit_max_frame"], 0);
+    let mut fb = [f64::NAN];
+    assert_eq!(rhs(&f, &[0.5], &vals, &mut fb), 0);
+    assert!(
+        (jit[0] - fb[0]).abs() <= 1e-12 * fb[0].abs().max(1.0),
+        "{} {}",
+        jit[0],
+        fb[0]
+    );
+}
+
+#[test]
+fn concurrent_compiles_leave_info_matching_the_thread() {
+    let m = model(LORENZ);
+    std::thread::scope(|s| {
+        for i in 0..8 {
+            let m = &m;
+            s.spawn(move || {
+                let o = if i % 2 == 0 { "jit" } else { "fallback" };
+                assert_eq!(compile(m, Some(&format!(r#"{{"evaluator":"{o}"}}"#))), 0);
+            });
+        }
+    });
+    // The last compile to run on the thread decides; info must name an evaluator
+    // that rhs can use, and a final compile must always be reported.
+    assert_eq!(compile(&m, Some(r#"{"evaluator":"jit"}"#)), 0);
+    assert_eq!(info(&m)["evaluator"], "jit");
+}
+
+#[test]
+fn a_null_out_model_still_clears_out_diag() {
+    let mut diag: *mut c_char = 8usize as *mut c_char;
+    let rc = unsafe {
+        (api().model_from_ode)(b"x'=-x\n".as_ptr().cast(), 6, ptr::null_mut(), &mut diag)
+    };
+    assert_eq!(rc, 2);
+    assert!(diag.is_null());
+}
+
+#[test]
+fn adjacent_outputs_are_not_an_overlap() {
+    let m = model(LORENZ);
+    assert_eq!(compile(&m, None), 0);
+    let mut buf = [0.0f64; 9];
+    let u0 = [8.0, 8.0, 26.0];
+    let rc = unsafe {
+        (api().model_equilibrium)(
+            m.0,
+            u0.as_ptr(),
+            3,
+            P1.as_ptr(),
+            3,
+            ptr::null(),
+            buf.as_mut_ptr(),
+            3,
+            buf.as_mut_ptr().add(3),
+            6,
+        )
+    };
+    assert_eq!(rc, 0, "{}", last_error());
 }

@@ -4,7 +4,7 @@
 //! thread. The MATLAB side sends owned requests over a channel and waits for
 //! the reply, which also serializes calls from several threads.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -63,7 +63,8 @@ pub(crate) struct ModelHandle {
     #[allow(dead_code)]
     pub info: ModelInfo,
     pub names: Names,
-    evaluator: Mutex<Option<Evaluator>>,
+    /// The evaluator the model thread holds: 0 none, 1 jit, 2 fallback. Written by that thread.
+    evaluator: Arc<AtomicU8>,
     /// Written by the model thread after every request.
     max_frame: Arc<AtomicU32>,
     tx: Mutex<Option<Sender<Msg>>>,
@@ -88,12 +89,14 @@ impl ModelHandle {
     pub fn new(model: Model, info: ModelInfo, names: Names) -> Result<ModelHandle> {
         let (tx, rx) = mpsc::channel();
         let max_frame = Arc::new(AtomicU32::new(0));
+        let evaluator = Arc::new(AtomicU8::new(0));
         let ctx = Context {
             model: model.clone(),
             info: info.clone(),
             warm_x: names.init.clone(),
             warm_p: names.par_values.clone(),
             max_frame: Arc::clone(&max_frame),
+            evaluator: Arc::clone(&evaluator),
         };
         let thread = std::thread::Builder::new()
             .name("pckern-model".into())
@@ -104,7 +107,7 @@ impl ModelHandle {
             model,
             info,
             names,
-            evaluator: Mutex::new(None),
+            evaluator,
             max_frame,
             tx: Mutex::new(Some(tx)),
             thread: Mutex::new(Some(thread)),
@@ -121,7 +124,11 @@ impl ModelHandle {
 
     /// The evaluator of the last successful compile, or None.
     pub fn evaluator(&self) -> Option<Evaluator> {
-        *lock(&self.evaluator)
+        match self.evaluator.load(Ordering::Relaxed) {
+            1 => Some(Evaluator::Jit),
+            2 => Some(Evaluator::Fallback),
+            _ => None,
+        }
     }
 
     /// The largest JIT frame the model thread has compiled, 0 before any.
@@ -141,10 +148,7 @@ impl ModelHandle {
 
     pub fn compile(&self, which: Evaluator) -> Result<()> {
         match self.call(Request::Compile(which))? {
-            Reply::Compiled => {
-                *lock(&self.evaluator) = Some(which);
-                Ok(())
-            }
+            Reply::Compiled => Ok(()),
             _ => Err(Error::Internal("unexpected reply to compile".into())),
         }
     }
@@ -208,6 +212,7 @@ struct Context {
     warm_x: Vec<f64>,
     warm_p: Vec<f64>,
     max_frame: Arc<AtomicU32>,
+    evaluator: Arc<AtomicU8>,
 }
 
 fn handle(req: Request, ctx: &Context, ev: &mut Option<Box<dyn ModelEval>>) -> Result<Reply> {
@@ -222,6 +227,8 @@ fn handle(req: Request, ctx: &Context, ev: &mut Option<Box<dyn ModelEval>>) -> R
             let mut out = vec![0.0; built.n()];
             let _ = built.eval(&EntryKind::F, &ctx.warm_x, &p, &[], &mut out);
             *ev = Some(built);
+            let code = if which == Evaluator::Jit { 1 } else { 2 };
+            ctx.evaluator.store(code, Ordering::Relaxed);
             Ok(Reply::Compiled)
         }
         Request::Rhs { x, mut p } => {

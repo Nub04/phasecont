@@ -121,6 +121,9 @@ pub(crate) unsafe fn bytes_arg<'a>(p: *const c_char, len: usize, what: &str) -> 
     if len == 0 {
         return Ok(&[]);
     }
+    if len > isize::MAX as usize {
+        return Err(bad_arg(format!("{what}: length {len} is too large")));
+    }
     if p.is_null() {
         return Err(bad_arg(format!("{what} is NULL but its length is {len}")));
     }
@@ -260,6 +263,11 @@ mod tests {
             let e = f64_arg(words.as_ptr().cast(), max + 1, "x").unwrap_err();
             assert_eq!(e.to_string(), format!("x: length {} is too large", max + 1));
             assert!(f64_out(words.as_ptr().cast_mut().cast(), usize::MAX, "y").is_err());
+            let e = bytes_arg(words.as_ptr().cast(), usize::MAX, "t").unwrap_err();
+            assert_eq!(
+                e.to_string(),
+                format!("t: length {} is too large", usize::MAX)
+            );
             // Aligned and in range is fine.
             assert_eq!(f64_arg(words.as_ptr().cast(), 4, "x").unwrap().len(), 4);
         }

@@ -50,8 +50,6 @@ pub unsafe extern "C" fn model_from_ode(
     out_diag: *mut *mut c_char,
 ) -> i32 {
     barrier(|| {
-        let out_model = unsafe { out_ptr(out_model, "model") }?;
-        *out_model = 0;
         let out_diag = if out_diag.is_null() {
             None
         } else {
@@ -59,6 +57,8 @@ pub unsafe extern "C" fn model_from_ode(
             *slot = std::ptr::null_mut();
             Some(slot)
         };
+        let out_model = unsafe { out_ptr(out_model, "model") }?;
+        *out_model = 0;
         if len > MAX_MODEL_TEXT {
             return Err(bad_arg("model text is over 16 MiB"));
         }
