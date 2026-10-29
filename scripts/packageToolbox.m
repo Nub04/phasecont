@@ -9,7 +9,7 @@ function outputFile = packageToolbox(opts)
 %
 %   Root          repo root (holds toolbox/, LICENSE, THIRD_PARTY_NOTICES.md)
 %   StageFolder   folder to build the package tree in; deleted first. It must
-%                 be a direct child of a folder named "package".
+%                 be an absolute path directly inside a folder named "package".
 %   OutputFile    the .mltbx to write
 %   Version       dotted number such as "0.3.0"
 %   Identifier    fixed toolbox UUID
@@ -19,30 +19,35 @@ function outputFile = packageToolbox(opts)
 % v0.3 supports win64 only. To add a platform (P8), extend platformBinaries
 % and the SupportedPlatforms and path lists below.
 arguments
-    opts.Root (1,1) string
-    opts.StageFolder (1,1) string
-    opts.OutputFile (1,1) string
-    opts.Version (1,1) string
-    opts.Identifier (1,1) string
-    opts.BinFolder (1,1) string
-    opts.LicensesFile (1,1) string
+    opts.Root
+    opts.StageFolder
+    opts.OutputFile
+    opts.Version
+    opts.Identifier
+    opts.BinFolder
+    opts.LicensesFile
 end
 
-% Every input is required. Check them all before anything is validated or deleted.
+% Every input is required text. Check them all before anything is
+% validated, created or deleted.
 required = ["Root", "StageFolder", "OutputFile", "Version", "Identifier", ...
     "BinFolder", "LicensesFile"];
-missing = strings(1, 0);
+absent = strings(1, 0);
 for name = required
-    if ~isfield(opts, name) || strlength(strtrim(opts.(name))) == 0
-        missing(end+1) = name; %#ok<AGROW>
+    if ~isfield(opts, name) || ~isTextValue(opts.(name))
+        absent(end+1) = name; %#ok<AGROW>
+    else
+        opts.(name) = string(opts.(name));
     end
 end
-if ~isempty(missing)
+if ~isempty(absent)
     error("phasecont:package:missingInput", ...
-        "Missing required input(s): %s", strjoin(missing, ", "));
+        "Missing required input(s), each must be non-empty text: %s", ...
+        strjoin(absent, ", "));
 end
 
-if isempty(regexp(opts.Version, '^\d+\.\d+\.\d+$', "once"))
+if isempty(regexp(opts.Version, ...
+        '^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$', "once"))
     error("phasecont:package:badVersion", ...
         "Version must be a dotted number such as 0.3.0, got '%s'", opts.Version);
 end
@@ -51,13 +56,21 @@ if isempty(regexp(opts.Identifier, ...
     error("phasecont:package:badIdentifier", ...
         "Identifier must be a lower-case UUID, got '%s'", opts.Identifier);
 end
-if ~endsWith(opts.OutputFile, ".mltbx", IgnoreCase = true)
-    error("phasecont:package:badOutput", ...
-        "OutputFile must end in .mltbx, got '%s'", opts.OutputFile);
-end
 
 stage = char(opts.StageFolder);
 checkStage(stage);
+stagePath = normalizedPath(stage);
+outPath = checkOutput(opts.OutputFile, stagePath);
+rootPath = normalizedPath(opts.Root);
+binPath = normalizedPath(opts.BinFolder);
+licPath = normalizedPath(opts.LicensesFile);
+for pair = {"Root", rootPath; "BinFolder", binPath; "LicensesFile", licPath}'
+    if isUnder(pair{2}, stagePath)
+        error("phasecont:package:inputInsideStage", ...
+            "%s lies inside the stage folder, which is deleted first: %s", ...
+            pair{1}, pair{2});
+    end
+end
 if ~isfolder(fullfile(opts.Root, "toolbox"))
     error("phasecont:package:missingFile", ...
         "Folder not found: %s", fullfile(opts.Root, "toolbox"));
@@ -79,6 +92,17 @@ for name = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
     if ~isfile(fullfile(opts.Root, name))
         error("phasecont:package:missingFile", ...
             "File not found: %s", fullfile(opts.Root, name));
+    end
+end
+
+% Make sure the output folder exists now, so that a failure here cannot
+% happen after the stage has been deleted.
+outFolder = fileparts(outPath);
+if ~isfolder(outFolder)
+    [made, msg] = mkdir(outFolder);
+    if ~made
+        error("phasecont:package:badOutput", ...
+            "Cannot create the output folder %s: %s", outFolder, msg);
     end
 end
 
@@ -112,11 +136,6 @@ copyfile(fullfile(opts.Root, "LICENSE"), stage);
 copyfile(fullfile(opts.Root, "THIRD_PARTY_NOTICES.md"), stage);
 copyfile(opts.LicensesFile, fullfile(stage, "THIRD_PARTY_LICENSES.txt"));
 
-outFolder = fileparts(opts.OutputFile);
-if strlength(outFolder) > 0 && ~isfolder(outFolder)
-    mkdir(outFolder);
-end
-
 o = matlab.addons.toolbox.ToolboxOptions(stage, opts.Identifier);
 o.ToolboxName = "PhaseCont";
 o.ToolboxVersion = opts.Version;
@@ -136,7 +155,7 @@ o.SupportedPlatforms.Glnxa64 = false;
 o.SupportedPlatforms.Mac = false;
 o.SupportedPlatforms.MatlabOnline = false;
 o.MinimumMatlabRelease = "R2026b";
-o.OutputFile = opts.OutputFile;
+o.OutputFile = outPath;
 
 matlab.addons.toolbox.packageToolbox(o);
 outputFile = opts.OutputFile;
@@ -147,17 +166,103 @@ function files = platformBinaries(binFolder)
 files = [fullfile(binFolder, "pckern.mexw64"), fullfile(binFolder, "pckern.dll")];
 end
 
+function tf = isTextValue(v)
+% True for a non-empty, non-missing text scalar (string or char row).
+if isstring(v) && isscalar(v)
+    tf = ~ismissing(v) && strlength(strtrim(v)) > 0;
+elseif ischar(v) && isrow(v)
+    tf = ~isempty(strtrim(v));
+else
+    tf = false;
+end
+end
+
+function checkSegments(parts, what, path)
+% Reject segments that Windows would read differently from what they say.
+reserved = ["CON", "PRN", "AUX", "NUL", "COM" + (1:9), "LPT" + (1:9)];
+for k = 1:numel(parts)
+    seg = parts(k);
+    bad = strlength(strtrim(seg)) == 0 || seg == "." || seg == ".." ...
+        || endsWith(seg, [" ", "."]) || contains(seg, ["<", ">", """", "|", "*"]) ...
+        || any(double(char(seg)) < 32) || (k > 1 && contains(seg, [":", "?"])) ...
+        || any(upper(extractBefore(seg + ".", ".")) == reserved);
+    if bad
+        error("phasecont:package:bad" + what, ...
+            "Refusing '%s': the segment '%s' is empty, relative, ends in a dot or space, is a reserved device name or has a character Windows does not allow", ...
+            path, seg);
+    end
+end
+end
+
 function checkStage(stage)
 % Refuse any stage folder that is not an absolute path of the form
-% <something>/package/<name>, with no "." or ".." segments, so that a typo
+% <something>/package/<name>, with no suspicious segments, so that a typo
 % cannot make the rmdir below delete real files.
 parts = split(string(stage), ["\", "/"]);
 isAbsolute = ~isempty(regexp(stage, '^([A-Za-z]:[\\/]|\\\\|/)', "once"));
-ok = isAbsolute && numel(parts) >= 2 && strlength(parts(end)) > 0 ...
-    && ~any(parts == "." | parts == "..") && parts(end-1) == "package";
-if ~ok
+if isAbsolute && numel(parts) >= 2 && parts(end) ~= "" && parts(end-1) == "package"
+    % Empty segments come from doubled separators or the UNC prefix.
+    checkSegments(parts(parts ~= ""), "Stage", stage);
+else
     error("phasecont:package:badStage", ...
-        "Refusing to use '%s' as the stage folder: it must be an absolute path directly inside a folder named package, with no . or .. segments", ...
+        "Refusing to use '%s' as the stage folder: it must be an absolute path directly inside a folder named package", ...
         stage);
 end
+end
+
+function outPath = checkOutput(output, stagePath)
+% Validate OutputFile and return its absolute, normalized path.
+outPath = normalizedPath(output);
+parts = split(string(outPath), "\");
+leaf = parts(end);
+if ~endsWith(leaf, ".mltbx", IgnoreCase = true) || strlength(leaf) <= strlength(".mltbx")
+    error("phasecont:package:badOutput", ...
+        "OutputFile must be a name ending in .mltbx, got '%s'", output);
+end
+checkSegments(parts(parts ~= ""), "Output", output);
+if isfolder(outPath) || isUnder(outPath, stagePath)
+    error("phasecont:package:badOutput", ...
+        "OutputFile is a folder or lies at or inside the stage folder: %s", output);
+end
+if isfile(outPath)
+    [~, attrs] = fileattrib(outPath);
+    if ~attrs.UserWrite
+        error("phasecont:package:badOutput", ...
+            "OutputFile exists and is read-only: %s", output);
+    end
+end
+end
+
+function p = normalizedPath(p)
+% Absolute path with "." and ".." resolved, "\" separators and no trailing
+% separator. Pure string work: the folder need not exist.
+p = char(p);
+if isempty(regexp(p, '^([A-Za-z]:[\\/]|\\\\|/)', "once"))
+    p = fullfile(pwd, p);
+end
+unc = startsWith(p, "\\");
+parts = split(string(p), ["\", "/"]);
+kept = strings(1, 0);
+for part = parts(:)'
+    if part == "" || part == "."
+        continue
+    elseif part == ".."
+        if ~isempty(kept)
+            kept(end) = [];
+        end
+    else
+        kept(end+1) = part; %#ok<AGROW>
+    end
+end
+p = char(strjoin(kept, "\"));
+if unc
+    p = ['\\' p];
+end
+end
+
+function tf = isUnder(p, folder)
+% True when p equals folder or lies below it (case-insensitive).
+p = lower(string(p));
+folder = lower(string(folder));
+tf = p == folder || startsWith(p, folder + "\");
 end

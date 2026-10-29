@@ -187,9 +187,131 @@ classdef PackageTest < matlab.unittest.TestCase
                 "phasecont:package:badOutput");
             noToolbox = fullfile(testCase.Temp, "noroot");
             mkdir(noToolbox);
+            writelines("x", fullfile(noToolbox, "LICENSE"));
+            writelines("x", fullfile(noToolbox, "THIRD_PARTY_NOTICES.md"));
             testCase.verifyError(@() testCase.build(strings(1, 0), ...
                 struct(Root = noToolbox)), "phasecont:package:missingFile");
             testCase.verifyTrue(isfile(marker));
+        end
+
+        function windowsAliasesOfStageSegmentsAreRejected(testCase)
+            % Windows drops trailing dots and spaces, so ".. " means "..".
+            work = testCase.prepareStage();
+            origStage = testCase.Stage;
+            pkg = fullfile(work, "package");
+            stages = [pkg + filesep + [".. ", "...", " ", ". ", " ..", ".. ."], ...
+                string(work) + filesep + ["package ", "package."] + filesep + "PhaseCont"];
+            for s = stages(:)'
+                testCase.Stage = s;
+                testCase.verifyError(@() testCase.build(), ...
+                    "phasecont:package:badStage", "stage: '" + s + "'");
+            end
+            testCase.Stage = origStage;
+            testCase.verifyIntact(work);
+        end
+
+        function reservedDeviceNamesAreRejected(testCase)
+            % NUL itself is not tested here: mkdir on it ends the MATLAB
+            % process if the check ever regresses. It was checked by hand.
+            work = testCase.prepareStage();
+            origStage = testCase.Stage;
+            pkg = fullfile(work, "package");
+            for n = ["CON", "con", "CON.txt", "nul.txt", "COM1", "lpt9", "AUX", "PRN.x"]
+                testCase.Stage = fullfile(pkg, n);
+                testCase.verifyError(@() testCase.build(), ...
+                    "phasecont:package:badStage", "stage leaf: " + n);
+            end
+            testCase.Stage = fullfile(pkg, "CON", "PhaseCont");
+            testCase.verifyError(@() testCase.build(), "phasecont:package:badStage");
+            testCase.Stage = origStage;
+            testCase.verifyIntact(work);
+        end
+
+        function inputsInsideTheStageAreRejected(testCase)
+            work = testCase.prepareStage();
+            origStage = testCase.Stage;
+            inStage = fullfile(testCase.Stage, "inner");
+            mkdir(fullfile(inStage, "toolbox"));
+            writelines("x", fullfile(inStage, "LICENSE"));
+            writelines("x", fullfile(inStage, "THIRD_PARTY_NOTICES.md"));
+            bin = fullfile(testCase.Stage, "bin");
+            mkdir(bin);
+            writeBytes(fullfile(bin, "pckern.mexw64"), uint8(1:9));
+            writeBytes(fullfile(bin, "pckern.dll"), uint8(1:9));
+            lic = fullfile(testCase.Stage, "lic.txt");
+            writelines("license text", lic);
+            cases = {struct(Root = inStage), struct(BinFolder = bin), ...
+                struct(LicensesFile = lic), struct(Root = testCase.Stage), ...
+                struct(Root = fullfile(testCase.Stage, "inner", ".."))};
+            for k = 1:numel(cases)
+                testCase.verifyError(@() testCase.build(strings(1, 0), cases{k}), ...
+                    "phasecont:package:inputInsideStage");
+            end
+            testCase.verifyTrue(isfile(lic));
+            testCase.verifyTrue(isfile(fullfile(bin, "pckern.dll")));
+            testCase.verifyTrue(isfile(fullfile(inStage, "LICENSE")));
+            testCase.verifyIntact(work);
+        end
+
+        function unusableOutputFilesAreRejectedBeforeDeleting(testCase)
+            work = testCase.prepareStage();
+            origStage = testCase.Stage;
+            asFile = fullfile(work, "afile.txt");
+            writelines("x", asFile);
+            readOnly = fullfile(work, "ro.mltbx");
+            writelines("old", readOnly);
+            fileattrib(readOnly, "-w");
+            testCase.addTeardown(@() fileattrib(readOnly, "+w"));
+            asFolder = fullfile(work, "dir.mltbx");
+            mkdir(asFolder);
+            outputs = [fullfile(asFile, "sub", "x.mltbx"), ...
+                fullfile(work, "x<.mltbx"), fullfile(work, "a|b", "x.mltbx"), ...
+                fullfile(work, ".mltbx"), readOnly, asFolder, ...
+                fullfile(testCase.Stage, "out", "x.mltbx")];
+            for o = outputs
+                testCase.verifyError(@() testCase.build(strings(1, 0), ...
+                    struct(OutputFile = o)), "phasecont:package:badOutput", ...
+                    "output: " + o);
+            end
+            % An output path that equals the stage path.
+            stage = fullfile(work, "package", "X.mltbx");
+            mkdir(stage);
+            writelines("m", fullfile(stage, "marker.txt"));
+            testCase.Stage = stage;
+            testCase.verifyError(@() testCase.build(strings(1, 0), ...
+                struct(OutputFile = stage)), "phasecont:package:badOutput");
+            testCase.verifyTrue(isfile(fullfile(stage, "marker.txt")));
+            testCase.Stage = origStage;
+            testCase.verifyTrue(isfolder(asFolder));
+            testCase.verifyIntact(work);
+        end
+
+        function strictVersionsAreEnforced(testCase)
+            work = testCase.prepareStage();
+            origStage = testCase.Stage;
+            arabic = string(char([1632 46 1635 46 1632]));
+            for v = ["00.03.000", "1.2.4294967296", arabic, "0.3.0" + newline, ...
+                    "99999999999.0.0"]
+                testCase.verifyError(@() testCase.build(strings(1, 0), ...
+                    struct(Version = v)), "phasecont:package:badVersion");
+            end
+            testCase.verifyIntact(work);
+        end
+
+        function nonTextInputsAreTreatedAsMissing(testCase)
+            work = testCase.prepareStage();
+            origStage = testCase.Stage;
+            names = ["Root", "StageFolder", "OutputFile", "Version", ...
+                "Identifier", "BinFolder", "LicensesFile"];
+            for n = names
+                for v = {NaN, string(missing), 5, ["a" "b"], {}}
+                    o = struct();
+                    o.(n) = v{1};
+                    testCase.verifyError(@() testCase.build(strings(1, 0), o), ...
+                        "phasecont:package:missingInput", n + " as " + class(v{1}));
+                end
+            end
+            testCase.verifyIntact(work);
         end
 
         function summaryAndDescriptionMakeOnlyTrueClaims(testCase)
@@ -250,6 +372,26 @@ classdef PackageTest < matlab.unittest.TestCase
     end
 
     methods
+        function work = prepareStage(testCase)
+            % Stage with a marker inside it and a sibling next to package/.
+            % Returns the folder that holds package/.
+            mkdir(testCase.Stage);
+            writelines("m", fullfile(testCase.Stage, "marker.txt"));
+            work = fullfile(testCase.Temp);
+            writelines("s", fullfile(work, "sibling.txt"));
+            writelines("s", fullfile(work, "package", "sibling.txt"));
+        end
+
+        function verifyIntact(testCase, work)
+            testCase.verifyTrue(isfile(fullfile(testCase.Stage, "marker.txt")), ...
+                "stage marker was deleted");
+            testCase.verifyTrue(isfile(fullfile(work, "sibling.txt")), ...
+                "sibling of package/ was deleted");
+            testCase.verifyTrue(isfile(fullfile(work, "package", "sibling.txt")), ...
+                "sibling inside package/ was deleted");
+            testCase.verifyTrue(isfile(testCase.BinFolder + "/pckern.dll"));
+        end
+
         function file = build(testCase, omit, override)
             % Call packageToolbox with the test inputs. omit names inputs to
             % leave out; override is a struct of replacement values.
