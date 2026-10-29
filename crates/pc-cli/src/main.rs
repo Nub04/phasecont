@@ -30,7 +30,8 @@ fn main() -> ExitCode {
             target,
             package,
             out,
-        }) => licenses::licenses(&target, &package, &out),
+            overrides,
+        }) => licenses::licenses(&target, &package, &out, overrides.as_deref()),
         Ok(Command::Cont {
             file,
             problem,

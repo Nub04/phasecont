@@ -39,6 +39,7 @@ pub enum Command {
         target: String,
         package: String,
         out: PathBuf,
+        overrides: Option<PathBuf>,
     },
     /// Follow equilibrium branches described by a problem file.
     Cont {
@@ -60,7 +61,7 @@ usage: pc-cli parse [--json] [--] <file.ode>
        pc-cli emit-c [-o out.c] [--] <file.ode>
        pc-cli cont [--fallback] [--] <file.ode> <problem.json>
        pc-cli dll-imports [--] <file.dll>
-       pc-cli licenses --target TRIPLE [--package NAME] --out FILE
+       pc-cli licenses --target TRIPLE [--package NAME] --out FILE [--overrides DIR]
        pc-cli --help | pc-cli --version";
 
 pub const HELP: &str = "\
@@ -73,7 +74,7 @@ usage:
   pc-cli emit-c <file.ode> [-o out.c]
   pc-cli cont <file.ode> <problem.json> [--fallback]
   pc-cli dll-imports <file.dll>
-  pc-cli licenses --target TRIPLE [--package NAME] --out FILE
+  pc-cli licenses --target TRIPLE [--package NAME] --out FILE [--overrides DIR]
   pc-cli --help
   pc-cli --version
 
@@ -191,7 +192,7 @@ the file cannot be read or is not a 64-bit PE file, 2 usage error
 ";
 
 pub const LICENSES_HELP: &str = "\
-usage: pc-cli licenses --target TRIPLE [--package NAME] --out FILE
+usage: pc-cli licenses --target TRIPLE [--package NAME] --out FILE [--overrides DIR]
 
 Runs `cargo metadata --locked --filter-platform TRIPLE`, takes the dependency
 closure of the package without dev-dependencies and writes, for each crate that
@@ -204,6 +205,9 @@ options:
   --target TRIPLE  Rust target triple (required)
   --package NAME   package whose closure is listed (default pc-ffi)
   --out FILE       file to write (required); not written on failure
+  --overrides DIR  folder with one subfolder per crate that ships no license file;
+                   its LICENSE*, LICENCE*, COPYING* and NOTICE* files and its SOURCE file
+                   (upstream URL and tag) stand in for the missing files (no default)
   -h, --help       print this help
 
 exit codes: 0 the file was written, 1 cargo failed, the package is unknown, a
@@ -454,6 +458,7 @@ fn dll_imports_command(rest: &[OsString]) -> Result<Command, UsageError> {
 fn licenses_command(rest: &[OsString]) -> Result<Command, UsageError> {
     let mut target: Option<String> = None;
     let mut package: Option<String> = None;
+    let mut overrides: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
@@ -462,6 +467,7 @@ fn licenses_command(rest: &[OsString]) -> Result<Command, UsageError> {
             "--target" => target = Some(utf8(value("--target", &mut it)?)?.to_string()),
             "--package" => package = Some(utf8(value("--package", &mut it)?)?.to_string()),
             "--out" => out = Some(PathBuf::from(value("--out", &mut it)?)),
+            "--overrides" => overrides = Some(PathBuf::from(value("--overrides", &mut it)?)),
             other if other.starts_with('-') => {
                 return Err(UsageError(format!("unknown option {other}")));
             }
@@ -475,6 +481,7 @@ fn licenses_command(rest: &[OsString]) -> Result<Command, UsageError> {
             target,
             package: package.unwrap_or_else(|| "pc-ffi".to_string()),
             out,
+            overrides,
         }),
         _ => Err(UsageError("licenses needs --target and --out".to_string())),
     }
@@ -629,7 +636,8 @@ mod tests {
             Ok(Command::Licenses {
                 target: "t".into(),
                 package: "pc-ffi".into(),
-                out: "o.txt".into()
+                out: "o.txt".into(),
+                overrides: None
             })
         );
         assert_eq!(
@@ -637,7 +645,25 @@ mod tests {
             Ok(Command::Licenses {
                 target: "t".into(),
                 package: "x".into(),
-                out: "o".into()
+                out: "o".into(),
+                overrides: None
+            })
+        );
+        assert_eq!(
+            p(&[
+                "licenses",
+                "--target",
+                "t",
+                "--out",
+                "o",
+                "--overrides",
+                "d"
+            ]),
+            Ok(Command::Licenses {
+                target: "t".into(),
+                package: "pc-ffi".into(),
+                out: "o".into(),
+                overrides: Some("d".into())
             })
         );
         assert_eq!(p(&["licenses", "-h"]), Ok(Command::ToolHelp(LICENSES_HELP)));
@@ -646,6 +672,7 @@ mod tests {
             &["licenses", "--target", "t"],
             &["licenses", "--out", "o"],
             &["licenses", "--target"],
+            &["licenses", "--target", "t", "--out", "o", "--overrides"],
             &["licenses", "--target", "t", "--out", "o", "x"],
             &["licenses", "--target", "t", "--out", "o", "--frob"],
         ] {

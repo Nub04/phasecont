@@ -159,3 +159,70 @@ fn missing_target_or_out_is_a_usage_error() {
         assert!(stderr(&o).contains("usage: pc-cli"), "{args:?}");
     }
 }
+
+/// Writes `root/ov/<name>/` with a license file and a SOURCE file.
+fn override_for(root: &Path, name: &str, text: &str) {
+    let dir = root.join("ov").join(name);
+    write(&dir.join("LICENSE"), text);
+    write(&dir.join("SOURCE"), "https://example.invalid/repo tag v9\n");
+}
+
+fn run_with_overrides(root: &Path, ws: &Path) -> std::process::Output {
+    let out = root.join("out.txt");
+    let ov = root.join("ov");
+    common::run(
+        ws,
+        &[
+            "licenses",
+            "--target",
+            TARGET,
+            "--package",
+            "app",
+            "--out",
+            out.to_str().expect("utf-8 path"),
+            "--overrides",
+            ov.to_str().expect("utf-8 path"),
+        ],
+    )
+}
+
+#[test]
+fn an_override_stands_in_for_a_missing_license_file() {
+    let root = scratch("ov-used");
+    let ws = fixture(&root, Some("nolic"));
+    override_for(&root, "nolic", "override text\n");
+    let o = run_with_overrides(&root, &ws);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let text = fs::read_to_string(root.join("out.txt")).expect("output file");
+    assert!(text.contains("== nolic 1.2.3 (MIT) =="), "{text}");
+    assert!(text.contains("supplied by PhaseCont"), "{text}");
+    assert!(
+        text.contains("https://example.invalid/repo tag v9"),
+        "{text}"
+    );
+    assert!(text.contains("--- LICENSE ---\noverride text\n"), "{text}");
+}
+
+#[test]
+fn own_license_files_win_over_an_override() {
+    let root = scratch("ov-own");
+    let ws = fixture(&root, None);
+    override_for(&root, "withlic", "override text\n");
+    let o = run_with_overrides(&root, &ws);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let text = fs::read_to_string(root.join("out.txt")).expect("output file");
+    assert!(text.contains("with license\ntext\n"), "{text}");
+    assert!(!text.contains("override text"), "{text}");
+    assert!(!text.contains("supplied by PhaseCont"), "{text}");
+}
+
+#[test]
+fn an_override_folder_without_the_crate_still_fails() {
+    let root = scratch("ov-other");
+    let ws = fixture(&root, Some("nolic"));
+    override_for(&root, "someother", "other text\n");
+    let o = run_with_overrides(&root, &ws);
+    assert_eq!(code(&o), 1);
+    assert!(stderr(&o).contains("nolic 1.2.3"), "{}", stderr(&o));
+    assert!(!root.join("out.txt").exists());
+}

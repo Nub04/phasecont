@@ -18,8 +18,8 @@ struct Krate {
 }
 
 /// Writes the license texts of the closure of `package` for `target` to `out`.
-pub fn licenses(target: &str, package: &str, out: &Path) -> ExitCode {
-    match run(target, package, out) {
+pub fn licenses(target: &str, package: &str, out: &Path, overrides: Option<&Path>) -> ExitCode {
+    match run(target, package, out, overrides) {
         Ok(()) => ExitCode::SUCCESS,
         Err(msg) => {
             eprintln!("pc-cli: {msg}");
@@ -28,7 +28,7 @@ pub fn licenses(target: &str, package: &str, out: &Path) -> ExitCode {
     }
 }
 
-fn run(target: &str, package: &str, out: &Path) -> Result<(), String> {
+fn run(target: &str, package: &str, out: &Path, overrides: Option<&Path>) -> Result<(), String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let output = Command::new(&cargo)
         .args(["metadata", "--format-version", "1", "--filter-platform"])
@@ -48,13 +48,25 @@ fn run(target: &str, package: &str, out: &Path) -> Result<(), String> {
     let mut text = String::new();
     let mut missing: Vec<String> = Vec::new();
     for k in &krates {
-        let files =
+        let mut files =
             license_files(&k.dir).map_err(|e| format!("cannot read {}: {e}", k.dir.display()))?;
+        let mut note = String::new();
+        let fallback = overrides.map(|o| o.join(&k.name)).filter(|d| d.is_dir());
+        if let (true, Some(dir)) = (files.is_empty(), fallback) {
+            files =
+                license_files(&dir).map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
+            let source = std::fs::read_to_string(dir.join("SOURCE")).unwrap_or_default();
+            note = format!(
+                "(license files supplied by PhaseCont, taken from: {})\n",
+                source.trim().replace("\r\n", "\n").replace('\n', "; ")
+            );
+        }
         if files.is_empty() {
             missing.push(format!("{} {}", k.name, k.version));
             continue;
         }
         text.push_str(&format!("== {} {} ({}) ==\n", k.name, k.version, k.license));
+        text.push_str(&note);
         for (name, body) in files {
             text.push_str(&format!("--- {name} ---\n{body}"));
             if !body.ends_with('\n') {
