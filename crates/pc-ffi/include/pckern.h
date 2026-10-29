@@ -93,7 +93,8 @@ typedef struct pc_api_v1_t {
   int32_t (*model_compile)(uint64_t model, const char *opts_json);
 
   /* Evaluates f(x, p). Needs a compiled model. nx and nout must equal n, np
-   * must equal the number of parameters. */
+   * must equal the number of parameters. A model that uses t
+   * gives PC_ERR_NON_AUTONOMOUS here: call model_rhs_t. */
   int32_t (*model_rhs)(uint64_t model, const double *x, size_t nx,
                        const double *p, size_t np, double *out, size_t nout);
 
@@ -157,6 +158,11 @@ typedef struct pc_api_v1_t {
 
   /* "pckern <crate version> abi 1". Not freed by the caller. */
   const char *(*version)(void);
+
+  /* Evaluates f(x, p, t). Same rules as model_rhs; t must be finite
+   * (PC_ERR_BAD_ARG otherwise). A model that does not use t ignores it. */
+  int32_t (*model_rhs_t)(uint64_t model, double t, const double *x, size_t nx,
+                         const double *p, size_t np, double *out, size_t nout);
 } pc_api_v1_t;
 
 /* The entry point, for loaders that resolve it by name. It returns NULL only
@@ -166,7 +172,7 @@ typedef struct pc_api_v1_t {
 typedef const pc_api_v1_t *(*pc_api_v1_fn)(void);
 
 /* Layout of pc_api_v1_t on 64-bit targets, in bytes. */
-#define PC_API_V1_SIZE 120
+#define PC_API_V1_SIZE 128
 #define PC_API_V1_OFFSET_ABI_VERSION 0
 #define PC_API_V1_OFFSET_STRUCT_SIZE 4
 #define PC_API_V1_OFFSET_MODEL_FROM_ODE 8
@@ -183,6 +189,7 @@ typedef const pc_api_v1_t *(*pc_api_v1_fn)(void);
 #define PC_API_V1_OFFSET_MODEL_EQUILIBRIUM 96
 #define PC_API_V1_OFFSET_DEBUG_PANIC 104
 #define PC_API_V1_OFFSET_VERSION 112
+#define PC_API_V1_OFFSET_MODEL_RHS_T 120
 
 #ifndef PCKERN_NO_LAYOUT_CHECK
 /* C89 negative-array checks: _Static_assert needs /std:c11 on MSVC. */
@@ -206,6 +213,7 @@ PC_CHECK_OFFSET(model_info, PC_API_V1_OFFSET_MODEL_INFO);
 PC_CHECK_OFFSET(model_equilibrium, PC_API_V1_OFFSET_MODEL_EQUILIBRIUM);
 PC_CHECK_OFFSET(debug_panic, PC_API_V1_OFFSET_DEBUG_PANIC);
 PC_CHECK_OFFSET(version, PC_API_V1_OFFSET_VERSION);
+PC_CHECK_OFFSET(model_rhs_t, PC_API_V1_OFFSET_MODEL_RHS_T);
 #endif
 
 #ifdef __cplusplus

@@ -16,7 +16,8 @@
  *   [m, diag, msg] = pckern("model_from_ode", text)   msg: last_error on a model error
  *   pckern("model_compile", m [, opts])
  *   info = pckern("model_info", m)
- *   f = pckern("model_rhs", m, x, p)
+ *   f = pckern("model_rhs", m, x, p)       a model that uses t raises nonAutonomous
+ *   f = pckern("model_rhs", m, x, p, t)    f(x, p, t); t is a real double scalar
  *   [u, ev] = pckern("model_equilibrium", m, u0, p, opts)
  *   r = pckern("run_start", m, problem, u0, p)
  *   status = pckern("run_poll", r)
@@ -550,14 +551,20 @@ static void cmd_model_rhs(int nlhs, mxArray *plhs[], int nrhs, const mxArray *pr
     uint64_t m;
     const double *x, *p;
     size_t nx, np;
+    double t = 0.0;
     mxArray *f;
-    need_args(nrhs, 4, 4, "model_rhs");
+    need_args(nrhs, 4, 5, "model_rhs");
     need_outs(nlhs, 1, "model_rhs");
     m = get_handle(prhs[1]);
     x = get_vec(prhs[2], "x", &nx);
     p = get_vec(prhs[3], "p", &np);
+    if (nrhs == 5)
+        t = get_real_scalar(prhs[4], "t");
     f = mxCreateDoubleMatrix(nx, 1, mxREAL);
-    check(g_api->model_rhs(m, x, nx, p, np, mxGetDoubles(f), nx));
+    if (nrhs == 5)
+        check(g_api->model_rhs_t(m, t, x, nx, p, np, mxGetDoubles(f), nx));
+    else
+        check(g_api->model_rhs(m, x, nx, p, np, mxGetDoubles(f), nx));
     plhs[0] = f;
 }
 

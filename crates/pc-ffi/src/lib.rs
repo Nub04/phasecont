@@ -64,6 +64,16 @@ pub struct PcApiV1 {
     ) -> i32,
     pub debug_panic: unsafe extern "C" fn(i32, *mut u64) -> i32,
     pub version: extern "C" fn() -> *const c_char,
+    pub model_rhs_t: unsafe extern "C" fn(
+        u64,
+        f64,
+        *const f64,
+        usize,
+        *const f64,
+        usize,
+        *mut f64,
+        usize,
+    ) -> i32,
 }
 
 static API: PcApiV1 = PcApiV1 {
@@ -83,6 +93,7 @@ static API: PcApiV1 = PcApiV1 {
     model_equilibrium: api::model_equilibrium,
     debug_panic: api::debug_panic,
     version: api::version,
+    model_rhs_t: api::model_rhs_t,
 };
 
 /// The only exported symbol. Returns NULL only if a panic was caught.

@@ -407,16 +407,15 @@ fn buffer_lengths_are_checked() {
 }
 
 #[test]
-fn a_non_autonomous_model_gives_7() {
-    // `model_compile` rejects such a model, so `run_start` is never reached with a
-    // compiled one. The check in `run_start` is a second guard.
+fn a_non_autonomous_model_compiles_and_run_start_gives_7() {
+    // `model_compile` accepts a model that uses t; runs need an autonomous one.
     let m = parse(NON_AUTONOMOUS);
     let opts = c"{\"evaluator\":\"jit\"}";
-    assert_eq!(unsafe { (api().model_compile)(m.0, opts.as_ptr()) }, 7);
+    assert_eq!(unsafe { (api().model_compile)(m.0, opts.as_ptr()) }, 0);
     let json = r#"{"type":"EP","free":"a"}"#;
     let (rc, run) = start_with(&m, json, &[0.0], &[1.0]);
-    assert_eq!((rc, run), (2, 0));
-    assert_eq!(last_error(), NOT_COMPILED);
+    assert_eq!((rc, run), (7, 0));
+    assert_eq!(last_error(), "the model depends on t");
 }
 
 #[test]

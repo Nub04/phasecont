@@ -5,6 +5,7 @@ classdef Model < handle
     %   m = phasecont.Model(file, Evaluator = "fallback")
     %   f = m.rhs(x)
     %   f = m.rhs(x, p)       % p: numeric vector or struct of parameters
+    %   f = m.rhs(x, p, t)    % t: time, needed when the equations use t
     %
     % The model lives in the engine and is freed when the object is deleted
     % or cleared. Saving a Model stores its source text, and loading it
@@ -18,6 +19,8 @@ classdef Model < handle
         ParameterValues (:,1) double = zeros(0,1)
         Init (:,1) double = zeros(0,1)
         Evaluator (1,1) string = "jit"
+        % Autonomous is false when the equations use t.
+        Autonomous (1,1) logical = true
         Diagnostics (:,1) struct = repmat(struct("code", [], "severity", [], ...
             "file", [], "line", [], "col", [], "end_line", [], "end_col", [], ...
             "message", [], "fix_it", [], "notes", []), 0, 1)
@@ -50,19 +53,41 @@ classdef Model < handle
             obj.build();
         end
 
-        function f = rhs(obj, x, p)
-            % F = M.RHS(X) or M.RHS(X, P): the right-hand side at X.
+        function f = rhs(obj, x, p, t)
+            % F = M.RHS(X), M.RHS(X, P) or M.RHS(X, P, T): the right-hand side
+            % at X. A model that uses t (Autonomous is false) needs T; a model
+            % that does not use t ignores it. P defaults to ParameterValues
+            % when it is omitted.
             arguments
                 obj (1,1) phasecont.Model
                 x {mustBeNumeric, mustBeReal}
                 p = []
+                t = []
+            end
+            haveT = nargin > 3;
+            if haveT
+                if ~(isnumeric(t) && isreal(t) && isscalar(t) && isfinite(t))
+                    error("phasecont:model:badTime", ...
+                        "t must be a finite real numeric scalar.");
+                end
+            elseif ~obj.Autonomous
+                name = obj.File;
+                if name == ""
+                    name = "model";
+                end
+                error("phasecont:model:missingTime", ...
+                    "%s uses t; call rhs(x, p, t)", name);
             end
             if nargin < 3
                 p = obj.ParameterValues;
             else
                 p = obj.paramVector(p);
             end
-            f = pckern("model_rhs", obj.Id, double(x), p);
+            if haveT
+                f = pckern("model_rhs", obj.Id, double(x), p, double(t));
+            else
+                f = pckern("model_rhs", obj.Id, double(x), p);
+            end
             f = f(:);
         end
 
@@ -177,6 +202,7 @@ classdef Model < handle
             obj.ParameterValues = phasecont.Model.toColumn(info.values);
             obj.Init = phasecont.Model.toColumn(info.init);
             obj.Evaluator = string(info.evaluator);
+            obj.Autonomous = logical(info.autonomous);
             obj.Diagnostics = entries;
         end
     end

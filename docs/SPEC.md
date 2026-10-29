@@ -301,8 +301,12 @@ typedef struct {
                                double* eig_out, size_t neig_out);          /* eig as [re; im], 2n */
   int32_t (*debug_panic)(int32_t where, uint64_t* run);                   /* 0: this thread, 1: a run whose worker panics */
   const char* (*version)(void);
+  int32_t (*model_rhs_t)(uint64_t model, double t, const double* x, size_t nx,
+                         const double* p, size_t np, double* out, size_t nout);  /* appended after version, offset 120, table size 128 */
 } pc_api_v1_t;
 ```
+
+**Time.** `model_compile` accepts a model whose equations use `t`, and `model_info` reports `autonomous: false` for it. `model_rhs` on such a model returns nonAutonomous with the message `the model depends on t; call model_rhs_t`. `model_rhs_t` evaluates `f(x, p, t)` for any model, needs a finite `t` (badArg otherwise), and a model that does not use `t` ignores it. There is no default for `t`. `run_start` and `model_equilibrium` need an autonomous model and return nonAutonomous otherwise. Adding `model_rhs_t` grew the table from 120 to 128 bytes and left `abi_version` at 1.
 
 **Error codes.** 0 ok, 1 panic, 2 badArg, 3 badHandle, 4 internal, 5 model, 6 badProblem, 7 nonAutonomous, 8 numeric (`Singular`, `NewtonFailed`, `StepTooSmall`). The gateway alone raises `load` and `unknown`. MATLAB error IDs are `phasecont:engine:<kind>`.
 
@@ -338,6 +342,7 @@ The P7a calls, the first working part of this sketch:
 ```matlab
 m   = phasecont.Model("lorenz.ode", Evaluator="jit");     % or "fallback"
 f   = m.rhs(x, p);                                        % p: vector or struct, default m.ParameterValues
+f   = m.rhs(x, p, t);                                     % a model that uses t (m.Autonomous false) needs t
 eq  = phasecont.equilibrium(m, x0, Params=struct(b=8/3)); % -> phasecont.Point, Label "EP"
 br  = phasecont.continuation(m, eq, Free="r", MaxSteps=500, Bounds=[0 30], Plot=true);
 brs = phasecont.continuation(m, eq, Free="r", Switch="BP1");  % 1x2 Branch: followed and switched
@@ -346,6 +351,7 @@ plot(br, Var="x");                                        % stable solid, unstab
 ```
 
 - **Handle classes.** Only `Model` and the internal `phasecont.internal.Run` own Rust handles, and their `delete` frees the handle. `Branch` is a handle class that holds copied data, and `Point` is a value class. `continuation` blocks and polls about every 50 ms with `drawnow`. It grows the plot when `Plot=true`, and Ctrl+C cancels the run and returns nothing.
+- **Time in `rhs`.** `m.rhs(x, p, t)` takes a finite real scalar `t`, else `phasecont:model:badTime`. A model with `Autonomous == false` called without `t` raises `phasecont:model:missingTime`; the toolbox never assumes `t = 0`. A model that does not use `t` accepts `t` and ignores it. `equilibrium` and `continuation` still need an autonomous model and raise `phasecont:engine:nonAutonomous`.
 - **Apps.** They are programmatic `uifigure` code, not `.mlapp` files.
 - **Session JSON.** Records the model source and its SHA-256, the engine name and version, the platform, the MATLAB release, every run's starting point and options, and the precision used.
 

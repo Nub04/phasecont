@@ -23,6 +23,10 @@ if isnumeric(free)
 else
     name = string(free);
     idx = find(m.Parameters == name, 1);
+    if isempty(idx) && ~isempty(m)
+        error("phasecont:model:unknownParameter", ...
+            "The model has no parameter named ""%s"".", name);
+    end
 end
 p = double(p(:));
 stride = 3*n + 6;

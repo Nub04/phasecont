@@ -50,6 +50,7 @@ fields!(
     model_equilibrium,
     debug_panic,
     version,
+    model_rhs_t,
 );
 
 #[test]

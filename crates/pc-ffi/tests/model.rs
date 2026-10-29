@@ -248,7 +248,7 @@ fn compile_options() {
     // A failed compile leaves the earlier evaluator in place.
     assert_eq!(info(&m)["evaluator"], "jit");
     let na = model(NON_AUTONOMOUS);
-    assert_eq!(compile(&na, None), 7);
+    assert_eq!(compile(&na, None), 0, "{}", last_error());
 }
 
 #[test]
@@ -561,4 +561,121 @@ fn adjacent_outputs_are_not_an_overlap() {
         )
     };
     assert_eq!(rc, 0, "{}", last_error());
+}
+
+fn rhs_t(m: &Mod, t: f64, x: &[f64], p: &[f64], out: &mut [f64]) -> i32 {
+    unsafe {
+        (api().model_rhs_t)(
+            m.0,
+            t,
+            x.as_ptr(),
+            x.len(),
+            p.as_ptr(),
+            p.len(),
+            out.as_mut_ptr(),
+            out.len(),
+        )
+    }
+}
+
+#[test]
+fn a_model_that_uses_t_evaluates_at_a_time_on_both_evaluators() {
+    let m = model(NON_AUTONOMOUS);
+    let mut out = [0.0];
+    for name in ["jit", "fallback"] {
+        let opts = format!(r#"{{"evaluator":"{name}"}}"#);
+        assert_eq!(compile(&m, Some(&opts)), 0, "{name}: {}", last_error());
+        assert_eq!(info(&m)["autonomous"], false);
+        assert_eq!(rhs_t(&m, 1.3, &[0.5], &[], &mut out), 0, "{}", last_error());
+        assert_eq!(out[0], -0.5 + 1.3f64.sin(), "{name}");
+        // Another time gives another value.
+        assert_eq!(rhs_t(&m, 0.0, &[0.5], &[], &mut out), 0);
+        assert_eq!(out[0], -0.5, "{name}");
+        // Without t the model refuses.
+        assert_eq!(rhs(&m, &[0.5], &[], &mut out), 7, "{name}");
+        assert_eq!(last_error(), "the model depends on t; call model_rhs_t");
+    }
+}
+
+#[test]
+fn model_rhs_t_checks_its_arguments() {
+    let m = model(NON_AUTONOMOUS);
+    assert_eq!(compile(&m, None), 0);
+    let mut out = [0.0];
+    for t in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_eq!(rhs_t(&m, t, &[0.5], &[], &mut out), 2, "t = {t}");
+        assert!(last_error().starts_with("t:"), "{}", last_error());
+    }
+    assert_eq!(rhs_t(&m, 1.0, &[0.5, 1.0], &[], &mut out), 2);
+    assert_eq!(rhs_t(&m, 1.0, &[0.5], &[1.0], &mut out), 2);
+    let mut two = [0.0; 2];
+    assert_eq!(rhs_t(&m, 1.0, &[0.5], &[], &mut two), 2);
+    unsafe {
+        let f = api().model_rhs_t;
+        let x = [0.5];
+        assert_eq!(
+            f(
+                m.0,
+                1.0,
+                ptr::null(),
+                1,
+                ptr::null(),
+                0,
+                out.as_mut_ptr(),
+                1
+            ),
+            2
+        );
+        assert_eq!(
+            f(m.0, 1.0, x.as_ptr(), 1, ptr::null(), 0, ptr::null_mut(), 1),
+            2
+        );
+        // A zero-length p may be NULL, as for model_rhs.
+        assert_eq!(
+            f(m.0, 1.0, x.as_ptr(), 1, ptr::null(), 0, out.as_mut_ptr(), 1),
+            0
+        );
+        assert_eq!(
+            f(0, 1.0, x.as_ptr(), 1, ptr::null(), 0, out.as_mut_ptr(), 1),
+            3
+        );
+    }
+}
+
+#[test]
+fn model_rhs_t_on_an_autonomous_model_ignores_t() {
+    let m = model(LORENZ);
+    let x = [1.0, 2.0, 3.0];
+    let mut want = [0.0; 3];
+    let mut got = [0.0; 3];
+    for name in ["jit", "fallback"] {
+        let opts = format!(r#"{{"evaluator":"{name}"}}"#);
+        assert_eq!(compile(&m, Some(&opts)), 0);
+        assert_eq!(rhs(&m, &x, &P1, &mut want), 0);
+        for t in [0.0, 7.0, -3.5, 1e300] {
+            assert_eq!(rhs_t(&m, t, &x, &P1, &mut got), 0, "{}", last_error());
+            assert_eq!(got, want, "{name} t = {t}");
+        }
+    }
+}
+
+#[test]
+fn model_rhs_t_needs_a_compiled_model() {
+    let m = model(NON_AUTONOMOUS);
+    let mut out = [0.0];
+    assert_eq!(rhs_t(&m, 1.0, &[0.5], &[], &mut out), 2);
+    assert_eq!(
+        last_error(),
+        "model is not compiled; call model_compile first"
+    );
+}
+
+#[test]
+fn equilibrium_on_a_model_that_uses_t_gives_7() {
+    let m = model(NON_AUTONOMOUS);
+    assert_eq!(compile(&m, None), 0);
+    let mut u = [0.0];
+    let mut eig = [0.0; 2];
+    assert_eq!(equil(&m, &[0.0], &[], None, &mut u, &mut eig), 7);
+    assert_eq!(last_error(), "the model depends on t");
 }

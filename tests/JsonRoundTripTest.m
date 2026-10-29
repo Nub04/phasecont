@@ -1,12 +1,17 @@
 classdef JsonRoundTripTest < matlab.unittest.TestCase
     % Tests that numbers written by num2json reach the engine unchanged.
 
+    properties
+        Bin
+    end
+
     methods (TestClassSetup)
         function addToolbox(testCase)
             root = fileparts(fileparts(mfilename("fullpath")));
             testCase.applyFixture( ...
                 matlab.unittest.fixtures.PathFixture(fullfile(root, "tests")));
-            testCase.applyFixture(fixtures.BinFixture);
+            f = testCase.applyFixture(fixtures.BinFixture);
+            testCase.Bin = f.Bin;
         end
     end
 
@@ -35,6 +40,9 @@ classdef JsonRoundTripTest < matlab.unittest.TestCase
         end
 
         function engineAcceptsTheseNumbers(testCase)
+            testCase.assumeTrue( ...
+                isfile(fullfile(testCase.Bin, "pckern." + mexext)), ...
+                "pckern has not been built (run buildtool mex)");
             f = fullfile(tempname, "fold.ode");
             mkdir(fileparts(f));
             cleanup = onCleanup(@() rmdir(fileparts(f), "s"));
@@ -42,14 +50,22 @@ classdef JsonRoundTripTest < matlab.unittest.TestCase
             fprintf(fid, "par a=-1\ninit x=1\nx'=a+x^2\ndone\n");
             fclose(fid);
             m = phasecont.Model(f);
+            last = "";
+            phasecont.internal.pollHook(@(~, st) assignState(st));
+            testCase.addTeardown(@() phasecont.internal.pollHook([]));
             eq = phasecont.equilibrium(m, -1, Tol = 1e-10);
             br = phasecont.continuation(m, eq, Free = "a", MaxSteps = 20, ...
                 Bounds = [-5 470/19], TolX = 1e-10, H0 = 8/3*1e-3);
             testCase.verifyClass(br, "phasecont.Branch");
             testCase.verifyGreaterThan(numel(br.Alpha), 2);
+            testCase.verifyEqual(last, "done");
             testCase.verifyNotEqual(br.Stop, "Error");
             testCase.verifyNotEqual(br.Stop, "Cancelled");
             clear cleanup
+
+            function assignState(st)
+                last = st.state;
+            end
         end
     end
 end

@@ -168,17 +168,26 @@ classdef GatewayTest < matlab.unittest.TestCase
             testCase.verifyNotEmpty(msg);
         end
 
-        function nonAutonomousModelIsRejected(testCase)
-            % model_compile rejects a model that uses t, so run_start never
-            % sees a compiled one (the library keeps a second guard there).
+        function nonAutonomousModelCompilesButCannotRun(testCase)
+            % model_compile accepts a model that uses t. model_rhs without t and
+            % run_start refuse it; the five-input model_rhs evaluates it.
             m = pckern("model_from_ode", ...
                 "par a=1" + newline + "x'=-a*x+sin(t)" + newline + "done" + newline);
             cleanup = onCleanup(@() pckern("free", m));
-            testCase.verifyError(@() pckern("model_compile", m, ...
-                "{""evaluator"":""fallback""}"), "phasecont:engine:nonAutonomous");
+            pckern("model_compile", m, "{""evaluator"":""fallback""}");
+            testCase.verifyError(@() pckern("model_rhs", m, 0.5, 1), ...
+                "phasecont:engine:nonAutonomous");
+            testCase.verifyEqual(pckern("model_rhs", m, 0.5, 1, 1.3), ...
+                -0.5 + sin(1.3), AbsTol = 4*eps);
+            testCase.verifyError(@() pckern("model_rhs", m, 0.5, 1, [1 2]), ...
+                "phasecont:engine:badArg");
+            testCase.verifyError(@() pckern("model_rhs", m, 0.5, 1, 1i), ...
+                "phasecont:engine:badArg");
+            testCase.verifyError(@() pckern("model_rhs", m, 0.5, 1, NaN), ...
+                "phasecont:engine:badArg");
             testCase.verifyError(@() pckern("run_start", m, ...
                 '{"type":"EP","free":"a","options":{}}', 0, 1), ...
-                "phasecont:engine:badArg");
+                "phasecont:engine:nonAutonomous");
             clear cleanup
         end
 

@@ -175,11 +175,48 @@ classdef ModelTest < matlab.unittest.TestCase
             testCase.verifyEqual(string(m.Diagnostics(1).severity), "warning");
         end
 
-        function nonAutonomousModel(testCase)
+        function nonAutonomousModel(testCase, Evaluator)
             f = testCase.write("na.ode", "par a=1" + newline + "init x=1" + ...
                 newline + "x'=-a*x+sin(t)" + newline + "done" + newline);
-            testCase.verifyError(@() phasecont.Model(f), ...
+            m = phasecont.Model(f, Evaluator = Evaluator);
+            testCase.verifyFalse(m.Autonomous);
+            testCase.verifyClass(m.Autonomous, "logical");
+            missing = "phasecont:model:missingTime";
+            testCase.verifyError(@() m.rhs(0.5), missing);
+            testCase.verifyError(@() m.rhs(0.5, 1), missing);
+            try
+                m.rhs(0.5);
+            catch err
+                testCase.verifyEqual(string(err.message), ...
+                    m.File + " uses t; call rhs(x, p, t)");
+            end
+            testCase.verifyEqual(m.rhs(0.5, 1, 1.3), -0.5 + sin(1.3), ...
+                AbsTol = 4*eps);
+            testCase.verifyEqual(m.rhs(0.5, struct(a = 2), 0), -1);
+            bad = "phasecont:model:badTime";
+            testCase.verifyError(@() m.rhs(0.5, 1, NaN), bad);
+            testCase.verifyError(@() m.rhs(0.5, 1, Inf), bad);
+            testCase.verifyError(@() m.rhs(0.5, 1, [1 2]), bad);
+            testCase.verifyError(@() m.rhs(0.5, 1, 1i), bad);
+            testCase.verifyError(@() m.rhs(0.5, 1, "1"), bad);
+            testCase.verifyError(@() m.rhs(0.5, 1, []), bad);
+            % Continuation and equilibrium still need an autonomous model.
+            testCase.verifyError(@() phasecont.equilibrium(m, 0.5), ...
                 "phasecont:engine:nonAutonomous");
+            testCase.verifyError(@() phasecont.continuation(m, 0.5, Free = "a"), ...
+                "phasecont:engine:nonAutonomous");
+        end
+
+        function autonomousModelIgnoresT(testCase, Evaluator)
+            f = testCase.write("lorenz.ode", testCase.Lorenz);
+            m = phasecont.Model(f, Evaluator = Evaluator);
+            testCase.verifyTrue(m.Autonomous);
+            x = [1 2 3];
+            p = [9 25 3];
+            testCase.verifyEqual(m.rhs(x, p, 7), m.rhs(x, p));
+            testCase.verifyEqual(m.rhs(x, p, -2.5), m.rhs(x, p));
+            testCase.verifyError(@() m.rhs(x, p, NaN), ...
+                "phasecont:model:badTime");
         end
 
         function largeFrameJitMatchesFallback(testCase)
@@ -244,9 +281,23 @@ classdef ModelTest < matlab.unittest.TestCase
                 testCase.verifyEqual(n.File, m.File);
                 testCase.verifyEqual(n.Source, m.Source);
                 testCase.verifyEqual(n.Evaluator, m.Evaluator);
+                testCase.verifyEqual(n.Autonomous, m.Autonomous);
+                testCase.verifyTrue(n.Autonomous);
                 testCase.verifyEqual(n.rhs([1 2 3]), m.rhs([1 2 3]));
             end
             testCase.verifyNotEqual(la.m.Id, lb.m.Id);
+        end
+
+        function saveAndLoadKeepsAutonomousFalse(testCase)
+            f = testCase.write("nasl.ode", "par a=1" + newline + "init x=1" + ...
+                newline + "x'=-a*x+sin(t)" + newline + "done" + newline);
+            m = phasecont.Model(f); %#ok<NASGU>
+            file = fullfile(testCase.Dir, "nasl.mat");
+            save(file, "m");
+            l = load(file);
+            testCase.verifyFalse(l.m.Autonomous);
+            testCase.verifyEqual(l.m.rhs(0.5, 1, 1.3), -0.5 + sin(1.3), ...
+                AbsTol = 4*eps);
         end
     end
 end

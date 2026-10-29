@@ -130,11 +130,31 @@ pub fn build(
     info: &ModelInfo,
     which: Evaluator,
 ) -> Result<Box<dyn ModelEval>, EngineError> {
+    build_checked(model, info, which, true)
+}
+
+/// Like [`build`] but accepts a model that reads `t`. The result evaluates `F`, `JacU` and
+/// the other entries with time as the last entry of `p` (`p` has `n_p + 1` values). The
+/// table check still applies.
+pub fn build_allowing_t(
+    model: &Model,
+    info: &ModelInfo,
+    which: Evaluator,
+) -> Result<Box<dyn ModelEval>, EngineError> {
+    build_checked(model, info, which, false)
+}
+
+fn build_checked(
+    model: &Model,
+    info: &ModelInfo,
+    which: Evaluator,
+    require_autonomous: bool,
+) -> Result<Box<dyn ModelEval>, EngineError> {
     let ir: IrModel = lower(model, info).map_err(|errs| {
         let msgs: Vec<&str> = errs.iter().map(|e| e.message.as_str()).collect();
         EngineError::Model(msgs.join("; "))
     })?;
-    if !ir.autonomous {
+    if require_autonomous && !ir.autonomous {
         return Err(EngineError::NonAutonomous);
     }
     if let Some(name) = table_reading_a_parameter(model, info) {

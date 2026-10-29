@@ -1,6 +1,6 @@
 classdef Rows2BranchTest < matlab.unittest.TestCase
     % Tests phasecont.internal.rows2branch on hand-made row matrices.
-    % No binary is needed: the Model is empty and nothing calls pckern.
+    % Most cases need no binary: the Model is empty and nothing calls pckern.
 
     methods (TestClassSetup)
         function addToolbox(testCase)
@@ -92,6 +92,34 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
                 phasecont.Model.empty, 1, 7, n, pts, zeros(9, 0), st);
             both = [br br];
             testCase.verifyError(@() points(both), "phasecont:model:badBranch");
+        end
+
+        function unknownFreeNameWithARealModel(testCase)
+            % This case needs a real Model, so it needs the binary.
+            root = fileparts(fileparts(mfilename("fullpath")));
+            testCase.applyFixture( ...
+                matlab.unittest.fixtures.PathFixture(fullfile(root, "tests")));
+            f = testCase.applyFixture(fixtures.BinFixture);
+            testCase.assumeTrue( ...
+                isfile(fullfile(f.Bin, "pckern." + mexext)), ...
+                "pckern has not been built (run buildtool mex)");
+            d = testCase.applyFixture( ...
+                matlab.unittest.fixtures.TemporaryFolderFixture);
+            file = fullfile(d.Folder, "fold.ode");
+            fid = fopen(file, "w");
+            fprintf(fid, "par a=-1\ninit x=1\nx'=a+x^2\ndone\n");
+            fclose(fid);
+            m = phasecont.Model(file);
+            n = 1;
+            pts = [0.0, 1, -1, 0, nan nan nan, 0.1, 2].';
+            st = struct("points", 1, "stop", "MaxSteps", "warnings", [], ...
+                "specials", []);
+            testCase.verifyError(@() phasecont.internal.rows2branch( ...
+                m, "zz", -1, n, pts, zeros(9, 0), st), ...
+                "phasecont:model:unknownParameter");
+            br = phasecont.internal.rows2branch( ...
+                m, "a", -1, n, pts, zeros(9, 0), st);
+            testCase.verifyEqual(br.FreeIndex, 1);
         end
     end
 end

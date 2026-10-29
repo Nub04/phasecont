@@ -9,7 +9,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 
-use pc_engine::{EpSetup, Evaluator, ModelEval, Options, build, equilibrium};
+use pc_engine::{EpSetup, Evaluator, ModelEval, Options, build_allowing_t, equilibrium};
 use pc_ir::{EntryKind, IrModel};
 use pc_ode::{Model, ModelInfo};
 
@@ -33,7 +33,7 @@ pub(crate) struct Names {
 
 enum Request {
     Compile(Evaluator),
-    Rhs { x: Vec<f64>, p: Vec<f64> },
+    Rhs { x: Vec<f64>, p: Vec<f64>, t: f64 },
     Equilibrium { setup: EpSetup, opts: Options },
     Panic,
 }
@@ -154,8 +154,8 @@ impl ModelHandle {
         }
     }
 
-    pub fn rhs(&self, x: Vec<f64>, p: Vec<f64>) -> Result<Vec<f64>> {
-        match self.call(Request::Rhs { x, p })? {
+    pub fn rhs(&self, x: Vec<f64>, p: Vec<f64>, t: f64) -> Result<Vec<f64>> {
+        match self.call(Request::Rhs { x, p, t })? {
             Reply::Rhs(out) => Ok(out),
             _ => Err(Error::Internal("unexpected reply to rhs".into())),
         }
@@ -228,7 +228,7 @@ struct Context {
 fn handle(req: Request, ctx: &Context, ev: &mut Option<Box<dyn ModelEval>>) -> Result<Reply> {
     match req {
         Request::Compile(which) => {
-            let mut built = build(&ctx.model, &ctx.info, which)?;
+            let mut built = build_allowing_t(&ctx.model, &ctx.info, which)?;
             // The JIT compiles an entry on its first call. Run `F` once so that the
             // compile happens here and `jit_max_frame` is set. The value does not matter,
             // and a NaN at the declared start is not an error.
@@ -241,9 +241,9 @@ fn handle(req: Request, ctx: &Context, ev: &mut Option<Box<dyn ModelEval>>) -> R
             ctx.evaluator.store(code, Ordering::Relaxed);
             Ok(Reply::Compiled)
         }
-        Request::Rhs { x, mut p } => {
+        Request::Rhs { x, mut p, t } => {
             let ev = compiled(ev)?;
-            p.push(0.0);
+            p.push(t);
             let mut out = vec![0.0; ev.n()];
             ev.eval(&EntryKind::F, &x, &p, &[], &mut out)?;
             Ok(Reply::Rhs(out))

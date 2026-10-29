@@ -115,17 +115,54 @@ pub unsafe extern "C" fn model_rhs(
     out: *mut f64,
     nout: usize,
 ) -> i32 {
-    barrier(|| {
-        let h = model_handle(model)?;
-        expect_len("x", h.n(), nx)?;
-        expect_len("p", h.n_p(), np)?;
-        expect_len("out", h.n(), nout)?;
-        let x = unsafe { f64_arg(x, nx, "x") }?.to_vec();
-        let p = unsafe { f64_arg(p, np, "p") }?.to_vec();
-        let out = unsafe { f64_out(out, nout, "out") }?;
-        out.copy_from_slice(&h.rhs(x, p)?);
-        Ok(())
-    })
+    barrier(|| unsafe { rhs_at(model, None, x, nx, p, np, out, nout) })
+}
+
+pub unsafe extern "C" fn model_rhs_t(
+    model: u64,
+    t: f64,
+    x: *const f64,
+    nx: usize,
+    p: *const f64,
+    np: usize,
+    out: *mut f64,
+    nout: usize,
+) -> i32 {
+    barrier(|| unsafe { rhs_at(model, Some(t), x, nx, p, np, out, nout) })
+}
+
+/// The body of `model_rhs` (`t` is None: time 0, refused for a model that uses t) and
+/// `model_rhs_t`.
+#[allow(clippy::too_many_arguments)]
+unsafe fn rhs_at(
+    model: u64,
+    t: Option<f64>,
+    x: *const f64,
+    nx: usize,
+    p: *const f64,
+    np: usize,
+    out: *mut f64,
+    nout: usize,
+) -> Result<()> {
+    let h = model_handle(model)?;
+    if t.is_none() && !h.names.autonomous {
+        return Err(Error::NonAutonomous(
+            "the model depends on t; call model_rhs_t".into(),
+        ));
+    }
+    if let Some(t) = t
+        && !t.is_finite()
+    {
+        return Err(bad_arg(format!("t: expected a finite value, got {t}")));
+    }
+    expect_len("x", h.n(), nx)?;
+    expect_len("p", h.n_p(), np)?;
+    expect_len("out", h.n(), nout)?;
+    let x = unsafe { f64_arg(x, nx, "x") }?.to_vec();
+    let p = unsafe { f64_arg(p, np, "p") }?.to_vec();
+    let out = unsafe { f64_out(out, nout, "out") }?;
+    out.copy_from_slice(&h.rhs(x, p, t.unwrap_or(0.0))?);
+    Ok(())
 }
 
 pub unsafe extern "C" fn run_start(
@@ -317,6 +354,9 @@ pub unsafe extern "C" fn model_equilibrium(
     barrier(|| {
         let h = model_handle(model)?;
         let n = h.n();
+        if !h.names.autonomous {
+            return Err(Error::NonAutonomous(EngineError::NonAutonomous.to_string()));
+        }
         expect_len("u0", n, nu)?;
         expect_len("p", h.n_p(), np)?;
         expect_len("u_out", n, nu_out)?;
