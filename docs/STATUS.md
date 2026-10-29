@@ -2,9 +2,11 @@
 
 ## Phase
 
-P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching; SPEC section 14) is implemented on branch `phase3-pc-engine` and reviewed, and waits for acceptance; its plan was approved on 2026-10-28. P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
+P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) is complete on branch `phase7a-matlab-api`, which is awaiting the owner's push and merge. It is not merged into `main`. P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
 
 ## Done
+
+- P3 merged into `main` on 2026-10-28 as PR #1 (dfcfdab).
 
 P0 (accepted on 2026-10-22, when the owner approved the decisions in `docs/spikes.md`):
 
@@ -39,7 +41,7 @@ P2 (accepted on 2026-10-28; the numbers below were measured that day at `765fc3c
   - The four checks pass there, and `cargo test` passes all 603 tests (run 40644502330 at `d1b60ec`), the `pc-jit` tests and the AOT test included. The AOT test compiles with Apple clang 21.0.0 (also called as `gcc`) and the same flags, and matches the JIT at 0 ulp.
   - `crates/pc-jit/examples/jit_probe.rs` compiles a Hopf model with the JIT and runs `F` and `JacU`. The results equal `Fallback` bit for bit, unsigned and under the hardened runtime with each JIT entitlement. The runner has SIP disabled and does not enforce the hardened runtime (`DYLD_PRINT_LIBRARIES` still prints with `--options runtime`), so that matrix only shows the JIT runs.
   - MATLAB R2026b on that runner is not hardened: `bin/maca64/MATLAB` and `matlab_helper` have `flags=0x0(none)` and no entitlements. `cranelift-jit`'s default memory provider (read-write, then executable, without `MAP_JIT`) therefore works inside MATLAB, and no `MAP_JIT` provider is needed. A guard step fails the job if a later release adopts the hardened runtime without `allow-unsigned-executable-memory` or `disable-executable-page-protection`.
-  - Not tested: the JIT inside the MATLAB process on macOS. That needs the MEX gateway and `pc-ffi` (P7a) and a MATLAB batch licensing token in CI.
+  - Not tested: the JIT inside the MATLAB process on macOS. That needs a MATLAB batch licensing token in CI (deferred from P7a, see Open questions).
 - The review of the whole branch (2026-10-28) found four minor defects and some stale text. One fix round (`8e15f85` to `765fc3c`) fixed them, each code fix with a test that fails without it:
   - The x-derivative of `besselj` and `bessely` now shifts the truncated order: for an order between -1 and 1 it used to give the wrong value.
   - An entry request that hits the node cap now restores the DAG, so later requests on the same model still work.
@@ -73,24 +75,27 @@ P3 (the numbers below were measured on 2026-10-28 at `fb14bdb` plus the SPEC and
 - `cargo build --target x86_64-pc-windows-gnu -p pc-engine` passes. The four checks pass.
 - Known limit: on a long step across a branch crossing, the trial corrector of the zero search can jump to the other branch, which puts the BP at the wrong place (α = 0.04 instead of 0 in one case). `hmax` bounds it; the test models use 0.1 or 0.5.
 
+P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; the commits are in `git log --oneline dfcfdab..HEAD`; awaiting the owner's push and merge):
+
+- `pc-ffi` C ABI v1: 17 members in 128 bytes, with `model_rhs_t` appended at offset 120. It has the handle registry, the panic barrier, model threads and runs, and a hand-written `pckern.h` with a layout test.
+- `pc-cli dll-imports`, the build tasks `cargo` and `mex` with `scripts/build-pckern`, and the MEX gateway in `mex/pckern_gateway.c`.
+- MATLAB API: `phasecont.Model`, `Point`, `equilibrium`, `continuation` (blocking, with a live plot), and `Branch` with `plot` and `points`.
+- A model that uses `t` compiles and evaluates with `m.rhs(x, p, t)`. `t` has no default and raises `phasecont:model:missingTime`. Runs and equilibria still need an autonomous model.
+- Continuation can start from an LP, H or BP point. A BP start raises `badProblem` and names `Switch`.
+- Tests at Task 15: Rust 868 passed; MATLAB 105 tests, 104 passed, 0 failed, 1 skipped (a BuildTest assumption).
+- CI in `.github/workflows/ci.yml` has four jobs: rust (ubuntu, windows, macos), pckern-win (cross build, dll-imports, artifact), matlab-windows (self-hosted Windows runner `nubom-windows`, prebuilt DLL, no license secret) and asan. None has run on GitHub, since the branch is not pushed.
+
 ## In progress
 
-- P3: all 14 plan tasks, the review of the whole branch and its fix round are done. The owner's acceptance remains.
+- Nothing. P7a is complete on `phase7a-matlab-api` and awaits the owner's push and merge.
 
 ## Next
 
+- P8a: package v0.3.
+  - Confirm on the File Exchange submission form that it accepts an Apache-2.0 toolbox linked to GitHub.
+  - AOT through `mex` with MSVC (moved from P7a by the owner on 2026-10-28): compile with floating-point contraction off (the counterpart of `-ffp-contract=off`), call `pc_aot_init` with pckern's shim table before any entry, and compare NaNs by class, not by sign. The project test runs gcc only.
 - P4: Hopf detection for n > 100 with the minimally augmented test function (Govaerts), and the LP and Hopf curves. Each step now evaluates `JacU` and all eigenvalues even when Hopf detection is off; P4 should reuse F_u from the step's Jacobian.
 - P4 and later: a continuation that changes a parameter or state read by a table formula needs a new lowering of the model (P2 known difference).
-- P7a: the `pc-ffi` worker thread. Parsing at depth 200 needs about 800 KB of stack in a debug build, so `pc-ffi` must parse on a worker thread with an explicit stack size (for example 8 MB), not on MATLAB's thread (parked P1). It must also cap the input size, since parse diagnostics grow with the input (about 253 MB for 300000 bad lines in a debug build).
-- P7a: the JIT and AOT inside MATLAB on Windows, which P2 could not test here.
-  - Run a model whose frame passes 4 KiB inside MATLAB, so the inline stack probes run on Windows.
-  - `cranelift-jit` registers no Windows unwind information. No panic or exception may unwind through JIT code, which rule 7's `catch_unwind` on the Rust side of every call already requires.
-  - `JitEntries` is neither `Send` nor `Sync`. Moving a compiled model to the worker thread needs a justified `unsafe impl`.
-  - Run `Fallback` on the 8 MB worker thread too: its recursion budget is sized for a 1 MiB stack at five nested dual levels.
-  - Lower models on that thread as well. `lower`'s depth limit of 1000 is not a stack bound: about 400 nested user functions overflow a 1 MiB stack in a debug build (a release build at 1 MiB and a debug build at 2 MiB return `TooLarge`).
-  - AOT through `mex` with MSVC: compile with floating-point contraction off (the counterpart of `-ffp-contract=off`), call `pc_aot_init` with pckern's shim table before any entry, and compare NaNs by class, not by sign. The project test runs gcc only.
-- P7a: the JIT inside MATLAB on macOS arm64 (moved here from P2 by the owner on 2026-10-28), on the macOS runner once the owner adds a MATLAB batch licensing token as a repository secret. The Rust side of the SPEC section 4 check passes there already (see "Done").
-- P8a: confirm on the File Exchange submission form that it accepts an Apache-2.0 toolbox linked to GitHub.
 
 ## Blocked
 
@@ -98,5 +103,32 @@ P3 (the numbers below were measured on 2026-10-28 at `fb14bdb` plus the SPEC and
 
 ## Open questions
 
-- Settled on 2026-10-28: the in-MATLAB part of the macOS arm64 check in SPEC section 4 moves to P7a, where the MEX gateway first exists (see "Next").
+- Settled on 2026-10-28: the in-MATLAB part of the macOS arm64 check in SPEC section 4 moved to P7a. P7a did not run it; it is deferred (see below).
 - The P1 questions are settled for P2: division follows IEEE; `mod` is `fmod(x,y)` plus `y` when the remainder is negative, which probe `fn-mod-more` confirmed on eight more cases; `if` evaluates both branches and selects one.
+- Open from P7a: `model_from_ode` parses one in-memory string with no file loader, so `#include` lines fail with a diagnostic. The MATLAB layer has to inline included files, or a later task adds a loader callback.
+- Carried into the open questions from the P1, P2 and P7a notes:
+  - Closed in P7a by c2ad18f: `pc-ffi` parses on an 8 MiB worker thread and rejects input over 16 MiB. Each Model handle owns an 8 MiB thread that lowers the model and runs either evaluator, so `JitEntries` never moves between threads and needs no `unsafe impl`. The diagnostics JSON keeps the first 1000 diagnostics.
+  - The JIT inside MATLAB on Windows:
+    - `ModelTest` evaluates a model whose JIT frame passes 4 KiB inside MATLAB (it asserts `jit_max_frame > 4096`), so the inline stack probes run on Windows.
+    - `cranelift-jit` registers no Windows unwind information. No panic or exception may unwind through JIT code, which rule 7's `catch_unwind` on the Rust side of every call already requires.
+  - The JIT inside MATLAB on macOS arm64 (moved from P2 by the owner on 2026-10-28). The Rust side of the SPEC section 4 check passes on the macOS runner already (see "Done").
+- Deferred from P7a, with reasons:
+  - (a) The MATLAB jobs on Linux and macOS, and the in-MATLAB macOS JIT check. MathWorks' batch token pilot was closed to new requests (checked 2026-10-29), and the repo is private. These resume when a token or a public repo exists.
+  - (b) AOT through `mex`, moved to P8a on 2026-10-28.
+  - (c) ASan and the self-hosted MATLAB job have never run on GitHub.
+  - The self-hosted runner is registered but not a Windows service. It runs only while `C:\actions-runner\run.cmd` is running.
+- Known minors from reviews, parked:
+  - `special_tangent` threshold flips LP orientation with refinement noise.
+  - The BP rank threshold needs a comment.
+  - The LP test does not assert alpha at or below the LP alpha.
+  - SPEC does not say that LP Direction 1 leaves toward increasing first state component.
+  - Variable lookup is duplicated in `Branch.m` and `continuation.m`.
+  - The special-marker edge is black on dark themes.
+  - The live line advances ColorOrderIndex, so the final plot uses the second color.
+  - From the final P7a review (2026-10-29):
+    - `Stable` is false for a point whose eigenvalues are NaN. The engine fills NaN only after an internal fault, and carrying the last value forward would be a silent default, so it stays.
+    - `run_copy` with `count == 0` does not reach the library, so a freed run id returns an empty matrix, and the gateway trusts the caller's `stride` instead of reading the run's.
+    - `dll-imports` accepts any `api-ms-win-` prefix and reads the whole file without a size limit.
+    - `scripts/build-pckern` and `buildfile.m` ignore `CARGO_TARGET_DIR`, and the `wsl.exe` command does not escape `$` or quotes in paths.
+    - A `Branch` keeps its `Model` handle, so variable lookup fails after the Model is deleted, and `continuation` rejects a start Point from another Model object with the same source.
+    - `BuildTest/gatewayIsBuiltIntoTheBinFolder` cannot fail when the gateway is missing.

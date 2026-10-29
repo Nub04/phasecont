@@ -797,6 +797,7 @@ version = "0.0.0"
 dependencies = [
  "pc-codegen",
  "pc-engine",
+ "pc-ffi",
  "pc-ir",
  "pc-jit",
  "pc-ode",
@@ -830,6 +831,14 @@ version = "0.0.0"
 [[package]]
 name = "pc-ffi"
 version = "0.0.0"
+dependencies = [
+ "pc-engine",
+ "pc-ir",
+ "pc-jit",
+ "pc-linalg",
+ "pc-ode",
+ "serde_json",
+]
 
 [[package]]
 name = "pc-ir"

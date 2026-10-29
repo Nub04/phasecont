@@ -560,7 +560,12 @@ fn fs_loader_resolves_against_the_including_file() {
     // R20 1: `..` is kept in the display name, so it names the opened file.
     assert_eq!(
         map.name(FileId(3)),
-        tmp.0.join("sub/../c.ode").display().to_string()
+        tmp.0
+            .join("sub")
+            .join("..")
+            .join("c.ode")
+            .display()
+            .to_string()
     );
 }
 
@@ -679,6 +684,7 @@ fn fs_loader_symlink_self_include_is_a_cycle() {
 
 /// `abs` as a path relative to the working directory, going up to the root
 /// first, so the result does not depend on where the tests run.
+#[cfg(unix)]
 fn relative_to_cwd(abs: &Path) -> PathBuf {
     let cwd = std::env::current_dir().unwrap();
     let mut rel = PathBuf::new();
@@ -863,6 +869,7 @@ fn display_names_drop_only_dot() {
 }
 
 /// Resolves the top file `top` with `FsLoader`.
+#[cfg(unix)]
 fn resolve_fs(top: &Path) -> (Model, Vec<Diagnostic>, SourceMap) {
     let mut map = SourceMap::new();
     let id = FsLoader::new().load_top(&mut map, top).unwrap();

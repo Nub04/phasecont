@@ -2,9 +2,9 @@
 
 mod args;
 mod cont;
+mod dllimports;
 mod ircmd;
-mod json;
-mod summary;
+mod pe;
 mod text;
 
 use std::io::Write as _;
@@ -24,6 +24,7 @@ fn main() -> ExitCode {
         Ok(Command::Ir { file }) => ircmd::ir(&file),
         Ok(Command::CheckDerivs { file, points, seed }) => ircmd::check_derivs(&file, points, seed),
         Ok(Command::EmitC { file, out }) => ircmd::emit_c(&file, out.as_deref()),
+        Ok(Command::DllImports { file }) => dllimports::dll_imports(&file),
         Ok(Command::Cont {
             file,
             problem,
@@ -78,7 +79,7 @@ fn parse(file: &Path, json: bool) -> ExitCode {
         Err(code) => return code,
     };
     let report = if json {
-        json::render(&shown, &map, &loaded)
+        pckern::json::diag::render(&shown, &map, &loaded)
     } else {
         text::render(&map, &loaded)
     };

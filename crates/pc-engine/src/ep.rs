@@ -7,7 +7,7 @@ use crate::palc::run_branch;
 use crate::problem::Problem;
 use crate::refine::refine_specials;
 use pc_ir::EntryKind;
-use pc_linalg::Lu;
+use pc_linalg::{Lu, null_right, singular_values};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Where and along which parameter an equilibrium branch starts.
@@ -184,8 +184,11 @@ pub fn continue_ep(
         return Err(EngineError::Cancelled);
     }
     // With a first tangent the start is a branch point, where A is singular, so Newton on
-    // F(u) = 0 is skipped and the start must already be an equilibrium.
-    let u = if setup.tangent0.is_some() {
+    // F(u) = 0 is skipped and the start must already be an equilibrium. A special start
+    // without a tangent (LP, H or BP) skips it too, since A is singular at an LP and a
+    // fixed-alpha solve fails there.
+    let special = setup.start_is_special && setup.tangent0.is_none();
+    let u = if setup.tangent0.is_some() || special {
         check_setup(model, setup)?;
         setup.u0.clone()
     } else {
@@ -196,20 +199,27 @@ pub fn continue_ep(
     let mut x = u;
     x.push(setup.params[setup.free]);
     let mut problem = EpProblem::new(model, &start)?;
-    if setup.tangent0.is_some() {
+    let mut tangent0 = setup.tangent0.clone();
+    if tangent0.is_some() || special {
         let mut f = vec![0.0; x.len() - 1];
         problem.residual(&x, &mut f)?;
         let res = f.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
         if res.is_nan() || res > opts.tol_f {
-            return Err(EngineError::BadProblem(
-                "the start of the switched branch is not an equilibrium".into(),
-            ));
+            let what = if special {
+                "the special start point is not an equilibrium"
+            } else {
+                "the start of the switched branch is not an equilibrium"
+            };
+            return Err(EngineError::BadProblem(what.into()));
         }
+    }
+    if special {
+        tangent0 = Some(special_tangent(&mut problem, &x)?);
     }
     let mut branch = run_branch(
         &mut problem,
         &x,
-        setup.tangent0.as_deref(),
+        tangent0.as_deref(),
         opts,
         setup.start_is_special,
         cancel,
@@ -220,4 +230,48 @@ pub fn continue_ep(
         refine_specials(model, &setup.params, setup.free, opts, cancel, &mut branch);
     }
     Ok(branch)
+}
+
+/// Relative size of the smallest singular value of `[F_u F_alpha]` below which the matrix
+/// counts as rank deficient. This is the constant `palc::kernel_tangent` uses to tell a
+/// two-dimensional null space from a one-dimensional one.
+const RANK_TOL: f64 = 1e-8;
+
+/// First tangent at a special start. The `n` by `n + 1` matrix `[F_u F_alpha]` has a
+/// one-dimensional null space at an LP and at an H, so the tangent is that null vector.
+/// At a BP the rank is `n - 1`, no single tangent exists, and the start is refused.
+///
+/// The sign is fixed so that the alpha component is positive; at an LP that component is
+/// zero up to rounding, and then the first state component of size above `RANK_TOL` is made
+/// positive instead. `Options::direction` -1 reverses the result in `run_branch`.
+fn special_tangent(problem: &mut EpProblem<'_>, x: &[f64]) -> Result<Vec<f64>, EngineError> {
+    let n = x.len() - 1;
+    let mut jac = vec![0.0; n * (n + 1)];
+    problem.jacobian(x, &mut jac)?;
+    let s = singular_values(&jac, n, n + 1)?;
+    if s.iter().any(|v| !v.is_finite()) {
+        return Err(EngineError::NotFinite("Jacobian at the start".into()));
+    }
+    if s[n - 1] <= RANK_TOL * s[0] {
+        return Err(EngineError::BadProblem(
+            "the start is a branch point, where the tangent is not unique; \
+             use the Switch option to leave on the other branch"
+                .into(),
+        ));
+    }
+    let mut t = null_right(&jac, n, n + 1, 1)?.swap_remove(0);
+    let lead = if t[n].abs() > RANK_TOL {
+        t[n]
+    } else {
+        t.iter()
+            .copied()
+            .find(|c| c.abs() > RANK_TOL)
+            .unwrap_or(1.0)
+    };
+    if lead < 0.0 {
+        for c in t.iter_mut() {
+            *c = -*c;
+        }
+    }
+    Ok(t)
 }

@@ -7,6 +7,7 @@
 mod common;
 
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::Command;
 
 use common::{code, run, stderr, stdout};
@@ -259,18 +260,18 @@ fn error_in_an_included_file_names_that_file() {
     let o = run(&dir, &["parse", "top_inc.ode"]);
     assert_eq!(code(&o), 1);
     let t = stdout(&o);
-    assert!(
-        t.starts_with(
-            "inc/bad.ode:2:5: error[ODE0012]: XPPAUT deletes this blank and joins `1` and `2` into one word; delete the blank or add an operator\ny'=1 2\n    ^\n"
-        ),
-        "{t}"
+    // The include path is shown with the platform's separator.
+    let bad = Path::new("inc").join("bad.ode").display().to_string();
+    let want = format!(
+        "{bad}:2:5: error[ODE0012]: XPPAUT deletes this blank and joins `1` and `2` into one word; delete the blank or add an operator\ny'=1 2\n    ^\n"
     );
+    assert!(t.starts_with(&want), "{t}");
     let o = run(&dir, &["parse", "top_inc.ode", "--json"]);
     assert_eq!(code(&o), 1);
     let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
     assert_eq!(v["file"], "top_inc.ode");
     let d = &v["diagnostics"][0];
-    assert_eq!(d["file"], "inc/bad.ode");
+    assert_eq!(d["file"], bad.as_str());
     assert_eq!(d["code"], "ODE0012");
     assert_eq!(d["line"], 2);
     assert_eq!(d["col"], 5);

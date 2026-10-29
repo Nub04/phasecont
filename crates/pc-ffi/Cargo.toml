@@ -13,3 +13,9 @@ name = "pckern"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+pc-engine = { path = "../pc-engine" }
+pc-ir = { path = "../pc-ir" }
+pc-jit = { path = "../pc-jit" }
+pc-linalg = { path = "../pc-linalg" }
+pc-ode = { path = "../pc-ode" }
+serde_json = { version = "1.0.154", features = ["float_roundtrip"] }

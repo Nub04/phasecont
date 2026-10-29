@@ -122,7 +122,7 @@ $A$ and $f_\alpha$ come from first-order symbolic differentiation. Orders 2 to 5
 
 **AOT path.** `pc-codegen` emits C with the same signatures. The C does not call the C library: it declares `const pc_math_t *pc_math` and exports `pc_aot_init(const pc_math_t *)`, and the loader passes the `pc-ir` shim table, so AOT and JIT call the same math functions. It is compiled through `mex` when a compiler exists and selected with `phasecont.config("Codegen","aot")`. AOT output must match JIT output to within 4 ulp. Compile AOT code with floating-point contraction turned off, as the spike's gcc build does with `-ffp-contract=off`, and store the compiler, its version and its flags with every benchmark or test result that uses AOT code.
 
-**macOS arm64.** Confirm that JIT pages can be mapped executable inside the MATLAB process. Phase 0 ran only on Windows and WSL, so Phase 2 runs the Rust side of this check on the macOS runner of section 12, and Phase 7a runs the part inside MATLAB once the MEX gateway exists. `cranelift-jit` 0.137.0 accepts `is_pic=true` only on x86_64. Its default `SystemMemoryProvider` maps code pages read-write without `MAP_JIT` and makes them read-execute with `mprotect`, which the hardened runtime allows only with `com.apple.security.cs.allow-unsigned-executable-memory` or `com.apple.security.cs.disable-executable-page-protection`. `codesign -d --entitlements - <matlabroot>/bin/maca64/MATLAB`, where `<matlabroot>` is the folder that `matlabroot` returns, lists the entitlements MATLAB has. Without either entitlement, `pc-jit` needs its own `JITMemoryProvider`, set with `JITBuilder::memory_provider`, that maps pages with `MAP_JIT`, which needs `com.apple.security.cs.allow-jit`, and switches them with `pthread_jit_write_protect_np`. With none of the three, rule 5 of `CLAUDE.md` still holds: models run on an `f64` evaluator in Rust built from the same code as the dual-number interpreter of section 3, and PhaseCont warns that this is slower than compiled code. The AOT path stays the optional speed-up on Macs that have the Xcode Command Line Tools, selected with `phasecont.config("Codegen","aot")`. No Mac user is required to install a compiler.
+**macOS arm64.** Confirm that JIT pages can be mapped executable inside the MATLAB process. Phase 0 ran only on Windows and WSL, so Phase 2 runs the Rust side of this check on the macOS runner of section 12, and the part inside MATLAB waits for a MATLAB licensing token for the macOS runner (deferred from Phase 7a, see `docs/STATUS.md`). `cranelift-jit` 0.137.0 accepts `is_pic=true` only on x86_64. Its default `SystemMemoryProvider` maps code pages read-write without `MAP_JIT` and makes them read-execute with `mprotect`, which the hardened runtime allows only with `com.apple.security.cs.allow-unsigned-executable-memory` or `com.apple.security.cs.disable-executable-page-protection`. `codesign -d --entitlements - <matlabroot>/bin/maca64/MATLAB`, where `<matlabroot>` is the folder that `matlabroot` returns, lists the entitlements MATLAB has. Without either entitlement, `pc-jit` needs its own `JITMemoryProvider`, set with `JITBuilder::memory_provider`, that maps pages with `MAP_JIT`, which needs `com.apple.security.cs.allow-jit`, and switches them with `pthread_jit_write_protect_np`. With none of the three, rule 5 of `CLAUDE.md` still holds: models run on an `f64` evaluator in Rust built from the same code as the dual-number interpreter of section 3, and PhaseCont warns that this is slower than compiled code. The AOT path stays the optional speed-up on Macs that have the Xcode Command Line Tools, selected with `phasecont.config("Codegen","aot")`. No Mac user is required to install a compiler.
 
 ## 5. Continuation core (pc-engine)
 
@@ -267,7 +267,7 @@ Oracle tests compare against `references/*.json`:
 FFI tests:
 - Calling `pckern("panic")` raises a MATLAB error with ID `phasecont:engine:panic`, and MATLAB keeps running.
 - Freed or unknown handles raise `phasecont:engine:badHandle`.
-- `pc-cli` runs clean under AddressSanitizer on Linux CI.
+- `pc-cli` runs clean under AddressSanitizer on Linux CI. The job uses a nightly Rust toolchain on GitHub's Ubuntu runner with `-Zsanitizer=address -Zbuild-std`, because Fedora's packaged rustc has no sanitizer runtime.
 
 Performance:
 - `pc-cli bench` reports time per step and Newton iterations per step for each model, written to `benches/RESULTS.md`.
@@ -275,28 +275,54 @@ Performance:
 
 ## 10. C ABI and MEX gateway
 
-**Shape of the boundary.** The Rust side is a `cdylib` named `pckern` that exports a single symbol, `pc_api_v1()`. That function returns a struct of function pointers that starts with an ABI version number and the struct's size in bytes. Sketch:
+**Shape of the boundary.** The Rust side is a `cdylib` named `pckern` that exports a single symbol, `pc_api_v1()`. That function returns a struct of function pointers that starts with an ABI version number and the struct's size in bytes. The table is frozen at ABI version 1 from P7a on. Later fields may only be appended, since the gateway already accepts a `struct_size` at least its own.
 
 ```c
+#define PC_ABI_VERSION 1
 typedef struct {
   uint32_t abi_version;
   uint32_t struct_size;   /* sizeof the table in this build of pckern */
   int32_t (*model_from_ode)(const char* text, size_t len, uint64_t* model, char** diag_json);
-  int32_t (*model_compile)(uint64_t model, const char* opts_json);
-  int32_t (*model_rhs)(uint64_t model, const double* x, const double* p, double* out);
-  int32_t (*run_start)(uint64_t model, const char* problem_json, uint64_t* run);
-  int32_t (*run_poll)(uint64_t run, char** status_json, size_t* new_points);
-  int32_t (*run_copy)(uint64_t run, size_t start, size_t count, double* buf, size_t buf_len);
+  int32_t (*model_compile)(uint64_t model, const char* opts_json);        /* {"evaluator":"jit"|"fallback"} */
+  int32_t (*model_rhs)(uint64_t model, const double* x, size_t nx,
+                       const double* p, size_t np, double* out, size_t nout);
+  int32_t (*run_start)(uint64_t model, const char* problem_json,
+                       const double* u0, size_t nu, const double* p, size_t np, uint64_t* run);
+  int32_t (*run_poll)(uint64_t run, char** status_json);
+  int32_t (*run_copy)(uint64_t run, uint32_t branch, uint32_t what,
+                      size_t start, size_t count, double* buf, size_t buf_len, size_t* rows);
   int32_t (*run_cancel)(uint64_t run);
   int32_t (*free_handle)(uint64_t handle);
   void    (*free_string)(char* s);
-  const char* (*last_error)(void);  /* thread-local */
+  const char* (*last_error)(void);                                        /* thread-local */
+  int32_t (*model_info)(uint64_t model, char** info_json);                /* names, values, init, n, n_p, evaluator, jit_max_frame */
+  int32_t (*model_equilibrium)(uint64_t model, const double* u0, size_t nu, const double* p, size_t np,
+                               const char* opts_json, double* u_out, size_t nu_out,
+                               double* eig_out, size_t neig_out);          /* eig as [re; im], 2n */
+  int32_t (*debug_panic)(int32_t where, uint64_t* run);                   /* 0: this thread, 1: a run whose worker panics */
+  const char* (*version)(void);
+  int32_t (*model_rhs_t)(uint64_t model, double t, const double* x, size_t nx,
+                         const double* p, size_t np, double* out, size_t nout);  /* appended after version, offset 120, table size 128 */
 } pc_api_v1_t;
 ```
 
-**Gateway.** `mex/pckern_gateway.c` is compiled with `mex -R2018a`. The first command that needs `pckern` loads it from the folder that holds the MEX file: on Windows the gateway finds its own file with `GetModuleHandleExW` and `GetModuleFileNameW` and loads `pckern.dll` by full path with `LoadLibraryExW` and `LOAD_WITH_ALTERED_SEARCH_PATH`, and elsewhere it uses `dlopen`. The gateway then calls `pc_api_v1`, requires `abi_version` to equal its own and `struct_size` to be at least the size of its own table, and dispatches on a command string. A failed load raises `phasecont:engine:load`, and the next call tries again. The gateway never unloads `pckern`, since worker threads may still run its code. Loading the library at runtime keeps the gateway independent of the Rust toolchain (MSVC or MinGW on Windows).
+**Time.** `model_compile` accepts a model whose equations use `t`, and `model_info` reports `autonomous: false` for it. `model_rhs` on such a model returns nonAutonomous with the message `the model depends on t; call model_rhs_t`. `model_rhs_t` evaluates `f(x, p, t)` for any model, needs a finite `t` (badArg otherwise), and a model that does not use `t` ignores it. There is no default for `t`. `run_start` and `model_equilibrium` need an autonomous model and return nonAutonomous otherwise. Adding `model_rhs_t` grew the table from 120 to 128 bytes and left `abi_version` at 1.
 
-**Data rules.** Metadata and options cross as JSON. Numeric arrays are copied into buffers that MATLAB allocated. Rust never holds a pointer into MATLAB memory after a call returns.
+**Error codes.** 0 ok, 1 panic, 2 badArg, 3 badHandle, 4 internal, 5 model, 6 badProblem, 7 nonAutonomous, 8 numeric (`Singular`, `NewtonFailed`, `StepTooSmall`). The gateway alone raises `load` and `unknown`. MATLAB error IDs are `phasecont:engine:<kind>`.
+
+**Runs.**
+- `problem_json` is the P3 problem JSON without `u0` and `params`, which come only as buffers: `{"type":"EP","free":"r","start_is_special":false,"options":{...},"switch":"BP1"?}`. On the ABI path a `u0` or `params` key is badProblem. pc-cli keeps accepting both keys. `start_is_special` (new in the shared parser, default false) maps to `EpSetup.start_is_special`. MATLAB sets it when the start Point's label is not `EP`, so a run from an H or BP point does not find its own start again. A special start is not solved for an equilibrium first (the Jacobian is singular at an LP). The engine checks that `u0` solves F = 0 to `tol_f`, takes the tangent from the null vector of `[F_u F_alpha]`, and `Direction` picks its sign. An LP or H start runs. A BP start, where that matrix has rank n-1 (smallest singular value below 1e-8 of the largest), ends with `badProblem` and a message that points to the `Switch` option.
+- `status_json`: `{"state":"running|done|cancelled","n":3,"stride":15,"branches":[{"points":120,"stop":"MaxSteps"|null,"warnings":[...],"specials":[{"label":"H","index":57,"coefficient":0.1,"omega":9.6,"normalization":"...","refined":true}]}]}`. `specials` appear once the branch has stopped.
+- Points and specials use stride 3n + 6, with the row layout `[alpha, u(1..n), eig_re(1..n), eig_im(1..n), psi_LP, psi_BP, psi_H, h, newton_iters]`, with NaN for missing values. Tangents stay in Rust.
+- `run_poll` returns 1 when the worker panicked and the kind code when the run failed, with the message in `last_error`. Cancelled is a state in the JSON.
+- `free_handle` on a running run cancels and joins inside the barrier. That blocks the MATLAB thread until the worker sees the flag, between Newton iterations.
+- `run_start` gives the run its own clone of the model, so a run does not depend on the Model handle after it starts.
+
+**Threads.** Each Model handle owns a thread with an 8 MiB stack. That thread builds the evaluator (the JIT is not `Send`) and serves `model_rhs` and `model_equilibrium` over a channel. Freeing the handle stops and joins the thread. `model_from_ode` parses on an 8 MiB thread. Input over 16 MiB is badArg. The diagnostics JSON keeps the first 1000 diagnostics plus a count of the rest. The registry is one global mutex over `Arc` entries. No call holds the lock across engine work, and a poisoned lock is recovered, so one panic does not break later calls.
+
+**Gateway.** `mex/pckern_gateway.c` is compiled with `mex -R2018a`. The first command that needs `pckern` loads it from the folder that holds the MEX file: on Windows the gateway finds its own file with `GetModuleHandleExW` and `GetModuleFileNameW` and loads `pckern.dll` by full path with `LoadLibraryExW` and `LOAD_WITH_ALTERED_SEARCH_PATH`, and elsewhere it uses `dlopen`. On Linux and macOS the gateway finds its own path with `dladdr(&mexFunction)` and calls `dlopen` with the full path. The binaries sit side by side: `pckern.<mexext>` plus `pckern.dll`, `libpckern.so` or `libpckern.dylib` in `toolbox/bin/<arch>/`. The gateway then calls `pc_api_v1`, requires `abi_version` to equal its own and `struct_size` to be at least the size of its own table, and dispatches on a command string. A failed load raises `phasecont:engine:load`, and the next call tries again. The gateway never unloads `pckern`, since worker threads may still run its code. Loading the library at runtime keeps the gateway independent of the Rust toolchain (MSVC or MinGW on Windows).
+
+**Data rules.** Metadata and options cross as JSON. Numeric arrays are copied into buffers that MATLAB allocated. Rust never holds a pointer into MATLAB memory after a call returns. MATLAB writes numeric option fields with `sprintf('%.17g')`, not `jsonencode`, since `jsonencode` can drop digits. Rust writes JSON numbers in serde_json's shortest round-trip form, and MATLAB reads them with `jsondecode`.
 
 ## 11. MATLAB API sketch
 
@@ -311,23 +337,41 @@ s = phasecont.Session(m, {br, lc}); save(s, "ml.pcsession.json");
 phasecont.session.replay("ml.pcsession.json");   % headless rerun
 ```
 
-- **Handle classes.** `Model`, `Branch` and `Run` are handle classes whose `delete` frees the Rust handle.
+The P7a calls, the first working part of this sketch:
+
+```matlab
+m   = phasecont.Model("lorenz.ode", Evaluator="jit");     % or "fallback"
+f   = m.rhs(x, p);                                        % p: vector or struct, default m.ParameterValues
+f   = m.rhs(x, p, t);                                     % a model that uses t (m.Autonomous false) needs t
+eq  = phasecont.equilibrium(m, x0, Params=struct(b=8/3)); % -> phasecont.Point, Label "EP"
+br  = phasecont.continuation(m, eq, Free="r", MaxSteps=500, Bounds=[0 30], Plot=true);
+brs = phasecont.continuation(m, eq, Free="r", Switch="BP1");  % 1x2 Branch: followed and switched
+h   = br.points("H");                                     % Point array; br.points() gives all specials
+plot(br, Var="x");                                        % stable solid, unstable dashed, labeled specials
+```
+
+- **Branch plots.** `plot(br)` draws stable runs as solid lines (Tag `pc-stable`), unstable runs as dashed lines (`pc-unstable`), and each special point as a marker (`pc-special`) with a text label (`pc-label`). It uses `newplot`, so `hold on` is respected, and `Parent=ax` draws into an axes without resetting it. `continuation(Plot=true)` ends with this plot.
+- **Handle classes.** Only `Model` and the internal `phasecont.internal.Run` own Rust handles, and their `delete` frees the handle. `Branch` is a handle class that holds copied data, and `Point` is a value class. `continuation` blocks and polls about every 50 ms with `drawnow`. It grows the plot when `Plot=true`, and Ctrl+C cancels the run and returns nothing.
+- **Time in `rhs`.** `m.rhs(x, p, t)` takes a finite real scalar `t`, else `phasecont:model:badTime`. A model with `Autonomous == false` called without `t` raises `phasecont:model:missingTime`; the toolbox never assumes `t = 0`. A model that does not use `t` accepts `t` and ignores it. `equilibrium` and `continuation` still need an autonomous model and raise `phasecont:engine:nonAutonomous`.
 - **Apps.** They are programmatic `uifigure` code, not `.mlapp` files.
 - **Session JSON.** Records the model source and its SHA-256, the engine name and version, the platform, the MATLAB release, every run's starting point and options, and the precision used.
 
 ## 12. Build, CI and packaging
 
 **`buildfile.m` tasks.**
-- `cargo`: release build for the current platform. For Windows the task lists the DLLs that `pckern.dll` imports and fails when one of them is not on an allow-list of DLLs that ship with Windows. Before a Windows build in WSL it checks that `rustc -vV` and `rpm -q rust-std-static-x86_64-pc-windows-gnu` report the same version, and stops with both versions in the message when they differ.
+- `cargo`: release build for the current platform. For Windows the allow-list check is `pc-cli dll-imports FILE`, a small PE reader in this repo. The allow-list holds the Windows system DLLs, `msvcrt.dll` and `api-ms-win-*`, and the task fails when `pckern.dll` imports anything else. Before a Windows build in WSL it checks that `rustc -vV` and `rpm -q rust-std-static-x86_64-pc-windows-gnu` report the same version, and stops with both versions in the message when they differ. On Windows MATLAB with the repo under `\\wsl.localhost`, the task runs `wsl.exe` to call `scripts/build-pckern win64 <stage>`. With `PHASECONT_PREBUILT` set, it copies prebuilt binaries instead.
 - `mex`: build the gateway.
 - `test`: run `matlab.unittest` with JUnit output.
 - `package`: build the `.mltbx` with `matlab.addons.toolbox.ToolboxOptions`, using a fixed UUID that never changes between versions. Before packaging, the task writes the license text of every crate linked into `pckern` on each platform into the toolbox, next to `LICENSE` and `THIRD_PARTY_NOTICES.md`. A Rust tool in this repo builds that file from `cargo metadata --filter-platform` and the license files in each crate's source.
 
+**C header.** The C header `crates/pc-ffi/include/pckern.h` is hand-written. A Rust test checks the table size and field offsets against it.
+
 **Base MATLAB check.** A test in `tests/` runs `matlab.codetools.requiredFilesAndProducts` on every file under `toolbox/` and fails when it lists a product other than MATLAB. Files of the optional `gpuArray` route may also list Parallel Computing Toolbox (rule 8 of `CLAUDE.md`). The test starts with the first MATLAB code under `toolbox/`.
 
 **GitHub Actions.**
-- **Rust job:** fmt, clippy, test and deny on Ubuntu, Windows and macOS.
-- **MATLAB job:** `matlab-actions/setup-matlab` and `matlab-actions/run-build` on all three operating systems.
+- **Rust job:** fmt, clippy and test on Ubuntu, Windows and macOS, with `cargo deny` on Ubuntu only, since licenses do not depend on the OS.
+- **`pckern-win` job:** on Ubuntu, cross-builds `pckern.dll` with MinGW, checks its imports and uploads the DLL as an artifact.
+- **MATLAB job:** runs on a self-hosted Windows runner (labels `self-hosted`, `windows`, `matlab`) that has its own MATLAB R2026b, so it needs no license secret. It downloads the `pckern-win` artifact, sets `PHASECONT_PREBUILT` to it and runs `matlab -batch "buildtool cargo mex test"`, so the runner needs no Rust or MinGW. Pull requests from forks skip it. Linux and macOS MATLAB jobs wait for a licensing route.
 - **Release job:** collects the per-platform binaries into one `.mltbx` and creates the GitHub Release with the `.mltbx` attached in the same step, so File Exchange serves the toolbox file.
 - **Linux binaries:** built against glibc 2.28.
 

@@ -3,7 +3,7 @@
 mod common;
 
 use common::{load, ulp_dist};
-use pc_engine::{EngineError, Evaluator, build};
+use pc_engine::{EngineError, Evaluator, build, build_allowing_t};
 use pc_ir::{EntryKind, Slot};
 
 /// Points per model: the declared state with the declared parameters, then two shifted
@@ -88,6 +88,28 @@ fn nonautonomous_is_refused() {
             build(&model, &info, which),
             Err(EngineError::NonAutonomous)
         ));
+    }
+}
+
+#[test]
+fn build_allowing_t_accepts_a_model_that_uses_t() {
+    let (model, info) = load("nonautonomous");
+    for which in [Evaluator::Jit, Evaluator::Fallback] {
+        assert!(matches!(
+            build(&model, &info, which),
+            Err(EngineError::NonAutonomous)
+        ));
+        let mut m = build_allowing_t(&model, &info, which).unwrap();
+        let n_p = m.n_p();
+        let mut out = vec![0.0; m.n()];
+        let mut p = vec![0.5; n_p];
+        p.push(1.3);
+        let x = vec![0.5; m.n()];
+        m.eval(&EntryKind::F, &x, &p, &[], &mut out).unwrap();
+        p[n_p] = 2.0;
+        let mut out2 = vec![0.0; m.n()];
+        m.eval(&EntryKind::F, &x, &p, &[], &mut out2).unwrap();
+        assert_ne!(out, out2, "time must reach the right-hand side");
     }
 }
 

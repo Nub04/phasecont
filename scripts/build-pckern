@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Cross-build pckern.dll for Windows MATLAB, check its imports and copy it to a
+# stage folder.
+#
+# Usage:
+#   scripts/build-pckern win64 STAGE
+#
+# STAGE is a WSL path or a Windows path such as C:\Users\me\phasecont-stage\bin\win64.
+# A MATLAB session that loaded the staged DLL keeps it locked, so the copy
+# fails until that session exits.
+set -euo pipefail
+
+usage() {
+  echo "usage: scripts/build-pckern win64 STAGE" >&2
+  exit 2
+}
+
+[[ "${1:-}" == "win64" && -n "${2:-}" ]] || usage
+stage="$2"
+if [[ "$stage" =~ ^[A-Za-z]:[\\/] ]]; then
+  stage="$(wslpath -u "$stage")"
+fi
+
+rust_ver="$(rustc -vV | sed -n 's/^release: //p')"
+if ! std_ver="$(rpm -q --qf '%{VERSION}\n' rust-std-static-x86_64-pc-windows-gnu 2>&1)"; then
+  echo "build-pckern: rust-std-static-x86_64-pc-windows-gnu is not installed; install it at the same version as rustc ($rust_ver)" >&2
+  exit 1
+fi
+if [[ "$rust_ver" != "$std_ver" ]]; then
+  echo "build-pckern: rustc is $rust_ver but rust-std-static-x86_64-pc-windows-gnu is $std_ver; update both to the same version" >&2
+  exit 1
+fi
+
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo"
+
+export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="${CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER:-x86_64-w64-mingw32-gcc}"
+cargo build --release --locked --target x86_64-pc-windows-gnu -p pc-ffi
+
+dll=target/x86_64-pc-windows-gnu/release/pckern.dll
+cargo build --release --locked -p pc-cli
+target/release/pc-cli dll-imports "$dll"
+
+mkdir -p "$stage"
+if ! err="$(cp "$dll" "$stage/pckern.dll" 2>&1)"; then
+  echo "build-pckern: cannot replace $stage/pckern.dll; a MATLAB session that loaded it keeps it locked. Close that MATLAB session and run the build again." >&2
+  echo "$err" >&2
+  exit 1
+fi
+echo "build-pckern: staged $stage/pckern.dll"

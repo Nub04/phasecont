@@ -10,6 +10,7 @@ rust-version.workspace = true
 [dependencies]
 pc-codegen = { path = "../pc-codegen" }
 pc-engine = { path = "../pc-engine" }
+pc-ffi = { path = "../pc-ffi" }
 pc-ir = { path = "../pc-ir" }
 pc-jit = { path = "../pc-jit" }
 pc-ode = { path = "../pc-ode" }

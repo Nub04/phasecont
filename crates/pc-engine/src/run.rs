@@ -216,10 +216,10 @@ fn finish(shared: &Shared, r: Result<&Branch, EngineError>) -> RunState {
     }
 }
 
-fn worker(shared: Arc<Shared>, spec: RunSpec) {
+fn worker(shared: Arc<Shared>, run_body: impl FnOnce(&Shared) -> RunState) {
     mark_worker();
     clear_last_panic();
-    let state = match catch_unwind(AssertUnwindSafe(|| body(&shared, spec))) {
+    let state = match catch_unwind(AssertUnwindSafe(|| run_body(&shared))) {
         Ok(s) => s,
         Err(payload) => {
             let (message, location) = take_last_panic()
@@ -237,6 +237,17 @@ impl Run {
     /// Spawns the worker thread (named "pc-engine-run", 8 MiB stack) and returns at once.
     /// If the thread cannot be spawned the run is `Failed` from the start.
     pub fn start(spec: RunSpec) -> Run {
+        Run::spawn(move |shared| body(shared, spec))
+    }
+
+    /// Starts a run whose body panics at once, through the same worker wrapper as
+    /// `start`. For the FFI panic tests only.
+    #[doc(hidden)]
+    pub fn start_panicking() -> Run {
+        Run::spawn(|_| panic!("start_panicking"))
+    }
+
+    fn spawn(run_body: impl FnOnce(&Shared) -> RunState + Send + 'static) -> Run {
         install_hook();
         let shared = Arc::new(Shared {
             inner: Mutex::new(Inner {
@@ -249,7 +260,7 @@ impl Run {
         let spawned = std::thread::Builder::new()
             .name("pc-engine-run".into())
             .stack_size(8 << 20)
-            .spawn(move || worker(s2, spec));
+            .spawn(move || worker(s2, run_body));
         let handle = match spawned {
             Ok(h) => Some(h),
             Err(e) => {
@@ -308,6 +319,16 @@ impl Run {
             .branches
             .get(branch)
             .map(|b| b.stop.clone())
+    }
+
+    /// The warnings of `branch`; empty when the branch does not exist.
+    pub fn warnings(&self, branch: usize) -> Vec<String> {
+        self.shared
+            .lock()
+            .branches
+            .get(branch)
+            .map(|b| b.warnings.clone())
+            .unwrap_or_default()
     }
 
     /// Asks the worker to stop. Returns at once.
@@ -402,6 +423,18 @@ mod tests {
     }
 
     #[test]
+    fn start_panicking_ends_panicked_with_a_location() {
+        let st = Run::start_panicking().join();
+        match st.state {
+            RunState::Panicked { message, location } => {
+                assert!(!message.is_empty());
+                assert_ne!(location, "unknown");
+            }
+            other => panic!("expected Panicked, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn finish_maps_cancel_per_r15c() {
         let sh = Shared {
             inner: Mutex::new(Inner {
@@ -470,6 +503,26 @@ mod tests {
         }
         let st = run.join();
         assert!(matches!(st.state, RunState::Panicked { .. }));
+    }
+
+    #[test]
+    fn warnings_come_from_the_branch_and_are_empty_for_a_missing_one() {
+        let mut b = placeholder();
+        b.warnings.push("first".into());
+        let shared = Arc::new(Shared {
+            inner: Mutex::new(Inner {
+                branches: vec![b, placeholder()],
+                state: RunState::Done,
+            }),
+            cancel: AtomicBool::new(false),
+        });
+        let run = Run {
+            shared,
+            handle: None,
+        };
+        assert_eq!(run.warnings(0), ["first"]);
+        assert!(run.warnings(1).is_empty());
+        assert!(run.warnings(2).is_empty());
     }
 
     #[test]

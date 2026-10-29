@@ -1,0 +1,119 @@
+# Checks for every push and pull request. macos-jit.yml stays as the separate
+# hardened-runtime probe.
+name: ci
+
+on:
+  push:
+    branches: [main, "phase*"]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          components: rustfmt, clippy
+      - run: rustc -vV
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --no-fail-fast
+      - name: Install cargo-deny
+        if: matrix.os == 'ubuntu-latest'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: Check licenses and advisories
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo deny check
+
+  pckern-win:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          targets: x86_64-pc-windows-gnu
+      - name: Install MinGW
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+      - name: Cross build pckern.dll
+        run: cargo build --release --locked --target x86_64-pc-windows-gnu -p pc-ffi
+      - name: Build pc-cli for the host
+        run: cargo build --release --locked -p pc-cli
+      - name: Check the DLL imports against the allow-list
+        run: target/release/pc-cli dll-imports target/x86_64-pc-windows-gnu/release/pckern.dll
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pckern-win64
+          path: target/x86_64-pc-windows-gnu/release/pckern.dll
+          if-no-files-found: error
+
+  # Needs a self-hosted Windows runner with the labels self-hosted, windows and
+  # matlab. On that machine: MATLAB R2026b with `matlab` on PATH, and Microsoft
+  # Visual C++ set up for `mex -setup C`. No Rust or MinGW is needed, because the
+  # job copies the pckern.dll built by pckern-win. There is no license secret.
+  matlab-windows:
+    if: >-
+      github.event_name != 'schedule' &&
+      (github.event.pull_request.head.repo.full_name == github.repository ||
+      github.event_name != 'pull_request')
+    needs: pckern-win
+    runs-on: [self-hosted, windows, matlab]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: pckern-win64
+          path: prebuilt
+      - name: Point the cargo task at the prebuilt DLL
+        shell: cmd
+        run: echo PHASECONT_PREBUILT=%GITHUB_WORKSPACE%\prebuilt>>"%GITHUB_ENV%"
+      - name: Run buildtool cargo mex test
+        shell: cmd
+        run: matlab -batch "buildtool cargo mex test"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: matlab-windows-junit
+          path: build/test-results/junit.xml
+          if-no-files-found: warn
+
+  asan:
+    if: github.event_name == 'pull_request' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -Zsanitizer=address
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+          targets: x86_64-unknown-linux-gnu
+      - name: Test pc-ffi under AddressSanitizer
+        run: cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu -p pc-ffi
+      - name: Build pc-cli under AddressSanitizer
+        run: cargo +nightly build -Zbuild-std --target x86_64-unknown-linux-gnu -p pc-cli
+      - name: Run pc-cli cont on the fold and Lorenz models
+        run: |
+          set -eu
+          cli=target/x86_64-unknown-linux-gnu/debug/pc-cli
+          t=crates/pc-engine/tests
+          for m in fold lorenz; do
+            "$cli" cont "$t/models/$m.ode" "$t/problems/$m.json" > "$m.out.json"
+          done

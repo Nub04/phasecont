@@ -23,13 +23,13 @@ mod tests_fn;
 pub use branch::{Branch, Extras, Options, Point, SpecialPoint, StopReason};
 pub use ep::{EpProblem, EpSetup, continue_ep, equilibrium};
 pub use error::EngineError;
-pub use model::{Evaluator, ModelEval, build};
+pub use model::{Evaluator, ModelEval, build, build_allowing_t};
 pub use normal::{
     H_NORMALIZATION, LP_NORMALIZATION, first_lyapunov, fold_coefficient, hopf_eigenvectors,
     special_coefficient,
 };
 pub use palc::continue_branch;
-pub use panic::{install_hook, take_last_panic};
+pub use panic::{install_hook, payload_message, recording, take_last_panic};
 pub use problem::Problem;
 pub use refine::{
     BpSystem, DefiningSystem, HopfSystem, LpSystem, MAX_REFINE_ITERS, NewtonResult, NewtonStep,
