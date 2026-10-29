@@ -248,8 +248,31 @@ classdef ContinuationTest < matlab.unittest.TestCase
                 Var = "q"), "phasecont:model:unknownVariable");
         end
 
-        function startFromASpecialPoint(testCase, Evaluator)
-            % Continue from the H point of one run.
+        function startFromTheLpPoint(testCase, Evaluator)
+            % Fold x' = a + x^2: leave the LP in both directions.
+            m = testCase.model(testCase.Fold, Evaluator);
+            eq = phasecont.equilibrium(m, -1);
+            br = phasecont.continuation(m, eq, Free = "a", Direction = 1, ...
+                MaxSteps = 100, Bounds = [-5 5]);
+            lp = br.points("LP");
+            testCase.assertSize(lp, [1 1]);
+            ends = zeros(1, 2);
+            for k = 1:2
+                d = [1 -1];
+                nb = phasecont.continuation(m, lp, Free = "a", Direction = d(k), ...
+                    H0 = 0.05, Hmax = 0.05, MaxSteps = 20, Bounds = [-5 5]);
+                testCase.verifyGreaterThan(numel(nb.Alpha), 10);
+                testCase.verifyEqual(nb.Alpha(1), lp.P(br.FreeIndex), AbsTol = 1e-10);
+                for j = 1:numel(nb.Alpha)
+                    r = m.rhs(nb.U(j, :), nb.Alpha(j));
+                    testCase.verifyEqual(r, 0, AbsTol = 1e-10);
+                end
+                ends(k) = sign(nb.U(end, 1));
+            end
+            testCase.verifyNotEqual(ends(1), ends(2));
+        end
+
+        function startFromTheHopfPoint(testCase, Evaluator)
             m = testCase.model(testCase.HopfC, Evaluator);
             eq = phasecont.equilibrium(m, [0 0], Params = struct(al = -0.5, c = 1));
             br = phasecont.continuation(m, eq, Free = "al", Direction = 1, ...
@@ -260,6 +283,25 @@ classdef ContinuationTest < matlab.unittest.TestCase
                 Bounds = [-1 1]);
             testCase.verifyGreaterThan(numel(nb.Alpha), 3);
             testCase.verifySize(nb.points("H"), [0 1]);
+            testCase.verifyEqual(nb.U, zeros(numel(nb.Alpha), 2), AbsTol = 1e-10);
+        end
+
+        function startFromTheBpPointNamesSwitch(testCase, Evaluator)
+            m = testCase.model(testCase.Lorenz, Evaluator);
+            eq = phasecont.equilibrium(m, [0 0 0], ...
+                Params = struct(s = 10, r = 0.5, b = 8/3));
+            br = phasecont.continuation(m, eq, Free = "r", Direction = 1, ...
+                Hmax = 0.5, MaxSteps = 100, Bounds = [0 3]);
+            bp = br.points("BP");
+            testCase.assertSize(bp, [1 1]);
+            try
+                phasecont.continuation(m, bp, Free = "r", Bounds = [0 3]);
+                testCase.verifyFail("expected an error at the BP start");
+            catch err
+                testCase.verifyEqual(string(err.identifier), ...
+                    "phasecont:engine:badProblem");
+                testCase.verifySubstring(err.message, "Switch");
+            end
         end
 
         function startIsSpecialSkipsTheFirstStep(testCase, Evaluator)

@@ -557,3 +557,41 @@ fn null_out_pointers_give_2() {
     let rc = unsafe { (api().run_copy)(run.0, 0, 0, 0, 0, ptr::null_mut(), 0, ptr::null_mut()) };
     assert_eq!(rc, 2);
 }
+
+const FOLD: &str = "par a=0\nx'=a+x^2\ninit x=0\ndone\n";
+
+#[test]
+fn a_run_from_an_lp_start_is_done() {
+    let m = parse(FOLD);
+    compile(&m, "jit");
+    let json = r#"{"type":"EP","free":"a","start_is_special":true,
+        "options":{"h0":0.05,"hmax":0.05,"max_steps":30,"direction":1,"bounds":[-5,5]}}"#;
+    let (rc, run) = start_with(&m, json, &[0.0], &[0.0]);
+    assert_eq!(rc, 0, "{}", last_error());
+    let run = Id(run);
+    let st = wait(&run);
+    assert_eq!(st["state"], "done", "{st}");
+    assert!(st["branches"][0]["points"].as_u64().unwrap() > 5, "{st}");
+}
+
+#[test]
+fn a_run_from_a_bp_start_fails_with_6_and_names_switch() {
+    let m = lorenz("jit");
+    let json = problem(r#","start_is_special":true"#);
+    let p = [10.0, 1.0, 2.6666666666666665];
+    let (rc, run) = start_with(&m, &json, &ORIGIN, &p);
+    assert_eq!(rc, 0, "{}", last_error());
+    let run = Id(run);
+    let t0 = Instant::now();
+    loop {
+        let (rc, v) = poll_raw(run.0);
+        if rc != 0 {
+            assert_eq!(rc, 6, "{}", last_error());
+            assert!(v.is_none());
+            assert!(last_error().contains("Switch"), "{}", last_error());
+            return;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(60));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
