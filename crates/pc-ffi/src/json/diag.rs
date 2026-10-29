@@ -1,11 +1,19 @@
 //! JSON rendering of a loaded model. Keys come out in sorted order
 //! (`serde_json` maps are ordered), so the output is stable.
 
-use pc_ode::{Diagnostic, Loaded, SourceMap, Span};
+use pc_ode::{Diagnostic, Loaded, Severity, SourceMap, Span};
 use serde_json::{Value, json};
 
-use crate::summary::Summary;
-use crate::text::severity_name;
+use super::summary::Summary;
+
+/// The name of a severity in the JSON and text reports.
+pub fn severity_name(s: Severity) -> &'static str {
+    match s {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        Severity::Note => "note",
+    }
+}
 
 /// `line`, `col`, `end_line`, `end_col` of `span`, 1-based, end exclusive.
 fn range(map: &SourceMap, span: Span) -> (usize, usize, usize, usize) {

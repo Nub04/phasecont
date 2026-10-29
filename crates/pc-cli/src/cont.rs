@@ -10,22 +10,12 @@ use std::io::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
 
-use pc_engine::{
-    EngineError, EpSetup, Evaluator, Options, Run, RunSpec, RunState, SpecialPoint, StopReason,
-};
-use pc_ir::IrModel;
-use serde_json::{Map, Value, json};
+use pc_engine::{EngineError, Evaluator, Run, RunSpec, RunState, SpecialPoint, StopReason};
+use pckern::json::problem::{Mode, parse_problem};
+use serde_json::{Value, json};
 
 use crate::ircmd::{Prepared, prepare};
 use crate::out;
-
-/// A problem file after validation.
-#[derive(Debug)]
-struct Problem {
-    setup: EpSetup,
-    opts: Options,
-    switch: Option<String>,
-}
 
 /// Exit code for a bad problem file.
 const BAD_PROBLEM: u8 = 2;
@@ -60,7 +50,7 @@ pub fn cont(file: &Path, problem_file: &Path, fallback: bool) -> ExitCode {
         Ok(p) => p,
         Err(code) => return code,
     };
-    let problem = match parse_problem(&value, &ir) {
+    let problem = match parse_problem(&value, &ir, Mode::Cli) {
         Ok(p) => p,
         Err(msg) => {
             to_stderr(&format!(
@@ -222,210 +212,6 @@ fn special_line(s: &SpecialPoint) -> String {
     line
 }
 
-// ---- problem file ----
-
-/// A number that is finite.
-fn number(v: &Value, path: &str) -> Result<f64, String> {
-    match v.as_f64() {
-        Some(x) if x.is_finite() => Ok(x),
-        _ => Err(format!("{path}: expected a number")),
-    }
-}
-
-fn positive(v: &Value, path: &str) -> Result<f64, String> {
-    let x = number(v, path)?;
-    if x > 0.0 {
-        Ok(x)
-    } else {
-        Err(format!("{path}: must be greater than 0"))
-    }
-}
-
-fn count(v: &Value, path: &str) -> Result<usize, String> {
-    match v.as_u64().and_then(|n| usize::try_from(n).ok()) {
-        Some(n) if n >= 1 => Ok(n),
-        _ => Err(format!("{path}: expected an integer of at least 1")),
-    }
-}
-
-fn object<'a>(v: &'a Value, path: &str) -> Result<&'a Map<String, Value>, String> {
-    v.as_object()
-        .ok_or_else(|| format!("{path}: expected an object"))
-}
-
-/// Errors on the first key of `map` that is not in `allowed`.
-fn only_keys(map: &Map<String, Value>, allowed: &[&str], path: &str) -> Result<(), String> {
-    for k in map.keys() {
-        if !allowed.contains(&k.as_str()) {
-            let at = if path.is_empty() {
-                k.clone()
-            } else {
-                format!("{path}.{k}")
-            };
-            return Err(format!("{at}: unknown key"));
-        }
-    }
-    Ok(())
-}
-
-/// Position of the parameter `name` (names match without regard to case).
-fn param_index(ir: &IrModel, name: &str) -> Option<usize> {
-    let key = name.to_lowercase();
-    ir.param_names.iter().position(|p| p.to_lowercase() == key)
-}
-
-/// A label followed by a 1-based ordinal, for example `BP1`: the form that
-/// `pc_engine::special_index` reads.
-fn check_switch(name: &str) -> bool {
-    match name.find(|c: char| c.is_ascii_digit()) {
-        Some(cut) if cut > 0 => {
-            let digits = &name[cut..];
-            digits.bytes().all(|b| b.is_ascii_digit())
-                && digits.parse::<usize>().is_ok_and(|n| n >= 1)
-        }
-        _ => false,
-    }
-}
-
-fn parse_problem(v: &Value, ir: &IrModel) -> Result<Problem, String> {
-    let top = v
-        .as_object()
-        .ok_or_else(|| "$: expected an object".to_string())?;
-    only_keys(
-        top,
-        &["type", "free", "u0", "params", "options", "switch"],
-        "",
-    )?;
-    match top.get("type") {
-        None => return Err("type: missing".into()),
-        Some(Value::String(s)) if s == "EP" => {}
-        Some(_) => return Err("type: expected \"EP\"".into()),
-    }
-    let free_name = match top.get("free") {
-        None => return Err("free: missing".into()),
-        Some(Value::String(s)) => s,
-        Some(_) => return Err("free: expected a string".into()),
-    };
-    let free = param_index(ir, free_name)
-        .ok_or_else(|| format!("free: unknown parameter \"{free_name}\""))?;
-
-    let mut params = ir.par_values.clone();
-    if let Some(p) = top.get("params") {
-        for (name, val) in object(p, "params")? {
-            let path = format!("params.{name}");
-            let i = param_index(ir, name)
-                .ok_or_else(|| format!("{path}: unknown parameter \"{name}\""))?;
-            params[i] = number(val, &path)?;
-        }
-    }
-
-    let u0 = match top.get("u0") {
-        None => ir.init.clone(),
-        Some(Value::Array(a)) => {
-            if a.len() != ir.n() {
-                return Err(format!("u0: expected {} values, got {}", ir.n(), a.len()));
-            }
-            a.iter()
-                .enumerate()
-                .map(|(i, x)| number(x, &format!("u0[{i}]")))
-                .collect::<Result<Vec<f64>, String>>()?
-        }
-        Some(_) => return Err("u0: expected an array of numbers".into()),
-    };
-
-    let opts = match top.get("options") {
-        None => Options::default(),
-        Some(o) => parse_options(o)?,
-    };
-
-    let switch = match top.get("switch") {
-        None => None,
-        Some(Value::String(s)) if check_switch(s) => Some(s.clone()),
-        Some(Value::String(s)) => {
-            return Err(format!(
-                "switch: \"{s}\" is not a label followed by a number of at least 1, like \"BP1\""
-            ));
-        }
-        Some(_) => return Err("switch: expected a string".into()),
-    };
-
-    Ok(Problem {
-        setup: EpSetup::new(free, params, u0),
-        opts,
-        switch,
-    })
-}
-
-fn parse_options(v: &Value) -> Result<Options, String> {
-    let map = object(v, "options")?;
-    only_keys(
-        map,
-        &[
-            "h0",
-            "hmin",
-            "hmax",
-            "max_steps",
-            "tol_x",
-            "tol_f",
-            "max_newton",
-            "direction",
-            "bounds",
-            "detect",
-        ],
-        "options",
-    )?;
-    let mut o = Options::default();
-    for (key, val) in map {
-        let path = format!("options.{key}");
-        match key.as_str() {
-            "h0" => o.h0 = positive(val, &path)?,
-            "hmin" => o.hmin = positive(val, &path)?,
-            "hmax" => o.hmax = positive(val, &path)?,
-            "tol_x" => o.tol_x = positive(val, &path)?,
-            "tol_f" => o.tol_f = positive(val, &path)?,
-            "max_steps" => o.max_steps = count(val, &path)?,
-            "max_newton" => o.max_newton = count(val, &path)?,
-            "direction" => {
-                let d = number(val, &path)?;
-                if d == 0.0 {
-                    return Err(format!("{path}: must not be 0"));
-                }
-                o.direction = d.signum();
-            }
-            "bounds" => {
-                let a = val
-                    .as_array()
-                    .filter(|a| a.len() == 2)
-                    .ok_or_else(|| format!("{path}: expected [lo, hi]"))?;
-                let lo = number(&a[0], &format!("{path}[0]"))?;
-                let hi = number(&a[1], &format!("{path}[1]"))?;
-                if lo >= hi {
-                    return Err(format!("{path}: lo must be less than hi"));
-                }
-                o.bounds = (lo, hi);
-            }
-            "detect" => {
-                let d = object(val, &path)?;
-                only_keys(d, &["lp", "bp", "h"], &path)?;
-                for (k, flag) in d {
-                    let p = format!("{path}.{k}");
-                    let b = flag
-                        .as_bool()
-                        .ok_or_else(|| format!("{p}: expected true or false"))?;
-                    match k.as_str() {
-                        "lp" => o.detect_lp = b,
-                        "bp" => o.detect_bp = b,
-                        _ => o.detect_h = b,
-                    }
-                }
-            }
-            // `only_keys` has rejected every other key.
-            _ => {}
-        }
-    }
-    Ok(o)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,16 +223,6 @@ mod tests {
         assert_eq!(fmt_e(0.0), "0.000000e+00");
         assert_eq!(fmt_e(1.5e120), "1.500000e+120");
         assert_eq!(fmt_e(f64::NAN), "NaN");
-    }
-
-    #[test]
-    fn switch_names() {
-        for ok in ["BP1", "H12", "LP3"] {
-            assert!(check_switch(ok), "{ok}");
-        }
-        for bad in ["BP", "1", "BP0", "BP1x", "", "B1P2"] {
-            assert!(!check_switch(bad), "{bad}");
-        }
     }
 
     #[test]

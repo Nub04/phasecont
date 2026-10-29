@@ -3,8 +3,6 @@
 mod args;
 mod cont;
 mod ircmd;
-mod json;
-mod summary;
 mod text;
 
 use std::io::Write as _;
@@ -78,7 +76,7 @@ fn parse(file: &Path, json: bool) -> ExitCode {
         Err(code) => return code,
     };
     let report = if json {
-        json::render(&shown, &map, &loaded)
+        pckern::json::diag::render(&shown, &map, &loaded)
     } else {
         text::render(&map, &loaded)
     };

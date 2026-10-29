@@ -7,17 +7,10 @@
 use std::fmt::Write as _;
 
 use pc_ir::{IrError, IrErrorKind};
-use pc_ode::{DUMMY_SPAN, Diagnostic, Loaded, Severity, SourceMap, Span};
+use pc_ode::{DUMMY_SPAN, Diagnostic, Loaded, SourceMap, Span};
 
-use crate::summary::Summary;
-
-pub fn severity_name(s: Severity) -> &'static str {
-    match s {
-        Severity::Error => "error",
-        Severity::Warning => "warning",
-        Severity::Note => "note",
-    }
-}
+use pckern::json::diag::severity_name;
+use pckern::json::summary::Summary;
 
 /// The most characters of a source line that the text report echoes.
 const WINDOW: usize = 120;

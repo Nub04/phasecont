@@ -13,3 +13,7 @@ name = "pckern"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+pc-engine = { path = "../pc-engine" }
+pc-ir = { path = "../pc-ir" }
+pc-ode = { path = "../pc-ode" }
+serde_json = "1.0.154"
