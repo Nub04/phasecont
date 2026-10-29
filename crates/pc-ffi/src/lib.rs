@@ -4,6 +4,7 @@
 //! `pc_api_v1()` returns (`docs/SPEC.md`, section 10). Every export returns an
 //! error code and keeps its message for `last_error`. The `json` module holds the
 //! problem parser and the diagnostics writer that `pc-cli` and the C ABI share.
+//! The C declarations are in `include/pckern.h`; `tests/header.rs` checks them against `PcApiV1`.
 
 use std::ffi::c_char;
 use std::panic::catch_unwind;
