@@ -312,6 +312,7 @@ typedef struct {
 - Points and specials use stride 3n + 6, with the row layout `[alpha, u(1..n), eig_re(1..n), eig_im(1..n), psi_LP, psi_BP, psi_H, h, newton_iters]`, with NaN for missing values. Tangents stay in Rust.
 - `run_poll` returns 1 when the worker panicked and the kind code when the run failed, with the message in `last_error`. Cancelled is a state in the JSON.
 - `free_handle` on a running run cancels and joins inside the barrier. That blocks the MATLAB thread until the worker sees the flag, between Newton iterations.
+- `run_start` gives the run its own clone of the model, so a run does not depend on the Model handle after it starts.
 
 **Threads.** Each Model handle owns a thread with an 8 MiB stack. That thread builds the evaluator (the JIT is not `Send`) and serves `model_rhs` and `model_equilibrium` over a channel. Freeing the handle stops and joins the thread. `model_from_ode` parses on an 8 MiB thread. Input over 16 MiB is badArg. The diagnostics JSON keeps the first 1000 diagnostics plus a count of the rest. The registry is one global mutex over `Arc` entries. No call holds the lock across engine work, and a poisoned lock is recovered, so one panic does not break later calls.
 
