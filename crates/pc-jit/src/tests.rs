@@ -398,7 +398,7 @@ fn a_frame_over_4096_bytes_runs() {
         .collect();
     module::MAX_FRAME.with(|m| m.set(0));
     check_points(&dag, vec![acc], &pts, "large frame");
-    let frame = module::MAX_FRAME.with(|m| m.get());
+    let frame = crate::max_frame();
     assert!(frame > 4096, "frame is only {frame} bytes");
 }
 

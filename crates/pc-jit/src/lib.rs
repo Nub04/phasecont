@@ -17,6 +17,12 @@ mod tests;
 pub use compiled::{CompiledModel, EntryFn};
 pub use module::JitEntries;
 
+/// The largest `frame_to_fp_offset` (bytes) among the functions compiled on the calling
+/// thread so far; 0 before any compile.
+pub fn max_frame() -> u32 {
+    module::MAX_FRAME.with(std::cell::Cell::get)
+}
+
 use cranelift_codegen::ir::{AbiParam, UserFuncName, types};
 use cranelift_frontend::FunctionBuilderContext;
 use cranelift_module::{FuncId, Linkage, Module};
@@ -157,7 +163,6 @@ pub fn compile(entries: &[(EntryKind, &Entry)], dag: &Dag) -> Result<JitEntries,
             },
         )?;
         cl(&name, module.define_function(id, &mut ctx))?;
-        #[cfg(test)]
         if let Some(fl) = ctx.compiled_code().and_then(|c| c.buffer.frame_layout()) {
             module::MAX_FRAME.with(|m| m.set(m.get().max(fl.frame_to_fp_offset)));
         }

@@ -4,6 +4,14 @@
 //! bits on every host. None of them panics. The `pc_math_*` functions wrap them for
 //! `extern "C"` callers, and [`MATH`] lists the wrappers in a frozen field order.
 
+#![deny(
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::arithmetic_side_effects
+)]
+
 pub fn sin(x: f64) -> f64 {
     libm::sin(x)
 }
@@ -159,24 +167,24 @@ fn polygamma_asymptotic(n: u32, z: f64) -> f64 {
         let mut zp = z2;
         let mut sum = 0.0;
         for (k, b) in BERNOULLI.iter().enumerate() {
-            let kk = (k + 1) as f64;
+            let kk = k.saturating_add(1) as f64;
             sum += b / (2.0 * kk * zp);
             zp *= z2;
         }
         return libm::log(z) - 0.5 / z - sum;
     }
     let zn = libm::pow(z, f64::from(n));
-    let mut total = factorial(n - 1) / zn + factorial(n) / (2.0 * zn * z);
+    let mut total = factorial(n.saturating_sub(1)) / zn + factorial(n) / (2.0 * zn * z);
     let z2 = z * z;
     let mut zp = zn * z2;
     for (k, b) in BERNOULLI.iter().enumerate() {
-        let k2 = 2 * (k as u32 + 1);
+        let k2 = (k as u32).saturating_add(1).saturating_mul(2);
         // (2k+n-1)! / (2k)! = (2k+1) * ... * (2k+n-1)
-        let ratio = (k2 + 1..k2 + n).fold(1.0, |a, j| a * f64::from(j));
+        let ratio = (k2.saturating_add(1)..k2.saturating_add(n)).fold(1.0, |a, j| a * f64::from(j));
         total += ratio * b / zp;
         zp *= z2;
     }
-    if (n - 1).is_multiple_of(2) {
+    if n.saturating_sub(1).is_multiple_of(2) {
         total
     } else {
         -total
@@ -272,7 +280,7 @@ fn table_npts(data: &[f64]) -> Option<usize> {
         return None;
     }
     let npts = n as usize;
-    if data.len() < 3 + npts {
+    if data.len() < 3usize.saturating_add(npts) {
         None
     } else {
         Some(npts)
@@ -282,9 +290,9 @@ fn table_npts(data: &[f64]) -> Option<usize> {
 /// Segment index, node position, step and the two end values for `x`.
 fn table_segment(data: &[f64], x: f64) -> Option<(f64, f64, f64, f64)> {
     let npts = table_npts(data)?;
-    let lo = data[1];
-    let hi = data[2];
-    let dx = (hi - lo) / (npts - 1) as f64;
+    let lo = *data.get(1)?;
+    let hi = *data.get(2)?;
+    let dx = (hi - lo) / npts.saturating_sub(1) as f64;
     if x.is_nan() {
         return None;
     }
@@ -292,11 +300,11 @@ fn table_segment(data: &[f64], x: f64) -> Option<(f64, f64, f64, f64)> {
     let i = if raw.is_nan() {
         0
     } else {
-        raw.clamp(0.0, (npts - 2) as f64) as usize
+        raw.clamp(0.0, npts.saturating_sub(2) as f64) as usize
     };
     let xi = lo + i as f64 * dx;
-    let y0 = *data.get(3 + i)?;
-    let y1 = *data.get(4 + i)?;
+    let y0 = *data.get(3usize.saturating_add(i))?;
+    let y1 = *data.get(4usize.saturating_add(i))?;
     Some((xi, dx, y0, y1))
 }
 
@@ -334,7 +342,7 @@ unsafe fn table_block<'a>(data: *const f64) -> Option<&'a [f64]> {
         return None;
     }
     // SAFETY: the caller guarantees 3 + npts readable values.
-    Some(unsafe { core::slice::from_raw_parts(data, 3 + n as usize) })
+    Some(unsafe { core::slice::from_raw_parts(data, 3usize.saturating_add(n as usize)) })
 }
 
 // ---------------------------------------------------------------------------
@@ -345,6 +353,10 @@ pub type F1 = unsafe extern "C" fn(f64) -> f64;
 pub type F2 = unsafe extern "C" fn(f64, f64) -> f64;
 pub type FT = unsafe extern "C" fn(*const f64, f64) -> f64;
 
+// These shims run inside JIT frames, where a panic aborts the process. They cannot panic:
+// each one forwards to a function above that only calls `libm` or does float arithmetic,
+// and the lints denied at the top of this file rule out indexing and unchecked integer
+// arithmetic.
 macro_rules! shim1 {
     ($($shim:ident => $f:ident),* $(,)?) => {
         $(pub extern "C" fn $shim(x: f64) -> f64 { $f(x) })*
@@ -368,6 +380,8 @@ shim2! {
     pc_math_bessely => bessely, pc_math_polygamma => polygamma, pc_math_mod => pc_mod,
 }
 
+// The table shims read through `table_block`, which checks for null and a valid header, and
+// then use `get` and saturating integer arithmetic, so a bad block gives NaN, not a panic.
 /// Shim for [`table`].
 ///
 /// # Safety
@@ -488,6 +502,13 @@ pub fn symbols() -> Vec<(&'static str, *const u8)> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::arithmetic_side_effects
+)]
 mod tests {
     use super::*;
     use core::f64::consts::PI;

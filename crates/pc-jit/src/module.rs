@@ -5,12 +5,15 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::default_libcall_names;
 use pc_ir::EntryKind;
 
+thread_local! {
+    /// Largest frame (bytes below the frame pointer) of any function compiled on this thread.
+    pub(crate) static MAX_FRAME: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 #[cfg(test)]
 thread_local! {
     /// Number of `free_memory` calls made by `Drop` on this thread.
     pub(crate) static FREED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    /// Largest frame (bytes below the frame pointer) of any function compiled on this thread.
-    pub(crate) static MAX_FRAME: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     /// When set, `compile` fails right after `JITModule::new`.
     pub(crate) static FAIL_AFTER_NEW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
