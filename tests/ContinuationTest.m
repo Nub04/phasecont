@@ -157,7 +157,7 @@ classdef ContinuationTest < matlab.unittest.TestCase
             testCase.verifyError(@() points(both), "phasecont:model:badBranch");
         end
 
-        function liveLoopLeavesOneLine(testCase)
+        function plotEndsWithStyledLines(testCase)
             m = testCase.model(testCase.Fold, "jit");
             eq = phasecont.equilibrium(m, -1);
             fig = figure(Visible = "off");
@@ -165,10 +165,16 @@ classdef ContinuationTest < matlab.unittest.TestCase
             br = phasecont.continuation(m, eq, Free = "a", Direction = 1, ...
                 MaxSteps = 60, Bounds = [-5 5], Plot = true, Var = "x");
             ax = gca;
-            ln = findobj(ax, "Type", "line");
-            testCase.assertSize(ln, [1 1]);
-            testCase.verifyEqual(ln.XData, br.Alpha');
-            testCase.verifyEqual(ln.YData, br.U(:, 1)');
+            ln = [findobj(ax, "Tag", "pc-stable"); findobj(ax, "Tag", "pc-unstable")];
+            testCase.assertNotEmpty(ln);
+            x = [];
+            y = [];
+            for k = 1:numel(ln)
+                x = [x, ln(k).XData]; %#ok<AGROW>
+                y = [y, ln(k).YData]; %#ok<AGROW>
+            end
+            testCase.verifyEqual(sort(unique(x)), sort(unique(br.Alpha')));
+            testCase.verifyEqual(sort(unique(y)), sort(unique(br.U(:, 1)')));
             testCase.verifyEqual(string(ax.XLabel.String), "a");
             testCase.verifyEqual(string(ax.YLabel.String), "x");
         end
@@ -184,8 +190,9 @@ classdef ContinuationTest < matlab.unittest.TestCase
             phasecont.continuation(m, eq, Free = "a", Direction = 1, ...
                 MaxSteps = 30, Bounds = [-5 5], Plot = true);
             lines = findobj(ax, "Type", "line");
-            testCase.verifyEqual(numel(lines), 2);
+            testCase.verifyGreaterThan(numel(lines), 2);
             testCase.verifyTrue(isvalid(old));
+            testCase.verifyTrue(any(lines == old));
         end
 
         function interruptCancelsAndFreesTheRun(testCase)

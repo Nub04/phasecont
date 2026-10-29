@@ -19,8 +19,10 @@ function br = continuation(m, start, options)
 %     MaxNewton  most Newton iterations per step
 %     Detect     labels to detect, a subset of ["LP" "BP" "H"] (default all)
 %     Switch     special point to switch at, like "BP1"
-%     Plot       true draws the branch while the run goes (default false)
-%     Var        variable to plot (default the first variable of M)
+%     Plot       true draws the branch while the run goes and ends with the
+%                styled plot of Branch.plot (default false)
+%     Var        variable to plot, a name or an index into M.Variables
+%                (default the first variable of M)
 %     Params     struct or vector that overrides the parameters of START
 %
 %   Options that are not given keep the engine defaults. If START is a
@@ -109,7 +111,15 @@ if options.Plot || ~isempty(options.Var)
     if isempty(options.Var)
         varIdx = 1;
     else
-        varIdx = find(m.Variables == string(options.Var), 1);
+        v = options.Var;
+        if isnumeric(v) && isscalar(v) && v >= 1 && v <= numel(m.Variables) ...
+                && v == round(v)
+            varIdx = double(v);
+        elseif (isstring(v) || ischar(v)) && isscalar(string(v))
+            varIdx = find(m.Variables == string(v), 1);
+        else
+            varIdx = [];
+        end
         if isempty(varIdx)
             error("phasecont:model:unknownVariable", ...
                 "Var must be one of: %s.", strjoin(m.Variables, ", "));
@@ -160,10 +170,6 @@ while true
     end
     pause(pause_s);
 end
-if options.Plot
-    drawnow
-end
-
 nb = numel(st.branches);
 br = phasecont.Branch.empty(1, 0);
 for b = 1:nb
@@ -171,6 +177,14 @@ for b = 1:nb
     sp = run.copy(b, 1, 1, nsp, st.stride);
     one = phasecont.internal.rows2branch(m, free, p, n, pts{b}, sp, st.branches(b));
     br(1, b) = one;
+end
+if options.Plot
+    % Replace the live lines with the styled plot.
+    delete(lines(isgraphics(lines)));
+    for b = 1:nb
+        plot(br(b), Var = varIdx, Parent = ax);
+    end
+    drawnow
 end
 delete(run);
 end

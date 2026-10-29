@@ -350,6 +350,7 @@ h   = br.points("H");                                     % Point array; br.poin
 plot(br, Var="x");                                        % stable solid, unstable dashed, labeled specials
 ```
 
+- **Branch plots.** `plot(br)` draws stable runs as solid lines (Tag `pc-stable`), unstable runs as dashed lines (`pc-unstable`), and each special point as a marker (`pc-special`) with a text label (`pc-label`). It uses `newplot`, so `hold on` is respected, and `Parent=ax` draws into an axes without resetting it. `continuation(Plot=true)` ends with this plot.
 - **Handle classes.** Only `Model` and the internal `phasecont.internal.Run` own Rust handles, and their `delete` frees the handle. `Branch` is a handle class that holds copied data, and `Point` is a value class. `continuation` blocks and polls about every 50 ms with `drawnow`. It grows the plot when `Plot=true`, and Ctrl+C cancels the run and returns nothing.
 - **Time in `rhs`.** `m.rhs(x, p, t)` takes a finite real scalar `t`, else `phasecont:model:badTime`. A model with `Autonomous == false` called without `t` raises `phasecont:model:missingTime`; the toolbox never assumes `t = 0`. A model that does not use `t` accepts `t` and ignores it. `equilibrium` and `continuation` still need an autonomous model and raise `phasecont:engine:nonAutonomous`.
 - **Apps.** They are programmatic `uifigure` code, not `.mlapp` files.
