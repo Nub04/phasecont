@@ -19,6 +19,10 @@ classdef Model < handle
         ParameterValues (:,1) double = zeros(0,1)
         Init (:,1) double = zeros(0,1)
         Evaluator (1,1) string = "jit"
+        % AotInfo holds Compiler, Version, Flags and Library of the AOT
+        % library when Evaluator is "aot"; the fields are "" otherwise.
+        AotInfo (1,1) struct = struct("Compiler", "", "Version", "", ...
+            "Flags", "", "Library", "")
         % Autonomous is false when the equations use t.
         Autonomous (1,1) logical = true
         Diagnostics (:,1) struct = repmat(struct("code", [], "severity", [], ...
@@ -34,7 +38,7 @@ classdef Model < handle
         function obj = Model(file, options)
             arguments
                 file (1,1) string
-                options.Evaluator (1,1) string {mustBeMember(options.Evaluator, ["jit" "fallback"])} = "jit"
+                options.Evaluator (1,1) string {mustBeMember(options.Evaluator, ["" "jit" "fallback" "aot"])} = ""
             end
             if exist("pckern", "file") ~= 3
                 error("phasecont:engine:load", ...
@@ -49,7 +53,12 @@ classdef Model < handle
             text = string(fileread(full, Encoding = "UTF-8"));
             obj.File = full;
             obj.Source = text;
-            obj.Evaluator = options.Evaluator;
+            if options.Evaluator == ""
+                % No Evaluator given: the session option decides.
+                obj.Evaluator = phasecont.config("Codegen");
+            else
+                obj.Evaluator = options.Evaluator;
+            end
             obj.build();
         end
 
@@ -178,9 +187,18 @@ classdef Model < handle
                 end
                 error("phasecont:engine:model", "%s", text);
             end
+            aot = phasecont.Model.emptyAotInfo();
             try
-                pckern("model_compile", id, ...
-                    sprintf('{"evaluator":"%s"}', obj.Evaluator));
+                if obj.Evaluator == "aot"
+                    [ok, aot] = phasecont.Model.compileAot(id);
+                    if ~ok
+                        obj.Evaluator = "jit";
+                    end
+                end
+                if obj.Evaluator ~= "aot"
+                    pckern("model_compile", id, ...
+                        sprintf('{"evaluator":"%s"}', obj.Evaluator));
+                end
                 info = jsondecode(pckern("model_info", id));
             catch err
                 try
@@ -203,12 +221,42 @@ classdef Model < handle
             obj.ParameterValues = phasecont.Model.toColumn(info.values);
             obj.Init = phasecont.Model.toColumn(info.init);
             obj.Evaluator = string(info.evaluator);
+            obj.AotInfo = aot;
             obj.Autonomous = logical(info.autonomous);
             obj.Diagnostics = entries;
         end
     end
 
     methods (Static, Access = private)
+        function s = emptyAotInfo()
+            s = struct("Compiler", "", "Version", "", "Flags", "", "Library", "");
+        end
+
+        function [ok, aot] = compileAot(id)
+            % Build and load the AOT library for model id. On any failure
+            % warn and return ok = false; the caller then builds the JIT.
+            ok = false;
+            aot = phasecont.Model.emptyAotInfo();
+            try
+                [lib, built] = phasecont.internal.aotBuild(id);
+            catch err
+                warning("phasecont:aot:compile", ...
+                    "AOT compile failed, using the JIT: %s", err.message);
+                return
+            end
+            try
+                pckern("model_compile", id, jsonencode( ...
+                    struct("evaluator", "aot", "aot_lib", char(lib))));
+            catch err
+                warning("phasecont:aot:load", ...
+                    "AOT library could not be loaded, using the JIT: %s", ...
+                    err.message);
+                return
+            end
+            ok = true;
+            aot = built;
+        end
+
         function full = fullPath(file)
             % Absolute path: keep an absolute name, resolve others against pwd.
             f = char(file);
