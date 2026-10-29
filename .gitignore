@@ -29,3 +29,5 @@ codegen/
 .vscode/settings.json
 .DS_Store
 Thumbs.db
+
+!crates/pc-cli/tests/fixtures/pe/fixture.dll

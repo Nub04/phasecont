@@ -32,6 +32,8 @@ pub enum Command {
     },
     /// Write C code for F, JacU and JacP.
     EmitC { file: PathBuf, out: Option<PathBuf> },
+    /// List the DLLs a 64-bit PE file imports and check them against the allow-list.
+    DllImports { file: PathBuf },
     /// Follow equilibrium branches described by a problem file.
     Cont {
         file: PathBuf,
@@ -51,6 +53,7 @@ usage: pc-cli parse [--json] [--] <file.ode>
        pc-cli check-derivs [--points N] [--seed S] [--] <file.ode>
        pc-cli emit-c [-o out.c] [--] <file.ode>
        pc-cli cont [--fallback] [--] <file.ode> <problem.json>
+       pc-cli dll-imports [--] <file.dll>
        pc-cli --help | pc-cli --version";
 
 pub const HELP: &str = "\
@@ -62,6 +65,7 @@ usage:
   pc-cli check-derivs <file.ode> [--points N] [--seed S]
   pc-cli emit-c <file.ode> [-o out.c]
   pc-cli cont <file.ode> <problem.json> [--fallback]
+  pc-cli dll-imports <file.dll>
   pc-cli --help
   pc-cli --version
 
@@ -72,6 +76,7 @@ commands:
                 f64 fallback, and with finite differences
   emit-c        write C code for F, JacU and JacP
   cont          follow an equilibrium branch and print its points and special points
+  dll-imports   list the DLLs a 64-bit Windows PE file imports and check the allow-list
 ";
 
 pub const PARSE_HELP: &str = "\
@@ -159,6 +164,23 @@ the model cannot be read, has errors or is refused, 2 usage error or bad
 problem file (the message names the key)
 ";
 
+pub const DLL_IMPORTS_HELP: &str = "\
+usage: pc-cli dll-imports [--] <file.dll>
+
+Reads a 64-bit Windows PE file (the cross-built pckern.dll) and prints the DLLs
+it imports, one per line in table order, each once. Delay-loaded imports follow
+with the suffix \" (delay)\". The names are compared without regard to case with
+an allow-list: kernel32, ntdll, userenv, ws2_32, bcryptprimitives, bcrypt,
+advapi32, msvcrt and api-ms-win-*. A name outside the list is reported on stderr.
+
+options:
+  --         the next argument is the file, even if it starts with `-`
+  -h, --help print this help
+
+exit codes: 0 every import is allowed, 1 an import is outside the allow-list or
+the file cannot be read or is not a 64-bit PE file, 2 usage error
+";
+
 pub const EMIT_HELP: &str = "\
 usage: pc-cli emit-c [-o out.c] [--] <file.ode>
 
@@ -202,6 +224,7 @@ where
         "check-derivs" => check_command(&args[1..]),
         "emit-c" => emit_command(&args[1..]),
         "cont" => cont_command(&args[1..]),
+        "dll-imports" => dll_imports_command(&args[1..]),
         "-h" | "--help" | "-V" | "--version" => {
             Err(UsageError(format!("unexpected argument after {first}")))
         }
@@ -386,6 +409,17 @@ fn emit_command(rest: &[OsString]) -> Result<Command, UsageError> {
     }
 }
 
+fn dll_imports_command(rest: &[OsString]) -> Result<Command, UsageError> {
+    let parts = split(rest, Accepts::default())?;
+    if parts.help {
+        return Ok(Command::ToolHelp(DLL_IMPORTS_HELP));
+    }
+    match parts.file {
+        Some(file) => Ok(Command::DllImports { file }),
+        None => Err(UsageError("dll-imports needs a file".to_string())),
+    }
+}
+
 fn cont_command(rest: &[OsString]) -> Result<Command, UsageError> {
     let parts = split(
         rest,
@@ -499,6 +533,33 @@ mod tests {
             Ok(Command::ToolHelp(CHECK_HELP))
         );
         assert_eq!(p(&["emit-c", "-h"]), Ok(Command::ToolHelp(EMIT_HELP)));
+    }
+
+    #[test]
+    fn dll_imports_command_takes_one_file() {
+        assert_eq!(
+            p(&["dll-imports", "a.dll"]),
+            Ok(Command::DllImports {
+                file: "a.dll".into()
+            })
+        );
+        assert_eq!(
+            p(&["dll-imports", "--", "-a.dll"]),
+            Ok(Command::DllImports {
+                file: "-a.dll".into()
+            })
+        );
+        assert_eq!(
+            p(&["dll-imports", "-h"]),
+            Ok(Command::ToolHelp(DLL_IMPORTS_HELP))
+        );
+        for args in [
+            &["dll-imports"][..],
+            &["dll-imports", "a.dll", "b.dll"],
+            &["dll-imports", "--json", "a.dll"],
+        ] {
+            assert!(p(args).is_err(), "{args:?}");
+        }
     }
 
     #[test]
