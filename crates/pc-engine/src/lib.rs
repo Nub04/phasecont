@@ -8,9 +8,12 @@
 
 mod aot;
 mod branch;
+mod codim2;
+mod curve2;
 mod ep;
 mod error;
 mod locate;
+mod lpcurve;
 mod model;
 mod normal;
 mod palc;
@@ -23,8 +26,10 @@ mod tests_fn;
 
 pub use aot::{AotEval, engine_kinds, entry_symbol};
 pub use branch::{Branch, Extras, Options, Point, SpecialPoint, StopReason};
+pub use curve2::CurveSetup;
 pub use ep::{EpProblem, EpSetup, continue_ep, equilibrium};
 pub use error::EngineError;
+pub use lpcurve::{LpCurveProblem, continue_lp_curve};
 pub use model::{Evaluator, ModelEval, build, build_allowing_t};
 pub use normal::{
     H_NORMALIZATION, LP_NORMALIZATION, first_lyapunov, fold_coefficient, hopf_eigenvectors,
