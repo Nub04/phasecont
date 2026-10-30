@@ -63,6 +63,17 @@ jobs:
           name: pckern-win64
           path: target/x86_64-pc-windows-gnu/release/pckern.dll
           if-no-files-found: error
+      - name: Collect the third-party license texts
+        run: >-
+          target/release/pc-cli licenses
+          --target x86_64-pc-windows-gnu --package pc-ffi
+          --out licenses/THIRD_PARTY_LICENSES.txt
+          --overrides licenses/overrides
+      - uses: actions/upload-artifact@v4
+        with:
+          name: third-party-licenses
+          path: licenses/THIRD_PARTY_LICENSES.txt
+          if-no-files-found: error
 
   # Needs a self-hosted Windows runner with the labels self-hosted, windows and
   # matlab. On that machine: MATLAB R2026b with `matlab` on PATH, and Microsoft
@@ -92,6 +103,57 @@ jobs:
         with:
           name: matlab-windows-junit
           path: build/test-results/junit.xml
+          if-no-files-found: warn
+
+  # Same runner as matlab-windows. Builds build/PhaseCont-<version>.mltbx from
+  # the prebuilt DLL and the license texts, then installs it into MATLAB from a
+  # folder outside the checkout, runs an example and uninstalls it. The runner
+  # must not have PhaseCont installed already (the check stops if it does).
+  package-win:
+    if: >-
+      github.event_name != 'schedule' &&
+      (github.event.pull_request.head.repo.full_name == github.repository ||
+      github.event_name != 'pull_request')
+    needs: pckern-win
+    runs-on: [self-hosted, windows, matlab]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: pckern-win64
+          path: prebuilt
+      - uses: actions/download-artifact@v4
+        with:
+          name: third-party-licenses
+          path: licenses-out
+      - name: Point the package task at the prebuilt DLL and the licenses
+        shell: cmd
+        run: |
+          echo PHASECONT_PREBUILT=%GITHUB_WORKSPACE%\prebuilt>>"%GITHUB_ENV%"
+          echo PHASECONT_LICENSES=%GITHUB_WORKSPACE%\licenses-out\THIRD_PARTY_LICENSES.txt>>"%GITHUB_ENV%"
+      - name: Run buildtool cargo mex test package
+        shell: cmd
+        run: matlab -batch "buildtool cargo mex test package"
+      - name: Install the package and run the example from a clean folder
+        shell: cmd
+        run: |
+          for %%f in ("%GITHUB_WORKSPACE%\build\PhaseCont-*.mltbx") do set PHASECONT_MLTBX=%%~ff
+          set CHECK_SCRIPT=%GITHUB_WORKSPACE%\scripts\cleanInstallCheck.m
+          cd /d "%RUNNER_TEMP%"
+          matlab -batch "run(getenv('CHECK_SCRIPT'))" > "%GITHUB_WORKSPACE%\build\install.log" 2>&1
+          set CHECK_STATUS=%ERRORLEVEL%
+          type "%GITHUB_WORKSPACE%\build\install.log"
+          exit /b %CHECK_STATUS%
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PhaseCont-mltbx
+          path: build/PhaseCont-*.mltbx
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: package-win-install-log
+          path: build/install.log
           if-no-files-found: warn
 
   asan:
