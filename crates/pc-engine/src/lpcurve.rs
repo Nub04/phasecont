@@ -13,19 +13,27 @@
 //! * `CP`, the cusp: `⟨p, B(q, q)⟩` with unit `q` and `p`. It changes sign with the
 //!   quadratic fold coefficient and stays smooth through a Bogdanov-Takens point, where
 //!   `⟨p, q⟩` vanishes.
+//! * `BT`, Bogdanov-Takens: `⟨p, q⟩` for unit `q` and `p`. It is zero where the zero
+//!   eigenvalue is double and changes sign through it.
+//! * `ZH`, zero-Hopf: `psi_h` of the eigenvalues without the zero one. It vanishes where a
+//!   complex pair crosses the imaginary axis. A zero from two real eigenvalues of opposite
+//!   sign (`classify_h_zero`) is not reported.
 
 use crate::branch::{Branch, Options, Point};
-use crate::codim2::{CUSP_NORMALIZATION, cusp_coefficient};
+use crate::codim2::{
+    BT_NORMALIZATION, CUSP_NORMALIZATION, bt_coefficients, cusp_coefficient, without_zero,
+};
 use crate::curve2::{CurveSetup, Model2, dot, norm, start_tangent};
 use crate::error::EngineError;
 use crate::model::ModelEval;
 use crate::palc::run_branch;
 use crate::problem::Problem;
+use crate::tests_fn::{HopfZero, classify_h_zero, psi_h};
 use pc_linalg::{Lu, null_left, null_right};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Codim-2 labels of the LP curve, in the order of `Point.codim2`.
-const LABELS: [&str; 1] = ["CP"];
+const LABELS: [&str; 3] = ["CP", "BT", "ZH"];
 
 /// `F = 0, g = 0` over a model with two free parameters.
 pub struct LpCurveProblem<'a> {
@@ -68,15 +76,21 @@ impl<'a> LpCurveProblem<'a> {
     fn annotate(&mut self, branch: &mut Branch) {
         let n = self.m.n;
         for sp in branch.specials.iter_mut() {
-            if sp.label != "CP" {
+            if sp.label != "CP" && sp.label != "BT" {
                 continue;
             }
             let mut x = sp.point.u.clone();
             x.push(sp.point.alpha);
             self.m.set(&x);
-            if let Ok(c) = cusp_coefficient(&mut self.m, &x[..n]) {
-                sp.extras.coefficient = Some(c);
-                sp.extras.normalization = Some(CUSP_NORMALIZATION.to_string());
+            if sp.label == "CP" {
+                if let Ok(c) = cusp_coefficient(&mut self.m, &x[..n]) {
+                    sp.extras.coefficient = Some(c);
+                    sp.extras.normalization = Some(CUSP_NORMALIZATION.to_string());
+                }
+            } else if let Ok((a, b)) = bt_coefficients(&mut self.m, &x[..n]) {
+                sp.extras.coefficient = Some(a);
+                sp.extras.coefficient2 = Some(b);
+                sp.extras.normalization = Some(BT_NORMALIZATION.to_string());
             }
         }
     }
@@ -154,7 +168,7 @@ impl Problem for LpCurveProblem<'_> {
         &mut self,
         x: &[f64],
         _tangent: &[f64],
-        _eigs: &[(f64, f64)],
+        eigs: &[(f64, f64)],
     ) -> Result<Vec<f64>, EngineError> {
         let n = self.m.n;
         self.m.set(x);
@@ -172,9 +186,24 @@ impl Problem for LpCurveProblem<'_> {
         p.iter_mut().for_each(|c| *c /= np);
         let bqq = self.m.b(u, &q, &q)?;
         let cp = dot(&p, &bqq);
+        let bt = dot(&p, &q);
+        let zh = if eigs.is_empty() {
+            f64::NAN
+        } else {
+            psi_h(&without_zero(eigs))
+        };
         self.v_b = q;
         self.w_b = p;
-        Ok(vec![cp])
+        Ok(vec![cp, bt, zh])
+    }
+
+    fn codim2_label(&self, i: usize, eigs: &[(f64, f64)]) -> Option<&'static str> {
+        if i == 2 {
+            // psi_h also vanishes where two real eigenvalues sum to zero, which is no ZH.
+            (classify_h_zero(&without_zero(eigs)) == HopfZero::Hopf).then_some("ZH")
+        } else {
+            LABELS.get(i).copied()
+        }
     }
 }
 

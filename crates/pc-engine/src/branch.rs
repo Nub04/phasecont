@@ -31,6 +31,8 @@ pub struct Point {
 pub struct Extras {
     /// Normal form coefficient (a for LP, l1 for H).
     pub coefficient: Option<f64>,
+    /// Second normal form coefficient: b of a Bogdanov-Takens point (`coefficient` is a).
+    pub coefficient2: Option<f64>,
     /// Frequency of a Hopf point.
     pub omega: Option<f64>,
     /// Which normalization the coefficient used.
