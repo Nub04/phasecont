@@ -2,12 +2,22 @@
 
 ## Phase
 
-P8a (package v0.3; SPEC section 14) is in progress on branch `phase8a-package`. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 as PR #2 (3748707). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
+P8a (package v0.3; SPEC section 14) is accepted and done on branch `phase8a-package`. Merging it into `main` is the owner's step, and it has not happened yet. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 as PR #2 (3748707). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
 
 ## Done
 
 - P3 merged into `main` on 2026-10-28 as PR #1 (dfcfdab).
 - P7a merged into `main` on 2026-10-29 as PR #2 (3748707).
+
+P8a (package v0.3, win64 only, branch `phase8a-package`, commits 5efc474 to cbbc82c, plus the commit that updates this file; not merged into `main`). `MinimumMatlabRelease` is R2026b, the version is 0.3.0, and the toolbox UUID is fixed in `buildfile.m`.
+
+- `Evaluator::Aot` in `pc-engine` loads the library with `libloading`, which is now a normal dependency. `model_compile` takes the keys `emit_c`, `evaluator` and `aot_lib`. The C ABI is unchanged: 17 members, 128 bytes. `internal.aotBuild` runs `mex` with floating-point contraction off. On the MATLAB side, `phasecont.config("Codegen")`, `Model(file, Evaluator="aot")` and `Model.AotInfo` select and report AOT.
+- `pc-cli licenses` writes `THIRD_PARTY_LICENSES.txt` with one section per crate in the closure. The real run gave 104 sections, 18 of them from `licenses/overrides`. The command fails when a crate has no license file and no override.
+- `toolbox/examples` has a FitzHugh-Nagumo example and `ExampleTest`. It finds two Hopf points, at I = 1.4187187 and I = 0.33128134, with omega = 0.27550681. An independent `fzero` on the Jacobian trace confirms both.
+- `scripts/packageToolbox.m`, `PackageTest` (31 tests) and the `package` buildtool task build `build/PhaseCont-0.3.0.mltbx`, about 4.87 MB. The script checks the stage path before it deletes anything, and it refuses a repo path that contains `&` or `;`.
+- `scripts/cleanInstallCheck.m`, `scripts/buildfileValue.m`, `BuildfileValueTest` and the `package-win` CI job. The check ran in the real Windows MATLAB R2026b Add-Ons folder. It installed 0.3.0, found `phasecont.Model` in the add-on folder, ran the example and uninstalled the toolbox. The run used the same Windows MATLAB install that built the package, not a second machine, and it does not prove that a brand new MATLAB session finds the toolbox on its path. Smart App Control did not block the freshly built `pckern.mexw64`.
+- Checks at the tip (cbbc82c): `cargo test` gave 894 passed and 0 failed. `scripts/matlab-win "buildtool cargo mex test package"` gave 150 tests, 149 passed, 0 failed and 1 incomplete (`BuildTest/wslRootElsewhereUsesToolboxBin`, skipped by an assumption, as before).
+- Not run yet: the `package-win` job and the licenses step in `pckern-win` have never run on a GitHub runner.
 
 P0 (accepted on 2026-10-22, when the owner approved the decisions in `docs/spikes.md`):
 
@@ -88,13 +98,10 @@ P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; merged into `mai
 
 ## In progress
 
-- P8a (package v0.3) on branch `phase8a-package`. The plan is `/home/nub04/.claude/plans/phase8a-package.md` (9 commits).
+Nothing is in progress. P8a is done on `phase8a-package`, and the owner merges it into `main`.
 
 ## Next
 
-- P8a: package v0.3.
-  - Confirm on the File Exchange submission form that it accepts an Apache-2.0 toolbox linked to GitHub.
-  - AOT through `mex` with MSVC (moved from P7a by the owner on 2026-10-28): compile with floating-point contraction off (the counterpart of `-ffp-contract=off`), call `pc_aot_init` with pckern's shim table before any entry, and compare NaNs by class, not by sign. The project test runs gcc only.
 - P4: Hopf detection for n > 100 with the minimally augmented test function (Govaerts), and the LP and Hopf curves. Each step now evaluates `JacU` and all eigenvalues even when Hopf detection is off; P4 should reuse F_u from the step's Jacobian.
 - P4 and later: a continuation that changes a parameter or state read by a table formula needs a new lowering of the model (P2 known difference).
 
@@ -104,6 +111,10 @@ P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; merged into `mai
 
 ## Open questions
 
+- Owner: File Exchange route for v0.3, checked on 2026-10-29. Direct upload accepts BSD only. Apache-2.0 is allowed only for a GitHub-linked entry. The R2026b help says a package with MEX or DLL files cannot be submitted to File Exchange, and it does not say whether a GitHub-linked entry is exempt. The repo is private, which blocks the GitHub link route. Ask MathWorks before relying on either route.
+- P8 release build: `pckern.dll` embeds host paths, about 377 references to `/home/nub04/.cargo/registry` and 8 to `target/`. Path remapping belongs in the release build.
+- P8 or later: the gateway never unloads `pckern.dll`. Uninstalling or upgrading the toolbox in a MATLAB session that has used PhaseCont fails with "Permission denied" and leaves a stale folder under `%APPDATA%\MathWorks\MATLAB Add-Ons` until MATLAB exits. Add an unload or shutdown function.
+- P8: AOT on Linux and macOS. The mex link may not export `pc_aot_init` on glnxa64 or maca64. The win64 build exports it through `PC_EXPORT`. Check with a visibility attribute and a Linux test. The AOT test in `pc-codegen` still runs gcc only.
 - Settled on 2026-10-28: the in-MATLAB part of the macOS arm64 check in SPEC section 4 moved to P7a. P7a did not run it; it is deferred (see below).
 - The P1 questions are settled for P2: division follows IEEE; `mod` is `fmod(x,y)` plus `y` when the remainder is negative, which probe `fn-mod-more` confirmed on eight more cases; `if` evaluates both branches and selects one.
 - Open from P7a: `model_from_ode` parses one in-memory string with no file loader, so `#include` lines fail with a diagnostic. The MATLAB layer has to inline included files, or a later task adds a loader callback.
@@ -116,7 +127,7 @@ P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; merged into `mai
 - Deferred from P7a, with reasons:
   - (a) The MATLAB jobs on Linux and macOS, and the in-MATLAB macOS JIT check. MathWorks' batch token pilot was closed to new requests (checked 2026-10-29), and the repo is private. These resume when a token or a public repo exists.
   - (b) AOT through `mex`, moved to P8a on 2026-10-28.
-  - (c) ASan and the self-hosted MATLAB job have never run on GitHub.
+  - (c) ASan and the self-hosted MATLAB job have never run on GitHub. The P8a `package-win` job and the licenses step in `pckern-win` have not run on a real runner either.
   - The self-hosted runner is registered but not a Windows service. It runs only while `C:\actions-runner\run.cmd` is running.
 - Known minors from reviews, parked:
   - `special_tangent` threshold flips LP orientation with refinement noise.
@@ -133,3 +144,15 @@ P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; merged into `mai
     - `scripts/build-pckern` and `buildfile.m` ignore `CARGO_TARGET_DIR`, and the `wsl.exe` command does not escape `$` or quotes in paths.
     - A `Branch` keeps its `Model` handle, so variable lookup fails after the Model is deleted, and `continuation` rejects a start Point from another Model object with the same source.
     - `BuildTest/gatewayIsBuiltIntoTheBinFolder` cannot fail when the gateway is missing.
+  - AOT cache: a cache hit trusts `isfile` alone, with no staged rename, no rebuild after a failed load and no flags in the key, so a partial library warns until the cache folder is deleted.
+  - AOT hash: `textHash` is a per-byte MATLAB loop on every Model construction; read the hash from the `c_file` name when no hook is set.
+  - AOT cache folder: the path is predictable in a shared `tempdir` with no ownership check (a Linux `/tmp` concern), and AotTest uses the real cache.
+  - AOT Model: the class help does not mention `Evaluator="aot"`, `AotInfo` or the config key, `Evaluator=""` is accepted, and a failed AOT attempt compiles the JIT a second time.
+  - Licenses: `--overrides` on a regular file says "not found", the help text calls SOURCE an "upstream URL and tag", and the exit-1 list leaves out SOURCE, UTF-8 and `--overrides`.
+  - Licenses: the `licenses.rs` doc lists `LICENSE*` only, a read failure names the folder and not the file, and two "names the crate" tests also match the fixture path.
+  - Licenses: overrides are keyed by crate name only, so a `Cargo.lock` bump can reuse an old text for a new version.
+  - Example: the comment says every setting is given, but H0, Hmin, Hmax and the tolerances use engine defaults, and the output leaves out `Branch.Stop` and `Warnings`.
+  - Example: the test checks only that the printed output is non-empty, does not assert distinct Hopf points or table columns, and `traceAt` never checks Newton convergence.
+  - Package: `PackageTest` reads metadata with regexes that depend on attribute spelling, the `toolbox/bin` skip is untested, and the stage root's `matlabPath` entry is an empty string.
+  - Package: `toolbox/examples` with no packageable file fails after the stage is deleted, a stage on a missing drive gives a raw MKDIR error, and files in dot-folders under `toolbox/` are shipped.
+  - Clean install: the `notAddon` negative path is untested, `settings()` has a silent catch fallback, and `buildfileValue` has no negative tests for single-quoted or concatenated literals.
