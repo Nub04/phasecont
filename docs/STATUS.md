@@ -2,12 +2,20 @@
 
 ## Phase
 
-P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 78c5df6. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 as PR #2 (3748707). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
+P4 (LP and H curves, codim-2 detection and normal forms; SPEC section 14) is implemented on branch `phase4-codim2` and awaits acceptance. P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 78c5df6. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 as PR #2 (3748707). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
 
 ## Done
 
 - P3 merged into `main` on 2026-10-28 as PR #1 (dfcfdab).
 - P7a merged into `main` on 2026-10-29 as PR #2 (3748707).
+
+P4 (branch `phase4-codim2`, commits 8a8d207 to 51f2922, Rust only: no MATLAB API change, no C ABI change, no new dependency).
+
+- 8a8d207 adds the `cusp.ode`, `bt.ode` and `bautin.ode` test models. bd44a92 adds `Point.codim2` and the `Problem` hooks `codim2_labels`, `codim2_tests` and `codim2_label`, and `locate.rs` searches one index space for the old and the codim-2 tests.
+- 4cc03d6: `continue_lp_curve` with CP detection and the cusp coefficient c. 6995fd5: BT and ZH detection on the LP curve and the BT coefficients (a, b). 51f2922: `continue_hopf_curve` with GH, BT, ZH and HH detection and l2.
+- Acceptance (SPEC section 9): Test 7 (cusp, CP at the origin), Test 8 (BT, LP and H curves meet at the origin, s = +1 and s = -1) and Test 9 (Bautin, GH at the origin, l2 = 4s) pass in `crates/pc-engine/tests/codim2.rs`, 10 tests. Two extra checks pass: a warped Bautin model (`bautin_warped.ode`) gives the same l2 to 1e-6, and the Brusselator Hopf curve b = 1 + a^2 matches to 1e-9.
+- Checks at 51f2922: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (no failures), `cargo deny check` (advisories, bans, licenses, sources ok) and `cargo build --release --target x86_64-pc-windows-gnu -p pc-ffi` all pass. `buildtool` did not run, since no MATLAB-side file or `pc-ffi` code changed.
+- SPEC section 6 now has the curve equations, the Hopf bordered function and its gradient, the codim-2 tests and the normal form formulas.
 
 P8a (package v0.3, win64 only, branch `phase8a-package`, commits 5efc474 to cbbc82c, plus the status commits; merged into `main` on 2026-10-30). `MinimumMatlabRelease` is R2026b, the version is 0.3.0, and the toolbox UUID is fixed in `buildfile.m`.
 
@@ -98,11 +106,11 @@ P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; merged into `mai
 
 ## In progress
 
-Nothing is in progress. P8a merged into `main` on 2026-10-30 (78c5df6).
+P4 awaits acceptance by the owner. P8a merged into `main` on 2026-10-30 (78c5df6).
 
 ## Next
 
-- P4: Hopf detection for n > 100 with the minimally augmented test function (Govaerts), and the LP and Hopf curves. Each step now evaluates `JacU` and all eigenvalues even when Hopf detection is off; P4 should reuse F_u from the step's Jacobian.
+- P5, P6, P7b and P8 follow P4.
 - P4 and later: a continuation that changes a parameter or state read by a table formula needs a new lowering of the model (P2 known difference).
 
 ## Blocked
@@ -111,6 +119,12 @@ Nothing is in progress. P8a merged into `main` on 2026-10-30 (78c5df6).
 
 ## Open questions
 
+- Open from P4:
+  - Hopf detection for n > 100 stays off. Govaerts' minimally augmented Hopf function needs kappa = omega^2 as an unknown, so it is not a scalar test along an equilibrium branch, and no source with such a test was confirmed (rule 9). A bialternate product costs too much at this size. Owner: name a source, or accept an Arnoldi approach for the eigenvalue nearest the imaginary axis.
+  - ZH and HH normal form coefficients are not computed. The points are detected, located and labeled.
+  - Codim-2 points are located by the Illinois search only (`refined = false`). The tests reach 1e-8 without Newton.
+  - The BT coefficients use the sign convention a > 0, which the normalization string records. The owner may prefer another convention.
+  - LP and H curves are reachable from Rust only. Exposing them in the MATLAB API and the C ABI needs the owner's approval first.
 - Owner: File Exchange route for v0.3, checked on 2026-10-29. Direct upload accepts BSD only. Apache-2.0 is allowed only for a GitHub-linked entry. The R2026b help says a package with MEX or DLL files cannot be submitted to File Exchange, and it does not say whether a GitHub-linked entry is exempt. The repo is private, which blocks the GitHub link route. Ask MathWorks before relying on either route.
 - P8 release build: `pckern.dll` embeds host paths, about 377 references to `/home/nub04/.cargo/registry` and 8 to `target/`. Path remapping belongs in the release build.
 - P8 or later: the gateway never unloads `pckern.dll`. Uninstalling or upgrading the toolbox in a MATLAB session that has used PhaseCont fails with "Permission denied" and leaves a stale folder under `%APPDATA%\MathWorks\MATLAB Add-Ons` until MATLAB exits. Add an unload or shutdown function.
