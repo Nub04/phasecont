@@ -7,8 +7,9 @@
 //! `x_k + s h v_k`, and the tangent and psi_BP at it use the border `v_k`, as at the
 //! accepted point k+1. The values at s = 0 and s = 1 are the stored test values, except
 //! for H, where every value is the plain product scaled by its modulus at point k
-//! (`psi_h_relative`). A zero found here is not refined; the defining systems of Task 8
-//! do that.
+//! (`psi_h_relative`). A zero of an equilibrium test found here is not refined; the defining
+//! systems of Task 8 do that. A zero of a codim-2 test is polished by Newton's method along
+//! the curve (`refine_zero`) and flagged `refined` when that converges.
 
 use crate::branch::{Extras, Options, Point, SpecialPoint, StopReason};
 use crate::error::EngineError;
@@ -21,6 +22,9 @@ use std::sync::atomic::AtomicBool;
 /// smaller end value of the step. A sign change through a pole (the first Lyapunov coefficient
 /// at a zero-Hopf point, say) leaves the search at a large value and fails this check.
 const POLE_TOL: f64 = 1e-2;
+
+/// Newton steps `refine_zero` takes before it gives up.
+const REFINE_ITERS: usize = 8;
 
 /// The step from point k, with the data every trial needs.
 struct Step<'a> {
@@ -182,6 +186,97 @@ fn locate_one(
         .map(|(s, _, pt)| (s, pt)))
 }
 
+/// Polishes the located zero `pt` of codim-2 test `t` with Newton's method along the curve.
+/// The point is on the curve already, so the system [F(x); test(x)] = 0 reduces to one
+/// unknown, the arclength along the tangent: the slope of the test is a forward difference
+/// along the tangent, each step is a corrector solve of that length from the current
+/// point, and the run ends when a step is shorter than `tol_x` (scaled by 1 + |x|). The
+/// result is `Ok(None)`, and the caller keeps `pt`, when the test is undefined or flat
+/// nearby, a step is longer than the step being searched, the corrector fails, the point
+/// leaves the step, or the iteration does not converge. Only a cancel is an `Err`.
+fn refine_zero(
+    p: &mut dyn Problem,
+    st: &Step,
+    t: usize,
+    pt: &Point,
+    opts: &Options,
+    cancel: &AtomicBool,
+    warnings: &mut Vec<String>,
+) -> Result<Option<Point>, StopReason> {
+    // Any error but a cancel only means that this point stays unrefined.
+    fn give_up<T>(e: EngineError) -> Result<Option<T>, StopReason> {
+        match e {
+            EngineError::Cancelled => Err(StopReason::Cancelled),
+            _ => Ok(None),
+        }
+    }
+    let mut cur = pt.clone();
+    let mut x: Vec<f64> = cur.u.iter().copied().chain([cur.alpha]).collect();
+    let (mut tau, mut det) = match tangent_or_kernel(p, &x, st.v) {
+        Ok(r) => r,
+        Err(e) => return give_up(e),
+    };
+    for _ in 0..REFINE_ITERS {
+        let val = value_at(&cur.tests, &cur.codim2, t);
+        if val == 0.0 {
+            return Ok(Some(cur));
+        }
+        let scale = 1.0 + x.iter().map(|a| a * a).sum::<f64>().sqrt();
+        let eps = f64::EPSILON.sqrt() * scale;
+        let xe: Vec<f64> = x.iter().zip(&tau).map(|(a, d)| a + eps * d).collect();
+        let slope = match tests_fn::evaluate(p, &xe, &tau, det, opts, warnings) {
+            Ok(r) => (r.value(t) - val) / eps,
+            Err(e) => return give_up(e),
+        };
+        let ds = -val / slope;
+        if !ds.is_finite() || ds.abs() > st.h.abs() {
+            return Ok(None);
+        }
+        let start: Vec<f64> = x.iter().zip(&tau).map(|(a, d)| a + ds * d).collect();
+        let (xn, iters) = match correct(p, &x, &tau, ds, start, opts, cancel) {
+            Corrected::Done { x, iters } => (x, iters),
+            Corrected::Stop(StopReason::Cancelled) => return Err(StopReason::Cancelled),
+            Corrected::Failed | Corrected::Stop(_) => return Ok(None),
+        };
+        let (tn, dn) = match tangent_or_kernel(p, &xn, &tau) {
+            Ok(r) => r,
+            Err(e) => return give_up(e),
+        };
+        let r = match tests_fn::evaluate(p, &xn, &tn, dn, opts, warnings) {
+            Ok(r) if !r.value(t).is_nan() => r,
+            Ok(_) => return Ok(None),
+            Err(e) => return give_up(e),
+        };
+        // The step coordinate s h of the new point, which must stay between the end points.
+        let along: f64 =
+            st.v.iter()
+                .zip(xn.iter().zip(st.xk))
+                .map(|(v, (a, b))| v * (a - b))
+                .sum();
+        if along * st.h < 0.0 || along.abs() > st.h.abs() {
+            return Ok(None);
+        }
+        let n = xn.len() - 1;
+        cur = Point {
+            u: xn[..n].to_vec(),
+            alpha: xn[n],
+            tangent: tn.clone(),
+            eigenvalues: r.eigenvalues,
+            tests: r.tests,
+            codim2: r.codim2,
+            h: along,
+            newton_iters: iters,
+        };
+        x = xn;
+        tau = tn;
+        det = dn;
+        if ds.abs() <= opts.tol_x * scale {
+            return Ok(Some(cur));
+        }
+    }
+    Ok(None)
+}
+
 /// Looks for sign changes of the enabled tests between the last two points of `points`
 /// (points k and k+1, with k = len - 2) and appends the special points found, ordered by
 /// s, to `specials`. `xk`, `v` and `h` describe the step that reached point k+1: the
@@ -267,7 +362,22 @@ fn detect_inner(
             };
             match locate_one(p, &st, t, ends, href, opts, cancel, scratch)? {
                 Some((s, pt)) => match label(&*p, t, &pt.eigenvalues) {
-                    Some(l) => found.push((s, special(l, k + 1, pt))),
+                    Some(l) => {
+                        // A codim-2 point is polished unless that changes what it is.
+                        let polished = if t >= 3 {
+                            refine_zero(p, &st, t, &pt, opts, cancel, scratch)?
+                                .filter(|r| label(&*p, t, &r.eigenvalues) == Some(l))
+                        } else {
+                            None
+                        };
+                        let (pt, refined) = match polished {
+                            Some(r) => (r, true),
+                            None => (pt, false),
+                        };
+                        let mut sp = special(l, k + 1, pt);
+                        sp.extras.refined = refined;
+                        found.push((s, sp));
+                    }
                     // A codim-2 zero that its problem drops is no bifurcation, and the
                     // search did not fail.
                     None if t >= 3 => {}
@@ -399,16 +509,17 @@ mod codim2_tests {
     use super::*;
 
     /// Two unknowns, the equation x0 = 0, and one codim-2 test named "ZZ": `x1 - 0.05`, or
-    /// `1 / (x1 - 0.05)` with `pole`. With `drop` the label hook rejects every zero.
+    /// `1 / (x1 - 0.05)` with `pole`. With `drop` the label hook rejects every zero. With
+    /// `nan_from = Some(n)` the test is NaN from its n-th evaluation on (counting from 1).
+    #[derive(Default)]
     struct Curve {
         pole: bool,
         drop: bool,
+        nan_from: Option<usize>,
+        calls: usize,
     }
     fn zero() -> Curve {
-        Curve {
-            pole: false,
-            drop: false,
-        }
+        Curve::default()
     }
     impl Problem for Curve {
         fn dim(&self) -> usize {
@@ -434,6 +545,10 @@ mod codim2_tests {
             _tangent: &[f64],
             _eigs: &[(f64, f64)],
         ) -> Result<Vec<f64>, EngineError> {
+            self.calls += 1;
+            if self.nan_from.is_some_and(|n| self.calls >= n) {
+                return Ok(vec![f64::NAN]);
+            }
             let d = x[1] - 0.05;
             Ok(vec![if self.pole { 1.0 / d } else { d }])
         }
@@ -483,6 +598,60 @@ mod codim2_tests {
         assert_eq!((sp[0].label.as_str(), sp[0].index), ("ZZ", 1));
         assert!((sp[0].point.alpha - 0.05).abs() < 1e-10);
         assert!((sp[0].point.codim2[0]).abs() < 1e-10);
+        assert!(sp[0].extras.refined);
+    }
+
+    /// Runs one step with end values that mislead the search, so one trial stops at about
+    /// alpha = 0.0545 and the true zero is at 0.05.
+    fn run_capped(p: Curve) -> (Vec<String>, Vec<SpecialPoint>) {
+        let (mut w, mut sp) = (Vec::new(), Vec::new());
+        let opts = Options {
+            max_locate: 1,
+            ..Options::default()
+        };
+        detect_step(
+            &mut { p },
+            &[0.0, 0.0],
+            &[0.0, 1.0],
+            0.1,
+            &[pt_with(0.0, -1.2), pt_with(0.1, 1.0)],
+            &opts,
+            &AtomicBool::new(false),
+            &mut w,
+            &mut sp,
+        )
+        .unwrap();
+        (w, sp)
+    }
+
+    #[test]
+    fn newton_polishes_a_zero_the_search_stopped_short_of() {
+        let (w, sp) = run_capped(zero());
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(sp.len(), 1);
+        assert!(sp[0].extras.refined);
+        assert!(
+            (sp[0].point.alpha - 0.05).abs() < 1e-10,
+            "{}",
+            sp[0].point.alpha
+        );
+        assert!(sp[0].point.codim2[0].abs() < 1e-10);
+        // The refined point stays inside the step it was found on.
+        assert!(sp[0].point.h > 0.0 && sp[0].point.h < 0.1);
+    }
+
+    #[test]
+    fn an_undefined_test_next_to_the_point_leaves_the_search_result() {
+        // The second evaluation is the difference quotient of the refinement.
+        let nan = Curve {
+            nan_from: Some(2),
+            ..zero()
+        };
+        let (w, sp) = run_capped(nan);
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(sp.len(), 1);
+        assert!(!sp[0].extras.refined);
+        assert!((sp[0].point.alpha - 0.05).abs() > 1e-4);
     }
 
     fn run(mut p: Curve, a: Point, b: Point) -> (Vec<String>, Vec<SpecialPoint>) {
@@ -506,7 +675,7 @@ mod codim2_tests {
     fn a_sign_change_through_a_pole_is_not_a_zero() {
         let pole = Curve {
             pole: true,
-            drop: false,
+            ..zero()
         };
         let (w, sp) = run(pole, pt_with(0.0, -20.0), pt_with(0.1, 20.0));
         assert!(sp.is_empty());
@@ -519,8 +688,8 @@ mod codim2_tests {
     #[test]
     fn a_dropped_codim2_zero_gives_no_special_and_no_warning() {
         let drop = Curve {
-            pole: false,
             drop: true,
+            ..zero()
         };
         let (w, sp) = run(drop, pt(0.0), pt(0.1));
         assert!(w.is_empty() && sp.is_empty(), "{w:?}");

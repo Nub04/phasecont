@@ -85,9 +85,10 @@ fn test7_cusp_cp() {
     );
     // Point.u is (x, b1) on a curve and Point.alpha is b2.
     let pt = &cp[0].point;
-    assert!(pt.u[0].abs() < 1e-8, "x = {}", pt.u[0]);
-    assert!(pt.u[1].abs() < 1e-8, "b1 = {}", pt.u[1]);
-    assert!(pt.alpha.abs() < 1e-8, "b2 = {}", pt.alpha);
+    assert!(pt.u[0].abs() < 1e-10, "x = {}", pt.u[0]);
+    assert!(pt.u[1].abs() < 1e-10, "b1 = {}", pt.u[1]);
+    assert!(pt.alpha.abs() < 1e-10, "b2 = {}", pt.alpha);
+    assert!(cp[0].extras.refined, "CP not refined");
     // x' = b1 + b2 x - x^3 has C = -6 and B = 0 at the origin, and p q = 1 with |q| = 1 gives
     // c = -1.
     let c = cp[0].extras.coefficient.expect("cusp coefficient");
@@ -148,12 +149,13 @@ fn test8_bt_lp(s: f64) {
         ("b1", pt.u[2]),
         ("b2", pt.alpha),
     ] {
-        assert!(v.abs() < 1e-8, "{name} = {v}");
+        assert!(v.abs() < 1e-10, "{name} = {v}");
     }
     let (a, b) = (
         bt[0].extras.coefficient.expect("a"),
         bt[0].extras.coefficient2.expect("b"),
     );
+    assert!(bt[0].extras.refined, "BT not refined");
     assert!((a - 1.0).abs() < 1e-8, "a = {a}");
     assert!((b - s).abs() < 1e-8, "b = {b}");
     assert!(bt[0].extras.normalization.is_some());
@@ -230,12 +232,13 @@ fn test8_bt_h(s: f64) {
         ("kappa", pt.u[3]),
         ("b2", pt.alpha),
     ] {
-        assert!(v.abs() < 1e-8, "{name} = {v}");
+        assert!(v.abs() < 1e-10, "{name} = {v}");
     }
     let (a, b) = (
         bt[0].extras.coefficient.expect("a"),
         bt[0].extras.coefficient2.expect("b"),
     );
+    assert!(bt[0].extras.refined, "BT not refined");
     assert!((a - 1.0).abs() < 1e-8, "a = {a}");
     assert!((b - s).abs() < 1e-8, "b = {b}");
     assert!(specials(&br.specials, "GH").is_empty(), "{:?}", br.specials);
@@ -289,9 +292,10 @@ fn bautin_gh(name: &str, s: f64, extra: &[f64]) -> (pc_engine::Branch, SpecialPo
 fn test9_bautin(s: f64) {
     let (_, gh) = bautin_gh("bautin", s, &[]);
     let pt = &gh.point;
-    assert!(pt.alpha.abs() < 1e-8, "b2 = {}", pt.alpha);
-    assert!(pt.u[2].abs() < 1e-8, "b1 = {}", pt.u[2]);
-    assert!((pt.u[3] - 1.0).abs() < 1e-8, "kappa = {}", pt.u[3]);
+    assert!(pt.alpha.abs() < 1e-10, "b2 = {}", pt.alpha);
+    assert!(pt.u[2].abs() < 1e-10, "b1 = {}", pt.u[2]);
+    assert!((pt.u[3] - 1.0).abs() < 1e-10, "kappa = {}", pt.u[3]);
+    assert!(gh.extras.refined, "GH not refined");
     let l2 = gh.extras.coefficient.expect("l2");
     assert!(l2 * s > 0.0, "l2 = {l2} must have the sign of s");
     assert!((l2 - 4.0 * s).abs() < 1e-6, "l2 = {l2}");
@@ -314,7 +318,8 @@ fn test9_bautin_s_minus() {
 fn test9_bautin_warped_l2_is_invariant() {
     for s in [1.0, -1.0] {
         let (_, gh) = bautin_gh("bautin_warped", s, &[0.4]);
-        assert!(gh.point.alpha.abs() < 1e-8, "b2 = {}", gh.point.alpha);
+        assert!(gh.point.alpha.abs() < 1e-10, "b2 = {}", gh.point.alpha);
+        assert!(gh.extras.refined, "GH not refined");
         let l2 = gh.extras.coefficient.expect("l2");
         assert!((l2 - 4.0 * s).abs() < 1e-6, "s = {s}, l2 = {l2}");
     }
