@@ -16,6 +16,7 @@ P4 (branch `phase4-codim2`, commits 8a8d207 to 51f2922, Rust only: no MATLAB API
 - Acceptance (SPEC section 9): Test 7 (cusp, CP at the origin), Test 8 (BT, LP and H curves meet at the origin, s = +1 and s = -1) and Test 9 (Bautin, GH at the origin, l2 = 4s) pass in `crates/pc-engine/tests/codim2.rs`, 10 tests. Two extra checks pass: a warped Bautin model (`bautin_warped.ode`) gives the same l2 to 1e-6, and the Brusselator Hopf curve b = 1 + a^2 matches to 1e-9.
 - Checks at 51f2922: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (no failures), `cargo deny check` (advisories, bans, licenses, sources ok) and `cargo build --release --target x86_64-pc-windows-gnu -p pc-ffi` all pass. `buildtool` did not run, since no MATLAB-side file or `pc-ffi` code changed.
 - SPEC section 6 now has the curve equations, the Hopf bordered function and its gradient, the codim-2 tests and the normal form formulas.
+- Review fixes after the branch read-through: `locate_one` rejects a codim-2 sign change through a pole, a codim-2 zero that its problem drops gives no warning, the warning names the codim-2 test, ZH and HH are NaN for kappa <= 0, and LP and H curve runs detect specials on their first step. Each has a unit test.
 
 P8a (package v0.3, win64 only, branch `phase8a-package`, commits 5efc474 to cbbc82c, plus the status commits; merged into `main` on 2026-10-30). `MinimumMatlabRelease` is R2026b, the version is 0.3.0, and the toolbox UUID is fixed in `buildfile.m`.
 

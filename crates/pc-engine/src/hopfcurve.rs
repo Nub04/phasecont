@@ -363,13 +363,7 @@ impl Problem for HopfCurveProblem<'_> {
         } else {
             f64::NAN
         };
-        let rest = outside_pair(eigs);
-        let zh = zh_test(&rest);
-        let hh = if rest.len() >= 2 {
-            psi_h(&rest)
-        } else {
-            f64::NAN
-        };
+        let (zh, hh) = zh_hh_tests(kappa, eigs);
         // New borders from the solution of the bordered systems at this point.
         let a = self.m.jac_u(u)?;
         let (xs, ys) = self.solves(&m_matrix(&a, n, kappa))?;
@@ -414,12 +408,27 @@ pub fn continue_hopf_curve(
         &x,
         Some(&tangent),
         opts,
-        true,
+        false,
         cancel,
         on_point,
     )?;
     problem.annotate(&mut branch);
     Ok(branch)
+}
+
+/// The ZH and HH test values from the spectrum `eigs` at `kappa`. Past a BT point
+/// (`kappa <= 0`) the critical pair is no Hopf pair, so both are NaN there.
+fn zh_hh_tests(kappa: f64, eigs: &[(f64, f64)]) -> (f64, f64) {
+    if kappa <= 0.0 {
+        return (f64::NAN, f64::NAN);
+    }
+    let rest = outside_pair(eigs);
+    let hh = if rest.len() >= 2 {
+        psi_h(&rest)
+    } else {
+        f64::NAN
+    };
+    (zh_test(&rest), hh)
 }
 
 #[cfg(test)]
@@ -446,6 +455,17 @@ mod tests {
         // A stable real eigenvalue next to the pair gives a nonzero product, so no zero is found.
         let none = [(0.0, 2.0), (0.0, -2.0), (-1.0, 0.0)];
         assert!(zh_test(&outside_pair(&none)) < 0.0);
+    }
+
+    #[test]
+    fn zh_and_hh_tests_are_off_for_nonpositive_kappa() {
+        let e = [(0.0, 2.0), (0.0, -2.0), (0.0, 0.0), (-1.0, 0.0)];
+        let (zh, _) = zh_hh_tests(4.0, &e);
+        assert_eq!(zh, 0.0);
+        for kappa in [0.0, -1.0] {
+            let (zh, hh) = zh_hh_tests(kappa, &e);
+            assert!(zh.is_nan() && hh.is_nan(), "kappa {kappa}");
+        }
     }
 
     #[test]

@@ -17,6 +17,11 @@ use crate::problem::Problem;
 use crate::tests_fn::{self, BP, H, HopfZero, LP, classify_h_zero, value_at};
 use std::sync::atomic::AtomicBool;
 
+/// A located zero of a codim-2 test counts only if its value is at most this fraction of the
+/// smaller end value of the step. A sign change through a pole (the first Lyapunov coefficient
+/// at a zero-Hopf point, say) leaves the search at a large value and fails this check.
+const POLE_TOL: f64 = 1e-2;
+
 /// The step from point k, with the data every trial needs.
 struct Step<'a> {
     xk: &'a [f64],
@@ -104,8 +109,9 @@ fn special(label: &str, index: usize, point: Point) -> SpecialPoint {
 
 /// Finds the zero of test `t` on the step; `fa` and `fb` are its values at the ends, of
 /// opposite sign. With `href` set (test H) the trials are scored with `psi_h_relative`
-/// against that log reference instead of their stored values. Returns `Ok(None)` after
-/// pushing a warning when the search fails.
+/// against that log reference instead of their stored values. Returns `Ok(None)` when the
+/// search fails, and also when a codim-2 test ends at a value above `POLE_TOL` times its
+/// smaller end value, since that sign change is a pole and not a zero.
 #[allow(clippy::too_many_arguments)]
 fn locate_one(
     p: &mut dyn Problem,
@@ -170,7 +176,10 @@ fn locate_one(
         }
     }
     // A search that ended on a failed trial still returns the best valid trial so far.
-    Ok(best.map(|(s, _, pt)| (s, pt)))
+    let tol = POLE_TOL * fa.abs().min(fb.abs());
+    Ok(best
+        .filter(|(_, v, _)| t < 3 || *v <= tol)
+        .map(|(s, _, pt)| (s, pt)))
 }
 
 /// Looks for sign changes of the enabled tests between the last two points of `points`
@@ -259,6 +268,9 @@ fn detect_inner(
             match locate_one(p, &st, t, ends, href, opts, cancel, scratch)? {
                 Some((s, pt)) => match label(&*p, t, &pt.eigenvalues) {
                     Some(l) => found.push((s, special(l, k + 1, pt))),
+                    // A codim-2 zero that its problem drops is no bifurcation, and the
+                    // search did not fail.
+                    None if t >= 3 => {}
                     None => warn(warnings, &*p, t, &pt.eigenvalues, k),
                 },
                 // No point was located, so the end of the step is the nearest guide to
@@ -273,7 +285,11 @@ fn detect_inner(
 }
 
 fn warn(warnings: &mut Vec<String>, p: &dyn Problem, t: usize, eigs: &[(f64, f64)], k: usize) {
-    let name = label(p, t, eigs).unwrap_or("H");
+    let name = if t >= 3 {
+        p.codim2_labels().get(t - 3).copied().unwrap_or("codim-2")
+    } else {
+        label(p, t, eigs).unwrap_or("H")
+    };
     warnings.push(format!(
         "could not locate {name} between points {k} and {}",
         k + 1
@@ -382,8 +398,18 @@ mod tests {
 mod codim2_tests {
     use super::*;
 
-    /// Two unknowns, the equation x0 = 0, and one codim-2 test `x1 - 0.05` named "ZZ".
-    struct Curve;
+    /// Two unknowns, the equation x0 = 0, and one codim-2 test named "ZZ": `x1 - 0.05`, or
+    /// `1 / (x1 - 0.05)` with `pole`. With `drop` the label hook rejects every zero.
+    struct Curve {
+        pole: bool,
+        drop: bool,
+    }
+    fn zero() -> Curve {
+        Curve {
+            pole: false,
+            drop: false,
+        }
+    }
     impl Problem for Curve {
         fn dim(&self) -> usize {
             2
@@ -408,18 +434,30 @@ mod codim2_tests {
             _tangent: &[f64],
             _eigs: &[(f64, f64)],
         ) -> Result<Vec<f64>, EngineError> {
-            Ok(vec![x[1] - 0.05])
+            let d = x[1] - 0.05;
+            Ok(vec![if self.pole { 1.0 / d } else { d }])
+        }
+        fn codim2_label(&self, i: usize, _eigs: &[(f64, f64)]) -> Option<&'static str> {
+            if self.drop {
+                None
+            } else {
+                self.codim2_labels().get(i).copied()
+            }
         }
     }
 
     fn pt(alpha: f64) -> Point {
+        pt_with(alpha, alpha - 0.05)
+    }
+
+    fn pt_with(alpha: f64, value: f64) -> Point {
         Point {
             u: vec![0.0],
             alpha,
             tangent: vec![0.0, 1.0],
             eigenvalues: Vec::new(),
             tests: [f64::NAN; 3],
-            codim2: vec![alpha - 0.05],
+            codim2: vec![value],
             h: 0.1,
             newton_iters: 1,
         }
@@ -429,7 +467,7 @@ mod codim2_tests {
     fn a_codim2_zero_is_located_and_labeled() {
         let (mut w, mut sp) = (Vec::new(), Vec::new());
         detect_step(
-            &mut Curve,
+            &mut zero(),
             &[0.0, 0.0],
             &[0.0, 1.0],
             0.1,
@@ -447,13 +485,54 @@ mod codim2_tests {
         assert!((sp[0].point.codim2[0]).abs() < 1e-10);
     }
 
+    fn run(mut p: Curve, a: Point, b: Point) -> (Vec<String>, Vec<SpecialPoint>) {
+        let (mut w, mut sp) = (Vec::new(), Vec::new());
+        detect_step(
+            &mut p,
+            &[0.0, 0.0],
+            &[0.0, 1.0],
+            0.1,
+            &[a, b],
+            &Options::default(),
+            &AtomicBool::new(false),
+            &mut w,
+            &mut sp,
+        )
+        .unwrap();
+        (w, sp)
+    }
+
+    #[test]
+    fn a_sign_change_through_a_pole_is_not_a_zero() {
+        let pole = Curve {
+            pole: true,
+            drop: false,
+        };
+        let (w, sp) = run(pole, pt_with(0.0, -20.0), pt_with(0.1, 20.0));
+        assert!(sp.is_empty());
+        assert_eq!(
+            w,
+            vec!["could not locate ZZ between points 0 and 1".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_dropped_codim2_zero_gives_no_special_and_no_warning() {
+        let drop = Curve {
+            pole: false,
+            drop: true,
+        };
+        let (w, sp) = run(drop, pt(0.0), pt(0.1));
+        assert!(w.is_empty() && sp.is_empty(), "{w:?}");
+    }
+
     #[test]
     fn points_without_codim2_values_skip_those_tests() {
         let (mut w, mut sp) = (Vec::new(), Vec::new());
         let mut a = pt(0.0);
         a.codim2.clear();
         detect_step(
-            &mut Curve,
+            &mut zero(),
             &[0.0, 0.0],
             &[0.0, 1.0],
             0.1,

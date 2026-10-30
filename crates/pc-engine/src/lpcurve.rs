@@ -238,7 +238,7 @@ pub fn continue_lp_curve(
         &x,
         Some(&tangent),
         opts,
-        true,
+        false,
         cancel,
         on_point,
     )?;
