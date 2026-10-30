@@ -59,11 +59,15 @@ end
 
 stage = char(opts.StageFolder);
 checkStage(stage);
-stagePath = normalizedPath(stage);
+stagePath = normalizedPath(stage, "phasecont:package:badStage");
+if isUnder(normalizedPath(pwd, "phasecont:package:badStage"), stagePath)
+    error("phasecont:package:badStage", ...
+        "The current folder is inside the stage folder, which is deleted first: %s", pwd);
+end
 outPath = checkOutput(opts.OutputFile, stagePath);
-rootPath = normalizedPath(opts.Root);
-binPath = normalizedPath(opts.BinFolder);
-licPath = normalizedPath(opts.LicensesFile);
+rootPath = normalizedPath(opts.Root, "phasecont:package:missingFile");
+binPath = normalizedPath(opts.BinFolder, "phasecont:package:missingFile");
+licPath = normalizedPath(opts.LicensesFile, "phasecont:package:missingFile");
 for pair = {"Root", rootPath; "BinFolder", binPath; "LicensesFile", licPath}'
     if isUnder(pair{2}, stagePath)
         error("phasecont:package:inputInsideStage", ...
@@ -74,6 +78,10 @@ end
 if ~isfolder(fullfile(opts.Root, "toolbox"))
     error("phasecont:package:missingFile", ...
         "Folder not found: %s", fullfile(opts.Root, "toolbox"));
+end
+if ~isfolder(fullfile(opts.Root, "toolbox", "examples"))
+    error("phasecont:package:missingFile", ...
+        "Folder not found: %s", fullfile(opts.Root, "toolbox", "examples"));
 end
 
 % Check every input before deleting or writing anything.
@@ -158,7 +166,7 @@ o.MinimumMatlabRelease = "R2026b";
 o.OutputFile = outPath;
 
 matlab.addons.toolbox.packageToolbox(o);
-outputFile = opts.OutputFile;
+outputFile = string(outPath);
 end
 
 function files = platformBinaries(binFolder)
@@ -177,7 +185,7 @@ else
 end
 end
 
-function checkSegments(parts, what, path)
+function checkSegments(parts, what, shown)
 % Reject segments that Windows would read differently from what they say.
 reserved = ["CON", "PRN", "AUX", "NUL", "COM" + (1:9), "LPT" + (1:9)];
 for k = 1:numel(parts)
@@ -185,11 +193,13 @@ for k = 1:numel(parts)
     bad = strlength(strtrim(seg)) == 0 || seg == "." || seg == ".." ...
         || endsWith(seg, [" ", "."]) || contains(seg, ["<", ">", """", "|", "*"]) ...
         || any(double(char(seg)) < 32) || (k > 1 && contains(seg, [":", "?"])) ...
-        || any(upper(extractBefore(seg + ".", ".")) == reserved);
+        || any(upper(extractBefore(seg + ".", ".")) == reserved) ...
+        || (what == "Stage" && (contains(seg, ["&", ";"]) ...
+        || (k == numel(parts) && startsWith(seg, "."))));
     if bad
         error("phasecont:package:bad" + what, ...
-            "Refusing '%s': the segment '%s' is empty, relative, ends in a dot or space, is a reserved device name or has a character Windows does not allow", ...
-            path, seg);
+            "Refusing '%s': the segment '%s' is empty, relative, ends in a dot or space, is a reserved device name, or has a character that is not allowed here", ...
+            shown, seg);
     end
 end
 end
@@ -199,7 +209,7 @@ function checkStage(stage)
 % <something>/package/<name>, with no suspicious segments, so that a typo
 % cannot make the rmdir below delete real files.
 parts = split(string(stage), ["\", "/"]);
-isAbsolute = ~isempty(regexp(stage, '^([A-Za-z]:[\\/]|\\\\|/)', "once"));
+isAbsolute = ~isempty(regexp(stage, '^([A-Za-z]:[\\/]|[\\/]{2})', "once"));
 if isAbsolute && numel(parts) >= 2 && parts(end) ~= "" && parts(end-1) == "package"
     % Empty segments come from doubled separators or the UNC prefix.
     checkSegments(parts(parts ~= ""), "Stage", stage);
@@ -212,7 +222,7 @@ end
 
 function outPath = checkOutput(output, stagePath)
 % Validate OutputFile and return its absolute, normalized path.
-outPath = normalizedPath(output);
+outPath = normalizedPath(output, "phasecont:package:badOutput");
 parts = split(string(outPath), "\");
 leaf = parts(end);
 if ~endsWith(leaf, ".mltbx", IgnoreCase = true) || strlength(leaf) <= strlength(".mltbx")
@@ -233,14 +243,21 @@ if isfile(outPath)
 end
 end
 
-function p = normalizedPath(p)
+function p = normalizedPath(p, id)
 % Absolute path with "." and ".." resolved, "\" separators and no trailing
-% separator. Pure string work: the folder need not exist.
+% separator. Pure string work: the folder need not exist. A path must start
+% with a drive letter and a separator, with two separators (UNC), or be
+% relative to the current folder. A single leading separator or "C:x" is
+% refused with the error id given in id.
 p = char(p);
-if isempty(regexp(p, '^([A-Za-z]:[\\/]|\\\\|/)', "once"))
+if isempty(regexp(p, '^([A-Za-z]:[\\/]|[\\/]{2})', "once"))
+    if ~isempty(regexp(p, '^([\\/]|[A-Za-z]:)', "once"))
+        error(id, ...
+            "Path '%s' must start with a drive letter and a separator, with a UNC prefix, or be relative to the current folder", p);
+    end
     p = fullfile(pwd, p);
 end
-unc = startsWith(p, "\\");
+unc = ~isempty(regexp(p, '^[\\/]{2}', "once"));
 parts = split(string(p), ["\", "/"]);
 kept = strings(1, 0);
 for part = parts(:)'

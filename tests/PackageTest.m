@@ -221,7 +221,7 @@ classdef PackageTest < matlab.unittest.TestCase
                 testCase.verifyError(@() testCase.build(), ...
                     "phasecont:package:badStage", "stage leaf: " + n);
             end
-            testCase.Stage = fullfile(pkg, "CON", "PhaseCont");
+            testCase.Stage = fullfile(work, "CON", "package", "PhaseCont");
             testCase.verifyError(@() testCase.build(), "phasecont:package:badStage");
             testCase.Stage = origStage;
             testCase.verifyIntact(work);
@@ -284,6 +284,137 @@ classdef PackageTest < matlab.unittest.TestCase
             testCase.Stage = origStage;
             testCase.verifyTrue(isfolder(asFolder));
             testCase.verifyIntact(work);
+        end
+
+        function nulLeafIsRejectedBeforeAnythingIsCreated(testCase)
+            % mkdir on NUL ends the MATLAB process. A LicensesFile that does
+            % not exist makes a regression fail at the licenses check, before
+            % any mkdir, so the test cannot take MATLAB down.
+            work = testCase.prepareStage();
+            origStage = testCase.Stage;
+            pkg = fullfile(work, "package");
+            for n = ["NUL", "nul"]
+                testCase.Stage = fullfile(pkg, n);
+                testCase.verifyError(@() testCase.build(strings(1, 0), ...
+                    struct(LicensesFile = fullfile(work, "no-such-licenses.txt"))), ...
+                    "phasecont:package:badStage", "stage leaf: " + n);
+            end
+            testCase.Stage = origStage;
+            testCase.verifyIntact(work);
+        end
+
+        function uncAndMixedSeparatorsMatchTheStage(testCase)
+            % The same stage written as \\localhost\C$\... must still catch
+            % an input that uses forward slashes or a different case.
+            work = testCase.prepareStage();
+            origStage = testCase.Stage;
+            drive = extractBefore(string(work), 2);
+            share = "\\localhost\" + drive + "$" + extractAfter(string(work), 2);
+            if ~isfolder(share)
+                testCase.assumeFail("admin share not available");
+            end
+            testCase.Stage = fullfile(share, "package", "PhaseCont");
+            inner = fullfile(origStage, "inner");
+            mkdir(fullfile(inner, "toolbox"));
+            writelines("x", fullfile(inner, "LICENSE"));
+            writelines("x", fullfile(inner, "THIRD_PARTY_NOTICES.md"));
+            forward = replace(share, "\", "/");
+            roots = [forward + "/package/PhaseCont/inner", ...
+                upper(forward) + "/package/PhaseCont/inner", ...
+                share + "/package/PhaseCont\inner"];
+            for r = roots
+                testCase.verifyError(@() testCase.build(strings(1, 0), ...
+                    struct(Root = r)), "phasecont:package:inputInsideStage", ...
+                    "root: " + r);
+            end
+            testCase.Stage = origStage;
+            testCase.verifyTrue(isfile(fullfile(inner, "LICENSE")));
+            testCase.verifyIntact(work);
+        end
+
+        function pathsWithoutDriveOrUncPrefixAreRejected(testCase)
+            work = testCase.prepareStage();
+            origStage = testCase.Stage;
+            drive = extractBefore(string(work), 2);
+            % A leading separator names the root of the current drive, and
+            % "C:x" is relative to a per-drive folder: neither is accepted.
+            stages = ["\phasecont_r3_none\package\PhaseCont", ...
+                "/phasecont_r3_none/package/PhaseCont", ...
+                drive + ":package\PhaseCont"];
+            for s = stages
+                testCase.Stage = s;
+                testCase.verifyError(@() testCase.build(), ...
+                    "phasecont:package:badStage", "stage: " + s);
+            end
+            testCase.Stage = origStage;
+            outputs = ["\phasecont_r3_none\x.mltbx", "/phasecont_r3_none/x.mltbx", ...
+                drive + ":x.mltbx"];
+            for o = outputs
+                testCase.verifyError(@() testCase.build(strings(1, 0), ...
+                    struct(OutputFile = o)), "phasecont:package:badOutput", ...
+                    "output: " + o);
+            end
+            for n = ["Root", "BinFolder", "LicensesFile"]
+                for v = ["/tmp/phasecont_r3_none", "\tmp\phasecont_r3_none", ...
+                        drive + ":tmp"]
+                    o = struct();
+                    o.(n) = v;
+                    testCase.verifyError(@() testCase.build(strings(1, 0), o), ...
+                        "phasecont:package:missingFile", n + ": " + v);
+                end
+            end
+            testCase.verifyFalse(isfolder(fullfile(drive + ":\", "phasecont_r3_none")));
+            testCase.verifyIntact(work);
+        end
+
+        function shellCharactersAndHiddenLeafInTheStageAreRejected(testCase)
+            work = testCase.prepareStage();
+            origStage = testCase.Stage;
+            pkg = fullfile(work, "package");
+            for n = ["a&b", "a;b", ".hidden"]
+                testCase.Stage = fullfile(pkg, n);
+                testCase.verifyError(@() testCase.build(), ...
+                    "phasecont:package:badStage", "stage leaf: " + n);
+            end
+            testCase.Stage = fullfile(work, "x&y", "package", "PhaseCont");
+            testCase.verifyError(@() testCase.build(), "phasecont:package:badStage");
+            testCase.Stage = origStage;
+            testCase.verifyFalse(isfolder(fullfile(pkg, "a&b")));
+            testCase.verifyFalse(isfolder(fullfile(pkg, ".hidden")));
+            testCase.verifyIntact(work);
+        end
+
+        function currentFolderInsideTheStageIsRejected(testCase)
+            work = testCase.prepareStage();
+            sub = fullfile(testCase.Stage, "sub");
+            mkdir(sub);
+            old = cd(sub);
+            testCase.addTeardown(@() cd(old));
+            testCase.verifyError(@() testCase.build(), "phasecont:package:badStage");
+            cd(testCase.Stage);
+            testCase.verifyError(@() testCase.build(), "phasecont:package:badStage");
+            cd(old);
+            testCase.verifyTrue(isfolder(sub));
+            testCase.verifyIntact(work);
+        end
+
+        function missingExamplesFolderIsCaughtBeforeDeleting(testCase)
+            work = testCase.prepareStage();
+            root = fullfile(testCase.Temp, "noexamples");
+            mkdir(fullfile(root, "toolbox", "+phasecont"));
+            writelines("x", fullfile(root, "toolbox", "+phasecont", "f.m"));
+            writelines("x", fullfile(root, "LICENSE"));
+            writelines("x", fullfile(root, "THIRD_PARTY_NOTICES.md"));
+            testCase.verifyError(@() testCase.build(strings(1, 0), ...
+                struct(Root = root)), "phasecont:package:missingFile");
+            testCase.verifyIntact(work);
+        end
+
+        function returnsTheNormalizedOutputPath(testCase)
+            file = testCase.build(strings(1, 0), ...
+                struct(OutputFile = testCase.Output + filesep));
+            testCase.verifyEqual(string(file), string(testCase.Output));
+            testCase.verifyTrue(isfile(file));
         end
 
         function strictVersionsAreEnforced(testCase)
