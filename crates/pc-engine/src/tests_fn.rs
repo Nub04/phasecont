@@ -23,9 +23,6 @@ use crate::error::EngineError;
 use crate::problem::Problem;
 use pc_linalg::{LinalgError, eigenvalues};
 
-/// Largest state dimension for which Hopf detection runs.
-pub(crate) const MAX_HOPF_DIM: usize = 100;
-
 /// Position of each test function in `Point.tests`.
 pub(crate) const LP: usize = 0;
 pub(crate) const BP: usize = 1;
@@ -193,9 +190,8 @@ fn side(len: usize) -> usize {
 /// determinant of the bordered tangent solve (0 when that matrix was singular).
 /// A test whose `detect_*` option is off is NaN. Eigenvalues are stored whenever the
 /// problem has a state block, whose side is the state dimension n (`dim() - 1` on an
-/// equilibrium branch, less on a curve). For n above `MAX_HOPF_DIM`, `psi_H` is NaN and
-/// a warning is added once. A failed eigenvalue computation gives no eigenvalues, NaN `psi_H`
-/// and a warning, and the run goes on. A problem that is not an equilibrium problem
+/// equilibrium branch, less on a curve). A failed eigenvalue computation gives no
+/// eigenvalues, NaN `psi_H` and a warning, and the run goes on. A problem that is not an equilibrium problem
 /// (`ep_tests` false) leaves `psi_LP`, `psi_BP` and `psi_H` NaN and fills `codim2` instead.
 pub(crate) fn evaluate(
     p: &mut dyn Problem,
@@ -206,14 +202,10 @@ pub(crate) fn evaluate(
     warnings: &mut Vec<String>,
 ) -> Result<PointTests, EngineError> {
     let ep = p.ep_tests();
-    let mut n_state = p.dim() - 1;
     let mut eig_failed = false;
     let eigs = match p.state_jacobian(x)? {
         Some(a) => {
-            n_state = side(a.len());
-            if ep && opts.detect_h && n_state > MAX_HOPF_DIM {
-                push_once(warnings, "Hopf detection is off for n > 100");
-            }
+            let n_state = side(a.len());
             match settle_eigenvalues(eigenvalues(&a, n_state), warnings)? {
                 Some(e) => e,
                 None => {
@@ -232,7 +224,7 @@ pub(crate) fn evaluate(
         if opts.detect_bp {
             tests[BP] = det;
         }
-        if opts.detect_h && n_state <= MAX_HOPF_DIM && !eig_failed && !eigs.is_empty() {
+        if opts.detect_h && !eig_failed && !eigs.is_empty() {
             tests[H] = psi_h(&eigs);
         }
     }

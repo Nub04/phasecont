@@ -152,31 +152,26 @@ fn detect_flags_turn_tests_into_nan() {
 }
 
 #[test]
-fn hopf_detection_is_off_above_100_variables() {
+fn hopf_is_detected_above_100_variables() {
     for which in BOTH {
-        let setup = EpSetup::new(0, vec![0.0], vec![0.0; 101]);
+        // The planar Hopf normal form of hopf_c plus 99 decoupled stable variables.
+        let setup = EpSetup::new(0, vec![-0.5, -1.0], vec![0.0; 101]);
         let opts = Options {
-            max_steps: 3,
-            bounds: (-1.0, 1.0),
+            bounds: (-0.5, 0.5),
             ..Options::default()
         };
-        let b = run("linear101", which.clone(), &setup, &opts);
-        assert_eq!(
-            b.warnings,
-            vec!["Hopf detection is off for n > 100".to_string()]
-        );
-        assert!(b.points.iter().all(|p| p.tests[H].is_nan()));
+        let b = run("hopf101", which.clone(), &setup, &opts);
+        assert_eq!(b.stop, StopReason::Bounds);
+        assert!(b.warnings.is_empty(), "{:?}", b.warnings);
         assert!(b.points.iter().all(|p| p.eigenvalues.len() == 101));
-        // With detection off there is nothing to warn about.
-        let off = Options {
-            detect_h: false,
-            ..opts
-        };
-        assert!(
-            run("linear101", which.clone(), &setup, &off)
-                .warnings
-                .is_empty()
-        );
+        assert!(b.points.iter().all(|p| !p.tests[H].is_nan()));
+        let ch = sign_changes(&b, H);
+        assert_eq!(ch.len(), 1, "{which:?}: {ch:?}");
+        assert!(b.points[ch[0]].alpha < 0.0 && b.points[ch[0] + 1].alpha > 0.0);
+        let h: Vec<_> = b.specials.iter().filter(|s| s.label == "H").collect();
+        assert_eq!(h.len(), 1, "{which:?}");
+        assert!(h[0].point.alpha.abs() < 1e-8, "alpha {}", h[0].point.alpha);
+        assert!(h[0].extras.refined);
     }
 }
 

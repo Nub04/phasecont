@@ -95,6 +95,10 @@ P3 (the numbers below were measured on 2026-10-28 at `fb14bdb` plus the SPEC and
 - `cargo build --target x86_64-pc-windows-gnu -p pc-engine` passes. The four checks pass.
 - Known limit: on a long step across a branch crossing, the trial corrector of the zero search can jump to the other branch, which puts the BP at the wrong place (α = 0.04 instead of 0 in one case). `hmax` bounds it; the test models use 0.1 or 0.5.
 
+P4b (branch `phase4b-open-items`, cut from 14d6455, closes the open items of P4):
+
+- Hopf detection has no dimension limit. `MAX_HOPF_DIM` and its warning are gone. `hopf_is_detected_above_100_variables` runs a 101-variable model (`hopf101.ode`, a planar Hopf normal form plus 99 stable variables) on both evaluators and finds H at al = 0 to 1e-8 with no warning. Release-mode cost of one `psi_h` call against one dense eigenvalue call on the same size: n = 101, 78 us against 1.4 ms; n = 300, 0.83 ms against 15 ms; n = 1000, 8.3 ms against 0.42 s.
+
 P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; merged into `main` as PR #2, 3748707):
 
 - `pc-ffi` C ABI v1: 17 members in 128 bytes, with `model_rhs_t` appended at offset 120. It has the handle registry, the panic barrier, model threads and runs, and a hand-written `pckern.h` with a layout test.
@@ -121,7 +125,6 @@ P4 awaits acceptance by the owner. P8a merged into `main` on 2026-10-30 (78c5df6
 ## Open questions
 
 - Open from P4:
-  - Hopf detection for n > 100 stays off. Govaerts' minimally augmented Hopf function needs kappa = omega^2 as an unknown, so it is not a scalar test along an equilibrium branch, and no source with such a test was confirmed (rule 9). A bialternate product costs too much at this size. Owner: name a source, or accept an Arnoldi approach for the eigenvalue nearest the imaginary axis.
   - ZH and HH normal form coefficients are not computed. The points are detected, located and labeled.
   - Codim-2 points are located by the Illinois search only (`refined = false`). The tests reach 1e-8 without Newton.
   - The BT coefficients use the sign convention a > 0, which the normalization string records. The owner may prefer another convention.

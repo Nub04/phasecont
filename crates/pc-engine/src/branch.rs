@@ -75,7 +75,7 @@ pub struct Branch {
     pub points: Vec<Point>,
     pub specials: Vec<SpecialPoint>,
     pub stop: StopReason,
-    /// Messages about the run, for example that Hopf detection is off.
+    /// Messages about the run, for example that an eigenvalue computation did not converge.
     pub warnings: Vec<String>,
 }
 
