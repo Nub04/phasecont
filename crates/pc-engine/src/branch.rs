@@ -29,7 +29,7 @@ pub struct Point {
 /// Extra data stored with a special point.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Extras {
-    /// Normal form coefficient (a for LP, l1 for H).
+    /// Normal form coefficient: a for LP, l1 for H, c for CP, a for BT, l2 for GH.
     pub coefficient: Option<f64>,
     /// Second normal form coefficient: b of a Bogdanov-Takens point (`coefficient` is a).
     pub coefficient2: Option<f64>,

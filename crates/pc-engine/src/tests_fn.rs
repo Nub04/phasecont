@@ -103,11 +103,9 @@ pub enum HopfZero {
     NoPair,
 }
 
-/// Decides what a zero of `psi_H` at a point with these eigenvalues is. Finds the pair
-/// (i, j) with the smallest `|l_i + l_j| / max(1, |l_i| + |l_j|)`. It is a Hopf point when
-/// that pair is a conjugate pair with `|im| > 1e-8 max(1, |l|)`, else a neutral saddle.
-/// Task 7 calls this at located zeros of `psi_H` to choose the label `H` or `NSA`.
-pub fn classify_h_zero(eigs: &[(f64, f64)]) -> HopfZero {
+/// The pair (i, j) of eigenvalues with the smallest `|l_i + l_j| / max(1, |l_i| + |l_j|)`,
+/// the pair `psi_H` is closest to zero for. `None` for fewer than two eigenvalues.
+pub(crate) fn critical_pair(eigs: &[(f64, f64)]) -> Option<(usize, usize)> {
     let mut best: Option<(f64, usize, usize)> = None;
     for i in 0..eigs.len() {
         for j in i + 1..eigs.len() {
@@ -118,7 +116,15 @@ pub fn classify_h_zero(eigs: &[(f64, f64)]) -> HopfZero {
             }
         }
     }
-    let Some((_, i, j)) = best else {
+    best.map(|(_, i, j)| (i, j))
+}
+
+/// Decides what a zero of `psi_H` at a point with these eigenvalues is. Takes the
+/// `critical_pair`. It is a Hopf point when that pair is a conjugate pair with
+/// `|im| > 1e-8 max(1, |l|)`, else a neutral saddle.
+/// Task 7 calls this at located zeros of `psi_H` to choose the label `H` or `NSA`.
+pub fn classify_h_zero(eigs: &[(f64, f64)]) -> HopfZero {
+    let Some((i, j)) = critical_pair(eigs) else {
         return HopfZero::NoPair;
     };
     let (a, b) = (eigs[i], eigs[j]);

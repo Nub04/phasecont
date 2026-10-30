@@ -12,6 +12,7 @@ mod codim2;
 mod curve2;
 mod ep;
 mod error;
+mod hopfcurve;
 mod locate;
 mod lpcurve;
 mod model;
@@ -29,11 +30,12 @@ pub use branch::{Branch, Extras, Options, Point, SpecialPoint, StopReason};
 pub use curve2::CurveSetup;
 pub use ep::{EpProblem, EpSetup, continue_ep, equilibrium};
 pub use error::EngineError;
+pub use hopfcurve::{HopfCurveProblem, continue_hopf_curve};
 pub use lpcurve::{LpCurveProblem, continue_lp_curve};
 pub use model::{Evaluator, ModelEval, build, build_allowing_t};
 pub use normal::{
-    H_NORMALIZATION, LP_NORMALIZATION, first_lyapunov, fold_coefficient, hopf_eigenvectors,
-    special_coefficient,
+    GH_NORMALIZATION, H_NORMALIZATION, LP_NORMALIZATION, first_lyapunov, fold_coefficient,
+    hopf_eigenvectors, special_coefficient,
 };
 pub use palc::continue_branch;
 pub use panic::{install_hook, payload_message, recording, take_last_panic};

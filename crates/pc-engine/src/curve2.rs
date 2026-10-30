@@ -8,6 +8,7 @@
 
 use crate::error::EngineError;
 use crate::model::ModelEval;
+use crate::normal::At;
 use crate::problem::Problem;
 use pc_ir::{EntryKind, Slot};
 use pc_linalg::{null_right, singular_values};
@@ -94,8 +95,18 @@ impl<'a> Model2<'a> {
 
     /// Sets the two parameters from `x = (u, a1, a2)`.
     pub(crate) fn set(&mut self, x: &[f64]) {
-        self.p[self.free[0]] = x[self.n];
-        self.p[self.free[1]] = x[self.n + 1];
+        self.set_pair(x[self.n], x[self.n + 1]);
+    }
+
+    /// Sets the two free parameters.
+    pub(crate) fn set_pair(&mut self, a1: f64, a2: f64) {
+        self.p[self.free[0]] = a1;
+        self.p[self.free[1]] = a2;
+    }
+
+    /// The model at the state `u` with the current parameters, for the normal form code.
+    pub(crate) fn at<'b>(&'b mut self, u: &'b [f64]) -> At<'b> {
+        At::new(&mut *self.model, self.n, u, self.p.clone())
     }
 
     pub(crate) fn f(&mut self, u: &[f64], out: &mut [f64]) -> Result<(), EngineError> {

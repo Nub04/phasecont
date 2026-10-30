@@ -1,0 +1,12 @@
+# bautin.ode after the triangular change u = x + a y^2, v = y, so x = u - a v^2.
+# The linear part at the origin is unchanged, B is not zero, and l2 stays 4 s because the
+# Hopf point is at u = v = 0 for every b1.
+par b1=0,b2=0.5,s=1,a=0.4
+px=u-a*v^2
+py=v
+fx=b1*px-py+b2*px*(px^2+py^2)+s*px*(px^2+py^2)^2
+fy=px+b1*py+b2*py*(px^2+py^2)+s*py*(px^2+py^2)^2
+u'=fx+2*a*py*fy
+v'=fy
+init u=0,v=0
+done
