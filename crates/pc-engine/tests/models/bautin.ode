@@ -1,0 +1,7 @@
+# Bautin normal form z' = (b1+i)z + b2 z|z|^2 + s z|z|^4 in real coordinates z=x+iy.
+# The Hopf point of z=0 is at b1=0 with omega=1; it is generalized at b2=0.
+par b1=0,b2=0.5,s=1
+x'=b1*x-y+b2*x*(x^2+y^2)+s*x*(x^2+y^2)^2
+y'=x+b1*y+b2*y*(x^2+y^2)+s*y*(x^2+y^2)^2
+init x=0,y=0
+done

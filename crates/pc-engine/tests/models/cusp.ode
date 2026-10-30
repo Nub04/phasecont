@@ -1,0 +1,5 @@
+# Cusp normal form x' = b1 + b2*x - x^3. The folds meet in a cusp at b1=b2=0, x=0.
+par b1=0,b2=1
+x'=b1+b2*x-x^3
+init x=-1
+done
