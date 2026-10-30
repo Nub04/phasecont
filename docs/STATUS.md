@@ -2,14 +2,14 @@
 
 ## Phase
 
-P8a (package v0.3; SPEC section 14) is complete on branch `phase8a-package` and waits for the owner's acceptance and merge into `main`. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 as PR #2 (3748707). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
+P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 78c5df6. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 as PR #2 (3748707). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
 
 ## Done
 
 - P3 merged into `main` on 2026-10-28 as PR #1 (dfcfdab).
 - P7a merged into `main` on 2026-10-29 as PR #2 (3748707).
 
-P8a (package v0.3, win64 only, branch `phase8a-package`, commits 5efc474 to cbbc82c, plus the commit that updates this file; not merged into `main`). `MinimumMatlabRelease` is R2026b, the version is 0.3.0, and the toolbox UUID is fixed in `buildfile.m`.
+P8a (package v0.3, win64 only, branch `phase8a-package`, commits 5efc474 to cbbc82c, plus the status commits; merged into `main` on 2026-10-30). `MinimumMatlabRelease` is R2026b, the version is 0.3.0, and the toolbox UUID is fixed in `buildfile.m`.
 
 - `Evaluator::Aot` in `pc-engine` loads the library with `libloading`, which is now a normal dependency. `model_compile` takes the keys `emit_c`, `evaluator` and `aot_lib`. The C ABI is unchanged: 17 members, 128 bytes. `internal.aotBuild` runs `mex` with floating-point contraction off. On the MATLAB side, `phasecont.config("Codegen")`, `Model(file, Evaluator="aot")` and `Model.AotInfo` select and report AOT.
 - `pc-cli licenses` writes `THIRD_PARTY_LICENSES.txt` with one section per crate in the closure. The real run gave 104 sections, 18 of them from `licenses/overrides`. The command fails when a crate has no license file and no override.
@@ -98,7 +98,7 @@ P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; merged into `mai
 
 ## In progress
 
-Nothing is in progress. P8a is complete on `phase8a-package`, and the owner accepts and merges it into `main`.
+Nothing is in progress. P8a merged into `main` on 2026-10-30 (78c5df6).
 
 ## Next
 
