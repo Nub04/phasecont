@@ -2,7 +2,7 @@
 
 ## Phase
 
-P8a (package v0.3; SPEC section 14) is accepted and done on branch `phase8a-package`. Merging it into `main` is the owner's step, and it has not happened yet. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 as PR #2 (3748707). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
+P8a (package v0.3; SPEC section 14) is complete on branch `phase8a-package` and waits for the owner's acceptance and merge into `main`. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 as PR #2 (3748707). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
 
 ## Done
 
@@ -98,7 +98,7 @@ P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; merged into `mai
 
 ## In progress
 
-Nothing is in progress. P8a is done on `phase8a-package`, and the owner merges it into `main`.
+Nothing is in progress. P8a is complete on `phase8a-package`, and the owner accepts and merges it into `main`.
 
 ## Next
 
@@ -156,3 +156,5 @@ Nothing is in progress. P8a is done on `phase8a-package`, and the owner merges i
   - Package: `PackageTest` reads metadata with regexes that depend on attribute spelling, the `toolbox/bin` skip is untested, and the stage root's `matlabPath` entry is an empty string.
   - Package: `toolbox/examples` with no packageable file fails after the stage is deleted, a stage on a missing drive gives a raw MKDIR error, and files in dot-folders under `toolbox/` are shipped.
   - Clean install: the `notAddon` negative path is untested, `settings()` has a silent catch fallback, and `buildfileValue` has no negative tests for single-quoted or concatenated literals.
+  - Clean install: the `.mltbx` is uploaded only after the check passes, and a failure in the licenses step stops the `matlab-windows` job.
+  - AOT load: `AotEval::open` checks only that the symbols exist. The emitted C has no dimension or `pc_math_t` layout export, so a hand-picked `aot_lib` built for another model passes `open` and reads out of bounds. The MATLAB flow cannot reach this, since the cache folder is named from a hash of the C text. A fix needs an exported tag in `pc-codegen`.
