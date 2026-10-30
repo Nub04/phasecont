@@ -1,6 +1,6 @@
 classdef BuildfileValueTest < matlab.unittest.TestCase
     % scripts/buildfileValue reads the version and the identifier from
-    % buildfile.m, which scripts/clean-install-check.m relies on.
+    % buildfile.m, which scripts/cleanInstallCheck.m relies on.
 
     methods (TestClassSetup)
         function addScriptsToPath(testCase)
@@ -14,10 +14,8 @@ classdef BuildfileValueTest < matlab.unittest.TestCase
         function readsVersionAndUuidFromRepoBuildfile(testCase)
             testCase.verifyTrue(matches(buildfileValue("toolboxVersion"), ...
                 digitsPattern + "." + digitsPattern + "." + digitsPattern));
-            testCase.verifyTrue(matches(buildfileValue("toolboxUuid"), ...
-                lettersPattern(0) + alphanumericsPattern(8) + "-" + ...
-                alphanumericsPattern(4) + "-" + alphanumericsPattern(4) + "-" + ...
-                alphanumericsPattern(4) + "-" + alphanumericsPattern(12)));
+            testCase.verifyNotEmpty(regexp(buildfileValue("toolboxUuid"), ...
+                "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "once"));
         end
 
         function skipsCommentLinesAfterHeader(testCase)

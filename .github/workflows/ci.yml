@@ -116,6 +116,11 @@ jobs:
       github.event_name != 'pull_request')
     needs: pckern-win
     runs-on: [self-hosted, windows, matlab]
+    timeout-minutes: 30
+    # One run at a time: installToolbox changes the shared MATLAB Add-Ons folder.
+    concurrency:
+      group: package-win-runner
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4

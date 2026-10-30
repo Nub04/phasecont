@@ -18,6 +18,7 @@
 
 # MATLAB
 /build/
+/licenses/THIRD_PARTY_LICENSES.txt
 /.buildtool/
 *.asv
 *.autosave
