@@ -214,6 +214,7 @@ fn make_point(
         tangent: v,
         eigenvalues: t.eigenvalues,
         tests: t.tests,
+        codim2: t.codim2,
         h,
         newton_iters: iters,
     })
@@ -228,6 +229,7 @@ fn bare_point(x: &[f64], v: Vec<f64>, h: f64, iters: usize) -> Point {
         tangent: v,
         eigenvalues: Vec::new(),
         tests: [f64::NAN; 3],
+        codim2: Vec::new(),
         h,
         newton_iters: iters,
     }

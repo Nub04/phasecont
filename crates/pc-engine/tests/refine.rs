@@ -445,6 +445,7 @@ fn fake(label: &str, u: &[f64], alpha: f64, eigs: Vec<(f64, f64)>) -> SpecialPoi
             tangent: vec![0.0; u.len() + 1],
             eigenvalues: eigs,
             tests: [0.0; 3],
+            codim2: Vec::new(),
             h: 0.0,
             newton_iters: 0,
         },

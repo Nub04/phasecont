@@ -128,6 +128,7 @@ mod tests {
             tangent: vec![0.0; 3],
             eigenvalues: vec![(-1.0, 0.25)],
             tests: [10.0, 11.0, 12.0],
+            codim2: Vec::new(),
             h: 0.125,
             newton_iters: 3,
         }

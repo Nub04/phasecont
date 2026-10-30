@@ -14,7 +14,7 @@ use crate::branch::{Extras, Options, Point, SpecialPoint, StopReason};
 use crate::error::EngineError;
 use crate::palc::{Corrected, correct, tangent_or_kernel};
 use crate::problem::Problem;
-use crate::tests_fn::{self, BP, H, HopfZero, LP, classify_h_zero};
+use crate::tests_fn::{self, BP, H, HopfZero, LP, classify_h_zero, value_at};
 use std::sync::atomic::AtomicBool;
 
 /// The step from point k, with the data every trial needs.
@@ -59,7 +59,7 @@ fn trial(
     let built = tangent_or_kernel(p, &x, st.v)
         .and_then(|(vn, d)| tests_fn::evaluate(p, &x, &vn, d, opts, warnings).map(|r| (vn, r)));
     match built {
-        Ok((vn, r)) if !r.tests[t].is_nan() => {
+        Ok((vn, r)) if !r.value(t).is_nan() => {
             let n = x.len() - 1;
             Trial::Ok(Point {
                 u: x[..n].to_vec(),
@@ -67,6 +67,7 @@ fn trial(
                 tangent: vn,
                 eigenvalues: r.eigenvalues,
                 tests: r.tests,
+                codim2: r.codim2,
                 h: s * st.h,
                 newton_iters: iters,
             })
@@ -77,16 +78,18 @@ fn trial(
 }
 
 /// Label of a zero of test `t` at a point with these eigenvalues; `None` for a zero of
-/// psi_H that has no pair behind it.
-fn label(t: usize, eigs: &[(f64, f64)]) -> Option<&'static str> {
+/// psi_H that has no pair behind it. Tests 0..3 are the equilibrium tests; `3 + i` is codim-2
+/// test `i` of the problem, which names it.
+fn label(p: &dyn Problem, t: usize, eigs: &[(f64, f64)]) -> Option<&'static str> {
     match t {
         LP => Some("LP"),
         BP => Some("BP"),
-        _ => match classify_h_zero(eigs) {
+        H => match classify_h_zero(eigs) {
             HopfZero::Hopf => Some("H"),
             HopfZero::NeutralSaddle => Some("NSA"),
             HopfZero::NoPair => None,
         },
+        _ => p.codim2_label(t - 3, eigs),
     }
 }
 
@@ -142,7 +145,7 @@ fn locate_one(
         };
         let fs = match href {
             Some(l) => tests_fn::psi_h_relative(&pt.eigenvalues, l),
-            None => pt.tests[t],
+            None => value_at(&pt.tests, &pt.codim2, t),
         };
         if best.as_ref().is_none_or(|(_, b, _)| fs.abs() < *b) {
             best = Some((s, fs.abs(), pt));
@@ -229,14 +232,18 @@ fn detect_inner(
     let (pk, pk1) = (&points[k], &points[k + 1]);
     let st = Step { xk, v, h };
     let mut found: Vec<(f64, SpecialPoint)> = Vec::new();
-    for t in [LP, BP, H] {
-        let (a, b) = (pk.tests[t], pk1.tests[t]);
+    let n_tests = 3 + pk.codim2.len().min(pk1.codim2.len());
+    for t in 0..n_tests {
+        let (a, b) = (
+            value_at(&pk.tests, &pk.codim2, t),
+            value_at(&pk1.tests, &pk1.codim2, t),
+        );
         // NaN on either side skips the test; a zero at point k was reported before.
         if a.is_nan() || b.is_nan() || a == 0.0 {
             continue;
         }
         if b == 0.0 {
-            if let Some(l) = label(t, &pk1.eigenvalues) {
+            if let Some(l) = label(&*p, t, &pk1.eigenvalues) {
                 found.push((1.0, special(l, k + 1, pk1.clone())));
             }
         } else if a * b < 0.0 {
@@ -250,13 +257,13 @@ fn detect_inner(
                 ((a, b), None)
             };
             match locate_one(p, &st, t, ends, href, opts, cancel, scratch)? {
-                Some((s, pt)) => match label(t, &pt.eigenvalues) {
+                Some((s, pt)) => match label(&*p, t, &pt.eigenvalues) {
                     Some(l) => found.push((s, special(l, k + 1, pt))),
-                    None => warn(warnings, t, &pt.eigenvalues, k),
+                    None => warn(warnings, &*p, t, &pt.eigenvalues, k),
                 },
                 // No point was located, so the end of the step is the nearest guide to
                 // which kind of zero (H or NSA) was being looked for.
-                None => warn(warnings, t, &pk1.eigenvalues, k),
+                None => warn(warnings, &*p, t, &pk1.eigenvalues, k),
             }
         }
     }
@@ -265,8 +272,8 @@ fn detect_inner(
     Ok(())
 }
 
-fn warn(warnings: &mut Vec<String>, t: usize, eigs: &[(f64, f64)], k: usize) {
-    let name = label(t, eigs).unwrap_or("H");
+fn warn(warnings: &mut Vec<String>, p: &dyn Problem, t: usize, eigs: &[(f64, f64)], k: usize) {
+    let name = label(p, t, eigs).unwrap_or("H");
     warnings.push(format!(
         "could not locate {name} between points {k} and {}",
         k + 1
@@ -305,6 +312,7 @@ mod tests {
             tangent: vec![0.0, 1.0],
             eigenvalues: Vec::new(),
             tests,
+            codim2: Vec::new(),
             h: 0.1,
             newton_iters: 1,
         }
@@ -371,6 +379,96 @@ mod tests {
 }
 
 #[cfg(test)]
+mod codim2_tests {
+    use super::*;
+
+    /// Two unknowns, the equation x0 = 0, and one codim-2 test `x1 - 0.05` named "ZZ".
+    struct Curve;
+    impl Problem for Curve {
+        fn dim(&self) -> usize {
+            2
+        }
+        fn residual(&mut self, x: &[f64], out: &mut [f64]) -> Result<(), EngineError> {
+            out[0] = x[0];
+            Ok(())
+        }
+        fn jacobian(&mut self, _x: &[f64], out: &mut [f64]) -> Result<(), EngineError> {
+            out.copy_from_slice(&[1.0, 0.0]);
+            Ok(())
+        }
+        fn ep_tests(&self) -> bool {
+            false
+        }
+        fn codim2_labels(&self) -> &'static [&'static str] {
+            &["ZZ"]
+        }
+        fn codim2_tests(
+            &mut self,
+            x: &[f64],
+            _tangent: &[f64],
+            _eigs: &[(f64, f64)],
+        ) -> Result<Vec<f64>, EngineError> {
+            Ok(vec![x[1] - 0.05])
+        }
+    }
+
+    fn pt(alpha: f64) -> Point {
+        Point {
+            u: vec![0.0],
+            alpha,
+            tangent: vec![0.0, 1.0],
+            eigenvalues: Vec::new(),
+            tests: [f64::NAN; 3],
+            codim2: vec![alpha - 0.05],
+            h: 0.1,
+            newton_iters: 1,
+        }
+    }
+
+    #[test]
+    fn a_codim2_zero_is_located_and_labeled() {
+        let (mut w, mut sp) = (Vec::new(), Vec::new());
+        detect_step(
+            &mut Curve,
+            &[0.0, 0.0],
+            &[0.0, 1.0],
+            0.1,
+            &[pt(0.0), pt(0.1)],
+            &Options::default(),
+            &AtomicBool::new(false),
+            &mut w,
+            &mut sp,
+        )
+        .unwrap();
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(sp.len(), 1);
+        assert_eq!((sp[0].label.as_str(), sp[0].index), ("ZZ", 1));
+        assert!((sp[0].point.alpha - 0.05).abs() < 1e-10);
+        assert!((sp[0].point.codim2[0]).abs() < 1e-10);
+    }
+
+    #[test]
+    fn points_without_codim2_values_skip_those_tests() {
+        let (mut w, mut sp) = (Vec::new(), Vec::new());
+        let mut a = pt(0.0);
+        a.codim2.clear();
+        detect_step(
+            &mut Curve,
+            &[0.0, 0.0],
+            &[0.0, 1.0],
+            0.1,
+            &[a, pt(0.1)],
+            &Options::default(),
+            &AtomicBool::new(false),
+            &mut w,
+            &mut sp,
+        )
+        .unwrap();
+        assert!(w.is_empty() && sp.is_empty());
+    }
+}
+
+#[cfg(test)]
 mod failure_tests {
     use super::*;
 
@@ -401,6 +499,7 @@ mod failure_tests {
             tangent: vec![0.0, 1.0],
             eigenvalues: Vec::new(),
             tests,
+            codim2: Vec::new(),
             h: 0.1,
             newton_iters: 1,
         }
@@ -495,6 +594,7 @@ mod two_zero_tests {
             tangent: vec![1.0, 0.0],
             eigenvalues: Vec::new(),
             tests: [alpha - 0.07, alpha - 0.03, f64::NAN],
+            codim2: Vec::new(),
             h: 0.1,
             newton_iters: 1,
         }
@@ -580,6 +680,7 @@ mod curved_tests {
             tangent: vec![0.0, 1.0],
             eigenvalues: Vec::new(),
             tests: [f64::NAN, psi(alpha), f64::NAN],
+            codim2: Vec::new(),
             h: 0.1,
             newton_iters: 1,
         }

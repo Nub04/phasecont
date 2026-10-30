@@ -22,6 +22,38 @@ pub trait Problem {
         Ok(None)
     }
 
+    /// Whether the equilibrium-branch tests (`psi_LP`, `psi_BP`, `psi_H`) apply to this
+    /// problem. Curve problems return false, which leaves those three NaN and moves the
+    /// detection to `codim2_tests`. The default is true.
+    fn ep_tests(&self) -> bool {
+        true
+    }
+
+    /// Names of the codim-2 test functions, in the order `codim2_tests` returns them. The
+    /// default is none.
+    fn codim2_labels(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Values of the codim-2 test functions at the accepted point `x` with unit tangent
+    /// `tangent`. `eigs` are the eigenvalues of the state Jacobian there (empty when they
+    /// were not computed). A value that is not defined at the point is NaN. The result has
+    /// `codim2_labels().len()` entries, or none. The default is none.
+    fn codim2_tests(
+        &mut self,
+        _x: &[f64],
+        _tangent: &[f64],
+        _eigs: &[(f64, f64)],
+    ) -> Result<Vec<f64>, EngineError> {
+        Ok(Vec::new())
+    }
+
+    /// Label of a zero of codim-2 test `i` at a point with these eigenvalues; `None` drops
+    /// the zero. The default is `codim2_labels()[i]`.
+    fn codim2_label(&self, i: usize, _eigs: &[(f64, f64)]) -> Option<&'static str> {
+        self.codim2_labels().get(i).copied()
+    }
+
     /// Solves `[jac; borderᵀ] sol = rhs` for the N by N matrix made of `jac` (N-1 rows,
     /// column-major) and one extra row `border`. Returns the determinant of that matrix.
     /// A singular matrix gives `EngineError::Singular`.

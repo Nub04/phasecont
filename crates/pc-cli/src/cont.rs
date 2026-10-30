@@ -234,6 +234,7 @@ mod tests {
             tangent: vec![],
             eigenvalues: vec![],
             tests: [f64::NAN; 3],
+            codim2: Vec::new(),
             h: 0.0,
             newton_iters: 0,
         };

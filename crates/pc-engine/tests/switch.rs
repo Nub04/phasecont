@@ -200,6 +200,7 @@ fn named(label: &str) -> SpecialPoint {
             tangent: vec![0.0, 1.0],
             eigenvalues: Vec::new(),
             tests: [0.0; 3],
+            codim2: Vec::new(),
             h: 0.0,
             newton_iters: 0,
         },

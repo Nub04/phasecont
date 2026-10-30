@@ -155,15 +155,42 @@ fn settle_eigenvalues(
 /// Test values and eigenvalues at one point.
 pub(crate) struct PointTests {
     pub tests: [f64; 3],
+    pub codim2: Vec<f64>,
     pub eigenvalues: Vec<(f64, f64)>,
+}
+
+impl PointTests {
+    /// Value of test `t` in the unified index space of `locate`: 0..3 are `tests`, and
+    /// `3 + i` is `codim2[i]`. A missing value is NaN.
+    pub fn value(&self, t: usize) -> f64 {
+        value_at(&self.tests, &self.codim2, t)
+    }
+}
+
+/// Test `t` of a point in the unified index space (see `PointTests::value`).
+pub(crate) fn value_at(tests: &[f64; 3], codim2: &[f64], t: usize) -> f64 {
+    if t < 3 {
+        tests[t]
+    } else {
+        codim2.get(t - 3).copied().unwrap_or(f64::NAN)
+    }
+}
+
+/// Side of the square matrix `a` given as a column-major vector.
+fn side(len: usize) -> usize {
+    let n = len.isqrt();
+    debug_assert_eq!(n * n, len);
+    n
 }
 
 /// Evaluates the test functions at `x`. `tangent` is the unit tangent there and `det` the
 /// determinant of the bordered tangent solve (0 when that matrix was singular).
 /// A test whose `detect_*` option is off is NaN. Eigenvalues are stored whenever the
-/// problem has a state block. For a state dimension above `MAX_HOPF_DIM`, `psi_H` is NaN and
+/// problem has a state block, whose side is the state dimension n (`dim() - 1` on an
+/// equilibrium branch, less on a curve). For n above `MAX_HOPF_DIM`, `psi_H` is NaN and
 /// a warning is added once. A failed eigenvalue computation gives no eigenvalues, NaN `psi_H`
-/// and a warning, and the run goes on.
+/// and a warning, and the run goes on. A problem that is not an equilibrium problem
+/// (`ep_tests` false) leaves `psi_LP`, `psi_BP` and `psi_H` NaN and fills `codim2` instead.
 pub(crate) fn evaluate(
     p: &mut dyn Problem,
     x: &[f64],
@@ -172,14 +199,16 @@ pub(crate) fn evaluate(
     opts: &Options,
     warnings: &mut Vec<String>,
 ) -> Result<PointTests, EngineError> {
-    let n = p.dim() - 1;
+    let ep = p.ep_tests();
+    let mut n_state = p.dim() - 1;
     let mut eig_failed = false;
     let eigs = match p.state_jacobian(x)? {
         Some(a) => {
-            if opts.detect_h && n > MAX_HOPF_DIM {
+            n_state = side(a.len());
+            if ep && opts.detect_h && n_state > MAX_HOPF_DIM {
                 push_once(warnings, "Hopf detection is off for n > 100");
             }
-            match settle_eigenvalues(eigenvalues(&a, n), warnings)? {
+            match settle_eigenvalues(eigenvalues(&a, n_state), warnings)? {
                 Some(e) => e,
                 None => {
                     eig_failed = true;
@@ -190,17 +219,21 @@ pub(crate) fn evaluate(
         None => Vec::new(),
     };
     let mut tests = [f64::NAN; 3];
-    if opts.detect_lp {
-        tests[LP] = tangent[n];
+    if ep {
+        if opts.detect_lp {
+            tests[LP] = tangent[tangent.len() - 1];
+        }
+        if opts.detect_bp {
+            tests[BP] = det;
+        }
+        if opts.detect_h && n_state <= MAX_HOPF_DIM && !eig_failed && !eigs.is_empty() {
+            tests[H] = psi_h(&eigs);
+        }
     }
-    if opts.detect_bp {
-        tests[BP] = det;
-    }
-    if opts.detect_h && n <= MAX_HOPF_DIM && !eig_failed && !eigs.is_empty() {
-        tests[H] = psi_h(&eigs);
-    }
+    let codim2 = p.codim2_tests(x, tangent, &eigs)?;
     Ok(PointTests {
         tests,
+        codim2,
         eigenvalues: eigs,
     })
 }
@@ -263,6 +296,54 @@ mod tests {
         )
         .unwrap();
         assert_eq!(r.eigenvalues.len(), 2);
+        assert!(w.is_empty());
+    }
+
+    /// A curve-like problem: five unknowns, a 2 by 2 state block and one codim-2 test.
+    struct CurveStub;
+    impl Problem for CurveStub {
+        fn dim(&self) -> usize {
+            5
+        }
+        fn residual(&mut self, _: &[f64], _: &mut [f64]) -> Result<(), EngineError> {
+            Ok(())
+        }
+        fn jacobian(&mut self, _: &[f64], _: &mut [f64]) -> Result<(), EngineError> {
+            Ok(())
+        }
+        fn state_jacobian(&mut self, _: &[f64]) -> Result<Option<Vec<f64>>, EngineError> {
+            Ok(Some(vec![0.0, 1.0, -1.0, 0.0]))
+        }
+        fn ep_tests(&self) -> bool {
+            false
+        }
+        fn codim2_tests(
+            &mut self,
+            _: &[f64],
+            _: &[f64],
+            eigs: &[(f64, f64)],
+        ) -> Result<Vec<f64>, EngineError> {
+            Ok(vec![eigs.len() as f64])
+        }
+    }
+
+    #[test]
+    fn a_curve_problem_fills_codim2_and_leaves_the_equilibrium_tests_nan() {
+        let mut w = Vec::new();
+        let r = evaluate(
+            &mut CurveStub,
+            &[0.0; 5],
+            &[0.0, 0.0, 0.0, 0.0, 1.0],
+            1.0,
+            &Options::default(),
+            &mut w,
+        )
+        .unwrap();
+        assert!(r.tests.iter().all(|t| t.is_nan()));
+        assert_eq!(r.eigenvalues.len(), 2);
+        assert_eq!(r.codim2, [2.0]);
+        assert_eq!(r.value(3), 2.0);
+        assert!(r.value(4).is_nan());
         assert!(w.is_empty());
     }
 

@@ -17,6 +17,9 @@ pub struct Point {
     /// Test function values in the order `[psi_LP, psi_BP, psi_H]`. A test that is off
     /// (`Options::detect_*`) or not defined at the point is NaN.
     pub tests: [f64; 3],
+    /// Codim-2 test values in the order of `Problem::codim2_labels`; empty on equilibrium
+    /// branches. On a curve the three `tests` are NaN.
+    pub codim2: Vec<f64>,
     /// Step length that reached this point (0 for the first point).
     pub h: f64,
     /// Newton iterations of the corrector that reached this point.
