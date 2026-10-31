@@ -9,6 +9,8 @@
 //! and Concordia University. See THIRD_PARTY_NOTICES.md.
 
 use super::basis::CollocationBasis;
+use super::problem::try_zeros;
+use crate::error::EngineError;
 
 /// AUTO's HMACH: when no m-th derivative is above it, the mesh stays as it is.
 const SMALL_DERIVATIVE: f64 = 1e-7;
@@ -128,7 +130,8 @@ pub(crate) fn new_mesh(
 
 /// Interpolates `vals`, n values at each base point of `old` with the m of `basis`, onto
 /// the base points of `new` with `new_m` points per interval (INTERP). Both meshes run
-/// from 0 to 1, and as in INTERP their numbers of intervals may differ.
+/// from 0 to 1, and as in INTERP their numbers of intervals may differ. `OutOfMemory`
+/// (as `BadProblem`) when the result cannot be allocated.
 pub(crate) fn interpolate(
     basis: &CollocationBasis,
     n: usize,
@@ -136,10 +139,15 @@ pub(crate) fn interpolate(
     new: &[f64],
     new_m: usize,
     vals: &[f64],
-) -> Vec<f64> {
+) -> Result<Vec<f64>, EngineError> {
     let m = basis.m();
     let (old_n, new_n) = (old.len() - 1, new.len() - 1);
-    let mut out = vec![0.0; n * (new_n * new_m + 1)];
+    let mut out = try_zeros(
+        new_n
+            .checked_mul(new_m)
+            .and_then(|k| k.checked_add(1))
+            .and_then(|k| k.checked_mul(n)),
+    )?;
     let mut w = vec![0.0; m + 1];
     let mut j = 1;
     for j1 in 0..new_n {
@@ -159,7 +167,7 @@ pub(crate) fn interpolate(
     }
     let (last, old_last) = (new_n * new_m * n, old_n * m * n);
     out[last..last + n].copy_from_slice(&vals[old_last..old_last + n]);
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -190,7 +198,7 @@ mod tests {
         let old = uniform(5);
         let new = [0.0, 0.1, 0.35, 0.4, 0.8, 1.0];
         let f = |t: f64| 2.0 - t + 3.0 * t * t - 4.0 * t.powi(3);
-        let u = interpolate(&basis, 1, &old, &new, 3, &sample(&basis, &old, f));
+        let u = interpolate(&basis, 1, &old, &new, 3, &sample(&basis, &old, f)).unwrap();
         for (a, b) in u.iter().zip(sample(&basis, &new, f)) {
             assert!((a - b).abs() <= 1e-13, "{a} {b}");
         }
@@ -206,7 +214,7 @@ mod tests {
         let old = uniform(5);
         let new = [0.0, 0.05, 0.2, 0.35, 0.5, 0.6, 0.9, 1.0];
         let f = |t: f64| 1.0 + 2.0 * t - 5.0 * t * t + 3.0 * t.powi(3);
-        let u = interpolate(&b3, 1, &old, &new, 4, &sample(&b3, &old, f));
+        let u = interpolate(&b3, 1, &old, &new, 4, &sample(&b3, &old, f)).unwrap();
         let want = sample(&b4, &new, f);
         assert_eq!(u.len(), want.len());
         for (a, b) in u.iter().zip(want) {

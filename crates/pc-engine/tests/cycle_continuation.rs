@@ -531,3 +531,59 @@ fn bad_pd_starts_are_refused() {
         assert!(matches!(r, Err(EngineError::BadProblem(_))), "{s:?}: {r:?}");
     }
 }
+
+/// 2^46 intervals of 2 points for 2 or 3 states need more than 2^49 bytes for one orbit,
+/// more than the address space, so those allocations fail whatever the overcommit
+/// setting. A start must refuse them with an error instead of aborting the process.
+#[test]
+fn starts_with_a_huge_mesh_give_an_error() {
+    let cancel = AtomicBool::new(false);
+    let huge = 1usize << 46;
+    let mut m = model_of("brusselator", Evaluator::Jit);
+    let hopf = HopfStart {
+        free: 1,
+        params: vec![1.0, 2.0],
+        u0: vec![1.0, 2.0],
+        ntst: huge,
+        ncol: 2,
+    };
+    let r = continue_cycle(
+        m.as_mut(),
+        &CycleStart::Hopf(hopf),
+        &Options::default(),
+        &cancel,
+        &mut |_| {},
+    );
+    assert!(
+        matches!(&r, Err(EngineError::BadProblem(s)) if s.contains("memory")),
+        "{r:?}"
+    );
+    let mut m = model_of("rossler", Evaluator::Jit);
+    let (ntst, ncol) = (4, 2);
+    let nm = ntst * ncol;
+    let mut orbit = Vec::new();
+    for k in 0..=nm {
+        let th = 2.0 * PI * k as f64 / nm as f64;
+        orbit.extend([3.0 * th.cos(), 3.0 * th.sin(), 0.1]);
+    }
+    let pd = PdStart {
+        free: 2,
+        params: vec![0.2, 0.2, 2.8],
+        orbit,
+        period: 6.0,
+        mesh: (0..=ntst).map(|j| j as f64 / ntst as f64).collect(),
+        ntst: huge,
+        ncol: 2,
+    };
+    let r = continue_cycle(
+        m.as_mut(),
+        &CycleStart::Pd(pd),
+        &Options::default(),
+        &cancel,
+        &mut |_| {},
+    );
+    assert!(
+        matches!(&r, Err(EngineError::BadProblem(s)) if s.contains("memory")),
+        "{r:?}"
+    );
+}

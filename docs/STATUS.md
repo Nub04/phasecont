@@ -174,7 +174,9 @@ Rulings in package 9:
 
 - 1f1f599 and 83d9d2d: package 10. `CycleTest/rosslerOracle` compares the first PD point of the Rössler run with `references/rossler.json` to 1e-6 relative and is skipped as "oracle missing" while that file does not exist; its header gives the file format. A temporary file with the engine's own PD value checked the comparison path once and was deleted. SPEC sections 7, 10 and 11 now describe the cycle problem as built: fixed N and m, the PALC scaling, the rayon threshold, the LPC test, the AUTO-07p mesh port, both starts, the LC problem and status JSON, the row layout and the MATLAB API. MATLAB 174 tests, 172 passed, 0 failed, 2 filtered by assumption (the oracle test and `BuildTest/wslRootElsewhereUsesToolboxBin`).
 
-Next: one read-through of the whole branch, then the merge choice.
+- Read-through of the whole branch. One finding, now fixed: a Hopf or PD start with a huge NTST that does not overflow (2^40, for example) made orbit-sized vectors before `CycleProblem::new` checked its largest allocation, and a failed infallible allocation aborts the process. Those vectors and the interpolation of the PD switch now use `try_reserve_exact`, so the start returns engine:badProblem with "not enough memory for a cycle of this size; use a smaller NTST or NCOL". A mesh adaptation that cannot allocate the new orbit keeps the old mesh. Test `starts_with_a_huge_mesh_give_an_error` uses NTST = 2^46, whose orbit needs more bytes than the address space holds, so it fails under any overcommit setting. On Linux with `vm.overcommit_memory = 1` (this WSL has it) a reservation larger than memory but inside the address space can still succeed, and the process is killed when it fills the pages; Windows refuses it at the commit limit.
+
+Next: the merge choice.
 
 ## Next
 

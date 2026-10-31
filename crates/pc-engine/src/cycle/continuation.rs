@@ -10,7 +10,7 @@
 
 use super::basis::CollocationBasis;
 use super::mesh;
-use super::problem::{CycleProblem, CycleSetup, check_dims};
+use super::problem::{CycleProblem, CycleSetup, check_dims, try_zeros};
 use crate::branch::{Branch, Options, Point, StopReason};
 use crate::error::EngineError;
 use crate::model::ModelEval;
@@ -259,23 +259,35 @@ fn hopf_start<'a>(
         ));
     }
     let (qr, qi) = eigvec(&a, n, (re, omega))?;
+    // The sizes come from NTST and NCOL, so these allocations fail with an error instead
+    // of aborting, until CycleProblem::new has checked the largest one.
     let nm = len / n - 1;
-    let mut phi = Vec::with_capacity(len);
-    for kk in 0..=nm {
+    let mut phi = try_zeros(Some(len))?;
+    for (kk, row) in phi.chunks_exact_mut(n).enumerate() {
         let th = 2.0 * PI * kk as f64 / nm as f64;
         let (sn, cs) = th.sin_cos();
-        phi.extend((0..n).map(|c| qr[c] * cs - qi[c] * sn));
+        for (c, v) in row.iter_mut().enumerate() {
+            *v = qr[c] * cs - qi[c] * sn;
+        }
     }
-    let base: Vec<f64> = (0..=nm).flat_map(|_| h.u0.iter().copied()).collect();
+    let mut base = try_zeros(Some(len))?;
+    for row in base.chunks_exact_mut(n) {
+        row.copy_from_slice(&h.u0);
+    }
     let period = 2.0 * PI / omega;
-    let guess =
-        |eps: f64| -> Vec<f64> { base.iter().zip(&phi).map(|(u, f)| u + eps * f).collect() };
+    let guess = |eps: f64| -> Result<Vec<f64>, EngineError> {
+        let mut g = try_zeros(Some(len))?;
+        for ((g, u), f) in g.iter_mut().zip(&base).zip(&phi) {
+            *g = u + eps * f;
+        }
+        Ok(g)
+    };
     let setup = CycleSetup::new(
         h.free,
         h.params.clone(),
         h.ntst,
         h.ncol,
-        guess(opts.h0),
+        guess(opts.h0)?,
         period,
     );
     let p = Scaled::new(CycleProblem::new(model, &setup)?);
@@ -287,7 +299,8 @@ fn hopf_start<'a>(
     x0.push(h.params[h.free]);
     p.scale(&mut x0);
     branch_off(p, &x0, &dir, opts, cancel, |q, eps| {
-        q.set_reference(&guess(eps))
+        q.set_reference(&guess(eps)?);
+        Ok(())
     })
 }
 
@@ -356,19 +369,19 @@ fn pd_start<'a>(
     orbit.extend_from_slice(&s.orbit[n..]);
     let mut psi2 = psi.clone();
     psi2.extend(psi[n..].iter().map(|v| -v));
+    // As at a Hopf point, the sizes from NTST and NCOL fail with an error, not an abort.
     let d = 2 * nint;
-    let mut new: Vec<f64> = (0..=s.ntst)
-        .map(|i| {
-            let r = i as f64 * d as f64 / s.ntst as f64;
-            let j = (r.floor() as usize).min(d - 1);
-            doubled[j] + (r - j as f64) * (doubled[j + 1] - doubled[j])
-        })
-        .collect();
+    let mut new = try_zeros(s.ntst.checked_add(1))?;
+    for (i, t) in new.iter_mut().enumerate() {
+        let r = i as f64 * d as f64 / s.ntst as f64;
+        let j = (r.floor() as usize).min(d - 1);
+        *t = doubled[j] + (r - j as f64) * (doubled[j + 1] - doubled[j]);
+    }
     new[0] = 0.0;
     new[s.ntst] = 1.0;
     let basis = CollocationBasis::new(old_m)?;
-    let u = mesh::interpolate(&basis, n, &doubled, &new, s.ncol, &orbit);
-    let mut dir = mesh::interpolate(&basis, n, &doubled, &new, s.ncol, &psi2);
+    let u = mesh::interpolate(&basis, n, &doubled, &new, s.ncol, &orbit)?;
+    let mut dir = mesh::interpolate(&basis, n, &doubled, &new, s.ncol, &psi2)?;
     let setup = CycleSetup::new(
         s.free,
         s.params.clone(),
@@ -385,7 +398,7 @@ fn pd_start<'a>(
     let mut x0 = u;
     x0.extend([2.0 * s.period, s.params[s.free]]);
     p.scale(&mut x0);
-    branch_off(p, &x0, &dir, opts, cancel, |_, _| {})
+    branch_off(p, &x0, &dir, opts, cancel, |_, _| Ok(()))
 }
 
 /// `d`, in the original unknowns, as a unit vector in the scaled unknowns of `p`.
@@ -411,13 +424,13 @@ fn branch_off<'a>(
     dir: &[f64],
     opts: &Options,
     cancel: &AtomicBool,
-    mut retry: impl FnMut(&mut CycleProblem<'a>, f64),
+    mut retry: impl FnMut(&mut CycleProblem<'a>, f64) -> Result<(), EngineError>,
 ) -> Result<(Scaled<'a>, Vec<f64>, Vec<f64>), EngineError> {
     let mut eps = opts.h0;
     for attempt in 0..=RETRIES {
         if attempt > 0 {
             eps /= 2.0;
-            retry(&mut p.inner, eps);
+            retry(&mut p.inner, eps)?;
         }
         let xg: Vec<f64> = x0.iter().zip(dir).map(|(x, d)| x + eps * d).collect();
         match correct(&mut p, &xg, dir, 0.0, xg.clone(), opts, cancel) {

@@ -121,7 +121,7 @@ pub struct CycleProblem<'a> {
 }
 
 /// A zeroed vector, or an error instead of an abort when the memory is not there.
-fn try_zeros(len: Option<usize>) -> Result<Vec<f64>, EngineError> {
+pub(crate) fn try_zeros(len: Option<usize>) -> Result<Vec<f64>, EngineError> {
     let oom = || EngineError::from(LinalgError::OutOfMemory);
     let len = len.ok_or_else(oom)?;
     let mut v = Vec::new();
@@ -588,8 +588,13 @@ impl Problem for CycleProblem<'_> {
             return false;
         };
         let m = self.basis.m();
-        let xu = mesh::interpolate(&self.basis, n, &self.mesh, &new, m, &x[..k]);
-        let vu = mesh::interpolate(&self.basis, n, &self.mesh, &new, m, &v[..k]);
+        // Without the memory for the new orbit, the mesh stays.
+        let (Ok(xu), Ok(vu)) = (
+            mesh::interpolate(&self.basis, n, &self.mesh, &new, m, &x[..k]),
+            mesh::interpolate(&self.basis, n, &self.mesh, &new, m, &v[..k]),
+        ) else {
+            return false;
+        };
         x[..k].copy_from_slice(&xu);
         v[..k].copy_from_slice(&vu);
         self.mesh = new;
