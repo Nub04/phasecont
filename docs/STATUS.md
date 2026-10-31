@@ -2,7 +2,7 @@
 
 ## Phase
 
-P4b closed the open items of P4 and merged into `main` locally on 2026-10-31 as a fast-forward to 78be5c3 (not pushed). P4 (LP and H curves, codim-2 detection and normal forms; SPEC section 14) merged into `main` locally on 2026-10-30 (14d6455, not pushed). P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 78c5df6. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 as PR #2 (3748707). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
+P4b closed the open items of P4 and merged into `main` locally on 2026-10-31 as a fast-forward to 78be5c3. P4 (LP and H curves, codim-2 detection and normal forms; SPEC section 14) merged into `main` locally on 2026-10-30 (14d6455). Both reached `origin/main` on 2026-10-31 with 175b6e9. P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 78c5df6. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 as PR #2 (3748707). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
 
 ## Done
 
@@ -113,11 +113,11 @@ P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; merged into `mai
 - A model that uses `t` compiles and evaluates with `m.rhs(x, p, t)`. `t` has no default and raises `phasecont:model:missingTime`. Runs and equilibria still need an autonomous model.
 - Continuation can start from an LP, H or BP point. A BP start raises `badProblem` and names `Switch`.
 - Tests at Task 15: Rust 868 passed; MATLAB 105 tests, 104 passed, 0 failed, 1 skipped (a BuildTest assumption).
-- CI in `.github/workflows/ci.yml` has four jobs: rust (ubuntu, windows, macos), pckern-win (cross build, dll-imports, artifact), matlab-windows (self-hosted Windows runner `nubom-windows`, prebuilt DLL, no license secret) and asan. None has run on GitHub, since the branch is not pushed.
+- CI in `.github/workflows/ci.yml` has four jobs: rust (ubuntu, windows, macos), pckern-win (cross build, dll-imports, artifact), matlab-windows (self-hosted Windows runner `nubom-windows`, prebuilt DLL, no license secret) and asan. They first ran on GitHub on 2026-10-31, for `main` and for the P5 branch: rust on all three runners and pckern-win pass, and matlab-windows and package-win wait in the queue, because the self-hosted runner is offline.
 
 ## In progress
 
-P5 (limit cycles, plan approved on 2026-10-31) on branch `phase5-limit-cycles`, not pushed. All 10 packages are done:
+P5 (limit cycles, plan approved on 2026-10-31) on branch `phase5-limit-cycles`, pushed and open as PR #3. All 10 packages are done:
 
 - 137aaa1: `cycle/basis.rs`, Gauss-Legendre nodes and weights by Newton on the Legendre polynomials, and the Lagrange basis on m + 1 base points.
 - 513f8cc: `pc-linalg` `condense.rs`, the condensation solver for the bordered collocation block system, with the monodromy matrix from the condensed blocks. rayon is a `pc-linalg` dependency and faer's `sparse-linalg` feature is on, both approved in the plan.
@@ -176,8 +176,9 @@ Rulings in package 9:
 
 - Read-through of the whole branch. One finding, now fixed: a Hopf or PD start with a huge NTST that does not overflow (2^40, for example) made orbit-sized vectors before `CycleProblem::new` checked its largest allocation, and a failed infallible allocation aborts the process. Those vectors and the interpolation of the PD switch now use `try_reserve_exact`, so the start returns engine:badProblem with "not enough memory for a cycle of this size; use a smaller NTST or NCOL". A mesh adaptation that cannot allocate the new orbit keeps the old mesh. Test `starts_with_a_huge_mesh_give_an_error` uses NTST = 2^46, whose orbit needs more bytes than the address space holds, so it fails under any overcommit setting. On Linux with `vm.overcommit_memory = 1` (this WSL has it) a reservation larger than memory but inside the address space can still succeed, and the process is killed when it fills the pages; Windows refuses it at the commit limit.
 - A second check of that fix found one more orbit-sized copy before the check: the PD switch cloned the doubled orbit into its setup. The orbit now moves into the setup and back out after `CycleProblem::new`, so no copy is made. No test can hit the narrow window where two orbits fit in memory and a third does not, so the existing PD tests cover the change.
+- One MATLAB run on 0f8d290, the first after a DLL rebuild, failed after about 35 seconds with an error that escaped the test runner (the stack ends in `JUnitXMLOutputPlugin.runSession` and `TestTask.runTests`). Only the last 15 lines of its log were kept, so the failing test is not known. A full `cargo test` was running in WSL at the same time. Four later runs passed with 172 passed and 0 failed, two of them with `cargo test` running alongside and one of those right after a DLL rebuild, so the failure has not been reproduced. Keep the full log of every MATLAB run until it shows up again.
 
-Next: the merge choice.
+Next: review and merge of PR #3, then P6.
 
 ## Next
 
