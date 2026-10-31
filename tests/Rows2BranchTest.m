@@ -216,5 +216,75 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
                 [0; 0], n, zeros(13, 0), zeros(13, 0), st, "XX"), ...
                 "phasecont:model:badOption");
         end
+
+        function cycleRows(testCase)
+            % n = 2, NTST = 2, NCOL = 2: rows of [alpha, orbit(10), T,
+            % mesh(3), mult_re(2), mult_im(2), psiLPC psiPD psiNS, h, it].
+            nan = NaN;
+            pts = [ ...
+                0.1, 1 2 2 3 3 4 2 1 1 2, 6, 0 0.4 1, 1 0.5, 0 0, 0.1 0.2 0.3, 0.01, 2; ...
+                0.2, 1 2 5 6 7 8 6 5 1 2, 7, 0 0.5 1, -1.5 1, 0 0, nan nan nan, 0.02, 3; ...
+                0.3, 0 0 1 1 2 2 1 1 0 0, 8, 0 0.6 1, nan 1, 0 0, 0.4 0.5 0.6, 0.03, 4].';
+            specials = pts(:, 2);
+            st = struct("points", 3, "stop", "max_steps", "warnings", [], ...
+                "specials", struct("label", "PD", "index", 1));
+            br = phasecont.internal.rows2branch(phasecont.Model.empty, 1, ...
+                [0; 9], 2, pts, specials, st, "LC", [2 2]);
+            testCase.verifyEqual(br.Type, "LC");
+            testCase.verifyEqual(br.Alpha, [0.1; 0.2; 0.3]);
+            testCase.verifyEqual(br.U, pts(2:11, :).');
+            testCase.verifyEqual(br.Period, [6; 7; 8]);
+            testCase.verifyEqual(br.Mesh, [0 0.4 1; 0 0.5 1; 0 0.6 1]);
+            testCase.verifyEqual([br.NTST br.NCOL], [2 2]);
+            testCase.verifyEqual(real(br.Eigenvalues(1, :)), [1 0.5]);
+            testCase.verifyEqual(imag(br.Eigenvalues), zeros(3, 2));
+            % Stable means every multiplier but the one closest to 1 is inside
+            % the unit circle; a NaN multiplier is not stable.
+            testCase.verifyEqual(br.Stable, [true; false; false]);
+            testCase.verifyEqual(br.Tests, [0.1 0.2 0.3; nan nan nan; 0.4 0.5 0.6]);
+            testCase.verifyEqual(br.StepSize, [0.01; 0.02; 0.03]);
+            testCase.verifyEqual(br.NewtonIters, [2; 3; 4]);
+            testCase.verifySize(br.Codim2, [3 0]);
+            sp = br.Specials(1);
+            testCase.verifyEqual(sp.Label, "PD");
+            testCase.verifyEqual(sp.Index, 2);
+            testCase.verifyEqual(sp.P, [0.2; 9]);
+            testCase.verifyEqual(sp.U, [1 2 5 6 7 8 6 5 1 2].');
+            testCase.verifyEqual(sp.Data.period, 7);
+            testCase.verifyEqual(sp.Data.mesh, [0 0.5 1]);
+            testCase.verifyEqual([sp.Data.ntst sp.Data.ncol], [2 2]);
+
+            % The base points of interval j are tau_j + (k/NCOL) h_j, then 1.
+            [t, x] = br.cycle(1);
+            testCase.verifyEqual(t, [0; 0.2; 0.4; 0.7; 1] * 6, AbsTol = 1e-15);
+            testCase.verifyEqual(x, [1 2; 2 3; 3 4; 2 1; 1 2]);
+            testCase.verifyError(@() br.cycle(4), "phasecont:model:badBranch");
+            testCase.verifyError(@() br.cycle(1.5), "phasecont:model:badBranch");
+            ep = phasecont.internal.rows2branch(phasecont.Model.empty, 1, ...
+                [0; 0], 2, zeros(12, 0), zeros(12, 0), ...
+                struct("points", 0, "stop", [], "warnings", [], "specials", []));
+            testCase.verifyError(@() ep.cycle(1), "phasecont:model:badBranch");
+        end
+
+        function cycleRowErrors(testCase)
+            st = struct("points", 0, "stop", [], "warnings", [], ...
+                "specials", []);
+            e = phasecont.Model.empty;
+            % Stride for n = 2, NTST = 2, NCOL = 2 is 24.
+            testCase.verifyError(@() phasecont.internal.rows2branch(e, 1, ...
+                [0; 0], 2, zeros(24, 0), zeros(24, 0), st, "LC"), ...
+                "phasecont:model:badOption");
+            testCase.verifyError(@() phasecont.internal.rows2branch(e, 1, ...
+                [0; 0], 2, zeros(24, 0), zeros(24, 0), st, "LC", [2 0]), ...
+                "phasecont:model:badOption");
+            testCase.verifyError(@() phasecont.internal.rows2branch(e, 1, ...
+                [0; 0], 2, zeros(20, 0), zeros(20, 0), st, "LC", [2 2]), ...
+                "phasecont:model:badRows");
+            br = phasecont.internal.rows2branch(e, 1, [0; 0], 2, ...
+                zeros(24, 0), zeros(24, 0), st, "LC", [2 2]);
+            testCase.verifySize(br.U, [0 10]);
+            testCase.verifySize(br.Mesh, [0 3]);
+            testCase.verifySize(br.Period, [0 1]);
+        end
     end
 end

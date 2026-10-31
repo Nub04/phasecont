@@ -17,10 +17,22 @@ function br = continuation(m, start, options)
 %   GH, BT, ZH, HH for "H") are in C.Specials. Detect, Switch and Var apply
 %   to equilibrium runs only.
 %
+%   LC = phasecont.continuation(M, START, Type = "LC", Free = "r", NTST = 40,
+%   NCOL = 4) follows the limit cycles that start at START, either a Hopf
+%   point of an equilibrium branch (or a state vector and Params that are
+%   one) or a PD point of an earlier cycle branch, where the run follows the
+%   cycles of twice the period. NTST is the number of mesh intervals and NCOL
+%   the number of collocation points in each. LC.Period holds the period,
+%   LC.Eigenvalues the Floquet multipliers and LC.Specials the LPC, PD and NS
+%   points; LC.cycle(i) returns the orbit at point i. Detect and Switch do
+%   not apply.
+%
 %   Name-value options
-%     Type       "EP" (default), "LP" or "H"
+%     Type       "EP" (default), "LP", "H" or "LC"
 %     Free       free parameter, one of M.Parameters (required); two names
 %                for Type "LP" or "H"
+%     NTST NCOL  mesh intervals and collocation points per interval,
+%                positive integers (required for Type "LC" only)
 %     MaxSteps   most steps per branch
 %     Direction  1 or -1, the first direction along the parameter
 %     Bounds     [lo hi], finite, the run stops outside them; on a curve
@@ -30,12 +42,12 @@ function br = continuation(m, start, options)
 %     MaxNewton  most Newton iterations per step
 %     Detect     labels to detect, a subset of ["LP" "BP" "H"] (default all);
 %                Type "EP" only
-%     Switch     special point to switch at, like "BP1"
+%     Switch     special point to switch at, like "BP1"; Type "EP" only
 %     Plot       true draws the branch while the run goes and ends with the
 %                styled plot of Branch.plot (default false)
 %     Var        variable to plot, a name or an index into M.Variables
-%                (default the first variable of M); Type "EP" only, a curve
-%                is plotted in the plane of its two free parameters
+%                (default the first variable of M); Type "EP" or "LC", a
+%                curve is plotted in the plane of its two free parameters
 %     Params     struct or vector that overrides the parameters of START
 %
 %   Options that are not given keep the engine defaults. If START is a
@@ -46,6 +58,8 @@ arguments
     start
     options.Type = "EP"
     options.Free = []
+    options.NTST = []
+    options.NCOL = []
     options.MaxSteps = []
     options.Direction = []
     options.Bounds = []
@@ -64,11 +78,23 @@ end
 import phasecont.internal.num2json
 
 type = string(options.Type);
-if ~isscalar(type) || ~ismember(type, ["EP" "LP" "H"])
+if ~isscalar(type) || ~ismember(type, ["EP" "LP" "H" "LC"])
     error("phasecont:model:badOption", ...
-        "Type must be ""EP"", ""LP"" or ""H"".");
+        "Type must be ""EP"", ""LP"", ""H"" or ""LC"".");
 end
-isCurve = type ~= "EP";
+isCurve = type == "LP" || type == "H";
+isCycle = type == "LC";
+grid = [];
+if isCycle
+    if ~isa(options.Detect, "missing") || ~isempty(options.Switch)
+        error("phasecont:model:badOption", ...
+            "Detect and Switch do not apply to Type = ""LC"".");
+    end
+    grid = [countOption(options.NTST, "NTST"), countOption(options.NCOL, "NCOL")];
+elseif ~isempty(options.NTST) || ~isempty(options.NCOL)
+    error("phasecont:model:badOption", ...
+        "NTST and NCOL apply to Type = ""LC"" only.");
+end
 if isempty(options.Free)
     error("phasecont:model:badOption", "The Free option is required.");
 end
@@ -92,7 +118,11 @@ elseif ~isscalar(free) || ~any(m.Parameters == free)
     error("phasecont:model:unknownParameter", ...
         "Free must be one of: %s.", strjoin(m.Parameters, ", "));
 end
-[u0, p, special] = startValues(m, start, options.Params);
+if isCycle
+    [u0, p, from, mesh] = cycleStart(m, start, options.Params);
+else
+    [u0, p, special] = startValues(m, start, options.Params);
+end
 
 parts = strings(1, 0);
 parts(end+1) = numberOption("h0", options.H0, "H0");
@@ -118,7 +148,7 @@ if ~isempty(options.Bounds)
     end
     parts(end+1) = """bounds"":[" + num2json(b(1)) + "," + num2json(b(2)) + "]";
 end
-if ~isCurve
+if type == "EP"
     if isa(options.Detect, "missing")
         detect = ["LP" "BP" "H"];
     else
@@ -137,6 +167,15 @@ parts = parts(strlength(parts) > 0);
 if isCurve
     problem = "{""type"":""" + type + """,""free"":" + jsonencode(free) + ...
         ",""options"":{" + strjoin(parts, ",") + "}";
+elseif isCycle
+    problem = "{""type"":""LC"",""free"":" + jsonencode(free) + ...
+        ",""ntst"":" + num2json(grid(1)) + ",""ncol"":" + num2json(grid(2)) + ...
+        ",""start"":""" + from + """";
+    if from == "pd"
+        problem = problem + ",""mesh"":[" + ...
+            strjoin(arrayfun(@num2json, mesh), ",") + "]";
+    end
+    problem = problem + ",""options"":{" + strjoin(parts, ",") + "}";
 else
     problem = "{""type"":""EP"",""free"":" + jsonencode(free) + ...
         ",""start_is_special"":" + lower(string(special)) + ...
@@ -185,12 +224,15 @@ if options.Plot
 end
 
 n = numel(m.Variables);
-% Live plot columns: a curve draws a2 against a1, which sits after the n states.
+% Live plot rows: a curve draws a2 against a1, which sits after the n states;
+% a cycle draws the maximum of the variable over its base points.
 xrow = 1;
 yrow = 1 + varIdx;
 if isCurve
     xrow = n + 2;
     yrow = 1;
+elseif isCycle
+    yrow = 1 + varIdx + n*(0:grid(1)*grid(2));
 end
 run = phasecont.internal.Run(m, problem, u0, p);
 cleanup = onCleanup(@() delete(run)); %#ok<NASGU>
@@ -213,7 +255,8 @@ while true
             if b > numel(lines)
                 lines(b) = line(ax, NaN, NaN);
             end
-            set(lines(b), XData = pts{b}(xrow, :), YData = pts{b}(yrow, :));
+            set(lines(b), XData = pts{b}(xrow, :), ...
+                YData = max(pts{b}(yrow, :), [], 1));
         end
     end
     hook = phasecont.internal.pollHook();
@@ -234,7 +277,7 @@ for b = 1:nb
     nsp = numel(st.branches(b).specials);
     sp = run.copy(b, 1, 1, nsp, st.stride);
     one = phasecont.internal.rows2branch(m, free, p, n, pts{b}, sp, ...
-        st.branches(b), type);
+        st.branches(b), type, grid);
     br(1, b) = one;
 end
 if options.Plot
@@ -271,13 +314,7 @@ if isa(start, "phasecont.Point")
         error("phasecont:model:badStart", ...
             "The start point needs %d states and %d parameters.", n, np);
     end
-    if isstruct(params)
-        v = m.paramVector(params);
-        idx = find(ismember(m.Parameters, string(fieldnames(params))));
-        p(idx) = v(idx);
-    elseif ~isempty(params)
-        p = m.paramVector(params);
-    end
+    p = overrideParams(m, p, params);
 elseif isnumeric(start) && isreal(start) && isvector(start)
     if numel(start) ~= n
         error("phasecont:model:badStart", ...
@@ -294,6 +331,60 @@ else
     error("phasecont:model:badStart", ...
         "START must be a phasecont.Point or a real state vector.");
 end
+end
+
+function [u0, p, from, mesh] = cycleStart(m, start, params)
+% Start values of an LC run. A point of a cycle branch (its Data has the
+% period) must be a PD point; anything else goes to startValues and is
+% taken as a Hopf point, which the engine checks.
+mesh = [];
+if isa(start, "phasecont.Point") && isscalar(start) && isstruct(start.Data) ...
+        && isfield(start.Data, "period")
+    if start.Label ~= "PD"
+        error("phasecont:model:badStart", ...
+            "An LC run starts from a Hopf point or a PD point, not from ""%s"".", ...
+            start.Label);
+    end
+    if ~isempty(start.Model) && start.Model ~= m
+        error("phasecont:model:badStart", ...
+            "The start point belongs to a different model.");
+    end
+    if numel(start.P) ~= numel(m.Parameters)
+        error("phasecont:model:badStart", ...
+            "The start point needs %d parameters.", numel(m.Parameters));
+    end
+    u0 = [start.U(:); start.Data.period];
+    p = overrideParams(m, start.P, params);
+    mesh = double(start.Data.mesh(:)).';
+    from = "pd";
+else
+    [u0, p] = startValues(m, start, params);
+    from = "hopf";
+end
+end
+
+function p = overrideParams(m, p, params)
+% P with the entries that PARAMS names replaced, or PARAMS as a whole vector.
+if isstruct(params)
+    v = m.paramVector(params);
+    idx = find(ismember(m.Parameters, string(fieldnames(params))));
+    p(idx) = v(idx);
+elseif ~isempty(params)
+    p = m.paramVector(params);
+end
+end
+
+function v = countOption(value, name)
+% A required positive integer option.
+if isempty(value)
+    error("phasecont:model:badOption", ...
+        "The %s option is required for Type = ""LC"".", name);
+end
+if ~(isnumeric(value) && isreal(value) && isscalar(value) && isfinite(value) ...
+        && value >= 1 && value == round(value))
+    error("phasecont:model:badOption", "%s must be a positive integer.", name);
+end
+v = double(value);
 end
 
 function s = numberOption(key, value, name, isCount)
