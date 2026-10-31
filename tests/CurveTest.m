@@ -161,7 +161,7 @@ classdef CurveTest < matlab.unittest.TestCase
             testCase.verifyEqual(bt.P(1:2), [0; 0], AbsTol = 1e-8);
             testCase.verifyEqual(bt.Data.coefficient, 1, AbsTol = 1e-8);
             testCase.verifyEqual(bt.Data.coefficient2, 1, AbsTol = 1e-8);
-            testCase.verifyTrue(isstruct(bt.Data.values));
+            testCase.verifyEmpty(fieldnames(bt.Data.values));
         end
 
         function hopfCurveOfTheBrusselatorFollowsBEqualsOnePlusASquared(testCase)
