@@ -224,7 +224,7 @@ pub unsafe extern "C" fn run_start(
         let v: Value = serde_json::from_str(text)
             .map_err(|e| Error::BadProblem(format!("problem_json: {e}")))?;
         let mut problem = parse_problem(&v, &h.ir, Mode::Abi).map_err(Error::BadProblem)?;
-        expect_len("u0", h.n(), nu)?;
+        problem.check_u0_len(h.n(), nu).map_err(bad_arg)?;
         expect_len("params", h.n_p(), np)?;
         problem.setup.u0 = unsafe { f64_arg(u0, nu, "u0") }?.to_vec();
         problem.setup.params = unsafe { f64_arg(p, np, "params") }?.to_vec();

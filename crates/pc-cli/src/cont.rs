@@ -1,4 +1,4 @@
-//! The `cont` command: follow an equilibrium branch described by a problem file.
+//! The `cont` command: follow the branch or curve that a problem file describes.
 //!
 //! The problem file is read by hand from a `serde_json::Value`, so that every error can
 //! name the key that is wrong. Unknown keys are errors. The run goes through
@@ -90,6 +90,7 @@ fn report(run: &Run, state: &RunState) -> ExitCode {
             .map(|p| {
                 json!({
                     "u": p.u, "alpha": p.alpha, "tests": p.tests, "codim2": p.codim2,
+                    "eigenvalues": p.eigenvalues, "mesh": p.mesh,
                     "h": p.h, "newton_iters": p.newton_iters,
                 })
             })
@@ -162,6 +163,8 @@ fn special_json(s: &SpecialPoint) -> Value {
         "index": s.index,
         "u": s.point.u,
         "alpha": s.point.alpha,
+        "eigenvalues": s.point.eigenvalues,
+        "mesh": s.point.mesh,
         "coefficient": s.extras.coefficient,
         "coefficient2": s.extras.coefficient2,
         "coefficients": s.extras.values.iter().map(|(k, v)| (k.clone(), json!(v))).collect::<serde_json::Map<_, _>>(),

@@ -4,7 +4,7 @@ use pc_engine::{EngineError, Point, Run, RunState, Status, StopReason};
 use serde_json::{Map, Value, json};
 
 use crate::error::{Error, Result};
-use crate::json::problem::Kind;
+use crate::json::problem::{Kind, cycle_stride};
 use crate::registry::Handle;
 
 /// A started run, what it follows and the state size of its model.
@@ -22,31 +22,40 @@ impl Handle for RunHandle {
 ///
 /// An equilibrium row is `[alpha, u(n), eig_re(n), eig_im(n), psi_LP, psi_BP, psi_H, h,
 /// newton_iters]`. A curve row is `[a2, x(n), a1, kappa (Hopf only), eig_re(n), eig_im(n),
-/// codim2(k), h, newton_iters]`, with `k` the number of codim-2 labels of the kind.
+/// codim2(k), h, newton_iters]`, with `k` the number of codim-2 labels of the kind. A cycle
+/// row on N intervals of m points is `[alpha, u(n (N m + 1)), T, mesh(N + 1), mult_re(n),
+/// mult_im(n), psi_LPC, psi_PD, psi_NS, h, newton_iters]`, with the orbit point-major.
 pub(crate) fn stride(kind: Kind, n: usize) -> usize {
     match kind {
         Kind::Ep => 3 * n + 6,
         Kind::Lp => 1 + (n + 1) + 2 * n + kind.labels().len() + 2,
         Kind::Hopf => 1 + (n + 2) + 2 * n + kind.labels().len() + 2,
+        // The parser rejects sizes that overflow; MAX makes a copy fail rather than wrap.
+        Kind::Lc { ntst, ncol } => cycle_stride(n, ntst, ncol).unwrap_or(usize::MAX),
     }
 }
 
-/// Writes one row into `out`, which holds `stride(kind, n)` values. Missing state,
+/// Writes one row into `out`, which holds `stride(kind, n)` values. Missing state, mesh,
 /// eigenvalue or codim-2 entries are NaN.
 pub(crate) fn pack_row(kind: Kind, p: &Point, n: usize, out: &mut [f64]) {
     debug_assert_eq!(out.len(), stride(kind, n));
     let nan = f64::NAN;
     out[0] = p.alpha;
-    // The state block: `n` values, plus a1 (and kappa) on a curve.
-    let block = match kind {
-        Kind::Ep => n,
-        Kind::Lp => n + 1,
-        Kind::Hopf => n + 2,
+    // The state block: `n` values, plus a1 (and kappa) on a curve, or the orbit and T.
+    let (block, mesh) = match kind {
+        Kind::Ep => (n, 0),
+        Kind::Lp => (n + 1, 0),
+        Kind::Hopf => (n + 2, 0),
+        Kind::Lc { ntst, ncol } => (n * (ntst * ncol + 1) + 1, ntst + 1),
     };
     for i in 0..block {
         out[1 + i] = p.u.get(i).copied().unwrap_or(nan);
     }
-    let e = 1 + block;
+    let m = 1 + block;
+    for i in 0..mesh {
+        out[m + i] = p.mesh.get(i).copied().unwrap_or(nan);
+    }
+    let e = m + mesh;
     for i in 0..n {
         let (re, im) = p.eigenvalues.get(i).copied().unwrap_or((nan, nan));
         out[e + i] = re;
@@ -145,14 +154,19 @@ pub(crate) fn poll_json(h: &RunHandle, st: &Status) -> Result<Value> {
             })
         })
         .collect();
-    Ok(json!({
+    let mut out = json!({
         "state": state,
         "kind": h.kind.name(),
         "codim2_labels": h.kind.labels(),
         "n": h.n,
         "stride": stride(h.kind, h.n),
         "branches": branches,
-    }))
+    });
+    if let Kind::Lc { ntst, ncol } = h.kind {
+        out["ntst"] = json!(ntst);
+        out["ncol"] = json!(ncol);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -202,10 +216,48 @@ mod tests {
         assert_eq!(Kind::Ep.labels(), &[] as &[&str]);
         assert_eq!(Kind::Lp.labels(), ["CP", "BT", "ZH"]);
         assert_eq!(Kind::Hopf.labels(), ["GH", "BT", "ZH", "HH"]);
+        let lc = Kind::Lc { ntst: 4, ncol: 3 };
+        // [alpha, u(2 * 13), T, mesh(5), mult_re(2), mult_im(2), LPC, PD, NS, h, iters]
+        assert_eq!(stride(lc, 2), 1 + 26 + 1 + 5 + 4 + 3 + 2);
+        assert_eq!(lc.labels(), ["LPC", "PD", "NS"]);
         assert_eq!(
-            [Kind::Ep.name(), Kind::Lp.name(), Kind::Hopf.name()],
-            ["EP", "LP", "H"]
+            [
+                Kind::Ep.name(),
+                Kind::Lp.name(),
+                Kind::Hopf.name(),
+                lc.name()
+            ],
+            ["EP", "LP", "H", "LC"]
         );
+        // An overflowing size makes the stride MAX, so a copy fails instead of wrapping.
+        let huge = Kind::Lc {
+            ntst: usize::MAX / 2,
+            ncol: 3,
+        };
+        assert_eq!(stride(huge, 2), usize::MAX);
+    }
+
+    #[test]
+    fn a_cycle_row_has_the_orbit_the_period_and_the_mesh() {
+        let lc = Kind::Lc { ntst: 1, ncol: 2 };
+        let mut p = point();
+        // n = 1: the orbit at 3 base points, then T; one multiplier; two mesh points.
+        p.u = vec![1.0, 2.0, 3.0, 6.5];
+        p.mesh = vec![0.0, 1.0];
+        p.eigenvalues = vec![(1.0, 0.0)];
+        p.codim2 = vec![7.0, 8.0];
+        let mut row = vec![0.0; stride(lc, 1)];
+        assert_eq!(row.len(), 1 + 3 + 1 + 2 + 2 + 3 + 2);
+        pack_row(lc, &p, 1, &mut row);
+        assert_eq!(&row[..7], [0.5, 1.0, 2.0, 3.0, 6.5, 0.0, 1.0]);
+        assert_eq!(&row[7..9], [1.0, 0.0]);
+        assert_eq!(&row[9..11], [7.0, 8.0]);
+        assert!(row[11].is_nan());
+        assert_eq!(&row[12..], [0.125, 3.0]);
+        // A point without a mesh gets NaN there.
+        p.mesh.clear();
+        pack_row(lc, &p, 1, &mut row);
+        assert!(row[5].is_nan() && row[6].is_nan());
     }
 
     #[test]

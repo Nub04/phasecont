@@ -7,12 +7,13 @@
 //! [`RunState::Panicked`].
 //!
 //! Points reach the shared state as they are accepted. When a branch finishes, the
-//! `Branch` that `continue_ep` returns (refined specials, stop reason) replaces the
+//! `Branch` that the continuation returns (refined specials, stop reason) replaces the
 //! streamed one, so specials are visible only after that. While a branch is running its
 //! stored `stop` is a placeholder and is not meaningful.
 
 use crate::branch::{Branch, Options, Point, SpecialPoint, StopReason};
 use crate::curve2::CurveSetup;
+use crate::cycle::{CycleStart, continue_cycle};
 use crate::ep::{EpSetup, continue_ep};
 use crate::error::EngineError;
 use crate::hopfcurve::continue_hopf_curve;
@@ -35,6 +36,8 @@ pub enum RunKind {
     LpCurve(CurveSetup),
     /// The Hopf curve through a Hopf point, in two parameters.
     HopfCurve(CurveSetup),
+    /// A branch of periodic orbits in one parameter.
+    Cycle(CycleStart),
 }
 
 /// What to run. The worker lowers and compiles the model on its own thread.
@@ -78,8 +81,8 @@ impl RunSpec {
         }
     }
 
-    /// A spec for the curve of `kind`. `kind` must be `LpCurve` or `HopfCurve`; with `Ep`
-    /// the run fails with `BadProblem` because there is no equilibrium start.
+    /// A spec for a run that starts from `kind` alone: `LpCurve`, `HopfCurve` or `Cycle`.
+    /// With `Ep` the run fails with `BadProblem` because there is no equilibrium start.
     pub fn curve(
         model: Model,
         info: ModelInfo,
@@ -199,6 +202,7 @@ fn follow(
         RunKind::Ep => continue_ep(model, setup, opts, &shared.cancel, on_point),
         RunKind::LpCurve(cs) => continue_lp_curve(model, cs, opts, &shared.cancel, on_point),
         RunKind::HopfCurve(cs) => continue_hopf_curve(model, cs, opts, &shared.cancel, on_point),
+        RunKind::Cycle(start) => continue_cycle(model, start, opts, &shared.cancel, on_point),
     };
     match &b {
         Ok(branch) => shared.lock().branches[idx] = branch.clone(),
@@ -430,11 +434,14 @@ impl Drop for Run {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cycle::{CYCLE_LABELS, HopfStart};
     use pc_ode::{FsLoader, Severity, SourceMap, load};
     use std::path::Path;
 
-    fn lorenz_spec() -> RunSpec {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/models/lorenz.ode");
+    fn test_model(name: &str) -> (Model, ModelInfo) {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/models")
+            .join(name);
         let mut map = SourceMap::new();
         let mut loader = FsLoader::new();
         let top = loader.load_top(&mut map, &path).unwrap();
@@ -445,6 +452,11 @@ mod tests {
                 .iter()
                 .all(|d| d.severity != Severity::Error)
         );
+        (loaded.expanded, loaded.info)
+    }
+
+    fn lorenz_spec() -> RunSpec {
+        let (model, info) = test_model("lorenz.ode");
         let setup = EpSetup::new(1, vec![10.0, 0.5, 8.0 / 3.0], vec![0.0, 0.0, 0.0]);
         let opts = Options {
             h0: 0.01,
@@ -453,7 +465,40 @@ mod tests {
             bounds: (f64::NEG_INFINITY, 2.0),
             ..Options::default()
         };
-        RunSpec::new(loaded.expanded, loaded.info, Evaluator::Jit, setup, opts)
+        RunSpec::new(model, info, Evaluator::Jit, setup, opts)
+    }
+
+    #[test]
+    fn a_cycle_run_follows_the_orbits_from_a_hopf_point() {
+        let (model, info) = test_model("hopf_c.ode");
+        let (ntst, ncol) = (10, 3);
+        let start = CycleStart::Hopf(HopfStart {
+            free: 0,
+            params: vec![0.0, -1.0],
+            u0: vec![0.0, 0.0],
+            ntst,
+            ncol,
+        });
+        let opts = Options {
+            hmax: 0.05,
+            max_steps: 40,
+            bounds: (f64::NEG_INFINITY, 0.2),
+            ..Options::default()
+        };
+        let spec = RunSpec::curve(model, info, Evaluator::Jit, RunKind::Cycle(start), opts);
+        let run = Run::start(spec);
+        while run.poll().state == RunState::Running {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let st = run.poll();
+        assert_eq!(st.state, RunState::Done);
+        assert!(st.points[0] > 3, "{:?}", st.points);
+        for p in run.points(0, 0, usize::MAX) {
+            assert_eq!(p.u.len(), 2 * (ntst * ncol + 1) + 1);
+            assert_eq!(p.mesh.len(), ntst + 1);
+            assert_eq!(p.eigenvalues.len(), 2);
+            assert_eq!(p.codim2.len(), CYCLE_LABELS.len());
+        }
     }
 
     #[test]

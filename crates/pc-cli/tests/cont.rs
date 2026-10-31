@@ -96,7 +96,16 @@ fn point_records_have_the_documented_keys() {
     let pts = v["branches"][0]["points"].as_array().unwrap();
     assert!(pts.len() > 10);
     for p in pts {
-        for key in ["u", "alpha", "tests", "h", "newton_iters"] {
+        for key in [
+            "u",
+            "alpha",
+            "tests",
+            "codim2",
+            "eigenvalues",
+            "mesh",
+            "h",
+            "newton_iters",
+        ] {
             assert!(p.get(key).is_some(), "point.{key}");
         }
         assert_eq!(p["tests"].as_array().unwrap().len(), 3);
@@ -108,6 +117,8 @@ fn point_records_have_the_documented_keys() {
             "index",
             "u",
             "alpha",
+            "eigenvalues",
+            "mesh",
             "coefficient",
             "omega",
             "normalization",
@@ -350,4 +361,30 @@ fn help_and_usage() {
     );
     let o = run(&scratch(), &["cont", "only_one.ode"]);
     assert_eq!(code(&o), 2);
+}
+
+#[test]
+fn a_cycle_run_prints_the_orbit_the_mesh_and_the_multipliers() {
+    let path = scratch().join("lc.json");
+    std::fs::write(
+        &path,
+        r#"{"type":"LC","free":"al","params":{"al":0,"c":-1},"u0":[0,0],"ntst":8,"ncol":3,
+            "start":"hopf","options":{"hmax":0.05,"max_steps":10,"bounds":[-1,0.3]}}"#,
+    )
+    .unwrap();
+    let o = run(
+        &scratch(),
+        &["cont", &model("hopf_c"), path.to_str().unwrap()],
+    );
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+    let pts = v["branches"][0]["points"].as_array().unwrap();
+    assert!(pts.len() > 3, "{v}");
+    for p in pts {
+        // The orbit at 8 * 3 + 1 points of 2 states, then the period.
+        assert_eq!(p["u"].as_array().unwrap().len(), 2 * 25 + 1);
+        assert_eq!(p["mesh"].as_array().unwrap().len(), 9);
+        assert_eq!(p["eigenvalues"].as_array().unwrap().len(), 2);
+        assert_eq!(p["codim2"].as_array().unwrap().len(), 3);
+    }
 }

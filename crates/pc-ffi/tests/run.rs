@@ -5,8 +5,8 @@ use std::ptr;
 use std::time::{Duration, Instant};
 
 use pc_engine::{
-    CurveSetup, EpSetup, Evaluator, Options, Point, Run, RunKind, RunSpec, RunState, StopReason,
-    build,
+    CurveSetup, CycleStart, EpSetup, Evaluator, HopfStart, Options, Point, Run, RunKind, RunSpec,
+    RunState, StopReason, build,
 };
 use pc_ode::{MapLoader, SourceMap, load};
 use pckern::{PcApiV1, pc_api_v1};
@@ -834,11 +834,211 @@ fn bad_curve_problems_give_6_at_run_start() {
             r#"{"type":"LP","free":["b1","b2"],"start_is_special":true}"#,
             "start_is_special: only an EP run",
         ),
-        (r#"{"type":"XX","free":"b1"}"#, "type: expected"),
+        (
+            r#"{"type":"XX","free":"b1"}"#,
+            r#"type: expected "EP", "LP", "H" or "LC""#,
+        ),
     ];
     for (json, msg) in cases {
         let (rc, run) = start_with(&m, json, &[0.0], &[0.0, 1.0]);
         assert_eq!((rc, run), (6, 0), "{json}");
+        assert!(last_error().contains(msg), "{json}: {}", last_error());
+    }
+}
+
+/// The cycle row the ABI documents, written out again: `[alpha, u(n (N m + 1)), T,
+/// mesh(N + 1), mult_re(n), mult_im(n), psi_LPC, psi_PD, psi_NS, h, newton_iters]`.
+fn expected_cycle_row(p: &Point, n: usize, ntst: usize, ncol: usize) -> Vec<f64> {
+    let mut row = vec![p.alpha];
+    let get = |v: &[f64], i: usize| v.get(i).copied().unwrap_or(f64::NAN);
+    row.extend((0..n * (ntst * ncol + 1) + 1).map(|i| get(&p.u, i)));
+    row.extend((0..=ntst).map(|i| get(&p.mesh, i)));
+    let mult = |i: usize| {
+        p.eigenvalues
+            .get(i)
+            .copied()
+            .unwrap_or((f64::NAN, f64::NAN))
+    };
+    row.extend((0..n).map(|i| mult(i).0));
+    row.extend((0..n).map(|i| mult(i).1));
+    row.extend((0..3).map(|i| get(&p.codim2, i)));
+    row.push(p.h);
+    row.push(p.newton_iters as f64);
+    row
+}
+
+const LC_OPTIONS: &str = r#""options":{"hmax":0.05,"max_steps":15,"bounds":[1.5,2.6]}"#;
+
+/// The Brusselator Hopf point in b at a = 1, as (b, equilibrium).
+fn bruss_hopf(m: &Id) -> (f64, Vec<f64>) {
+    let (b, u) = ep_special(m, "b", &[1.0, 1.2], &[1.0, 1.2], "[0.5,4]", "H");
+    // The Hopf point is at b = 1 + a^2 = 2, where the equilibrium is (a, b / a) = (1, 2).
+    assert!((b - 2.0).abs() < 1e-8, "b = {b}");
+    (b, u)
+}
+
+#[test]
+fn a_cycle_run_from_a_hopf_point_has_cycle_rows() {
+    let m = compiled(BRUSS);
+    let (b, u) = bruss_hopf(&m);
+    let (n, ntst, ncol) = (2, 10, 3);
+    let json = format!(
+        r#"{{"type":"LC","free":"b","ntst":{ntst},"ncol":{ncol},"start":"hopf",{LC_OPTIONS}}}"#
+    );
+    let (rc, run) = start_with(&m, &json, &u, &[1.0, b]);
+    assert_eq!(rc, 0, "{}", last_error());
+    let run = Id(run);
+    let st = wait(&run);
+    assert_eq!(st["state"], "done", "{st}");
+    assert_eq!(st["kind"], "LC");
+    assert_eq!(st["codim2_labels"], serde_json::json!(["LPC", "PD", "NS"]));
+    assert_eq!(st["ntst"], ntst);
+    assert_eq!(st["ncol"], ncol);
+    let stride = st["stride"].as_u64().unwrap() as usize;
+    assert_eq!(
+        stride,
+        1 + n * (ntst * ncol + 1) + 1 + (ntst + 1) + 2 * n + 3 + 2
+    );
+
+    let start = HopfStart {
+        free: 1,
+        params: vec![1.0, b],
+        u0: u.clone(),
+        ntst,
+        ncol,
+    };
+    let opts = Options {
+        hmax: 0.05,
+        max_steps: 15,
+        bounds: (1.5, 2.6),
+        ..Options::default()
+    };
+    let mut map = SourceMap::new();
+    let f = map.add("model.ode", BRUSS);
+    let l = load(f, &mut map, &mut MapLoader::new());
+    let kind = RunKind::Cycle(CycleStart::Hopf(start));
+    let engine = Run::start(RunSpec::curve(
+        l.expanded,
+        l.info,
+        Evaluator::Jit,
+        kind,
+        opts,
+    ));
+    let t0 = Instant::now();
+    while engine.poll().state == RunState::Running {
+        assert!(t0.elapsed() < Duration::from_secs(60));
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let want = engine.points(0, 0, usize::MAX);
+    let count = st["branches"][0]["points"].as_u64().unwrap() as usize;
+    assert_eq!(count, want.len());
+    assert!(count > 5, "{st}");
+    let (rc, rows, got) = copy(run.0, 0, 0, 0, count, stride);
+    assert_eq!((rc, rows), (0, count), "{}", last_error());
+    for (i, point) in want.iter().enumerate() {
+        let w = expected_cycle_row(point, n, ntst, ncol);
+        assert!(same_bits(&got[i * stride..(i + 1) * stride], &w), "row {i}");
+    }
+    // The period starts near 2 pi / omega = 2 pi, and the mesh runs from 0 to 1.
+    let t = got[1 + n * (ntst * ncol + 1)];
+    assert!((t - 2.0 * std::f64::consts::PI).abs() < 0.1, "T = {t}");
+    let mesh = &got[2 + n * (ntst * ncol + 1)..][..=ntst];
+    assert_eq!((mesh[0], mesh[ntst]), (0.0, 1.0));
+}
+
+#[test]
+fn a_cycle_run_from_an_orbit_continues_it() {
+    let m = compiled(BRUSS);
+    let (b, u) = bruss_hopf(&m);
+    let (n, ntst, ncol) = (2, 6, 3);
+    // Without mesh adaptation the orbit of each row is on the uniform mesh.
+    let json = format!(
+        r#"{{"type":"LC","free":"b","ntst":{ntst},"ncol":{ncol},"start":"hopf","options":{{"hmax":0.05,"max_steps":6,"bounds":[1.5,2.6],"mesh_adapt":0}}}}"#
+    );
+    let (rc, run) = start_with(&m, &json, &u, &[1.0, b]);
+    assert_eq!(rc, 0, "{}", last_error());
+    let run = Id(run);
+    let st = wait(&run);
+    assert_eq!(st["state"], "done", "{st}");
+    let stride = st["stride"].as_u64().unwrap() as usize;
+    let count = st["branches"][0]["points"].as_u64().unwrap() as usize;
+    let (rc, rows, last) = copy(run.0, 0, 0, count - 1, 1, stride);
+    assert_eq!((rc, rows), (0, 1));
+    let state = n * (ntst * ncol + 1) + 1;
+    let orbit = &last[1..=state];
+
+    let json = format!(
+        r#"{{"type":"LC","free":"b","ntst":{ntst},"ncol":{ncol},"start":"orbit","options":{{"hmax":0.05,"max_steps":5,"bounds":[1.5,2.6]}}}}"#
+    );
+    let (rc, run) = start_with(&m, &json, orbit, &[1.0, last[0]]);
+    assert_eq!(rc, 0, "{}", last_error());
+    let run = Id(run);
+    let st = wait(&run);
+    assert_eq!(st["state"], "done", "{st}");
+    assert!(st["branches"][0]["points"].as_u64().unwrap() > 2, "{st}");
+    // The first point is the corrected start, which is already a solution.
+    let (rc, _, first) = copy(run.0, 0, 0, 0, 1, stride);
+    assert_eq!(rc, 0);
+    assert!((first[0] - last[0]).abs() < 1e-8);
+    assert!((first[state] - last[state]).abs() < 1e-6, "T");
+}
+
+#[test]
+fn bad_cycle_problems_give_6_and_bad_lengths_give_2() {
+    let m = compiled(BRUSS);
+    let cases = [
+        (
+            r#"{"type":"LC","free":"b","ncol":3,"start":"hopf"}"#,
+            "ntst: missing",
+        ),
+        (
+            r#"{"type":"LC","free":"b","ntst":4,"ncol":9,"start":"hopf"}"#,
+            "ncol: expected an integer from 2 to 7",
+        ),
+        (
+            r#"{"type":"LC","free":"b","ntst":4,"ncol":3,"start":"x"}"#,
+            "start: expected",
+        ),
+        (
+            r#"{"type":"LC","free":"b","ntst":4,"ncol":3,"start":"pd"}"#,
+            "mesh: missing",
+        ),
+        (
+            r#"{"type":"EP","free":"b","ntst":4}"#,
+            "ntst: only an LC run takes this key",
+        ),
+        (
+            r#"{"type":"EP","free":"b","options":{"mesh_adapt":2}}"#,
+            "options.mesh_adapt: only an LC run",
+        ),
+    ];
+    for (json, msg) in cases {
+        let (rc, run) = start_with(&m, json, &[1.0, 2.0], &[1.0, 2.0]);
+        assert_eq!((rc, run), (6, 0), "{json}");
+        assert!(last_error().contains(msg), "{json}: {}", last_error());
+    }
+    let lengths = [
+        (
+            r#"{"type":"LC","free":"b","ntst":4,"ncol":3,"start":"orbit"}"#,
+            "u0: expected 27 values, got 2",
+        ),
+        (
+            r#"{"type":"LC","free":"b","ntst":4,"ncol":3,"start":"pd","mesh":[0,0.5,1]}"#,
+            "u0: expected n (N m + 1) + 1 values with n = 2, N = 2 from mesh",
+        ),
+        (
+            r#"{"type":"LC","free":"b","ntst":4,"ncol":3,"start":"hopf"}"#,
+            "u0: expected 2 values, got 3",
+        ),
+    ];
+    for (i, (json, msg)) in lengths.into_iter().enumerate() {
+        let u0: &[f64] = if i == 2 {
+            &[1.0, 2.0, 3.0]
+        } else {
+            &[1.0, 2.0]
+        };
+        let (rc, run) = start_with(&m, json, u0, &[1.0, 2.0]);
+        assert_eq!((rc, run), (2, 0), "{json}");
         assert!(last_error().contains(msg), "{json}: {}", last_error());
     }
 }

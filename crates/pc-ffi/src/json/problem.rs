@@ -6,19 +6,22 @@
 //! are errors.
 
 use pc_engine::{
-    CurveSetup, EpSetup, Evaluator, HOPF_CURVE_LABELS, LP_CURVE_LABELS, Options, RunKind, RunSpec,
+    CYCLE_LABELS, CurveSetup, CycleSetup, CycleStart, EpSetup, Evaluator, HOPF_CURVE_LABELS,
+    HopfStart, LP_CURVE_LABELS, NCOL_RANGE, Options, PdStart, RunKind, RunSpec,
 };
 use pc_ir::IrModel;
 use pc_ode::{Model, ModelInfo};
 use serde_json::{Map, Value};
 
-/// What a run follows: an equilibrium branch, or the curve of fold (LP) or Hopf points of two
-/// parameters.
+/// What a run follows: an equilibrium branch, the curve of fold (LP) or Hopf points of two
+/// parameters, or a branch of periodic orbits (LC) on N mesh intervals of m collocation
+/// points.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Ep,
     Lp,
     Hopf,
+    Lc { ntst: usize, ncol: usize },
 }
 
 impl Kind {
@@ -28,17 +31,47 @@ impl Kind {
             Kind::Ep => "EP",
             Kind::Lp => "LP",
             Kind::Hopf => "H",
+            Kind::Lc { .. } => "LC",
         }
     }
 
-    /// Codim-2 labels in the order of `Point::codim2`; empty for an equilibrium branch.
+    /// Labels of the test values in `Point::codim2`, in order: the codim-2 points of a
+    /// curve or the LPC, PD and NS points of a cycle branch. Empty for an equilibrium branch.
     pub fn labels(self) -> &'static [&'static str] {
         match self {
             Kind::Ep => &[],
             Kind::Lp => &LP_CURVE_LABELS,
             Kind::Hopf => &HOPF_CURVE_LABELS,
+            Kind::Lc { .. } => &CYCLE_LABELS,
         }
     }
+}
+
+/// Where an LC run starts, and what its start state holds.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CycleFrom {
+    /// A Hopf point: the equilibrium there, `n` values.
+    Hopf,
+    /// A guessed orbit on the uniform mesh: the orbit at the N m + 1 base points,
+    /// point-major, then the period.
+    Orbit,
+    /// A PD point of an earlier LC run: its orbit at the base points of `mesh`, then its
+    /// period. The new run doubles the orbit onto its own N and m.
+    Pd { mesh: Vec<f64> },
+}
+
+/// Keys that only an LC problem takes.
+const LC_KEYS: [&str; 4] = ["ntst", "ncol", "start", "mesh"];
+
+/// Values in one row of an LC run, `n (N m + 1) + N + 2 n + 8`, or `None` when that
+/// overflows. `pc-ffi`'s row layout documents the parts.
+pub fn cycle_stride(n: usize, ntst: usize, ncol: usize) -> Option<usize> {
+    ntst.checked_mul(ncol)?
+        .checked_add(1)?
+        .checked_mul(n)?
+        .checked_add(ntst)?
+        .checked_add(n.checked_mul(2)?)?
+        .checked_add(8)
 }
 
 /// A problem file after validation.
@@ -52,6 +85,8 @@ pub struct Problem {
     pub kind: Kind,
     /// The two parameters of a curve run, `[a1, a2]`, as positions among the parameters.
     pub curve_free: Option<[usize; 2]>,
+    /// The start of an LC run.
+    pub cycle: Option<CycleFrom>,
 }
 
 impl Problem {
@@ -60,10 +95,77 @@ impl Problem {
         let curve = |free: [usize; 2]| {
             CurveSetup::new(free, self.setup.params.clone(), self.setup.u0.clone())
         };
-        match (self.kind, self.curve_free) {
-            (Kind::Lp, Some(free)) => RunKind::LpCurve(curve(free)),
-            (Kind::Hopf, Some(free)) => RunKind::HopfCurve(curve(free)),
+        match (self.kind, self.curve_free, &self.cycle) {
+            (Kind::Lp, Some(free), _) => RunKind::LpCurve(curve(free)),
+            (Kind::Hopf, Some(free), _) => RunKind::HopfCurve(curve(free)),
+            (Kind::Lc { ntst, ncol }, _, Some(from)) => {
+                RunKind::Cycle(self.cycle_start(ntst, ncol, from))
+            }
             _ => RunKind::Ep,
+        }
+    }
+
+    fn cycle_start(&self, ntst: usize, ncol: usize, from: &CycleFrom) -> CycleStart {
+        let free = self.setup.free;
+        let params = self.setup.params.clone();
+        // An empty state gives a NaN period, which the engine rejects.
+        let (period, orbit) = match self.setup.u0.split_last() {
+            Some((t, orbit)) => (*t, orbit.to_vec()),
+            None => (f64::NAN, Vec::new()),
+        };
+        match from {
+            CycleFrom::Hopf => CycleStart::Hopf(HopfStart {
+                free,
+                params,
+                u0: self.setup.u0.clone(),
+                ntst,
+                ncol,
+            }),
+            CycleFrom::Orbit => {
+                CycleStart::Orbit(CycleSetup::new(free, params, ntst, ncol, orbit, period))
+            }
+            CycleFrom::Pd { mesh } => CycleStart::Pd(PdStart {
+                free,
+                params,
+                orbit,
+                period,
+                mesh: mesh.clone(),
+                ntst,
+                ncol,
+            }),
+        }
+    }
+
+    /// Checks that a start state of `got` values fits the run: `n` values, except for an
+    /// LC run from an orbit or a PD point, where it is the orbit at the base points of its
+    /// mesh followed by the period.
+    pub fn check_u0_len(&self, n: usize, got: usize) -> Result<(), String> {
+        let want = match (self.kind, &self.cycle) {
+            (Kind::Lc { ntst, ncol }, Some(CycleFrom::Orbit)) => n * (ntst * ncol + 1) + 1,
+            (Kind::Lc { .. }, Some(CycleFrom::Pd { mesh })) => {
+                // got = n (N m + 1) + 1, with N from the mesh and m in NCOL_RANGE.
+                let old = mesh.len() - 1;
+                let fits = n > 0 && got > 0 && (got - 1).is_multiple_of(n) && {
+                    let k = (got - 1) / n;
+                    k > 1 && (k - 1).is_multiple_of(old) && NCOL_RANGE.contains(&((k - 1) / old))
+                };
+                return if fits {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "u0: expected n (N m + 1) + 1 values with n = {n}, N = {old} from mesh \
+                         and m from {} to {}, got {got}",
+                        NCOL_RANGE.start(),
+                        NCOL_RANGE.end()
+                    ))
+                };
+            }
+            _ => n,
+        };
+        if got == want {
+            Ok(())
+        } else {
+            Err(format!("u0: expected {want} values, got {got}"))
         }
     }
 
@@ -169,6 +271,10 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
             "options",
             "switch",
             "start_is_special",
+            "ntst",
+            "ncol",
+            "start",
+            "mesh",
         ],
         "",
     )?;
@@ -177,15 +283,17 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         Some(Value::String(s)) if s == "EP" => Kind::Ep,
         Some(Value::String(s)) if s == "LP" => Kind::Lp,
         Some(Value::String(s)) if s == "H" => Kind::Hopf,
-        Some(_) => return Err("type: expected \"EP\", \"LP\" or \"H\"".into()),
+        Some(Value::String(s)) if s == "LC" => cycle_size(top, ir.n())?,
+        Some(_) => return Err("type: expected \"EP\", \"LP\", \"H\" or \"LC\"".into()),
     };
-    let (free, curve_free) = match (kind, top.get("free")) {
+    let one_free = matches!(kind, Kind::Ep | Kind::Lc { .. });
+    let (free, curve_free) = match (one_free, top.get("free")) {
         (_, None) => return Err("free: missing".into()),
-        (Kind::Ep, Some(Value::String(name))) => (
+        (true, Some(Value::String(name))) => (
             param_index(ir, name).ok_or_else(|| format!("free: unknown parameter \"{name}\""))?,
             None,
         ),
-        (Kind::Ep, Some(_)) => return Err("free: expected a string".into()),
+        (true, Some(_)) => return Err("free: expected a string".into()),
         (_, Some(Value::Array(names))) if names.len() == 2 => {
             let mut at = [0; 2];
             for (i, name) in names.iter().enumerate() {
@@ -222,17 +330,33 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         }
     }
 
-    let u0 = match top.get("u0") {
-        None => ir.init.clone(),
-        Some(Value::Array(a)) => {
-            if a.len() != ir.n() {
-                return Err(format!("u0: expected {} values, got {}", ir.n(), a.len()));
+    let cycle = match kind {
+        Kind::Lc { .. } => Some(cycle_from(top)?),
+        _ => {
+            if let Some(key) = LC_KEYS.iter().find(|k| top.contains_key(**k)) {
+                return Err(format!("{key}: only an LC run takes this key"));
             }
-            a.iter()
-                .enumerate()
-                .map(|(i, x)| number(x, &format!("u0[{i}]")))
-                .collect::<Result<Vec<f64>, String>>()?
+            None
         }
+    };
+
+    let u0 = match top.get("u0") {
+        // A start from an orbit has no default state.
+        None if matches!(cycle, Some(CycleFrom::Orbit | CycleFrom::Pd { .. }))
+            && mode == Mode::Cli =>
+        {
+            return Err(
+                "u0: missing; an LC run from an orbit or a PD point needs the orbit and the \
+                 period"
+                    .into(),
+            );
+        }
+        None => ir.init.clone(),
+        Some(Value::Array(a)) => a
+            .iter()
+            .enumerate()
+            .map(|(i, x)| number(x, &format!("u0[{i}]")))
+            .collect::<Result<Vec<f64>, String>>()?,
         Some(_) => return Err("u0: expected an array of numbers".into()),
     };
 
@@ -240,6 +364,17 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         None => Options::default(),
         Some(o) => parse_options(o)?,
     };
+    let has_option = |key: &str| top.get("options").is_some_and(|o| o.get(key).is_some());
+    match kind {
+        Kind::Lc { .. } if has_option("detect") => {
+            return Err("options.detect: an LC run always detects LPC, PD and NS".into());
+        }
+        Kind::Lc { .. } => {}
+        _ if has_option("mesh_adapt") => {
+            return Err("options.mesh_adapt: only an LC run adapts its mesh".into());
+        }
+        _ => {}
+    }
 
     let switch = match top.get("switch") {
         None => None,
@@ -269,13 +404,82 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
 
     let mut setup = EpSetup::new(free, params, u0);
     setup.start_is_special = start_is_special;
-    Ok(Problem {
+    let problem = Problem {
         setup,
         opts,
         switch,
         kind,
         curve_free,
-    })
+        cycle,
+    };
+    if mode == Mode::Cli {
+        problem.check_u0_len(ir.n(), problem.setup.u0.len())?;
+    }
+    Ok(problem)
+}
+
+/// Reads `ntst` and `ncol` of an LC problem.
+fn cycle_size(top: &Map<String, Value>, n: usize) -> Result<Kind, String> {
+    let ntst = count(top.get("ntst").ok_or("ntst: missing")?, "ntst")?;
+    let ncol = match top.get("ncol").ok_or("ncol: missing")?.as_u64() {
+        Some(m) if usize::try_from(m).is_ok_and(|m| NCOL_RANGE.contains(&m)) => m as usize,
+        _ => {
+            return Err(format!(
+                "ncol: expected an integer from {} to {}",
+                NCOL_RANGE.start(),
+                NCOL_RANGE.end()
+            ));
+        }
+    };
+    if n == 0 {
+        return Err("type: an LC run needs at least one state variable".into());
+    }
+    if cycle_stride(n, ntst, ncol).is_none() {
+        return Err("ntst: ntst times ncol is too large".into());
+    }
+    Ok(Kind::Lc { ntst, ncol })
+}
+
+/// Reads `start` and `mesh` of an LC problem.
+fn cycle_from(top: &Map<String, Value>) -> Result<CycleFrom, String> {
+    let from = match top.get("start") {
+        None => return Err("start: missing".into()),
+        Some(Value::String(s)) if s == "hopf" => CycleFrom::Hopf,
+        Some(Value::String(s)) if s == "orbit" => CycleFrom::Orbit,
+        Some(Value::String(s)) if s == "pd" => {
+            let v = top
+                .get("mesh")
+                .ok_or("mesh: missing; a start from a PD point needs the mesh of its orbit")?;
+            CycleFrom::Pd {
+                mesh: parse_mesh(v)?,
+            }
+        }
+        Some(_) => return Err("start: expected \"hopf\", \"orbit\" or \"pd\"".into()),
+    };
+    if !matches!(from, CycleFrom::Pd { .. }) && top.contains_key("mesh") {
+        return Err("mesh: only a start from a PD point takes a mesh".into());
+    }
+    Ok(from)
+}
+
+/// A mesh: at least two numbers that rise strictly from exactly 0 to exactly 1.
+fn parse_mesh(v: &Value) -> Result<Vec<f64>, String> {
+    let a = v
+        .as_array()
+        .filter(|a| a.len() >= 2)
+        .ok_or("mesh: expected an array of at least 2 numbers")?;
+    let mesh = a
+        .iter()
+        .enumerate()
+        .map(|(i, x)| number(x, &format!("mesh[{i}]")))
+        .collect::<Result<Vec<f64>, String>>()?;
+    if mesh[0] != 0.0 || mesh[mesh.len() - 1] != 1.0 {
+        return Err("mesh: must run from 0 to 1".into());
+    }
+    if mesh.windows(2).any(|w| w[0] >= w[1]) {
+        return Err("mesh: must rise strictly".into());
+    }
+    Ok(mesh)
 }
 
 /// Reads the `options` object.
@@ -294,6 +498,7 @@ pub fn parse_options(v: &Value) -> Result<Options, String> {
             "direction",
             "bounds",
             "detect",
+            "mesh_adapt",
         ],
         "options",
     )?;
@@ -308,6 +513,12 @@ pub fn parse_options(v: &Value) -> Result<Options, String> {
             "tol_f" => o.tol_f = positive(val, &path)?,
             "max_steps" => o.max_steps = count(val, &path)?,
             "max_newton" => o.max_newton = count(val, &path)?,
+            "mesh_adapt" => {
+                o.mesh_adapt = val
+                    .as_u64()
+                    .and_then(|k| usize::try_from(k).ok())
+                    .ok_or_else(|| format!("{path}: expected an integer of at least 0"))?
+            }
             "direction" => {
                 let d = number(val, &path)?;
                 if d == 0.0 {
@@ -444,7 +655,7 @@ mod tests {
             ),
             (
                 json!({"type": "BP", "free": "a"}),
-                "type: expected \"EP\", \"LP\" or \"H\"",
+                "type: expected \"EP\", \"LP\", \"H\" or \"LC\"",
             ),
         ];
         for (v, msg) in cases {
@@ -552,5 +763,207 @@ mod tests {
                 assert_eq!(o.h0.to_bits(), a.to_bits(), "h0 {a:.17e}");
             }
         }
+    }
+
+    fn lc(start: &str) -> Value {
+        json!({"type": "LC", "free": "a", "ntst": 2, "ncol": 3, "start": start})
+    }
+
+    #[test]
+    fn an_lc_problem_builds_a_cycle_run_for_each_start() {
+        let ir = model();
+        let p = parse_problem(&lc("hopf"), &ir, Mode::Abi).unwrap();
+        assert_eq!(p.kind, Kind::Lc { ntst: 2, ncol: 3 });
+        assert_eq!(p.cycle, Some(CycleFrom::Hopf));
+        let RunKind::Cycle(CycleStart::Hopf(h)) = p.run_kind() else {
+            panic!("expected a Hopf start");
+        };
+        assert_eq!((h.free, h.ntst, h.ncol), (0, 2, 3));
+        assert_eq!(h.u0, ir.init);
+        assert_eq!(h.params, ir.par_values);
+
+        // An orbit on the uniform mesh: 2 states at N m + 1 = 7 points, then T.
+        let mut orbit: Vec<f64> = (0..14).map(f64::from).collect();
+        orbit.push(6.5);
+        let mut v = lc("orbit");
+        v["u0"] = json!(orbit);
+        let p = parse_problem(&v, &ir, Mode::Cli).unwrap();
+        let RunKind::Cycle(CycleStart::Orbit(c)) = p.run_kind() else {
+            panic!("expected an orbit start");
+        };
+        assert_eq!(c.profile, orbit[..14]);
+        assert_eq!(c.period, 6.5);
+        assert_eq!((c.free, c.ntst, c.ncol), (0, 2, 3));
+
+        // A PD point of a run on 1 interval of 2 points: 2 states at 3 points, then T.
+        let mut v = lc("pd");
+        v["mesh"] = json!([0.0, 1.0]);
+        v["u0"] = json!([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.5]);
+        let p = parse_problem(&v, &ir, Mode::Cli).unwrap();
+        let RunKind::Cycle(CycleStart::Pd(d)) = p.run_kind() else {
+            panic!("expected a PD start");
+        };
+        assert_eq!(d.orbit, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(d.period, 7.5);
+        assert_eq!(d.mesh, [0.0, 1.0]);
+        assert_eq!((d.ntst, d.ncol), (2, 3));
+    }
+
+    #[test]
+    fn lc_keys_are_checked() {
+        let ir = model();
+        let put = |mut v: Value, key: &str, x: Value| {
+            v[key] = x;
+            v
+        };
+        let drop = |mut v: Value, key: &str| {
+            v.as_object_mut().unwrap().remove(key);
+            v
+        };
+        let cases = [
+            (drop(lc("hopf"), "ntst"), "ntst: missing".to_string()),
+            (
+                put(lc("hopf"), "ntst", json!(0)),
+                "ntst: expected an integer of at least 1".into(),
+            ),
+            (drop(lc("hopf"), "ncol"), "ncol: missing".into()),
+            (
+                put(lc("hopf"), "ncol", json!(8)),
+                "ncol: expected an integer from 2 to 7".into(),
+            ),
+            (
+                put(lc("hopf"), "ncol", json!(1)),
+                "ncol: expected an integer from 2 to 7".into(),
+            ),
+            (
+                put(lc("hopf"), "ntst", json!(u64::MAX / 2)),
+                "ntst: ntst times ncol is too large".into(),
+            ),
+            (drop(lc("hopf"), "start"), "start: missing".into()),
+            (
+                lc("bp"),
+                "start: expected \"hopf\", \"orbit\" or \"pd\"".into(),
+            ),
+            (
+                put(lc("hopf"), "free", json!(["a", "a"])),
+                "free: expected a string".into(),
+            ),
+            (
+                put(lc("hopf"), "mesh", json!([0.0, 1.0])),
+                "mesh: only a start from a PD point takes a mesh".into(),
+            ),
+            (
+                lc("pd"),
+                "mesh: missing; a start from a PD point needs the mesh of its orbit".into(),
+            ),
+            (
+                put(lc("pd"), "mesh", json!([0.0])),
+                "mesh: expected an array of at least 2 numbers".into(),
+            ),
+            (
+                put(lc("pd"), "mesh", json!([0.0, "x", 1.0])),
+                "mesh[1]: expected a number".into(),
+            ),
+            (
+                put(lc("pd"), "mesh", json!([0.1, 1.0])),
+                "mesh: must run from 0 to 1".into(),
+            ),
+            (
+                put(lc("pd"), "mesh", json!([0.0, 0.5, 0.5, 1.0])),
+                "mesh: must rise strictly".into(),
+            ),
+            (
+                put(lc("hopf"), "switch", json!("BP1")),
+                "switch: only an EP run can switch branches".into(),
+            ),
+            (
+                put(lc("hopf"), "start_is_special", json!(true)),
+                "start_is_special: only an EP run starts at a special point".into(),
+            ),
+            (
+                put(lc("hopf"), "options", json!({"detect": {"lp": true}})),
+                "options.detect: an LC run always detects LPC, PD and NS".into(),
+            ),
+            (
+                put(lc("hopf"), "options", json!({"mesh_adapt": -1})),
+                "options.mesh_adapt: expected an integer of at least 0".into(),
+            ),
+            (
+                with("options", json!({"mesh_adapt": 3})),
+                "options.mesh_adapt: only an LC run adapts its mesh".into(),
+            ),
+        ];
+        for (v, msg) in cases {
+            assert_eq!(parse_problem(&v, &ir, Mode::Abi).unwrap_err(), msg, "{v}");
+        }
+        for key in ["ntst", "ncol", "start", "mesh"] {
+            let e = parse_problem(&with(key, json!(2)), &ir, Mode::Abi).unwrap_err();
+            assert_eq!(e, format!("{key}: only an LC run takes this key"));
+        }
+        let p = parse_problem(
+            &put(lc("hopf"), "options", json!({"mesh_adapt": 0})),
+            &ir,
+            Mode::Abi,
+        )
+        .unwrap();
+        assert_eq!(p.opts.mesh_adapt, 0);
+    }
+
+    #[test]
+    fn the_start_state_length_follows_the_start() {
+        let ir = model();
+        // A Hopf start takes the equilibrium, n values, with ir.init as the CLI default.
+        let p = parse_problem(&lc("hopf"), &ir, Mode::Cli).unwrap();
+        assert_eq!(p.setup.u0, ir.init);
+        assert_eq!(p.check_u0_len(2, 2), Ok(()));
+        assert_eq!(
+            p.check_u0_len(2, 15),
+            Err("u0: expected 2 values, got 15".into())
+        );
+        // An orbit start takes n (N m + 1) + 1 = 15 values and has no default.
+        let p = parse_problem(&lc("orbit"), &ir, Mode::Abi).unwrap();
+        assert_eq!(p.check_u0_len(2, 15), Ok(()));
+        assert_eq!(
+            p.check_u0_len(2, 14),
+            Err("u0: expected 15 values, got 14".into())
+        );
+        let missing = "u0: missing; an LC run from an orbit or a PD point needs the orbit and \
+                       the period";
+        assert_eq!(
+            parse_problem(&lc("orbit"), &ir, Mode::Cli).unwrap_err(),
+            missing
+        );
+        let mut v = lc("orbit");
+        v["u0"] = json!([1.0, 2.0]);
+        assert_eq!(
+            parse_problem(&v, &ir, Mode::Cli).unwrap_err(),
+            "u0: expected 15 values, got 2"
+        );
+        // A PD start on a mesh of 2 intervals takes n (2 m + 1) + 1 values, m from 2 to 7.
+        let mut v = lc("pd");
+        v["mesh"] = json!([0.0, 0.25, 1.0]);
+        let p = parse_problem(&v, &ir, Mode::Abi).unwrap();
+        for m in 2..=7 {
+            assert_eq!(p.check_u0_len(2, 2 * (2 * m + 1) + 1), Ok(()), "m = {m}");
+        }
+        let bad = "u0: expected n (N m + 1) + 1 values with n = 2, N = 2 from mesh and m from 2 \
+                   to 7, got";
+        // 7 is m = 1, 9 has an odd point count, 35 is m = 8.
+        for got in [0, 1, 2, 3, 6, 7, 9, 35] {
+            assert_eq!(
+                p.check_u0_len(2, got),
+                Err(format!("{bad} {got}")),
+                "got = {got}"
+            );
+        }
+        assert_eq!(parse_problem(&v, &ir, Mode::Cli).unwrap_err(), missing);
+    }
+
+    #[test]
+    fn cycle_stride_checks_overflow() {
+        // [alpha, u(2 * 7), T, mesh(3), mult(4), tests(3), h, iters]
+        assert_eq!(cycle_stride(2, 2, 3), Some(1 + 14 + 1 + 3 + 4 + 3 + 2));
+        assert_eq!(cycle_stride(2, usize::MAX / 2, 3), None);
+        assert_eq!(cycle_stride(usize::MAX / 2, 1, 2), None);
     }
 }
