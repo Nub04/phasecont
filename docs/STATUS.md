@@ -117,7 +117,7 @@ P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; merged into `mai
 
 ## In progress
 
-P5 (limit cycles, plan approved on 2026-10-31) on branch `phase5-limit-cycles`, not pushed. Packages 1 to 8 of 10 are done:
+P5 (limit cycles, plan approved on 2026-10-31) on branch `phase5-limit-cycles`, not pushed. Packages 1 to 9 of 10 are done:
 
 - 137aaa1: `cycle/basis.rs`, Gauss-Legendre nodes and weights by Newton on the Legendre polynomials, and the Lagrange basis on m + 1 base points.
 - 513f8cc: `pc-linalg` `condense.rs`, the condensation solver for the bordered collocation block system, with the monodromy matrix from the condensed blocks. rayon is a `pc-linalg` dependency and faer's `sparse-linalg` feature is on, both approved in the plan.
@@ -163,7 +163,16 @@ Rulings in package 8:
 - `detect` is refused for LC, since LPC, PD and NS are always tested; `mesh_adapt` is refused for the other types.
 - A problem whose stride would overflow `usize` is refused when it is parsed ("ntst: ntst times ncol is too large"). `stride` still maps an overflow to `usize::MAX` as a second guard, so the `count * stride` check in `pc_run_points` fails instead of wrapping.
 
-Next is package 9: the MATLAB API.
+- d0805d1: limit cycles in the MATLAB API. `phasecont.continuation(m, start, Type = "LC", NTST = N, NCOL = m)` starts from a Hopf point (or any equilibrium point or vector, which the engine checks) or from a PD point of an earlier cycle branch. A cycle `Branch` has `Period`, `Mesh`, `NTST` and `NCOL`, keeps the multipliers in `Eigenvalues` and the LPC, PD and NS test values in `Tests`, and `cycle(i)` returns the orbit of point i as times and states over one period. `plot` draws the maximum and minimum of the chosen state, and `Plot = true` draws the maximum while the run goes and ends with the same lines. `tests/CycleTest.m` runs the Brusselator from its Hopf point at b = 2 (first period 2 pi within 1e-3, trivial multiplier within 1e-6 at every point, all points stable) and Rössler (a = b = 0.2, c = 2.5, free a) from its Hopf point to a PD point with a in (0.2, 0.25) and a multiplier within 1e-4 of -1, then the doubled branch from that point with its first period twice the old one within 1e-3. `cargo test`: 984 passed, 0 failed; MATLAB 173 tests, 172 passed, 0 failed, 1 filtered by assumption.
+
+Rulings in package 9:
+
+- `NTST` and `NCOL` are required for LC and have no default. Other types refuse them, and LC refuses `Detect` and `Switch`. `Var` works as for EP.
+- A cycle point is a start only when its label is PD. Any other start goes to the engine as a Hopf start, and a state with no complex pair fails the run with `phasecont:engine:badProblem`.
+- A cycle point is stable when every multiplier except the one closest to 1 has modulus below 1. A point with a NaN multiplier is not stable.
+- The Rössler checks are self-consistent, since no oracle file exists (SPEC section 14).
+
+Next is package 10: docs.
 
 ## Next
 
@@ -176,6 +185,7 @@ Next is package 9: the MATLAB API.
 
 ## Open questions
 
+- Open from P5: the engine option `mesh_adapt` (default 3) is not exposed in MATLAB, so a MATLAB LC run always adapts the mesh every 3 accepted points. A `MeshAdapt` option would change the public API.
 - Open from P4:
   - The BT coefficients use the sign convention a > 0, and the ZH coefficients use b > 0. The normalization strings record both. The owner may prefer another convention.
   - HH fifth-order coefficients S1 and S2 are not computed (see P4b). They need a second source for the formulas.
