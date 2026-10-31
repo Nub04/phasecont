@@ -117,7 +117,7 @@ P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; merged into `mai
 
 ## In progress
 
-P5 (limit cycles, plan approved on 2026-10-31) on branch `phase5-limit-cycles`, not pushed. Packages 1 to 9 of 10 are done:
+P5 (limit cycles, plan approved on 2026-10-31) on branch `phase5-limit-cycles`, not pushed. All 10 packages are done:
 
 - 137aaa1: `cycle/basis.rs`, Gauss-Legendre nodes and weights by Newton on the Legendre polynomials, and the Lagrange basis on m + 1 base points.
 - 513f8cc: `pc-linalg` `condense.rs`, the condensation solver for the bordered collocation block system, with the monodromy matrix from the condensed blocks. rayon is a `pc-linalg` dependency and faer's `sparse-linalg` feature is on, both approved in the plan.
@@ -172,7 +172,9 @@ Rulings in package 9:
 - A cycle point is stable when every multiplier except the one closest to 1 has modulus below 1. A point with a NaN multiplier is not stable.
 - The Rössler checks are self-consistent, since no oracle file exists (SPEC section 14).
 
-Next is package 10: docs.
+- 1f1f599 and 83d9d2d: package 10. `CycleTest/rosslerOracle` compares the first PD point of the Rössler run with `references/rossler.json` to 1e-6 relative and is skipped as "oracle missing" while that file does not exist; its header gives the file format. A temporary file with the engine's own PD value checked the comparison path once and was deleted. SPEC sections 7, 10 and 11 now describe the cycle problem as built: fixed N and m, the PALC scaling, the rayon threshold, the LPC test, the AUTO-07p mesh port, both starts, the LC problem and status JSON, the row layout and the MATLAB API. MATLAB 174 tests, 172 passed, 0 failed, 2 filtered by assumption (the oracle test and `BuildTest/wslRootElsewhereUsesToolboxBin`).
+
+Next: one read-through of the whole branch, then the merge choice.
 
 ## Next
 
