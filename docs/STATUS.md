@@ -2,7 +2,7 @@
 
 ## Phase
 
-P4 (LP and H curves, codim-2 detection and normal forms; SPEC section 14) is implemented on branch `phase4-codim2` and awaits acceptance. P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 78c5df6. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 as PR #2 (3748707). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
+P4b closes the open items of P4 on branch `phase4b-open-items` (cut from 14d6455) and awaits the owner's choice to merge. P4 (LP and H curves, codim-2 detection and normal forms; SPEC section 14) merged into `main` locally on 2026-10-30 (14d6455, not pushed). P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 78c5df6. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 as PR #2 (3748707). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
 
 ## Done
 
@@ -99,6 +99,11 @@ P4b (branch `phase4b-open-items`, cut from 14d6455, closes the open items of P4)
 
 - Hopf detection has no dimension limit. `MAX_HOPF_DIM` and its warning are gone. `hopf_is_detected_above_100_variables` runs a 101-variable model (`hopf101.ode`, a planar Hopf normal form plus 99 stable variables) on both evaluators and finds H at al = 0 to 1e-8 with no warning. Release-mode cost of one `psi_h` call against one dense eigenvalue call on the same size: n = 101, 78 us against 1.4 ms; n = 300, 0.83 ms against 15 ms; n = 1000, 8.3 ms against 0.42 s.
 - Codim-2 points are polished by Newton's method along the curve (`refine_zero` in `locate.rs`) and carry `refined = true`. CP (Test 7), BT on both curves (Test 8) and GH (Test 9) now sit within 1e-10 of the exact positions, up from 1e-8. The slope of the test is a forward difference along the tangent, so each step costs one extra test evaluation. A point that does not converge keeps its Illinois position with `refined = false`. Unit tests in `locate.rs` cover a capped search that Newton finishes and a test that is undefined next to the point.
+- ZH normal form coefficients (436f39e): b, c, d and e from Kuznetsov (1999) section 8, at ZH points on both the LP curve and the H curve. The sign of q0 makes b > 0, a convention of this project like a > 0 at BT. Tests use our own models with the G values read off by hand, plus a coordinate change by an orthogonal map (the |q0| = 1 normalization allows no other). The warp test asserts b, c, Re d and e.
+- HH cubic coefficients (68927d2): P11, P12, P21, P22 and omega2 from section 9, with the pairs ordered w1 > w2. The warp test asserts all four real parts. The fifth-order coefficients S1 and S2 stay unimplemented: the open copy of the paper has misprints in those formulas and no second source confirms them (rule 9).
+- LP and H curves in the C ABI and MATLAB (4adcfeb, 61badc2, d236c08). The engine has a `RunKind`, and `pc-ffi` and `pc-cli` take problem `type` `LP` or `H` with two free names. The ABI struct is unchanged (17 members, 128 bytes, `abi_version` 1); the JSON gained `kind`, `codim2_labels`, `coefficient2` and `coefficients`, and curve rows have their own layout (SPEC section 10). MATLAB has `continuation(..., Type="LP"|"H", Free=[a1 a2])`, `Branch.Type`, `Alpha` (N-by-2), `Codim2`, `Codim2Labels` and `Point.Data.values` (SPEC section 11). `kappa` of the Hopf curve is not exposed, and `Stable` is false on a curve.
+- Checks at 61badc2: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (939 tests, no failures), `cargo deny check` and `cargo build --release --target x86_64-pc-windows-gnu -p pc-ffi` pass. Commit d236c08 changed no Rust.
+- MATLAB suite at d236c08: 165 tests, 159 passed, 5 failed and 4 incomplete. All 5 failures are `AotTest`. Windows Smart App Control blocks freshly built unsigned MEX and DLL files here, so `buildtool cargo mex test` does not run green on this machine. The run used `buildtool cargo`, then the previously staged `pckern.mexw64` gateway (24064 bytes) with the fresh `pckern.dll`, then `buildtool test`. The 4 incomplete are the AOT tests and `BuildTest/wslRootElsewhereUsesToolboxBin` (an assumption). `CurveTest` (11 tests) and the 4 new `Rows2BranchTest` tests pass.
 
 P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; merged into `main` as PR #2, 3748707):
 
@@ -112,11 +117,11 @@ P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; merged into `mai
 
 ## In progress
 
-P4 awaits acceptance by the owner. P8a merged into `main` on 2026-10-30 (78c5df6).
+P4b awaits the owner's choice (merge locally, push and PR, or keep). P4 and P8a are merged into `main` locally.
 
 ## Next
 
-- P5, P6, P7b and P8 follow P4.
+- P5, P6, P7b and P8 follow P4b.
 - P4 and later: a continuation that changes a parameter or state read by a table formula needs a new lowering of the model (P2 known difference).
 
 ## Blocked
@@ -126,9 +131,8 @@ P4 awaits acceptance by the owner. P8a merged into `main` on 2026-10-30 (78c5df6
 ## Open questions
 
 - Open from P4:
-  - ZH and HH normal form coefficients are not computed. The points are detected, located and labeled.
-  - The BT coefficients use the sign convention a > 0, which the normalization string records. The owner may prefer another convention.
-  - LP and H curves are reachable from Rust only. Exposing them in the MATLAB API and the C ABI needs the owner's approval first.
+  - The BT coefficients use the sign convention a > 0, and the ZH coefficients use b > 0. The normalization strings record both. The owner may prefer another convention.
+  - HH fifth-order coefficients S1 and S2 are not computed (see P4b). They need a second source for the formulas.
 - Owner: File Exchange route for v0.3, checked on 2026-10-29. Direct upload accepts BSD only. Apache-2.0 is allowed only for a GitHub-linked entry. The R2026b help says a package with MEX or DLL files cannot be submitted to File Exchange, and it does not say whether a GitHub-linked entry is exempt. The repo is private, which blocks the GitHub link route. Ask MathWorks before relying on either route.
 - P8 release build: `pckern.dll` embeds host paths, about 377 references to `/home/nub04/.cargo/registry` and 8 to `target/`. Path remapping belongs in the release build.
 - P8 or later: the gateway never unloads `pckern.dll`. Uninstalling or upgrading the toolbox in a MATLAB session that has used PhaseCont fails with "Permission denied" and leaves a stale folder under `%APPDATA%\MathWorks\MATLAB Add-Ons` until MATLAB exits. Add an unload or shutdown function.
