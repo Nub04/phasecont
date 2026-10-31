@@ -117,7 +117,7 @@ P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; merged into `mai
 
 ## In progress
 
-P5 (limit cycles, plan approved on 2026-10-31) on branch `phase5-limit-cycles`, not pushed. Packages 1 to 5 of 10 are done:
+P5 (limit cycles, plan approved on 2026-10-31) on branch `phase5-limit-cycles`, not pushed. Packages 1 to 6 of 10 are done:
 
 - 137aaa1: `cycle/basis.rs`, Gauss-Legendre nodes and weights by Newton on the Legendre polynomials, and the Lagrange basis on m + 1 base points.
 - 513f8cc: `pc-linalg` `condense.rs`, the condensation solver for the bordered collocation block system, with the monodromy matrix from the condensed blocks. rayon is a `pc-linalg` dependency and faer's `sparse-linalg` feature is on, both approved in the plan.
@@ -139,7 +139,15 @@ Rulings in package 5:
 - When every m-th derivative is below 1e-7 the mesh stays, as in AUTO. A new mesh that is not strictly increasing or not finite is refused and the old one kept.
 - The interpolated orbit is not an exact solution on the new mesh; the next corrector step fixes it, as in AUTO. The PALC scale factor stays as it was.
 
-Next is package 6: the branch switch at a PD point.
+- e588cdd: `CycleStart::Pd(PdStart)`, the switch to the period-doubled branch. The eigenfunction psi of the multiplier -1 is solved from the condensed system of the PD orbit, the orbit and psi (with -psi on the second half) are doubled onto [0, 1] and interpolated onto the new N and m, and the first orbit is corrected at h0 along that direction, halving it up to 4 times. On Rössler (a = b = 0.2, N = 40, m = 4) the run from an RK4 orbit at c = 2.5 finds one PD at c = 2.8324450, period 5.7698. The switched run (N = 60, m = 4) goes to c = 3 with no warnings, and there its period 11.5310741 matches the sum of two RK4 crossing times (6.0085632 + 5.5225106) to 1e-4, it closes under RK4 over the period with a gap of 6.8e-9, and the gap at half the period is 1.38. `mesh::interpolate` now takes the number of points per interval on the new mesh. `cargo test`: 973 passed, 0 failed.
+
+Rulings in package 6:
+
+- This test stands in for the Rössler oracle of SPEC section 9, as the plan says, until `references/rossler.json` exists.
+- The PD start warns when the multiplier closest to -1 is more than 1e-6 away from it and refuses a complex one. Like a Hopf start, it ignores `direction` < 0 with a warning, because both directions give the same orbits half a period apart.
+- The new mesh takes its N + 1 points evenly in the index of the doubled mesh, interpolated linearly between its points, so the adapted spacing of the PD orbit carries over to both halves.
+
+Next is package 7: the rayon threshold.
 
 ## Next
 
