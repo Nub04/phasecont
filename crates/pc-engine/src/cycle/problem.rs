@@ -23,7 +23,7 @@ use crate::error::EngineError;
 use crate::model::ModelEval;
 use crate::problem::Problem;
 use pc_ir::EntryKind;
-use pc_linalg::{BlockSystem, CondenseShape, Condenser, LinalgError, eigenvalues};
+use pc_linalg::{BlockSystem, CondenseShape, Condenser, LinalgError, eigenvalues, eigvec};
 
 /// Where and along which parameter a periodic orbit is computed.
 #[derive(Clone, Debug)]
@@ -384,6 +384,54 @@ impl<'a> CycleProblem<'a> {
         self.condenser.condense_intervals(&sys, false)?;
         Ok(self.condenser.monodromy()?)
     }
+
+    /// Replaces the mesh, with `uref` on the new mesh as the reference of the phase
+    /// condition.
+    pub(crate) fn set_mesh(&mut self, mesh: Vec<f64>, uref: &[f64]) {
+        self.mesh = mesh;
+        self.set_reference(uref);
+    }
+
+    /// The eigenfunction of the multiplier closest to -1 at x, at the base points, and that
+    /// multiplier. It solves the linearized collocation equations with T and alpha held,
+    /// from the eigenvector w of the monodromy matrix with 2-norm 1 at tau = 0, so it ends
+    /// at mu w. `BadProblem` when that multiplier is not real.
+    pub(crate) fn pd_eigenfunction(&mut self, x: &[f64]) -> Result<(Vec<f64>, f64), EngineError> {
+        let n = self.model.n();
+        let mono = self.monodromy(x)?;
+        let eigs = eigenvalues(&mono, n)?;
+        let dist = |z: &(f64, f64)| (z.0 + 1.0).hypot(z.1);
+        let Some(&(re, im)) = eigs.iter().min_by(|a, b| dist(a).total_cmp(&dist(b))) else {
+            return Err(EngineError::BadProblem("the model has no variables".into()));
+        };
+        if im.abs() > 1e-12 * re.abs().max(1.0) {
+            return Err(EngineError::BadProblem(format!(
+                "the multiplier closest to -1 is {re} + {im}i, which is not real; start \
+                 from a PD point"
+            )));
+        }
+        let (w, _) = eigvec(&mono, n, (re, 0.0))?;
+        let dim = self.dim();
+        let mut bc = vec![0.0; n * (2 * n + 2)];
+        for c in 0..n {
+            bc[c + n * c] = 1.0;
+        }
+        let mut border = vec![0.0; 2 * dim];
+        border[2 * (dim - 2)] = 1.0;
+        border[1 + 2 * (dim - 1)] = 1.0;
+        let mut rhs = vec![0.0; dim];
+        let top = self.ntst * n * self.basis.m();
+        rhs[top..top + n].copy_from_slice(&w);
+        let mut sol = vec![0.0; dim];
+        let sys = BlockSystem {
+            blocks: &self.blocks,
+            bc: &bc,
+            border: &border,
+        };
+        self.condenser.solve(&sys, &rhs, &mut sol, false)?;
+        sol.truncate(dim - 2);
+        Ok((sol, re))
+    }
 }
 
 impl Problem for CycleProblem<'_> {
@@ -535,8 +583,9 @@ impl Problem for CycleProblem<'_> {
         let Some(new) = mesh::new_mesh(&self.basis, n, &self.mesh, &x[..k]) else {
             return false;
         };
-        let xu = mesh::interpolate(&self.basis, n, &self.mesh, &new, &x[..k]);
-        let vu = mesh::interpolate(&self.basis, n, &self.mesh, &new, &v[..k]);
+        let m = self.basis.m();
+        let xu = mesh::interpolate(&self.basis, n, &self.mesh, &new, m, &x[..k]);
+        let vu = mesh::interpolate(&self.basis, n, &self.mesh, &new, m, &v[..k]);
         x[..k].copy_from_slice(&xu);
         v[..k].copy_from_slice(&vu);
         self.mesh = new;

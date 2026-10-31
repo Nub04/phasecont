@@ -1,6 +1,6 @@
-//! Continuation of periodic orbits in one parameter (SPEC §7): the start from a Hopf point
-//! or from a guessed orbit, the run on the collocation problem, and the check of the
-//! trivial Floquet multiplier.
+//! Continuation of periodic orbits in one parameter (SPEC §7): the start from a Hopf point,
+//! from a PD point or from a guessed orbit, the run on the collocation problem, and the
+//! check of the trivial Floquet multiplier.
 //!
 //! The PALC loop measures arclength in scaled unknowns: the profile values are multiplied
 //! by s = 1/sqrt(N m), T and alpha are not. The sum of squares of the scaled profile then
@@ -8,6 +8,8 @@
 //! so the step length does not grow with the mesh. The points the caller sees are in the
 //! original unknowns.
 
+use super::basis::CollocationBasis;
+use super::mesh;
 use super::problem::{CycleProblem, CycleSetup, check_dims};
 use crate::branch::{Branch, Options, Point, StopReason};
 use crate::error::EngineError;
@@ -35,6 +37,57 @@ pub struct HopfStart {
     pub ncol: usize,
 }
 
+/// A start from a PD point of a cycle branch, onto the branch of period about 2T.
+#[derive(Clone, Debug)]
+pub struct PdStart {
+    /// Index of the continuation parameter among the model parameters.
+    pub free: usize,
+    /// All `n_p` parameter values at the PD point.
+    pub params: Vec<f64>,
+    /// The orbit at the PD point at the base points of `mesh`, point-major, as in
+    /// `Point::u` without the period.
+    pub orbit: Vec<f64>,
+    /// The period T at the PD point.
+    pub period: f64,
+    /// The mesh of `orbit`, strictly increasing from 0 to 1.
+    pub mesh: Vec<f64>,
+    /// Number of mesh intervals N (NTST) of the new branch, at least 1.
+    pub ntst: usize,
+    /// Number of collocation points per interval m (NCOL) of the new branch, in
+    /// [`NCOL_RANGE`](super::basis::NCOL_RANGE).
+    pub ncol: usize,
+}
+
+impl PdStart {
+    /// The start from `point`, a PD special point of a cycle branch in parameter `free`,
+    /// with the other parameters from `params`.
+    pub fn from_point(
+        free: usize,
+        params: &[f64],
+        point: &Point,
+        ntst: usize,
+        ncol: usize,
+    ) -> PdStart {
+        let (orbit, period) = match point.u.split_last() {
+            Some((t, orbit)) => (orbit.to_vec(), *t),
+            None => (Vec::new(), f64::NAN),
+        };
+        let mut params = params.to_vec();
+        if let Some(a) = params.get_mut(free) {
+            *a = point.alpha;
+        }
+        PdStart {
+            free,
+            params,
+            orbit,
+            period,
+            mesh: point.mesh.clone(),
+            ntst,
+            ncol,
+        }
+    }
+}
+
 /// Where a cycle run starts.
 #[derive(Clone, Debug)]
 pub enum CycleStart {
@@ -42,14 +95,22 @@ pub enum CycleStart {
     Orbit(CycleSetup),
     /// A Hopf point, with the first orbit taken from the eigenvector of the Hopf pair.
     Hopf(HopfStart),
+    /// A PD point, with the first orbit taken from the orbit there run twice and the
+    /// eigenfunction of the multiplier -1.
+    Pd(PdStart),
 }
 
 /// Largest distance of the trivial Floquet multiplier from 1 before a point gets a
 /// warning (SPEC §7).
 const TRIVIAL_TOL: f64 = 1e-6;
 
-/// Number of times the Hopf start halves the amplitude after a failed correction.
-const HOPF_RETRIES: usize = 4;
+/// Largest distance of the multiplier closest to -1 from -1 at a PD start before the run
+/// gets a warning.
+const PD_TOL: f64 = 1e-6;
+
+/// Number of times a start from a Hopf or PD point halves the amplitude after a failed
+/// correction.
+const RETRIES: usize = 4;
 
 /// Follows a branch of periodic orbits from `start`. `Point::u` holds the orbit at the
 /// N m + 1 base points, point-major, then the period T; `Point::alpha` is the parameter
@@ -61,8 +122,13 @@ const HOPF_RETRIES: usize = 4;
 /// the first orbit at amplitude `Options::h0` along the Hopf eigenvector, halving it up to
 /// four times when the correction fails, and leaves the Hopf point with growing
 /// amplitude: `Options::direction` is ignored there, with a warning when it is negative.
-/// A run in which some point has no multiplier within 1e-6 of 1 gets a warning, because
-/// the mesh is then too coarse for the multipliers to be trusted.
+/// A PD start runs the orbit at the PD point twice, on NTST intervals of the new mesh, and
+/// puts the first orbit at amplitude `Options::h0` along the eigenfunction of the
+/// multiplier -1 with the same halving. Both directions there give the same orbits, half
+/// a period apart, so `Options::direction` is ignored as at a Hopf point, and the run gets
+/// a warning when the multiplier closest to -1 is more than 1e-6 from it. A run in which
+/// some point has no multiplier within 1e-6 of 1 gets a warning, because the mesh is then
+/// too coarse for the multipliers to be trusted.
 pub fn continue_cycle(
     model: &mut dyn ModelEval,
     start: &CycleStart,
@@ -86,18 +152,13 @@ pub fn continue_cycle(
         }
         CycleStart::Hopf(h) => {
             let (p, x0, t0) = hopf_start(model, h, opts, cancel, &mut early)?;
-            if opts.direction < 0.0 {
-                early.push(
-                    "the direction is ignored for a start from a Hopf point; the branch \
-                     leaves it with growing amplitude"
-                        .into(),
-                );
-            }
-            let o = Options {
-                direction: 1.0,
-                ..opts.clone()
-            };
-            (p, x0, Some(t0), o)
+            let what = "a Hopf point; the branch leaves it with growing amplitude";
+            (p, x0, Some(t0), switched(opts, what, &mut early))
+        }
+        CycleStart::Pd(s) => {
+            let (p, x0, t0) = pd_start(model, s, opts, cancel, &mut early)?;
+            let what = "a PD point; the two directions give the same orbits, half a period apart";
+            (p, x0, Some(t0), switched(opts, what, &mut early))
         }
     };
     p.inner.adapt_every = opts.mesh_adapt;
@@ -217,32 +278,151 @@ fn hopf_start<'a>(
         guess(opts.h0),
         period,
     );
-    let mut p = Scaled::new(CycleProblem::new(model, &setup)?);
-    // The direction phi in scaled unknowns, as a unit vector.
+    let p = Scaled::new(CycleProblem::new(model, &setup)?);
     let mut dir = phi.clone();
     dir.extend([0.0, 0.0]);
-    p.scale(&mut dir);
-    let nrm = dir.iter().map(|v| v * v).sum::<f64>().sqrt();
-    if !(nrm.is_finite() && nrm > 0.0) {
-        return Err(EngineError::Singular("the Hopf eigenvector is zero".into()));
-    }
-    for v in dir.iter_mut() {
-        *v /= nrm;
-    }
+    let dir = unit_direction(&p, dir, "Hopf eigenvector")?;
     let mut x0 = base.clone();
     x0.push(period);
     x0.push(h.params[h.free]);
     p.scale(&mut x0);
+    branch_off(p, &x0, &dir, opts, cancel, |q, eps| {
+        q.set_reference(&guess(eps))
+    })
+}
+
+/// The first orbit on the period-doubled branch and the tangent there, in scaled unknowns.
+///
+/// At the PD point the monodromy matrix has the multiplier -1, and the linearized flow has
+/// a solution psi with psi(1) = -psi(0). Run twice, the orbit is a cycle of period 2T on
+/// which the doubled branch crosses in a pitchfork, along psi on the first half and -psi
+/// on the second. That direction is periodic and orthogonal to the phase condition of the
+/// orbit run twice. Both are doubled onto [0, 1] and interpolated onto NTST intervals of
+/// NCOL points, whose mesh points are evenly spaced in the index of the doubled mesh. The
+/// correction then keeps the component along the direction at eps, as at a Hopf point.
+fn pd_start<'a>(
+    model: &'a mut dyn ModelEval,
+    s: &PdStart,
+    opts: &Options,
+    cancel: &AtomicBool,
+    warnings: &mut Vec<String>,
+) -> Result<(Scaled<'a>, Vec<f64>, Vec<f64>), EngineError> {
+    let n = model.n();
+    let bad = |m: String| Err(EngineError::BadProblem(m));
+    check_dims(model, s.free, &s.params, s.ntst, s.ncol)?;
+    let nint = s.mesh.len().saturating_sub(1);
+    if nint == 0
+        || s.mesh[0] != 0.0
+        || s.mesh[nint] != 1.0
+        || !s.mesh.windows(2).all(|w| w[1] > w[0])
+    {
+        return bad("the mesh of a PD start must rise strictly from 0 to 1".into());
+    }
+    let pts = s.orbit.len() / n;
+    if !s.orbit.len().is_multiple_of(n) || pts < 2 || !(pts - 1).is_multiple_of(nint) {
+        return bad(format!(
+            "expected the orbit at N m + 1 points of {n} values on {nint} mesh intervals, got \
+             {} values",
+            s.orbit.len()
+        ));
+    }
+    if s.params.iter().any(|v| !v.is_finite()) {
+        return bad("the PD point has NaN or infinite parameters".into());
+    }
+    let old_m = (pts - 1) / nint;
+    let (psi, mu) = {
+        let setup = CycleSetup::new(
+            s.free,
+            s.params.clone(),
+            nint,
+            old_m,
+            s.orbit.clone(),
+            s.period,
+        );
+        let mut src = CycleProblem::new(&mut *model, &setup)?;
+        src.set_mesh(s.mesh.clone(), &s.orbit);
+        let mut x = s.orbit.clone();
+        x.extend([s.period, s.params[s.free]]);
+        src.pd_eigenfunction(&x)?
+    };
+    if (mu + 1.0).abs() > PD_TOL {
+        warnings.push(format!(
+            "the start is not a PD point to {PD_TOL:e}: the multiplier closest to -1 is {mu}"
+        ));
+    }
+    let mut doubled: Vec<f64> = s.mesh.iter().map(|t| t / 2.0).collect();
+    doubled.extend(s.mesh[1..].iter().map(|t| 0.5 + t / 2.0));
+    let mut orbit = s.orbit.clone();
+    orbit.extend_from_slice(&s.orbit[n..]);
+    let mut psi2 = psi.clone();
+    psi2.extend(psi[n..].iter().map(|v| -v));
+    let d = 2 * nint;
+    let mut new: Vec<f64> = (0..=s.ntst)
+        .map(|i| {
+            let r = i as f64 * d as f64 / s.ntst as f64;
+            let j = (r.floor() as usize).min(d - 1);
+            doubled[j] + (r - j as f64) * (doubled[j + 1] - doubled[j])
+        })
+        .collect();
+    new[0] = 0.0;
+    new[s.ntst] = 1.0;
+    let basis = CollocationBasis::new(old_m)?;
+    let u = mesh::interpolate(&basis, n, &doubled, &new, s.ncol, &orbit);
+    let mut dir = mesh::interpolate(&basis, n, &doubled, &new, s.ncol, &psi2);
+    let setup = CycleSetup::new(
+        s.free,
+        s.params.clone(),
+        s.ntst,
+        s.ncol,
+        u.clone(),
+        2.0 * s.period,
+    );
+    let mut inner = CycleProblem::new(model, &setup)?;
+    inner.set_mesh(new, &u);
+    let p = Scaled::new(inner);
+    dir.extend([0.0, 0.0]);
+    let dir = unit_direction(&p, dir, "PD eigenfunction")?;
+    let mut x0 = u;
+    x0.extend([2.0 * s.period, s.params[s.free]]);
+    p.scale(&mut x0);
+    branch_off(p, &x0, &dir, opts, cancel, |_, _| {})
+}
+
+/// `d`, in the original unknowns, as a unit vector in the scaled unknowns of `p`.
+fn unit_direction(p: &Scaled, mut d: Vec<f64>, what: &str) -> Result<Vec<f64>, EngineError> {
+    p.scale(&mut d);
+    let nrm = d.iter().map(|v| v * v).sum::<f64>().sqrt();
+    if !(nrm.is_finite() && nrm > 0.0) {
+        return Err(EngineError::Singular(format!("the {what} is zero")));
+    }
+    for v in d.iter_mut() {
+        *v /= nrm;
+    }
+    Ok(d)
+}
+
+/// Corrects the first orbit at x0 + eps dir, keeping its component along the unit vector
+/// `dir` at eps, with eps = `Options::h0` halved up to [`RETRIES`] times when the
+/// correction fails. `retry` gets the problem and the new eps before each new attempt.
+/// Returns the problem, the orbit and the tangent there, bordered by `dir`.
+fn branch_off<'a>(
+    mut p: Scaled<'a>,
+    x0: &[f64],
+    dir: &[f64],
+    opts: &Options,
+    cancel: &AtomicBool,
+    mut retry: impl FnMut(&mut CycleProblem<'a>, f64),
+) -> Result<(Scaled<'a>, Vec<f64>, Vec<f64>), EngineError> {
     let mut eps = opts.h0;
-    for attempt in 0..=HOPF_RETRIES {
+    for attempt in 0..=RETRIES {
         if attempt > 0 {
             eps /= 2.0;
-            p.inner.set_reference(&guess(eps));
+            retry(&mut p.inner, eps);
         }
-        let xg: Vec<f64> = x0.iter().zip(&dir).map(|(x, d)| x + eps * d).collect();
-        match correct(&mut p, &xg, &dir, 0.0, xg.clone(), opts, cancel) {
+        let xg: Vec<f64> = x0.iter().zip(dir).map(|(x, d)| x + eps * d).collect();
+        match correct(&mut p, &xg, dir, 0.0, xg.clone(), opts, cancel) {
             Corrected::Done { x, .. } => {
-                let (t, _) = tangent_or_kernel(&mut p, &x, &dir)?;
+                let (t, _) = tangent_or_kernel(&mut p, &x, dir)?;
                 return Ok((p, x, t));
             }
             Corrected::Failed => {}
@@ -253,6 +433,18 @@ fn hopf_start<'a>(
         iters: opts.max_newton,
         residual: f64::NAN,
     })
+}
+
+/// The options of a run from a point the branch leaves one way only, with a warning when
+/// `Options::direction` asks for the other.
+fn switched(opts: &Options, what: &str, warnings: &mut Vec<String>) -> Options {
+    if opts.direction < 0.0 {
+        warnings.push(format!("the direction is ignored for a start from {what}"));
+    }
+    Options {
+        direction: 1.0,
+        ..opts.clone()
+    }
 }
 
 /// The error behind a stop of the corrector.

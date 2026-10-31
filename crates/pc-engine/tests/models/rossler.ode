@@ -1,0 +1,7 @@
+# Rossler system with a = b = 0.2. The cycle doubles its period between c = 2.5 and 2.9.
+par a=0.2,b=0.2,c=2.5
+x'=-y-z
+y'=x+a*y
+z'=b+z*(x-c)
+init x=1,y=1,z=1
+done

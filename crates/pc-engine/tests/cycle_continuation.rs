@@ -5,14 +5,16 @@
 //! On `hopf_c.ode` with c = -1 the orbit at alpha > 0 is the circle of radius sqrt(alpha),
 //! run counterclockwise with period 2 pi, and its nontrivial Floquet multiplier is
 //! exp(-4 pi alpha). The Brusselator has its Hopf point at b = 1 + a^2 with omega = a, at
-//! the equilibrium (a, b / a). Run with `-- --nocapture` to see the errors.
+//! the equilibrium (a, b / a). The Rössler cycle with a = b = 0.2 doubles its period
+//! between c = 2.5 and 2.9, and the doubled orbit is still stable at c = 3, so RK4 finds
+//! it there. Run with `-- --nocapture` to see the errors.
 
 mod common;
 
 use common::load;
 use pc_engine::{
     Branch, CYCLE_LABELS, CycleSetup, CycleStart, EngineError, Evaluator, HopfStart, ModelEval,
-    Options, Point, StopReason, build, continue_cycle,
+    Options, PdStart, Point, StopReason, build, continue_cycle,
 };
 use pc_ir::EntryKind;
 use std::f64::consts::PI;
@@ -359,4 +361,173 @@ fn mesh_adaptation_lowers_the_error_on_a_stiff_cycle() {
         errs.push(err);
     }
     assert!(errs[1] < errs[0] / 10.0, "{errs:?}");
+}
+
+/// Rössler parameters (a, b, c) with t = 0 appended.
+fn rossler_p(c: f64) -> [f64; 4] {
+    [0.2, 0.2, c, 0.0]
+}
+
+/// RK4 on Rössler at c from (1, 1, 1), first for t = 1000 to reach the attractor, then
+/// up to `count` + 1 downward crossings of y = 0, with the crossing times interpolated
+/// linearly. Returns the state at the last step and the `count` times between crossings.
+fn rossler_crossings(m: &mut dyn ModelEval, c: f64, count: usize) -> ([f64; 3], Vec<f64>) {
+    let (p, dt) = (rossler_p(c), 0.005);
+    let mut x = [1.0, 1.0, 1.0];
+    for _ in 0..200_000 {
+        rk4(m, &p, 1.0, &mut x, dt);
+    }
+    let (mut t, mut at) = (0.0, Vec::new());
+    while at.len() <= count {
+        let y0 = x[1];
+        rk4(m, &p, 1.0, &mut x, dt);
+        t += dt;
+        if y0 > 0.0 && x[1] <= 0.0 {
+            at.push(t - dt + dt * y0 / (y0 - x[1]));
+        }
+    }
+    (x, at.windows(2).map(|w| w[1] - w[0]).collect())
+}
+
+/// The RK4 orbit of Rössler at c = 2.5 is the guess of an orbit start; its branch has a PD
+/// point, and the run from there follows the doubled cycle to c = 3. That cycle has twice
+/// the period at the PD point, closes under RK4 over its period but not over half of it,
+/// and its period is the sum of two crossing times of the RK4 attractor at c = 3.
+#[test]
+fn rossler_switches_to_the_doubled_cycle_at_the_pd_point() {
+    let mut m = model_of("rossler", Evaluator::Jit);
+    let (x, times) = rossler_crossings(m.as_mut(), 2.5, 1);
+    let (ntst, ncol) = (40, 4);
+    let nm = ntst * ncol;
+    let (t, sub) = (times[0], 8);
+    let p = rossler_p(2.5);
+    let mut y = x;
+    let mut profile = y.to_vec();
+    for _ in 0..nm {
+        for _ in 0..sub {
+            rk4(m.as_mut(), &p, t, &mut y, 1.0 / (nm * sub) as f64);
+        }
+        profile.extend(y);
+    }
+    let params = vec![0.2, 0.2, 2.5];
+    let start = CycleStart::Orbit(CycleSetup::new(2, params.clone(), ntst, ncol, profile, t));
+    let (single, _) = run(m.as_mut(), &start, &opts((2.0, 2.9)));
+    assert_eq!(single.stop, StopReason::Bounds, "{:?}", single.warnings);
+    let pds: Vec<_> = single.specials.iter().filter(|s| s.label == "PD").collect();
+    assert_eq!(pds.len(), 1, "{:?}", single.specials);
+    let pd = &pds[0].point;
+    let t_pd = period(pd);
+    println!(
+        "single cycle: period {t:.6} at c = 2.5, PD at c = {:.10}, period {t_pd:.10}",
+        pd.alpha
+    );
+    assert!(pd.alpha > 2.5 && pd.alpha < 2.9, "{}", pd.alpha);
+
+    let s = PdStart::from_point(2, &params, pd, 60, 4);
+    let (double, _) = run(m.as_mut(), &CycleStart::Pd(s), &opts((2.0, 3.0)));
+    assert_eq!(double.stop, StopReason::Bounds, "{:?}", double.warnings);
+    assert!(double.warnings.is_empty(), "{:?}", double.warnings);
+    assert!(double.specials.is_empty(), "{:?}", double.specials);
+    let first = &double.points[0];
+    assert!(first.alpha > pd.alpha, "{} {}", first.alpha, pd.alpha);
+    assert!(
+        (period(first) - 2.0 * t_pd).abs() <= 1e-2,
+        "{}",
+        period(first)
+    );
+    let last = double.points.last().unwrap();
+    assert!((last.alpha - 3.0).abs() <= 1e-12);
+    let t2 = period(last);
+    let p3 = rossler_p(3.0);
+    let u0 = [last.u[0], last.u[1], last.u[2]];
+    let mut y = u0;
+    let steps = 40_000;
+    let gap = |y: &[f64; 3]| (0..3).map(|c| (y[c] - u0[c]).powi(2)).sum::<f64>().sqrt();
+    let mut half = 0.0;
+    for k in 0..steps {
+        rk4(m.as_mut(), &p3, t2, &mut y, 1.0 / steps as f64);
+        if k + 1 == steps / 2 {
+            half = gap(&y);
+        }
+    }
+    let closure = gap(&y);
+    let (_, rk) = rossler_crossings(m.as_mut(), 3.0, 2);
+    println!(
+        "doubled cycle: {} points, c {:.6} -> 3, period {t2:.10}, RK4 closure {closure:.3e}, \
+         gap at half the period {half:.3e}, RK4 crossing times {rk:?}",
+        double.points.len(),
+        first.alpha
+    );
+    assert!(closure <= 1e-6, "{closure:e}");
+    assert!(half > 0.1, "{half:e}");
+    assert!((rk[0] - rk[1]).abs() > 0.1, "{rk:?}");
+    assert!((t2 - rk[0] - rk[1]).abs() <= 1e-3, "{t2} {rk:?}");
+}
+
+#[test]
+fn bad_pd_starts_are_refused() {
+    let mut m = model_of("rossler", Evaluator::Jit);
+    let cancel = AtomicBool::new(false);
+    let (ntst, ncol) = (4, 2);
+    let nm = ntst * ncol;
+    let mut orbit = Vec::new();
+    for k in 0..=nm {
+        let th = 2.0 * PI * k as f64 / nm as f64;
+        orbit.extend([3.0 * th.cos(), 3.0 * th.sin(), 0.1]);
+    }
+    let good = PdStart {
+        free: 2,
+        params: vec![0.2, 0.2, 2.8],
+        orbit,
+        period: 6.0,
+        mesh: (0..=ntst).map(|j| j as f64 / ntst as f64).collect(),
+        ntst: 10,
+        ncol: 4,
+    };
+    let mut bad = Vec::new();
+    bad.push(PdStart {
+        mesh: vec![0.1, 0.25, 0.5, 0.75, 1.0],
+        ..good.clone()
+    });
+    bad.push(PdStart {
+        mesh: vec![0.0, 0.5, 0.25, 0.75, 1.0],
+        ..good.clone()
+    });
+    bad.push(PdStart {
+        mesh: vec![0.0],
+        ..good.clone()
+    });
+    let mut short = good.clone();
+    short.orbit.pop();
+    bad.push(short);
+    bad.push(PdStart {
+        period: 0.0,
+        ..good.clone()
+    });
+    bad.push(PdStart {
+        params: vec![0.2, f64::NAN, 2.8],
+        ..good.clone()
+    });
+    bad.push(PdStart {
+        free: 3,
+        ..good.clone()
+    });
+    bad.push(PdStart {
+        ntst: 0,
+        ..good.clone()
+    });
+    bad.push(PdStart {
+        ncol: 9,
+        ..good.clone()
+    });
+    for s in bad {
+        let r = continue_cycle(
+            m.as_mut(),
+            &CycleStart::Pd(s.clone()),
+            &Options::default(),
+            &cancel,
+            &mut |_| {},
+        );
+        assert!(matches!(r, Err(EngineError::BadProblem(_))), "{s:?}: {r:?}");
+    }
 }

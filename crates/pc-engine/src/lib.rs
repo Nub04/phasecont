@@ -31,7 +31,7 @@ pub use branch::{Branch, Extras, Options, Point, SpecialPoint, StopReason};
 pub use curve2::CurveSetup;
 pub use cycle::{
     CYCLE_LABELS, CollocationBasis, CycleProblem, CycleSetup, CycleStart, HopfStart, NCOL_RANGE,
-    PeriodicOrbit, continue_cycle, periodic_orbit,
+    PdStart, PeriodicOrbit, continue_cycle, periodic_orbit,
 };
 pub use ep::{EpProblem, EpSetup, continue_ep, equilibrium};
 pub use error::EngineError;

@@ -126,37 +126,39 @@ pub(crate) fn new_mesh(
     (increasing && finite).then_some(new)
 }
 
-/// Interpolates `vals`, n values at each base point of `old`, onto the base points of
-/// `new` (INTERP). Both meshes have N intervals and run from 0 to 1.
+/// Interpolates `vals`, n values at each base point of `old` with the m of `basis`, onto
+/// the base points of `new` with `new_m` points per interval (INTERP). Both meshes run
+/// from 0 to 1, and as in INTERP their numbers of intervals may differ.
 pub(crate) fn interpolate(
     basis: &CollocationBasis,
     n: usize,
     old: &[f64],
     new: &[f64],
+    new_m: usize,
     vals: &[f64],
 ) -> Vec<f64> {
     let m = basis.m();
-    let ntst = old.len() - 1;
-    let mut out = vec![0.0; vals.len()];
+    let (old_n, new_n) = (old.len() - 1, new.len() - 1);
+    let mut out = vec![0.0; n * (new_n * new_m + 1)];
     let mut w = vec![0.0; m + 1];
     let mut j = 1;
-    for j1 in 0..ntst {
+    for j1 in 0..new_n {
         let dt = new[j1 + 1] - new[j1];
-        for i in 0..m {
-            let z = new[j1] + i as f64 * dt / m as f64;
-            while j <= ntst && old[j] <= z {
+        for i in 0..new_m {
+            let z = new[j1] + i as f64 * dt / new_m as f64;
+            while j <= old_n && old[j] <= z {
                 j += 1;
             }
-            j = (j - 1).min(ntst - 1);
+            j = (j - 1).min(old_n - 1);
             basis.values((z - old[j]) / (old[j + 1] - old[j]), &mut w);
-            let at = (j1 * m + i) * n;
+            let at = (j1 * new_m + i) * n;
             for c in 0..n {
                 out[at + c] = (0..=m).map(|l| w[l] * vals[(j * m + l) * n + c]).sum();
             }
         }
     }
-    let last = ntst * m * n;
-    out[last..last + n].copy_from_slice(&vals[last..last + n]);
+    let (last, old_last) = (new_n * new_m * n, old_n * m * n);
+    out[last..last + n].copy_from_slice(&vals[old_last..old_last + n]);
     out
 }
 
@@ -188,8 +190,26 @@ mod tests {
         let old = uniform(5);
         let new = [0.0, 0.1, 0.35, 0.4, 0.8, 1.0];
         let f = |t: f64| 2.0 - t + 3.0 * t * t - 4.0 * t.powi(3);
-        let u = interpolate(&basis, 1, &old, &new, &sample(&basis, &old, f));
+        let u = interpolate(&basis, 1, &old, &new, 3, &sample(&basis, &old, f));
         for (a, b) in u.iter().zip(sample(&basis, &new, f)) {
+            assert!((a - b).abs() <= 1e-13, "{a} {b}");
+        }
+    }
+
+    /// The PD switch interpolates onto a mesh with other N and m.
+    #[test]
+    fn interpolation_changes_the_number_of_intervals_and_points() {
+        let (b3, b4) = (
+            CollocationBasis::new(3).unwrap(),
+            CollocationBasis::new(4).unwrap(),
+        );
+        let old = uniform(5);
+        let new = [0.0, 0.05, 0.2, 0.35, 0.5, 0.6, 0.9, 1.0];
+        let f = |t: f64| 1.0 + 2.0 * t - 5.0 * t * t + 3.0 * t.powi(3);
+        let u = interpolate(&b3, 1, &old, &new, 4, &sample(&b3, &old, f));
+        let want = sample(&b4, &new, f);
+        assert_eq!(u.len(), want.len());
+        for (a, b) in u.iter().zip(want) {
             assert!((a - b).abs() <= 1e-13, "{a} {b}");
         }
     }
