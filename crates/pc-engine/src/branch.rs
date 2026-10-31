@@ -31,12 +31,17 @@ pub struct Point {
 pub struct Extras {
     /// Normal form coefficient: a for LP, l1 for H, c for CP, a for BT, l2 for GH.
     pub coefficient: Option<f64>,
-    /// Second normal form coefficient: b of a Bogdanov-Takens point (`coefficient` is a).
+    /// Second normal form coefficient: b of a Bogdanov-Takens point (`coefficient` is a), c
+    /// of a zero-Hopf point (`coefficient` is b).
     pub coefficient2: Option<f64>,
     /// Frequency of a Hopf point.
     pub omega: Option<f64>,
     /// Which normalization the coefficient used.
     pub normalization: Option<String>,
+    /// Further named coefficients: `re_d`, `im_d` and `e` of a zero-Hopf point, and the real
+    /// parts `re_p12`, `re_p21` and `re_p22` of a double-Hopf point (`coefficient` is
+    /// `re_p11`).
+    pub values: Vec<(String, f64)>,
     /// Whether Newton on the defining system succeeded.
     pub refined: bool,
 }

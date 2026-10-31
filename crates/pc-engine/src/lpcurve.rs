@@ -26,9 +26,10 @@ use crate::codim2::{
 use crate::curve2::{CurveSetup, Model2, dot, norm, start_tangent};
 use crate::error::EngineError;
 use crate::model::ModelEval;
+use crate::normal::{store_zero_hopf, zero_hopf_at};
 use crate::palc::run_branch;
 use crate::problem::Problem;
-use crate::tests_fn::{HopfZero, classify_h_zero, psi_h};
+use crate::tests_fn::{HopfZero, classify_h_zero, critical_pair, psi_h};
 use pc_linalg::{Lu, null_left, null_right};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -76,21 +77,37 @@ impl<'a> LpCurveProblem<'a> {
     fn annotate(&mut self, branch: &mut Branch) {
         let n = self.m.n;
         for sp in branch.specials.iter_mut() {
-            if sp.label != "CP" && sp.label != "BT" {
+            if !matches!(sp.label.as_str(), "CP" | "BT" | "ZH") {
                 continue;
             }
             let mut x = sp.point.u.clone();
             x.push(sp.point.alpha);
             self.m.set(&x);
-            if sp.label == "CP" {
-                if let Ok(c) = cusp_coefficient(&mut self.m, &x[..n]) {
-                    sp.extras.coefficient = Some(c);
-                    sp.extras.normalization = Some(CUSP_NORMALIZATION.to_string());
+            match sp.label.as_str() {
+                "CP" => {
+                    if let Ok(c) = cusp_coefficient(&mut self.m, &x[..n]) {
+                        sp.extras.coefficient = Some(c);
+                        sp.extras.normalization = Some(CUSP_NORMALIZATION.to_string());
+                    }
                 }
-            } else if let Ok((a, b)) = bt_coefficients(&mut self.m, &x[..n]) {
-                sp.extras.coefficient = Some(a);
-                sp.extras.coefficient2 = Some(b);
-                sp.extras.normalization = Some(BT_NORMALIZATION.to_string());
+                "ZH" => {
+                    let rest = without_zero(&sp.point.eigenvalues);
+                    if classify_h_zero(&rest) == HopfZero::Hopf
+                        && let Some((i, _)) = critical_pair(&rest)
+                    {
+                        let omega = rest[i].1.abs();
+                        if let Ok(z) = zero_hopf_at(&mut self.m.at(&x[..n]), omega) {
+                            store_zero_hopf(&mut sp.extras, &z, omega);
+                        }
+                    }
+                }
+                _ => {
+                    if let Ok((a, b)) = bt_coefficients(&mut self.m, &x[..n]) {
+                        sp.extras.coefficient = Some(a);
+                        sp.extras.coefficient2 = Some(b);
+                        sp.extras.normalization = Some(BT_NORMALIZATION.to_string());
+                    }
+                }
             }
         }
     }

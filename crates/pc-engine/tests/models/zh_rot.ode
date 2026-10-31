@@ -1,0 +1,26 @@
+# zh.ode in coordinates X = R (x, y, z) for the rotation R = Rz(tc) Ry(tb) Rx(ta). The
+# rotation is orthogonal, so the normal form coefficients do not change.
+par b1=0,b2=0,B=1.5,C=0.8,K=0.3,L=0.6,om=2,dr=1,di=0.4,er=0.5,ei=-0.3,mr=-0.4,mi=0.7,ta=0.7,tb=-0.5,tc=1.1
+r11=cos(tc)*cos(tb)
+r12=cos(tc)*sin(tb)*sin(ta)-sin(tc)*cos(ta)
+r13=cos(tc)*sin(tb)*cos(ta)+sin(tc)*sin(ta)
+r21=sin(tc)*cos(tb)
+r22=sin(tc)*sin(tb)*sin(ta)+cos(tc)*cos(ta)
+r23=sin(tc)*sin(tb)*cos(ta)-cos(tc)*sin(ta)
+r31=-sin(tb)
+r32=cos(tb)*sin(ta)
+r33=cos(tb)*cos(ta)
+px=r11*u+r21*v+r31*w
+py=r12*u+r22*v+r32*w
+pz=r13*u+r23*v+r33*w
+rr=py^2+pz^2
+al=b2+dr*px+er*px^2+mr*rr
+be=om+di*px+ei*px^2+mi*rr
+fx=b1+B*px^2+C*rr+K*px^3+L*px*rr
+fy=al*py-be*pz
+fz=al*pz+be*py
+u'=r11*fx+r12*fy+r13*fz
+v'=r21*fx+r22*fy+r23*fz
+w'=r31*fx+r32*fy+r33*fz
+init u=0,v=0,w=0
+done

@@ -1,0 +1,13 @@
+# Zero-Hopf normal form with cubic terms. With w = y + i z and rr = |w|^2:
+#   x' = b1 + B x^2 + C rr + K x^3 + L x rr
+#   w' = (b2 + i om + (dr + i di) x + (er + i ei) x^2 + (mr + i mi) rr) w
+# The origin at b1 = b2 = 0 is a zero-Hopf point with frequency om.
+par b1=0,b2=0,B=1.5,C=0.8,K=0.3,L=0.6,om=2,dr=1,di=0.4,er=0.5,ei=-0.3,mr=-0.4,mi=0.7
+rr=y^2+z^2
+al=b2+dr*x+er*x^2+mr*rr
+be=om+di*x+ei*x^2+mi*rr
+x'=b1+B*x^2+C*rr+K*x^3+L*x*rr
+y'=al*y-be*z
+z'=al*z+be*y
+init x=0,y=0,z=0
+done

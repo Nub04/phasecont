@@ -40,7 +40,9 @@ use crate::codim2::{BT_NORMALIZATION, bt_coefficients};
 use crate::curve2::{CurveSetup, Model2, dot, norm, start_tangent};
 use crate::error::EngineError;
 use crate::model::ModelEval;
-use crate::normal::{GH_NORMALIZATION, first_lyapunov_at, second_lyapunov_at};
+use crate::normal::{
+    GH_NORMALIZATION, first_lyapunov_at, second_lyapunov_at, store_zero_hopf, zero_hopf_at,
+};
 use crate::palc::run_branch;
 use crate::problem::Problem;
 use crate::tests_fn::{HopfZero, classify_h_zero, critical_pair, psi_h};
@@ -249,27 +251,40 @@ impl<'a> HopfCurveProblem<'a> {
     fn annotate(&mut self, branch: &mut Branch) {
         let n = self.m.n;
         for sp in branch.specials.iter_mut() {
-            if sp.label != "GH" && sp.label != "BT" {
+            if !matches!(sp.label.as_str(), "GH" | "BT" | "ZH") {
                 continue;
             }
             let mut x = sp.point.u.clone();
             x.push(sp.point.alpha);
             self.m.set_pair(x[n], x[n + 2]);
             let u = &x[..n];
-            if sp.label == "GH" {
-                let kappa = x[n + 1];
-                if kappa > 0.0 {
-                    let omega = kappa.sqrt();
-                    if let Ok(l2) = second_lyapunov_at(&mut self.m.at(u), omega) {
-                        sp.extras.coefficient = Some(l2);
-                        sp.extras.omega = Some(omega);
-                        sp.extras.normalization = Some(GH_NORMALIZATION.to_string());
+            let kappa = x[n + 1];
+            match sp.label.as_str() {
+                "GH" => {
+                    if kappa > 0.0 {
+                        let omega = kappa.sqrt();
+                        if let Ok(l2) = second_lyapunov_at(&mut self.m.at(u), omega) {
+                            sp.extras.coefficient = Some(l2);
+                            sp.extras.omega = Some(omega);
+                            sp.extras.normalization = Some(GH_NORMALIZATION.to_string());
+                        }
                     }
                 }
-            } else if let Ok((a, b)) = bt_coefficients(&mut self.m, u) {
-                sp.extras.coefficient = Some(a);
-                sp.extras.coefficient2 = Some(b);
-                sp.extras.normalization = Some(BT_NORMALIZATION.to_string());
+                "ZH" => {
+                    if kappa > 0.0 {
+                        let omega = kappa.sqrt();
+                        if let Ok(z) = zero_hopf_at(&mut self.m.at(u), omega) {
+                            store_zero_hopf(&mut sp.extras, &z, omega);
+                        }
+                    }
+                }
+                _ => {
+                    if let Ok((a, b)) = bt_coefficients(&mut self.m, u) {
+                        sp.extras.coefficient = Some(a);
+                        sp.extras.coefficient2 = Some(b);
+                        sp.extras.normalization = Some(BT_NORMALIZATION.to_string());
+                    }
+                }
             }
         }
     }

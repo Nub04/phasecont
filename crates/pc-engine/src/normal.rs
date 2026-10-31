@@ -13,7 +13,7 @@
 //! Elements of Applied Bifurcation Theory (2004), p. 180, through Kuehn, arXiv:1201.6595,
 //! eq. (9). See `.superpowers/sdd/phase3-pc-engine/sources.md`, items 1 and 2.
 
-use crate::branch::SpecialPoint;
+use crate::branch::{Extras, SpecialPoint};
 use crate::error::EngineError;
 use crate::model::ModelEval;
 use pc_ir::complex::dir_complex;
@@ -435,6 +435,176 @@ pub(crate) fn second_lyapunov_at(at: &mut At, omega: f64) -> Result<f64, EngineE
     } else {
         Err(EngineError::NotFinite("second Lyapunov coefficient".into()))
     }
+}
+
+/// Normalization string stored with the coefficients of a zero-Hopf point. The sign of `q0`
+/// is fixed by `b > 0`, like `a > 0` at a Bogdanov-Takens point.
+pub const ZH_NORMALIZATION: &str = "b>0, |q0|=1, <p0,q0>=1, <q1,q1>=1, <p1,q1>=1";
+
+/// The coefficients of the zero-Hopf normal form
+/// `u' = beta1 + b u^2 + c |z|^2`, `z' = (beta2 + i omega + d u + e u^2) z`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ZeroHopf {
+    pub b: f64,
+    pub c: f64,
+    /// Real and imaginary part of `d`.
+    pub d: (f64, f64),
+    pub e: f64,
+}
+
+/// Coefficients `b, c, d, e` at a zero-Hopf point with `A q0 = 0`, `A q1 = i omega q1`.
+///
+/// Kuznetsov, "Numerical normalization techniques for all codim 2 bifurcations of
+/// equilibria in ODE's", SIAM J. Numer. Anal. 36 (1999), section 8, with
+/// `<p0,q0> = <p1,q1> = <q1,q1> = 1` and `|q0| = 1`:
+///
+/// ```text
+/// G200 = <p0, B(q0,q0)>   G110 = <p1, B(q0,q1)>   G011 = <p0, B(q1,cq1)>
+/// -A h200 = B(q0,q0) - G200 q0,   -A h011 = B(q1,cq1) - G011 q0,   <p0,h> = 0
+/// (i w - A) h110 = B(q0,q1) - G110 q1,   <p1,h110> = 0,   h020 = (2 i w - A)^-1 B(q1,q1)
+/// G300 = <p0, C(q0,q0,q0) + 3 B(q0,h200)>
+/// G111 = <p0, C(q0,q1,cq1) + B(q0,h011) + B(q1,ch110) + B(cq1,h110)>
+/// G210 = <p1, C(q0,q0,q1) + 2 B(q0,h110) + B(q1,h200)>
+/// G021 = <p1, C(q1,q1,cq1) + 2 B(q1,h011) + B(cq1,h020)>
+/// b = G200 / 2,   c = G011,   d = G110 - i w G300 / (3 G200)
+/// e = Re[G210 + G110 (Re G021 / G011 - G300 / G200 + G111 / G011)
+///        - G021 G200 / (2 G011)] / 2
+/// ```
+///
+/// The coefficients depend on the scale of `q0`, so `|q0| = 1` is part of the normalization.
+/// Flipping `q0` and `p0` flips `b`, `c` and `d` and leaves `e` alone, so the sign is fixed
+/// by `b > 0`. `G200 = 0` or `G011 = 0` is an error: the normal form is degenerate there.
+pub(crate) fn zero_hopf_at(at: &mut At, omega: f64) -> Result<ZeroHopf, EngineError> {
+    let n = at.n;
+    if !(omega.is_finite() && omega > 0.0) {
+        return Err(EngineError::Singular(
+            "zero-Hopf frequency is not positive".into(),
+        ));
+    }
+    let a = at.jac_u()?;
+    let (q1, p1) = hopf_eigenvectors(&a, n, omega)?;
+    let q1c = conj(&q1);
+    let mut q0 = first(null_right(&a, n, n, 1)?)?;
+    let mut p0 = first(null_left(&a, n, n, 1)?)?;
+    let nq = dot(&q0, &q0).sqrt();
+    q0.iter_mut().for_each(|x| *x /= nq);
+    let pq = dot(&p0, &q0);
+    if !(pq.is_finite() && pq != 0.0 && nq.is_finite() && nq > 0.0) {
+        return Err(EngineError::Singular(
+            "left and right null vectors are orthogonal".into(),
+        ));
+    }
+    p0.iter_mut().for_each(|x| *x /= pq);
+    let real = |v: &[f64]| -> Cv { (v.to_vec(), vec![0.0; n]) };
+    let one = (1.0, 0.0);
+
+    let mut q0c = real(&q0);
+    let b00 = at.form(&[&q0c, &q0c])?;
+    let mut g200 = dot(&p0, &b00.0);
+    if g200 < 0.0 {
+        q0.iter_mut().for_each(|x| *x = -*x);
+        p0.iter_mut().for_each(|x| *x = -*x);
+        q0c = real(&q0);
+        g200 = -g200;
+    }
+    let p0c = real(&p0);
+    let b00 = real(&b00.0);
+    let b11 = at.form(&[&q1, &q1c])?;
+    let g011 = dot(&p0, &b11.0);
+    if !(g200.is_finite() && g200 != 0.0 && g011.is_finite() && g011 != 0.0) {
+        return Err(EngineError::Singular(
+            "G200 or G011 is zero at the zero-Hopf point".into(),
+        ));
+    }
+    let b11 = real(&b11.0);
+    let b01 = at.form(&[&q0c, &q1])?;
+    let g110 = herm(&p1, &b01);
+
+    let h200 = solve_bordered(
+        &a,
+        n,
+        0.0,
+        &q0c,
+        &p0c,
+        &lin(&[(one, &b00), ((-g200, 0.0), &q0c)]),
+    )?;
+    let h011 = solve_bordered(
+        &a,
+        n,
+        0.0,
+        &q0c,
+        &p0c,
+        &lin(&[(one, &b11), ((-g011, 0.0), &q0c)]),
+    )?;
+    let h110 = solve_bordered(
+        &a,
+        n,
+        omega,
+        &q1,
+        &p1,
+        &lin(&[(one, &b01), ((-g110.0, -g110.1), &q1)]),
+    )?;
+    let h110c = conj(&h110);
+    let h020 = inv_shift(&a, n, 2.0 * omega, &at.form(&[&q1, &q1])?)?;
+
+    let two = (2.0, 0.0);
+    let c000 = at.form(&[&q0c, &q0c, &q0c])?;
+    let b0h200 = at.form(&[&q0c, &h200])?;
+    let g300 = dot(&p0, &lin(&[(one, &c000), ((3.0, 0.0), &b0h200)]).0);
+
+    let c011 = at.form(&[&q0c, &q1, &q1c])?;
+    let b0h011 = at.form(&[&q0c, &h011])?;
+    let b1h110c = at.form(&[&q1, &h110c])?;
+    let b1ch110 = at.form(&[&q1c, &h110])?;
+    let g111 = dot(
+        &p0,
+        &lin(&[
+            (one, &c011),
+            (one, &b0h011),
+            (one, &b1h110c),
+            (one, &b1ch110),
+        ])
+        .0,
+    );
+
+    let c001 = at.form(&[&q0c, &q0c, &q1])?;
+    let b0h110 = at.form(&[&q0c, &h110])?;
+    let b1h200 = at.form(&[&q1, &h200])?;
+    let g210 = herm(&p1, &lin(&[(one, &c001), (two, &b0h110), (one, &b1h200)]));
+
+    let c111 = at.form(&[&q1, &q1, &q1c])?;
+    let b1h011 = at.form(&[&q1, &h011])?;
+    let b1ch020 = at.form(&[&q1c, &h020])?;
+    let g021 = herm(&p1, &lin(&[(one, &c111), (two, &b1h011), (one, &b1ch020)]));
+
+    let s = g021.0 / g011 - g300 / g200 + g111 / g011;
+    let out = ZeroHopf {
+        b: 0.5 * g200,
+        c: g011,
+        d: (g110.0, g110.1 - omega * g300 / (3.0 * g200)),
+        e: 0.5 * (g210.0 + g110.0 * s - g021.0 * g200 / (2.0 * g011)),
+    };
+    if [out.b, out.c, out.d.0, out.d.1, out.e]
+        .iter()
+        .all(|v| v.is_finite())
+    {
+        Ok(out)
+    } else {
+        Err(EngineError::NotFinite("zero-Hopf coefficients".into()))
+    }
+}
+
+/// Stores the zero-Hopf coefficients and the frequency with a special point.
+pub(crate) fn store_zero_hopf(extras: &mut Extras, z: &ZeroHopf, omega: f64) {
+    extras.coefficient = Some(z.b);
+    extras.coefficient2 = Some(z.c);
+    extras.omega = Some(omega);
+    extras.normalization = Some(ZH_NORMALIZATION.to_string());
+    extras.values = vec![
+        ("re_d".to_string(), z.d.0),
+        ("im_d".to_string(), z.d.1),
+        ("e".to_string(), z.e),
+    ];
 }
 
 /// The coefficient and normalization string for a refined LP or H point; `Ok(None)` for

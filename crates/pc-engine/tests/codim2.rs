@@ -360,3 +360,214 @@ fn brusselator_hopf_curve_is_analytic() {
         assert!((x - a).abs() < 1e-9 && (y - b / a).abs() < 1e-9);
     }
 }
+
+// ---- Zero-Hopf points (Kuznetsov, SIAM J. Numer. Anal. 36 (1999), section 8) ----
+//
+// zh.ode is x' = b1 + B x^2 + C rr + K x^3 + L x rr, w' = (b2 + i om + d0 x + e0 x^2 + m rr) w
+// with w = y + i z, rr = |w|^2, d0 = dr + i di, e0 = er + i ei and m = mr + i mi. In the
+// basis q0 = sigma e_x, q1 = (0, 1, -i)/sqrt(2) with sigma = sign(B), which makes b > 0, the
+// bilinear terms are already in normal form, so every h vector is zero, and the G values
+// are read off the Taylor coefficients: G200 = 2 sigma B, G011 = 2 sigma C, G110 = sigma d0,
+// G300 = 6 K, G111 = 2 L, G210 = 2 e0, G021 = 4 m. Kuznetsov's formulas then give
+//
+//   b = sigma B,  c = 2 sigma C,  d = sigma (d0 - i om K / B),
+//   e = er + (dr / 2) (2 mr / C - 3 K / B + L / C) - mr B / C.
+
+/// B, C, K, L, om, dr, di, er, ei, mr, mi of the zero-Hopf models, after b1 and b2.
+const ZH_P: [f64; 11] = [1.5, 0.8, 0.3, 0.6, 2.0, 1.0, 0.4, 0.5, -0.3, -0.4, 0.7];
+const ROT: [f64; 3] = [0.7, -0.5, 1.1];
+const WARP: [f64; 3] = [0.4, -0.3, 0.2];
+
+/// All parameters of zero-Hopf model `name` in file order.
+fn zh_params(name: &str, b1: f64, b2: f64) -> Vec<f64> {
+    let mut p = vec![b1, b2];
+    p.extend_from_slice(&ZH_P);
+    match name {
+        "zh_rot" => p.extend_from_slice(&ROT),
+        "zh_warped" => p.extend_from_slice(&WARP),
+        _ => {}
+    }
+    p
+}
+
+/// The equilibrium with x = `x` on y = z = 0 of zh.ode, in the coordinates of model `name`.
+fn zh_state(name: &str, x: f64) -> Vec<f64> {
+    match name {
+        "zh_rot" => {
+            let [_, tb, tc] = ROT;
+            vec![
+                tc.cos() * tb.cos() * x,
+                tc.sin() * tb.cos() * x,
+                -tb.sin() * x,
+            ]
+        }
+        "zh_warped" => vec![x, WARP[0] * x * x, WARP[2] * x * x * x],
+        _ => vec![x, 0.0, 0.0],
+    }
+}
+
+/// The b1 of the equilibrium with state `x` on y = z = 0.
+fn zh_b1(x: f64) -> f64 {
+    -(ZH_P[0] * x * x + ZH_P[2] * x * x * x)
+}
+
+/// The hand-derived b, c, d (re, im) and e.
+fn zh_expected() -> (f64, f64, (f64, f64), f64) {
+    let [bb, cc, k, l, om, dr, di, er, _, mr, _] = ZH_P;
+    let sigma = bb.signum();
+    let s = 2.0 * mr / cc - 3.0 * k / bb + l / cc;
+    (
+        sigma * bb,
+        2.0 * sigma * cc,
+        (sigma * dr, sigma * (di - om * k / bb)),
+        er + 0.5 * dr * s - mr * bb / cc,
+    )
+}
+
+fn value(sp: &SpecialPoint, name: &str) -> f64 {
+    sp.extras
+        .values
+        .iter()
+        .find(|(k, _)| k == name)
+        .unwrap_or_else(|| panic!("no value {name} in {:?}", sp.extras))
+        .1
+}
+
+/// The ZH point of the LP curve of model `name`: the equilibrium branch in b1 at b2 = 0.5
+/// has the fold x = 0, and the LP curve runs from there to decreasing b2 through b2 = 0.
+fn zh_on_lp_curve(name: &str) -> SpecialPoint {
+    let mut m = model_of(name);
+    let cancel = AtomicBool::new(false);
+    let x0 = -1.0;
+    let ep_opts = Options {
+        bounds: (-2.0, 1.0),
+        ..Options::default()
+    };
+    let ep = continue_ep(
+        &mut *m,
+        &EpSetup::new(0, zh_params(name, zh_b1(x0), 0.5), zh_state(name, x0)),
+        &ep_opts,
+        &cancel,
+        &mut |_| {},
+    )
+    .unwrap();
+    let lp = specials(&ep.specials, "LP");
+    assert_eq!(lp.len(), 1, "{name}: specials {:?}", ep.specials);
+    let setup = CurveSetup::new(
+        [0, 1],
+        zh_params(name, lp[0].point.alpha, 0.5),
+        lp[0].point.u.clone(),
+    );
+    let opts = Options {
+        direction: -1.0,
+        bounds: (-0.5, 1.0),
+        ..Options::default()
+    };
+    let br = continue_lp_curve(&mut *m, &setup, &opts, &cancel, &mut |_| {}).unwrap();
+    let zh = specials(&br.specials, "ZH");
+    assert_eq!(zh.len(), 1, "{name}: stop {:?}, {:?}", br.stop, br.specials);
+    let sp = zh[0].clone();
+    // Point.u is (x, y, z, b1) on an LP curve and Point.alpha is b2.
+    for (k, v) in sp.point.u.iter().enumerate() {
+        assert!(v.abs() < 1e-10, "{name}: u[{k}] = {v}");
+    }
+    assert!(
+        sp.point.alpha.abs() < 1e-10,
+        "{name}: b2 = {}",
+        sp.point.alpha
+    );
+    sp
+}
+
+/// The ZH point of the Hopf curve of model `name`: the equilibrium branch in b1 at b2 = 0.3
+/// has a Hopf point at x = -0.37, from which the Hopf curve runs through x = 0, b2 = 0.
+fn zh_on_hopf_curve(name: &str) -> SpecialPoint {
+    let mut m = model_of(name);
+    let cancel = AtomicBool::new(false);
+    let x0 = -1.0;
+    let setup = hopf_start(
+        &mut *m,
+        zh_params(name, zh_b1(x0), 0.3),
+        zh_state(name, x0),
+        (-2.0, 1.0),
+    );
+    let opts = Options {
+        bounds: (-0.5, 1.0),
+        ..Options::default()
+    };
+    let br = continue_hopf_curve(&mut *m, &setup, &opts, &cancel, &mut |_| {}).unwrap();
+    let zh = specials(&br.specials, "ZH");
+    assert_eq!(zh.len(), 1, "{name}: stop {:?}, {:?}", br.stop, br.specials);
+    let sp = zh[0].clone();
+    // Point.u is (x, y, z, b1, kappa) on a Hopf curve and Point.alpha is b2.
+    let n = 3;
+    for (k, v) in sp.point.u[..n + 1].iter().enumerate() {
+        assert!(v.abs() < 1e-10, "{name}: u[{k}] = {v}");
+    }
+    let om = ZH_P[4];
+    assert!((sp.point.u[n + 1] - om * om).abs() < 1e-9, "kappa");
+    assert!(
+        sp.point.alpha.abs() < 1e-10,
+        "{name}: b2 = {}",
+        sp.point.alpha
+    );
+    sp
+}
+
+/// `full` also checks Im d, which a nonlinear change of coordinates may move.
+fn check_zh(name: &str, sp: &SpecialPoint, tol: f64, full: bool) {
+    let (b, c, d, e) = zh_expected();
+    assert!(sp.extras.refined, "{name}: ZH not refined");
+    let got = (
+        sp.extras.coefficient.expect("b"),
+        sp.extras.coefficient2.expect("c"),
+        value(sp, "re_d"),
+        value(sp, "im_d"),
+        value(sp, "e"),
+    );
+    assert!((got.0 - b).abs() < tol, "{name}: b = {}, want {b}", got.0);
+    assert!((got.1 - c).abs() < tol, "{name}: c = {}, want {c}", got.1);
+    assert!(
+        (got.2 - d.0).abs() < tol,
+        "{name}: Re d = {}, want {}",
+        got.2,
+        d.0
+    );
+    if full {
+        assert!(
+            (got.3 - d.1).abs() < tol,
+            "{name}: Im d = {}, want {}",
+            got.3,
+            d.1
+        );
+    }
+    assert!((got.4 - e).abs() < tol, "{name}: e = {}, want {e}", got.4);
+    assert!((sp.extras.omega.expect("omega") - ZH_P[4]).abs() < 1e-8);
+    let norm = sp.extras.normalization.as_deref().expect("normalization");
+    assert!(norm.contains("b>0"), "{norm}");
+}
+
+#[test]
+fn zh_coefficients_on_the_lp_curve() {
+    check_zh("zh", &zh_on_lp_curve("zh"), 1e-8, true);
+}
+
+#[test]
+fn zh_coefficients_on_the_hopf_curve() {
+    check_zh("zh", &zh_on_hopf_curve("zh"), 1e-8, true);
+}
+
+/// An orthogonal change of coordinates keeps |q0| = 1, so all four coefficients stay.
+#[test]
+fn zh_coefficients_are_invariant_under_a_rotation() {
+    check_zh("zh_rot", &zh_on_lp_curve("zh_rot"), 1e-8, true);
+    check_zh("zh_rot", &zh_on_hopf_curve("zh_rot"), 1e-8, true);
+}
+
+/// A triangular near-identity change of coordinates makes B(q0, q1) and h nonzero. b, c,
+/// Re d and e are properties of the singularity and do not change.
+#[test]
+fn zh_coefficients_are_invariant_under_a_nonlinear_warp() {
+    check_zh("zh_warped", &zh_on_lp_curve("zh_warped"), 1e-6, false);
+    check_zh("zh_warped", &zh_on_hopf_curve("zh_warped"), 1e-6, false);
+}
