@@ -44,6 +44,6 @@ pub use refine::{
     BpSystem, DefiningSystem, HopfSystem, LpSystem, MAX_REFINE_ITERS, NewtonResult, NewtonStep,
     Refined, newton, refine_special, refine_specials,
 };
-pub use run::{Run, RunSpec, RunState, Status};
+pub use run::{Run, RunKind, RunSpec, RunState, Status};
 pub use switch::{special_index, switch_bp};
 pub use tests_fn::{HopfZero, classify_h_zero};

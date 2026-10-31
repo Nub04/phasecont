@@ -12,8 +12,11 @@
 //! stored `stop` is a placeholder and is not meaningful.
 
 use crate::branch::{Branch, Options, Point, SpecialPoint, StopReason};
+use crate::curve2::CurveSetup;
 use crate::ep::{EpSetup, continue_ep};
 use crate::error::EngineError;
+use crate::hopfcurve::continue_hopf_curve;
+use crate::lpcurve::continue_lp_curve;
 use crate::model::{Evaluator, build};
 use crate::panic::{clear_last_panic, install_hook, mark_worker, payload_message, take_last_panic};
 use crate::switch::{special_index, switch_bp};
@@ -23,16 +26,29 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 
+/// What a run follows.
+#[derive(Clone, Debug)]
+pub enum RunKind {
+    /// An equilibrium branch from `RunSpec::setup`.
+    Ep,
+    /// The LP curve through an LP point, in two parameters.
+    LpCurve(CurveSetup),
+    /// The Hopf curve through a Hopf point, in two parameters.
+    HopfCurve(CurveSetup),
+}
+
 /// What to run. The worker lowers and compiles the model on its own thread.
 #[derive(Clone, Debug)]
 pub struct RunSpec {
     pub model: Model,
     pub info: ModelInfo,
     pub evaluator: Evaluator,
+    pub kind: RunKind,
+    /// Start of an `Ep` run. A curve run ignores it.
     pub setup: EpSetup,
     pub opts: Options,
     /// Name of a special point of the first branch, for example `"BP1"`. When set, the
-    /// run switches there and follows the second branch.
+    /// run switches there and follows the second branch. Only an `Ep` run can switch.
     pub switch_at: Option<String>,
     /// Test hook: wraps the evaluator in one that panics in `eval` after this many
     /// successful calls.
@@ -53,12 +69,33 @@ impl RunSpec {
             model,
             info,
             evaluator,
+            kind: RunKind::Ep,
             setup,
             opts,
             switch_at: None,
             #[cfg(test)]
             panic_after: None,
         }
+    }
+
+    /// A spec for the curve of `kind`. `kind` must be `LpCurve` or `HopfCurve`; with `Ep`
+    /// the run fails with `BadProblem` because there is no equilibrium start.
+    pub fn curve(
+        model: Model,
+        info: ModelInfo,
+        evaluator: Evaluator,
+        kind: RunKind,
+        opts: Options,
+    ) -> RunSpec {
+        let mut spec = RunSpec::new(
+            model,
+            info,
+            evaluator,
+            EpSetup::new(0, Vec::new(), Vec::new()),
+            opts,
+        );
+        spec.kind = kind;
+        spec
     }
 }
 
@@ -149,14 +186,20 @@ impl crate::model::ModelEval for PanicEval {
 fn follow(
     shared: &Shared,
     model: &mut dyn crate::model::ModelEval,
+    kind: &RunKind,
     setup: &EpSetup,
     opts: &Options,
     idx: usize,
 ) -> Result<Branch, EngineError> {
     shared.lock().branches.push(placeholder());
-    let b = continue_ep(model, setup, opts, &shared.cancel, &mut |p: &Point| {
+    let on_point = &mut |p: &Point| {
         shared.lock().branches[idx].points.push(p.clone());
-    });
+    };
+    let b = match kind {
+        RunKind::Ep => continue_ep(model, setup, opts, &shared.cancel, on_point),
+        RunKind::LpCurve(cs) => continue_lp_curve(model, cs, opts, &shared.cancel, on_point),
+        RunKind::HopfCurve(cs) => continue_hopf_curve(model, cs, opts, &shared.cancel, on_point),
+    };
     match &b {
         Ok(branch) => shared.lock().branches[idx] = branch.clone(),
         // Keep the streamed points and say that the branch did not finish.
@@ -166,6 +209,14 @@ fn follow(
 }
 
 fn body(shared: &Shared, spec: RunSpec) -> RunState {
+    if spec.switch_at.is_some() && !matches!(spec.kind, RunKind::Ep) {
+        return finish(
+            shared,
+            Err(EngineError::BadProblem(
+                "only an equilibrium run can switch branches".into(),
+            )),
+        );
+    }
     let model = match build(&spec.model, &spec.info, spec.evaluator) {
         Ok(m) => m,
         Err(e) => return finish(shared, Err(e)),
@@ -176,7 +227,14 @@ fn body(shared: &Shared, spec: RunSpec) -> RunState {
         None => model,
     };
     let mut model = model;
-    let first = match follow(shared, model.as_mut(), &spec.setup, &spec.opts, 0) {
+    let first = match follow(
+        shared,
+        model.as_mut(),
+        &spec.kind,
+        &spec.setup,
+        &spec.opts,
+        0,
+    ) {
         Ok(b) => b,
         Err(e) => return finish(shared, Err(e)),
     };
@@ -198,7 +256,7 @@ fn body(shared: &Shared, spec: RunSpec) -> RunState {
         Ok(s) => s,
         Err(e) => return finish(shared, Err(e)),
     };
-    match follow(shared, model.as_mut(), &next, &spec.opts, 1) {
+    match follow(shared, model.as_mut(), &RunKind::Ep, &next, &spec.opts, 1) {
         Ok(b) => finish(shared, Ok(&b)),
         Err(e) => finish(shared, Err(e)),
     }

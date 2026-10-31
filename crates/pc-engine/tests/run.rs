@@ -3,7 +3,10 @@
 mod common;
 
 use common::load;
-use pc_engine::{EngineError, EpSetup, Evaluator, Options, Run, RunSpec, RunState};
+use pc_engine::{
+    CurveSetup, EngineError, EpSetup, Evaluator, Options, Run, RunKind, RunSpec, RunState,
+    SpecialPoint,
+};
 use std::time::{Duration, Instant};
 
 /// Lorenz from the origin along r up to 30 with a small step: a long run.
@@ -164,4 +167,111 @@ fn cancel_after_done_leaves_done() {
     wait_for(&run, |s| s.state != RunState::Running);
     run.cancel();
     assert_eq!(run.join().state, RunState::Done);
+}
+
+/// The first special point called `label` on the equilibrium branch of `model` in the
+/// parameter `free`, found through a run like any other.
+fn ep_special(
+    model: &str,
+    free: usize,
+    params: Vec<f64>,
+    u0: Vec<f64>,
+    bounds: (f64, f64),
+    label: &str,
+) -> SpecialPoint {
+    let (m, info) = load(model);
+    let opts = Options {
+        bounds,
+        ..Options::default()
+    };
+    let run = Run::start(RunSpec::new(
+        m,
+        info,
+        Evaluator::Jit,
+        EpSetup::new(free, params, u0),
+        opts,
+    ));
+    wait_for(&run, |s| s.state != RunState::Running);
+    run.specials(0)
+        .into_iter()
+        .find(|s| s.label == label)
+        .unwrap_or_else(|| panic!("no {label} on the {model} branch"))
+}
+
+#[test]
+fn an_lp_curve_run_streams_points_and_finds_the_cusp() {
+    let lp = ep_special("cusp", 0, vec![0.0, 1.0], vec![-1.0], (-1.0, 1.0), "LP");
+    let (m, info) = load("cusp");
+    let setup = CurveSetup::new([0, 1], vec![lp.point.alpha, 1.0], lp.point.u.clone());
+    let opts = Options {
+        bounds: (-0.5, 1.5),
+        ..Options::default()
+    };
+    let spec = RunSpec::curve(m, info, Evaluator::Jit, RunKind::LpCurve(setup), opts);
+    let run = Run::start(spec);
+    let st = wait_for(&run, |s| s.state != RunState::Running);
+    assert_eq!(st.state, RunState::Done);
+    assert_eq!(st.points.len(), 1);
+    let pts = run.points(0, 0, 1000);
+    assert!(pts.len() > 5);
+    // On a curve Point.u is (x, b1) and Point.alpha is b2.
+    assert!(pts.iter().all(|p| p.u.len() == 2));
+    let cp: Vec<_> = run
+        .specials(0)
+        .into_iter()
+        .filter(|s| s.label == "CP")
+        .collect();
+    assert_eq!(cp.len(), 1);
+    assert!(cp[0].extras.refined);
+    assert!(cp[0].point.alpha.abs() < 1e-10);
+}
+
+#[test]
+fn a_hopf_curve_run_follows_the_brusselator_curve() {
+    let h = ep_special(
+        "brusselator",
+        1,
+        vec![1.0, 1.2],
+        vec![1.0, 1.2],
+        (0.5, 4.0),
+        "H",
+    );
+    let (m, info) = load("brusselator");
+    let setup = CurveSetup::new([0, 1], vec![1.0, h.point.alpha], h.point.u.clone());
+    let opts = Options {
+        bounds: (1.5, 5.0),
+        ..Options::default()
+    };
+    let spec = RunSpec::curve(m, info, Evaluator::Jit, RunKind::HopfCurve(setup), opts);
+    let run = Run::start(spec);
+    let st = wait_for(&run, |s| s.state != RunState::Running);
+    assert_eq!(st.state, RunState::Done);
+    let pts = run.points(0, 0, 1000);
+    assert!(pts.len() > 5);
+    // Point.u is (x, y, a, kappa) and Point.alpha is b; the curve is b = 1 + a^2.
+    for p in &pts {
+        assert_eq!(p.u.len(), 4);
+        assert!((p.alpha - (1.0 + p.u[2] * p.u[2])).abs() < 1e-9);
+    }
+}
+
+#[test]
+fn a_curve_run_cannot_switch_branches() {
+    let lp = ep_special("cusp", 0, vec![0.0, 1.0], vec![-1.0], (-1.0, 1.0), "LP");
+    let (m, info) = load("cusp");
+    let setup = CurveSetup::new([0, 1], vec![lp.point.alpha, 1.0], lp.point.u.clone());
+    let mut spec = RunSpec::curve(
+        m,
+        info,
+        Evaluator::Jit,
+        RunKind::LpCurve(setup),
+        Options::default(),
+    );
+    spec.switch_at = Some("BP1".into());
+    let st = Run::start(spec).join();
+    assert!(
+        matches!(st.state, RunState::Failed(EngineError::BadProblem(_))),
+        "{:?}",
+        st.state
+    );
 }
