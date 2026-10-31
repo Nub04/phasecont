@@ -117,7 +117,7 @@ P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; merged into `mai
 
 ## In progress
 
-P5 (limit cycles, plan approved on 2026-10-31) on branch `phase5-limit-cycles`, not pushed. Packages 1 to 6 of 10 are done:
+P5 (limit cycles, plan approved on 2026-10-31) on branch `phase5-limit-cycles`, not pushed. Packages 1 to 7 of 10 are done:
 
 - 137aaa1: `cycle/basis.rs`, Gauss-Legendre nodes and weights by Newton on the Legendre polynomials, and the Lagrange basis on m + 1 base points.
 - 513f8cc: `pc-linalg` `condense.rs`, the condensation solver for the bordered collocation block system, with the monodromy matrix from the condensed blocks. rayon is a `pc-linalg` dependency and faer's `sparse-linalg` feature is on, both approved in the plan.
@@ -147,7 +147,14 @@ Rulings in package 6:
 - The PD start warns when the multiplier closest to -1 is more than 1e-6 away from it and refuses a complex one. Like a Hopf start, it ignores `direction` < 0 with a warning, because both directions give the same orbits half a period apart.
 - The new mesh takes its N + 1 points evenly in the index of the doubled mesh, interpolated linearly between its points, so the adapted spacing of the PD orbit carries over to both halves.
 
-Next is package 7: the rayon threshold.
+- f7528bd: the rayon threshold. `CondenseShape::parallel_pays` holds when the interval elimination work, N nm ni (ni + 2n + k + 1) multiply-adds, is at least `PARALLEL_WORK` = 2e7, and `CycleProblem` then condenses on the current rayon pool. The ignored test `timing_sequential_and_parallel` (`cargo test --release -p pc-linalg timing -- --ignored --nocapture`, 12 logical CPUs, m = 4) measured: on the default pool of 12 threads, parallel was 1.20 times faster at n = 10 and N = 320 and 1.47 times at N = 640, but 1.0 at n = 4 and N = 640, 0.55 at n = 2 and N = 640, and 0.02 at n = 2 and N = 20. Pools of 4 or 6 threads break even earlier (about N = 160 at n = 2), with at most 1.6 times. The parallel and sequential solves give the same bits, so the threshold changes only the time. `cargo test`: 974 passed, 0 failed.
+
+Rulings in package 7:
+
+- The threshold is set for the default pool, which has one thread per logical CPU, since that is what a MATLAB session gets. It is conservative for smaller pools.
+- The plan's memory check is the fallible allocation already in place: the blocks, the condenser store and the sparse workspaces use `try_reserve` or `MemBuffer::try_new` and return `OutOfMemory` instead of aborting.
+
+Next is package 8: the run machinery, pc-ffi and the CLI.
 
 ## Next
 
