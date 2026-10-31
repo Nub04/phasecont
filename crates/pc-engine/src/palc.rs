@@ -222,11 +222,12 @@ fn make_point(
         codim2: t.codim2,
         h,
         newton_iters: iters,
+        mesh: p.mesh(),
     })
 }
 
 /// A point without test values, for a landing point whose tangent could not be computed.
-fn bare_point(x: &[f64], v: Vec<f64>, h: f64, iters: usize) -> Point {
+fn bare_point(x: &[f64], v: Vec<f64>, h: f64, iters: usize, mesh: Vec<f64>) -> Point {
     let n = x.len() - 1;
     Point {
         u: x[..n].to_vec(),
@@ -237,6 +238,7 @@ fn bare_point(x: &[f64], v: Vec<f64>, h: f64, iters: usize) -> Point {
         codim2: Vec::new(),
         h,
         newton_iters: iters,
+        mesh,
     }
 }
 
@@ -426,7 +428,10 @@ pub(crate) fn run_branch(
                 let start: Vec<f64> = x.iter().zip(&v).map(|(a, t)| a + h * t).collect();
                 match correct(p, &x, &v, h, start, opts, cancel) {
                     Corrected::Done { x, iters } => break (x, iters),
-                    Corrected::Failed => h /= 2.0,
+                    Corrected::Failed => {
+                        h /= 2.0;
+                        p.adapt(&mut x, &mut v, true);
+                    }
                     Corrected::Stop(r) => break 'run r,
                 }
             };
@@ -446,7 +451,7 @@ pub(crate) fn run_branch(
                         let (pt, reason) = match built {
                             Ok(pt) => (pt, StopReason::Bounds),
                             Err(e) => {
-                                let bare = bare_point(&l.x, v.clone(), l.s * h, l.iters);
+                                let bare = bare_point(&l.x, v.clone(), l.s * h, l.iters, p.mesh());
                                 if e == EngineError::Cancelled {
                                     (bare, StopReason::Cancelled)
                                 } else {
@@ -506,6 +511,7 @@ pub(crate) fn run_branch(
             p.accept(&x1);
             x = x1;
             v = vn;
+            p.adapt(&mut x, &mut v, false);
             if iters <= 3 {
                 h = (1.3 * h).min(opts.hmax);
             }

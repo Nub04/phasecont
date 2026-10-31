@@ -17,6 +17,7 @@
 //! condition as the first border row and the PALC row as the second.
 
 use super::basis::{CollocationBasis, NCOL_RANGE};
+use super::mesh;
 use crate::branch::Options;
 use crate::error::EngineError;
 use crate::model::ModelEval;
@@ -108,6 +109,12 @@ pub struct CycleProblem<'a> {
     f: Vec<f64>,
     jac_u: Vec<f64>,
     jac_p: Vec<f64>,
+    /// Accepted points between mesh adaptations, 0 for none (`Options::mesh_adapt`).
+    pub(crate) adapt_every: usize,
+    /// Accepted points since the last adaptation, and whether the mesh already moved at
+    /// the current point.
+    since: usize,
+    adapted_here: bool,
 }
 
 /// A zeroed vector, or an error instead of an abort when the memory is not there.
@@ -225,14 +232,12 @@ impl<'a> CycleProblem<'a> {
             f: vec![0.0; n],
             jac_u: vec![0.0; n * n],
             jac_p: vec![0.0; n * n_p],
+            adapt_every: 0,
+            since: 0,
+            adapted_here: false,
         };
         problem.set_reference(&setup.profile);
         Ok(problem)
-    }
-
-    /// The N + 1 mesh points.
-    pub fn mesh(&self) -> &[f64] {
-        &self.mesh
     }
 
     /// Makes `uref`, the orbit at the base points, the reference of the phase condition:
@@ -500,6 +505,43 @@ impl Problem for CycleProblem<'_> {
     fn accept(&mut self, x: &[f64]) {
         let k = self.model.n() * self.points();
         self.set_reference(&x[..k]);
+    }
+
+    /// The N + 1 mesh points.
+    fn mesh(&self) -> Vec<f64> {
+        self.mesh.clone()
+    }
+
+    /// Moves the mesh every `adapt_every` accepted points and after a failed corrector,
+    /// at most once per point, and interpolates the orbit part of x and v onto it. The
+    /// interpolated x becomes the reference of the phase condition.
+    fn adapt(&mut self, x: &mut [f64], v: &mut [f64], failed: bool) -> bool {
+        if !failed {
+            self.adapted_here = false;
+            self.since += 1;
+        }
+        let due = if failed {
+            !self.adapted_here
+        } else {
+            self.since >= self.adapt_every
+        };
+        if self.adapt_every == 0 || !due {
+            return false;
+        }
+        self.since = 0;
+        self.adapted_here = true;
+        let n = self.model.n();
+        let k = n * self.points();
+        let Some(new) = mesh::new_mesh(&self.basis, n, &self.mesh, &x[..k]) else {
+            return false;
+        };
+        let xu = mesh::interpolate(&self.basis, n, &self.mesh, &new, &x[..k]);
+        let vu = mesh::interpolate(&self.basis, n, &self.mesh, &new, &v[..k]);
+        x[..k].copy_from_slice(&xu);
+        v[..k].copy_from_slice(&vu);
+        self.mesh = new;
+        self.set_reference(&x[..k]);
+        true
     }
 
     /// Solves with the condensation solver. The determinant is not computed, so the

@@ -299,3 +299,64 @@ fn bad_starts_are_refused() {
         assert!(matches!(r, Err(EngineError::BadProblem(_))), "{s:?}: {r:?}");
     }
 }
+
+/// Largest error at the mesh points of `pt` against RK4 from its base point u_0, in
+/// rescaled time, with `sub` RK4 steps per mesh interval.
+fn mesh_point_error(m: &mut dyn ModelEval, pt: &Point, ncol: usize, sub: usize) -> f64 {
+    let t = period(pt);
+    let p = [1.0, pt.alpha, 0.0];
+    let mut x = [pt.u[0], pt.u[1]];
+    let mut err = 0.0_f64;
+    for j in 0..pt.mesh.len() - 1 {
+        let dt = (pt.mesh[j + 1] - pt.mesh[j]) / sub as f64;
+        for _ in 0..sub {
+            rk4(m, &p, t, &mut x, dt);
+        }
+        let at = 2 * (j + 1) * ncol;
+        err = err.max((x[0] - pt.u[at]).hypot(x[1] - pt.u[at + 1]));
+    }
+    err
+}
+
+/// At larger b the Brusselator cycle has a fast jump. Mesh adaptation moves the mesh
+/// points to it and lowers the error at the mesh points well below that of the uniform
+/// mesh (about 4e-3 against 1e-5 at b = 3.5; at b = 5 the uniform mesh with N = 20 no
+/// longer gives the right cycle).
+#[test]
+fn mesh_adaptation_lowers_the_error_on_a_stiff_cycle() {
+    let (ntst, ncol, b) = (20, 4, 3.5);
+    let mut errs = Vec::new();
+    for every in [0, 3] {
+        let mut m = model_of("brusselator", Evaluator::Jit);
+        let o = Options {
+            mesh_adapt: every,
+            ..opts((0.0, b))
+        };
+        let (branch, _) = run(m.as_mut(), &brusselator_start(ntst, ncol), &o);
+        assert_eq!(branch.stop, StopReason::Bounds, "{:?}", branch.warnings);
+        let last = branch.points.last().unwrap();
+        assert!((last.alpha - b).abs() <= 1e-12);
+        let mesh = &last.mesh;
+        assert_eq!(mesh.len(), ntst + 1);
+        assert_eq!((mesh[0], mesh[ntst]), (0.0, 1.0));
+        assert!(mesh.windows(2).all(|w| w[1] > w[0]));
+        let h: Vec<f64> = mesh.windows(2).map(|w| w[1] - w[0]).collect();
+        let (hmin, hmax) = h
+            .iter()
+            .fold((1.0_f64, 0.0_f64), |(a, z), &x| (a.min(x), z.max(x)));
+        let err = mesh_point_error(m.as_mut(), last, ncol, 4000);
+        println!(
+            "adapt every {every}: {} points, period {:.10}, intervals {hmin:.4e} to {hmax:.4e}, \
+             mesh-point error {err:.3e}",
+            branch.points.len(),
+            period(last)
+        );
+        if every == 0 {
+            assert!(hmax - hmin <= 1e-15);
+        } else {
+            assert!(hmax / hmin > 2.0, "{hmin} {hmax}");
+        }
+        errs.push(err);
+    }
+    assert!(errs[1] < errs[0] / 10.0, "{errs:?}");
+}

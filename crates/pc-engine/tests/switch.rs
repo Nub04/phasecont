@@ -203,6 +203,7 @@ fn named(label: &str) -> SpecialPoint {
             codim2: Vec::new(),
             h: 0.0,
             newton_iters: 0,
+            mesh: Vec::new(),
         },
         extras: Default::default(),
     }

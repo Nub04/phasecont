@@ -169,6 +169,7 @@ mod tests {
             codim2: Vec::new(),
             h: 0.125,
             newton_iters: 3,
+            mesh: Vec::new(),
         }
     }
 

@@ -24,6 +24,9 @@ pub struct Point {
     pub h: f64,
     /// Newton iterations of the corrector that reached this point.
     pub newton_iters: usize,
+    /// The N + 1 mesh points of a cycle branch, from 0 to 1, on which `u` lives; empty on
+    /// other branches.
+    pub mesh: Vec<f64>,
 }
 
 /// Extra data stored with a special point.
@@ -111,6 +114,9 @@ pub struct Options {
     pub max_locate: usize,
     /// Tolerance of that search and of the refinement Newton.
     pub tol_refine: f64,
+    /// Accepted steps between mesh adaptations on a cycle branch; 0 turns adaptation off.
+    /// A failed corrector also adapts the mesh, at most once per point (SPEC §7).
+    pub mesh_adapt: usize,
 }
 
 impl Default for Options {
@@ -130,6 +136,7 @@ impl Default for Options {
             detect_h: true,
             max_locate: 30,
             tol_refine: 1e-12,
+            mesh_adapt: 3,
         }
     }
 }

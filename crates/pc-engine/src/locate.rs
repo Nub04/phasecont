@@ -79,6 +79,7 @@ fn trial(
                 codim2: r.codim2,
                 h: s * st.h,
                 newton_iters: iters,
+                mesh: p.mesh(),
             })
         }
         Err(EngineError::Cancelled) => Trial::Stop(StopReason::Cancelled),
@@ -266,6 +267,7 @@ fn refine_zero(
             codim2: r.codim2,
             h: along,
             newton_iters: iters,
+            mesh: p.mesh(),
         };
         x = xn;
         tau = tn;
@@ -441,6 +443,7 @@ mod tests {
             codim2: Vec::new(),
             h: 0.1,
             newton_iters: 1,
+            mesh: Vec::new(),
         }
     }
 
@@ -575,6 +578,7 @@ mod codim2_tests {
             codim2: vec![value],
             h: 0.1,
             newton_iters: 1,
+            mesh: Vec::new(),
         }
     }
 
@@ -750,6 +754,7 @@ mod failure_tests {
             codim2: Vec::new(),
             h: 0.1,
             newton_iters: 1,
+            mesh: Vec::new(),
         }
     }
 
@@ -845,6 +850,7 @@ mod two_zero_tests {
             codim2: Vec::new(),
             h: 0.1,
             newton_iters: 1,
+            mesh: Vec::new(),
         }
     }
 
@@ -931,6 +937,7 @@ mod curved_tests {
             codim2: Vec::new(),
             h: 0.1,
             newton_iters: 1,
+            mesh: Vec::new(),
         }
     }
 

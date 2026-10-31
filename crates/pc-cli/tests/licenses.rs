@@ -100,6 +100,22 @@ fn writes_sorted_sections_and_skips_dev_only_and_workspace_crates() {
     assert_eq!(text, want);
 }
 
+/// A workspace crate adds its NOTICE file, for ported code, but not its LICENSE file.
+#[test]
+fn a_workspace_crate_adds_only_its_notice_file() {
+    let root = scratch("member-notice");
+    let ws = fixture(&root, None);
+    write(&ws.join("app/NOTICE"), "ported from elsewhere\n");
+    write(&ws.join("app/LICENSE"), "project license\n");
+    let o = run_plain(&root, &ws);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let text = fs::read_to_string(root.join("out.txt")).expect("output file");
+    let want = "== app 0.1.0 ((none declared)) ==\n--- NOTICE ---\nported from elsewhere\n\n\
+                == buildlic 1.2.3 (MIT) ==\n--- LICENSE-MIT ---\nbuild license\n\n\
+                == withlic 1.2.3 (MIT) ==\n--- LICENSE-MIT ---\nwith license\ntext\n\n";
+    assert_eq!(text, want);
+}
+
 #[test]
 fn a_crate_without_a_license_file_fails_and_is_named() {
     let root = scratch("missing");

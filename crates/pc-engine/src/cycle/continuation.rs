@@ -100,6 +100,7 @@ pub fn continue_cycle(
             (p, x0, Some(t0), o)
         }
     };
+    p.inner.adapt_every = opts.mesh_adapt;
     let (k, s) = (p.k, p.s);
     let mut seen = |pt: &Point| {
         let mut q = pt.clone();
@@ -413,6 +414,26 @@ impl Problem for Scaled<'_> {
     fn accept(&mut self, x: &[f64]) {
         self.load(x);
         self.inner.accept(&self.xp);
+    }
+
+    fn mesh(&self) -> Vec<f64> {
+        self.inner.mesh()
+    }
+
+    /// The monitor sees the original unknowns. Interpolation is linear, so the scaled
+    /// tangent is interpolated as it is and then normalized again.
+    fn adapt(&mut self, x: &mut [f64], v: &mut [f64], failed: bool) -> bool {
+        self.load(x);
+        if !self.inner.adapt(&mut self.xp, v, failed) {
+            return false;
+        }
+        x.copy_from_slice(&self.xp);
+        self.scale(x);
+        let nrm = v.iter().map(|t| t * t).sum::<f64>().sqrt();
+        for t in v.iter_mut() {
+            *t /= nrm;
+        }
+        true
     }
 
     /// With y = S z, [J S^-1; bᵀ] y = r is [J; (S b)ᵀ] z = r.

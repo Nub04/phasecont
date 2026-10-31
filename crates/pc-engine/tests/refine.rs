@@ -448,6 +448,7 @@ fn fake(label: &str, u: &[f64], alpha: f64, eigs: Vec<(f64, f64)>) -> SpecialPoi
             codim2: Vec::new(),
             h: 0.0,
             newton_iters: 0,
+            mesh: Vec::new(),
         },
         extras: Default::default(),
     };

@@ -72,6 +72,20 @@ pub trait Problem {
     /// The default does nothing.
     fn accept(&mut self, _x: &[f64]) {}
 
+    /// The mesh that the unknowns live on, stored with each point; empty for a problem
+    /// without one.
+    fn mesh(&self) -> Vec<f64> {
+        Vec::new()
+    }
+
+    /// Called with the point x that the next step starts from and its tangent v: after
+    /// each accepted point (`failed` false) and after each failed corrector (`failed`
+    /// true). A problem with a mesh may move it and rewrite x and v on the new mesh.
+    /// Returns whether it did. The default does nothing.
+    fn adapt(&mut self, _x: &mut [f64], _v: &mut [f64], _failed: bool) -> bool {
+        false
+    }
+
     /// Solves `[jac; borderᵀ] sol = rhs` for the N by N matrix made of `jac` (N-1 rows,
     /// column-major) and one extra row `border`. Returns the determinant of that matrix.
     /// A singular matrix gives `EngineError::Singular`.

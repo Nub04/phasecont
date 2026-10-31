@@ -15,6 +15,9 @@ struct Krate {
     version: String,
     license: String,
     dir: PathBuf,
+    /// A workspace crate: only its `NOTICE*` files are written, for code it ports from
+    /// other projects, and a member without one is left out.
+    member: bool,
 }
 
 /// Writes the license texts of the closure of `package` for `target` to `out`.
@@ -25,7 +28,8 @@ struct Krate {
 /// from `overrides/<crate name>/`. The override applies to every version of
 /// that crate that ships no license file. A missing, unreadable or empty
 /// `SOURCE`, a license file that is not UTF-8, and an `overrides` path that is
-/// not a folder are errors.
+/// not a folder are errors. Workspace crates add their `NOTICE*` files, which hold
+/// the notices of the code they port (see `THIRD_PARTY_NOTICES.md`).
 pub fn licenses(target: &str, package: &str, out: &Path, overrides: Option<&Path>) -> ExitCode {
     match run(target, package, out, overrides) {
         Ok(()) => ExitCode::SUCCESS,
@@ -61,6 +65,12 @@ fn run(target: &str, package: &str, out: &Path, overrides: Option<&Path>) -> Res
     for k in &krates {
         let mut files =
             license_files(&k.dir).map_err(|e| format!("{} {}: {e}", k.name, k.version))?;
+        if k.member {
+            files.retain(|(name, _)| name.to_ascii_lowercase().starts_with("notice"));
+            if files.is_empty() {
+                continue;
+            }
+        }
         let mut note = String::new();
         let fallback = overrides.map(|o| o.join(&k.name)).filter(|d| d.is_dir());
         if let (true, Some(dir)) = (files.is_empty(), fallback) {
@@ -100,8 +110,8 @@ fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
 }
 
-/// The non-member crates in the normal and build dependency closure of
-/// `package`, sorted by name, then version.
+/// The crates in the normal and build dependency closure of `package`, itself
+/// included, sorted by name, then version.
 fn closure(meta: &Value, package: &str) -> Result<Vec<Krate>, String> {
     let bad = || "unexpected cargo metadata layout".to_string();
     let packages = meta
@@ -163,9 +173,6 @@ fn closure(meta: &Value, package: &str) -> Result<Vec<Krate>, String> {
 
     let mut krates = Vec::new();
     for id in seen {
-        if members.contains(id) {
-            continue;
-        }
         let p = by_id.get(id).ok_or_else(bad)?;
         let manifest = str_of(p, "manifest_path").ok_or_else(bad)?;
         krates.push(Krate {
@@ -175,6 +182,7 @@ fn closure(meta: &Value, package: &str) -> Result<Vec<Krate>, String> {
                 .unwrap_or("(none declared)")
                 .to_string(),
             dir: Path::new(manifest).parent().ok_or_else(bad)?.to_path_buf(),
+            member: members.contains(id),
         });
     }
     krates.sort_by(|a, b| (&a.name, &a.version).cmp(&(&b.name, &b.version)));

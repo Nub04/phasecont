@@ -3,6 +3,7 @@
 
 mod basis;
 mod continuation;
+mod mesh;
 mod problem;
 
 pub use basis::{CollocationBasis, NCOL_RANGE};
