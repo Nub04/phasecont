@@ -129,6 +129,31 @@ classdef CycleTest < matlab.unittest.TestCase
             testCase.verifyEqual(x(end, :), x(1, :), AbsTol = 1e-8);
         end
 
+        function rosslerOracle(testCase)
+            % SPEC section 9: a test without its reference file is skipped
+            % as "oracle missing". The file comes from AUTO-07p or MatCont on
+            % the developer's machine, for the run of rosslerCycles (b = 0.2,
+            % c = 2.5, free a), and lists its special points as
+            % {"tool", "version", "settings", "free": "a",
+            %  "specials": [{"label": "PD", "a": value}, ...]}.
+            root = fileparts(fileparts(mfilename("fullpath")));
+            file = fullfile(root, "references", "rossler.json");
+            testCase.assumeTrue(isfile(file), ...
+                "oracle missing: references/rossler.json");
+            ref = jsondecode(fileread(file));
+            testCase.assertEqual(string(ref.free), "a");
+            specials = ref.specials;
+            if iscell(specials)
+                specials = [specials{:}];
+            end
+            want = specials(string({specials.label}) == "PD");
+            testCase.assertNotEmpty(want, "the oracle lists no PD point");
+            [~, lc] = testCase.rosslerCycles();
+            pd = lc.points("PD");
+            testCase.assertNotEmpty(pd);
+            testCase.verifyEqual(pd(1).P(1), want(1).a, RelTol = 1e-6);
+        end
+
         function plotDrawsMaxAndMin(testCase)
             [m, h] = testCase.brusselatorHopf();
             lc = phasecont.continuation(m, h, Type = "LC", Free = "b", ...
