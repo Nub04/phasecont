@@ -34,7 +34,7 @@ use pc_linalg::{Lu, null_left, null_right};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Codim-2 labels of the LP curve, in the order of `Point.codim2`.
-const LABELS: [&str; 3] = ["CP", "BT", "ZH"];
+pub const LP_CURVE_LABELS: [&str; 3] = ["CP", "BT", "ZH"];
 
 /// `F = 0, g = 0` over a model with two free parameters.
 pub struct LpCurveProblem<'a> {
@@ -178,7 +178,7 @@ impl Problem for LpCurveProblem<'_> {
     }
 
     fn codim2_labels(&self) -> &'static [&'static str] {
-        &LABELS
+        &LP_CURVE_LABELS
     }
 
     fn codim2_tests(
@@ -219,7 +219,7 @@ impl Problem for LpCurveProblem<'_> {
             // psi_h also vanishes where two real eigenvalues sum to zero, which is no ZH.
             (classify_h_zero(&without_zero(eigs)) == HopfZero::Hopf).then_some("ZH")
         } else {
-            LABELS.get(i).copied()
+            LP_CURVE_LABELS.get(i).copied()
         }
     }
 }

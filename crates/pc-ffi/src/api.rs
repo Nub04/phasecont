@@ -9,14 +9,14 @@ use std::ffi::c_char;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use pc_engine::{EngineError, EpSetup, Evaluator, Options, Run, RunSpec};
+use pc_engine::{EngineError, EpSetup, Evaluator, Options, Run};
 use serde_json::{Value, json};
 
 use crate::barrier::{
     barrier, bytes_arg, f64_arg, f64_out, into_c_string, out_ptr, ptr_barrier, str_arg,
 };
 use crate::error::{Error, Result, bad_arg};
-use crate::json::problem::{Mode, parse_options, parse_problem};
+use crate::json::problem::{Kind, Mode, parse_options, parse_problem};
 use crate::model::{ModelHandle, NOT_COMPILED};
 use crate::parse::{MAX_MODEL_TEXT, parse_model};
 use crate::registry::{self, Handle};
@@ -231,16 +231,14 @@ pub unsafe extern "C" fn run_start(
         if !h.names.autonomous {
             return Err(Error::NonAutonomous(EngineError::NonAutonomous.to_string()));
         }
-        let mut spec = RunSpec::new(
-            h.model.clone(),
-            h.info.clone(),
-            evaluator,
-            problem.setup,
-            problem.opts,
-        );
-        spec.switch_at = problem.switch;
+        let kind = problem.kind;
+        let spec = problem.into_spec(h.model.clone(), h.info.clone(), evaluator);
         let run = Run::start(spec);
-        *out_run = registry::insert(RunHandle { run, n: h.n() });
+        *out_run = registry::insert(RunHandle {
+            run,
+            kind,
+            n: h.n(),
+        });
         Ok(())
     })
 }
@@ -287,7 +285,7 @@ pub unsafe extern "C" fn run_copy(
                 "branch: the run has {branches} branches, got {branch}"
             )));
         }
-        let stride = stride(h.n);
+        let stride = stride(h.kind, h.n);
         let need = count
             .checked_mul(stride)
             .ok_or_else(|| bad_arg(format!("count: {count} rows is too many")))?;
@@ -309,7 +307,7 @@ pub unsafe extern "C" fn run_copy(
                 .collect()
         };
         for (row, point) in buf.chunks_exact_mut(stride).zip(&points) {
-            pack_row(point, h.n, row);
+            pack_row(h.kind, point, h.n, row);
         }
         *out_rows = points.len().min(count);
         Ok(())
@@ -448,6 +446,7 @@ pub unsafe extern "C" fn debug_panic(where_: i32, run: *mut u64) -> i32 {
             *slot = 0;
             *slot = registry::insert(RunHandle {
                 run: Run::start_panicking(),
+                kind: Kind::Ep,
                 n: 0,
             });
             Ok(())

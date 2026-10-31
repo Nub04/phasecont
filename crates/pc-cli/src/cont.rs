@@ -10,7 +10,7 @@ use std::io::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
 
-use pc_engine::{EngineError, Evaluator, Run, RunSpec, RunState, SpecialPoint, StopReason};
+use pc_engine::{EngineError, Evaluator, Run, RunState, SpecialPoint, StopReason};
 use pckern::json::problem::{Mode, parse_problem};
 use serde_json::{Value, json};
 
@@ -65,15 +65,7 @@ pub fn cont(file: &Path, problem_file: &Path, fallback: bool) -> ExitCode {
     } else {
         Evaluator::Jit
     };
-    let mut spec = RunSpec::new(
-        loaded.expanded,
-        loaded.info,
-        evaluator,
-        problem.setup,
-        problem.opts,
-    );
-    spec.switch_at = problem.switch;
-    let run = Run::start(spec);
+    let run = Run::start(problem.into_spec(loaded.expanded, loaded.info, evaluator));
     // `join` would consume the run and with it the branches, so wait by polling. The worker
     // sets the final state last; dropping `run` after the report joins the thread.
     let state = loop {
@@ -97,8 +89,8 @@ fn report(run: &Run, state: &RunState) -> ExitCode {
             .iter()
             .map(|p| {
                 json!({
-                    "u": p.u, "alpha": p.alpha, "tests": p.tests, "h": p.h,
-                    "newton_iters": p.newton_iters,
+                    "u": p.u, "alpha": p.alpha, "tests": p.tests, "codim2": p.codim2,
+                    "h": p.h, "newton_iters": p.newton_iters,
                 })
             })
             .collect();
@@ -171,6 +163,8 @@ fn special_json(s: &SpecialPoint) -> Value {
         "u": s.point.u,
         "alpha": s.point.alpha,
         "coefficient": s.extras.coefficient,
+        "coefficient2": s.extras.coefficient2,
+        "coefficients": s.extras.values.iter().map(|(k, v)| (k.clone(), json!(v))).collect::<serde_json::Map<_, _>>(),
         "omega": s.extras.omega,
         "normalization": s.extras.normalization,
         "refined": s.extras.refined,

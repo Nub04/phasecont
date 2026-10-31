@@ -5,16 +5,80 @@
 //! where the state and the parameters come as buffers and the keys `u0` and `params`
 //! are errors.
 
-use pc_engine::{EpSetup, Options};
+use pc_engine::{
+    CurveSetup, EpSetup, Evaluator, HOPF_CURVE_LABELS, LP_CURVE_LABELS, Options, RunKind, RunSpec,
+};
 use pc_ir::IrModel;
+use pc_ode::{Model, ModelInfo};
 use serde_json::{Map, Value};
+
+/// What a run follows: an equilibrium branch, or the curve of fold (LP) or Hopf points of two
+/// parameters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Ep,
+    Lp,
+    Hopf,
+}
+
+impl Kind {
+    /// The `type` string of the problem JSON.
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::Ep => "EP",
+            Kind::Lp => "LP",
+            Kind::Hopf => "H",
+        }
+    }
+
+    /// Codim-2 labels in the order of `Point::codim2`; empty for an equilibrium branch.
+    pub fn labels(self) -> &'static [&'static str] {
+        match self {
+            Kind::Ep => &[],
+            Kind::Lp => &LP_CURVE_LABELS,
+            Kind::Hopf => &HOPF_CURVE_LABELS,
+        }
+    }
+}
 
 /// A problem file after validation.
 #[derive(Debug)]
 pub struct Problem {
+    /// The start of an `Ep` run. For a curve, `setup.u0` and `setup.params` are the start of
+    /// the curve and `setup.free` is the first of its two parameters.
     pub setup: EpSetup,
     pub opts: Options,
     pub switch: Option<String>,
+    pub kind: Kind,
+    /// The two parameters of a curve run, `[a1, a2]`, as positions among the parameters.
+    pub curve_free: Option<[usize; 2]>,
+}
+
+impl Problem {
+    /// The engine's run kind, with the start taken from `setup` as it is now.
+    pub fn run_kind(&self) -> RunKind {
+        let curve = |free: [usize; 2]| {
+            CurveSetup::new(free, self.setup.params.clone(), self.setup.u0.clone())
+        };
+        match (self.kind, self.curve_free) {
+            (Kind::Lp, Some(free)) => RunKind::LpCurve(curve(free)),
+            (Kind::Hopf, Some(free)) => RunKind::HopfCurve(curve(free)),
+            _ => RunKind::Ep,
+        }
+    }
+
+    /// The run to start, with the start taken from `setup` as it is now.
+    pub fn into_spec(self, model: Model, info: ModelInfo, evaluator: Evaluator) -> RunSpec {
+        let kind = self.run_kind();
+        match kind {
+            RunKind::Ep => {
+                let mut spec = RunSpec::new(model, info, evaluator, self.setup, self.opts);
+                spec.switch_at = self.switch;
+                spec
+            }
+            curve => RunSpec::curve(model, info, evaluator, curve, self.opts),
+        }
+    }
 }
 
 /// Who is reading the problem.
@@ -108,18 +172,36 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         ],
         "",
     )?;
-    match top.get("type") {
+    let kind = match top.get("type") {
         None => return Err("type: missing".into()),
-        Some(Value::String(s)) if s == "EP" => {}
-        Some(_) => return Err("type: expected \"EP\"".into()),
-    }
-    let free_name = match top.get("free") {
-        None => return Err("free: missing".into()),
-        Some(Value::String(s)) => s,
-        Some(_) => return Err("free: expected a string".into()),
+        Some(Value::String(s)) if s == "EP" => Kind::Ep,
+        Some(Value::String(s)) if s == "LP" => Kind::Lp,
+        Some(Value::String(s)) if s == "H" => Kind::Hopf,
+        Some(_) => return Err("type: expected \"EP\", \"LP\" or \"H\"".into()),
     };
-    let free = param_index(ir, free_name)
-        .ok_or_else(|| format!("free: unknown parameter \"{free_name}\""))?;
+    let (free, curve_free) = match (kind, top.get("free")) {
+        (_, None) => return Err("free: missing".into()),
+        (Kind::Ep, Some(Value::String(name))) => (
+            param_index(ir, name).ok_or_else(|| format!("free: unknown parameter \"{name}\""))?,
+            None,
+        ),
+        (Kind::Ep, Some(_)) => return Err("free: expected a string".into()),
+        (_, Some(Value::Array(names))) if names.len() == 2 => {
+            let mut at = [0; 2];
+            for (i, name) in names.iter().enumerate() {
+                let name = name
+                    .as_str()
+                    .ok_or_else(|| format!("free[{i}]: expected a string"))?;
+                at[i] = param_index(ir, name)
+                    .ok_or_else(|| format!("free[{i}]: unknown parameter \"{name}\""))?;
+            }
+            if at[0] == at[1] {
+                return Err("free: the two parameters must differ".into());
+            }
+            (at[0], Some(at))
+        }
+        (_, Some(_)) => return Err("free: expected two parameter names".into()),
+    };
 
     if mode == Mode::Abi {
         if top.contains_key("u0") {
@@ -176,12 +258,23 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         Some(_) => return Err("start_is_special: expected true or false".into()),
     };
 
+    if kind != Kind::Ep {
+        if switch.is_some() {
+            return Err("switch: only an EP run can switch branches".into());
+        }
+        if top.contains_key("start_is_special") {
+            return Err("start_is_special: only an EP run starts at a special point".into());
+        }
+    }
+
     let mut setup = EpSetup::new(free, params, u0);
     setup.start_is_special = start_is_special;
     Ok(Problem {
         setup,
         opts,
         switch,
+        kind,
+        curve_free,
     })
 }
 
@@ -278,6 +371,85 @@ mod tests {
         let mut b = base();
         b[key] = v;
         b
+    }
+
+    /// Two parameters, for curves.
+    fn model2() -> IrModel {
+        let mut map = SourceMap::new();
+        let top = map.add(
+            "t.ode",
+            "x'=a-x\ny'=b*x-y\npar a=2,b=3\ninit x=0.5,y=1.5\ndone\n",
+        );
+        let loaded = load(top, &mut map, &mut MapLoader::new());
+        pc_ir::lower(&loaded.expanded, &loaded.info).expect("the test model lowers")
+    }
+
+    #[test]
+    fn curve_types_take_two_names_and_build_a_curve_run() {
+        let ir = model2();
+        for (ty, kind) in [("LP", Kind::Lp), ("H", Kind::Hopf)] {
+            let v = json!({"type": ty, "free": ["B", "a"]});
+            let p = parse_problem(&v, &ir, Mode::Abi).unwrap();
+            assert_eq!(p.kind, kind);
+            assert_eq!(p.curve_free, Some([1, 0]));
+            let run = p.run_kind();
+            let (RunKind::LpCurve(cs) | RunKind::HopfCurve(cs)) = run else {
+                panic!("expected a curve kind");
+            };
+            assert_eq!(cs.free, [1, 0]);
+            assert_eq!(cs.u0, ir.init);
+            assert_eq!(cs.params, ir.par_values);
+        }
+        let p = parse_problem(&json!({"type": "EP", "free": "a"}), &ir, Mode::Abi).unwrap();
+        assert_eq!(p.kind, Kind::Ep);
+        assert_eq!(p.curve_free, None);
+        assert!(matches!(p.run_kind(), RunKind::Ep));
+    }
+
+    #[test]
+    fn curve_types_check_free_switch_and_start_is_special() {
+        let ir = model2();
+        let cases = [
+            (
+                json!({"type": "LP", "free": "a"}),
+                "free: expected two parameter names",
+            ),
+            (
+                json!({"type": "LP", "free": ["a"]}),
+                "free: expected two parameter names",
+            ),
+            (
+                json!({"type": "LP", "free": ["a", 1]}),
+                "free[1]: expected a string",
+            ),
+            (
+                json!({"type": "LP", "free": ["a", "A"]}),
+                "free: the two parameters must differ",
+            ),
+            (
+                json!({"type": "H", "free": ["a", "zz"]}),
+                "free[1]: unknown parameter \"zz\"",
+            ),
+            (
+                json!({"type": "EP", "free": ["a", "b"]}),
+                "free: expected a string",
+            ),
+            (
+                json!({"type": "LP", "free": ["a", "b"], "switch": "BP1"}),
+                "switch: only an EP run can switch branches",
+            ),
+            (
+                json!({"type": "H", "free": ["a", "b"], "start_is_special": true}),
+                "start_is_special: only an EP run starts at a special point",
+            ),
+            (
+                json!({"type": "BP", "free": "a"}),
+                "type: expected \"EP\", \"LP\" or \"H\"",
+            ),
+        ];
+        for (v, msg) in cases {
+            assert_eq!(parse_problem(&v, &ir, Mode::Abi).unwrap_err(), msg, "{v}");
+        }
     }
 
     #[test]

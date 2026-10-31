@@ -210,7 +210,10 @@ fn bad_problem_files_exit_two_and_name_the_key_path() {
     for (text, path) in [
         (r#"{"type":"EP","free":"a","frob":1}"#, "frob"),
         (r#"{"free":"a"}"#, "type"),
-        (r#"{"type":"LP","free":"a"}"#, "type"),
+        (r#"{"type":"BP","free":"a"}"#, "type"),
+        (r#"{"type":"LP","free":"a"}"#, "free"),
+        (r#"{"type":"H","free":["a","a"]}"#, "free"),
+        (r#"{"type":"LP","free":["a","b"]}"#, "free[1]"),
         (r#"{"type":"EP"}"#, "free"),
         (r#"{"type":"EP","free":3}"#, "free"),
         (r#"{"type":"EP","free":"zz"}"#, "free"),

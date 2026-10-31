@@ -4,7 +4,10 @@ use std::ffi::{CStr, CString, c_char};
 use std::ptr;
 use std::time::{Duration, Instant};
 
-use pc_engine::{EpSetup, Evaluator, Options, Point, Run, RunSpec, RunState, StopReason, build};
+use pc_engine::{
+    CurveSetup, EpSetup, Evaluator, Options, Point, Run, RunKind, RunSpec, RunState, StopReason,
+    build,
+};
 use pc_ode::{MapLoader, SourceMap, load};
 use pckern::{PcApiV1, pc_api_v1};
 use serde_json::Value;
@@ -593,5 +596,249 @@ fn a_run_from_a_bp_start_fails_with_6_and_names_switch() {
         }
         assert!(t0.elapsed() < Duration::from_secs(60));
         std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+// ---- LP and Hopf curves ----
+
+const CUSP: &str = "par b1=0,b2=1\nx'=b1+b2*x-x^3\ninit x=-1\ndone\n";
+const BT: &str = "par b1=0,b2=0,s=1\nx'=y\ny'=b1+b2*y+x^2+s*x*y\ninit x=0,y=0\ndone\n";
+const BRUSS: &str = "par a=1,b=1.5\nx'=a-(b+1)*x+x^2*y\ny'=b*x-x^2*y\ninit x=1,y=1\ndone\n";
+
+fn compiled(text: &str) -> Id {
+    let m = parse(text);
+    compile(&m, "jit");
+    m
+}
+
+/// Runs an equilibrium branch to the end and returns the first special point called
+/// `label` as (value of the free parameter, state).
+fn ep_special(
+    m: &Id,
+    free: &str,
+    u0: &[f64],
+    p: &[f64],
+    bounds: &str,
+    label: &str,
+) -> (f64, Vec<f64>) {
+    let json = format!(r#"{{"type":"EP","free":"{free}","options":{{"bounds":{bounds}}}}}"#);
+    let (rc, run) = start_with(m, &json, u0, p);
+    assert_eq!(rc, 0, "{}", last_error());
+    let run = Id(run);
+    let st = wait(&run);
+    let n = st["n"].as_u64().unwrap() as usize;
+    let stride = st["stride"].as_u64().unwrap() as usize;
+    let k = st["branches"][0]["specials"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|s| s["label"] == label)
+        .unwrap_or_else(|| panic!("no {label}: {st}"));
+    let (rc, rows, row) = copy(run.0, 0, 1, k, 1, stride);
+    assert_eq!((rc, rows), (0, 1));
+    (row[0], row[1..=n].to_vec())
+}
+
+/// The curve row the ABI documents, written out again: `[a2, x(n), a1, extra,
+/// eig_re(n), eig_im(n), codim2(k), h, newton_iters]`, where `extra` is kappa on a Hopf curve.
+fn expected_curve_row(p: &Point, n: usize, extra: usize, k: usize) -> Vec<f64> {
+    let mut row = vec![p.alpha];
+    let get = |i: usize| p.u.get(i).copied().unwrap_or(f64::NAN);
+    row.extend((0..n + 1 + extra).map(get));
+    let eig = |i: usize| {
+        p.eigenvalues
+            .get(i)
+            .copied()
+            .unwrap_or((f64::NAN, f64::NAN))
+    };
+    row.extend((0..n).map(|i| eig(i).0));
+    row.extend((0..n).map(|i| eig(i).1));
+    row.extend((0..k).map(|i| p.codim2.get(i).copied().unwrap_or(f64::NAN)));
+    row.push(p.h);
+    row.push(p.newton_iters as f64);
+    row
+}
+
+/// Starts the curve run `json` and compares every row with the engine's own run of `kind`.
+fn check_curve(
+    text: &str,
+    json: &str,
+    kind: RunKind,
+    u0: &[f64],
+    p: &[f64],
+    opts: Options,
+    (n, extra, k): (usize, usize, usize),
+) -> Value {
+    let m = compiled(text);
+    let (rc, run) = start_with(&m, json, u0, p);
+    assert_eq!(rc, 0, "{}", last_error());
+    let run = Id(run);
+    let st = wait(&run);
+    assert_eq!(st["state"], "done", "{st}");
+    let stride = st["stride"].as_u64().unwrap() as usize;
+    assert_eq!(stride, 1 + n + 1 + extra + 2 * n + k + 2, "{st}");
+    assert_eq!(st["n"].as_u64().unwrap() as usize, n);
+
+    let mut map = SourceMap::new();
+    let f = map.add("model.ode", text);
+    let l = load(f, &mut map, &mut MapLoader::new());
+    let spec = RunSpec::curve(l.expanded, l.info, Evaluator::Jit, kind, opts);
+    let engine = Run::start(spec);
+    let t0 = Instant::now();
+    while engine.poll().state == RunState::Running {
+        assert!(t0.elapsed() < Duration::from_secs(60));
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let want = engine.points(0, 0, usize::MAX);
+    let count = st["branches"][0]["points"].as_u64().unwrap() as usize;
+    assert_eq!(count, want.len());
+    assert!(count > 5, "{st}");
+    let (rc, rows, got) = copy(run.0, 0, 0, 0, count, stride);
+    assert_eq!((rc, rows), (0, count), "{}", last_error());
+    for (i, point) in want.iter().enumerate() {
+        let w = expected_curve_row(point, n, extra, k);
+        assert!(same_bits(&got[i * stride..(i + 1) * stride], &w), "row {i}");
+    }
+    st
+}
+
+#[test]
+fn an_lp_curve_run_has_curve_rows_and_finds_the_cusp() {
+    let m = compiled(CUSP);
+    let (b1, u) = ep_special(&m, "b1", &[-1.0], &[0.0, 1.0], "[-1,1]", "LP");
+    let setup = CurveSetup::new([0, 1], vec![b1, 1.0], u.clone());
+    let opts = Options {
+        bounds: (-0.5, 1.5),
+        ..Options::default()
+    };
+    let json = r#"{"type":"LP","free":["b1","b2"],"options":{"bounds":[-0.5,1.5]}}"#;
+    let st = check_curve(
+        CUSP,
+        json,
+        RunKind::LpCurve(setup),
+        &u,
+        &[b1, 1.0],
+        opts,
+        (1, 0, 3),
+    );
+    assert_eq!(st["kind"], "LP");
+    assert_eq!(st["codim2_labels"], serde_json::json!(["CP", "BT", "ZH"]));
+    let cp = st["branches"][0]["specials"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["label"] == "CP")
+        .unwrap_or_else(|| panic!("no CP: {st}"));
+    assert!(
+        (cp["coefficient"].as_f64().unwrap() + 1.0).abs() < 1e-8,
+        "{cp}"
+    );
+    assert_eq!(cp["refined"], true);
+}
+
+#[test]
+fn a_hopf_curve_run_has_curve_rows_with_kappa() {
+    let m = compiled(BRUSS);
+    let (b, u) = ep_special(&m, "b", &[1.0, 1.2], &[1.0, 1.2], "[0.5,4]", "H");
+    let setup = CurveSetup::new([0, 1], vec![1.0, b], u.clone());
+    let opts = Options {
+        bounds: (1.5, 5.0),
+        ..Options::default()
+    };
+    let json = r#"{"type":"H","free":["a","b"],"options":{"bounds":[1.5,5]}}"#;
+    let st = check_curve(
+        BRUSS,
+        json,
+        RunKind::HopfCurve(setup),
+        &u,
+        &[1.0, b],
+        opts,
+        (2, 1, 4),
+    );
+    assert_eq!(st["kind"], "H");
+    assert_eq!(
+        st["codim2_labels"],
+        serde_json::json!(["GH", "BT", "ZH", "HH"])
+    );
+}
+
+#[test]
+fn a_bt_point_reports_both_coefficients() {
+    let m = compiled(BT);
+    let (b1, u) = ep_special(&m, "b1", &[-1.0, 0.0], &[-1.0, 0.5, 1.0], "[-1,1]", "LP");
+    let json = r#"{"type":"LP","free":["b1","b2"],"options":{"direction":-1,"bounds":[-0.5,1]}}"#;
+    let (rc, run) = start_with(&m, json, &u, &[b1, 0.5, 1.0]);
+    assert_eq!(rc, 0, "{}", last_error());
+    let run = Id(run);
+    let st = wait(&run);
+    let bt = st["branches"][0]["specials"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["label"] == "BT")
+        .unwrap_or_else(|| panic!("no BT: {st}"));
+    assert!(
+        (bt["coefficient"].as_f64().unwrap() - 1.0).abs() < 1e-8,
+        "{bt}"
+    );
+    assert!(
+        (bt["coefficient2"].as_f64().unwrap() - 1.0).abs() < 1e-8,
+        "{bt}"
+    );
+    assert!(bt["coefficients"].is_object(), "{bt}");
+}
+
+#[test]
+fn equilibrium_status_names_its_kind_and_has_no_codim2_labels() {
+    let m = lorenz("jit");
+    let run = start(&m, &problem(""));
+    let st = wait(&run);
+    assert_eq!(st["kind"], "EP");
+    assert_eq!(st["codim2_labels"], serde_json::json!([]));
+    assert_eq!(st["stride"].as_u64().unwrap(), 15);
+    for s in st["branches"][0]["specials"].as_array().unwrap() {
+        assert!(s["coefficient2"].is_null(), "{s}");
+        assert!(s["coefficients"].as_object().unwrap().is_empty(), "{s}");
+    }
+}
+
+#[test]
+fn bad_curve_problems_give_6_at_run_start() {
+    let m = compiled(CUSP);
+    let cases = [
+        (
+            r#"{"type":"LP","free":"b1"}"#,
+            "free: expected two parameter names",
+        ),
+        (
+            r#"{"type":"LP","free":["b1"]}"#,
+            "free: expected two parameter names",
+        ),
+        (
+            r#"{"type":"LP","free":["b1","b1"]}"#,
+            "free: the two parameters must differ",
+        ),
+        (
+            r#"{"type":"H","free":["b1","zz"]}"#,
+            "free[1]: unknown parameter",
+        ),
+        (
+            r#"{"type":"EP","free":["b1","b2"]}"#,
+            "free: expected a string",
+        ),
+        (
+            r#"{"type":"LP","free":["b1","b2"],"switch":"BP1"}"#,
+            "switch: only an EP run",
+        ),
+        (
+            r#"{"type":"LP","free":["b1","b2"],"start_is_special":true}"#,
+            "start_is_special: only an EP run",
+        ),
+        (r#"{"type":"XX","free":"b1"}"#, "type: expected"),
+    ];
+    for (json, msg) in cases {
+        let (rc, run) = start_with(&m, json, &[0.0], &[0.0, 1.0]);
+        assert_eq!((rc, run), (6, 0), "{json}");
+        assert!(last_error().contains(msg), "{json}: {}", last_error());
     }
 }

@@ -51,7 +51,7 @@ use pc_linalg::{Lu, eigenvalues, null_left, null_right};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Codim-2 labels of the Hopf curve, in the order of `Point.codim2`.
-const LABELS: [&str; 4] = ["GH", "BT", "ZH", "HH"];
+pub const HOPF_CURVE_LABELS: [&str; 4] = ["GH", "BT", "ZH", "HH"];
 
 /// Relative size of the imaginary part below which an eigenvalue counts as real.
 const REAL_TOL: f64 = 1e-8;
@@ -173,7 +173,7 @@ fn label_for(i: usize, eigs: &[(f64, f64)]) -> Option<&'static str> {
     match i {
         2 => nearest_axis_is_real(&outside_pair(eigs)).then_some("ZH"),
         3 => (classify_h_zero(&outside_pair(eigs)) == HopfZero::Hopf).then_some("HH"),
-        _ => LABELS.get(i).copied(),
+        _ => HOPF_CURVE_LABELS.get(i).copied(),
     }
 }
 
@@ -396,7 +396,7 @@ impl Problem for HopfCurveProblem<'_> {
     }
 
     fn codim2_labels(&self) -> &'static [&'static str] {
-        &LABELS
+        &HOPF_CURVE_LABELS
     }
 
     fn codim2_tests(
