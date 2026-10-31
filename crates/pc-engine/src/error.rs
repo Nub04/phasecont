@@ -55,6 +55,9 @@ impl From<LinalgError> for EngineError {
             LinalgError::NoConvergence => EngineError::Singular(
                 "the factorization did not converge, so the matrix is treated as singular".into(),
             ),
+            LinalgError::OutOfMemory => EngineError::BadProblem(
+                "not enough memory for the linear solve; use a smaller NTST or NCOL".into(),
+            ),
         }
     }
 }

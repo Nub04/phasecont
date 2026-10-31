@@ -8,4 +8,5 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-faer = { version = "0.24.4", default-features = false, features = ["std", "linalg"] }
+faer = { version = "0.24.4", default-features = false, features = ["std", "linalg", "sparse-linalg"] }
+rayon = "1.11"

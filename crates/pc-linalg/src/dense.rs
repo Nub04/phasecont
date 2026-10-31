@@ -15,6 +15,8 @@ pub enum LinalgError {
     Singular,
     /// An iterative factorization (eigenvalues, SVD) did not converge.
     NoConvergence,
+    /// A workspace could not be allocated.
+    OutOfMemory,
 }
 
 impl std::fmt::Display for LinalgError {
@@ -24,6 +26,7 @@ impl std::fmt::Display for LinalgError {
             LinalgError::NotFinite => "NaN or infinity in matrix",
             LinalgError::Singular => "matrix is singular to working precision",
             LinalgError::NoConvergence => "factorization did not converge",
+            LinalgError::OutOfMemory => "not enough memory for the linear solve",
         })
     }
 }
