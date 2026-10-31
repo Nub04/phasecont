@@ -382,15 +382,10 @@ fn pd_start<'a>(
     let basis = CollocationBasis::new(old_m)?;
     let u = mesh::interpolate(&basis, n, &doubled, &new, s.ncol, &orbit)?;
     let mut dir = mesh::interpolate(&basis, n, &doubled, &new, s.ncol, &psi2)?;
-    let setup = CycleSetup::new(
-        s.free,
-        s.params.clone(),
-        s.ntst,
-        s.ncol,
-        u.clone(),
-        2.0 * s.period,
-    );
+    let setup = CycleSetup::new(s.free, s.params.clone(), s.ntst, s.ncol, u, 2.0 * s.period);
     let mut inner = CycleProblem::new(model, &setup)?;
+    // Moved back out, not cloned, so no copy is made before the check in new.
+    let u = setup.profile;
     inner.set_mesh(new, &u);
     let p = Scaled::new(inner);
     dir.extend([0.0, 0.0]);
