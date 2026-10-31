@@ -67,6 +67,11 @@ pub trait Problem {
         self.codim2_labels().get(i).copied()
     }
 
+    /// Called with each accepted point that the next step starts from: the first point,
+    /// and each later point once the specials of the step that reached it are located.
+    /// The default does nothing.
+    fn accept(&mut self, _x: &[f64]) {}
+
     /// Solves `[jac; borderᵀ] sol = rhs` for the N by N matrix made of `jac` (N-1 rows,
     /// column-major) and one extra row `border`. Returns the determinant of that matrix.
     /// A singular matrix gives `EngineError::Singular`.

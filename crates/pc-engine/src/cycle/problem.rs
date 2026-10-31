@@ -120,47 +120,59 @@ fn try_zeros(len: Option<usize>) -> Result<Vec<f64>, EngineError> {
     Ok(v)
 }
 
-fn check_setup(model: &dyn ModelEval, s: &CycleSetup) -> Result<(), EngineError> {
+/// Checks the parameters and the mesh sizes against the model and returns the length of
+/// the profile, n (N m + 1).
+pub(crate) fn check_dims(
+    model: &dyn ModelEval,
+    free: usize,
+    params: &[f64],
+    ntst: usize,
+    ncol: usize,
+) -> Result<usize, EngineError> {
     let n = model.n();
     let bad = |m: String| Err(EngineError::BadProblem(m));
     if n == 0 {
         return bad("the model has no variables".into());
     }
-    if s.params.len() != model.n_p() {
+    if params.len() != model.n_p() {
         return bad(format!(
             "expected {} parameters, got {}",
             model.n_p(),
-            s.params.len()
+            params.len()
         ));
     }
-    if s.free >= model.n_p() {
-        return bad(format!("parameter index {} is out of range", s.free));
+    if free >= model.n_p() {
+        return bad(format!("parameter index {free} is out of range"));
     }
-    if s.ntst == 0 {
+    if ntst == 0 {
         return bad("NTST must be at least 1".into());
     }
-    if !NCOL_RANGE.contains(&s.ncol) {
+    if !NCOL_RANGE.contains(&ncol) {
         return bad(format!(
-            "NCOL must be between {} and {}, got {}",
+            "NCOL must be between {} and {}, got {ncol}",
             NCOL_RANGE.start(),
-            NCOL_RANGE.end(),
-            s.ncol
+            NCOL_RANGE.end()
         ));
     }
-    let len = s
-        .ntst
-        .checked_mul(s.ncol)
+    match ntst
+        .checked_mul(ncol)
         .and_then(|k| k.checked_add(1))
-        .and_then(|k| k.checked_mul(n));
-    match len {
-        None => return bad("NTST times NCOL is too large".into()),
-        Some(len) if len != s.profile.len() => {
-            return bad(format!(
-                "expected {len} profile values (NTST NCOL + 1 points of {n}), got {}",
-                s.profile.len()
-            ));
-        }
-        Some(_) => {}
+        .and_then(|k| k.checked_mul(n))
+    {
+        None => bad("NTST times NCOL is too large".into()),
+        Some(len) => Ok(len),
+    }
+}
+
+fn check_setup(model: &dyn ModelEval, s: &CycleSetup) -> Result<(), EngineError> {
+    let n = model.n();
+    let bad = |m: String| Err(EngineError::BadProblem(m));
+    let len = check_dims(model, s.free, &s.params, s.ntst, s.ncol)?;
+    if len != s.profile.len() {
+        return bad(format!(
+            "expected {len} profile values (NTST NCOL + 1 points of {n}), got {}",
+            s.profile.len()
+        ));
     }
     if s.profile.iter().any(|v| !v.is_finite()) {
         return bad("the profile has NaN or infinite values".into());
@@ -256,7 +268,7 @@ impl<'a> CycleProblem<'a> {
     }
 
     /// Number of base points N m + 1.
-    fn points(&self) -> usize {
+    pub(crate) fn points(&self) -> usize {
         self.ntst * self.basis.m() + 1
     }
 
@@ -426,6 +438,70 @@ impl Problem for CycleProblem<'_> {
         false
     }
 
+    fn codim2_labels(&self) -> &'static [&'static str] {
+        &CYCLE_LABELS
+    }
+
+    /// LPC is the alpha component of the tangent. PD is the product of mu + 1 and NS the
+    /// product of mu_i mu_j - 1 over i < j, both over the nontrivial multipliers (SPEC §7).
+    /// Both products are real, because the nontrivial multipliers come in conjugate pairs.
+    fn codim2_tests(
+        &mut self,
+        x: &[f64],
+        tangent: &[f64],
+        eigs: &[(f64, f64)],
+    ) -> Result<Vec<f64>, EngineError> {
+        let lpc = tangent[x.len() - 1];
+        if eigs.is_empty() {
+            return Ok(vec![lpc, f64::NAN, f64::NAN]);
+        }
+        let mu = nontrivial(eigs);
+        let pd = mu.iter().fold((1.0, 0.0), |p, m| cmul(p, (m.0 + 1.0, m.1)));
+        let ns = if mu.len() < 2 {
+            f64::NAN
+        } else {
+            let mut prod = (1.0, 0.0);
+            for i in 0..mu.len() {
+                for j in i + 1..mu.len() {
+                    let q = cmul(mu[i], mu[j]);
+                    prod = cmul(prod, (q.0 - 1.0, q.1));
+                }
+            }
+            prod.0
+        };
+        Ok(vec![lpc, pd.0, ns])
+    }
+
+    /// The NS product also vanishes when two real multipliers have product 1, a neutral
+    /// saddle cycle. The zero is an NS point only when the pair closest to product 1 is a
+    /// complex pair.
+    fn codim2_label(&self, i: usize, eigs: &[(f64, f64)]) -> Option<&'static str> {
+        if i != 2 {
+            return CYCLE_LABELS.get(i).copied();
+        }
+        let mu = nontrivial(eigs);
+        let mut best: Option<(f64, usize, usize)> = None;
+        for a in 0..mu.len() {
+            for b in a + 1..mu.len() {
+                let q = cmul(mu[a], mu[b]);
+                let d = (q.0 - 1.0).hypot(q.1);
+                if best.is_none_or(|(e, _, _)| d < e) {
+                    best = Some((d, a, b));
+                }
+            }
+        }
+        let (_, a, b) = best?;
+        let (p, q) = (mu[a], mu[b]);
+        let tol = 1e-10 * p.0.hypot(p.1).max(1.0);
+        let pair = p.1 != 0.0 && (p.0 - q.0).abs() <= tol && (p.1 + q.1).abs() <= tol;
+        pair.then_some("NS")
+    }
+
+    fn accept(&mut self, x: &[f64]) {
+        let k = self.model.n() * self.points();
+        self.set_reference(&x[..k]);
+    }
+
     /// Solves with the condensation solver. The determinant is not computed, so the
     /// result is NaN.
     fn bordered_solve(
@@ -452,6 +528,23 @@ impl Problem for CycleProblem<'_> {
         self.condenser.solve(&sys, rhs, sol, false)?;
         Ok(f64::NAN)
     }
+}
+
+/// Names of the cycle test functions, in the order of `Point::codim2` on a cycle branch.
+pub const CYCLE_LABELS: [&str; 3] = ["LPC", "PD", "NS"];
+
+fn cmul(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0)
+}
+
+/// The multipliers without the one closest to 1, the trivial multiplier.
+fn nontrivial(eigs: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let dist = |z: &(f64, f64)| (z.0 - 1.0).hypot(z.1);
+    let mut mu = eigs.to_vec();
+    if let Some(k) = (0..mu.len()).min_by(|&a, &b| dist(&mu[a]).total_cmp(&dist(&mu[b]))) {
+        mu.remove(k);
+    }
+    mu
 }
 
 /// Inf-norm that propagates NaN.

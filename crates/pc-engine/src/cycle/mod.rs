@@ -2,7 +2,9 @@
 //! points each (SPEC §7).
 
 mod basis;
+mod continuation;
 mod problem;
 
 pub use basis::{CollocationBasis, NCOL_RANGE};
-pub use problem::{CycleProblem, CycleSetup, PeriodicOrbit, periodic_orbit};
+pub use continuation::{CycleStart, HopfStart, continue_cycle};
+pub use problem::{CYCLE_LABELS, CycleProblem, CycleSetup, PeriodicOrbit, periodic_orbit};

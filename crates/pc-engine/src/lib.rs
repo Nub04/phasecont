@@ -30,7 +30,8 @@ pub use aot::{AotEval, engine_kinds, entry_symbol};
 pub use branch::{Branch, Extras, Options, Point, SpecialPoint, StopReason};
 pub use curve2::CurveSetup;
 pub use cycle::{
-    CollocationBasis, CycleProblem, CycleSetup, NCOL_RANGE, PeriodicOrbit, periodic_orbit,
+    CYCLE_LABELS, CollocationBasis, CycleProblem, CycleSetup, CycleStart, HopfStart, NCOL_RANGE,
+    PeriodicOrbit, continue_cycle, periodic_orbit,
 };
 pub use ep::{EpProblem, EpSetup, continue_ep, equilibrium};
 pub use error::EngineError;

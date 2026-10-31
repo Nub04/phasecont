@@ -402,6 +402,7 @@ pub(crate) fn run_branch(
     let mut x = x0.to_vec();
     let first = make_point(p, &x, v.clone(), det, 0.0, 0, opts, &mut warnings)?;
     on_point(&first);
+    p.accept(&x);
     let mut points = vec![first];
     let mut specials = Vec::new();
     let (lo, hi) = opts.bounds;
@@ -502,6 +503,7 @@ pub(crate) fn run_branch(
             {
                 break 'run r;
             }
+            p.accept(&x1);
             x = x1;
             v = vn;
             if iters <= 3 {
