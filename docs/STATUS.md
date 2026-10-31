@@ -117,7 +117,7 @@ P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; merged into `mai
 
 ## In progress
 
-P5 (limit cycles, plan approved on 2026-10-31) on branch `phase5-limit-cycles`, not pushed. Packages 1 to 7 of 10 are done:
+P5 (limit cycles, plan approved on 2026-10-31) on branch `phase5-limit-cycles`, not pushed. Packages 1 to 8 of 10 are done:
 
 - 137aaa1: `cycle/basis.rs`, Gauss-Legendre nodes and weights by Newton on the Legendre polynomials, and the Lagrange basis on m + 1 base points.
 - 513f8cc: `pc-linalg` `condense.rs`, the condensation solver for the bordered collocation block system, with the monodromy matrix from the condensed blocks. rayon is a `pc-linalg` dependency and faer's `sparse-linalg` feature is on, both approved in the plan.
@@ -154,7 +154,16 @@ Rulings in package 7:
 - The threshold is set for the default pool, which has one thread per logical CPU, since that is what a MATLAB session gets. It is conservative for smaller pools.
 - The plan's memory check is the fallible allocation already in place: the blocks, the condenser store and the sparse workspaces use `try_reserve` or `MemBuffer::try_new` and return `OutOfMemory` instead of aborting.
 
-Next is package 8: the run machinery, pc-ffi and the CLI.
+- f93a9bb: limit cycles in the run machinery, the C ABI and the CLI. `RunKind::Cycle` takes a `CycleStart`, and the problem JSON `{"type": "LC", "free", "ntst", "ncol", "start", "mesh"}` builds one. An LC row is `[alpha, u (n (N m + 1)), T, mesh (N + 1), mult_re (n), mult_im (n), LPC, PD, NS, h, newton_iters]`, so its stride is n (N m + 1) + N + 2n + 8, and the status JSON reports `kind` "LC", `ntst`, `ncol` and the labels LPC, PD and NS. The C ABI struct and `abi_version` are unchanged. CLI points and special points gain `eigenvalues` and `mesh`. On Rössler (a = b = 0.2, c = 2.5, free a) the CLI run from the Hopf point at a = 0.0278973 (N = 40, m = 4) finds a PD at a = 0.2261598 with period 5.6796 in 75 points, and a `pd` start built from that special point's CLI output begins the doubled branch at period 11.3592, twice the old one. `cargo test`: 984 passed, 0 failed; MATLAB 165 tests, 164 passed, 0 failed, 1 filtered by assumption.
+
+Rulings in package 8:
+
+- `start` is required for LC and has no default. `hopf` takes the equilibrium as `u0`; `orbit` and `pd` take the orbit at the base points followed by the period, and the CLI gives them no default `u0`. `mesh` is required for `pd` and refused for the other starts. `orbit` assumes a uniform mesh.
+- For `pd` the old N comes from `mesh` and the old m from the length of `u0`, so the new `ntst` and `ncol` may differ from the PD orbit's. A wrong `u0` length keeps error code 2.
+- `detect` is refused for LC, since LPC, PD and NS are always tested; `mesh_adapt` is refused for the other types.
+- A problem whose stride would overflow `usize` is refused when it is parsed ("ntst: ntst times ncol is too large"). `stride` still maps an overflow to `usize::MAX` as a second guard, so the `count * stride` check in `pc_run_points` fails instead of wrapping.
+
+Next is package 9: the MATLAB API.
 
 ## Next
 
