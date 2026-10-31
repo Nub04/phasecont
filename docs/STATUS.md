@@ -117,13 +117,21 @@ P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; merged into `mai
 
 ## In progress
 
-P5 (limit cycles, plan approved on 2026-10-31) on branch `phase5-limit-cycles`, not pushed. Packages 1 to 3 of 10 are done:
+P5 (limit cycles, plan approved on 2026-10-31) on branch `phase5-limit-cycles`, not pushed. Packages 1 to 4 of 10 are done:
 
 - 137aaa1: `cycle/basis.rs`, Gauss-Legendre nodes and weights by Newton on the Legendre polynomials, and the Lagrange basis on m + 1 base points.
 - 513f8cc: `pc-linalg` `condense.rs`, the condensation solver for the bordered collocation block system, with the monodromy matrix from the condensed blocks. rayon is a `pc-linalg` dependency and faer's `sparse-linalg` feature is on, both approved in the plan.
 - 4363ed1: `cycle/problem.rs`, `CycleProblem` and `periodic_orbit`. `Problem` gains `jacobian_len` so a problem can keep its Jacobian in its own storage. SPEC section 9 Test 3 passes on both evaluators (radius error 1.4e-14, period error 9.1e-14, |mu1 - 1| 3.3e-15, mu2 error 2.5e-15 against exp(-2 pi)), and Test 4 gives observed orders 3.96 to 3.99 (m = 2), 5.89 to 5.97 (m = 3) and 7.92 to 7.98 (m = 4). `cargo test`: 960 passed, 0 failed.
 
-Next is package 4: cycle continuation from a Hopf point, Floquet multipliers per point, and LPC, PD and NS detection.
+- 93f4280: `cycle/continuation.rs`, `continue_cycle` from a Hopf point or a guessed orbit, with Floquet multipliers per point and LPC, PD and NS detection. `Problem` gains an `accept` hook that moves the phase reference to the last accepted orbit. On the Hopf normal form (N = 40, m = 4, alpha from 1e-4 to 0.5) the radius error is at most 1.4e-13 and |mu1 - 1| 6.8e-15. The Brusselator cycle at b = 2.5 closes under an independent RK4 integration over one period with a gap of 2.4e-10. `cargo test`: 965 passed, 0 failed.
+
+Rulings in package 4:
+
+- PALC metric. The profile unknowns enter PALC multiplied by 1/sqrt(N m), so the arclength approximates the L2 norm of the orbit (Doedel, Keller and Kernévez 1991). T and alpha are not scaled. The factor stays fixed for the whole run, also after mesh adaptation. Points and tangents are returned unscaled. A side effect is that tol_x on profile entries is looser by sqrt(N m); tol_f still applies in full.
+- A Hopf start always continues away from the equilibrium, so `direction` < 0 is ignored with a warning.
+- The trivial multiplier check warns when a point has no multiplier within 1e-6 of 1. The Hopf normal form cannot trigger it, since its rotation symmetry keeps the multiplier at 1 on any mesh; the test uses the Brusselator on a 3 by 2 mesh, where the trivial multiplier is 1.39 at b = 2.5 and moves to 0.99999 at 20 by 4.
+
+Next is package 5: mesh adaptation.
 
 ## Next
 
