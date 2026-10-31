@@ -117,7 +117,13 @@ P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; merged into `mai
 
 ## In progress
 
-Nothing is open on `main` (78be5c3, not pushed). P5 is next, and it starts in plan mode.
+P5 (limit cycles, plan approved on 2026-10-31) on branch `phase5-limit-cycles`, not pushed. Packages 1 to 3 of 10 are done:
+
+- 137aaa1: `cycle/basis.rs`, Gauss-Legendre nodes and weights by Newton on the Legendre polynomials, and the Lagrange basis on m + 1 base points.
+- 513f8cc: `pc-linalg` `condense.rs`, the condensation solver for the bordered collocation block system, with the monodromy matrix from the condensed blocks. rayon is a `pc-linalg` dependency and faer's `sparse-linalg` feature is on, both approved in the plan.
+- 4363ed1: `cycle/problem.rs`, `CycleProblem` and `periodic_orbit`. `Problem` gains `jacobian_len` so a problem can keep its Jacobian in its own storage. SPEC section 9 Test 3 passes on both evaluators (radius error 1.4e-14, period error 9.1e-14, |mu1 - 1| 3.3e-15, mu2 error 2.5e-15 against exp(-2 pi)), and Test 4 gives observed orders 3.96 to 3.99 (m = 2), 5.89 to 5.97 (m = 3) and 7.92 to 7.98 (m = 4). `cargo test`: 960 passed, 0 failed.
+
+Next is package 4: cycle continuation from a Hopf point, Floquet multipliers per point, and LPC, PD and NS detection.
 
 ## Next
 
