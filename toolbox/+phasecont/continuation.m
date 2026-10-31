@@ -1,5 +1,5 @@
 function br = continuation(m, start, options)
-%CONTINUATION Follow a branch of equilibria in one parameter.
+%CONTINUATION Follow a branch of equilibria, or a curve of fold or Hopf points.
 %   BR = phasecont.continuation(M, START, Free = "r") continues START along
 %   the free parameter. START is a phasecont.Point or a state vector. The
 %   call blocks while the engine runs, polls it about every 50 ms and
@@ -9,20 +9,33 @@ function br = continuation(m, start, options)
 %   follows the branch and then the branch that starts at its first branch
 %   point. BRS is a 1-by-2 array: the followed branch, then the switched one.
 %
+%   C = phasecont.continuation(M, START, Type = "LP", Free = ["a" "b"])
+%   follows the curve of fold points through START, which must be an LP
+%   point (or a state vector and Params that are one). Type = "H" does the
+%   same for Hopf points. Free names two different parameters [a b]; C.Alpha
+%   holds [a b] at each point and the codim-2 points (CP, BT, ZH for "LP";
+%   GH, BT, ZH, HH for "H") are in C.Specials. Detect, Switch and Var apply
+%   to equilibrium runs only.
+%
 %   Name-value options
-%     Free       free parameter, one of M.Parameters (required)
+%     Type       "EP" (default), "LP" or "H"
+%     Free       free parameter, one of M.Parameters (required); two names
+%                for Type "LP" or "H"
 %     MaxSteps   most steps per branch
 %     Direction  1 or -1, the first direction along the parameter
-%     Bounds     [lo hi], finite, the run stops outside them
+%     Bounds     [lo hi], finite, the run stops outside them; on a curve
+%                they bound the second free parameter
 %     H0 Hmin Hmax   first, smallest and largest step length
 %     TolX TolF  Newton tolerances on the step and the residual
 %     MaxNewton  most Newton iterations per step
-%     Detect     labels to detect, a subset of ["LP" "BP" "H"] (default all)
+%     Detect     labels to detect, a subset of ["LP" "BP" "H"] (default all);
+%                Type "EP" only
 %     Switch     special point to switch at, like "BP1"
 %     Plot       true draws the branch while the run goes and ends with the
 %                styled plot of Branch.plot (default false)
 %     Var        variable to plot, a name or an index into M.Variables
-%                (default the first variable of M)
+%                (default the first variable of M); Type "EP" only, a curve
+%                is plotted in the plane of its two free parameters
 %     Params     struct or vector that overrides the parameters of START
 %
 %   Options that are not given keep the engine defaults. If START is a
@@ -31,6 +44,7 @@ function br = continuation(m, start, options)
 arguments
     m (1,1) phasecont.Model
     start
+    options.Type = "EP"
     options.Free = []
     options.MaxSteps = []
     options.Direction = []
@@ -41,7 +55,7 @@ arguments
     options.TolX = []
     options.TolF = []
     options.MaxNewton = []
-    options.Detect = ["LP" "BP" "H"]
+    options.Detect = missing
     options.Switch = []
     options.Plot (1,1) logical = false
     options.Var = []
@@ -49,11 +63,32 @@ arguments
 end
 import phasecont.internal.num2json
 
+type = string(options.Type);
+if ~isscalar(type) || ~ismember(type, ["EP" "LP" "H"])
+    error("phasecont:model:badOption", ...
+        "Type must be ""EP"", ""LP"" or ""H"".");
+end
+isCurve = type ~= "EP";
 if isempty(options.Free)
     error("phasecont:model:badOption", "The Free option is required.");
 end
 free = string(options.Free);
-if ~isscalar(free) || ~any(m.Parameters == free)
+if isCurve
+    if numel(free) ~= 2 || free(1) == free(2)
+        error("phasecont:model:badOption", ...
+            "Free must name two different parameters for Type = ""%s"".", type);
+    end
+    free = reshape(free, 1, 2);
+    if ~all(ismember(free, m.Parameters))
+        error("phasecont:model:unknownParameter", ...
+            "Free must be two of: %s.", strjoin(m.Parameters, ", "));
+    end
+    if ~isa(options.Detect, "missing") || ~isempty(options.Switch) ...
+            || ~isempty(options.Var)
+        error("phasecont:model:badOption", ...
+            "Detect, Switch and Var apply to Type = ""EP"" only.");
+    end
+elseif ~isscalar(free) || ~any(m.Parameters == free)
     error("phasecont:model:unknownParameter", ...
         "Free must be one of: %s.", strjoin(m.Parameters, ", "));
 end
@@ -83,19 +118,30 @@ if ~isempty(options.Bounds)
     end
     parts(end+1) = """bounds"":[" + num2json(b(1)) + "," + num2json(b(2)) + "]";
 end
-detect = string(options.Detect);
-if ~all(ismember(detect, ["LP" "BP" "H"]))
-    error("phasecont:model:badOption", ...
-        "Detect entries must be among ""LP"", ""BP"" and ""H"".");
+if ~isCurve
+    if isa(options.Detect, "missing")
+        detect = ["LP" "BP" "H"];
+    else
+        detect = string(options.Detect);
+    end
+    if ~all(ismember(detect, ["LP" "BP" "H"]))
+        error("phasecont:model:badOption", ...
+            "Detect entries must be among ""LP"", ""BP"" and ""H"".");
+    end
+    parts(end+1) = """detect"":{""lp"":" + lower(string(any(detect == "LP"))) + ...
+        ",""bp"":" + lower(string(any(detect == "BP"))) + ...
+        ",""h"":" + lower(string(any(detect == "H"))) + "}";
 end
-parts(end+1) = """detect"":{""lp"":" + lower(string(any(detect == "LP"))) + ...
-    ",""bp"":" + lower(string(any(detect == "BP"))) + ...
-    ",""h"":" + lower(string(any(detect == "H"))) + "}";
 parts = parts(strlength(parts) > 0);
 
-problem = "{""type"":""EP"",""free"":" + jsonencode(free) + ...
-    ",""start_is_special"":" + lower(string(special)) + ...
-    ",""options"":{" + strjoin(parts, ",") + "}";
+if isCurve
+    problem = "{""type"":""" + type + """,""free"":" + jsonencode(free) + ...
+        ",""options"":{" + strjoin(parts, ",") + "}";
+else
+    problem = "{""type"":""EP"",""free"":" + jsonencode(free) + ...
+        ",""start_is_special"":" + lower(string(special)) + ...
+        ",""options"":{" + strjoin(parts, ",") + "}";
+end
 hasSwitch = ~isempty(options.Switch);
 if hasSwitch
     sw = string(options.Switch);
@@ -107,7 +153,7 @@ end
 problem = problem + "}";
 
 varIdx = 0;
-if options.Plot || ~isempty(options.Var)
+if ~isCurve && (options.Plot || ~isempty(options.Var))
     if isempty(options.Var)
         varIdx = 1;
     else
@@ -129,11 +175,23 @@ end
 ax = [];
 if options.Plot
     ax = newplot;
-    xlabel(ax, free);
-    ylabel(ax, m.Variables(varIdx));
+    if isCurve
+        xlabel(ax, free(1));
+        ylabel(ax, free(2));
+    else
+        xlabel(ax, free);
+        ylabel(ax, m.Variables(varIdx));
+    end
 end
 
 n = numel(m.Variables);
+% Live plot columns: a curve draws a2 against a1, which sits after the n states.
+xrow = 1;
+yrow = 1 + varIdx;
+if isCurve
+    xrow = n + 2;
+    yrow = 1;
+end
 run = phasecont.internal.Run(m, problem, u0, p);
 cleanup = onCleanup(@() delete(run)); %#ok<NASGU>
 pts = cell(1, 0);
@@ -155,7 +213,7 @@ while true
             if b > numel(lines)
                 lines(b) = line(ax, NaN, NaN);
             end
-            set(lines(b), XData = pts{b}(1, :), YData = pts{b}(1 + varIdx, :));
+            set(lines(b), XData = pts{b}(xrow, :), YData = pts{b}(yrow, :));
         end
     end
     hook = phasecont.internal.pollHook();
@@ -175,14 +233,19 @@ br = phasecont.Branch.empty(1, 0);
 for b = 1:nb
     nsp = numel(st.branches(b).specials);
     sp = run.copy(b, 1, 1, nsp, st.stride);
-    one = phasecont.internal.rows2branch(m, free, p, n, pts{b}, sp, st.branches(b));
+    one = phasecont.internal.rows2branch(m, free, p, n, pts{b}, sp, ...
+        st.branches(b), type);
     br(1, b) = one;
 end
 if options.Plot
     % Replace the live lines with the styled plot.
     delete(lines(isgraphics(lines)));
     for b = 1:nb
-        plot(br(b), Var = varIdx, Parent = ax);
+        if isCurve
+            plot(br(b), Parent = ax);
+        else
+            plot(br(b), Var = varIdx, Parent = ax);
+        end
     end
     drawnow
 end

@@ -1,24 +1,35 @@
 classdef Branch < handle
-    % A computed branch of equilibria with its special points.
+    % A computed branch with its special points: a branch of equilibria
+    % (Type "EP"), or a curve of fold points ("LP") or Hopf points ("H").
     %
     %   br = phasecont.continuation(m, eq, Free = "r")
     %   h  = br.points("H")     % special points with label H
     %   all = br.points()       % every special point
     %   plot(br, Var = "x")     % stable solid, unstable dashed, labeled specials
     %
+    %   c = phasecont.continuation(m, lp, Type = "LP", Free = ["a" "b"])
+    %   plot(c)                 % the curve in the (a, b) plane
+    %
     % A Branch holds copied data and no engine handle, so it stays valid
-    % after the Model is deleted. Rows are points: N points give N-by-1 or
+    % after the Model is deleted. Rows are points: N points give N-by-k or
     % N-by-n arrays. Call points on one Branch at a time, not on an array.
     %
     % Properties
-    %   Free         name of the free parameter
-    %   FreeIndex    its index in Model.Parameters
+    %   Type         "EP", "LP" or "H"
+    %   Free         name of the free parameter; [a1 a2] for a curve
+    %   FreeIndex    its index in Model.Parameters; [i1 i2] for a curve
     %   P            parameter vector the run started from
-    %   Alpha        free parameter value at each point
-    %   U            states, N-by-n
+    %   Alpha        free parameter value at each point, N-by-1; [a1 a2] in
+    %                the order of Free, N-by-2, for a curve
+    %   U            states, N-by-n (on a curve, the state at each point of it)
     %   Eigenvalues  N-by-n complex
-    %   Stable       true where all eigenvalues have negative real part
-    %   Tests        [psi_LP psi_BP psi_H] at each point, N-by-3
+    %   Stable       true where all eigenvalues have negative real part; false
+    %                everywhere on a curve, whose points are never hyperbolic
+    %   Tests        [psi_LP psi_BP psi_H] at each point, N-by-3 (N-by-0 on a curve)
+    %   Codim2       codim-2 test values at each point of a curve, N-by-k
+    %                (N-by-0 for Type "EP")
+    %   Codim2Labels the k labels of the columns of Codim2: ["CP" "BT" "ZH"]
+    %                for "LP", ["GH" "BT" "ZH" "HH"] for "H"
     %   StepSize     step length used to reach each point
     %   NewtonIters  Newton iterations used at each point
     %   Specials     column of phasecont.Point
@@ -30,14 +41,17 @@ classdef Branch < handle
     %   points, plot
 
     properties (SetAccess = private)
-        Free (1,1) string = ""
-        FreeIndex (1,1) double = NaN
+        Type (1,1) string = "EP"
+        Free (1,:) string = ""
+        FreeIndex (1,:) double = NaN
         P (:,1) double = zeros(0,1)
-        Alpha (:,1) double = zeros(0,1)
+        Alpha (:,:) double = zeros(0,1)
         U (:,:) double = zeros(0,0)
         Eigenvalues (:,:) double = zeros(0,0)
         Stable (:,1) logical = false(0,1)
         Tests (:,:) double = zeros(0,3)
+        Codim2 (:,:) double = zeros(0,0)
+        Codim2Labels (1,:) string = strings(1,0)
         StepSize (:,1) double = zeros(0,1)
         NewtonIters (:,1) double = zeros(0,1)
         Specials (:,1) phasecont.Point = phasecont.Point.empty(0,1)
@@ -89,6 +103,8 @@ classdef Branch < handle
             % be a 1-by-K array. Stable runs are solid (Tag "pc-stable"),
             % unstable runs dashed (Tag "pc-unstable"). Special points get a
             % marker (Tag "pc-special") and a text label (Tag "pc-label").
+            % A curve is one solid line (Tag "pc-curve") in the plane of its
+            % two free parameters and takes no Var.
             % Without Parent the plot uses newplot, so hold on is respected.
             % H holds the lines, markers and texts as a column vector.
             arguments
@@ -117,6 +133,10 @@ classdef Branch < handle
     methods (Access = private)
         function h = drawOne(br, ax, var)
             % Draw this branch on ax: stability runs, then special points.
+            if br.Type ~= "EP"
+                h = br.drawCurve(ax, var);
+                return
+            end
             vi = br.variableIndex(var);
             if isempty(br.Alpha)
                 h = gobjects(0, 1);
@@ -172,6 +192,47 @@ classdef Branch < handle
             end
             xlabel(ax, br.Free);
             ylabel(ax, br.variableName(vi));
+        end
+
+        function h = drawCurve(br, ax, var)
+            % Draw a curve in the (a1, a2) plane with its special points.
+            if ~isempty(var)
+                error("phasecont:model:badOption", ...
+                    "A %s curve is plotted in its parameter plane and takes no Var.", ...
+                    br.Type);
+            end
+            h = gobjects(0, 1);
+            if isempty(br.Alpha)
+                return
+            end
+            x = br.Alpha(:, 1);
+            y = br.Alpha(:, 2);
+            order = ax.ColorOrder;
+            idx = ax.ColorOrderIndex;
+            color = order(mod(idx - 1, size(order, 1)) + 1, :);
+            ax.ColorOrderIndex = mod(idx, size(order, 1)) + 1;
+            if numel(x) == 1
+                h(end+1, 1) = line(ax, x, y, Color = color, LineStyle = "none", ...
+                    Marker = ".", MarkerSize = 12, Tag = "pc-curve");
+            else
+                h(end+1, 1) = line(ax, x, y, Color = color, LineStyle = "-", ...
+                    Tag = "pc-curve");
+            end
+            dx = 0.015 * (max(x) - min(x));
+            dy = 0.015 * (max(y) - min(y));
+            for k = 1:numel(br.Specials)
+                sp = br.Specials(k);
+                px = sp.P(br.FreeIndex(1));
+                py = sp.P(br.FreeIndex(2));
+                h(end+1, 1) = line(ax, px, py, LineStyle = "none", ...
+                    Marker = "o", MarkerSize = 7, MarkerEdgeColor = "k", ...
+                    MarkerFaceColor = "w", Tag = "pc-special"); %#ok<AGROW>
+                h(end+1, 1) = text(ax, px + dx, py + dy, sp.Label, ...
+                    HorizontalAlignment = "left", VerticalAlignment = "bottom", ...
+                    Tag = "pc-label"); %#ok<AGROW>
+            end
+            xlabel(ax, br.Free(1));
+            ylabel(ax, br.Free(2));
         end
 
         function vi = variableIndex(br, var)
