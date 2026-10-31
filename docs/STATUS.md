@@ -117,7 +117,7 @@ P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; merged into `mai
 
 ## In progress
 
-P5 (limit cycles, plan approved on 2026-10-31) on branch `phase5-limit-cycles`, not pushed. Packages 1 to 4 of 10 are done:
+P5 (limit cycles, plan approved on 2026-10-31) on branch `phase5-limit-cycles`, not pushed. Packages 1 to 5 of 10 are done:
 
 - 137aaa1: `cycle/basis.rs`, Gauss-Legendre nodes and weights by Newton on the Legendre polynomials, and the Lagrange basis on m + 1 base points.
 - 513f8cc: `pc-linalg` `condense.rs`, the condensation solver for the bordered collocation block system, with the monodromy matrix from the condensed blocks. rayon is a `pc-linalg` dependency and faer's `sparse-linalg` feature is on, both approved in the plan.
@@ -131,7 +131,15 @@ Rulings in package 4:
 - A Hopf start always continues away from the equilibrium, so `direction` < 0 is ignored with a warning.
 - The trivial multiplier check warns when a point has no multiplier within 1e-6 of 1. The Hopf normal form cannot trigger it, since its rotation symmetry keeps the multiplier at 1 on any mesh; the test uses the Brusselator on a 3 by 2 mesh, where the trivial multiplier is 1.39 at b = 2.5 and moves to 0.99999 at 20 by 4.
 
-Next is package 5: mesh adaptation.
+- 3bfd726: `cycle/mesh.rs`, mesh adaptation ported from AUTO-07p (EQDF, NEWMSH and INTERP, see `THIRD_PARTY_NOTICES.md`). The N + 1 mesh points move so that the jumps of the m-th derivative are equidistributed, and the orbit and the tangent are interpolated onto the new mesh. `Options::mesh_adapt` sets the number of accepted points between adaptations (default 3, 0 turns it off), and a failed corrector adapts at most once per point. Every `Point` carries its mesh. On the Brusselator at b = 3.5 with N = 20 and m = 4 the largest mesh-point error against RK4 drops from 3.8e-3 (uniform mesh) to 1.1e-5. `pc-cli licenses` now also copies the `NOTICE*` files of workspace crates, so `crates/pc-engine/NOTICE` reaches `THIRD_PARTY_LICENSES.txt`. `cargo test`: 970 passed, 0 failed; MATLAB 165 tests, 164 passed, 0 failed, 1 filtered by assumption.
+
+Rulings in package 5:
+
+- The plan said mesh adaptation would be written from the papers with no notice entry. SPEC section 7 names AUTO-07p for it, so `mesh.rs` is a port of AUTO's routines with a header comment, an entry in `THIRD_PARTY_NOTICES.md` and the BSD text in `crates/pc-engine/NOTICE`.
+- When every m-th derivative is below 1e-7 the mesh stays, as in AUTO. A new mesh that is not strictly increasing or not finite is refused and the old one kept.
+- The interpolated orbit is not an exact solution on the new mesh; the next corrector step fixes it, as in AUTO. The PALC scale factor stays as it was.
+
+Next is package 6: the branch switch at a PD point.
 
 ## Next
 
