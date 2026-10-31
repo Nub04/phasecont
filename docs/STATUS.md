@@ -2,7 +2,7 @@
 
 ## Phase
 
-P4b closes the open items of P4 on branch `phase4b-open-items` (cut from 14d6455) and awaits the owner's choice to merge. P4 (LP and H curves, codim-2 detection and normal forms; SPEC section 14) merged into `main` locally on 2026-10-30 (14d6455, not pushed). P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 78c5df6. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 as PR #2 (3748707). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
+P4b closed the open items of P4 and merged into `main` locally on 2026-10-31 as a fast-forward to 78be5c3 (not pushed). P4 (LP and H curves, codim-2 detection and normal forms; SPEC section 14) merged into `main` locally on 2026-10-30 (14d6455, not pushed). P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 78c5df6. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 as PR #2 (3748707). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
 
 ## Done
 
@@ -95,7 +95,7 @@ P3 (the numbers below were measured on 2026-10-28 at `fb14bdb` plus the SPEC and
 - `cargo build --target x86_64-pc-windows-gnu -p pc-engine` passes. The four checks pass.
 - Known limit: on a long step across a branch crossing, the trial corrector of the zero search can jump to the other branch, which puts the BP at the wrong place (α = 0.04 instead of 0 in one case). `hmax` bounds it; the test models use 0.1 or 0.5.
 
-P4b (branch `phase4b-open-items`, cut from 14d6455, closes the open items of P4):
+P4b (branch `phase4b-open-items`, cut from 14d6455, merged into `main` on 2026-10-31; closes the open items of P4):
 
 - Hopf detection has no dimension limit. `MAX_HOPF_DIM` and its warning are gone. `hopf_is_detected_above_100_variables` runs a 101-variable model (`hopf101.ode`, a planar Hopf normal form plus 99 stable variables) on both evaluators and finds H at al = 0 to 1e-8 with no warning. Release-mode cost of one `psi_h` call against one dense eigenvalue call on the same size: n = 101, 78 us against 1.4 ms; n = 300, 0.83 ms against 15 ms; n = 1000, 8.3 ms against 0.42 s.
 - Codim-2 points are polished by Newton's method along the curve (`refine_zero` in `locate.rs`) and carry `refined = true`. CP (Test 7), BT on both curves (Test 8) and GH (Test 9) now sit within 1e-10 of the exact positions, up from 1e-8. The slope of the test is a forward difference along the tangent, so each step costs one extra test evaluation. A point that does not converge keeps its Illinois position with `refined = false`. Unit tests in `locate.rs` cover a capped search that Newton finishes and a test that is undefined next to the point.
@@ -117,7 +117,7 @@ P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; merged into `mai
 
 ## In progress
 
-P4b awaits the owner's choice (merge locally, push and PR, or keep). P4 and P8a are merged into `main` locally.
+Nothing is open on `main` (78be5c3, not pushed). P5 is next, and it starts in plan mode.
 
 ## Next
 
