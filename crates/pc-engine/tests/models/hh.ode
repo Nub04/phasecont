@@ -1,0 +1,14 @@
+# Two Hopf normal forms with cubic coupling, w1 = x1 + i y1 and w2 = x2 + i y2:
+# w1' = (b1 + i om1 + a11 |w1|^2 + a12 |w2|^2) w1, w2' = (b2 + i om2 + a21 |w1|^2 + a22 |w2|^2) w2
+par b1=0,b2=0,om1=2,om2=0.9,a11r=-0.8,a11i=0.3,a12r=1.7,a12i=-0.4,a21r=0.6,a21i=0.5,a22r=-1.1,a22i=0.2
+r1=x1^2+y1^2
+r2=x2^2+y2^2
+al1=b1+a11r*r1+a12r*r2
+be1=om1+a11i*r1+a12i*r2
+al2=b2+a21r*r1+a22r*r2
+be2=om2+a21i*r1+a22i*r2
+x1'=al1*x1-be1*y1
+y1'=al1*y1+be1*x1
+x2'=al2*x2-be2*y2
+y2'=al2*y2+be2*x2
+init x1=0,y1=0,x2=0,y2=0

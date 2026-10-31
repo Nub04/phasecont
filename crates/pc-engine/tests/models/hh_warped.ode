@@ -1,0 +1,24 @@
+# hh.ode after the triangular near-identity change of coordinates
+# X1 = x1, Y1 = y1 + wa x1^2, X2 = x2 + wb x1 y1 + wc y1^2, Y2 = y2 + wd x1 x2.
+# The linear part is unchanged and the quadratic terms are not zero, so the h vectors of the
+# normal form computation are not zero.
+par b1=0,b2=0,om1=2,om2=0.9,a11r=-0.8,a11i=0.3,a12r=1.7,a12i=-0.4,a21r=0.6,a21i=0.5,a22r=-1.1,a22i=0.2,wa=0.4,wb=-0.3,wc=0.2,wd=0.5
+px1=X1
+py1=Y1-wa*X1^2
+px2=X2-wb*px1*py1-wc*py1^2
+py2=Y2-wd*px1*px2
+r1=px1^2+py1^2
+r2=px2^2+py2^2
+al1=b1+a11r*r1+a12r*r2
+be1=om1+a11i*r1+a12i*r2
+al2=b2+a21r*r1+a22r*r2
+be2=om2+a21i*r1+a22i*r2
+fx1=al1*px1-be1*py1
+fy1=al1*py1+be1*px1
+fx2=al2*px2-be2*py2
+fy2=al2*py2+be2*px2
+X1'=fx1
+Y1'=fy1+2*wa*px1*fx1
+X2'=fx2+wb*(fx1*py1+px1*fy1)+2*wc*py1*fy1
+Y2'=fy2+wd*(fx1*px2+px1*fx2)
+init X1=0,Y1=0,X2=0,Y2=0

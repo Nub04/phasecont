@@ -571,3 +571,127 @@ fn zh_coefficients_are_invariant_under_a_nonlinear_warp() {
     check_zh("zh_warped", &zh_on_lp_curve("zh_warped"), 1e-6, false);
     check_zh("zh_warped", &zh_on_hopf_curve("zh_warped"), 1e-6, false);
 }
+
+// Test 11: double-Hopf coefficients. hh.ode is two Hopf normal forms with cubic coupling,
+// w1 = x1 + i y1 and w2 = x2 + i y2, with
+//
+//   w1' = (b1 + i om1 + a11 |w1|^2 + a12 |w2|^2) w1,
+//   w2' = (b2 + i om2 + a21 |w1|^2 + a22 |w2|^2) w2.
+//
+// The eigenvector of the pair k is q_k = (1, -i) / sqrt(2) in the plane (x_k, y_k), which
+// gives w_k = sqrt(2) z_k and, with Kuznetsov's z-expansion, G2100 = 4 a11, G1011 = 2 a12,
+// G1110 = 2 a21 and G0021 = 4 a22. The pair with the larger frequency is pair 1 in the
+// normal form, so Re P11, Re P12, Re P21 and Re P22 are 4 a11r, 2 a12r, 2 a21r and 4 a22r
+// when om1 > om2, and 4 a22r, 2 a21r, 2 a12r and 4 a11r when om1 < om2.
+
+/// a11r, a11i, a12r, a12i, a21r, a21i, a22r, a22i of the double-Hopf models.
+const HH_A: [f64; 8] = [-0.8, 0.3, 1.7, -0.4, 0.6, 0.5, -1.1, 0.2];
+const HH_ROT: [f64; 4] = [0.7, -0.5, 1.1, 0.4];
+const HH_WARP: [f64; 4] = [0.4, -0.3, 0.2, 0.5];
+
+/// All parameters of double-Hopf model `name` in file order.
+fn hh_params(name: &str, b: (f64, f64), om: (f64, f64)) -> Vec<f64> {
+    let mut p = vec![b.0, b.1, om.0, om.1];
+    p.extend_from_slice(&HH_A);
+    match name {
+        "hh_rot" => p.extend_from_slice(&HH_ROT),
+        "hh_warped" => p.extend_from_slice(&HH_WARP),
+        _ => {}
+    }
+    p
+}
+
+/// The HH point of the Hopf curve of model `name` through the Hopf point of pair 1 at
+/// b2 = 0.4. The origin is an equilibrium for all b, so the Hopf curve is b1 = 0.
+fn hh_on_hopf_curve(name: &str, om: (f64, f64)) -> SpecialPoint {
+    let mut m = model_of(name);
+    let cancel = AtomicBool::new(false);
+    let setup = hopf_start(
+        &mut *m,
+        hh_params(name, (-0.3, 0.4), om),
+        vec![0.0; 4],
+        (-0.5, 0.5),
+    );
+    let opts = Options {
+        bounds: (-0.5, 1.0),
+        direction: -1.0,
+        ..Options::default()
+    };
+    let br = continue_hopf_curve(&mut *m, &setup, &opts, &cancel, &mut |_| {}).unwrap();
+    let hh = specials(&br.specials, "HH");
+    assert_eq!(hh.len(), 1, "{name}: stop {:?}, {:?}", br.stop, br.specials);
+    let sp = hh[0].clone();
+    // Point.u is (x1, y1, x2, y2, b1, kappa) on a Hopf curve and Point.alpha is b2.
+    let n = 4;
+    for (k, v) in sp.point.u[..n + 1].iter().enumerate() {
+        assert!(v.abs() < 1e-10, "{name}: u[{k}] = {v}");
+    }
+    assert!((sp.point.u[n + 1] - om.0 * om.0).abs() < 1e-9, "kappa");
+    assert!(
+        sp.point.alpha.abs() < 1e-10,
+        "{name}: b2 = {}",
+        sp.point.alpha
+    );
+    sp
+}
+
+/// Checks Re P11, Re P12, Re P21 and Re P22 against the hand-derived values.
+fn check_hh(name: &str, sp: &SpecialPoint, om: (f64, f64), tol: f64) {
+    let [a11, _, a12, _, a21, _, a22, _] = HH_A;
+    let (p11, p12, p21, p22) = if om.0 > om.1 {
+        (4.0 * a11, 2.0 * a12, 2.0 * a21, 4.0 * a22)
+    } else {
+        (4.0 * a22, 2.0 * a21, 2.0 * a12, 4.0 * a11)
+    };
+    assert!(sp.extras.refined, "{name}: HH not refined");
+    let got = (
+        sp.extras.coefficient.expect("re_p11"),
+        value(sp, "re_p12"),
+        value(sp, "re_p21"),
+        value(sp, "re_p22"),
+    );
+    for (what, g, w) in [
+        ("Re P11", got.0, p11),
+        ("Re P12", got.1, p12),
+        ("Re P21", got.2, p21),
+        ("Re P22", got.3, p22),
+    ] {
+        assert!((g - w).abs() < tol, "{name}: {what} = {g}, want {w}");
+    }
+    let (w1, w2) = (om.0.max(om.1), om.0.min(om.1));
+    assert!(
+        (sp.extras.omega.expect("omega") - w1).abs() < 1e-8,
+        "omega1"
+    );
+    assert!((value(sp, "omega2") - w2).abs() < 1e-8, "omega2");
+    let norm = sp.extras.normalization.as_deref().expect("normalization");
+    assert!(norm.contains("w1>w2"), "{norm}");
+}
+
+#[test]
+fn hh_coefficients_on_the_hopf_curve() {
+    let om = (2.0, 0.9);
+    check_hh("hh", &hh_on_hopf_curve("hh", om), om, 1e-8);
+}
+
+/// With om1 < om2 the curve pair is the slow one, so P11 belongs to the other pair.
+#[test]
+fn hh_pairs_are_ordered_by_frequency() {
+    let om = (0.9, 2.0);
+    check_hh("hh", &hh_on_hopf_curve("hh", om), om, 1e-8);
+}
+
+/// An orthogonal change of coordinates keeps |q| = 1, so the coefficients stay.
+#[test]
+fn hh_coefficients_are_invariant_under_a_rotation() {
+    let om = (2.0, 0.9);
+    check_hh("hh_rot", &hh_on_hopf_curve("hh_rot", om), om, 1e-8);
+}
+
+/// A triangular near-identity change of coordinates makes the quadratic terms and the h
+/// vectors nonzero. The real parts of the cubic coefficients do not change.
+#[test]
+fn hh_coefficients_are_invariant_under_a_nonlinear_warp() {
+    let om = (2.0, 0.9);
+    check_hh("hh_warped", &hh_on_hopf_curve("hh_warped", om), om, 1e-6);
+}

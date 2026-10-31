@@ -607,6 +607,120 @@ pub(crate) fn store_zero_hopf(extras: &mut Extras, z: &ZeroHopf, omega: f64) {
     ];
 }
 
+/// Normalization string stored with the coefficients of a double-Hopf point. The pairs are
+/// ordered by frequency, so pair 1 is the faster one.
+pub const HH_NORMALIZATION: &str = "<q1,q1>=1, <p1,q1>=1, <q2,q2>=1, <p2,q2>=1, w1>w2";
+
+/// The cubic coefficients of a double-Hopf point, each as (re, im). Only the real parts
+/// `P11 = Re G2100`, `P12 = Re G1011`, `P21 = Re G1110` and `P22 = Re G0021` enter the
+/// normal form amplitude equations.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct DoubleHopf {
+    pub g2100: (f64, f64),
+    pub g1011: (f64, f64),
+    pub g1110: (f64, f64),
+    pub g0021: (f64, f64),
+}
+
+/// Cubic coefficients at a double-Hopf point with `A q1 = i w1 q1`, `A q2 = i w2 q2` and
+/// `w1 > w2`.
+///
+/// Kuznetsov, "Numerical normalization techniques for all codim 2 bifurcations of equilibria
+/// in ODE's", SIAM J. Numer. Anal. 36 (1999), section 9, with `<q_k,q_k> = <p_k,q_k> = 1`:
+///
+/// ```text
+/// h1100 = -A^-1 B(q1,cq1)               h2000 = (2 i w1 - A)^-1 B(q1,q1)
+/// h0011 = -A^-1 B(q2,cq2)               h0020 = (2 i w2 - A)^-1 B(q2,q2)
+/// h1010 = (i (w1 + w2) - A)^-1 B(q1,q2) h1001 = (i (w1 - w2) - A)^-1 B(q1,cq2)
+/// G2100 = <p1, C(q1,q1,cq1) + B(h2000,cq1) + 2 B(h1100,q1)>
+/// G1011 = <p1, C(q1,q2,cq2) + B(h1010,cq2) + B(h1001,q2) + B(h0011,q1)>
+/// G1110 = <p2, C(q1,cq1,q2) + B(h1100,q2) + B(h1010,cq1) + B(ch1001,q1)>
+/// G0021 = <p2, C(q2,q2,cq2) + B(h0020,cq2) + 2 B(h0011,q2)>
+/// ```
+///
+/// The fifth-order coefficients of the paper are not computed. `w1 = w2` and `w1 = 2 w2` are
+/// errors, since a shifted matrix is singular there.
+pub(crate) fn double_hopf_at(at: &mut At, w1: f64, w2: f64) -> Result<DoubleHopf, EngineError> {
+    let n = at.n;
+    if !(w1.is_finite() && w2.is_finite() && w2 > 0.0 && w1 > w2) {
+        return Err(EngineError::Singular(
+            "double-Hopf frequencies are not ordered w1 > w2 > 0".into(),
+        ));
+    }
+    if (w1 - w2) < 1e-6 * w1 || (w1 - 2.0 * w2).abs() < 1e-6 * w1 {
+        return Err(EngineError::Singular(
+            "double-Hopf frequencies are in 1:1 or 1:2 resonance".into(),
+        ));
+    }
+    let a = at.jac_u()?;
+    let (q1, p1) = hopf_eigenvectors(&a, n, w1)?;
+    let (q2, p2) = hopf_eigenvectors(&a, n, w2)?;
+    let (q1c, q2c) = (conj(&q1), conj(&q2));
+    let lu = Lu::new(&a, n)?;
+    let neg = |v: Cv| -> Cv { lin(&[((-1.0, 0.0), &v)]) };
+    let one = (1.0, 0.0);
+    let two = (2.0, 0.0);
+
+    let h1100 = neg(inv_real(&lu, &at.form(&[&q1, &q1c])?)?);
+    let h0011 = neg(inv_real(&lu, &at.form(&[&q2, &q2c])?)?);
+    let h2000 = inv_shift(&a, n, 2.0 * w1, &at.form(&[&q1, &q1])?)?;
+    let h0020 = inv_shift(&a, n, 2.0 * w2, &at.form(&[&q2, &q2])?)?;
+    let h1010 = inv_shift(&a, n, w1 + w2, &at.form(&[&q1, &q2])?)?;
+    let h1001 = inv_shift(&a, n, w1 - w2, &at.form(&[&q1, &q2c])?)?;
+    let h1001c = conj(&h1001);
+
+    let c = at.form(&[&q1, &q1, &q1c])?;
+    let t1 = at.form(&[&h2000, &q1c])?;
+    let t2 = at.form(&[&h1100, &q1])?;
+    let g2100 = herm(&p1, &lin(&[(one, &c), (one, &t1), (two, &t2)]));
+
+    let c = at.form(&[&q1, &q2, &q2c])?;
+    let t1 = at.form(&[&h1010, &q2c])?;
+    let t2 = at.form(&[&h1001, &q2])?;
+    let t3 = at.form(&[&h0011, &q1])?;
+    let g1011 = herm(&p1, &lin(&[(one, &c), (one, &t1), (one, &t2), (one, &t3)]));
+
+    let c = at.form(&[&q1, &q1c, &q2])?;
+    let t1 = at.form(&[&h1100, &q2])?;
+    let t2 = at.form(&[&h1010, &q1c])?;
+    let t3 = at.form(&[&h1001c, &q1])?;
+    let g1110 = herm(&p2, &lin(&[(one, &c), (one, &t1), (one, &t2), (one, &t3)]));
+
+    let c = at.form(&[&q2, &q2, &q2c])?;
+    let t1 = at.form(&[&h0020, &q2c])?;
+    let t2 = at.form(&[&h0011, &q2])?;
+    let g0021 = herm(&p2, &lin(&[(one, &c), (one, &t1), (two, &t2)]));
+
+    let out = DoubleHopf {
+        g2100,
+        g1011,
+        g1110,
+        g0021,
+    };
+    if [g2100, g1011, g1110, g0021]
+        .iter()
+        .all(|g| g.0.is_finite() && g.1.is_finite())
+    {
+        Ok(out)
+    } else {
+        Err(EngineError::NotFinite("double-Hopf coefficients".into()))
+    }
+}
+
+/// Stores the real parts of the cubic double-Hopf coefficients and both frequencies with a
+/// special point: `coefficient` is `Re P11`, `omega` is `w1`.
+pub(crate) fn store_double_hopf(extras: &mut Extras, d: &DoubleHopf, w1: f64, w2: f64) {
+    extras.coefficient = Some(d.g2100.0);
+    extras.omega = Some(w1);
+    extras.normalization = Some(HH_NORMALIZATION.to_string());
+    extras.values = vec![
+        ("re_p12".to_string(), d.g1011.0),
+        ("re_p21".to_string(), d.g1110.0),
+        ("re_p22".to_string(), d.g0021.0),
+        ("omega2".to_string(), w2),
+    ];
+}
+
 /// The coefficient and normalization string for a refined LP or H point; `Ok(None)` for
 /// any other label or a point that is not refined. H takes `omega` from `extras.omega`.
 pub fn special_coefficient(

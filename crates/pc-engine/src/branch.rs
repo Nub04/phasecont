@@ -39,8 +39,8 @@ pub struct Extras {
     /// Which normalization the coefficient used.
     pub normalization: Option<String>,
     /// Further named coefficients: `re_d`, `im_d` and `e` of a zero-Hopf point, and the real
-    /// parts `re_p12`, `re_p21` and `re_p22` of a double-Hopf point (`coefficient` is
-    /// `re_p11`).
+    /// parts `re_p12`, `re_p21` and `re_p22` and the second frequency `omega2` of a double-Hopf
+    /// point (`coefficient` is `re_p11` and `omega` is the larger frequency).
     pub values: Vec<(String, f64)>,
     /// Whether Newton on the defining system succeeded.
     pub refined: bool,

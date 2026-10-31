@@ -41,7 +41,8 @@ use crate::curve2::{CurveSetup, Model2, dot, norm, start_tangent};
 use crate::error::EngineError;
 use crate::model::ModelEval;
 use crate::normal::{
-    GH_NORMALIZATION, first_lyapunov_at, second_lyapunov_at, store_zero_hopf, zero_hopf_at,
+    GH_NORMALIZATION, double_hopf_at, first_lyapunov_at, second_lyapunov_at, store_double_hopf,
+    store_zero_hopf, zero_hopf_at,
 };
 use crate::palc::run_branch;
 use crate::problem::Problem;
@@ -128,6 +129,27 @@ fn outside_pair(eigs: &[(f64, f64)]) -> Vec<(f64, f64)> {
         .filter(|&(k, _)| k != i && k != j)
         .map(|(_, &e)| e)
         .collect()
+}
+
+/// The frequency of the second critical pair at a double-Hopf point whose curve pair has
+/// frequency `wc`: of the upper-half-plane eigenvalues, drop the one nearest `wc` and take
+/// the imaginary part of the one closest to the imaginary axis.
+fn second_frequency(eigs: &[(f64, f64)], wc: f64) -> Option<f64> {
+    let upper: Vec<(f64, f64)> = eigs
+        .iter()
+        .copied()
+        .filter(|e| e.1 > REAL_TOL * 1.0_f64.max(e.0.hypot(e.1)))
+        .collect();
+    let (k, _) = upper
+        .iter()
+        .enumerate()
+        .min_by(|a, b| (a.1.1 - wc).abs().total_cmp(&(b.1.1 - wc).abs()))?;
+    upper
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| i != k)
+        .min_by(|a, b| a.1.0.abs().total_cmp(&b.1.0.abs()))
+        .map(|(_, e)| e.1)
 }
 
 /// The eigenvalue closest to the imaginary axis is real.
@@ -251,7 +273,7 @@ impl<'a> HopfCurveProblem<'a> {
     fn annotate(&mut self, branch: &mut Branch) {
         let n = self.m.n;
         for sp in branch.specials.iter_mut() {
-            if !matches!(sp.label.as_str(), "GH" | "BT" | "ZH") {
+            if !matches!(sp.label.as_str(), "GH" | "BT" | "ZH" | "HH") {
                 continue;
             }
             let mut x = sp.point.u.clone();
@@ -275,6 +297,20 @@ impl<'a> HopfCurveProblem<'a> {
                         let omega = kappa.sqrt();
                         if let Ok(z) = zero_hopf_at(&mut self.m.at(u), omega) {
                             store_zero_hopf(&mut sp.extras, &z, omega);
+                        }
+                    }
+                }
+                "HH" => {
+                    let wc = kappa.max(0.0).sqrt();
+                    let a = self.m.jac_u(u);
+                    let w2 = a
+                        .ok()
+                        .and_then(|a| eigenvalues(&a, n).ok())
+                        .and_then(|eigs| second_frequency(&eigs, wc));
+                    if let Some(wo) = w2 {
+                        let (w1, w2) = (wc.max(wo), wc.min(wo));
+                        if let Ok(d) = double_hopf_at(&mut self.m.at(u), w1, w2) {
+                            store_double_hopf(&mut sp.extras, &d, w1, w2);
                         }
                     }
                 }
