@@ -29,7 +29,9 @@ mod tests_fn;
 pub use aot::{AotEval, engine_kinds, entry_symbol};
 pub use branch::{Branch, Extras, Options, Point, SpecialPoint, StopReason};
 pub use curve2::CurveSetup;
-pub use cycle::{CollocationBasis, NCOL_RANGE};
+pub use cycle::{
+    CollocationBasis, CycleProblem, CycleSetup, NCOL_RANGE, PeriodicOrbit, periodic_orbit,
+};
 pub use ep::{EpProblem, EpSetup, continue_ep, equilibrium};
 pub use error::EngineError;
 pub use hopfcurve::{HOPF_CURVE_LABELS, HopfCurveProblem, continue_hopf_curve};

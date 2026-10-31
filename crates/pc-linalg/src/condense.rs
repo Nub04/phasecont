@@ -397,23 +397,62 @@ impl Condenser {
         sol: &mut [f64],
         parallel: bool,
     ) -> Result<(), LinalgError> {
+        let dim = self.shape.dim();
+        if rhs.len() != dim || sol.len() != dim {
+            return Err(LinalgError::BadShape);
+        }
+        self.check_system(sys, rhs)?;
+        self.valid = false;
+        self.condense_all(sys, rhs, parallel)?;
+        self.solve_reduced(sys, rhs)?;
+        self.back_substitute(sol, parallel);
+        self.valid = true;
+        Ok(())
+    }
+
+    /// Condenses the intervals of `sys` without solving the system, so that
+    /// [`Condenser::monodromy`] then gives the monodromy matrix of `sys`. The errors are
+    /// those of [`Condenser::solve`] for the interval blocks.
+    pub fn condense_intervals(
+        &mut self,
+        sys: &BlockSystem<'_>,
+        parallel: bool,
+    ) -> Result<(), LinalgError> {
+        self.check_system(sys, &[])?;
+        self.valid = false;
+        let zeros = try_filled(self.shape.nint * self.shape.block_rows(), 0.0)?;
+        self.condense_all(sys, &zeros, parallel)?;
+        self.valid = true;
+        Ok(())
+    }
+
+    /// `BadShape` when a part of `sys` has the wrong length, `NotFinite` for NaN or
+    /// infinity in `sys` or `rhs`. Finiteness is checked here so that the error kind does
+    /// not depend on which interval a parallel run reaches first.
+    fn check_system(&self, sys: &BlockSystem<'_>, rhs: &[f64]) -> Result<(), LinalgError> {
         let s = self.shape;
-        let dim = s.dim();
         if sys.blocks.len() != s.nint * s.block_rows() * s.block_cols()
             || sys.bc.len() != s.n * (2 * s.n + s.k)
-            || sys.border.len() != s.k * dim
-            || rhs.len() != dim
-            || sol.len() != dim
+            || sys.border.len() != s.k * s.dim()
         {
             return Err(LinalgError::BadShape);
         }
-        // Checked here so that the error kind does not depend on which interval a
-        // parallel run reaches first.
         let all = [sys.blocks, sys.bc, sys.border, rhs];
         if all.iter().any(|v| v.iter().any(|x| !x.is_finite())) {
             return Err(LinalgError::NotFinite);
         }
-        self.valid = false;
+        Ok(())
+    }
+
+    /// Condenses every interval into its slot of the store. `rhs` needs only the
+    /// interval rows.
+    fn condense_all(
+        &mut self,
+        sys: &BlockSystem<'_>,
+        rhs: &[f64],
+        parallel: bool,
+    ) -> Result<(), LinalgError> {
+        let s = self.shape;
         let stride = s.stride();
         if parallel {
             self.store
@@ -425,16 +464,13 @@ impl Condenser {
                         let w = w.as_mut().map_err(|e| *e)?;
                         condense(&s, sys, rhs, j, slot, w)
                     },
-                )?;
+                )
         } else {
             for (j, slot) in self.store.chunks_mut(stride).enumerate() {
                 condense(&s, sys, rhs, j, slot, &mut self.work)?;
             }
+            Ok(())
         }
-        self.solve_reduced(sys, rhs)?;
-        self.back_substitute(sol, parallel);
-        self.valid = true;
-        Ok(())
     }
 
     /// Assembles the reduced system from the condensed intervals and solves it into
@@ -917,6 +953,46 @@ mod tests {
             let err = max_diff(&mono, &want);
             assert!(err <= 1e-9 * max_abs(&want), "{n} {m} {nint} {k}: {err}");
         }
+    }
+
+    #[test]
+    fn condense_intervals_gives_the_monodromy_of_solve() {
+        let mut rng = Rng(6);
+        for (n, m, nint, k) in SHAPES {
+            let s = CondenseShape::new(n, m, nint, k).unwrap();
+            let sys = Sys::random(&s, &mut rng);
+            let mut c = Condenser::new(s).unwrap();
+            let mut x = vec![0.0; s.dim()];
+            c.solve(&sys.view(), &sys.rhs, &mut x, false).unwrap();
+            let want = c.monodromy().unwrap();
+            for parallel in [false, true] {
+                let mut d = Condenser::new(s).unwrap();
+                d.condense_intervals(&sys.view(), parallel).unwrap();
+                assert_eq!(d.monodromy().unwrap(), want, "{n} {m} {nint} {k}");
+            }
+        }
+        let s = CondenseShape::new(2, 3, 4, 2).unwrap();
+        let sys = Sys::random(&s, &mut Rng(2));
+        let mut c = Condenser::new(s).unwrap();
+        let short = BlockSystem {
+            bc: &sys.bc[1..],
+            ..sys.view()
+        };
+        assert_eq!(
+            c.condense_intervals(&short, false),
+            Err(LinalgError::BadShape)
+        );
+        let mut blocks = sys.blocks.clone();
+        blocks[0] = f64::INFINITY;
+        let bad = BlockSystem {
+            blocks: &blocks,
+            ..sys.view()
+        };
+        assert_eq!(
+            c.condense_intervals(&bad, false),
+            Err(LinalgError::NotFinite)
+        );
+        assert_eq!(c.monodromy(), Err(LinalgError::BadShape));
     }
 
     #[test]

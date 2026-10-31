@@ -67,7 +67,7 @@ pub(crate) fn correct(
     let n = p.dim();
     let mut x = start;
     let mut f = vec![0.0; n - 1];
-    let mut jac = vec![0.0; (n - 1) * n];
+    let mut jac = vec![0.0; p.jacobian_len()];
     let mut rhs = vec![0.0; n];
     let mut dx = vec![0.0; n];
     for it in 1..=opts.max_newton {
@@ -125,7 +125,7 @@ pub(crate) fn correct(
 /// tangent and the determinant of the bordered matrix.
 fn tangent(p: &mut dyn Problem, x: &[f64], border: &[f64]) -> Result<(Vec<f64>, f64), EngineError> {
     let n = p.dim();
-    let mut jac = vec![0.0; (n - 1) * n];
+    let mut jac = vec![0.0; p.jacobian_len()];
     p.jacobian(x, &mut jac)?;
     let mut rhs = vec![0.0; n];
     rhs[n - 1] = 1.0;
@@ -162,6 +162,11 @@ pub(crate) fn tangent_or_kernel(
 /// space, so the run goes straight through along the old direction.
 fn kernel_tangent(p: &mut dyn Problem, x: &[f64], prev: &[f64]) -> Result<Vec<f64>, EngineError> {
     let n = p.dim();
+    if p.jacobian_len() != (n - 1) * n {
+        return Err(EngineError::Singular(
+            "the bordered matrix is singular and this problem has no dense Jacobian".into(),
+        ));
+    }
     let mut jac = vec![0.0; (n - 1) * n];
     p.jacobian(x, &mut jac)?;
     let s = singular_values(&jac, n - 1, n)?;

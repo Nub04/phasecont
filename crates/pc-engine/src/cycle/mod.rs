@@ -2,5 +2,7 @@
 //! points each (SPEC §7).
 
 mod basis;
+mod problem;
 
 pub use basis::{CollocationBasis, NCOL_RANGE};
+pub use problem::{CycleProblem, CycleSetup, PeriodicOrbit, periodic_orbit};

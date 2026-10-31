@@ -12,12 +12,25 @@ pub trait Problem {
     /// Writes F(x), N - 1 values, to `out`.
     fn residual(&mut self, x: &[f64], out: &mut [f64]) -> Result<(), EngineError>;
 
-    /// Writes the (N-1) by N Jacobian of F at `x` to `out`, column-major.
+    /// Writes the (N-1) by N Jacobian of F at `x` to `out`, column-major. `out` has
+    /// `jacobian_len()` values.
     fn jacobian(&mut self, x: &[f64], out: &mut [f64]) -> Result<(), EngineError>;
 
-    /// The (dim-1) by (dim-1) state Jacobian A = F_u at `x`, column-major, for problems on
-    /// equilibrium branches. The engine takes the eigenvalues of A for the Hopf test
-    /// function. The default is `None`: no state block, no eigenvalues, no Hopf test.
+    /// Length of the buffer that the PALC loop passes to `jacobian` and `bordered_solve`.
+    /// The default is (N-1) N, the dense Jacobian. A problem that keeps its Jacobian in its
+    /// own storage returns 0: `jacobian` then gets an empty buffer, `bordered_solve` an
+    /// empty `jac`, and a singular bordered matrix stops the run instead of giving a
+    /// tangent from the null space.
+    fn jacobian_len(&self) -> usize {
+        let n = self.dim();
+        n.saturating_sub(1) * n
+    }
+
+    /// A square state matrix at `x`, column-major, whose eigenvalues the engine reports
+    /// with the point: the (dim-1) by (dim-1) state Jacobian A = F_u on equilibrium
+    /// branches, where the eigenvalues feed the Hopf test function, and the n by n
+    /// monodromy matrix on cycle branches, where they are the Floquet multipliers. The
+    /// default is `None`: no matrix, no eigenvalues, no Hopf test.
     fn state_jacobian(&mut self, _x: &[f64]) -> Result<Option<Vec<f64>>, EngineError> {
         Ok(None)
     }
