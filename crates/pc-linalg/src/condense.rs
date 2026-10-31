@@ -37,6 +37,13 @@ use rayon::prelude::*;
 
 use crate::dense::{LinalgError, Lu};
 
+/// The interval work above which [`CondenseShape::parallel_pays`] holds. Measured with
+/// `timing_sequential_and_parallel` in release mode on 12 logical CPUs (m = 4, k = 2):
+/// on the default pool of 12 threads a parallel solve took 1.2 to 1.5 times less time
+/// from n = 10 and N = 320 (work 2.0e7), and more time below about 1e7, by up to 50
+/// times at n = 2 and N = 20.
+pub const PARALLEL_WORK: usize = 20_000_000;
+
 /// Sizes of a block system: n states, m collocation points per interval, N intervals
 /// and k extra unknowns with one border row each.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +102,19 @@ impl CondenseShape {
     /// Dimension of the reduced system, n(N+1)+k.
     pub fn reduced_dim(&self) -> usize {
         self.n * (self.nint + 1) + self.k
+    }
+
+    /// Whether condensing the intervals in parallel pays: when the interval
+    /// eliminations take about N nm ni (ni + 2n + k + 1) multiply-adds, at least
+    /// [`PARALLEL_WORK`].
+    pub fn parallel_pays(&self) -> bool {
+        let (nm, ni, ne) = (self.block_rows(), self.ni(), self.ne());
+        let work = self
+            .nint
+            .saturating_mul(nm)
+            .saturating_mul(ni)
+            .saturating_mul(ni + ne + 1);
+        work >= PARALLEL_WORK
     }
 
     /// Interior columns of one interval, n(m-1).
@@ -885,6 +905,16 @@ mod tests {
     }
 
     #[test]
+    fn parallel_pays_only_for_large_systems() {
+        let pays = |n, nint| CondenseShape::new(n, 4, nint, 2).unwrap().parallel_pays();
+        assert!(!pays(2, 640));
+        assert!(!pays(4, 640));
+        assert!(!pays(10, 160));
+        assert!(pays(10, 320));
+        assert!(pays(20, 50));
+    }
+
+    #[test]
     fn same_bits_sequential_and_in_a_pool() {
         let s = CondenseShape::new(2, 3, 37, 2).unwrap();
         let sys = Sys::random(&s, &mut Rng(3));
@@ -1079,5 +1109,47 @@ mod tests {
             Err(LinalgError::Singular)
         );
         assert_eq!(c.monodromy(), Err(LinalgError::BadShape));
+    }
+
+    /// The timings behind the parallel threshold of the cycle problem. Run with
+    /// `cargo test --release -p pc-linalg timing -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn timing_sequential_and_parallel() {
+        use std::time::Instant;
+        let median = |c: &mut Condenser, sys: &Sys, x: &mut [f64], par: bool| {
+            let mut t: Vec<f64> = (0..15)
+                .map(|_| {
+                    let start = Instant::now();
+                    c.solve(&sys.view(), &sys.rhs, x, par).unwrap();
+                    start.elapsed().as_secs_f64()
+                })
+                .collect();
+            t.sort_by(f64::total_cmp);
+            t[t.len() / 2]
+        };
+        for threads in [2, 4, 6, 12] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            for n in [2, 4, 10] {
+                for nint in [20, 40, 80, 160, 320, 640] {
+                    let s = CondenseShape::new(n, 4, nint, 2).unwrap();
+                    let sys = Sys::random(&s, &mut Rng(5));
+                    let mut c = Condenser::new(s).unwrap();
+                    let mut x = vec![0.0; s.dim()];
+                    let seq = median(&mut c, &sys, &mut x, false);
+                    let par = pool.install(|| median(&mut c, &sys, &mut x, true));
+                    println!(
+                        "threads {threads:2} n {n:2} N {nint:3}: seq {:8.1} us, par {:8.1} us, \
+                         speedup {:.2}",
+                        seq * 1e6,
+                        par * 1e6,
+                        seq / par
+                    );
+                }
+            }
+        }
     }
 }

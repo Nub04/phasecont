@@ -104,6 +104,9 @@ pub struct CycleProblem<'a> {
     bc: Vec<f64>,
     border: Vec<f64>,
     condenser: Condenser,
+    /// Whether the condenser runs the intervals on the current rayon pool
+    /// ([`CondenseShape::parallel_pays`]).
+    parallel: bool,
     /// The orbit at one collocation point, and F, F_u and F_p there.
     uz: Vec<f64>,
     f: Vec<f64>,
@@ -228,6 +231,7 @@ impl<'a> CycleProblem<'a> {
             bc,
             border: try_zeros(Some(2 * shape.dim()))?,
             condenser: Condenser::new(shape)?,
+            parallel: shape.parallel_pays(),
             uz: vec![0.0; n],
             f: vec![0.0; n],
             jac_u: vec![0.0; n * n],
@@ -381,7 +385,7 @@ impl<'a> CycleProblem<'a> {
             bc: &self.bc,
             border: &self.border,
         };
-        self.condenser.condense_intervals(&sys, false)?;
+        self.condenser.condense_intervals(&sys, self.parallel)?;
         Ok(self.condenser.monodromy()?)
     }
 
@@ -428,7 +432,7 @@ impl<'a> CycleProblem<'a> {
             bc: &bc,
             border: &border,
         };
-        self.condenser.solve(&sys, &rhs, &mut sol, false)?;
+        self.condenser.solve(&sys, &rhs, &mut sol, self.parallel)?;
         sol.truncate(dim - 2);
         Ok((sol, re))
     }
@@ -616,7 +620,7 @@ impl Problem for CycleProblem<'_> {
             bc: &self.bc,
             border: &self.border,
         };
-        self.condenser.solve(&sys, rhs, sol, false)?;
+        self.condenser.solve(&sys, rhs, sol, self.parallel)?;
         Ok(f64::NAN)
     }
 }

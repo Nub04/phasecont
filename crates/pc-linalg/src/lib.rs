@@ -10,7 +10,7 @@ mod eig;
 mod null;
 
 pub use block::solve_shifted;
-pub use condense::{BlockSystem, CondenseShape, Condenser};
+pub use condense::{BlockSystem, CondenseShape, Condenser, PARALLEL_WORK};
 pub use dense::{LinalgError, Lu};
 pub use eig::{eigenvalues, eigvec};
 pub use null::{null_left, null_right, singular_values};
