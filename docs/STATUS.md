@@ -229,13 +229,12 @@ Rulings in P6 package 8:
   - Item 5 (aa319cc): `Lu::new` scales the determinant so a finite nonsingular matrix cannot give 0, infinity or NaN.
   - Item 6 (0c6ea68): `eig_len` checks 2n for overflow.
   - Item 7a (0bdee24): `run_copy` with `count == 0` now reaches the library, so a freed run id or a bad branch gives an error. `GatewayTest` has both cases; it loads the MEX, so it was not run locally (Smart App Control).
-  - Item 7b, open: the engine accepts a buffer longer than `count * stride`, so a gateway call with a wrong `stride` is not caught. The fix needs the owner's choice (see "Open questions").
+  - Item 7b (24c548f): the engine accepted a buffer longer than `count * stride`, so a gateway call with a wrong `stride` was not caught. On the owner's choice, `run_copy` now needs `buf_len` to equal `count * stride` and returns badArg otherwise. The table and `abi_version` are unchanged, and `pckern.h` and SPEC section 10 state the rule. `GatewayTest` has a stride + 1 and a stride - 1 case; it loads the MEX, so it was not run locally.
 
 P6 is done except for formal acceptance. SPEC section 14 accepts it on the `references/*.json` oracles, which the owner produces with AUTO-07p or MatCont; until then the LC self-consistency checks and the RK4 shooting oracle of package 8 stand in. The MATLAB suites that load the MEX need a run on a machine without Smart App Control, or on CI.
 
 ## Next
 
-- Audit item 7b, after the owner's choice.
 - P7b (phase-plane app, sessions and replay) and P8 (v1.0 packaging and the release workflow), then the public switch.
 - P4 and later: a continuation that changes a parameter or state read by a table formula needs a new lowering of the model (P2 known difference).
 
@@ -245,7 +244,6 @@ P6 is done except for formal acceptance. SPEC section 14 accepts it on the `refe
 
 ## Open questions
 
-- Audit item 7b: should `run_copy` require `buf_len == count * stride` exactly (a C ABI contract change), or should the gateway alone check the stride by filling the buffer with NaN and checking that the last field of the last row was written?
 - Open from P5: the engine option `mesh_adapt` (default 3) is not exposed in MATLAB, so a MATLAB LC run always adapts the mesh every 3 accepted points. A `MeshAdapt` option would change the public API.
 - Open from P4:
   - The BT coefficients use the sign convention a > 0, and the ZH coefficients use b > 0. The normalization strings record both. The owner may prefer another convention.
@@ -278,7 +276,7 @@ P6 is done except for formal acceptance. SPEC section 14 accepts it on the `refe
   - The live line advances ColorOrderIndex, so the final plot uses the second color.
   - From the final P7a review (2026-10-29):
     - `Stable` is false for a point whose eigenvalues are NaN. The engine fills NaN only after an internal fault, and carrying the last value forward would be a silent default, so it stays.
-    - The gateway trusts the caller's `stride` instead of reading the run's (audit item 7b). The `count == 0` half is fixed (audit item 7a).
+    - Fixed: the engine now rejects a `stride` that is not the run's (audit item 7b, 24c548f), and `count == 0` reaches the library (audit item 7a).
     - `dll-imports` accepts any `api-ms-win-` prefix and reads the whole file without a size limit.
     - `scripts/build-pckern` and `buildfile.m` ignore `CARGO_TARGET_DIR`, and the `wsl.exe` command does not escape `$` or quotes in paths.
     - A `Branch` keeps its `Model` handle, so variable lookup fails after the Model is deleted, and `continuation` rejects a start Point from another Model object with the same source.
