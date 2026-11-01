@@ -3,6 +3,7 @@ function br = rows2branch(m, free, p, n, points, specials, branchStatus, kind, g
 %   BR = rows2branch(M, FREE, P, N, POINTS, SPECIALS, ST)
 %   BR = rows2branch(M, FREE, P, N, POINTS, SPECIALS, ST, KIND)
 %   BR = rows2branch(M, FREE, P, N, POINTS, SPECIALS, ST, "LC", [NTST NCOL])
+%   BR = rows2branch(..., "LPC" | "PD" | "NS", [NTST NCOL])
 %
 %   M         the phasecont.Model (empty is allowed in tests)
 %   FREE      name of the free parameter, or its 1-based index; a curve
@@ -12,8 +13,9 @@ function br = rows2branch(m, free, p, n, points, specials, branchStatus, kind, g
 %   POINTS    stride-by-N matrix from run_copy, one column per point
 %   SPECIALS  stride-by-K matrix of the special points
 %   ST        the status struct of this branch (stop, warnings, specials)
-%   KIND      "EP" (default), "LP", "H" or "LC"
-%   GRID      [NTST NCOL] of an LC run: mesh intervals and collocation points
+%   KIND      "EP" (default), "LP", "H", "LC", "LPC", "PD" or "NS"
+%   GRID      [NTST NCOL] of a run of cycles: mesh intervals and
+%             collocation points
 %
 % An equilibrium column has the layout [alpha, u(1..n), eig_re(1..n),
 % eig_im(1..n), psi_LP, psi_BP, psi_H, h, newton_iters].
@@ -22,10 +24,16 @@ function br = rows2branch(m, free, p, n, points, specials, branchStatus, kind, g
 % codim-2 labels of the kind.
 % A cycle column is [alpha, orbit(1..n(NTST*NCOL+1)), T, mesh(1..NTST+1),
 % mult_re(1..n), mult_im(1..n), psi_LPC, psi_PD, psi_NS, h, newton_iters],
-% with the orbit at the base points, point-major. All have NaN for missing
-% values. The function makes no engine calls.
+% with the orbit at the base points, point-major.
+% A column of a curve of cycles is [a2, orbit, T, a1, (kappa for NS,)
+% mesh(1..NTST+1), mult_re(1..n), mult_im(1..n), codim2(1..k), h,
+% newton_iters]. All have NaN for missing values. The function makes no
+% engine calls.
 if nargin < 8
     kind = "EP";
+end
+if nargin < 9
+    grid = [];
 end
 kind = string(kind);
 nmesh = 0;
@@ -43,22 +51,34 @@ switch kind
         labels = ["GH" "BT" "ZH" "HH"];
         extra = numel(labels);
     case "LC"
-        if nargin < 9 || ~isnumeric(grid) || numel(grid) ~= 2 ...
-                || any(grid < 1 | grid ~= round(grid))
-            error("phasecont:model:badOption", ...
-                "An LC branch needs [NTST NCOL], two positive integers.");
-        end
-        ntst = double(grid(1));
-        ncol = double(grid(2));
+        [ntst, ncol] = cycleGrid(kind, grid);
         block = n*(ntst*ncol + 1) + 1;
         nmesh = ntst + 1;
         labels = strings(1, 0);
         extra = 3;
+    case {"LPC" "PD" "NS"}
+        [ntst, ncol] = cycleGrid(kind, grid);
+        block = n*(ntst*ncol + 1) + 2 + (kind == "NS");
+        nmesh = ntst + 1;
+        if kind == "LPC"
+            labels = ["LPPD" "LPNS"];
+        elseif kind == "PD"
+            labels = ["LPPD" "PDNS"];
+        else
+            labels = ["R1" "R2" "R3" "R4" "LPNS" "PDNS"];
+        end
+        extra = numel(labels);
     otherwise
         error("phasecont:model:badOption", ...
-            "The kind must be ""EP"", ""LP"", ""H"" or ""LC"".");
+            "The kind must be ""EP"", ""LP"", ""H"", ""LC"", ""LPC"", ""PD"" or ""NS"".");
 end
-isCurve = kind == "LP" || kind == "H";
+isCycle = kind == "LC" || kind == "LPC" || kind == "PD" || kind == "NS";
+isCurve = ~(kind == "EP" || kind == "LC");
+% Length of the orbit in a cycle row.
+np = 0;
+if isCycle
+    np = n*(ntst*ncol + 1);
+end
 
 [name, idx] = freeParameters(m, free, 1 + isCurve);
 p = double(p(:));
@@ -78,9 +98,19 @@ switch kind
         u = s;
         stable = all(real(ev) < 0, 2);
     case "LC"
-        u = s(:, 1:end-1);
-        period = s(:, end);
+        u = s(:, 1:np);
+        period = s(:, np+1);
         stable = cycleStable(ev);
+    case {"LPC" "PD" "NS"}
+        u = s(:, 1:np);
+        period = s(:, np+1);
+        alpha = [s(:, np+2) alpha];
+        if kind == "NS"
+            kappa = s(:, np+3);
+        end
+        tests = zeros(npts, 0);
+        codim2 = tail;
+        stable = false(npts, 1);
     otherwise
         u = s(:, 1:n);
         alpha = [s(:, n+1) alpha];
@@ -108,13 +138,15 @@ end
 for k = 1:numel(info)
     [a2, sk, mk, ek] = unpack(specials(:, k), n, block, nmesh, extra);
     pk = p;
-    if isCurve
+    if isCycle && isCurve
+        pk(idx) = [sk(np+2), a2];
+    elseif isCurve
         pk(idx) = [sk(n+1), a2];
     else
         pk(idx) = a2;
     end
-    if kind == "LC"
-        uk = sk(1:end-1);
+    if isCycle
+        uk = sk(1:np);
     else
         uk = sk(1:n);
     end
@@ -125,11 +157,14 @@ for k = 1:numel(info)
         "normalization", textField(info{k}, "normalization"), ...
         "refined", flagField(info{k}, "refined"), ...
         "values", structField(info{k}, "coefficients"));
-    if kind == "LC"
-        data.period = sk(end);
+    if isCycle
+        data.period = sk(np+1);
         data.mesh = mk;
         data.ntst = ntst;
         data.ncol = ncol;
+    end
+    if kind == "NS"
+        data.kappa = sk(np+3);
     end
     pts(end+1, 1) = phasecont.Point(U = uk(:), P = pk, ...
         Eigenvalues = ek(:), Label = string(info{k}.label), ...
@@ -142,13 +177,27 @@ values = struct( ...
     "Codim2", codim2, "Codim2Labels", labels, ...
     "StepSize", h, "NewtonIters", iters, "Specials", pts, ...
     "Stop", stop, "Warnings", warn, "Model", m);
-if kind == "LC"
+if isCycle
     values.Period = period;
     values.Mesh = mesh;
     values.NTST = ntst;
     values.NCOL = ncol;
 end
+if kind == "NS"
+    values.Kappa = kappa;
+end
 br = phasecont.Branch(values);
+end
+
+function [ntst, ncol] = cycleGrid(kind, grid)
+% NTST and NCOL from GRID, which must hold two positive integers.
+if ~isnumeric(grid) || numel(grid) ~= 2 ...
+        || any(grid < 1 | grid ~= round(grid))
+    error("phasecont:model:badOption", ...
+        "An %s branch needs [NTST NCOL], two positive integers.", kind);
+end
+ntst = double(grid(1));
+ncol = double(grid(2));
 end
 
 function [name, idx] = freeParameters(m, free, count)

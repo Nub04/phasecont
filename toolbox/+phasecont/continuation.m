@@ -1,5 +1,5 @@
 function br = continuation(m, start, options)
-%CONTINUATION Follow a branch of equilibria, or a curve of fold or Hopf points.
+%CONTINUATION Follow a branch of equilibria or cycles, or a curve of special points.
 %   BR = phasecont.continuation(M, START, Free = "r") continues START along
 %   the free parameter. START is a phasecont.Point or a state vector. The
 %   call blocks while the engine runs, polls it about every 50 ms and
@@ -27,12 +27,24 @@ function br = continuation(m, start, options)
 %   points; LC.cycle(i) returns the orbit at point i. Detect and Switch do
 %   not apply.
 %
+%   C = phasecont.continuation(M, PT, Type = "PD", Free = ["a" "b"])
+%   follows the curve of period-doubling points of cycles through PT, a PD
+%   point of an LC branch, with a the free parameter of that branch. Type =
+%   "LPC" does the same for an LPC point and Type = "NS" for an NS point.
+%   C.Alpha holds [a b], C.Period the period and C.cycle(i) the orbit at
+%   point i; an NS curve also has C.Kappa, the cosine of the angle of its
+%   critical multipliers. The codim-2 points (LPPD, LPNS for "LPC"; LPPD,
+%   PDNS for "PD"; R1 to R4, LPNS, PDNS for "NS") are in C.Specials. NTST
+%   and NCOL default to the mesh of PT, and other values regrid its orbit.
+%   Detect, Switch and Var do not apply.
+%
 %   Name-value options
-%     Type       "EP" (default), "LP", "H" or "LC"
+%     Type       "EP" (default), "LP", "H", "LC", "LPC", "PD" or "NS"
 %     Free       free parameter, one of M.Parameters (required); two names
-%                for Type "LP" or "H"
+%                for Type "LP", "H", "LPC", "PD" or "NS"
 %     NTST NCOL  mesh intervals and collocation points per interval,
-%                positive integers (required for Type "LC" only)
+%                positive integers (required for Type "LC"; for "LPC",
+%                "PD" and "NS" they default to those of the start point)
 %     MaxSteps   most steps per branch
 %     Direction  1 or -1, the first direction along the parameter
 %     Bounds     [lo hi], finite, the run stops outside them; on a curve
@@ -47,7 +59,8 @@ function br = continuation(m, start, options)
 %                styled plot of Branch.plot (default false)
 %     Var        variable to plot, a name or an index into M.Variables
 %                (default the first variable of M); Type "EP" or "LC", a
-%                curve is plotted in the plane of its two free parameters
+%                curve of any other Type is plotted in the plane of its two
+%                free parameters
 %     Params     struct or vector that overrides the parameters of START
 %
 %   Options that are not given keep the engine defaults. If START is a
@@ -78,12 +91,14 @@ end
 import phasecont.internal.num2json
 
 type = string(options.Type);
-if ~isscalar(type) || ~ismember(type, ["EP" "LP" "H" "LC"])
+if ~isscalar(type) || ~ismember(type, ["EP" "LP" "H" "LC" "LPC" "PD" "NS"])
     error("phasecont:model:badOption", ...
-        "Type must be ""EP"", ""LP"", ""H"" or ""LC"".");
+        "Type must be ""EP"", ""LP"", ""H"", ""LC"", ""LPC"", ""PD"" or ""NS"".");
 end
-isCurve = type == "LP" || type == "H";
 isCycle = type == "LC";
+% A curve of cycles has two free parameters like an LP or H curve.
+isCycleCurve = type == "LPC" || type == "PD" || type == "NS";
+isCurve = type == "LP" || type == "H" || isCycleCurve;
 grid = [];
 if isCycle
     if ~isa(options.Detect, "missing") || ~isempty(options.Switch)
@@ -91,9 +106,9 @@ if isCycle
             "Detect and Switch do not apply to Type = ""LC"".");
     end
     grid = [countOption(options.NTST, "NTST"), countOption(options.NCOL, "NCOL")];
-elseif ~isempty(options.NTST) || ~isempty(options.NCOL)
+elseif ~isCycleCurve && (~isempty(options.NTST) || ~isempty(options.NCOL))
     error("phasecont:model:badOption", ...
-        "NTST and NCOL apply to Type = ""LC"" only.");
+        "NTST and NCOL apply to Type = ""LC"", ""LPC"", ""PD"" and ""NS"" only.");
 end
 if isempty(options.Free)
     error("phasecont:model:badOption", "The Free option is required.");
@@ -112,7 +127,7 @@ if isCurve
     if ~isa(options.Detect, "missing") || ~isempty(options.Switch) ...
             || ~isempty(options.Var)
         error("phasecont:model:badOption", ...
-            "Detect, Switch and Var apply to Type = ""EP"" only.");
+            "Detect, Switch and Var do not apply to Type = ""%s"".", type);
     end
 elseif ~isscalar(free) || ~any(m.Parameters == free)
     error("phasecont:model:unknownParameter", ...
@@ -120,6 +135,14 @@ elseif ~isscalar(free) || ~any(m.Parameters == free)
 end
 if isCycle
     [u0, p, from, mesh] = cycleStart(m, start, options.Params);
+elseif isCycleCurve
+    [u0, p, mesh, grid] = curveCycleStart(m, start, options.Params, type);
+    if ~isempty(options.NTST)
+        grid(1) = countOption(options.NTST, "NTST");
+    end
+    if ~isempty(options.NCOL)
+        grid(2) = countOption(options.NCOL, "NCOL");
+    end
 else
     [u0, p, special] = startValues(m, start, options.Params);
 end
@@ -164,7 +187,12 @@ if type == "EP"
 end
 parts = parts(strlength(parts) > 0);
 
-if isCurve
+if isCycleCurve
+    problem = "{""type"":""" + type + """,""free"":" + jsonencode(free) + ...
+        ",""ntst"":" + num2json(grid(1)) + ",""ncol"":" + num2json(grid(2)) + ...
+        ",""mesh"":[" + strjoin(arrayfun(@num2json, mesh), ",") + "]" + ...
+        ",""options"":{" + strjoin(parts, ",") + "}";
+elseif isCurve
     problem = "{""type"":""" + type + """,""free"":" + jsonencode(free) + ...
         ",""options"":{" + strjoin(parts, ",") + "}";
 elseif isCycle
@@ -224,11 +252,15 @@ if options.Plot
 end
 
 n = numel(m.Variables);
-% Live plot rows: a curve draws a2 against a1, which sits after the n states;
-% a cycle draws the maximum of the variable over its base points.
+% Live plot rows: a curve draws a2 against a1, which sits after the n states,
+% or after the orbit and the period on a curve of cycles; a cycle draws the
+% maximum of the variable over its base points.
 xrow = 1;
 yrow = 1 + varIdx;
-if isCurve
+if isCycleCurve
+    xrow = 3 + n*(grid(1)*grid(2) + 1);
+    yrow = 1;
+elseif isCurve
     xrow = n + 2;
     yrow = 1;
 elseif isCycle
@@ -361,6 +393,29 @@ else
     [u0, p] = startValues(m, start, params);
     from = "hopf";
 end
+end
+
+function [u0, p, mesh, grid] = curveCycleStart(m, start, params, type)
+% Start values of an LPC, PD or NS curve: a special point with the label
+% TYPE on an LC branch, whose Data holds the period, the mesh, NTST and NCOL.
+if ~(isa(start, "phasecont.Point") && isscalar(start) && isstruct(start.Data) ...
+        && all(isfield(start.Data, ["period" "mesh" "ntst" "ncol"])) ...
+        && start.Label == type)
+    error("phasecont:model:badStart", ...
+        "A %s curve starts from a %s point of an LC branch.", type, type);
+end
+if ~isempty(start.Model) && start.Model ~= m
+    error("phasecont:model:badStart", ...
+        "The start point belongs to a different model.");
+end
+if numel(start.P) ~= numel(m.Parameters)
+    error("phasecont:model:badStart", ...
+        "The start point needs %d parameters.", numel(m.Parameters));
+end
+u0 = [start.U(:); start.Data.period];
+p = overrideParams(m, start.P, params);
+mesh = double(start.Data.mesh(:)).';
+grid = double([start.Data.ntst start.Data.ncol]);
 end
 
 function p = overrideParams(m, p, params)

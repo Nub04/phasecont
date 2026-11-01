@@ -1,7 +1,8 @@
 classdef Branch < handle
     % A computed branch with its special points: a branch of equilibria
-    % (Type "EP"), a curve of fold points ("LP") or Hopf points ("H"), or a
-    % branch of periodic orbits ("LC").
+    % (Type "EP"), a curve of fold points ("LP") or Hopf points ("H"), a
+    % branch of periodic orbits ("LC"), or a curve of fold ("LPC"),
+    % period-doubling ("PD") or Neimark-Sacker ("NS") points of cycles.
     %
     %   br = phasecont.continuation(m, eq, Free = "r")
     %   h  = br.points("H")     % special points with label H
@@ -16,21 +17,27 @@ classdef Branch < handle
     %   [t, x] = lc.cycle(10)   % the orbit at point 10
     %   plot(lc, Var = "x")     % max and min of x over the orbit
     %
+    %   pd = phasecont.continuation(m, lc.points("PD"), Type = "PD", ...
+    %       Free = ["r" "b"])
+    %   plot(pd)                % the curve in the (r, b) plane
+    %
     % A Branch holds copied data and no engine handle, so it stays valid
     % after the Model is deleted. Rows are points: N points give N-by-k or
     % N-by-n arrays. Call points on one Branch at a time, not on an array.
     %
     % Properties
-    %   Type         "EP", "LP", "H" or "LC"
+    %   Type         "EP", "LP", "H", "LC", "LPC", "PD" or "NS"
     %   Free         name of the free parameter; [a1 a2] for a curve
     %   FreeIndex    its index in Model.Parameters; [i1 i2] for a curve
     %   P            parameter vector the run started from
     %   Alpha        free parameter value at each point, N-by-1; [a1 a2] in
     %                the order of Free, N-by-2, for a curve
     %   U            states, N-by-n (on a curve, the state at each point of
-    %                it); for "LC", the orbit at the NTST*NCOL+1 base points,
-    %                point-major, N-by-n(NTST*NCOL+1) (see cycle)
-    %   Eigenvalues  N-by-n complex; the Floquet multipliers for "LC"
+    %                it); for "LC", "LPC", "PD" and "NS", the orbit at the
+    %                NTST*NCOL+1 base points, point-major, N-by-n(NTST*NCOL+1)
+    %                (see cycle)
+    %   Eigenvalues  N-by-n complex; the Floquet multipliers for "LC",
+    %                "LPC", "PD" and "NS"
     %   Stable       true where all eigenvalues have negative real part; for
     %                "LC", where all multipliers except the one closest to 1
     %                have modulus below 1; false everywhere on a curve, whose
@@ -40,11 +47,15 @@ classdef Branch < handle
     %   Codim2       codim-2 test values at each point of a curve, N-by-k
     %                (N-by-0 for Type "EP" and "LC")
     %   Codim2Labels the k labels of the columns of Codim2: ["CP" "BT" "ZH"]
-    %                for "LP", ["GH" "BT" "ZH" "HH"] for "H"
-    %   Period       period of the orbit at each point, N-by-1 ("LC" only)
+    %                for "LP", ["GH" "BT" "ZH" "HH"] for "H", ["LPPD"
+    %                "LPNS"] for "LPC", ["LPPD" "PDNS"] for "PD", ["R1" "R2"
+    %                "R3" "R4" "LPNS" "PDNS"] for "NS"
+    %   Period       period of the orbit at each point, N-by-1 (cycles only)
+    %   Kappa        cos(theta) of the critical multipliers exp(+-i theta)
+    %                at each point, N-by-1 ("NS" only)
     %   Mesh         mesh points from 0 to 1 at each point, N-by-(NTST+1)
-    %                ("LC" only); the mesh moves when the run adapts it
-    %   NTST NCOL    mesh intervals and collocation points of an "LC" run
+    %                (cycles only); the mesh moves when the run adapts it
+    %   NTST NCOL    mesh intervals and collocation points of a run of cycles
     %   StepSize     step length used to reach each point
     %   NewtonIters  Newton iterations used at each point
     %   Specials     column of phasecont.Point
@@ -68,6 +79,7 @@ classdef Branch < handle
         Codim2 (:,:) double = zeros(0,0)
         Codim2Labels (1,:) string = strings(1,0)
         Period (:,1) double = zeros(0,1)
+        Kappa (:,1) double = zeros(0,1)
         Mesh (:,:) double = zeros(0,0)
         NTST (1,1) double = NaN
         NCOL (1,1) double = NaN
@@ -117,17 +129,19 @@ classdef Branch < handle
 
         function [t, x] = cycle(br, i)
             % [T, X] = BR.CYCLE(I) returns the periodic orbit at point I of an
-            % LC branch. T holds the NTST*NCOL+1 base-point times from 0 to
-            % the period, as a column. X holds the state at those times, one
-            % row per time and one column per variable. The last row closes
-            % the orbit and equals the first.
+            % LC branch or of an LPC, PD or NS curve. T holds the
+            % NTST*NCOL+1 base-point times from 0 to the period, as a
+            % column. X holds the state at those times, one row per time and
+            % one column per variable. The last row closes the orbit and
+            % equals the first.
             if ~isscalar(br)
                 error("phasecont:model:badBranch", ...
                     "cycle works on one Branch at a time; call it per element.");
             end
-            if br.Type ~= "LC"
+            if ~br.isCycleType()
                 error("phasecont:model:badBranch", ...
-                    "cycle needs a Branch of Type ""LC"", not ""%s"".", br.Type);
+                    "cycle needs a Branch of Type ""LC"", ""LPC"", ""PD"" or ""NS"", not ""%s"".", ...
+                    br.Type);
             end
             npts = numel(br.Period);
             if ~(isnumeric(i) && isscalar(i) && isreal(i) && i == round(i) ...
@@ -151,8 +165,9 @@ classdef Branch < handle
             % be a 1-by-K array. Stable runs are solid (Tag "pc-stable"),
             % unstable runs dashed (Tag "pc-unstable"). Special points get a
             % marker (Tag "pc-special") and a text label (Tag "pc-label").
-            % A curve is one solid line (Tag "pc-curve") in the plane of its
-            % two free parameters and takes no Var. An LC branch draws the
+            % A curve (Type "LP", "H", "LPC", "PD" or "NS") is one solid line
+            % (Tag "pc-curve") in the plane of its two free parameters and
+            % takes no Var. An LC branch draws the
             % max and the min of Var over each orbit, both styled by
             % stability, with its special points at the max.
             % Without Parent the plot uses newplot, so hold on is respected.
@@ -183,7 +198,7 @@ classdef Branch < handle
     methods (Access = private)
         function h = drawOne(br, ax, var)
             % Draw this branch on ax: stability runs, then special points.
-            if br.Type == "LP" || br.Type == "H"
+            if br.Type ~= "EP" && br.Type ~= "LC"
                 h = br.drawCurve(ax, var);
                 return
             end
@@ -294,9 +309,14 @@ classdef Branch < handle
         function n = stateCount(br)
             % Number of states, from the columns of U.
             n = size(br.U, 2);
-            if br.Type == "LC"
+            if br.isCycleType()
                 n = n / (br.NTST*br.NCOL + 1);
             end
+        end
+
+        function tf = isCycleType(br)
+            % True for a branch whose points are cycles.
+            tf = any(br.Type == ["LC" "LPC" "PD" "NS"]);
         end
     end
 end
