@@ -500,7 +500,24 @@ fn run_copy_checks_its_arguments() {
     let mut rows = 99usize;
     let rc = unsafe { (api().run_copy)(run.0, 0, 0, 0, 1, buf.as_mut_ptr(), buf.len(), &mut rows) };
     assert_eq!((rc, rows), (2, 0));
-    assert_eq!(last_error(), "buf: expected at least 15 values, got 14");
+    assert_eq!(
+        last_error(),
+        "buf: expected count * stride = 15 values with stride 15, got 14"
+    );
+    // The length must match exactly, so a caller with the wrong stride fails.
+    let mut long = [0.0f64; 16];
+    let rc =
+        unsafe { (api().run_copy)(run.0, 0, 0, 0, 1, long.as_mut_ptr(), long.len(), &mut rows) };
+    assert_eq!((rc, rows), (2, 0));
+    assert_eq!(
+        last_error(),
+        "buf: expected count * stride = 15 values with stride 15, got 16"
+    );
+    assert_eq!(copy(run.0, 0, 0, 0, 2, 16).0, 2);
+    assert_eq!(copy(run.0, 0, 0, 0, 2, 14).0, 2);
+    let rc =
+        unsafe { (api().run_copy)(run.0, 0, 0, 0, 0, long.as_mut_ptr(), long.len(), &mut rows) };
+    assert_eq!((rc, rows), (2, 0));
     let (rc, rows, _) = copy(run.0, 0, 0, points + 10, 4, 15);
     assert_eq!((rc, rows), (0, 0));
     let (rc, rows, _) = copy(run.0, 0, 0, points - 2, 10, 15);

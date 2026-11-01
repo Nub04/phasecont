@@ -661,7 +661,8 @@ static void cmd_run_copy(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prh
     /* Each column is one C row: MATLAB is column-major and the rows are
      * contiguous. Shrink to the rows written after the call. The call runs
      * for count = 0 too, so the handle and branch are always checked; the
-     * engine accepts a NULL buffer of length 0. */
+     * engine accepts a NULL buffer of length 0. The engine needs total to
+     * equal count times the run's stride, so a wrong stride is badArg. */
     out = mxCreateDoubleMatrix(stride, count, mxREAL);
     check(g_api->run_copy(r, branch, what, start, count, total > 0 ? mxGetDoubles(out) : NULL,
                           total, &rows));

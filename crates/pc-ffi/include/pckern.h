@@ -121,8 +121,9 @@ typedef struct pc_api_v1_t {
 
   /* Copies up to count rows from row start of the given branch into buf.
    * what is PC_COPY_POINTS or PC_COPY_SPECIALS. buf_len is in doubles and
-   * must be at least count * stride, with stride from status_json. *rows gets
-   * the number of rows written (0 on failure). */
+   * must equal count * stride, with stride from status_json, so a caller with
+   * the wrong stride gets PC_ERR_BAD_ARG. buf may be NULL when count is 0.
+   * *rows gets the number of rows written (0 on failure). */
   int32_t (*run_copy)(uint64_t run, uint32_t branch, uint32_t what,
                       size_t start, size_t count, double *buf, size_t buf_len,
                       size_t *rows);

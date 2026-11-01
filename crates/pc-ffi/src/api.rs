@@ -296,9 +296,10 @@ pub unsafe extern "C" fn run_copy(
         let need = count
             .checked_mul(stride)
             .ok_or_else(|| bad_arg(format!("count: {count} rows is too many")))?;
-        if buf_len < need {
+        // An exact length catches a caller that uses the wrong stride.
+        if buf_len != need {
             return Err(bad_arg(format!(
-                "buf: expected at least {need} values, got {buf_len}"
+                "buf: expected count * stride = {need} values with stride {stride}, got {buf_len}"
             )));
         }
         let buf = unsafe { f64_out(buf, buf_len, "buf") }?;

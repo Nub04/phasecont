@@ -240,6 +240,11 @@ classdef GatewayTest < matlab.unittest.TestCase
                 "phasecont:engine:badArg");
             testCase.verifyError(@() pckern("run_copy", r, 99, 0, 0, 1, stride), ...
                 "phasecont:engine:badArg");
+            % The engine needs the run's own stride.
+            testCase.verifyError(@() pckern("run_copy", r, 0, 0, 0, 1, stride + 1), ...
+                "phasecont:engine:badArg");
+            testCase.verifyError(@() pckern("run_copy", r, 0, 0, 0, 1, stride - 1), ...
+                "phasecont:engine:badArg");
             clear freeRun cleanup
         end
 
