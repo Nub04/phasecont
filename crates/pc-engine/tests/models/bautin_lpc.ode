@@ -1,0 +1,7 @@
+# Bautin normal form r' = r (b1 + b2 r^2 - r^4), theta' = 1 + g r^2 in Cartesian
+# coordinates. Its LPC curve is b1 = -b2^2/4 with r^2 = b2/2. Own test model.
+par b1=-0.25,b2=1,g=0.5
+x'=(b1+b2*(x^2+y^2)-(x^2+y^2)^2)*x-(1+g*(x^2+y^2))*y
+y'=(1+g*(x^2+y^2))*x+(b1+b2*(x^2+y^2)-(x^2+y^2)^2)*y
+init x=0.7,y=0
+done

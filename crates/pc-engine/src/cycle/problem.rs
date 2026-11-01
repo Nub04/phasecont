@@ -26,7 +26,7 @@ use crate::branch::Options;
 use crate::error::EngineError;
 use crate::model::ModelEval;
 use crate::problem::Problem;
-use pc_ir::EntryKind;
+use pc_ir::{EntryKind, Slot};
 use pc_linalg::{BlockSystem, CondenseShape, Condenser, LinalgError, eigenvalues, eigvec};
 
 /// Where and along which parameter a periodic orbit is computed.
@@ -335,7 +335,6 @@ impl<'a> CycleProblem<'a> {
 
     /// Sets border row `r`, 1 <= r <= k - 2, to `row`, the derivative of an added
     /// equation with respect to all dim unknowns.
-    #[allow(dead_code)]
     pub(crate) fn set_border_row(&mut self, r: usize, row: &[f64]) {
         let k = self.k();
         debug_assert!((1..k - 1).contains(&r) && row.len() == self.dim());
@@ -451,7 +450,7 @@ impl<'a> CycleProblem<'a> {
     }
 
     /// The monodromy matrix at x, n by n, from the condensed collocation blocks.
-    fn monodromy(&mut self, x: &[f64]) -> Result<Vec<f64>, EngineError> {
+    pub(super) fn monodromy(&mut self, x: &[f64]) -> Result<Vec<f64>, EngineError> {
         self.assemble(x)?;
         let sys = BlockSystem {
             blocks: &self.blocks,
@@ -460,6 +459,118 @@ impl<'a> CycleProblem<'a> {
         };
         self.condenser.condense_intervals(&sys, self.parallel)?;
         Ok(self.condenser.monodromy()?)
+    }
+
+    /// Adds to `out`, of length dim, the gradient over x of w · (A_u q + A_T q_t), where
+    /// A_u and A_T are the derivatives of the collocation rows with respect to the
+    /// profile and to T, `w` has one entry per collocation row and `q` is a profile. The
+    /// curves of cycles (SPEC §8) take the derivatives of their defining functions from
+    /// it. F_uu and F_up come from the model as directional derivatives.
+    pub(super) fn coll_form_gradient(
+        &mut self,
+        x: &[f64],
+        w: &[f64],
+        q: &[f64],
+        q_t: f64,
+        out: &mut [f64],
+    ) -> Result<(), EngineError> {
+        let (n, m, n_p) = (self.model.n(), self.basis.m(), self.model.n_p());
+        let (nm, tcol, ext) = (n * m, n * (m + 1), self.profile_len());
+        let period = self.read_extras(x);
+        let (uu, up) = (
+            EntryKind::Dir(vec![Slot::U, Slot::U]),
+            EntryKind::Dir(vec![Slot::U, Slot::P]),
+        );
+        let mut qi = vec![0.0; n];
+        let mut v = vec![0.0; 2 * n];
+        let mut vp = vec![0.0; n + n_p];
+        let mut d2 = vec![0.0; n];
+        let mut grad = vec![0.0; n];
+        for j in 0..self.ntst {
+            let h = self.mesh[j + 1] - self.mesh[j];
+            for i in 0..m {
+                self.interpolate(&x[j * nm..j * nm + tcol], i);
+                for (c, s) in qi.iter_mut().enumerate() {
+                    *s = (0..=m)
+                        .map(|l| self.basis.value_at_node(i, l) * q[j * nm + l * n + c])
+                        .sum();
+                }
+                let wi = &w[j * nm + i * n..j * nm + (i + 1) * n];
+                let (u, p) = (&self.uz, &self.p);
+                self.model
+                    .eval(&EntryKind::JacU, u, p, &[], &mut self.jac_u)?;
+                self.model
+                    .eval(&EntryKind::JacP, u, p, &[], &mut self.jac_p)?;
+                // The derivative with respect to the orbit at this node, then spread over
+                // the base points of the interval.
+                v[..n].copy_from_slice(&qi);
+                for c2 in 0..n {
+                    v[n..].fill(0.0);
+                    v[n + c2] = 1.0;
+                    self.model.eval(&uu, u, p, &v, &mut d2)?;
+                    grad[c2] = (0..n)
+                        .map(|c| wi[c] * (period * d2[c] + q_t * self.jac_u[c + n * c2]))
+                        .sum::<f64>()
+                        * -h;
+                }
+                for l in 0..=m {
+                    let lv = self.basis.value_at_node(i, l);
+                    let row = &mut out[j * nm + l * n..j * nm + (l + 1) * n];
+                    for (o, g) in row.iter_mut().zip(&grad) {
+                        *o += lv * g;
+                    }
+                }
+                let aq = |c: usize| {
+                    (0..n)
+                        .map(|c2| self.jac_u[c + n * c2] * qi[c2])
+                        .sum::<f64>()
+                };
+                out[ext] -= h * (0..n).map(|c| wi[c] * aq(c)).sum::<f64>();
+                for (e, extra) in self.extras.iter().enumerate() {
+                    let Extra::Param(a) = *extra else { continue };
+                    vp[..n].copy_from_slice(&qi);
+                    vp[n..].fill(0.0);
+                    vp[n + a] = 1.0;
+                    self.model.eval(&up, u, p, &vp, &mut d2)?;
+                    out[ext + 1 + e] -= h
+                        * (0..n)
+                            .map(|c| wi[c] * (period * d2[c] + q_t * self.jac_p[a * n + c]))
+                            .sum::<f64>();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn n(&self) -> usize {
+        self.model.n()
+    }
+
+    pub(super) fn basis(&self) -> &CollocationBasis {
+        &self.basis
+    }
+
+    pub(super) fn ntst(&self) -> usize {
+        self.ntst
+    }
+
+    /// The N + 1 mesh points, without a copy.
+    pub(super) fn mesh_points(&self) -> &[f64] {
+        &self.mesh
+    }
+
+    /// The phase row over the profile.
+    pub(super) fn phase(&self) -> &[f64] {
+        &self.phase
+    }
+
+    /// The collocation blocks of the last assembly.
+    pub(super) fn blocks(&self) -> &[f64] {
+        &self.blocks
+    }
+
+    pub(super) fn parallel(&self) -> bool {
+        self.parallel
     }
 
     /// Replaces the mesh, with `uref` on the new mesh as the reference of the phase
@@ -513,7 +624,7 @@ impl<'a> CycleProblem<'a> {
 }
 
 /// Length of the n by 2n + k boundary block, `None` when it does not fit in `usize`.
-fn boundary_len(n: usize, k: usize) -> Option<usize> {
+pub(super) fn boundary_len(n: usize, k: usize) -> Option<usize> {
     n.checked_mul(2)
         .and_then(|c| c.checked_add(k))
         .and_then(|c| c.checked_mul(n))
