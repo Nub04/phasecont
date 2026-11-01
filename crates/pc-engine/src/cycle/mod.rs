@@ -3,6 +3,7 @@
 
 mod basis;
 mod bordered;
+mod codim2;
 mod continuation;
 mod curve;
 mod lpc;
@@ -12,6 +13,7 @@ mod pd;
 mod problem;
 
 pub use basis::{CollocationBasis, NCOL_RANGE};
+pub use codim2::{LPC_CURVE_LABELS, NS_CURVE_LABELS, PD_CURVE_LABELS};
 pub use continuation::{CycleStart, HopfStart, PdStart, continue_cycle};
 pub use curve::CycleCurveStart;
 pub use lpc::{LpcProblem, continue_lpc_curve};

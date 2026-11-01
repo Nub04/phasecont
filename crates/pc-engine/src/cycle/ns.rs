@@ -27,6 +27,7 @@
 //! rows and the kappa entries of N depend on x.
 
 use super::bordered::{Bordered, orthonormal};
+use super::codim2::{NS_CURVE_LABELS, neutral_saddle_gap, ns_curve_label, ns_curve_tests};
 use super::continuation::Scaled;
 use super::curve::{CycleCurveStart, run_curve};
 use super::mesh;
@@ -304,6 +305,25 @@ impl Problem for NsProblem<'_> {
         false
     }
 
+    fn codim2_labels(&self) -> &'static [&'static str] {
+        &NS_CURVE_LABELS
+    }
+
+    /// The resonances from kappa, and LPNS and PDNS over the multipliers without the one
+    /// at 1 and the pair of kappa.
+    fn codim2_tests(
+        &mut self,
+        x: &[f64],
+        _tangent: &[f64],
+        eigs: &[(f64, f64)],
+    ) -> Result<Vec<f64>, EngineError> {
+        Ok(ns_curve_tests(x[self.outer.profile_len() + 2], eigs))
+    }
+
+    fn codim2_label(&self, i: usize, _eigs: &[(f64, f64)]) -> Option<&'static str> {
+        ns_curve_label(i)
+    }
+
     /// Moves the phase reference to x and refreshes the borders there. When N cannot be
     /// solved at x the old borders stay.
     fn accept(&mut self, x: &[f64]) {
@@ -365,5 +385,97 @@ pub fn continue_ns_curve(
     p.outer.adapt_every = opts.mesh_adapt;
     let x0 = p.x0.clone();
     let (k, points) = (p.outer.profile_len(), p.outer.points());
-    run_curve(Scaled::new(p, k, points), x0, opts, cancel, on_point)
+    let mut branch = run_curve(Scaled::new(p, k, points), x0, opts, cancel, on_point)?;
+    neutral_saddle_warning(&mut branch);
+    Ok(branch)
+}
+
+/// Relative distance above which a root of mu^2 - 2 kappa mu + 1 counts as missing from
+/// the multipliers.
+const PAIR_TOL: f64 = 1e-6;
+
+/// For |kappa| > 1 the NS equations also hold when the monodromy has only one of the two
+/// real roots of mu^2 - 2 kappa mu + 1, so the curve can run through cycles that are no
+/// neutral saddles. Warns when points with |kappa| > 1 lack one of the roots.
+fn neutral_saddle_warning(branch: &mut Branch) {
+    let mut count = 0;
+    let mut worst = 0.0_f64;
+    for pt in &branch.points {
+        let Some(&kappa) = pt.u.last() else { continue };
+        if let Some(gap) = neutral_saddle_gap(kappa, &pt.eigenvalues)
+            && (gap.is_nan() || gap > PAIR_TOL)
+        {
+            count += 1;
+            worst = worst.max(if gap.is_nan() { f64::INFINITY } else { gap });
+        }
+    }
+    if count > 0 {
+        branch.warnings.push(format!(
+            "{count} of {} points with |kappa| > 1 lack one of the multipliers mu, 1/mu with \
+             mu + 1/mu = 2 kappa (largest relative distance {worst:.3e}); these points have \
+             one real multiplier there and are no neutral saddle cycles",
+            branch.points.len()
+        ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::branch::StopReason;
+
+    fn point(kappa: f64, eigenvalues: Vec<(f64, f64)>) -> Point {
+        Point {
+            u: vec![0.0, 1.0, kappa],
+            alpha: 0.0,
+            tangent: Vec::new(),
+            eigenvalues,
+            tests: [f64::NAN; 3],
+            codim2: Vec::new(),
+            h: 0.1,
+            newton_iters: 2,
+            mesh: Vec::new(),
+        }
+    }
+
+    fn branch(points: Vec<Point>) -> Branch {
+        Branch {
+            points,
+            specials: Vec::new(),
+            stop: StopReason::MaxSteps,
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_curve_of_neutral_saddles_has_no_warning() {
+        // kappa = 1.25 has the roots 2 and 1/2.
+        let mut b = branch(vec![
+            point(
+                0.5,
+                vec![(1.0, 0.0), (0.5, 0.75_f64.sqrt()), (0.5, -0.75_f64.sqrt())],
+            ),
+            point(1.25, vec![(1.0, 0.0), (2.0, 0.0), (0.5, 0.0), (0.1, 0.0)]),
+            point(1.0, Vec::new()),
+        ]);
+        neutral_saddle_warning(&mut b);
+        assert!(b.warnings.is_empty(), "{:?}", b.warnings);
+    }
+
+    #[test]
+    fn points_with_one_real_root_get_a_warning() {
+        let mut b = branch(vec![
+            point(1.25, vec![(1.0, 0.0), (2.0, 0.0), (0.5, 0.0)]),
+            point(1.25, vec![(1.0, 0.0), (2.0, 0.0), (0.3, 0.0)]),
+            point(-1.25, vec![(1.0, 0.0), (-2.0, 0.0), (0.9, 0.0)]),
+        ]);
+        neutral_saddle_warning(&mut b);
+        assert_eq!(b.warnings.len(), 1);
+        assert!(
+            b.warnings[0].starts_with("2 of 3 points"),
+            "{}",
+            b.warnings[0]
+        );
+        assert!(b.warnings[0].contains("1.400e0"), "{}", b.warnings[0]);
+    }
 }

@@ -21,6 +21,7 @@
 //! and the PALC row.
 
 use super::basis::{CollocationBasis, NCOL_RANGE};
+use super::codim2::{nearest_pair_is_complex, nontrivial, pair_product, shifted_product};
 use super::mesh;
 use crate::branch::Options;
 use crate::error::EngineError;
@@ -706,20 +707,7 @@ impl Problem for CycleProblem<'_> {
             return Ok(vec![lpc, f64::NAN, f64::NAN]);
         }
         let mu = nontrivial(eigs);
-        let pd = mu.iter().fold((1.0, 0.0), |p, m| cmul(p, (m.0 + 1.0, m.1)));
-        let ns = if mu.len() < 2 {
-            f64::NAN
-        } else {
-            let mut prod = (1.0, 0.0);
-            for i in 0..mu.len() {
-                for j in i + 1..mu.len() {
-                    let q = cmul(mu[i], mu[j]);
-                    prod = cmul(prod, (q.0 - 1.0, q.1));
-                }
-            }
-            prod.0
-        };
-        Ok(vec![lpc, pd.0, ns])
+        Ok(vec![lpc, shifted_product(&mu, 1.0), pair_product(&mu)])
     }
 
     /// The NS product also vanishes when two real multipliers have product 1, a neutral
@@ -729,22 +717,7 @@ impl Problem for CycleProblem<'_> {
         if i != 2 {
             return CYCLE_LABELS.get(i).copied();
         }
-        let mu = nontrivial(eigs);
-        let mut best: Option<(f64, usize, usize)> = None;
-        for a in 0..mu.len() {
-            for b in a + 1..mu.len() {
-                let q = cmul(mu[a], mu[b]);
-                let d = (q.0 - 1.0).hypot(q.1);
-                if best.is_none_or(|(e, _, _)| d < e) {
-                    best = Some((d, a, b));
-                }
-            }
-        }
-        let (_, a, b) = best?;
-        let (p, q) = (mu[a], mu[b]);
-        let tol = 1e-10 * p.0.hypot(p.1).max(1.0);
-        let pair = p.1 != 0.0 && (p.0 - q.0).abs() <= tol && (p.1 + q.1).abs() <= tol;
-        pair.then_some("NS")
+        nearest_pair_is_complex(&nontrivial(eigs)).then_some("NS")
     }
 
     fn accept(&mut self, x: &[f64]) {
@@ -825,20 +798,6 @@ impl Problem for CycleProblem<'_> {
 
 /// Names of the cycle test functions, in the order of `Point::codim2` on a cycle branch.
 pub const CYCLE_LABELS: [&str; 3] = ["LPC", "PD", "NS"];
-
-fn cmul(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
-    (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0)
-}
-
-/// The multipliers without the one closest to 1, the trivial multiplier.
-fn nontrivial(eigs: &[(f64, f64)]) -> Vec<(f64, f64)> {
-    let dist = |z: &(f64, f64)| (z.0 - 1.0).hypot(z.1);
-    let mut mu = eigs.to_vec();
-    if let Some(k) = (0..mu.len()).min_by(|&a, &b| dist(&mu[a]).total_cmp(&dist(&mu[b]))) {
-        mu.remove(k);
-    }
-    mu
-}
 
 /// Inf-norm that propagates NaN.
 fn norm_inf(v: &[f64]) -> f64 {

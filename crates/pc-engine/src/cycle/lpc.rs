@@ -17,6 +17,7 @@
 //! the collocation rows of N depend on x.
 
 use super::bordered::{Bordered, unit};
+use super::codim2::{LPC_CURVE_LABELS, lpc_curve_label, lpc_curve_tests};
 use super::continuation::Scaled;
 use super::curve::{CycleCurveStart, run_curve};
 use super::mesh;
@@ -206,6 +207,24 @@ impl Problem for LpcProblem<'_> {
 
     fn ep_tests(&self) -> bool {
         false
+    }
+
+    fn codim2_labels(&self) -> &'static [&'static str] {
+        &LPC_CURVE_LABELS
+    }
+
+    /// LPPD and LPNS over the multipliers without the two at 1.
+    fn codim2_tests(
+        &mut self,
+        _x: &[f64],
+        _tangent: &[f64],
+        eigs: &[(f64, f64)],
+    ) -> Result<Vec<f64>, EngineError> {
+        Ok(lpc_curve_tests(eigs))
+    }
+
+    fn codim2_label(&self, i: usize, eigs: &[(f64, f64)]) -> Option<&'static str> {
+        lpc_curve_label(i, eigs)
     }
 
     /// Moves the phase reference to x and refreshes the borders there. When N cannot be

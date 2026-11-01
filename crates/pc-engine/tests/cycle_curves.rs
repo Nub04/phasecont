@@ -19,9 +19,9 @@ mod common;
 
 use common::{load, rk4};
 use pc_engine::{
-    CycleCurveStart, CycleSetup, CycleStart, EngineError, Evaluator, LpcProblem, ModelEval,
-    NsProblem, Options, PdProblem, Point, Problem, StopReason, build, continue_cycle,
-    continue_lpc_curve, continue_ns_curve, continue_pd_curve,
+    CycleCurveStart, CycleSetup, CycleStart, EngineError, Evaluator, LPC_CURVE_LABELS, LpcProblem,
+    ModelEval, NS_CURVE_LABELS, NsProblem, Options, PD_CURVE_LABELS, PdProblem, Point, Problem,
+    StopReason, build, continue_cycle, continue_lpc_curve, continue_ns_curve, continue_pd_curve,
 };
 use std::f64::consts::PI;
 use std::sync::atomic::AtomicBool;
@@ -147,6 +147,17 @@ fn lpc_curve_follows_the_bautin_fold() {
         assert!(branch.points.len() > 5);
         let last = branch.points.last().unwrap();
         assert!((last.alpha - 1.5).abs() < 1e-9, "{which:?}: {}", last.alpha);
+        // The planar model has no multipliers besides the two at 1, so the codim-2 tests
+        // are undefined.
+        assert!(
+            branch.specials.is_empty(),
+            "{which:?}: {:?}",
+            branch.specials
+        );
+        for pt in &branch.points {
+            assert_eq!(pt.codim2.len(), LPC_CURVE_LABELS.len());
+            assert!(pt.codim2.iter().all(|v| v.is_nan()), "{:?}", pt.codim2);
+        }
         let (mut e_b1, mut e_t, mut e_r, mut iters) = (0.0_f64, 0.0_f64, 0.0_f64, 0);
         for pt in &branch.points {
             let k = pt.u.len() - 2;
@@ -317,10 +328,21 @@ fn pd_curve_follows_a1_equals_a2_squared() {
         assert!(branch.points.len() > 5);
         let last = branch.points.last().unwrap();
         assert!((last.alpha - 0.5).abs() < 1e-9, "{which:?}: {}", last.alpha);
+        assert!(
+            branch.specials.is_empty(),
+            "{which:?}: {:?}",
+            branch.specials
+        );
         let (mut e_a1, mut e_t, mut e_r, mut iters) = (0.0_f64, 0.0_f64, 0.0_f64, 0);
+        let mut e_lppd = 0.0_f64;
         for pt in &branch.points {
             let k = pt.u.len() - 2;
             let (a2, a1, t) = (pt.alpha, pt.u[k + 1], pt.u[k]);
+            // Without 1 and -1 the multipliers are -exp(-T), so LPPD = -exp(-T) - 1, and
+            // PDNS, a product over pairs, is undefined.
+            assert_eq!(pt.codim2.len(), PD_CURVE_LABELS.len());
+            e_lppd = e_lppd.max((pt.codim2[0] + (-t).exp() + 1.0).abs());
+            assert!(pt.codim2[1].is_nan(), "{:?}", pt.codim2);
             e_a1 = e_a1.max((a1 - a2 * a2).abs());
             e_t = e_t.max((t - 2.0 * PI / (1.0 + a2)).abs());
             assert_eq!(pt.mesh.len(), ntst + 1);
@@ -331,8 +353,12 @@ fn pd_curve_follows_a1_equals_a2_squared() {
             }
             iters = iters.max(pt.newton_iters);
         }
-        println!("{which:?}: a1 {e_a1:.2e}, T {e_t:.2e}, circle {e_r:.2e}, iters {iters}");
+        println!(
+            "{which:?}: a1 {e_a1:.2e}, T {e_t:.2e}, circle {e_r:.2e}, LPPD {e_lppd:.2e}, \
+             iters {iters}"
+        );
         assert!(e_a1 < 1e-8 && e_t < 1e-8 && e_r < 1e-8, "{which:?}");
+        assert!(e_lppd < 1e-6, "{which:?}: {e_lppd:.2e}");
         assert!(iters <= 4, "{which:?}: {iters} Newton iterations");
     }
 }
@@ -546,6 +572,57 @@ fn ns_curve_follows_be_equals_minus_c_al() {
             "{which:?}"
         );
         assert!(iters <= 4, "{which:?}: {iters} Newton iterations");
+    }
+}
+
+/// From al = 0.06 to 0.5 kappa = cos(2 pi (0.2 + al / 2)) falls from 0.13 to -0.95 and
+/// crosses the 1:4 resonance at al = 0.1 and the 1:3 resonance at al = 4/15. Without 1
+/// and the critical pair the multiplier is exp(-4 pi al), which gives LPNS and PDNS.
+#[test]
+fn ns_curve_finds_the_resonances_r4_and_r3() {
+    for which in BOTH {
+        let mut m = model_of("ns4", &which);
+        let cancel = AtomicBool::new(false);
+        let branch = continue_ns_curve(
+            m.as_mut(),
+            &ns_start(0.06, -0.03, 0.2, 0.5, 40, 4),
+            &opts((0.05, 0.5)),
+            &cancel,
+            &mut |_| (),
+        )
+        .unwrap();
+        assert_eq!(branch.stop, StopReason::Bounds, "{which:?}");
+        assert!(
+            branch.warnings.is_empty(),
+            "{which:?}: {:?}",
+            branch.warnings
+        );
+        let labels: Vec<_> = branch.specials.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(labels, ["R4", "R3"], "{which:?}");
+        for (sp, (al, kappa)) in branch.specials.iter().zip([(0.1, 0.0), (4.0 / 15.0, -0.5)]) {
+            let u = &sp.point.u;
+            println!(
+                "{which:?} {}: al {:.12} (want {al:.12}), kappa {:.2e}",
+                sp.label,
+                sp.point.alpha,
+                u[u.len() - 1] - kappa
+            );
+            assert!((sp.point.alpha - al).abs() < 1e-8, "{which:?} {}", sp.label);
+            assert!(
+                (u[u.len() - 1] - kappa).abs() < 1e-8,
+                "{which:?} {}",
+                sp.label
+            );
+        }
+        let (mut e_lpns, mut e_pdns) = (0.0_f64, 0.0_f64);
+        for pt in &branch.points {
+            assert_eq!(pt.codim2.len(), NS_CURVE_LABELS.len());
+            let mu = (-4.0 * PI * pt.alpha).exp();
+            e_lpns = e_lpns.max((pt.codim2[4] - (mu - 1.0)).abs());
+            e_pdns = e_pdns.max((pt.codim2[5] - (mu + 1.0)).abs());
+        }
+        println!("{which:?}: LPNS {e_lpns:.2e}, PDNS {e_pdns:.2e}");
+        assert!(e_lpns < 1e-6 && e_pdns < 1e-6, "{which:?}");
     }
 }
 

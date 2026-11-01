@@ -201,7 +201,14 @@ Rulings in P6 package 6:
 
 - The engine's `Point` has no label, so the engine checks the type of a start through the start itself. The correction at fixed a2 returns BadProblem when it fails, hits a singular matrix or leaves the finite numbers, and the NS start returns BadProblem when the multipliers have no complex pair. Before this package a singular matrix at the start came back as `Singular`; the PD curve from the Bautin LPC point hit that case. The label check ("start an LPC curve from an LPC point") goes into the MATLAB layer in package 10, where the branch keeps its labels.
 
-Next: package 7, codim-2 tests.
+- package 7. Each curve has its own codim-2 tests, computed from the Floquet multipliers left after removing the trivial multiplier and the curve's own critical ones (`cycle/codim2.rs`). The LPC curve has LPPD = Re Π(μ+1) and LPNS = Re Π(μiμj - 1), with the complex-pair veto from the LC branch. The PD curve has LPPD = Re Π(μ-1) and PDNS, with the same veto. The NS curve has R1 = κ-1, R2 = κ+1, R3 = κ+½, R4 = κ, LPNS = Π(μ-1) and PDNS = Π(μ+1). The cycle branch tests now use the same helpers, and its numbers are unchanged. Unit tests on synthetic multiplier sets cover every label and the veto. On ns4 the NS curve from al = 0.06 to 0.5 finds R4 at al = 0.1 and R3 at al = 4/15, both to the 12 digits printed, on both evaluators, and LPNS and PDNS match e^{-4π al} - 1 and e^{-4π al} + 1 to 7.8e-14. On pd_twist the PD curve has LPPD = -e^{-T} - 1 to 4.1e-14 with PDNS undefined. The planar Bautin model has all LPC curve tests undefined. R1 and R2 are not exercised by a model, because ns4 is rotationally symmetric and κ only touches ±1. An NS curve run warns when points with |κ| > 1 lack one of the roots μ, 1/μ of μ² - 2κμ + 1, because such points are not neutral saddles. CPC, GPD, CH, R1 on the LPC curve and R2 on the PD curve stay deferred to E7 (sign-off item 6).
+
+Rulings in P6 package 7:
+
+- A curve removes its critical multipliers by nearest match: the two closest to 1 on an LPC curve, the ones closest to 1 and -1 on a PD curve, and the closest to 1 and to each root of μ² - 2κμ + 1 on an NS curve. A test over an empty rest set is NaN (undefined), and so is a pair product over fewer than two multipliers, so locate skips it.
+- The neutral saddle warning counts a root as missing when the nearest remaining multiplier is more than 1e-6 away, relative to max(|root|, 1).
+
+Next: package 8, Morris-Lecar and Rössler model tests and the RK4 shooting oracle.
 
 ## Next
 
