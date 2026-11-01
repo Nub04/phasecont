@@ -89,7 +89,6 @@ pub(crate) enum Extra {
     Param(usize),
     /// An unknown the collocation equations do not depend on, such as kappa on an NS
     /// curve.
-    #[allow(dead_code)]
     Other,
 }
 

@@ -9,14 +9,18 @@
 //! On `pd_twist.ode` the unit circle in the (x, y) plane is a cycle of period
 //! T = 2 pi / (1 + a2) for all parameters, with multipliers -exp(T (a1 - a2^2)),
 //! -exp(T l2) and 1. The PD curve is a1 = a2^2.
+//!
+//! On `ns4.ode` the circle r^2 = al in the (x, y) plane, with z = 0, is a cycle of period
+//! 2 pi with multipliers 1, exp(-4 pi al) and exp(2 pi (be + c al)) exp(+-i 2 pi (w2 + e al)).
+//! The NS curve is be = -c al with kappa = cos(2 pi (w2 + e al)).
 //! Run with `-- --nocapture` to see the errors.
 
 mod common;
 
 use common::{load, rk4};
 use pc_engine::{
-    CycleCurveStart, EngineError, Evaluator, LpcProblem, ModelEval, Options, PdProblem, Problem,
-    StopReason, build, continue_lpc_curve, continue_pd_curve,
+    CycleCurveStart, EngineError, Evaluator, LpcProblem, ModelEval, NsProblem, Options, PdProblem,
+    Problem, StopReason, build, continue_lpc_curve, continue_ns_curve, continue_pd_curve,
 };
 use std::f64::consts::PI;
 use std::sync::atomic::AtomicBool;
@@ -383,5 +387,232 @@ fn pd_curve_refuses_bad_starts() {
             matches!(r, Err(EngineError::BadProblem(_))),
             "{name}: {r:?}"
         );
+    }
+}
+
+/// The ns4 cycle, the circle of radius sqrt(al) at speed 1 from (sqrt(al), 0, 0, 0), with
+/// c = 0.5, on a uniform mesh of `ntst` intervals of `ncol` points. The free parameters are
+/// be and al, in that order.
+fn ns_start(al: f64, be: f64, w2: f64, e: f64, ntst: usize, ncol: usize) -> CycleCurveStart {
+    let pts = ntst * ncol + 1;
+    let r = al.sqrt();
+    let orbit = (0..pts)
+        .flat_map(|k| {
+            let t = 2.0 * PI * k as f64 / (pts - 1) as f64;
+            [r * t.cos(), r * t.sin(), 0.0, 0.0]
+        })
+        .collect();
+    CycleCurveStart {
+        free: [1, 0],
+        params: vec![al, be, 0.5, w2, e],
+        orbit,
+        period: 2.0 * PI,
+        mesh: (0..=ntst).map(|j| j as f64 / ntst as f64).collect(),
+        ntst,
+        ncol,
+    }
+}
+
+/// The exact kappa of the ns4 NS curve at al, with w2 = 0.2 and e = 0.5.
+fn ns_kappa(al: f64) -> f64 {
+    (2.0 * PI * (0.2 + 0.5 * al)).cos()
+}
+
+/// The monodromy of ns4 at (sqrt(al), 0, 0, 0) is diag(exp(-4 pi al), 1, rho R(phi)) with
+/// rho = exp(2 pi (be + c al)) and R(phi) the rotation by phi = 2 pi (w2 + e al), by central
+/// differences of an RK4 flow over one period.
+#[test]
+fn ns4_has_the_stated_multipliers() {
+    let mut m = model_of("ns4", &Evaluator::Jit);
+    let (al, be, c, w2, e) = (0.2, -0.05, 0.5, 0.2, 0.5);
+    // The model reads the time after the parameters.
+    let p = [al, be, c, w2, e, 0.0];
+    let t = 2.0 * PI;
+    let (rho, phi) = ((t * (be + c * al)).exp(), t * (w2 + e * al));
+    let want = [
+        [(-2.0 * t * al).exp(), 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, rho * phi.cos(), -rho * phi.sin()],
+        [0.0, 0.0, rho * phi.sin(), rho * phi.cos()],
+    ];
+    let steps = 2000;
+    let mut flow = |x0: [f64; 4]| {
+        let mut x = x0.to_vec();
+        for _ in 0..steps {
+            rk4(m.as_mut(), &p, t, &mut x, 1.0 / steps as f64);
+        }
+        x
+    };
+    let h = 1e-6;
+    let x0 = [al.sqrt(), 0.0, 0.0, 0.0];
+    let mut worst = 0.0_f64;
+    for col in 0..4 {
+        let (mut xp, mut xm) = (x0, x0);
+        xp[col] += h;
+        xm[col] -= h;
+        let (fp, fm) = (flow(xp), flow(xm));
+        for (row, w) in want.iter().enumerate() {
+            let d = (fp[row] - fm[row]) / (2.0 * h);
+            worst = worst.max((d - w[col]).abs());
+        }
+    }
+    println!("monodromy error {worst:.2e}");
+    assert!(worst < 1e-7, "{worst:.2e}");
+}
+
+/// The dense Jacobian of the NS system, with its two G rows, matches central differences on
+/// the NS curve and off it.
+#[test]
+fn ns_jacobian_matches_finite_differences() {
+    for which in BOTH {
+        let mut m = model_of("ns4", &which);
+        let mut p = NsProblem::new(m.as_mut(), &ns_start(0.2, -0.1, 0.2, 0.5, 5, 3)).unwrap();
+        let x0 = p.start().to_vec();
+        let x1: Vec<f64> = x0
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let i = i as f64;
+                v + 1e-2 * ((0.7 * i).sin() + 0.3 * (1.3 * i).cos())
+            })
+            .collect();
+        for (name, x) in [("on the curve", &x0), ("off the curve", &x1)] {
+            let err = jacobian_error(&mut p, x);
+            println!("{which:?} {name}: {err:.2e}");
+            assert!(err < 1e-6, "{which:?} {name}: {err:.2e}");
+        }
+    }
+}
+
+/// The start takes kappa from the critical pair of multipliers.
+#[test]
+fn ns_start_takes_kappa_from_the_multipliers() {
+    let mut m = model_of("ns4", &Evaluator::Jit);
+    // Off the curve the pair has modulus exp(0.04 pi), and kappa is still cos(phi).
+    let p = NsProblem::new(m.as_mut(), &ns_start(0.2, -0.08, 0.2, 0.5, 40, 4)).unwrap();
+    let x0 = p.start();
+    let k = x0.len() - 4;
+    println!("kappa {:.15}, want {:.15}", x0[k + 2], ns_kappa(0.2));
+    assert!((x0[k + 2] - ns_kappa(0.2)).abs() < 1e-9, "{}", x0[k + 2]);
+    assert_eq!(&x0[k..k + 2], &[2.0 * PI, -0.08]);
+    assert_eq!(x0[k + 3], 0.2);
+}
+
+/// From al = 0.2 the curve follows be = -al / 2 with kappa = cos(2 pi (0.2 + al / 2)) on the
+/// exact circle and period up to the bound al = 0.5, with quadratic Newton convergence.
+#[test]
+fn ns_curve_follows_be_equals_minus_c_al() {
+    let (ntst, ncol) = (40, 4);
+    for which in BOTH {
+        let mut m = model_of("ns4", &which);
+        let cancel = AtomicBool::new(false);
+        let mut seen = 0;
+        let branch = continue_ns_curve(
+            m.as_mut(),
+            &ns_start(0.2, -0.1, 0.2, 0.5, ntst, ncol),
+            &opts((0.12, 0.5)),
+            &cancel,
+            &mut |_| seen += 1,
+        )
+        .unwrap();
+        assert_eq!(branch.stop, StopReason::Bounds, "{which:?}");
+        assert_eq!(seen, branch.points.len());
+        assert!(branch.points.len() > 5);
+        let last = branch.points.last().unwrap();
+        assert!((last.alpha - 0.5).abs() < 1e-9, "{which:?}: {}", last.alpha);
+        let (mut e_be, mut e_k, mut e_t, mut e_r, mut iters) =
+            (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64, 0);
+        for pt in &branch.points {
+            let k = pt.u.len() - 3;
+            let (al, t, be, kappa) = (pt.alpha, pt.u[k], pt.u[k + 1], pt.u[k + 2]);
+            e_be = e_be.max((be + 0.5 * al).abs());
+            e_k = e_k.max((kappa - ns_kappa(al)).abs());
+            e_t = e_t.max((t - 2.0 * PI).abs());
+            assert_eq!(pt.mesh.len(), ntst + 1);
+            for j in 0..=ntst {
+                let u = &pt.u[4 * j * ncol..4 * j * ncol + 4];
+                let r2 = u[0] * u[0] + u[1] * u[1];
+                e_r = e_r.max((r2 - al).abs()).max(u[2].abs()).max(u[3].abs());
+            }
+            iters = iters.max(pt.newton_iters);
+        }
+        println!(
+            "{which:?}: be {e_be:.2e}, kappa {e_k:.2e}, T {e_t:.2e}, circle {e_r:.2e}, \
+             iters {iters}"
+        );
+        assert!(
+            e_be < 1e-8 && e_k < 1e-8 && e_t < 1e-8 && e_r < 1e-8,
+            "{which:?}"
+        );
+        assert!(iters <= 4, "{which:?}: {iters} Newton iterations");
+    }
+}
+
+/// The curve also runs to smaller al and from a start off the curve, which the start
+/// corrects at fixed al.
+#[test]
+fn ns_curve_runs_down_from_a_start_off_the_curve() {
+    let mut m = model_of("ns4", &Evaluator::Jit);
+    let cancel = AtomicBool::new(false);
+    let o = Options {
+        direction: -1.0,
+        ..opts((0.12, 0.5))
+    };
+    let branch = continue_ns_curve(
+        m.as_mut(),
+        &ns_start(0.2, -0.08, 0.2, 0.5, 20, 4),
+        &o,
+        &cancel,
+        &mut |_| (),
+    )
+    .unwrap();
+    assert_eq!(branch.stop, StopReason::Bounds);
+    let first = &branch.points[0];
+    let k = first.u.len() - 3;
+    assert!((first.alpha - 0.2).abs() < 1e-12);
+    assert!((first.u[k + 1] + 0.1).abs() < 1e-8, "{}", first.u[k + 1]);
+    assert!((first.u[k + 2] - ns_kappa(0.2)).abs() < 1e-8);
+    assert!((branch.points.last().unwrap().alpha - 0.12).abs() < 1e-9);
+}
+
+/// Starts that cannot define a curve are refused, among them a cycle without a complex
+/// pair of multipliers.
+#[test]
+fn ns_curve_refuses_bad_starts() {
+    let mut m = model_of("ns4", &Evaluator::Jit);
+    let cancel = AtomicBool::new(false);
+    let o = opts((0.12, 0.5));
+    let mut same = ns_start(0.2, -0.1, 0.2, 0.5, 10, 4);
+    same.free = [1, 1];
+    let mut out_of_range = ns_start(0.2, -0.1, 0.2, 0.5, 10, 4);
+    out_of_range.free = [0, 5];
+    let mut short = ns_start(0.2, -0.1, 0.2, 0.5, 10, 4);
+    short.orbit.pop();
+    let mut no_period = ns_start(0.2, -0.1, 0.2, 0.5, 10, 4);
+    no_period.period = 0.0;
+    for (name, start) in [
+        ("same parameters", same),
+        ("index out of range", out_of_range),
+        ("short orbit", short),
+        ("zero period", no_period),
+    ] {
+        let r = continue_ns_curve(m.as_mut(), &start, &o, &cancel, &mut |_| ());
+        assert!(
+            matches!(r, Err(EngineError::BadProblem(_))),
+            "{name}: {r:?}"
+        );
+    }
+    // The pd_twist multipliers are all real.
+    let mut twist = model_of("pd_twist", &Evaluator::Jit);
+    let r = continue_ns_curve(
+        twist.as_mut(),
+        &pd_start(0.04, 0.2, 10, 4),
+        &opts((0.1, 0.5)),
+        &cancel,
+        &mut |_| (),
+    );
+    match r {
+        Err(EngineError::BadProblem(msg)) => assert!(msg.contains("complex"), "{msg}"),
+        other => panic!("no complex pair: {other:?}"),
     }
 }

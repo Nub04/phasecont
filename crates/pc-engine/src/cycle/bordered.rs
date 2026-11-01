@@ -82,6 +82,19 @@ impl Bordered {
         Ok(())
     }
 
+    /// Solves N s = e_i into `out` with the factored N.
+    pub(super) fn solve(
+        &mut self,
+        i: usize,
+        out: &mut [f64],
+        parallel: bool,
+    ) -> Result<(), EngineError> {
+        self.rhs.fill(0.0);
+        self.rhs[i] = 1.0;
+        self.condenser.solve_factored(&self.rhs, out, parallel)?;
+        Ok(())
+    }
+
     /// Solves Nᵀ s = e_i into `out` with the factored N.
     pub(super) fn solve_transpose(
         &mut self,
@@ -101,4 +114,19 @@ impl Bordered {
 pub(super) fn unit(v: &[f64]) -> Option<Vec<f64>> {
     let nrm = v.iter().map(|t| t * t).sum::<f64>().sqrt();
     (nrm.is_finite() && nrm > 0.0).then(|| v.iter().map(|t| t / nrm).collect())
+}
+
+/// An orthonormal basis of the span of `a` and `b` by Gram-Schmidt, or `None` when the two
+/// are not independent to 1e-10 relative or not finite.
+pub(super) fn orthonormal(a: &[f64], b: &[f64]) -> Option<[Vec<f64>; 2]> {
+    let a = unit(a)?;
+    let nb = b.iter().map(|t| t * t).sum::<f64>().sqrt();
+    let d: f64 = a.iter().zip(b).map(|(s, t)| s * t).sum();
+    let r: Vec<f64> = b.iter().zip(&a).map(|(t, s)| t - d * s).collect();
+    let nr = r.iter().map(|t| t * t).sum::<f64>().sqrt();
+    // A NaN passes here and fails in `unit`.
+    if nr <= 1e-10 * nb {
+        return None;
+    }
+    Some([a, unit(&r)?])
 }

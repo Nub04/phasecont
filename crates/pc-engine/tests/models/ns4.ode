@@ -1,0 +1,14 @@
+# A Hopf normal form in (x, y) with the circle r^2 = al of period 2 pi, and a (z1, z2)
+# block that turns at rate w2 + e r^2 and grows at rate be + c r^2. On the cycle the
+# multipliers are 1, exp(-4 pi al) and exp(2 pi (be + c al)) exp(+-i 2 pi (w2 + e al)),
+# so the NS curve is be = -c al with kappa = cos(2 pi (w2 + e al)). Own test model.
+par al=0.2,be=-0.1,c=0.5,w2=0.2,e=0.5
+r2=x^2+y^2
+g=be+c*r2
+w=w2+e*r2
+x'=al*x-y-x*r2
+y'=x+al*y-y*r2
+z1'=g*z1-w*z2
+z2'=w*z1+g*z2
+init x=0.4472135954999579,y=0,z1=0,z2=0
+done
