@@ -26,6 +26,13 @@ fn model_handle(id: u64) -> Result<Arc<ModelHandle>> {
     registry::get::<ModelHandle>(id)
 }
 
+/// Length of a buffer of real and imaginary parts of n eigenvalues, 2n, or an error when
+/// 2n does not fit in usize.
+fn eig_len(n: usize) -> Result<usize> {
+    n.checked_mul(2)
+        .ok_or_else(|| bad_arg(format!("{n} eigenvalues do not fit in one buffer")))
+}
+
 fn expect_len(what: &str, want: usize, got: usize) -> Result<()> {
     if want == got {
         Ok(())
@@ -408,7 +415,7 @@ pub unsafe extern "C" fn model_equilibrium(
         expect_len("u0", n, nu)?;
         expect_len("p", h.n_p(), np)?;
         expect_len("u_out", n, nu_out)?;
-        expect_len("eig_out", 2 * n, neig_out)?;
+        expect_len("eig_out", eig_len(n)?, neig_out)?;
         if overlaps(u_out, nu_out, eig_out, neig_out) {
             return Err(bad_arg("u_out and eig_out overlap"));
         }
@@ -473,4 +480,18 @@ impl Handle for DebugEntry {
 #[doc(hidden)]
 pub fn debug_handle() -> u64 {
     registry::insert(DebugEntry)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eig_len_checks_for_overflow() {
+        assert_eq!(eig_len(0).unwrap(), 0);
+        assert_eq!(eig_len(3).unwrap(), 6);
+        assert_eq!(eig_len(usize::MAX / 2).unwrap(), usize::MAX - 1);
+        assert!(matches!(eig_len(usize::MAX / 2 + 1), Err(Error::BadArg(_))));
+        assert!(matches!(eig_len(usize::MAX), Err(Error::BadArg(_))));
+    }
 }
