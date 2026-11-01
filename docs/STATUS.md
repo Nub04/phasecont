@@ -2,7 +2,7 @@
 
 ## Phase
 
-P4b closed the open items of P4 and merged into `main` locally on 2026-10-31 as a fast-forward to 78be5c3. P4 (LP and H curves, codim-2 detection and normal forms; SPEC section 14) merged into `main` locally on 2026-10-30 (14d6455). Both reached `origin/main` on 2026-10-31 with 175b6e9. P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 78c5df6. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 as PR #2 (3748707). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
+P6 (LPC, PD and NS curves of limit cycles; SPEC section 8) is built on branch `phase6-cycle-curves`, stacked on `phase5-limit-cycles`, and waits for the oracle files and a read-through. P5 (limit cycles; SPEC section 7) is open as PR #3. P4b closed the open items of P4 and merged into `main` locally on 2026-10-31 as a fast-forward to 78be5c3. P4 (LP and H curves, codim-2 detection and normal forms; SPEC section 14) merged into `main` locally on 2026-10-30 (14d6455). Both reached `origin/main` on 2026-10-31 with 175b6e9. P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 78c5df6. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 as PR #2 (3748707). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
 
 ## Done
 
@@ -216,11 +216,17 @@ Rulings in P6 package 8:
 - Morris-Lecar uses NTST 160 and NCOL 4. At NTST 80 and 120 the mean of the double multiplier is more than 1e-6 from 1, which is real mesh error, and the warning is correct there.
 - The `references/*.json` oracle tests of the plan go into `tests/CycleCurveTest.m` in package 10, skipped as "oracle missing", where the P5 oracle test also lives.
 
-Next: package 9, run machinery, pc-ffi and CLI.
+- 562c9c8: package 9. `RunKind::CycleCurve` runs the three curves. The problem JSON takes the types "LPC", "PD" and "NS" with `free` [a1, a2], `ntst`, `ncol` and the `mesh` of the start orbit, and refuses `start`, `detect`, `switch` and `start_is_special`. A row is [a2, profile, T, a1, (κ), mesh, mult_re, mult_im, codim-2 tests, h, iters], with stride n(Nm+1)+N+2n+8 for LPC and PD and n(Nm+1)+N+2n+13 for NS, and the status names the curve's own codim-2 labels and its `ntst` and `ncol`. JSON round trips, the row layouts and a CLI run of each curve are tested.
+- bacf620: package 10. `phasecont.continuation(m, pt, Type="LPC"|"PD"|"NS", Free=[a1 a2])` starts a curve from a matching special point of an LC branch. NTST and NCOL default to the grid of the start point, and other values regrid its orbit. `Branch` gains `Kappa` for NS curves, and `rows2branch` unpacks the curve rows. `tests/CycleCurveTest.m` runs the exact Bautin LPC curve on the start mesh and on another mesh, the Rössler PD curve, the Morris-Lecar LPC curve, the start and option errors, and the two `references/*.json` oracle tests, skipped as "oracle missing".
+- Package 10 evidence. `scripts/matlab-win` with `checkcode` on the changed files and `Rows2BranchTest`: `checkcode` gives two messages, both on lines older than P6 (a suppression in `continuation.m` that is no longer needed and an `isscalar` hint in `Branch.m`); 12 of 13 tests passed, and `unknownFreeNameWithARealModel` errored because Smart App Control blocks the freshly built `pckern.mexw64` (MATLAB:mex:ErrInvalidMEXFile). The owner keeps Smart App Control on, so `CycleCurveTest` and every other suite that loads the MEX were not run locally and are not counted as passed. The settings of `CycleCurveTest` rest on `pc-cli` runs of the same problems: the Bautin LPC curve at NTST 40, NCOL 4 has 20 points, ends at b2 = 1.5 and matches the exact curve to 4.2e-15 in b1, 2.2e-14 relative in T and 2.7e-10 in r², with |μ - 1| at 8.9e-8; at NTST 20, NCOL 3 it ends at b2 = 1.1; the Rössler PD curve ends at a = 0.25, c = 2.281435759357531 and at a = 0.2, c = 2.8324450280634625; the Morris-Lecar LPC curve starts at I = 88.29325054302073 and ends at phi = 0.06, I = 91.21718956908252, T = 101.45750455220272. `bash checks.sh` (fmt, clippy, `cargo test` with 1030 passed and 0 failed, deny, Windows release build) and `scripts/matlab-win "buildtool cargo"` (exit 0) pass.
+- package 11. SPEC section 8 describes the curves as built, section 10 the problem JSON, the status and the row layouts, and section 11 the MATLAB API.
+
+P6 is done except for formal acceptance. SPEC section 14 accepts it on the `references/*.json` oracles, which the owner produces with AUTO-07p or MatCont; until then the LC self-consistency checks and the RK4 shooting oracle of package 8 stand in. The MATLAB suites that load the MEX need a run on a machine without Smart App Control, or on CI.
 
 ## Next
 
-- P5, P6, P7b and P8 follow P4b.
+- A read-through of the whole P6 branch, then audit items 1 to 3 and 5 to 7.
+- P7b (phase-plane app, sessions and replay) and P8 (v1.0 packaging and the release workflow), then the public switch.
 - P4 and later: a continuation that changes a parameter or state read by a table formula needs a new lowering of the model (P2 known difference).
 
 ## Blocked

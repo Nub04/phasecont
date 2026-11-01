@@ -12,7 +12,7 @@ This file records what the development machine has, as found on 2026-10-21 durin
 | WSL kernel | `6.18.54.1-microsoft-standard-WSL2` |
 | WSL limits | `.wslconfig` sets `processors=12`, `memory=20GB`, `swap=8GB` and `networkingMode=consomme` |
 | Free disk | 856 GB on the WSL root file system, 130 GB on `C:` |
-| Smart App Control | on: `VerifiedAndReputablePolicyState` is 1 under `HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy`. It blocked one test executable that `cargo test` built for `x86_64-pc-windows-gnu` (CodeIntegrity events 3033 and 3077). It has not blocked `pckern.dll` or `pckern.mexw64` |
+| Smart App Control | on: `VerifiedAndReputablePolicyState` is 1 under `HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy`. It blocked one test executable that `cargo test` built for `x86_64-pc-windows-gnu` (CodeIntegrity events 3033 and 3077). During P6 it began to block the freshly built `pckern.mexw64`, so MATLAB reports MATLAB:mex:ErrInvalidMEXFile when a test loads it. The owner keeps Smart App Control on, so the MATLAB suites that load the MEX are not run on this machine |
 
 WSL sees 12 processors (`nproc` prints 12), while Windows MATLAB sees all 16 (`maxNumCompThreads` is 16). A parallel timing taken in WSL is not directly comparable with one taken in MATLAB.
 
