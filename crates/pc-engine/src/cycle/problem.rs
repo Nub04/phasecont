@@ -14,7 +14,11 @@
 //! Newton tolerance.
 //!
 //! The linear solves go through the condensation solver of `pc-linalg`, with the phase
-//! condition as the first border row and the PALC row as the second.
+//! condition as the first border row and the PALC row as the last.
+//!
+//! A curve of cycles in two parameters (SPEC §8) uses the same equations with more
+//! unknowns after T, listed as [`Extra`]s, and adds its own rows between the phase row
+//! and the PALC row.
 
 use super::basis::{CollocationBasis, NCOL_RANGE};
 use super::mesh;
@@ -78,6 +82,17 @@ pub struct PeriodicOrbit {
     pub newton_iters: usize,
 }
 
+/// An unknown of a cycle problem after the period T.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Extra {
+    /// The value of the model parameter with this index.
+    Param(usize),
+    /// An unknown the collocation equations do not depend on, such as kappa on an NS
+    /// curve.
+    #[allow(dead_code)]
+    Other,
+}
+
 /// The collocation equations of a periodic orbit over a model, with x = (u, T, alpha) and
 /// alpha being parameter `free`.
 ///
@@ -86,10 +101,16 @@ pub struct PeriodicOrbit {
 /// buffer of (dim - 1) dim values. `bordered_solve` uses the matrix of the last
 /// `jacobian` call. `state_jacobian` gives the monodromy matrix, whose eigenvalues are
 /// the Floquet multipliers.
+///
+/// Inside the crate the unknowns after T can be any list of [`Extra`]s, x = (u, T,
+/// extras), for k = 1 + extras unknowns and k border rows: the phase row, k - 2 rows
+/// that a curve sets with [`CycleProblem::set_border_row`], then the PALC row. The
+/// `Problem` methods then cover the collocation, periodicity and phase rows only.
 pub struct CycleProblem<'a> {
     model: &'a mut dyn ModelEval,
-    free: usize,
-    /// Parameters with t = 0 appended; entry `free` is overwritten by alpha.
+    extras: Vec<Extra>,
+    /// Parameters with t = 0 appended; the entries of the `Extra::Param`s are
+    /// overwritten from x.
     p: Vec<f64>,
     basis: CollocationBasis,
     ntst: usize,
@@ -98,7 +119,7 @@ pub struct CycleProblem<'a> {
     /// value at the reference, so the condition is `phase · u - phase0 = 0`.
     phase: Vec<f64>,
     phase0: f64,
-    /// Collocation blocks, boundary rows and the two border rows, in the layout of
+    /// Collocation blocks, boundary rows and the k border rows, in the layout of
     /// [`BlockSystem`].
     blocks: Vec<f64>,
     bc: Vec<f64>,
@@ -203,15 +224,35 @@ impl<'a> CycleProblem<'a> {
         model: &'a mut dyn ModelEval,
         setup: &CycleSetup,
     ) -> Result<CycleProblem<'a>, EngineError> {
+        let free = setup.free;
+        CycleProblem::with_extras(model, setup, vec![Extra::Param(free)])
+    }
+
+    /// As [`CycleProblem::new`], with `extras` as the unknowns after T in place of
+    /// alpha. `setup.free` is still checked against the model.
+    pub(crate) fn with_extras(
+        model: &'a mut dyn ModelEval,
+        setup: &CycleSetup,
+        extras: Vec<Extra>,
+    ) -> Result<CycleProblem<'a>, EngineError> {
         check_setup(model, setup)?;
         let (n, n_p) = (model.n(), model.n_p());
+        if let Some(i) = extras.iter().find_map(|e| match e {
+            Extra::Param(i) if *i >= n_p => Some(*i),
+            _ => None,
+        }) {
+            return Err(EngineError::BadProblem(format!(
+                "parameter index {i} is out of range"
+            )));
+        }
         let (ntst, m) = (setup.ntst, setup.ncol);
-        let shape = CondenseShape::new(n, m, ntst, 2)?;
+        let k = extras.len() + 1;
+        let shape = CondenseShape::new(n, m, ntst, k)?;
         let blocks = try_zeros(
             ntst.checked_mul(shape.block_rows())
                 .and_then(|k| k.checked_mul(shape.block_cols())),
         )?;
-        let mut bc = vec![0.0; n * (2 * n + 2)];
+        let mut bc = try_zeros(boundary_len(n, k))?;
         for c in 0..n {
             bc[c + n * c] = 1.0;
             bc[c + n * (n + c)] = -1.0;
@@ -220,7 +261,7 @@ impl<'a> CycleProblem<'a> {
         p.push(0.0);
         let mut problem = CycleProblem {
             model,
-            free: setup.free,
+            extras,
             p,
             basis: CollocationBasis::new(m)?,
             ntst,
@@ -229,7 +270,7 @@ impl<'a> CycleProblem<'a> {
             phase0: 0.0,
             blocks,
             bc,
-            border: try_zeros(Some(2 * shape.dim()))?,
+            border: try_zeros(shape.dim().checked_mul(k))?,
             condenser: Condenser::new(shape)?,
             parallel: shape.parallel_pays(),
             uz: vec![0.0; n],
@@ -271,8 +312,9 @@ impl<'a> CycleProblem<'a> {
             }
         }
         self.phase0 = self.phase.iter().zip(uref).map(|(a, b)| a * b).sum();
-        for (k, v) in self.phase.iter().enumerate() {
-            self.border[2 * k] = *v;
+        let k = self.k();
+        for (q, v) in self.phase.iter().enumerate() {
+            self.border[k * q] = *v;
         }
     }
 
@@ -281,10 +323,35 @@ impl<'a> CycleProblem<'a> {
         self.ntst * self.basis.m() + 1
     }
 
-    /// Sets alpha from x and returns T.
+    /// Number of profile values n (N m + 1), the index of T in x.
+    pub(crate) fn profile_len(&self) -> usize {
+        self.model.n() * self.points()
+    }
+
+    /// Number of unknowns after the profile (T and the extras), and of border rows.
+    pub(crate) fn k(&self) -> usize {
+        self.extras.len() + 1
+    }
+
+    /// Sets border row `r`, 1 <= r <= k - 2, to `row`, the derivative of an added
+    /// equation with respect to all dim unknowns.
+    #[allow(dead_code)]
+    pub(crate) fn set_border_row(&mut self, r: usize, row: &[f64]) {
+        let k = self.k();
+        debug_assert!((1..k - 1).contains(&r) && row.len() == self.dim());
+        for (q, v) in row.iter().enumerate() {
+            self.border[r + k * q] = *v;
+        }
+    }
+
+    /// Sets the parameters of the `Extra::Param`s from x and returns T.
     fn read_extras(&mut self, x: &[f64]) -> f64 {
-        let k = self.model.n() * self.points();
-        self.p[self.free] = x[k + 1];
+        let k = self.profile_len();
+        for (i, e) in self.extras.iter().enumerate() {
+            if let Extra::Param(a) = e {
+                self.p[*a] = x[k + 1 + i];
+            }
+        }
         x[k]
     }
 
@@ -299,11 +366,11 @@ impl<'a> CycleProblem<'a> {
     }
 
     /// Assembles the collocation blocks at x.
-    fn assemble(&mut self, x: &[f64]) -> Result<(), EngineError> {
+    pub(crate) fn assemble(&mut self, x: &[f64]) -> Result<(), EngineError> {
         let (n, m) = (self.model.n(), self.basis.m());
         let nm = n * m;
         let tcol = n * (m + 1);
-        let size = nm * (tcol + 2);
+        let size = nm * (tcol + self.k());
         let period = self.read_extras(x);
         for j in 0..self.ntst {
             let h = self.mesh[j + 1] - self.mesh[j];
@@ -328,52 +395,58 @@ impl<'a> CycleProblem<'a> {
                         }
                     }
                     blk[row + nm * tcol] = -h * self.f[c];
-                    blk[row + nm * (tcol + 1)] = -h * period * self.jac_p[self.free * n + c];
+                    for (e, extra) in self.extras.iter().enumerate() {
+                        blk[row + nm * (tcol + 1 + e)] = match extra {
+                            Extra::Param(a) => -h * period * self.jac_p[a * n + c],
+                            Extra::Other => 0.0,
+                        };
+                    }
                 }
             }
         }
         Ok(())
     }
 
-    /// Writes the assembled Jacobian as a dense (dim - 1) by dim matrix.
-    fn write_dense(&self, out: &mut [f64]) {
+    /// Writes the assembled Jacobian as a dense (dim - 1) by dim matrix: the collocation,
+    /// periodicity and phase rows, then border rows 1 to k - 2.
+    pub(crate) fn write_dense(&self, out: &mut [f64]) {
         let (n, m) = (self.model.n(), self.basis.m());
         let nm = n * m;
         let tcol = n * (m + 1);
-        let size = nm * (tcol + 2);
+        let k = self.k();
+        let size = nm * (tcol + k);
         let dim = self.dim();
         let rows = dim - 1;
-        let extra = |k: usize| {
-            if k < tcol {
-                None
-            } else {
-                Some(dim - 2 + k - tcol)
-            }
-        };
+        let ext = self.profile_len();
         out.fill(0.0);
         for j in 0..self.ntst {
             let blk = &self.blocks[j * size..(j + 1) * size];
-            for k in 0..tcol + 2 {
-                let col = extra(k).unwrap_or(j * nm + k);
+            for q in 0..tcol + k {
+                let col = if q < tcol { j * nm + q } else { ext + q - tcol };
                 for r in 0..nm {
-                    out[j * nm + r + rows * col] = blk[r + nm * k];
+                    out[j * nm + r + rows * col] = blk[r + nm * q];
                 }
             }
         }
         let top = self.ntst * nm;
         let last = (self.points() - 1) * n;
-        for k in 0..2 * n + 2 {
-            let col = match k {
-                k if k < n => k,
-                k if k < 2 * n => last + k - n,
-                k => dim - 2 + k - 2 * n,
+        for q in 0..2 * n + k {
+            let col = match q {
+                q if q < n => q,
+                q if q < 2 * n => last + q - n,
+                q => ext + q - 2 * n,
             };
             for r in 0..n {
-                out[top + r + rows * col] = self.bc[r + n * k];
+                out[top + r + rows * col] = self.bc[r + n * q];
             }
         }
-        for (k, v) in self.phase.iter().enumerate() {
-            out[top + n + rows * k] = *v;
+        for (q, v) in self.phase.iter().enumerate() {
+            out[top + n + rows * q] = *v;
+        }
+        for r in 1..k - 1 {
+            for q in 0..dim {
+                out[top + n + r + rows * q] = self.border[r + k * q];
+            }
         }
     }
 
@@ -397,7 +470,7 @@ impl<'a> CycleProblem<'a> {
     }
 
     /// The eigenfunction of the multiplier closest to -1 at x, at the base points, and that
-    /// multiplier. It solves the linearized collocation equations with T and alpha held,
+    /// multiplier. It solves the linearized collocation equations with T and the extras held,
     /// from the eigenvector w of the monodromy matrix with 2-norm 1 at tau = 0, so it ends
     /// at mu w. `BadProblem` when that multiplier is not real.
     pub(crate) fn pd_eigenfunction(&mut self, x: &[f64]) -> Result<(Vec<f64>, f64), EngineError> {
@@ -415,14 +488,15 @@ impl<'a> CycleProblem<'a> {
             )));
         }
         let (w, _) = eigvec(&mono, n, (re, 0.0))?;
-        let dim = self.dim();
-        let mut bc = vec![0.0; n * (2 * n + 2)];
+        let (dim, k, ext) = (self.dim(), self.k(), self.profile_len());
+        let mut bc = try_zeros(boundary_len(n, k))?;
         for c in 0..n {
             bc[c + n * c] = 1.0;
         }
-        let mut border = vec![0.0; 2 * dim];
-        border[2 * (dim - 2)] = 1.0;
-        border[1 + 2 * (dim - 1)] = 1.0;
+        let mut border = try_zeros(dim.checked_mul(k))?;
+        for r in 0..k {
+            border[r + k * (ext + r)] = 1.0;
+        }
         let mut rhs = vec![0.0; dim];
         let top = self.ntst * n * self.basis.m();
         rhs[top..top + n].copy_from_slice(&w);
@@ -433,16 +507,25 @@ impl<'a> CycleProblem<'a> {
             border: &border,
         };
         self.condenser.solve(&sys, &rhs, &mut sol, self.parallel)?;
-        sol.truncate(dim - 2);
+        sol.truncate(ext);
         Ok((sol, re))
     }
 }
 
+/// Length of the n by 2n + k boundary block, `None` when it does not fit in `usize`.
+fn boundary_len(n: usize, k: usize) -> Option<usize> {
+    n.checked_mul(2)
+        .and_then(|c| c.checked_add(k))
+        .and_then(|c| c.checked_mul(n))
+}
+
 impl Problem for CycleProblem<'_> {
     fn dim(&self) -> usize {
-        self.model.n() * self.points() + 2
+        self.profile_len() + self.k()
     }
 
+    /// The collocation, periodicity and phase rows. With k > 2 the rows after them are
+    /// left to the curve.
     fn residual(&mut self, x: &[f64], out: &mut [f64]) -> Result<(), EngineError> {
         let (n, m) = (self.model.n(), self.basis.m());
         let nm = n * m;
@@ -555,7 +638,7 @@ impl Problem for CycleProblem<'_> {
     }
 
     fn accept(&mut self, x: &[f64]) {
-        let k = self.model.n() * self.points();
+        let k = self.profile_len();
         self.set_reference(&x[..k]);
     }
 
@@ -583,7 +666,7 @@ impl Problem for CycleProblem<'_> {
         self.since = 0;
         self.adapted_here = true;
         let n = self.model.n();
-        let k = n * self.points();
+        let k = self.profile_len();
         let Some(new) = mesh::new_mesh(&self.basis, n, &self.mesh, &x[..k]) else {
             return false;
         };
@@ -602,8 +685,8 @@ impl Problem for CycleProblem<'_> {
         true
     }
 
-    /// Solves with the condensation solver. The determinant is not computed, so the
-    /// result is NaN.
+    /// Solves with the condensation solver, with `border` as the last border row. The
+    /// determinant is not computed, so the result is NaN.
     fn bordered_solve(
         &mut self,
         _jac: &[f64],
@@ -611,14 +694,14 @@ impl Problem for CycleProblem<'_> {
         rhs: &[f64],
         sol: &mut [f64],
     ) -> Result<f64, EngineError> {
-        let dim = self.dim();
+        let (dim, k) = (self.dim(), self.k());
         if border.len() != dim || rhs.len() != dim || sol.len() != dim {
             return Err(EngineError::BadProblem(
                 "bordered_solve: wrong lengths".into(),
             ));
         }
-        for (k, v) in border.iter().enumerate() {
-            self.border[1 + 2 * k] = *v;
+        for (q, v) in border.iter().enumerate() {
+            self.border[k - 1 + k * q] = *v;
         }
         let sys = BlockSystem {
             blocks: &self.blocks,
@@ -673,7 +756,7 @@ pub fn periodic_orbit(
     let mut x = setup.profile.clone();
     x.push(setup.period);
     x.push(setup.params[setup.free]);
-    // The last row fixes alpha: dalpha = 0.
+    // The last row fixes alpha: d alpha = 0.
     let mut fix = vec![0.0; dim];
     fix[dim - 1] = 1.0;
     let mut f = vec![0.0; dim - 1];

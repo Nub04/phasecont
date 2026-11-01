@@ -142,7 +142,7 @@ pub fn continue_cycle(
     let mut early = Vec::new();
     let (mut p, x0, tangent, run_opts) = match start {
         CycleStart::Orbit(setup) => {
-            let mut p = Scaled::new(CycleProblem::new(model, setup)?);
+            let mut p = Scaled::cycle(CycleProblem::new(model, setup)?);
             let mut x = setup.profile.clone();
             x.push(setup.period);
             x.push(setup.params[setup.free]);
@@ -190,8 +190,8 @@ pub fn continue_cycle(
 }
 
 /// Corrects a guessed orbit (scaled unknowns) at fixed alpha.
-fn fixed_alpha(
-    p: &mut Scaled,
+pub(crate) fn fixed_alpha<P: Problem>(
+    p: &mut Scaled<P>,
     x: Vec<f64>,
     opts: &Options,
     cancel: &AtomicBool,
@@ -223,7 +223,7 @@ fn hopf_start<'a>(
     opts: &Options,
     cancel: &AtomicBool,
     warnings: &mut Vec<String>,
-) -> Result<(Scaled<'a>, Vec<f64>, Vec<f64>), EngineError> {
+) -> Result<Start<CycleProblem<'a>>, EngineError> {
     let n = model.n();
     let len = check_dims(model, h.free, &h.params, h.ntst, h.ncol)?;
     if h.u0.len() != n {
@@ -290,7 +290,7 @@ fn hopf_start<'a>(
         guess(opts.h0)?,
         period,
     );
-    let p = Scaled::new(CycleProblem::new(model, &setup)?);
+    let p = Scaled::cycle(CycleProblem::new(model, &setup)?);
     let mut dir = phi.clone();
     dir.extend([0.0, 0.0]);
     let dir = unit_direction(&p, dir, "Hopf eigenvector")?;
@@ -319,7 +319,7 @@ fn pd_start<'a>(
     opts: &Options,
     cancel: &AtomicBool,
     warnings: &mut Vec<String>,
-) -> Result<(Scaled<'a>, Vec<f64>, Vec<f64>), EngineError> {
+) -> Result<Start<CycleProblem<'a>>, EngineError> {
     let n = model.n();
     let bad = |m: String| Err(EngineError::BadProblem(m));
     check_dims(model, s.free, &s.params, s.ntst, s.ncol)?;
@@ -387,7 +387,7 @@ fn pd_start<'a>(
     // Moved back out, not cloned, so no copy is made before the check in new.
     let u = setup.profile;
     inner.set_mesh(new, &u);
-    let p = Scaled::new(inner);
+    let p = Scaled::cycle(inner);
     dir.extend([0.0, 0.0]);
     let dir = unit_direction(&p, dir, "PD eigenfunction")?;
     let mut x0 = u;
@@ -397,7 +397,11 @@ fn pd_start<'a>(
 }
 
 /// `d`, in the original unknowns, as a unit vector in the scaled unknowns of `p`.
-fn unit_direction(p: &Scaled, mut d: Vec<f64>, what: &str) -> Result<Vec<f64>, EngineError> {
+pub(crate) fn unit_direction<P>(
+    p: &Scaled<P>,
+    mut d: Vec<f64>,
+    what: &str,
+) -> Result<Vec<f64>, EngineError> {
     p.scale(&mut d);
     let nrm = d.iter().map(|v| v * v).sum::<f64>().sqrt();
     if !(nrm.is_finite() && nrm > 0.0) {
@@ -414,13 +418,13 @@ fn unit_direction(p: &Scaled, mut d: Vec<f64>, what: &str) -> Result<Vec<f64>, E
 /// correction fails. `retry` gets the problem and the new eps before each new attempt.
 /// Returns the problem, the orbit and the tangent there, bordered by `dir`.
 fn branch_off<'a>(
-    mut p: Scaled<'a>,
+    mut p: Scaled<CycleProblem<'a>>,
     x0: &[f64],
     dir: &[f64],
     opts: &Options,
     cancel: &AtomicBool,
     mut retry: impl FnMut(&mut CycleProblem<'a>, f64) -> Result<(), EngineError>,
-) -> Result<(Scaled<'a>, Vec<f64>, Vec<f64>), EngineError> {
+) -> Result<Start<CycleProblem<'a>>, EngineError> {
     let mut eps = opts.h0;
     for attempt in 0..=RETRIES {
         if attempt > 0 {
@@ -445,7 +449,7 @@ fn branch_off<'a>(
 
 /// The options of a run from a point the branch leaves one way only, with a warning when
 /// `Options::direction` asks for the other.
-fn switched(opts: &Options, what: &str, warnings: &mut Vec<String>) -> Options {
+pub(crate) fn switched(opts: &Options, what: &str, warnings: &mut Vec<String>) -> Options {
     if opts.direction < 0.0 {
         warnings.push(format!("the direction is ignored for a start from {what}"));
     }
@@ -456,7 +460,7 @@ fn switched(opts: &Options, what: &str, warnings: &mut Vec<String>) -> Options {
 }
 
 /// The error behind a stop of the corrector.
-fn stop_error(r: StopReason) -> EngineError {
+pub(crate) fn stop_error(r: StopReason) -> EngineError {
     match r {
         StopReason::Cancelled => EngineError::Cancelled,
         StopReason::Error(e) => e,
@@ -467,7 +471,7 @@ fn stop_error(r: StopReason) -> EngineError {
 
 /// Undoes the scaling of the profile in a point: the orbit values and the tangent, which
 /// is normalized again to unit length.
-fn unscale_point(pt: &mut Point, k: usize, s: f64) {
+pub(crate) fn unscale_point(pt: &mut Point, k: usize, s: f64) {
     for v in pt.u[..k].iter_mut() {
         *v /= s;
     }
@@ -486,7 +490,7 @@ fn unscale_point(pt: &mut Point, k: usize, s: f64) {
 
 /// Adds one warning for the points whose multipliers have none within [`TRIVIAL_TOL`]
 /// of 1.
-fn floquet_warning(branch: &mut Branch) {
+pub(crate) fn floquet_warning(branch: &mut Branch) {
     let (mut count, mut total, mut worst) = (0, 0, 0.0_f64);
     for pt in &branch.points {
         if pt.eigenvalues.is_empty() {
@@ -515,23 +519,37 @@ fn floquet_warning(branch: &mut Branch) {
     }
 }
 
-/// The collocation problem in scaled unknowns: profile values times `s`, T and alpha as
-/// they are.
-struct Scaled<'a> {
-    inner: CycleProblem<'a>,
+/// The problem of a run, its first point and the tangent there, in scaled unknowns.
+pub(crate) type Start<P> = (Scaled<P>, Vec<f64>, Vec<f64>);
+
+/// A cycle problem in scaled unknowns: the first `k` values (the profile) times `s`, the
+/// rest as they are.
+pub(crate) struct Scaled<P> {
+    pub(crate) inner: P,
     /// Number of profile values.
-    k: usize,
-    s: f64,
+    pub(crate) k: usize,
+    pub(crate) s: f64,
     /// x in the original unknowns.
     xp: Vec<f64>,
     border: Vec<f64>,
 }
 
-impl<'a> Scaled<'a> {
-    fn new(inner: CycleProblem<'a>) -> Scaled<'a> {
+impl<'a> Scaled<CycleProblem<'a>> {
+    /// The scaled P5 cycle problem.
+    pub(crate) fn cycle(inner: CycleProblem<'a>) -> Scaled<CycleProblem<'a>> {
+        let (k, points) = (inner.profile_len(), inner.points());
+        Scaled::new(inner, k, points)
+    }
+}
+
+impl<P> Scaled<P> {
+    /// `inner` with its first `k` unknowns, the profile at `points` points, scaled by
+    /// 1 / sqrt(points - 1).
+    pub(crate) fn new(inner: P, k: usize, points: usize) -> Scaled<P>
+    where
+        P: Problem,
+    {
         let dim = inner.dim();
-        let k = dim - 2;
-        let points = inner.points();
         Scaled {
             inner,
             k,
@@ -542,7 +560,7 @@ impl<'a> Scaled<'a> {
     }
 
     /// Original unknowns to scaled ones, in place.
-    fn scale(&self, x: &mut [f64]) {
+    pub(crate) fn scale(&self, x: &mut [f64]) {
         for v in x[..self.k].iter_mut() {
             *v *= self.s;
         }
@@ -557,7 +575,7 @@ impl<'a> Scaled<'a> {
     }
 }
 
-impl Problem for Scaled<'_> {
+impl<P: Problem> Problem for Scaled<P> {
     fn dim(&self) -> usize {
         self.inner.dim()
     }
