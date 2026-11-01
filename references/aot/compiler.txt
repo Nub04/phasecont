@@ -1,2 +1,2 @@
-gcc (GCC) 16.2.1 20260819 (Red Hat 16.2.1-2)
+gcc (GCC) 16.2.1 20261029 (Red Hat 16.2.1-3)
 flags: gcc -O2 -fPIC -shared -ffp-contract=off -std=c99 -Wall -Wextra -Werror
