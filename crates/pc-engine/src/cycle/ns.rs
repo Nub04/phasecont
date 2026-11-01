@@ -385,7 +385,7 @@ pub fn continue_ns_curve(
     p.outer.adapt_every = opts.mesh_adapt;
     let x0 = p.x0.clone();
     let (k, points) = (p.outer.profile_len(), p.outer.points());
-    let mut branch = run_curve(Scaled::new(p, k, points), x0, opts, cancel, on_point)?;
+    let mut branch = run_curve(Scaled::new(p, k, points), x0, 1, opts, cancel, on_point)?;
     neutral_saddle_warning(&mut branch);
     Ok(branch)
 }

@@ -157,10 +157,12 @@ impl CycleCurveStart {
 /// leaves the finite numbers is a start off the curve, such as a special point of another
 /// type, and returns `BadProblem`. The first tangent is bordered by the a2 direction, or
 /// by the next unknown when that bordered matrix is singular, and points to growing a2,
-/// times the sign of `Options::direction`.
+/// times the sign of `Options::direction`. `trivial` is the multiplicity of the multiplier
+/// 1 on the curve, for the mesh warning of `floquet_warning`.
 pub(super) fn run_curve<P: Problem>(
     mut p: Scaled<P>,
     mut x0: Vec<f64>,
+    trivial: usize,
     opts: &Options,
     cancel: &AtomicBool,
     on_point: &mut dyn FnMut(&Point),
@@ -212,6 +214,6 @@ pub(super) fn run_curve<P: Problem>(
     for sp in branch.specials.iter_mut() {
         unscale_point(&mut sp.point, k, s);
     }
-    floquet_warning(&mut branch);
+    floquet_warning(&mut branch, trivial);
     Ok(branch)
 }

@@ -185,7 +185,7 @@ pub fn continue_cycle(
     }
     early.append(&mut branch.warnings);
     branch.warnings = early;
-    floquet_warning(&mut branch);
+    floquet_warning(&mut branch, 1);
     Ok(branch)
 }
 
@@ -489,19 +489,30 @@ pub(crate) fn unscale_point(pt: &mut Point, k: usize, s: f64) {
 }
 
 /// Adds one warning for the points whose multipliers have none within [`TRIVIAL_TOL`]
-/// of 1.
-pub(crate) fn floquet_warning(branch: &mut Branch) {
+/// of 1. On an LPC curve `trivial` is 2: the multiplier 1 is double there, with a Jordan
+/// block, so an error e in the monodromy matrix moves the two by about sqrt(e), and their
+/// mean, which moves by about e, is checked instead.
+pub(crate) fn floquet_warning(branch: &mut Branch, trivial: usize) {
+    let dist = |m: &(f64, f64)| (m.0 - 1.0).hypot(m.1);
     let (mut count, mut total, mut worst) = (0, 0, 0.0_f64);
     for pt in &branch.points {
         if pt.eigenvalues.is_empty() {
             continue;
         }
         total += 1;
-        let d = pt
-            .eigenvalues
-            .iter()
-            .map(|m| (m.0 - 1.0).hypot(m.1))
-            .fold(f64::INFINITY, f64::min);
+        let d = if trivial < 2 {
+            pt.eigenvalues
+                .iter()
+                .map(dist)
+                .fold(f64::INFINITY, f64::min)
+        } else {
+            let mut near: Vec<&(f64, f64)> = pt.eigenvalues.iter().collect();
+            near.sort_by(|a, b| dist(a).total_cmp(&dist(b)));
+            match near[..] {
+                [a, b, ..] => ((a.0 + b.0) / 2.0 - 1.0).hypot((a.1 + b.1) / 2.0),
+                _ => f64::NAN,
+            }
+        };
         if d.is_nan() || d > TRIVIAL_TOL {
             count += 1;
             worst = if worst.is_nan() || d.is_nan() {
@@ -512,9 +523,14 @@ pub(crate) fn floquet_warning(branch: &mut Branch) {
         }
     }
     if count > 0 {
+        let what = if trivial < 2 {
+            "trivial Floquet multiplier"
+        } else {
+            "double trivial Floquet multiplier (by the mean of the two nearest 1)"
+        };
         branch.warnings.push(format!(
-            "{count} of {total} points have no trivial Floquet multiplier within {TRIVIAL_TOL:e} \
-             of 1 (largest distance {worst:.3e}); the mesh is too coarse, increase NTST or NCOL"
+            "{count} of {total} points have no {what} within {TRIVIAL_TOL:e} of 1 (largest \
+             distance {worst:.3e}); the mesh is too coarse, increase NTST or NCOL"
         ));
     }
 }
@@ -674,5 +690,64 @@ impl<P: Problem> Problem for Scaled<P> {
         let det = self.inner.bordered_solve(jac, &self.border, rhs, sol)?;
         self.scale(sol);
         Ok(det)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn branch_of(mults: &[&[(f64, f64)]]) -> Branch {
+        let points = mults
+            .iter()
+            .map(|m| Point {
+                u: vec![0.0],
+                alpha: 0.0,
+                tangent: Vec::new(),
+                eigenvalues: m.to_vec(),
+                tests: [f64::NAN; 3],
+                codim2: Vec::new(),
+                h: 0.1,
+                newton_iters: 2,
+                mesh: Vec::new(),
+            })
+            .collect();
+        Branch {
+            points,
+            specials: Vec::new(),
+            stop: StopReason::MaxSteps,
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_split_double_multiplier_passes_on_its_mean() {
+        // 1 +- 2e-3 is what an error of 4e-6 does to a Jordan block at 1.
+        let split: &[(f64, f64)] = &[(1.002, 0.0), (0.998, 0.0), (0.3, 0.0)];
+        let pair: &[(f64, f64)] = &[(1.0, 2e-3), (1.0, -2e-3), (0.3, 0.0)];
+        let mut b = branch_of(&[split, pair]);
+        floquet_warning(&mut b, 2);
+        assert!(b.warnings.is_empty(), "{:?}", b.warnings);
+        let mut b = branch_of(&[split, pair]);
+        floquet_warning(&mut b, 1);
+        assert_eq!(b.warnings.len(), 1);
+        assert!(b.warnings[0].contains("2 of 2 points"), "{:?}", b.warnings);
+    }
+
+    #[test]
+    fn a_shifted_double_multiplier_gets_a_warning() {
+        let shifted: &[(f64, f64)] = &[(1.003, 0.0), (0.999, 0.0), (0.3, 0.0)];
+        let good: &[(f64, f64)] = &[(1.0 + 1e-7, 0.0), (1.0 - 1e-7, 0.0), (0.3, 0.0)];
+        let single: &[(f64, f64)] = &[(1.0, 0.0)];
+        let mut b = branch_of(&[shifted, good]);
+        floquet_warning(&mut b, 2);
+        assert_eq!(b.warnings.len(), 1);
+        let w = &b.warnings[0];
+        assert!(w.contains("1 of 2 points") && w.contains("1.000e-3"), "{w}");
+        assert!(w.contains("double"), "{w}");
+        // A point without two multipliers cannot have a double one.
+        let mut b = branch_of(&[single]);
+        floquet_warning(&mut b, 2);
+        assert!(b.warnings[0].contains("1 of 1 points") && b.warnings[0].contains("NaN"));
     }
 }
