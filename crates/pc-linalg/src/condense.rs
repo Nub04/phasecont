@@ -9,6 +9,12 @@
 //! of dimension n(N+1)+k, which faer's simplicial sparse LU solves. A back substitution
 //! per interval then recovers the interior values.
 //!
+//! [`Condenser::factor`] keeps the interval factorizations and the reduced LU, so that
+//! [`Condenser::solve_factored`] and [`Condenser::solve_transpose_factored`] solve with
+//! A and A^T for further right-hand sides. The transposed solve runs the steps of the
+//! block elimination in reverse: the interval triangles, the reduced system, then the
+//! interval triangles again.
+//!
 //! The intervals can be condensed in parallel on the current rayon pool. Each interval
 //! works only on its own slot of the store, and the border rows sum the interval
 //! contributions in interval order, so the result has the same bits at every thread
@@ -19,13 +25,13 @@ use faer::linalg::lu::partial_pivoting::factor::{lu_in_place, lu_in_place_scratc
 use faer::linalg::matmul::matmul;
 use faer::linalg::triangular_solve::{
     solve_lower_triangular_in_place, solve_unit_lower_triangular_in_place,
-    solve_upper_triangular_in_place,
+    solve_unit_upper_triangular_in_place, solve_upper_triangular_in_place,
 };
 use faer::perm::PermRef;
 use faer::prelude::{Reborrow, ReborrowMut};
 use faer::sparse::linalg::lu::simplicial::{
     SimplicialLu, factorize_simplicial_numeric_lu, factorize_simplicial_numeric_lu_scratch,
-    solve_in_place_scratch,
+    solve_in_place_scratch, solve_transpose_in_place_scratch,
 };
 use faer::sparse::linalg::lu::{LuSymbolicParams, SymbolicLu, factorize_symbolic_lu};
 use faer::sparse::linalg::{LuError, SupernodalThreshold};
@@ -184,7 +190,6 @@ pub struct BlockSystem<'a> {
 /// Workspace of one condensation job.
 struct Work {
     buf: MemBuffer,
-    perm: Vec<usize>,
     perm_inv: Vec<usize>,
 }
 
@@ -194,7 +199,6 @@ impl Work {
         let req = lu_in_place_scratch::<usize, f64>(nm, s.ni(), Par::Seq, Default::default());
         Ok(Work {
             buf: MemBuffer::try_new(req).map_err(|_| LinalgError::OutOfMemory)?,
-            perm: try_filled(nm, 0)?,
             perm_inv: try_filled(nm, 0)?,
         })
     }
@@ -324,14 +328,23 @@ fn check_pivots(diag: impl Iterator<Item = f64>, dim: usize) -> Result<(), Linal
     }
 }
 
-/// Solver for block systems of one shape. It keeps the condensed intervals of the last
-/// successful solve, from which [`Condenser::monodromy`] forms the monodromy matrix.
+/// Solver for block systems of one shape. It keeps the condensed intervals and the
+/// reduced LU of the last system it factored, from which [`Condenser::monodromy`] forms
+/// the monodromy matrix and the factored solves reuse the factorization.
 pub struct Condenser {
     shape: CondenseShape,
     store: Vec<f64>,
+    /// The row permutation of each interval's LU, nm entries per interval.
+    perms: Vec<usize>,
+    /// Per interval, U^-T times the interior entries of the transposed right-hand side
+    /// (ni values), then Y1^T times that (2n+k values).
+    twork: Vec<f64>,
     work: Work,
     red: Reduced,
+    /// The store holds the condensed intervals of one system.
     valid: bool,
+    /// The reduced LU of that system is factored too.
+    factored: bool,
 }
 
 impl Condenser {
@@ -376,6 +389,7 @@ impl Condenser {
         let req = StackReq::any_of(&[
             factorize_simplicial_numeric_lu_scratch::<usize, f64>(rdim, rdim),
             solve_in_place_scratch::<usize, f64>(rdim, 1, Par::Seq),
+            solve_transpose_in_place_scratch::<usize, f64>(rdim, 1, Par::Seq),
         ]);
         let red = Reduced {
             symbolic,
@@ -392,9 +406,12 @@ impl Condenser {
         Ok(Condenser {
             shape,
             store: try_filled(s.nint * s.stride(), 0.0)?,
+            perms: try_filled(s.nint * s.block_rows(), 0)?,
+            twork: try_filled(s.nint * (s.ni() + s.ne()), 0.0)?,
             work: Work::try_new(&s)?,
             red,
             valid: false,
+            factored: false,
         })
     }
 
@@ -423,10 +440,14 @@ impl Condenser {
         }
         self.check_system(sys, rhs)?;
         self.valid = false;
+        self.factored = false;
         self.condense_all(sys, rhs, parallel)?;
-        self.solve_reduced(sys, rhs)?;
+        self.factor_reduced(sys)?;
+        self.reduced_rhs(rhs);
+        self.solve_reduced()?;
         self.back_substitute(sol, parallel);
         self.valid = true;
+        self.factored = true;
         Ok(())
     }
 
@@ -440,9 +461,209 @@ impl Condenser {
     ) -> Result<(), LinalgError> {
         self.check_system(sys, &[])?;
         self.valid = false;
-        let zeros = try_filled(self.shape.nint * self.shape.block_rows(), 0.0)?;
-        self.condense_all(sys, &zeros, parallel)?;
+        self.factored = false;
+        self.condense_all(sys, &[], parallel)?;
         self.valid = true;
+        Ok(())
+    }
+
+    /// Condenses the intervals of `sys` and factors the reduced system, for later
+    /// [`Condenser::solve_factored`] and [`Condenser::solve_transpose_factored`] calls.
+    /// [`Condenser::monodromy`] then gives the monodromy matrix of `sys`. The errors are
+    /// those of [`Condenser::solve`] for the matrix.
+    pub fn factor(&mut self, sys: &BlockSystem<'_>, parallel: bool) -> Result<(), LinalgError> {
+        self.check_system(sys, &[])?;
+        self.valid = false;
+        self.factored = false;
+        self.condense_all(sys, &[], parallel)?;
+        self.factor_reduced(sys)?;
+        self.valid = true;
+        self.factored = true;
+        Ok(())
+    }
+
+    /// Solves A x = `rhs` into `sol` with the factorization of the last successful
+    /// [`Condenser::factor`] or [`Condenser::solve`]. `BadShape` without one or when a
+    /// length does not match the shape, and `NotFinite` for NaN or infinity in `rhs` or
+    /// the result. An error leaves the factorization in place.
+    pub fn solve_factored(
+        &mut self,
+        rhs: &[f64],
+        sol: &mut [f64],
+        parallel: bool,
+    ) -> Result<(), LinalgError> {
+        self.check_factored(rhs, sol)?;
+        let s = self.shape;
+        let (nm, stride) = (s.block_rows(), s.stride());
+        let inner = &rhs[..s.nint * nm];
+        if parallel {
+            self.store
+                .par_chunks_mut(stride)
+                .zip(self.perms.par_chunks(nm))
+                .zip(inner.par_chunks(nm))
+                .for_each(|((slot, perm), rj)| eliminate_rhs(&s, rj, perm, slot));
+        } else {
+            for ((slot, perm), rj) in self
+                .store
+                .chunks_mut(stride)
+                .zip(self.perms.chunks(nm))
+                .zip(inner.chunks(nm))
+            {
+                eliminate_rhs(&s, rj, perm, slot);
+            }
+        }
+        self.reduced_rhs(rhs);
+        self.solve_reduced()?;
+        self.back_substitute(sol, parallel);
+        if sol.iter().any(|v| !v.is_finite()) {
+            return Err(LinalgError::NotFinite);
+        }
+        Ok(())
+    }
+
+    /// Solves A^T y = `rhs` into `sol` with the factorization of the last successful
+    /// [`Condenser::factor`] or [`Condenser::solve`]. `rhs` is ordered like the unknowns
+    /// and `sol` like the rows of A. The errors are those of
+    /// [`Condenser::solve_factored`].
+    pub fn solve_transpose_factored(
+        &mut self,
+        rhs: &[f64],
+        sol: &mut [f64],
+        parallel: bool,
+    ) -> Result<(), LinalgError> {
+        self.check_factored(rhs, sol)?;
+        let s = self.shape;
+        let (n, m, nint, k) = (s.n, s.m, s.nint, s.k);
+        let (nm, ni, ne) = (s.block_rows(), s.ni(), s.ne());
+        let (nmesh, stride, tstride) = (n * (nint + 1), s.stride(), ni + ne);
+        // With A = [A_II A_IR; A_RI A_RR] over the interior and remaining unknowns and the
+        // Schur complement S, A^T y = c gives S^T y_R = c_R - (A_II^-1 A_IR)^T c_I and
+        // y_I = A_II^-T (c_I - A_RI^T y_R). Per interval A_II = L11 U and
+        // A_II^-1 A_IR = U^-1 Y1, so the first step needs v = U^-T c_I and Y1^T v.
+        let first = |(j, (tw, slot)): (usize, (&mut [f64], &[f64]))| {
+            let (v, t) = tw.split_at_mut(ni);
+            v.copy_from_slice(&rhs[j * m * n + n..][..ni]);
+            let (lu, y) = slot.split_at(nm * ni);
+            let l11 = MatRef::from_column_major_slice(lu, nm, ni).submatrix(0, 0, ni, ni);
+            let mut vm = MatMut::from_column_major_slice_mut(v, ni, 1);
+            solve_lower_triangular_in_place(l11.transpose(), vm.rb_mut(), Par::Seq);
+            let y1 = MatRef::from_column_major_slice(&y[..nm * ne], nm, ne).submatrix(0, 0, ni, ne);
+            matmul(
+                MatMut::from_column_major_slice_mut(t, ne, 1),
+                Accum::Replace,
+                y1.transpose(),
+                vm.rb(),
+                1.0,
+                Par::Seq,
+            );
+        };
+        if parallel {
+            self.twork
+                .par_chunks_mut(tstride)
+                .zip(self.store.par_chunks(stride))
+                .enumerate()
+                .for_each(first);
+        } else {
+            self.twork
+                .chunks_mut(tstride)
+                .zip(self.store.chunks(stride))
+                .enumerate()
+                .for_each(first);
+        }
+        let s = &self.shape;
+        let red = &mut self.red;
+        for jj in 0..=nint {
+            red.x[jj * n..(jj + 1) * n].copy_from_slice(&rhs[jj * m * n..][..n]);
+        }
+        red.x[nmesh..].copy_from_slice(&rhs[n * (nint * m + 1)..]);
+        for (j, tw) in self.twork.chunks(tstride).enumerate() {
+            for (q, t) in tw[ni..].iter().enumerate() {
+                red.x[reduced_col(s, j, q)] -= t;
+            }
+        }
+        let rdim = s.reduced_dim();
+        red.lu.solve_transpose_in_place_with_conj(
+            PermRef::new_checked(&red.row_perm, &red.row_perm_inv, rdim),
+            red.sym.col_perm(),
+            Conj::No,
+            MatMut::from_column_major_slice_mut(&mut red.x, rdim, 1),
+            Par::Seq,
+            MemStack::new(&mut red.buf),
+        );
+        if red.x.iter().any(|v| !v.is_finite()) {
+            return Err(LinalgError::NotFinite);
+        }
+        let (xr, store, perms) = (&red.x, &self.store, &self.perms);
+        // y_I = L11^-T (v - L21^T y_c - g y_b), where y_c are the condensed rows of the
+        // interval and y_b the border rows, then the rows go back to their order in A.
+        let last = |(j, (out, tw)): (usize, (&mut [f64], &mut [f64]))| {
+            let slot = &store[j * stride..(j + 1) * stride];
+            let perm = &perms[j * nm..(j + 1) * nm];
+            let v = &mut tw[..ni];
+            let yc = &xr[j * n..(j + 1) * n];
+            let (lu, rest) = slot.split_at(nm * ni);
+            let g = &rest[nm * (ne + 1) + k * (ne + 1)..];
+            let l = MatRef::from_column_major_slice(lu, nm, ni);
+            let mut vm = MatMut::from_column_major_slice_mut(v, ni, 1);
+            matmul(
+                vm.rb_mut(),
+                Accum::Add,
+                l.submatrix(ni, 0, n, ni).transpose(),
+                MatRef::from_column_major_slice(yc, n, 1),
+                -1.0,
+                Par::Seq,
+            );
+            if k > 0 {
+                matmul(
+                    vm.rb_mut(),
+                    Accum::Add,
+                    MatRef::from_column_major_slice(g, ni, k),
+                    MatRef::from_column_major_slice(&xr[nmesh..], k, 1),
+                    -1.0,
+                    Par::Seq,
+                );
+            }
+            let l11 = l.submatrix(0, 0, ni, ni);
+            solve_unit_upper_triangular_in_place(l11.transpose(), vm, Par::Seq);
+            for (r, &vr) in v.iter().enumerate() {
+                out[perm[r]] = vr;
+            }
+            for (i, &yi) in yc.iter().enumerate() {
+                out[perm[ni + i]] = yi;
+            }
+        };
+        let (inner, tail) = sol.split_at_mut(nint * nm);
+        if parallel {
+            inner
+                .par_chunks_mut(nm)
+                .zip(self.twork.par_chunks_mut(tstride))
+                .enumerate()
+                .for_each(last);
+        } else {
+            inner
+                .chunks_mut(nm)
+                .zip(self.twork.chunks_mut(tstride))
+                .enumerate()
+                .for_each(last);
+        }
+        tail[..n].copy_from_slice(&xr[nint * n..nmesh]);
+        tail[n..].copy_from_slice(&xr[nmesh..]);
+        if sol.iter().any(|v| !v.is_finite()) {
+            return Err(LinalgError::NotFinite);
+        }
+        Ok(())
+    }
+
+    /// `BadShape` without a factorization or for a wrong length, `NotFinite` for NaN or
+    /// infinity in `rhs`.
+    fn check_factored(&self, rhs: &[f64], sol: &[f64]) -> Result<(), LinalgError> {
+        let dim = self.shape.dim();
+        if !self.factored || rhs.len() != dim || sol.len() != dim {
+            return Err(LinalgError::BadShape);
+        }
+        if rhs.iter().any(|x| !x.is_finite()) {
+            return Err(LinalgError::NotFinite);
+        }
         Ok(())
     }
 
@@ -473,29 +694,30 @@ impl Condenser {
         parallel: bool,
     ) -> Result<(), LinalgError> {
         let s = self.shape;
-        let stride = s.stride();
+        let (nm, stride) = (s.block_rows(), s.stride());
         if parallel {
             self.store
                 .par_chunks_mut(stride)
+                .zip(self.perms.par_chunks_mut(nm))
                 .enumerate()
                 .try_for_each_init(
                     || Work::try_new(&s),
-                    |w, (j, slot)| {
+                    |w, (j, (slot, perm))| {
                         let w = w.as_mut().map_err(|e| *e)?;
-                        condense(&s, sys, rhs, j, slot, w)
+                        condense(&s, sys, rhs, j, slot, perm, w)
                     },
                 )
         } else {
-            for (j, slot) in self.store.chunks_mut(stride).enumerate() {
-                condense(&s, sys, rhs, j, slot, &mut self.work)?;
+            let slots = self.store.chunks_mut(stride).zip(self.perms.chunks_mut(nm));
+            for (j, (slot, perm)) in slots.enumerate() {
+                condense(&s, sys, rhs, j, slot, perm, &mut self.work)?;
             }
             Ok(())
         }
     }
 
-    /// Assembles the reduced system from the condensed intervals and solves it into
-    /// `red.x`.
-    fn solve_reduced(&mut self, sys: &BlockSystem<'_>, rhs: &[f64]) -> Result<(), LinalgError> {
+    /// Assembles the reduced matrix from the condensed intervals and factors it.
+    fn factor_reduced(&mut self, sys: &BlockSystem<'_>) -> Result<(), LinalgError> {
         let s = self.shape;
         let (n, m, nint, k) = (s.n, s.m, s.nint, s.k);
         let (nm, ni, ne) = (s.block_rows(), s.ni(), s.ne());
@@ -513,24 +735,12 @@ impl Condenser {
             for e in 0..k {
                 row[nmesh + e] = sys.border[r + k * (n * (nint * m + 1) + e)];
             }
-            let mut b = rhs[nint * nm + n + r];
             for (j, slot) in self.store.chunks(stride).enumerate() {
                 let contrib = &slot[nm * ni + nm * (ne + 1)..][..k * (ne + 1)];
                 for q in 0..ne {
                     row[reduced_col(&s, j, q)] -= contrib[r + k * q];
                 }
-                b -= contrib[r + k * ne];
             }
-            red.x[nmesh + r] = b;
-        }
-        for (j, slot) in self.store.chunks(stride).enumerate() {
-            let y = &slot[nm * ni..];
-            for i in 0..n {
-                red.x[j * n + i] = y[ni + i + nm * ne];
-            }
-        }
-        for c in 0..n {
-            red.x[nint * n + c] = rhs[nint * nm + c];
         }
         let store = &self.store;
         let (vals, pos, rb) = (&mut red.vals, &red.pos, &red.rb);
@@ -558,7 +768,39 @@ impl Condenser {
         })?;
         let u = red.lu.u_factor_unsorted();
         let (cp, uv) = (u.symbolic().col_ptr(), u.val());
-        check_pivots((0..rdim).map(|j| uv[cp[j + 1] - 1]), rdim)?;
+        check_pivots((0..rdim).map(|j| uv[cp[j + 1] - 1]), rdim)
+    }
+
+    /// Assembles the reduced right-hand side into `red.x` from the rhs column of the
+    /// condensed intervals and the boundary and border rows of `rhs`.
+    fn reduced_rhs(&mut self, rhs: &[f64]) {
+        let s = self.shape;
+        let (n, nint, k) = (s.n, s.nint, s.k);
+        let (nm, ni, ne) = (s.block_rows(), s.ni(), s.ne());
+        let (nmesh, stride) = (n * (nint + 1), s.stride());
+        let x = &mut self.red.x;
+        for r in 0..k {
+            let mut b = rhs[nint * nm + n + r];
+            for slot in self.store.chunks(stride) {
+                b -= slot[nm * ni + nm * (ne + 1) + r + k * ne];
+            }
+            x[nmesh + r] = b;
+        }
+        for (j, slot) in self.store.chunks(stride).enumerate() {
+            let y = &slot[nm * ni..];
+            for i in 0..n {
+                x[j * n + i] = y[ni + i + nm * ne];
+            }
+        }
+        for c in 0..n {
+            x[nint * n + c] = rhs[nint * nm + c];
+        }
+    }
+
+    /// Solves the factored reduced system in place in `red.x`.
+    fn solve_reduced(&mut self) -> Result<(), LinalgError> {
+        let rdim = self.shape.reduced_dim();
+        let red = &mut self.red;
         red.lu.solve_in_place_with_conj(
             PermRef::new_checked(&red.row_perm, &red.row_perm_inv, rdim),
             red.sym.col_perm(),
@@ -622,10 +864,10 @@ impl Condenser {
         tail[n..].copy_from_slice(&xr[nmesh..nmesh + k]);
     }
 
-    /// The monodromy matrix of the last successful solve, n by n column-major: the
-    /// product over the intervals of -C_R^-1 C_L, where C_L and C_R are the condensed
-    /// columns of u_{jm} and u_{jm+m}. `BadShape` before a successful solve, and
-    /// `Singular` when some C_R is singular.
+    /// The monodromy matrix of the system of the last successful solve, factor or
+    /// condense_intervals, n by n column-major: the product over the intervals of
+    /// -C_R^-1 C_L, where C_L and C_R are the condensed columns of u_{jm} and u_{jm+m}.
+    /// `BadShape` before one, and `Singular` when some C_R is singular.
     pub fn monodromy(&self) -> Result<Vec<f64>, LinalgError> {
         if !self.valid {
             return Err(LinalgError::BadShape);
@@ -669,15 +911,17 @@ impl Condenser {
     }
 }
 
-/// Condenses interval j into `slot`: the LU of its interior columns, Y = P (rest | rhs)
-/// with Y1 <- L11^-1 Y1 and Y2 <- Y2 - L21 Y1, and the border contribution g^T Y1 with
-/// U^T g = the border entries of the interior columns.
+/// Condenses interval j into `slot` and its row permutation P into `perm`: the LU of its
+/// interior columns, Y = P (rest | rhs) with Y1 <- L11^-1 Y1 and Y2 <- Y2 - L21 Y1, and
+/// the border contribution g^T Y1 with U^T g = the border entries of the interior
+/// columns. An empty `rhs` stands for zeros.
 fn condense(
     s: &CondenseShape,
     sys: &BlockSystem<'_>,
     rhs: &[f64],
     j: usize,
     slot: &mut [f64],
+    perm: &mut [usize],
     w: &mut Work,
 ) -> Result<(), LinalgError> {
     let (n, m, k) = (s.n, s.m, s.k);
@@ -689,7 +933,7 @@ fn condense(
     lu.copy_from_slice(&blk[nm * n..nm * (n + ni)]);
     let _ = lu_in_place(
         MatMut::from_column_major_slice_mut(lu, nm, ni),
-        &mut w.perm,
+        perm,
         &mut w.perm_inv,
         Par::Seq,
         MemStack::new(&mut w.buf),
@@ -697,16 +941,19 @@ fn condense(
     );
     let l = MatRef::from_column_major_slice(lu, nm, ni);
     check_pivots((0..ni).map(|i| l[(i, i)]), nm)?;
-    let perm = &w.perm;
     for q in 0..ne {
         let src = &blk[nm * rest_col(s, q)..][..nm];
         for (r, d) in y[nm * q..nm * (q + 1)].iter_mut().enumerate() {
             *d = src[perm[r]];
         }
     }
-    let rj = &rhs[j * nm..(j + 1) * nm];
-    for (r, d) in y[nm * ne..].iter_mut().enumerate() {
-        *d = rj[perm[r]];
+    if rhs.is_empty() {
+        y[nm * ne..].fill(0.0);
+    } else {
+        let rj = &rhs[j * nm..(j + 1) * nm];
+        for (r, d) in y[nm * ne..].iter_mut().enumerate() {
+            *d = rj[perm[r]];
+        }
     }
     let l11 = l.submatrix(0, 0, ni, ni);
     let l21 = l.submatrix(ni, 0, n, ni);
@@ -733,6 +980,43 @@ fn condense(
         );
     }
     Ok(())
+}
+
+/// Puts the interval rows `rj` of a new right-hand side through the elimination that
+/// `condense` stored in `slot` and `perm`: the rhs column of Y and of the border
+/// contribution.
+fn eliminate_rhs(s: &CondenseShape, rj: &[f64], perm: &[usize], slot: &mut [f64]) {
+    let (n, k) = (s.n, s.k);
+    let (nm, ni, ne) = (s.block_rows(), s.ni(), s.ne());
+    let (lu, rest) = slot.split_at_mut(nm * ni);
+    let (y, rest) = rest.split_at_mut(nm * (ne + 1));
+    let (contrib, g) = rest.split_at_mut(k * (ne + 1));
+    let d = &mut y[nm * ne..];
+    for (r, dr) in d.iter_mut().enumerate() {
+        *dr = rj[perm[r]];
+    }
+    let l = MatRef::from_column_major_slice(lu, nm, ni);
+    let mut dm = MatMut::from_column_major_slice_mut(d, nm, 1);
+    let (mut d1, d2) = dm.rb_mut().split_at_row_mut(ni);
+    solve_unit_lower_triangular_in_place(l.submatrix(0, 0, ni, ni), d1.rb_mut(), Par::Seq);
+    matmul(
+        d2,
+        Accum::Add,
+        l.submatrix(ni, 0, n, ni),
+        d1.rb(),
+        -1.0,
+        Par::Seq,
+    );
+    if k > 0 {
+        matmul(
+            MatMut::from_column_major_slice_mut(&mut contrib[k * ne..], k, 1),
+            Accum::Replace,
+            MatRef::from_column_major_slice(g, ni, k).transpose(),
+            d1.rb(),
+            1.0,
+            Par::Seq,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1021,6 +1305,144 @@ mod tests {
         assert_eq!(
             c.condense_intervals(&bad, false),
             Err(LinalgError::NotFinite)
+        );
+        assert_eq!(c.monodromy(), Err(LinalgError::BadShape));
+    }
+
+    /// Shapes with k from 0 to 4 for the factored solves.
+    const FACTOR_SHAPES: [(usize, usize, usize, usize); 7] = [
+        (1, 2, 1, 0),
+        (2, 3, 4, 1),
+        (3, 4, 5, 2),
+        (2, 4, 3, 3),
+        (3, 2, 6, 4),
+        (4, 3, 5, 4),
+        (2, 7, 3, 3),
+    ];
+
+    #[test]
+    fn factored_solves_match_dense_lu() {
+        let mut rng = Rng(13);
+        for (n, m, nint, k) in FACTOR_SHAPES {
+            let s = CondenseShape::new(n, m, nint, k).unwrap();
+            let sys = Sys::random(&s, &mut rng);
+            let dim = s.dim();
+            let lu = Lu::new(&sys.dense(&s), dim).unwrap();
+            let mut c = Condenser::new(s).unwrap();
+            c.factor(&sys.view(), false).unwrap();
+            for _ in 0..2 {
+                let b: Vec<f64> = (0..dim).map(|_| rng.unit()).collect();
+                let mut x = vec![0.0; dim];
+                c.solve_factored(&b, &mut x, false).unwrap();
+                let mut xd = b.clone();
+                lu.solve(&mut xd).unwrap();
+                let err = max_diff(&x, &xd);
+                assert!(err <= 1e-10 * max_abs(&xd), "{n} {m} {nint} {k}: {err}");
+                c.solve_transpose_factored(&b, &mut x, false).unwrap();
+                let mut xt = b.clone();
+                lu.solve_transpose(&mut xt).unwrap();
+                let err = max_diff(&x, &xt);
+                assert!(
+                    err <= 1e-10 * max_abs(&xt),
+                    "{n} {m} {nint} {k}: transpose {err}"
+                );
+            }
+            // The factorization holds the same condensed intervals as a solve.
+            let mut d = Condenser::new(s).unwrap();
+            let mut x = vec![0.0; dim];
+            d.solve(&sys.view(), &sys.rhs, &mut x, false).unwrap();
+            assert_eq!(c.monodromy().unwrap(), d.monodromy().unwrap());
+            // A solve leaves its factorization for later factored solves.
+            let mut y = vec![0.0; dim];
+            d.solve_factored(&sys.rhs, &mut y, false).unwrap();
+            assert!(
+                max_diff(&x, &y) <= 1e-12 * max_abs(&x),
+                "{n} {m} {nint} {k}"
+            );
+        }
+    }
+
+    #[test]
+    fn factored_solves_same_bits_in_a_pool() {
+        let s = CondenseShape::new(2, 3, 37, 3).unwrap();
+        let mut rng = Rng(4);
+        let sys = Sys::random(&s, &mut rng);
+        let b: Vec<f64> = (0..s.dim()).map(|_| rng.unit()).collect();
+        let run = |parallel: bool| {
+            let mut c = Condenser::new(s).unwrap();
+            c.factor(&sys.view(), parallel).unwrap();
+            let mut x = vec![0.0; s.dim()];
+            let mut y = vec![0.0; s.dim()];
+            c.solve_factored(&b, &mut x, parallel).unwrap();
+            c.solve_transpose_factored(&b, &mut y, parallel).unwrap();
+            (x, y)
+        };
+        let seq = run(false);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        let par = pool.install(|| run(true));
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&seq.0), bits(&par.0));
+        assert_eq!(bits(&seq.1), bits(&par.1));
+    }
+
+    #[test]
+    fn factored_solve_errors() {
+        let s = CondenseShape::new(2, 3, 4, 2).unwrap();
+        let sys = Sys::random(&s, &mut Rng(8));
+        let dim = s.dim();
+        let mut x = vec![0.0; dim];
+        let mut c = Condenser::new(s).unwrap();
+        assert_eq!(
+            c.solve_factored(&sys.rhs, &mut x, false),
+            Err(LinalgError::BadShape)
+        );
+        assert_eq!(
+            c.solve_transpose_factored(&sys.rhs, &mut x, false),
+            Err(LinalgError::BadShape)
+        );
+        // Condensed intervals without the reduced factorization.
+        c.condense_intervals(&sys.view(), false).unwrap();
+        assert_eq!(
+            c.solve_factored(&sys.rhs, &mut x, false),
+            Err(LinalgError::BadShape)
+        );
+        c.factor(&sys.view(), false).unwrap();
+        assert_eq!(
+            c.solve_factored(&sys.rhs[1..], &mut x, false),
+            Err(LinalgError::BadShape)
+        );
+        assert_eq!(
+            c.solve_transpose_factored(&sys.rhs, &mut x[1..], false),
+            Err(LinalgError::BadShape)
+        );
+        let mut rhs = sys.rhs.clone();
+        rhs[5] = f64::NAN;
+        assert_eq!(
+            c.solve_factored(&rhs, &mut x, false),
+            Err(LinalgError::NotFinite)
+        );
+        assert_eq!(
+            c.solve_transpose_factored(&rhs, &mut x, false),
+            Err(LinalgError::NotFinite)
+        );
+        // A bad right-hand side leaves the factorization usable.
+        c.solve_factored(&sys.rhs, &mut x, false).unwrap();
+        // A failed factorization cannot be reused.
+        let mut bad = Sys::random(&s, &mut Rng(8));
+        for col in 0..dim {
+            bad.border[1 + s.k() * col] = 0.0;
+        }
+        assert_eq!(c.factor(&bad.view(), false), Err(LinalgError::Singular));
+        assert_eq!(
+            c.solve_factored(&sys.rhs, &mut x, false),
+            Err(LinalgError::BadShape)
+        );
+        assert_eq!(
+            c.solve_transpose_factored(&sys.rhs, &mut x, false),
+            Err(LinalgError::BadShape)
         );
         assert_eq!(c.monodromy(), Err(LinalgError::BadShape));
     }
