@@ -185,7 +185,10 @@ P6 (LPC, PD and NS curves of limit cycles; SPEC section 8) is in progress on bra
 - 5348ecb: package 1. The condenser can keep its factorization (`factor`) and reuse it for a solve and for a solve with the transposed matrix. On random bordered block systems with k = 1 to 4, both match a dense LU to 1e-10, and parallel and sequential runs give the same bits.
 - 42bcf2d: package 2. `CycleProblem` takes a list of extra unknowns after T, and its condensed system has one border row per unknown after the profile: the phase row first, the rows a curve adds in between, the PALC row last. `Scaled` is generic over the problem and takes the profile length. The size of the boundary block is checked for overflow, which also covers audit item 4. All six P5 cycle continuation tests give bit-identical branches before and after the change (the full `Debug` output of every branch was compared).
 
-Next: package 3, the LPC curve.
+- a5b8246: package 3. The LPC curve borders the (profile, T) Jacobian of the cycle problem, with its phase row, by one row and one column and continues its last solution component G. On the Bautin model `bautin_lpc.ode` the extended Jacobian matches central differences to about 1e-10 on both evaluators, and the curve matches the exact fold β1 = -β2²/4 to 4e-15 with 3 Newton iterations per point. a8d8b3c records the updated gcc in the AOT reference.
+- package 4. The PD curve borders [D - T f_x; q(0) + q(1)] (DGK 2003) by one row over the profile and one column on the boundary rows. The bordered systems of LPC and PD now share one helper, `cycle/bordered.rs`, and the LPC tests give the same numbers as before. On the twisted model `pd_twist.ode` an RK4 monodromy confirms the multipliers -e^{Tλ1}, 1 and -e^{Tλ2} to 2.2e-9, the extended Jacobian matches central differences to 1.5e-10, and the curve matches a1 = a2² to 5.6e-15 with 3 Newton iterations per point. A start off the curve is first corrected at fixed a2. Each of two deliberate sign errors (the sign of G_x, the sign of q(1) in the boundary row) makes at least two PD tests fail.
+
+Next: package 5, the NS curve.
 
 ## Next
 

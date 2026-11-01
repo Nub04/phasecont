@@ -16,15 +16,16 @@
 //! border v_b covers (u, T). With Nᵀ [y; h] = [0; 1], G_x = -yᵀ N_x [q; q_T; G], and only
 //! the collocation rows of N depend on x.
 
+use super::bordered::{Bordered, unit};
 use super::continuation::Scaled;
 use super::curve::{CycleCurveStart, run_curve};
 use super::mesh;
-use super::problem::{CycleProblem, Extra, boundary_len, try_zeros};
+use super::problem::{CycleProblem, Extra};
 use crate::branch::{Branch, Options, Point};
 use crate::error::EngineError;
 use crate::model::ModelEval;
 use crate::problem::Problem;
-use pc_linalg::{BlockSystem, CondenseShape, Condenser};
+use pc_linalg::CondenseShape;
 use std::sync::atomic::AtomicBool;
 
 /// The LPC curve problem over the collocation equations, x = (u, T, a1, a2).
@@ -33,23 +34,16 @@ use std::sync::atomic::AtomicBool;
 /// `jacobian` writes the dense matrix only when it is given a (dim - 1) dim buffer.
 pub struct LpcProblem<'a> {
     outer: CycleProblem<'a>,
-    /// The bordered system N in the layout of [`BlockSystem`] with k = 2: the unknowns
-    /// (q, q_T, G), the phase row and the v_b row as border rows.
-    blocks: Vec<f64>,
-    bc: Vec<f64>,
-    border: Vec<f64>,
-    condenser: Condenser,
+    /// N with k = 2: the unknowns (q, q_T, G), the phase row and the v_b row as border
+    /// rows.
+    inner: Bordered,
     /// Borders of N over (u, T), and over the periodicity and phase rows.
     v_b: Vec<f64>,
     w_b: Vec<f64>,
-    /// [q; q_T; G], [y; h] and a right-hand side, K + 2 values each.
+    /// [q; q_T; G] and [y; h], K + 2 values each.
     w: Vec<f64>,
     y: Vec<f64>,
-    rhs: Vec<f64>,
     gz: Vec<f64>,
-    /// The x at which N is factored and `w` solved, when `cached`.
-    at: Vec<f64>,
-    cached: bool,
     x0: Vec<f64>,
 }
 
@@ -68,25 +62,16 @@ impl<'a> LpcProblem<'a> {
             CycleProblem::with_extras(model, &setup, vec![Extra::Param(a1), Extra::Param(a2)])?;
         outer.set_mesh(mesh, &setup.profile);
         let (n, m, ntst) = (outer.n(), outer.basis().m(), outer.ntst());
-        let shape = CondenseShape::new(n, m, ntst, 2)?;
+        let inner = Bordered::new(CondenseShape::new(n, m, ntst, 2)?)?;
         let ext = outer.profile_len();
-        let len = shape.dim();
+        let len = inner.dim();
         let mut p = LpcProblem {
-            blocks: try_zeros(
-                ntst.checked_mul(shape.block_rows())
-                    .and_then(|k| k.checked_mul(shape.block_cols())),
-            )?,
-            bc: try_zeros(boundary_len(n, 2))?,
-            border: try_zeros(len.checked_mul(2))?,
-            condenser: Condenser::new(shape)?,
+            inner,
             v_b: vec![1.0 / ((ext + 1) as f64).sqrt(); ext + 1],
             w_b: vec![1.0 / ((n + 1) as f64).sqrt(); n + 1],
             w: vec![0.0; len],
             y: vec![0.0; len],
-            rhs: vec![0.0; len],
             gz: vec![0.0; ext + 3],
-            at: Vec::new(),
-            cached: false,
             outer,
             x0,
         };
@@ -96,7 +81,7 @@ impl<'a> LpcProblem<'a> {
             p.transpose_solve()?;
             p.take_borders();
         }
-        p.cached = false;
+        p.inner.forget();
         Ok(p)
     }
 
@@ -108,46 +93,22 @@ impl<'a> LpcProblem<'a> {
     /// Assembles the cycle Jacobian at x, factors N and solves N w = e, unless that is
     /// already done at this x.
     fn factor(&mut self, x: &[f64]) -> Result<(), EngineError> {
-        if self.cached
-            && self.at.len() == x.len()
-            && self
-                .at
-                .iter()
-                .zip(x)
-                .all(|(a, b)| a.to_bits() == b.to_bits())
-        {
+        if self.inner.is_at(x) {
             return Ok(());
         }
-        self.cached = false;
+        self.inner.forget();
         self.outer.assemble(x)?;
         self.build();
-        let sys = BlockSystem {
-            blocks: &self.blocks,
-            bc: &self.bc,
-            border: &self.border,
-        };
+        let last = self.inner.dim() - 1;
         let parallel = self.outer.parallel();
-        self.condenser.factor(&sys, parallel)?;
-        let last = self.rhs.len() - 1;
-        self.rhs.fill(0.0);
-        self.rhs[last] = 1.0;
-        self.condenser
-            .solve_factored(&self.rhs, &mut self.w, parallel)?;
-        self.at.clear();
-        self.at.extend_from_slice(x);
-        self.cached = true;
-        Ok(())
+        self.inner.factor_solve(x, last, &mut self.w, parallel)
     }
 
     /// Solves Nᵀ y = e with the factored N.
     fn transpose_solve(&mut self) -> Result<(), EngineError> {
-        let last = self.rhs.len() - 1;
-        self.rhs.fill(0.0);
-        self.rhs[last] = 1.0;
+        let last = self.inner.dim() - 1;
         let parallel = self.outer.parallel();
-        self.condenser
-            .solve_transpose_factored(&self.rhs, &mut self.y, parallel)?;
-        Ok(())
+        self.inner.solve_transpose(last, &mut self.y, parallel)
     }
 
     /// Copies the (u, T) columns of the assembled cycle blocks into N and sets its
@@ -158,25 +119,27 @@ impl<'a> LpcProblem<'a> {
         let (outer_size, size) = (nm * (tcol + 3), nm * (tcol + 2));
         let src = self.outer.blocks();
         for j in 0..self.outer.ntst() {
-            let to = &mut self.blocks[j * size..(j + 1) * size];
+            let to = &mut self.inner.blocks[j * size..(j + 1) * size];
             to[..nm * (tcol + 1)]
                 .copy_from_slice(&src[j * outer_size..j * outer_size + nm * (tcol + 1)]);
             to[nm * (tcol + 1)..].fill(0.0);
         }
-        self.bc.fill(0.0);
+        let bc = &mut self.inner.bc;
+        bc.fill(0.0);
         for c in 0..n {
-            self.bc[c + n * c] = 1.0;
-            self.bc[c + n * (n + c)] = -1.0;
-            self.bc[c + n * (2 * n + 1)] = self.w_b[c];
+            bc[c + n * c] = 1.0;
+            bc[c + n * (n + c)] = -1.0;
+            bc[c + n * (2 * n + 1)] = self.w_b[c];
         }
         let ext = self.outer.profile_len();
-        self.border.fill(0.0);
+        let border = &mut self.inner.border;
+        border.fill(0.0);
         for (q, v) in self.outer.phase().iter().enumerate() {
-            self.border[2 * q] = *v;
+            border[2 * q] = *v;
         }
-        self.border[2 * (ext + 1)] = self.w_b[n];
+        border[2 * (ext + 1)] = self.w_b[n];
         for (q, v) in self.v_b.iter().enumerate() {
-            self.border[1 + 2 * q] = *v;
+            border[1 + 2 * q] = *v;
         }
     }
 
@@ -186,10 +149,6 @@ impl<'a> LpcProblem<'a> {
         let ext = self.outer.profile_len();
         let n = self.outer.n();
         let top = ext - n;
-        let unit = |v: &[f64]| {
-            let nrm = v.iter().map(|t| t * t).sum::<f64>().sqrt();
-            (nrm.is_finite() && nrm > 0.0).then(|| v.iter().map(|t| t / nrm).collect::<Vec<_>>())
-        };
         if let Some(v) = unit(&self.w[..ext + 1]) {
             self.v_b = v;
         }
@@ -241,7 +200,7 @@ impl Problem for LpcProblem<'_> {
 
     /// The monodromy matrix, from a new assembly of the cycle blocks.
     fn state_jacobian(&mut self, x: &[f64]) -> Result<Option<Vec<f64>>, EngineError> {
-        self.cached = false;
+        self.inner.forget();
         self.outer.state_jacobian(x)
     }
 
@@ -252,12 +211,12 @@ impl Problem for LpcProblem<'_> {
     /// Moves the phase reference to x and refreshes the borders there. When N cannot be
     /// solved at x the old borders stay.
     fn accept(&mut self, x: &[f64]) {
-        self.cached = false;
+        self.inner.forget();
         self.outer.accept(x);
         if self.factor(x).and_then(|_| self.transpose_solve()).is_ok() {
             self.take_borders();
         }
-        self.cached = false;
+        self.inner.forget();
     }
 
     fn mesh(&self) -> Vec<f64> {
@@ -271,7 +230,7 @@ impl Problem for LpcProblem<'_> {
         if !self.outer.adapt(x, v, failed) {
             return false;
         }
-        self.cached = false;
+        self.inner.forget();
         let (n, m, ext) = (
             self.outer.n(),
             self.outer.basis().m(),

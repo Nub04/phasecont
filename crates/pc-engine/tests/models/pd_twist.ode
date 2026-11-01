@@ -1,0 +1,19 @@
+# The circle x^2 + y^2 = 1, z = 0 run at speed w = 1 + a2, with a transverse frame
+# (rho - 1, z) that turns by theta/2. In the turned frame the rates are l1 = a1 - a2^2 and
+# l2, so the multipliers are -exp(T l1) and -exp(T l2) with T = 2 pi/w, and the PD curve
+# is a1 = a2^2. cos(theta) and sin(theta) are x/rho and y/rho. Own test model.
+par a1=0,a2=0,l2=-1
+rho=sqrt(x^2+y^2)
+c=x/rho
+s=y/rho
+w=1+a2
+l1=a1-a2^2
+sm=(l1+l2)/2
+df=(l1-l2)/2
+xi=rho-1
+dr=(sm+df*c)*xi+(df*s-w/2)*z
+x'=c*dr-w*y
+y'=s*dr+w*x
+z'=(df*s+w/2)*xi+(sm-df*c)*z
+init x=1,y=0,z=0
+done

@@ -11,12 +11,11 @@
 
 mod common;
 
-use common::load;
+use common::{load, rk4};
 use pc_engine::{
     Branch, CYCLE_LABELS, CycleSetup, CycleStart, EngineError, Evaluator, HopfStart, ModelEval,
     Options, PdStart, Point, StopReason, build, continue_cycle,
 };
-use pc_ir::EntryKind;
 use std::f64::consts::PI;
 use std::sync::atomic::AtomicBool;
 
@@ -175,26 +174,6 @@ fn brusselator_start(ntst: usize, ncol: usize) -> CycleStart {
         ntst,
         ncol,
     })
-}
-
-/// One RK4 step of x' = T f(x) in rescaled time.
-fn rk4(m: &mut dyn ModelEval, p: &[f64], t: f64, x: &mut [f64], dt: f64) {
-    let n = x.len();
-    let mut f = |y: &[f64]| {
-        let mut out = vec![0.0; n];
-        m.eval(&EntryKind::F, y, p, &[], &mut out).unwrap();
-        out.iter().map(|v| t * v).collect::<Vec<f64>>()
-    };
-    let add = |y: &[f64], k: &[f64], s: f64| -> Vec<f64> {
-        y.iter().zip(k).map(|(a, b)| a + s * b).collect()
-    };
-    let k1 = f(x);
-    let k2 = f(&add(x, &k1, dt / 2.0));
-    let k3 = f(&add(x, &k2, dt / 2.0));
-    let k4 = f(&add(x, &k3, dt));
-    for i in 0..n {
-        x[i] += dt / 6.0 * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]);
-    }
 }
 
 #[test]
