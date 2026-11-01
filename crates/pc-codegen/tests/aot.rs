@@ -3,9 +3,11 @@
 mod common;
 
 use common::{FLAGS, build_model, compile_c, compilers, gcc_version, record_compiler, ulp_dist};
+use libloading::Symbol;
 use pc_codegen::emit_c;
 use pc_ir::dag::{Dag, Fn1, Fn2, NodeId};
 use pc_ir::eval::eval;
+use pc_ir::math::{MATH, MathTable};
 use pc_ir::{Entry, EntryKind, IrModel, Slot};
 use pc_jit::CompiledModel;
 
@@ -74,7 +76,7 @@ fn compare_model(cc: &str, tag: &str, src: &str) -> u64 {
         .map(|(nm, _)| nm.clone())
         .zip(entries.iter())
         .collect();
-    let c = emit_c(&ir, &pairs);
+    let c = emit_c(&ir, &pairs).expect("emit");
     let aot = compile_c(cc, tag, &c);
     let mut rng = Lcg(7);
     let mut max_ulp = 0u64;
@@ -227,7 +229,7 @@ fn aot_matches_jit_on_every_model() {
 /// bit for bit (NaN sign and payload included), at the given `x` and `v` values.
 fn check_against_eval(tag: &str, ir: &IrModel, e: &Entry, xs: &[f64], v: &[f64]) {
     let is_dir = matches!(e.kind, EntryKind::Dir(_));
-    let c = emit_c(ir, &[("ent".into(), e)]);
+    let c = emit_c(ir, &[("ent".into(), e)]).expect("emit");
     for cc in compilers() {
         let aot = compile_c(cc, tag, &c);
         for &xv in xs {
@@ -318,7 +320,7 @@ fn bad_table_argument_is_not_emitted() {
         kind: EntryKind::F,
         outputs: outs,
     };
-    let text = emit_c(&ir, &[("ent".into(), &e)]);
+    let text = emit_c(&ir, &[("ent".into(), &e)]).expect("emit");
     assert!(!text.contains("pc_math->sin"), "{text}");
     assert!(!text.contains("pc_math->cos"), "{text}");
     check_against_eval("badtab", &ir, &e, &XS, &[]);
@@ -368,7 +370,7 @@ fn bessel_order_cap_matches_eval_in_aot() {
         let src = format!("par n=1\ninit x=1\nx'={f}(n,x)\ndone\n");
         let mut ir = build_model(&src);
         let e: Entry = ir.entry(&EntryKind::F).expect("entry");
-        let c = emit_c(&ir, &[("ent".to_string(), &e)]);
+        let c = emit_c(&ir, &[("ent".to_string(), &e)]).expect("emit");
         for cc in compilers() {
             let aot = compile_c(cc, &format!("bessel_cap_{f}"), &c);
             for n in ORDERS {
@@ -389,5 +391,50 @@ fn bessel_order_cap_matches_eval_in_aot() {
                 }
             }
         }
+    }
+}
+
+unsafe extern "C" fn fake_sin(_: f64) -> f64 {
+    42.0
+}
+
+/// `pc_math` is per library: two copies of the same model keep the tables they were given,
+/// and calling `pc_aot_init` again with the same table leaves the entries as they were.
+#[test]
+fn each_library_keeps_its_own_math_table() {
+    if gcc_version().is_none() {
+        println!("skip: gcc not found, AOT C test not run");
+        return;
+    }
+    let mut ir = build_model("x'=sin(x)\ndone\n");
+    let e = ir.entry(&EntryKind::F).expect("entry");
+    let c = emit_c(&ir, &[("f".into(), &e)]).expect("emit");
+    assert!(c.contains("if (pc_math != m) pc_math = m;"), "{c}");
+    let fake = MathTable {
+        sin: fake_sin,
+        ..MATH
+    };
+    let a = compile_c("gcc", "table_a", &c);
+    let b = compile_c("gcc", "table_b", &c);
+    let init = |aot: &common::Aot, t: &MathTable| {
+        // SAFETY: pc_aot_init takes the table pointer and stores it; `fake` and MATH
+        // outlive both libraries.
+        unsafe {
+            let f: Symbol<unsafe extern "C" fn(*const MathTable)> =
+                aot.lib.get(b"pc_aot_init").expect("pc_aot_init");
+            f(t);
+        }
+    };
+    init(&b, &fake);
+    // SAFETY: MATH.sin is a plain f64 function.
+    let want = unsafe { (MATH.sin)(0.5) };
+    for _ in 0..2 {
+        let (mut ya, mut yb) = ([0.0], [0.0]);
+        a.call("f", &[0.5], &[0.0], None, &mut ya);
+        b.call("f", &[0.5], &[0.0], None, &mut yb);
+        assert_eq!(ya[0].to_bits(), want.to_bits());
+        assert_eq!(yb[0], 42.0);
+        init(&a, &MATH);
+        init(&b, &fake);
     }
 }

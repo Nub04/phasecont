@@ -311,7 +311,8 @@ fn write_c(model: &Model, info: &ModelInfo, dir: &Path) -> Result<PathBuf> {
     }
     let named: Vec<(String, &pc_ir::Entry)> =
         kinds.iter().map(entry_symbol).zip(entries.iter()).collect();
-    let text = pc_codegen::emit_c(&ir, &named);
+    let text =
+        pc_codegen::emit_c(&ir, &named).map_err(|e| Error::Internal(format!("emit_c: {e}")))?;
     let path = dir.join(format!("pc_model_{:016x}.c", fnv1a64(text.as_bytes())));
     std::fs::create_dir_all(dir)
         .and_then(|()| std::fs::write(&path, &text))

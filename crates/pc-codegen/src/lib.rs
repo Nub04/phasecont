@@ -2,7 +2,7 @@
 
 mod c;
 
-pub use c::{c_ident, emit_c};
+pub use c::{CNameError, c_ident, emit_c};
 
 #[cfg(test)]
 mod c_tests;

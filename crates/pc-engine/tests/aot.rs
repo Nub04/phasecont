@@ -126,7 +126,7 @@ fn emit_all(ir: &mut IrModel) -> String {
     let kinds = engine_kinds();
     let entries: Vec<Entry> = kinds.iter().map(|k| ir.entry(k).expect("entry")).collect();
     let named: Vec<(String, &Entry)> = kinds.iter().map(entry_symbol).zip(entries.iter()).collect();
-    emit_c(ir, &named)
+    emit_c(ir, &named).expect("emit")
 }
 
 /// Same bits, or both NaN.
@@ -292,7 +292,7 @@ fn missing_directional_entry_is_an_error_at_first_use() {
     let entries: Vec<Entry> = kinds.iter().map(|k| ir.entry(k).unwrap()).collect();
     let named: Vec<(String, &Entry)> = kinds.iter().map(entry_symbol).zip(&entries).collect();
     let tmp = Temp::new("nodir");
-    let so = compile(&tmp, &emit_c(&ir, &named)).expect("compile");
+    let so = compile(&tmp, &emit_c(&ir, &named).expect("emit")).expect("compile");
     let mut aot = AotEval::open(&so, ir.n(), ir.n_p(), ir.aux.len()).expect("open");
     let kind = EntryKind::Dir(vec![pc_ir::Slot::U]);
     let mut out = [0.0];

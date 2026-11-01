@@ -157,7 +157,7 @@ fn aot_vs_jit(
             .enumerate()
             .map(|(i, e)| (format!("e{i}"), e))
             .collect();
-        emit_c(&ir, &named)
+        emit_c(&ir, &named).map_err(|e| e.to_string())?
     };
     let tag = name.replace(['/', '.'], "_");
     let aot = try_compile_c("gcc", &tag, &c)?;

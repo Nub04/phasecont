@@ -198,7 +198,7 @@ fn emit_c_writes_the_text_that_emit_c_gives() {
     let kinds = engine_kinds();
     let entries: Vec<_> = kinds.iter().map(|k| ir.entry(k).unwrap()).collect();
     let named: Vec<_> = kinds.iter().map(entry_symbol).zip(entries.iter()).collect();
-    let want = pc_codegen::emit_c(&ir, &named);
+    let want = pc_codegen::emit_c(&ir, &named).expect("emit");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), want);
 
     // The same model gives the same file name; without an evaluator key the JIT is built.

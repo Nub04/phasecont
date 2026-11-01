@@ -2,7 +2,7 @@
 //! text live in `tests/aot.rs`.
 
 use crate::c::MATH_FIELDS;
-use crate::emit_c;
+use crate::{CNameError, c_ident, emit_c};
 use pc_ir::EntryKind;
 use pc_ir::math::MathTable;
 
@@ -30,7 +30,7 @@ fn math_fields_follow_the_math_table_order() {
         20 => polygamma, 21 => floor, 22 => ceil, 23 => pc_mod, 24 => table,
         25 => table_slope);
     let ir = build_model("x'=-x\ndone\n");
-    let c = emit_c(&ir, &[]);
+    let c = emit_c(&ir, &[]).expect("emit");
     let start = c.find("typedef struct pc_math_t").expect("struct");
     let end = c[start..].find("} pc_math_t;").expect("struct end") + start;
     let body = &c[start..end];
@@ -50,11 +50,78 @@ fn math_fields_follow_the_math_table_order() {
 fn entry_names_are_sanitized() {
     let mut ir = build_model("x'=-x\ndone\n");
     let e = ir.entry(&EntryKind::F).expect("entry");
-    let c = emit_c(
-        &ir,
-        &[("my-f".into(), &e), ("1st".into(), &e), ("".into(), &e)],
-    );
+    let c = emit_c(&ir, &[("my-f".into(), &e), ("g.2".into(), &e)]).expect("emit");
     assert!(c.contains("void my_f(const double *x"), "{c}");
-    assert!(c.contains("void _1st(const double *x"), "{c}");
-    assert!(c.contains("void _(const double *x"), "{c}");
+    assert!(c.contains("void g_2(const double *x"), "{c}");
+}
+
+#[test]
+fn names_that_collide_after_sanitizing_are_rejected() {
+    let mut ir = build_model("x'=-x\ndone\n");
+    let e = ir.entry(&EntryKind::F).expect("entry");
+    for (a, b) in [("a-b", "a_b"), ("f", "f"), ("a.b", "a b")] {
+        let err = emit_c(&ir, &[(a.into(), &e), (b.into(), &e)]).expect_err(a);
+        assert_eq!(
+            err,
+            CNameError::Duplicate {
+                first: a.into(),
+                second: b.into(),
+                ident: c_ident(a),
+            }
+        );
+        assert!(err.to_string().contains(&c_ident(a)), "{err}");
+    }
+}
+
+#[test]
+fn reserved_names_are_rejected() {
+    let mut ir = build_model("x'=-x\ndone\n");
+    let e = ir.entry(&EntryKind::F).expect("entry");
+    for name in [
+        "int",
+        "double",
+        "return",
+        "inline",
+        "restrict",
+        "bool",
+        "true",
+        "nullptr",
+        "typeof",
+        "constexpr",
+        "_Bool",
+        "1st",
+        "",
+        "_f",
+        "__f",
+        "pc_f",
+        "pc_math",
+        "pc_aot_init",
+        "PC_EXPORT",
+        "uint8_t",
+        "int64_t",
+        "uintptr_t",
+        "INT8_MAX",
+        "UINT64_C",
+        "SIZE_MAX",
+        "PTRDIFF_MIN",
+        "WCHAR_MAX",
+        "main",
+        "linux",
+        "unix",
+    ] {
+        let err = emit_c(&ir, &[(name.into(), &e)]).expect_err(name);
+        assert_eq!(
+            err,
+            CNameError::Reserved {
+                name: name.into(),
+                ident: c_ident(name),
+            }
+        );
+    }
+    // Close to reserved forms but not reserved.
+    let ok = [
+        "f", "aux", "jac_u", "jac_p", "d_u_u", "integer", "x_t", "uint", "Int8",
+    ];
+    let named: Vec<(String, &pc_ir::Entry)> = ok.iter().map(|s| (s.to_string(), &e)).collect();
+    emit_c(&ir, &named).expect("plain names");
 }

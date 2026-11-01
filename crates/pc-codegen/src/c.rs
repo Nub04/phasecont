@@ -17,6 +17,7 @@ use pc_ir::IrModel;
 use pc_ir::dag::{Cmp, Dag, Fn1, Fn2, NodeId, Op};
 use pc_ir::eval::children;
 use pc_ir::math::table_ok;
+use std::fmt;
 use std::fmt::Write;
 
 /// One field of `pc_math_t`: its name and the C parameter list.
@@ -130,6 +131,115 @@ pub fn c_ident(name: &str) -> String {
         s.insert(0, '_');
     }
     s
+}
+
+/// A name that [`emit_c`] cannot use for an entry function.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CNameError {
+    /// Two names have the same C identifier.
+    Duplicate {
+        first: String,
+        second: String,
+        ident: String,
+    },
+    /// The C identifier of a name is reserved; see [`emit_c`].
+    Reserved { name: String, ident: String },
+}
+
+impl fmt::Display for CNameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CNameError::Duplicate {
+                first,
+                second,
+                ident,
+            } => write!(
+                f,
+                "entries {first:?} and {second:?} both map to C name {ident}"
+            ),
+            CNameError::Reserved { name, ident } => {
+                write!(
+                    f,
+                    "entry {name:?} maps to C name {ident}, which is reserved"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for CNameError {}
+
+/// C keywords through C23 that do not start with `_` (those are caught by the `_` rule),
+/// plus `asm`, which gcc and clang treat as a keyword in their GNU modes.
+const C_KEYWORDS: [&str; 46] = [
+    "alignas",
+    "alignof",
+    "asm",
+    "auto",
+    "bool",
+    "break",
+    "case",
+    "char",
+    "const",
+    "constexpr",
+    "continue",
+    "default",
+    "do",
+    "double",
+    "else",
+    "enum",
+    "extern",
+    "false",
+    "float",
+    "for",
+    "goto",
+    "if",
+    "inline",
+    "int",
+    "long",
+    "nullptr",
+    "register",
+    "restrict",
+    "return",
+    "short",
+    "signed",
+    "sizeof",
+    "static",
+    "static_assert",
+    "struct",
+    "switch",
+    "thread_local",
+    "true",
+    "typedef",
+    "typeof",
+    "typeof_unqual",
+    "union",
+    "unsigned",
+    "void",
+    "volatile",
+    "while",
+];
+
+/// Prefixes of the macros that `<stdint.h>` defines or that C reserves for it.
+const STDINT_MACRO_PREFIXES: [&str; 7] = [
+    "INT",
+    "UINT",
+    "PTRDIFF_",
+    "SIZE_",
+    "SIG_ATOMIC_",
+    "WCHAR_",
+    "WINT_",
+];
+
+/// Whether the emitted file cannot define a function named `ident`.
+fn reserved(ident: &str) -> bool {
+    C_KEYWORDS.contains(&ident)
+        || matches!(ident, "main" | "linux" | "unix" | "i386")
+        || ident.starts_with('_')
+        || ident.starts_with("pc_")
+        || ident.starts_with("PC_")
+        || ((ident.starts_with("int") || ident.starts_with("uint")) && ident.ends_with("_t"))
+        || STDINT_MACRO_PREFIXES.iter().any(|p| ident.starts_with(p))
 }
 
 /// `pc_bits(...)` for a constant, with the decimal value in a comment.
@@ -310,9 +420,20 @@ fn node(out: &mut String, dag: &Dag, id: NodeId, lens: &Lens, table_ok: &dyn Fn(
 /// *p, double *out)`; `Dir` entries get `void name(const double *x, const double *p, const
 /// double *v, double *out)`. The array lengths are the contract in `pc_ir::entry`.
 ///
+/// Each function is named `c_ident(name)`. A [`CNameError`] is returned, and no text, when
+/// two names have the same `c_ident`, or when a `c_ident` is reserved:
+/// - a C keyword through C23, or `asm`;
+/// - `main`, or `linux`, `unix` or `i386`, which gcc and clang predefine as macros in their
+///   GNU modes;
+/// - a name that starts with `_` (reserved at file scope), `pc_` or `PC_` (used by this
+///   file);
+/// - a `<stdint.h>` type (`int...` or `uint...` ending in `_t`) or macro (starting with
+///   `INT`, `UINT`, `PTRDIFF_`, `SIZE_`, `SIG_ATOMIC_`, `WCHAR_` or `WINT_`).
+///
+/// The names should also avoid other C library functions with external linkage, such as
+/// `sin` or `printf`, which C reserves; that is not checked.
+///
 /// Rules for the caller:
-/// - Each function is named `c_ident(name)`. Those names must be distinct, must not be C
-///   keywords and must not start with `pc_`.
 /// - The host calls `pc_aot_init` with a `pc_math_t` table (for example
 ///   `pc_ir::math::MATH`) before any entry; `pc_math` is NULL until then.
 /// - Build with `-ffp-contract=off` under gcc (it ignores the pragma that the file carries
@@ -321,7 +442,26 @@ fn node(out: &mut String, dag: &Dag, id: NodeId, lens: &Lens, table_ok: &dyn Fn(
 /// A leaf index outside the array lengths of its entry, and a table node whose table is
 /// missing or malformed, give a NaN constant, as `pc_ir::eval::eval` does. Table data is
 /// written as bit patterns, so every value (NaN payloads, -0.0, infinities) is exact.
-pub fn emit_c(ir: &IrModel, entries: &[(String, &Entry)]) -> String {
+pub fn emit_c(ir: &IrModel, entries: &[(String, &Entry)]) -> Result<String, CNameError> {
+    let mut idents: Vec<(&str, String)> = Vec::with_capacity(entries.len());
+    for (name, _) in entries {
+        let ident = c_ident(name);
+        if reserved(&ident) {
+            return Err(CNameError::Reserved {
+                name: name.clone(),
+                ident,
+            });
+        }
+        if let Some((first, _)) = idents.iter().find(|(_, id)| *id == ident) {
+            return Err(CNameError::Duplicate {
+                first: first.to_string(),
+                second: name.clone(),
+                ident,
+            });
+        }
+        idents.push((name, ident));
+    }
+
     let dag = &ir.dag;
     let (n, n_p) = (ir.n(), ir.n_p());
     let lives: Vec<Vec<bool>> = entries
@@ -351,7 +491,11 @@ pub fn emit_c(ir: &IrModel, entries: &[(String, &Entry)]) -> String {
         let _ = writeln!(s, "    double (*{name})({args});");
     }
     s.push_str("} pc_math_t;\n\nPC_UNUSED static const pc_math_t *pc_math;\n\n");
-    s.push_str("PC_EXPORT void pc_aot_init(const pc_math_t *m) { pc_math = m; }\n\n");
+    // Each library has its own pc_math. The guard keeps a second init with the same table
+    // from writing while another thread runs an entry.
+    s.push_str(
+        "PC_EXPORT void pc_aot_init(const pc_math_t *m) {\n    if (pc_math != m) pc_math = m;\n}\n\n",
+    );
 
     for (id, data) in dag.tables.iter().enumerate() {
         if !used.get(id).copied().unwrap_or(false) {
@@ -369,8 +513,7 @@ pub fn emit_c(ir: &IrModel, entries: &[(String, &Entry)]) -> String {
         );
     }
 
-    for ((name, e), live) in entries.iter().zip(&lives) {
-        let name = c_ident(name);
+    for (((_, e), live), (_, name)) in entries.iter().zip(&lives).zip(&idents) {
         let is_dir = matches!(e.kind, EntryKind::Dir(_));
         let v_len = match &e.kind {
             EntryKind::Dir(slots) => slots.iter().map(|sl| sl.len(n, n_p)).sum(),
@@ -407,5 +550,5 @@ pub fn emit_c(ir: &IrModel, entries: &[(String, &Entry)]) -> String {
         }
         s.push_str("}\n\n");
     }
-    s
+    Ok(s)
 }

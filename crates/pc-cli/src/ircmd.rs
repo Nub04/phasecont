@@ -115,7 +115,13 @@ pub fn emit_c(file: &Path, target: Option<&Path>) -> ExitCode {
         }
     }
     let named: Vec<(String, &Entry)> = entries.iter().map(|(n, e)| (n.clone(), e)).collect();
-    let code = pc_codegen::emit_c(&ir, &named);
+    let code = match pc_codegen::emit_c(&ir, &named) {
+        Ok(code) => code,
+        Err(e) => {
+            to_stderr(&format!("pc-cli: cannot emit C: {e}\n"));
+            return ExitCode::from(1);
+        }
+    };
     match target {
         None => out(&code, 0),
         Some(path) => match std::fs::write(path, &code) {
