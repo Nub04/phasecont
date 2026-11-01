@@ -2,7 +2,7 @@
 
 ## Phase
 
-P6 (LPC, PD and NS curves of limit cycles; SPEC section 8) is built on branch `phase6-cycle-curves`, stacked on `phase5-limit-cycles`, and waits for the oracle files and a read-through. P5 (limit cycles; SPEC section 7) is open as PR #3. P4b closed the open items of P4 and merged into `main` locally on 2026-10-31 as a fast-forward to 78be5c3. P4 (LP and H curves, codim-2 detection and normal forms; SPEC section 14) merged into `main` locally on 2026-10-30 (14d6455). Both reached `origin/main` on 2026-10-31 with 175b6e9. P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 78c5df6. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 as PR #2 (3748707). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
+P6 (LPC, PD and NS curves of limit cycles; SPEC section 8) is built on branch `phase6-cycle-curves`, stacked on `phase5-limit-cycles`, and waits for the oracle files. P5 (limit cycles; SPEC section 7) is open as PR #3. P4b closed the open items of P4 and merged into `main` locally on 2026-10-31 as a fast-forward to 78be5c3. P4 (LP and H curves, codim-2 detection and normal forms; SPEC section 14) merged into `main` locally on 2026-10-30 (14d6455). Both reached `origin/main` on 2026-10-31 with 175b6e9. P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 78c5df6. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 as PR #2 (3748707). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
 
 ## Done
 
@@ -221,11 +221,21 @@ Rulings in P6 package 8:
 - Package 10 evidence. `scripts/matlab-win` with `checkcode` on the changed files and `Rows2BranchTest`: `checkcode` gives two messages, both on lines older than P6 (a suppression in `continuation.m` that is no longer needed and an `isscalar` hint in `Branch.m`); 12 of 13 tests passed, and `unknownFreeNameWithARealModel` errored because Smart App Control blocks the freshly built `pckern.mexw64` (MATLAB:mex:ErrInvalidMEXFile). The owner keeps Smart App Control on, so `CycleCurveTest` and every other suite that loads the MEX were not run locally and are not counted as passed. The settings of `CycleCurveTest` rest on `pc-cli` runs of the same problems: the Bautin LPC curve at NTST 40, NCOL 4 has 20 points, ends at b2 = 1.5 and matches the exact curve to 4.2e-15 in b1, 2.2e-14 relative in T and 2.7e-10 in r², with |μ - 1| at 8.9e-8; at NTST 20, NCOL 3 it ends at b2 = 1.1; the Rössler PD curve ends at a = 0.25, c = 2.281435759357531 and at a = 0.2, c = 2.8324450280634625; the Morris-Lecar LPC curve starts at I = 88.29325054302073 and ends at phi = 0.06, I = 91.21718956908252, T = 101.45750455220272. `bash checks.sh` (fmt, clippy, `cargo test` with 1030 passed and 0 failed, deny, Windows release build) and `scripts/matlab-win "buildtool cargo"` (exit 0) pass.
 - package 11. SPEC section 8 describes the curves as built, section 10 the problem JSON, the status and the row layouts, and section 11 the MATLAB API.
 
+- Read-through of the whole P6 branch. No defect needs a fix before acceptance. Low notes, parked: the `references/*.json` oracle files are missing; `Free(1)` of a curve is not checked against the parameter the LC branch varied; NTST has no upper bound other than the overflow and allocation checks; no test checks that mesh adaptation moves the mesh points.
+- Audit of seven reported bugs, each checked against the code:
+  - Items 1 and 2 (150d7ea): two entry names that map to the same C name, or a C name that is reserved, gave C that failed to compile or bound the wrong symbol. `emit_c` now returns `CNameError::Duplicate` or `CNameError::Reserved`. Reserved means a C23 keyword or `asm`, `main`, `linux`, `unix`, `i386`, a leading `_`, the `pc_` or `PC_` prefix, an `int*_t` or `uint*_t` name, or a `<stdint.h>` macro prefix. Other C library names such as `sin` are not checked. The product cannot reach either case, since `entry_symbol` fixes the names (`f`, `aux`, `jac_u`, `jac_p`, `d_*`).
+  - Item 3 (150d7ea): the report called `pc_math` process-global. It is a static in each AOT library, and a test loads two libraries with different tables and checks that each keeps its own. The real issue was a write race when a library is initialized again while a worker reads `pc_math`; `pc_aot_init` now writes only when the table changes.
+  - Item 4: covered by the boundary block overflow check of package 2 (42bcf2d).
+  - Item 5 (aa319cc): `Lu::new` scales the determinant so a finite nonsingular matrix cannot give 0, infinity or NaN.
+  - Item 6 (0c6ea68): `eig_len` checks 2n for overflow.
+  - Item 7a (0bdee24): `run_copy` with `count == 0` now reaches the library, so a freed run id or a bad branch gives an error. `GatewayTest` has both cases; it loads the MEX, so it was not run locally (Smart App Control).
+  - Item 7b, open: the engine accepts a buffer longer than `count * stride`, so a gateway call with a wrong `stride` is not caught. The fix needs the owner's choice (see "Open questions").
+
 P6 is done except for formal acceptance. SPEC section 14 accepts it on the `references/*.json` oracles, which the owner produces with AUTO-07p or MatCont; until then the LC self-consistency checks and the RK4 shooting oracle of package 8 stand in. The MATLAB suites that load the MEX need a run on a machine without Smart App Control, or on CI.
 
 ## Next
 
-- A read-through of the whole P6 branch, then audit items 1 to 3 and 5 to 7.
+- Audit item 7b, after the owner's choice.
 - P7b (phase-plane app, sessions and replay) and P8 (v1.0 packaging and the release workflow), then the public switch.
 - P4 and later: a continuation that changes a parameter or state read by a table formula needs a new lowering of the model (P2 known difference).
 
@@ -235,6 +245,7 @@ P6 is done except for formal acceptance. SPEC section 14 accepts it on the `refe
 
 ## Open questions
 
+- Audit item 7b: should `run_copy` require `buf_len == count * stride` exactly (a C ABI contract change), or should the gateway alone check the stride by filling the buffer with NaN and checking that the last field of the last row was written?
 - Open from P5: the engine option `mesh_adapt` (default 3) is not exposed in MATLAB, so a MATLAB LC run always adapts the mesh every 3 accepted points. A `MeshAdapt` option would change the public API.
 - Open from P4:
   - The BT coefficients use the sign convention a > 0, and the ZH coefficients use b > 0. The normalization strings record both. The owner may prefer another convention.
@@ -267,7 +278,7 @@ P6 is done except for formal acceptance. SPEC section 14 accepts it on the `refe
   - The live line advances ColorOrderIndex, so the final plot uses the second color.
   - From the final P7a review (2026-10-29):
     - `Stable` is false for a point whose eigenvalues are NaN. The engine fills NaN only after an internal fault, and carrying the last value forward would be a silent default, so it stays.
-    - `run_copy` with `count == 0` does not reach the library, so a freed run id returns an empty matrix, and the gateway trusts the caller's `stride` instead of reading the run's.
+    - The gateway trusts the caller's `stride` instead of reading the run's (audit item 7b). The `count == 0` half is fixed (audit item 7a).
     - `dll-imports` accepts any `api-ms-win-` prefix and reads the whole file without a size limit.
     - `scripts/build-pckern` and `buildfile.m` ignore `CARGO_TARGET_DIR`, and the `wsl.exe` command does not escape `$` or quotes in paths.
     - A `Branch` keeps its `Model` handle, so variable lookup fails after the Model is deleted, and `continuation` rejects a start Point from another Model object with the same source.
