@@ -659,15 +659,16 @@ static void cmd_run_copy(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prh
     /* Callers clamp count to the point count from the status JSON. A huge
      * count raises MATLAB's out-of-memory error, not a phasecont ID. */
     /* Each column is one C row: MATLAB is column-major and the rows are
-     * contiguous. Shrink to the rows written after the call. */
+     * contiguous. Shrink to the rows written after the call. The call runs
+     * for count = 0 too, so the handle and branch are always checked; the
+     * engine accepts a NULL buffer of length 0. */
     out = mxCreateDoubleMatrix(stride, count, mxREAL);
-    if (count > 0) {
-        check(g_api->run_copy(r, branch, what, start, count, mxGetDoubles(out), total, &rows));
-        if (rows > count)
-            fail("phasecont:engine:internal", "run_copy reported %zu rows for %zu requested",
-                 rows, count);
-        mxSetN(out, rows);
-    }
+    check(g_api->run_copy(r, branch, what, start, count, total > 0 ? mxGetDoubles(out) : NULL,
+                          total, &rows));
+    if (rows > count)
+        fail("phasecont:engine:internal", "run_copy reported %zu rows for %zu requested", rows,
+             count);
+    mxSetN(out, rows);
     plhs[0] = out;
 }
 

@@ -226,6 +226,11 @@ classdef GatewayTest < matlab.unittest.TestCase
             % count = 0
             none = pckern("run_copy", r, 0, 0, 0, 0, stride);
             testCase.verifyEqual(size(none), [stride 0]);
+            % count = 0 still checks the handle and the branch.
+            testCase.verifyError(@() pckern("run_copy", uint64(987654321), 0, 0, 0, 0, stride), ...
+                "phasecont:engine:badHandle");
+            testCase.verifyError(@() pckern("run_copy", r, 99, 0, 0, 0, stride), ...
+                "phasecont:engine:badArg");
             % Bad arguments.
             testCase.verifyError(@() pckern("run_copy", r, 0, 0, 0, 1, 0), ...
                 "phasecont:engine:badArg");

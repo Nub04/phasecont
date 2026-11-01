@@ -63,10 +63,13 @@ extern "C" {
  * A malformed switch label fails in run_start. A well-formed label that does
  * not exist (for example "XY1") is reported by run_poll as PC_ERR_BAD_PROBLEM.
  *
- * Rows copied by run_copy have stride 3n + 6 doubles, in this order:
+ * Rows copied by run_copy have "stride" doubles, read from status_json; the
+ * stride depends on the problem type. EP rows have stride 3n + 6, in this
+ * order:
  *   [alpha, u(1..n), eig_re(1..n), eig_im(1..n),
  *    psi_LP, psi_BP, psi_H, h, newton_iters]
- * Missing values are NaN. Tangents stay inside the library.
+ * docs/SPEC.md section 10 lists the rows of the LP, H, LC, LPC, PD and NS
+ * types. Missing values are NaN. Tangents stay inside the library.
  *
  * status_json (run_poll):
  *   {"state":"running"|"done"|"cancelled","n":3,"stride":15,
@@ -88,8 +91,10 @@ typedef struct pc_api_v1_t {
   int32_t (*model_from_ode)(const char *text, size_t len, uint64_t *model,
                             char **diag_json);
 
-  /* Builds the evaluator. opts_json is NULL or {"evaluator":"jit"|"fallback"};
-   * any other key is PC_ERR_BAD_ARG. NULL means "jit". */
+  /* Builds the evaluator. opts_json is NULL or an object with the keys
+   * "evaluator" ("jit", "fallback" or "aot"), "aot_lib" (needed by and only
+   * valid with "aot") and "emit_c" (a folder for the model's C text); any
+   * other key is PC_ERR_BAD_ARG. NULL means "jit". See docs/SPEC.md section 10. */
   int32_t (*model_compile)(uint64_t model, const char *opts_json);
 
   /* Evaluates f(x, p). Needs a compiled model. nx and nout must equal n, np
@@ -99,8 +104,12 @@ typedef struct pc_api_v1_t {
                        const double *p, size_t np, double *out, size_t nout);
 
   /* Starts a continuation run on its own worker thread. Needs a compiled,
-   * autonomous model. nu must equal n and np the number of parameters. The
-   * run keeps its own copy of the model. *run is 0 unless set. */
+   * autonomous model. np must equal the number of parameters. nu is n, except
+   * for a cycle run that starts from an orbit (LC) or from a point of an LC
+   * branch (an LC run from a PD point, or an LPC, PD or NS curve): there u0
+   * holds the orbit and the period, n (N m + 1) + 1 values, with N and m of
+   * the start orbit. The run keeps its own copy of the model. *run is 0 unless
+   * set. */
   int32_t (*run_start)(uint64_t model, const char *problem_json,
                        const double *u0, size_t nu, const double *p, size_t np,
                        uint64_t *run);
@@ -112,8 +121,8 @@ typedef struct pc_api_v1_t {
 
   /* Copies up to count rows from row start of the given branch into buf.
    * what is PC_COPY_POINTS or PC_COPY_SPECIALS. buf_len is in doubles and
-   * must be at least count * (3n + 6). *rows gets the number of rows written
-   * (0 on failure). */
+   * must be at least count * stride, with stride from status_json. *rows gets
+   * the number of rows written (0 on failure). */
   int32_t (*run_copy)(uint64_t run, uint32_t branch, uint32_t what,
                       size_t start, size_t count, double *buf, size_t buf_len,
                       size_t *rows);
