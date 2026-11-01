@@ -178,7 +178,14 @@ Rulings in package 9:
 - A second check of that fix found one more orbit-sized copy before the check: the PD switch cloned the doubled orbit into its setup. The orbit now moves into the setup and back out after `CycleProblem::new`, so no copy is made. No test can hit the narrow window where two orbits fit in memory and a third does not, so the existing PD tests cover the change.
 - One MATLAB run on 0f8d290, the first after a DLL rebuild, failed after about 35 seconds with an error that escaped the test runner (the stack ends in `JUnitXMLOutputPlugin.runSession` and `TestTask.runTests`). Only the last 15 lines of its log were kept, so the failing test is not known. A full `cargo test` was running in WSL at the same time. Four later runs passed with 172 passed and 0 failed, two of them with `cargo test` running alongside and one of those right after a DLL rebuild, so the failure has not been reproduced. Keep the full log of every MATLAB run until it shows up again.
 
-Next: review and merge of PR #3, then P6.
+PR #3 waits for the owner's review and merge.
+
+P6 (LPC, PD and NS curves of limit cycles; SPEC section 8) is in progress on branch `phase6-cycle-curves`, stacked on `phase5-limit-cycles`.
+
+- 5348ecb: package 1. The condenser can keep its factorization (`factor`) and reuse it for a solve and for a solve with the transposed matrix. On random bordered block systems with k = 1 to 4, both match a dense LU to 1e-10, and parallel and sequential runs give the same bits.
+- 42bcf2d: package 2. `CycleProblem` takes a list of extra unknowns after T, and its condensed system has one border row per unknown after the profile: the phase row first, the rows a curve adds in between, the PALC row last. `Scaled` is generic over the problem and takes the profile length. The size of the boundary block is checked for overflow, which also covers audit item 4. All six P5 cycle continuation tests give bit-identical branches before and after the change (the full `Debug` output of every branch was compared).
+
+Next: package 3, the LPC curve.
 
 ## Next
 
