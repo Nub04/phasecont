@@ -44,6 +44,35 @@ pub(crate) fn check(a: &[f64], rows: usize, cols: usize) -> Result<(), LinalgErr
     Ok(())
 }
 
+/// Splits a finite nonzero `x` into `(m, e)` with 0.5 <= |m| < 1 and x = m * 2^e.
+fn frexp(x: f64) -> (f64, i32) {
+    // A subnormal has no implicit bit; scale it into the normal range first.
+    let (x, shift) = if x.is_normal() {
+        (x, 0)
+    } else {
+        (x * 2f64.powi(64), -64)
+    };
+    let bits = x.to_bits();
+    let biased = ((bits >> 52) & 0x7ff) as i32;
+    // Replace the exponent field with that of 0.5 (biased 1022).
+    let m = f64::from_bits((bits & !(0x7ff << 52)) | (1022 << 52));
+    (m, biased - 1022 + shift)
+}
+
+/// m * 2^e for 0.5 <= |m| < 1. Out of range, it saturates at +-f64::MAX or at
+/// +-f64::MIN_POSITIVE, keeping the sign.
+fn ldexp_saturating(m: f64, e: i64) -> f64 {
+    if e > 1024 {
+        f64::MAX.copysign(m)
+    } else if e < -1021 {
+        f64::MIN_POSITIVE.copysign(m)
+    } else {
+        // 2m is in [1, 2) and 2^(e-1) is a normal power of two, so the product is exact.
+        let p = f64::from_bits(((e - 1 + 1023) as u64) << 52);
+        (2.0 * m) * p
+    }
+}
+
 /// LU factorization with partial (row) pivoting of a square matrix.
 pub struct Lu {
     n: usize,
@@ -77,16 +106,29 @@ impl Lu {
         let u = lu.U();
         let mut umin = f64::INFINITY;
         let mut umax = 0.0_f64;
-        let mut det = 1.0;
         for i in 0..n {
             let d = u[(i, i)];
             umin = umin.min(d.abs());
             umax = umax.max(d.abs());
-            det *= d;
         }
         if umin == 0.0 || umin <= (n as f64) * f64::EPSILON * umax {
             return Err(LinalgError::Singular);
         }
+        if (0..n).any(|i| !u[(i, i)].is_finite()) {
+            return Err(LinalgError::NotFinite);
+        }
+        // Product of the pivots as mantissa * 2^exp, so that no partial product
+        // overflows or underflows. Scaling by a power of two is exact, so the result has
+        // the same bits as a plain running product whenever that product stays normal.
+        let mut mant = 1.0;
+        let mut exp = 0i64;
+        for i in 0..n {
+            let (m, e) = frexp(u[(i, i)]);
+            let (m, e2) = frexp(mant * m);
+            mant = m;
+            exp += i64::from(e) + i64::from(e2);
+        }
+        let mut det = ldexp_saturating(mant, exp);
         // Sign of the row permutation: (-1)^(n - number of cycles).
         let (fwd, _) = lu.P().arrays();
         let mut seen = vec![false; n];
@@ -127,7 +169,9 @@ impl Lu {
         Ok(())
     }
 
-    /// Determinant, with the sign of the row swaps counted.
+    /// Determinant, with the sign of the row swaps counted. A determinant outside the f64
+    /// range saturates at +-f64::MAX or +-f64::MIN_POSITIVE with its sign, so it is never
+    /// 0, infinite or NaN.
     pub fn det(&self) -> f64 {
         self.det
     }
@@ -230,6 +274,86 @@ mod tests {
         let b = [0.0, 2.0, 3.0, 0.0];
         let d = Lu::new(&b, 2).unwrap().det();
         assert!((d + 6.0).abs() < 1e-13, "{d}");
+    }
+
+    fn diag(d: &[f64]) -> Vec<f64> {
+        let n = d.len();
+        let mut a = vec![0.0; n * n];
+        for (i, x) in d.iter().enumerate() {
+            a[i * n + i] = *x;
+        }
+        a
+    }
+
+    #[test]
+    fn det_out_of_range_keeps_its_sign() {
+        // 60 pivots of 2^20 give 2^1200, and 60 of 2^-20 give 2^-1200. Both are outside
+        // f64, so the determinant saturates at the largest finite or the smallest normal
+        // magnitude and keeps its sign.
+        let big = 2f64.powi(20);
+        let mut d = vec![big; 60];
+        assert_eq!(Lu::new(&diag(&d), 60).unwrap().det(), f64::MAX);
+        d[7] = -big;
+        assert_eq!(Lu::new(&diag(&d), 60).unwrap().det(), -f64::MAX);
+        let mut d = vec![1.0 / big; 60];
+        assert_eq!(Lu::new(&diag(&d), 60).unwrap().det(), f64::MIN_POSITIVE);
+        d[0] = -1.0 / big;
+        assert_eq!(Lu::new(&diag(&d), 60).unwrap().det(), -f64::MIN_POSITIVE);
+    }
+
+    #[test]
+    fn frexp_and_ldexp() {
+        // faer forms the reciprocal of a pivot, which overflows for a subnormal pivot, so
+        // Lu::new reports NotFinite there and the subnormal branch of frexp is tested here.
+        let sub = f64::from_bits(1 << 44);
+        assert!(sub > 0.0 && !sub.is_normal());
+        assert_eq!(frexp(sub), (0.5, -1029));
+        assert_eq!(frexp(-sub), (-0.5, -1029));
+        assert_eq!(frexp(1.0), (0.5, 1));
+        assert_eq!(frexp(-0.75), (-0.75, 0));
+        assert_eq!(frexp(f64::MAX), (f64::MAX / 2f64.powi(1023) / 2.0, 1024));
+        assert_eq!(ldexp_saturating(0.5, 1), 1.0);
+        assert_eq!(ldexp_saturating(-0.75, 0), -0.75);
+        let (m, e) = frexp(f64::MAX);
+        assert_eq!(ldexp_saturating(m, i64::from(e)), f64::MAX);
+        let (m, e) = frexp(f64::MIN_POSITIVE);
+        assert_eq!(ldexp_saturating(m, i64::from(e)), f64::MIN_POSITIVE);
+        assert_eq!(ldexp_saturating(0.5, 1025), f64::MAX);
+        assert_eq!(ldexp_saturating(-0.5, -1022), -f64::MIN_POSITIVE);
+        assert_eq!(
+            Lu::new(&diag(&[sub, 2f64.powi(-1000)]), 2).err(),
+            Some(LinalgError::NotFinite)
+        );
+    }
+
+    #[test]
+    fn det_partial_products_out_of_range() {
+        // 60 pivots of 2^20 then 60 of 2^-20: a plain running product overflows to
+        // infinity halfway, but the determinant is exactly 1.
+        let big = 2f64.powi(20);
+        let mut d = vec![big; 60];
+        d.extend(std::iter::repeat_n(1.0 / big, 60));
+        assert_eq!(Lu::new(&diag(&d), 120).unwrap().det(), 1.0);
+        // The same in the other order underflows to 0 in a plain product.
+        d.reverse();
+        assert_eq!(Lu::new(&diag(&d), 120).unwrap().det(), 1.0);
+    }
+
+    #[test]
+    fn det_in_range_matches_the_plain_product() {
+        // 2^1000 and 2^-1000 fit in f64 and come out exactly.
+        let big = 2f64.powi(20);
+        let d = vec![big; 50];
+        assert_eq!(Lu::new(&diag(&d), 50).unwrap().det(), 2f64.powi(1000));
+        let d = vec![1.0 / big; 50];
+        assert_eq!(Lu::new(&diag(&d), 50).unwrap().det(), 2f64.powi(-1000));
+        // Rounded products give the same bits as a plain running product.
+        let d = [1.1, 3.7, -0.3, 2.9, 1.0 / 3.0, 7.25];
+        let plain = d.iter().product::<f64>();
+        assert_eq!(
+            Lu::new(&diag(&d), 6).unwrap().det().to_bits(),
+            plain.to_bits()
+        );
     }
 
     #[test]
