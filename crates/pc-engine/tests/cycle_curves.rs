@@ -19,8 +19,9 @@ mod common;
 
 use common::{load, rk4};
 use pc_engine::{
-    CycleCurveStart, EngineError, Evaluator, LpcProblem, ModelEval, NsProblem, Options, PdProblem,
-    Problem, StopReason, build, continue_lpc_curve, continue_ns_curve, continue_pd_curve,
+    CycleCurveStart, CycleSetup, CycleStart, EngineError, Evaluator, LpcProblem, ModelEval,
+    NsProblem, Options, PdProblem, Point, Problem, StopReason, build, continue_cycle,
+    continue_lpc_curve, continue_ns_curve, continue_pd_curve,
 };
 use std::f64::consts::PI;
 use std::sync::atomic::AtomicBool;
@@ -614,5 +615,186 @@ fn ns_curve_refuses_bad_starts() {
     match r {
         Err(EngineError::BadProblem(msg)) => assert!(msg.contains("complex"), "{msg}"),
         other => panic!("no complex pair: {other:?}"),
+    }
+}
+
+/// The one special point labelled `label` of an LC run in `free` from the orbit of `start`,
+/// within `bounds` and in `direction`.
+fn lc_special(
+    m: &mut dyn ModelEval,
+    start: &CycleCurveStart,
+    free: usize,
+    bounds: (f64, f64),
+    direction: f64,
+    label: &str,
+) -> Point {
+    let setup = CycleSetup::new(
+        free,
+        start.params.clone(),
+        start.ntst,
+        start.ncol,
+        start.orbit.clone(),
+        start.period,
+    );
+    let o = Options {
+        direction,
+        ..opts(bounds)
+    };
+    let cancel = AtomicBool::new(false);
+    let branch = continue_cycle(m, &CycleStart::Orbit(setup), &o, &cancel, &mut |_| ()).unwrap();
+    assert_eq!(branch.stop, StopReason::Bounds, "{:?}", branch.warnings);
+    let found: Vec<_> = branch
+        .specials
+        .iter()
+        .filter(|s| s.label == label)
+        .collect();
+    assert_eq!(found.len(), 1, "{label}: {:?}", branch.specials);
+    found[0].point.clone()
+}
+
+/// The LC run in b1 at b2 = 1 from the outer cycle r^2 = 0.7 turns at the LPC point
+/// b1 = -1/4, and the LPC curve from that point follows b1 = -b2^2 / 4.
+#[test]
+fn lpc_curve_starts_at_the_lpc_point_of_a_cycle_branch() {
+    let (ntst, ncol) = (40, 4);
+    for which in BOTH {
+        let mut m = model_of("bautin_lpc", &which);
+        let orbit = bautin_start(-0.21, 1.0, 0.7_f64.sqrt(), ntst, ncol);
+        let lpc = lc_special(m.as_mut(), &orbit, 0, (-0.3, -0.15), -1.0, "LPC");
+        println!("{which:?}: LPC at b1 = {:.12}", lpc.alpha);
+        assert!((lpc.alpha + 0.25).abs() < 1e-6, "{which:?}: {}", lpc.alpha);
+        let start = CycleCurveStart::from_point([0, 1], &orbit.params, &lpc, ntst, ncol);
+        let cancel = AtomicBool::new(false);
+        let branch =
+            continue_lpc_curve(m.as_mut(), &start, &opts((0.5, 1.5)), &cancel, &mut |_| ())
+                .unwrap();
+        assert_eq!(branch.stop, StopReason::Bounds, "{which:?}");
+        assert!((branch.points[0].alpha - 1.0).abs() < 1e-12);
+        let e_b1 = branch
+            .points
+            .iter()
+            .map(|pt| (pt.u[pt.u.len() - 1] + pt.alpha * pt.alpha / 4.0).abs())
+            .fold(0.0, f64::max);
+        println!(
+            "{which:?}: b1 {e_b1:.2e} over {} points",
+            branch.points.len()
+        );
+        assert!(e_b1 < 1e-8, "{which:?}: {e_b1:.2e}");
+    }
+}
+
+/// The LC run in a1 at a2 = 0.2 finds the PD point a1 = 0.04, and the PD curve from that
+/// point follows a1 = a2^2.
+#[test]
+fn pd_curve_starts_at_the_pd_point_of_a_cycle_branch() {
+    let (ntst, ncol) = (40, 4);
+    for which in BOTH {
+        let mut m = model_of("pd_twist", &which);
+        let orbit = pd_start(0.0, 0.2, ntst, ncol);
+        let pd = lc_special(m.as_mut(), &orbit, 0, (-0.05, 0.1), 1.0, "PD");
+        println!("{which:?}: PD at a1 = {:.12}", pd.alpha);
+        assert!((pd.alpha - 0.04).abs() < 1e-6, "{which:?}: {}", pd.alpha);
+        let start = CycleCurveStart::from_point([0, 1], &orbit.params, &pd, ntst, ncol);
+        let cancel = AtomicBool::new(false);
+        let branch =
+            continue_pd_curve(m.as_mut(), &start, &opts((0.1, 0.5)), &cancel, &mut |_| ()).unwrap();
+        assert_eq!(branch.stop, StopReason::Bounds, "{which:?}");
+        assert!((branch.points[0].alpha - 0.2).abs() < 1e-12);
+        let e_a1 = branch
+            .points
+            .iter()
+            .map(|pt| (pt.u[pt.u.len() - 1] - pt.alpha * pt.alpha).abs())
+            .fold(0.0, f64::max);
+        println!(
+            "{which:?}: a1 {e_a1:.2e} over {} points",
+            branch.points.len()
+        );
+        assert!(e_a1 < 1e-8, "{which:?}: {e_a1:.2e}");
+    }
+}
+
+/// The LC run in be at al = 0.2 finds the NS point be = -0.1, and the NS curve from that
+/// point follows be = -al / 2 with the exact kappa.
+#[test]
+fn ns_curve_starts_at_the_ns_point_of_a_cycle_branch() {
+    let (ntst, ncol) = (40, 4);
+    for which in BOTH {
+        let mut m = model_of("ns4", &which);
+        let orbit = ns_start(0.2, -0.15, 0.2, 0.5, ntst, ncol);
+        let ns = lc_special(m.as_mut(), &orbit, 1, (-0.2, -0.05), 1.0, "NS");
+        println!("{which:?}: NS at be = {:.12}", ns.alpha);
+        assert!((ns.alpha + 0.1).abs() < 1e-6, "{which:?}: {}", ns.alpha);
+        let start = CycleCurveStart::from_point([1, 0], &orbit.params, &ns, ntst, ncol);
+        let cancel = AtomicBool::new(false);
+        let branch =
+            continue_ns_curve(m.as_mut(), &start, &opts((0.12, 0.5)), &cancel, &mut |_| ())
+                .unwrap();
+        assert_eq!(branch.stop, StopReason::Bounds, "{which:?}");
+        assert!((branch.points[0].alpha - 0.2).abs() < 1e-12);
+        let (mut e_be, mut e_k) = (0.0_f64, 0.0_f64);
+        for pt in &branch.points {
+            let k = pt.u.len() - 3;
+            e_be = e_be.max((pt.u[k + 1] + 0.5 * pt.alpha).abs());
+            e_k = e_k.max((pt.u[k + 2] - ns_kappa(pt.alpha)).abs());
+        }
+        println!(
+            "{which:?}: be {e_be:.2e}, kappa {e_k:.2e} over {} points",
+            branch.points.len()
+        );
+        assert!(e_be < 1e-8 && e_k < 1e-8, "{which:?}");
+    }
+}
+
+/// A special point of the wrong type does not start a curve: the Bautin LPC point has no
+/// multiplier -1, the ns4 NS point no double multiplier 1, and the pd_twist PD point no
+/// complex pair.
+#[test]
+fn curves_refuse_special_points_of_another_type() {
+    let (ntst, ncol) = (20, 4);
+    let cancel = AtomicBool::new(false);
+
+    let mut bautin = model_of("bautin_lpc", &Evaluator::Jit);
+    let orbit = bautin_start(-0.21, 1.0, 0.7_f64.sqrt(), ntst, ncol);
+    let lpc = lc_special(bautin.as_mut(), &orbit, 0, (-0.3, -0.15), -1.0, "LPC");
+    let start = CycleCurveStart::from_point([0, 1], &orbit.params, &lpc, ntst, ncol);
+    let r = continue_pd_curve(
+        bautin.as_mut(),
+        &start,
+        &opts((0.5, 1.5)),
+        &cancel,
+        &mut |_| (),
+    );
+    println!("PD curve from an LPC point: {r:?}");
+    assert!(matches!(r, Err(EngineError::BadProblem(_))), "{r:?}");
+
+    let mut ns4 = model_of("ns4", &Evaluator::Jit);
+    let orbit = ns_start(0.2, -0.15, 0.2, 0.5, ntst, ncol);
+    let ns = lc_special(ns4.as_mut(), &orbit, 1, (-0.2, -0.05), 1.0, "NS");
+    let start = CycleCurveStart::from_point([1, 0], &orbit.params, &ns, ntst, ncol);
+    let r = continue_lpc_curve(
+        ns4.as_mut(),
+        &start,
+        &opts((0.12, 0.5)),
+        &cancel,
+        &mut |_| (),
+    );
+    println!("LPC curve from an NS point: {r:?}");
+    assert!(matches!(r, Err(EngineError::BadProblem(_))), "{r:?}");
+
+    let mut twist = model_of("pd_twist", &Evaluator::Jit);
+    let orbit = pd_start(0.0, 0.2, ntst, ncol);
+    let pd = lc_special(twist.as_mut(), &orbit, 0, (-0.05, 0.1), 1.0, "PD");
+    let start = CycleCurveStart::from_point([0, 1], &orbit.params, &pd, ntst, ncol);
+    let r = continue_ns_curve(
+        twist.as_mut(),
+        &start,
+        &opts((0.1, 0.5)),
+        &cancel,
+        &mut |_| (),
+    );
+    println!("NS curve from a PD point: {r:?}");
+    match r {
+        Err(EngineError::BadProblem(msg)) => assert!(msg.contains("complex"), "{msg}"),
+        other => panic!("NS curve from a PD point: {other:?}"),
     }
 }

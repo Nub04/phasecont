@@ -153,7 +153,9 @@ impl CycleCurveStart {
 }
 
 /// Runs a curve from `x0`, in the original unknowns, on the scaled problem `p`. The start
-/// is corrected at fixed a2 first. The first tangent is bordered by the a2 direction, or
+/// is corrected at fixed a2 first. A correction that fails, hits a singular matrix or
+/// leaves the finite numbers is a start off the curve, such as a special point of another
+/// type, and returns `BadProblem`. The first tangent is bordered by the a2 direction, or
 /// by the next unknown when that bordered matrix is singular, and points to growing a2,
 /// times the sign of `Options::direction`.
 pub(super) fn run_curve<P: Problem>(
@@ -168,11 +170,16 @@ pub(super) fn run_curve<P: Problem>(
     }
     let dim = p.dim();
     p.scale(&mut x0);
+    let hint = "start from a matching special point of a cycle branch";
     let x0 = match fixed_alpha(&mut p, x0, opts, cancel) {
         Err(EngineError::NewtonFailed { iters, .. }) => {
             return Err(EngineError::BadProblem(format!(
-                "the start did not converge onto the curve in {iters} Newton iterations; \
-                 start from a matching special point of a cycle branch"
+                "the start did not converge onto the curve in {iters} Newton iterations; {hint}"
+            )));
+        }
+        Err(e @ (EngineError::Singular(_) | EngineError::NotFinite(_))) => {
+            return Err(EngineError::BadProblem(format!(
+                "the start did not converge onto the curve ({e}); {hint}"
             )));
         }
         r => r?,
