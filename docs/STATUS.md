@@ -208,7 +208,15 @@ Rulings in P6 package 7:
 - A curve removes its critical multipliers by nearest match: the two closest to 1 on an LPC curve, the ones closest to 1 and -1 on a PD curve, and the closest to 1 and to each root of μ² - 2κμ + 1 on an NS curve. A test over an empty rest set is NaN (undefined), and so is a pair product over fewer than two multipliers, so locate skips it.
 - The neutral saddle warning counts a root as missing when the nearest remaining multiplier is more than 1e-6 away, relative to max(|root|, 1).
 
-Next: package 8, Morris-Lecar and Rössler model tests and the RK4 shooting oracle.
+- package 8. The model tests of SPEC section 14 are in `tests/cycle_curve_models.rs`, with our own `morris_lecar.ode` (the type II set, I and phi first). `tests/common` has an RK4 shooting oracle that shares no code with the collocation: Newton on (u0, T, a1) with periodicity, the section f(u_ref)·(u0 - u_ref) and det[M - I, f(u0); f(u_ref)ᵀ, 0] = 0 for a fold or det(M + I) = 0 for a flip, with M from the variational equations and the exact f_x. The Morris-Lecar LPC curve in (I, phi) runs from the fold at phi = 0.04 (I = 88.2932505431) to phi = 0.06 with no warnings, ends on the fold that an LC run at phi = 0.06 finds (I = 91.2171895691, T = 101.4575045510), and matches the oracle in T to 7.4e-11 and in I to 8.9e-14 at its middle point and to 5.3e-12 and 1.9e-14 at its end. The Rössler PD curve in (c, a) from the PD at a = 0.2 (c = 2.8324450280) runs to a = 0.25 (c = 2.2814357594) and to a = 0.15 (c = 3.9157034124), ends on the PD points that LC runs at those values of a find, and matches the oracle in T to 5.4e-12 and in c to 2.0e-10. The LC runs and the curve ends agree within the 1e-6 of the test, and u0 matches the oracle within 1e-6 too. The file takes 3.5 s in release and 119 s in debug.
+
+Rulings in P6 package 8:
+
+- On an LPC curve the multiplier 1 is double and splits by about the square root of the discretization error, so the mesh warning of `floquet_warning` checks the mean of the two multipliers closest to 1 there. The LPC curve passes multiplicity 2 and the PD and NS curves pass 1. Before this, every Morris-Lecar point gave a false warning.
+- Morris-Lecar uses NTST 160 and NCOL 4. At NTST 80 and 120 the mean of the double multiplier is more than 1e-6 from 1, which is real mesh error, and the warning is correct there.
+- The `references/*.json` oracle tests of the plan go into `tests/CycleCurveTest.m` in package 10, skipped as "oracle missing", where the P5 oracle test also lives.
+
+Next: package 9, run machinery, pc-ffi and CLI.
 
 ## Next
 

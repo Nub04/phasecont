@@ -1,0 +1,14 @@
+# Morris-Lecar model with the type II parameter set of crates/pc-ode/tests/corpus,
+# with I and phi first so that they are parameters 0 and 1. The rest state loses
+# stability in a Hopf point and the stable cycle ends in a fold of cycles below it.
+par I=100,phi=0.04
+par C=20,gL=2,gK=8,gCa=4.4
+par vL=-60,vK=-84,vCa=120
+par v1=-1.2,v2=18,v3=2,v4=30
+minf=0.5*(1+tanh((v-v1)/v2))
+winf=0.5*(1+tanh((v-v3)/v4))
+tauw=1/cosh((v-v3)/(2*v4))
+v'=(I-gL*(v-vL)-gK*w*(v-vK)-gCa*minf*(v-vCa))/C
+w'=phi*(winf-w)/tauw
+init v=-20,w=0.1
+done
