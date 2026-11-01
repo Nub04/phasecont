@@ -388,3 +388,42 @@ fn a_cycle_run_prints_the_orbit_the_mesh_and_the_multipliers() {
         assert_eq!(p["codim2"].as_array().unwrap().len(), 3);
     }
 }
+
+#[test]
+fn an_lpc_curve_run_follows_the_bautin_fold() {
+    let (ntst, ncol) = (6, 3);
+    let pts = ntst * ncol + 1;
+    let r = 0.5_f64.sqrt();
+    let mut u0: Vec<f64> = (0..pts)
+        .flat_map(|k| {
+            let t = 2.0 * std::f64::consts::PI * k as f64 / (pts - 1) as f64;
+            [r * t.cos(), r * t.sin()]
+        })
+        .collect();
+    u0.push(2.0 * std::f64::consts::PI / 1.25);
+    let mesh: Vec<f64> = (0..=ntst).map(|j| j as f64 / ntst as f64).collect();
+    let problem = serde_json::json!({
+        "type": "LPC", "free": ["b1", "b2"], "params": {"b1": -0.25, "b2": 1, "g": 0.5},
+        "u0": u0, "ntst": ntst, "ncol": ncol, "mesh": mesh,
+        "options": {"hmax": 0.05, "max_steps": 6, "bounds": [0.5, 1.5]}
+    });
+    let path = scratch().join("lpc.json");
+    std::fs::write(&path, problem.to_string()).unwrap();
+    let o = run(
+        &scratch(),
+        &["cont", &model("bautin_lpc"), path.to_str().unwrap()],
+    );
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+    let pts = v["branches"][0]["points"].as_array().unwrap();
+    assert!(pts.len() > 3, "{v}");
+    for p in pts {
+        // The orbit at 6 * 3 + 1 points of 2 states, then T and b1; alpha is b2.
+        let u = p["u"].as_array().unwrap();
+        assert_eq!(u.len(), 2 * 19 + 2);
+        assert_eq!(p["mesh"].as_array().unwrap().len(), ntst + 1);
+        assert_eq!(p["codim2"].as_array().unwrap().len(), 2);
+        let (b1, b2) = (u[39].as_f64().unwrap(), p["alpha"].as_f64().unwrap());
+        assert!((b1 + b2 * b2 / 4.0).abs() < 1e-3, "b1 = {b1}, b2 = {b2}");
+    }
+}

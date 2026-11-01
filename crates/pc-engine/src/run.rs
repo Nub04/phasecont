@@ -13,7 +13,10 @@
 
 use crate::branch::{Branch, Options, Point, SpecialPoint, StopReason};
 use crate::curve2::CurveSetup;
-use crate::cycle::{CycleStart, continue_cycle};
+use crate::cycle::{
+    CycleCurveStart, CycleStart, continue_cycle, continue_lpc_curve, continue_ns_curve,
+    continue_pd_curve,
+};
 use crate::ep::{EpSetup, continue_ep};
 use crate::error::EngineError;
 use crate::hopfcurve::continue_hopf_curve;
@@ -38,6 +41,12 @@ pub enum RunKind {
     HopfCurve(CurveSetup),
     /// A branch of periodic orbits in one parameter.
     Cycle(CycleStart),
+    /// The LPC curve through an LPC point of a cycle branch, in two parameters.
+    LpcCurve(CycleCurveStart),
+    /// The PD curve through a PD point of a cycle branch, in two parameters.
+    PdCurve(CycleCurveStart),
+    /// The NS curve through an NS point of a cycle branch, in two parameters.
+    NsCurve(CycleCurveStart),
 }
 
 /// What to run. The worker lowers and compiles the model on its own thread.
@@ -81,7 +90,7 @@ impl RunSpec {
         }
     }
 
-    /// A spec for a run that starts from `kind` alone: `LpCurve`, `HopfCurve` or `Cycle`.
+    /// A spec for a run that starts from `kind` alone, which is any kind but `Ep`.
     /// With `Ep` the run fails with `BadProblem` because there is no equilibrium start.
     pub fn curve(
         model: Model,
@@ -203,6 +212,9 @@ fn follow(
         RunKind::LpCurve(cs) => continue_lp_curve(model, cs, opts, &shared.cancel, on_point),
         RunKind::HopfCurve(cs) => continue_hopf_curve(model, cs, opts, &shared.cancel, on_point),
         RunKind::Cycle(start) => continue_cycle(model, start, opts, &shared.cancel, on_point),
+        RunKind::LpcCurve(cs) => continue_lpc_curve(model, cs, opts, &shared.cancel, on_point),
+        RunKind::PdCurve(cs) => continue_pd_curve(model, cs, opts, &shared.cancel, on_point),
+        RunKind::NsCurve(cs) => continue_ns_curve(model, cs, opts, &shared.cancel, on_point),
     };
     match &b {
         Ok(branch) => shared.lock().branches[idx] = branch.clone(),
@@ -498,6 +510,55 @@ mod tests {
             assert_eq!(p.mesh.len(), ntst + 1);
             assert_eq!(p.eigenvalues.len(), 2);
             assert_eq!(p.codim2.len(), CYCLE_LABELS.len());
+        }
+    }
+
+    #[test]
+    fn an_lpc_curve_run_follows_the_bautin_fold() {
+        // On bautin_lpc.ode the LPC curve is b1 = -b2^2 / 4 with r^2 = b2 / 2, and the
+        // period is 2 pi / (1 + g r^2).
+        let (model, info) = test_model("bautin_lpc.ode");
+        let (ntst, ncol) = (8, 3);
+        let r = 0.5_f64.sqrt();
+        let pts = ntst * ncol + 1;
+        let orbit = (0..pts)
+            .flat_map(|k| {
+                let t = std::f64::consts::TAU * k as f64 / (pts - 1) as f64;
+                [r * t.cos(), r * t.sin()]
+            })
+            .collect();
+        let start = CycleCurveStart {
+            free: [0, 1],
+            params: vec![-0.25, 1.0, 0.5],
+            orbit,
+            period: std::f64::consts::TAU / (1.0 + 0.5 * r * r),
+            mesh: (0..=ntst).map(|j| j as f64 / ntst as f64).collect(),
+            ntst,
+            ncol,
+        };
+        let opts = Options {
+            max_newton: 15,
+            hmax: 0.05,
+            max_steps: 30,
+            bounds: (0.8, 1.2),
+            ..Options::default()
+        };
+        let spec = RunSpec::curve(model, info, Evaluator::Jit, RunKind::LpcCurve(start), opts);
+        let run = Run::start(spec);
+        while run.poll().state == RunState::Running {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let st = run.poll();
+        assert_eq!(st.state, RunState::Done);
+        assert!(st.points[0] > 3, "{:?}", st.points);
+        for p in run.points(0, 0, usize::MAX) {
+            // u = (profile, T, a1) and alpha = a2.
+            assert_eq!(p.u.len(), 2 * (ntst * ncol + 1) + 2);
+            assert_eq!(p.mesh.len(), ntst + 1);
+            assert_eq!(p.eigenvalues.len(), 2);
+            assert_eq!(p.codim2.len(), crate::cycle::LPC_CURVE_LABELS.len());
+            let b1 = p.u[p.u.len() - 1];
+            assert!((b1 + p.alpha * p.alpha / 4.0).abs() < 1e-3, "b1 {b1}");
         }
     }
 

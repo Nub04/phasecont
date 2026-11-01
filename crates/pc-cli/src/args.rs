@@ -156,19 +156,22 @@ line per special point.
 
 The problem file is a JSON object:
   type      \"EP\" equilibria, \"LP\" or \"H\" a curve of fold or Hopf points in
-            two parameters, \"LC\" periodic orbits (required)
-  free      name of the continuation parameter, or [a1, a2] for LP and H
+            two parameters, \"LC\" periodic orbits, \"LPC\", \"PD\" or \"NS\" a
+            curve of fold, period-doubling or Neimark-Sacker points of cycles in
+            two parameters (required)
+  free      name of the continuation parameter, or [a1, a2] for LP, H, LPC, PD
+            and NS, with a1 the parameter of the branch the start point is on
             (required)
   u0        starting state (default: the model's init): one number per state,
             on an LP or H curve the point there, for LC \"hopf\" the equilibrium
-            at the Hopf point, for LC \"orbit\" or \"pd\" the orbit at the
-            N m + 1 base points of its mesh, point by point, then the period
-            (required for those two)
+            at the Hopf point, for LC \"orbit\" or \"pd\" and for LPC, PD and NS
+            the orbit at the N m + 1 base points of its mesh, point by point,
+            then the period (required for those)
   params    object of parameter values by name (default: the model's values)
   options   h0, hmin, hmax, max_steps, tol_x, tol_f, max_newton, direction,
-            bounds [lo, hi], detect {lp, bp, h} (not for LC), mesh_adapt (LC
-            only: adapt the mesh every that many steps, 0 never); engine
-            defaults for the rest
+            bounds [lo, hi], detect {lp, bp, h} (EP, LP and H only),
+            mesh_adapt (cycles only: adapt the mesh every that many steps, 0
+            never); engine defaults for the rest
   switch    EP only: name of a special point of the first branch, for example
             \"BP1\": the run switches there and follows the second branch
 
@@ -178,6 +181,12 @@ LC only:
   start     \"hopf\" from a Hopf point, \"orbit\" from an orbit on the uniform
             mesh, \"pd\" the doubled orbit from a PD point (required)
   mesh      for \"pd\": the mesh of the orbit in u0, from 0 to 1, rising
+
+LPC, PD and NS only:
+  ntst      number of mesh intervals N of the curve, at least 1 (required)
+  ncol      collocation points per interval m of the curve, 2 to 7 (required)
+  mesh      the mesh of the orbit in u0, from 0 to 1, rising (required); the
+            orbit is regridded when it differs from the N and m of the curve
 
 options:
   --fallback  evaluate the model with the f64 interpreter instead of the JIT

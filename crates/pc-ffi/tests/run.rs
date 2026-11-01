@@ -5,8 +5,8 @@ use std::ptr;
 use std::time::{Duration, Instant};
 
 use pc_engine::{
-    CurveSetup, CycleStart, EpSetup, Evaluator, HopfStart, Options, Point, Run, RunKind, RunSpec,
-    RunState, StopReason, build,
+    CurveSetup, CycleCurveStart, CycleStart, EpSetup, Evaluator, HopfStart, Options, Point, Run,
+    RunKind, RunSpec, RunState, StopReason, build,
 };
 use pc_ode::{MapLoader, SourceMap, load};
 use pckern::{PcApiV1, pc_api_v1};
@@ -836,7 +836,7 @@ fn bad_curve_problems_give_6_at_run_start() {
         ),
         (
             r#"{"type":"XX","free":"b1"}"#,
-            r#"type: expected "EP", "LP", "H" or "LC""#,
+            r#"type: expected "EP", "LP", "H", "LC", "LPC", "PD" or "NS""#,
         ),
     ];
     for (json, msg) in cases {
@@ -849,9 +849,15 @@ fn bad_curve_problems_give_6_at_run_start() {
 /// The cycle row the ABI documents, written out again: `[alpha, u(n (N m + 1)), T,
 /// mesh(N + 1), mult_re(n), mult_im(n), psi_LPC, psi_PD, psi_NS, h, newton_iters]`.
 fn expected_cycle_row(p: &Point, n: usize, ntst: usize, ncol: usize) -> Vec<f64> {
+    cycle_row(p, n, (ntst, ncol), 1, 3)
+}
+
+/// A cycle row with `tail` values after the profile (T, then a1 and kappa on a curve) and
+/// `k` codim-2 tests.
+fn cycle_row(p: &Point, n: usize, (ntst, ncol): (usize, usize), tail: usize, k: usize) -> Vec<f64> {
     let mut row = vec![p.alpha];
     let get = |v: &[f64], i: usize| v.get(i).copied().unwrap_or(f64::NAN);
-    row.extend((0..n * (ntst * ncol + 1) + 1).map(|i| get(&p.u, i)));
+    row.extend((0..n * (ntst * ncol + 1) + tail).map(|i| get(&p.u, i)));
     row.extend((0..=ntst).map(|i| get(&p.mesh, i)));
     let mult = |i: usize| {
         p.eigenvalues
@@ -861,10 +867,98 @@ fn expected_cycle_row(p: &Point, n: usize, ntst: usize, ncol: usize) -> Vec<f64>
     };
     row.extend((0..n).map(|i| mult(i).0));
     row.extend((0..n).map(|i| mult(i).1));
-    row.extend((0..3).map(|i| get(&p.codim2, i)));
+    row.extend((0..k).map(|i| get(&p.codim2, i)));
     row.push(p.h);
     row.push(p.newton_iters as f64);
     row
+}
+
+/// Bautin normal form r' = r (b1 + b2 r^2 - r^4), theta' = 1 + g r^2. Its LPC curve is
+/// b1 = -b2^2 / 4 with r^2 = b2 / 2.
+const BAUTIN: &str = "par b1=-0.25,b2=1,g=0.5\n\
+x'=(b1+b2*(x^2+y^2)-(x^2+y^2)^2)*x-(1+g*(x^2+y^2))*y\n\
+y'=(1+g*(x^2+y^2))*x+(b1+b2*(x^2+y^2)-(x^2+y^2)^2)*y\n\
+init x=0.7,y=0\ndone\n";
+
+#[test]
+fn an_lpc_curve_run_has_curve_rows_with_a1_after_the_period() {
+    let m = compiled(BAUTIN);
+    let (n, ntst, ncol) = (2, 8, 3);
+    // The exact LPC cycle at b2 = 1, on the uniform mesh.
+    let (b1, b2, r) = (-0.25, 1.0, 0.5_f64.sqrt());
+    let pts = ntst * ncol + 1;
+    let mut u0: Vec<f64> = (0..pts)
+        .flat_map(|k| {
+            let t = 2.0 * std::f64::consts::PI * k as f64 / (pts - 1) as f64;
+            [r * t.cos(), r * t.sin()]
+        })
+        .collect();
+    let period = 2.0 * std::f64::consts::PI / (1.0 + 0.5 * r * r);
+    u0.push(period);
+    let mesh: Vec<f64> = (0..=ntst).map(|j| j as f64 / ntst as f64).collect();
+    let json = format!(
+        r#"{{"type":"LPC","free":["b1","b2"],"ntst":{ntst},"ncol":{ncol},"mesh":{},"options":{{"hmax":0.05,"max_steps":8,"bounds":[0.5,1.5]}}}}"#,
+        serde_json::to_string(&mesh).unwrap()
+    );
+    let params = [b1, b2, 0.5];
+    let (rc, run) = start_with(&m, &json, &u0, &params);
+    assert_eq!(rc, 0, "{}", last_error());
+    let run = Id(run);
+    let st = wait(&run);
+    assert_eq!(st["state"], "done", "{st}");
+    assert_eq!(st["kind"], "LPC");
+    assert_eq!(st["codim2_labels"], serde_json::json!(["LPPD", "LPNS"]));
+    assert_eq!(st["ntst"], ntst);
+    assert_eq!(st["ncol"], ncol);
+    let stride = st["stride"].as_u64().unwrap() as usize;
+    let profile = n * (ntst * ncol + 1);
+    assert_eq!(stride, 1 + profile + 2 + (ntst + 1) + 2 * n + 2 + 2);
+
+    let start = CycleCurveStart {
+        free: [0, 1],
+        params: params.to_vec(),
+        orbit: u0[..profile].to_vec(),
+        period,
+        mesh,
+        ntst,
+        ncol,
+    };
+    let opts = Options {
+        hmax: 0.05,
+        max_steps: 8,
+        bounds: (0.5, 1.5),
+        ..Options::default()
+    };
+    let mut map = SourceMap::new();
+    let f = map.add("model.ode", BAUTIN);
+    let l = load(f, &mut map, &mut MapLoader::new());
+    let engine = Run::start(RunSpec::curve(
+        l.expanded,
+        l.info,
+        Evaluator::Jit,
+        RunKind::LpcCurve(start),
+        opts,
+    ));
+    let t0 = Instant::now();
+    while engine.poll().state == RunState::Running {
+        assert!(t0.elapsed() < Duration::from_secs(60));
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let want = engine.points(0, 0, usize::MAX);
+    let count = st["branches"][0]["points"].as_u64().unwrap() as usize;
+    assert_eq!(count, want.len());
+    assert!(count > 3, "{st}");
+    let (rc, rows, got) = copy(run.0, 0, 0, 0, count, stride);
+    assert_eq!((rc, rows), (0, count), "{}", last_error());
+    for (i, point) in want.iter().enumerate() {
+        let w = cycle_row(point, n, (ntst, ncol), 2, 2);
+        assert!(same_bits(&got[i * stride..(i + 1) * stride], &w), "row {i}");
+    }
+    // Each row has a2 = b2 first and a1 = b1 after the period, on b1 = -b2^2 / 4.
+    for row in got.chunks(stride) {
+        let (b2, b1) = (row[0], row[2 + profile]);
+        assert!((b1 + b2 * b2 / 4.0).abs() < 1e-4, "b1 = {b1}, b2 = {b2}");
+    }
 }
 
 const LC_OPTIONS: &str = r#""options":{"hmax":0.05,"max_steps":15,"bounds":[1.5,2.6]}"#;
@@ -1005,11 +1099,11 @@ fn bad_cycle_problems_give_6_and_bad_lengths_give_2() {
         ),
         (
             r#"{"type":"EP","free":"b","ntst":4}"#,
-            "ntst: only an LC run takes this key",
+            "ntst: only an LC, LPC, PD or NS run takes this key",
         ),
         (
             r#"{"type":"EP","free":"b","options":{"mesh_adapt":2}}"#,
-            "options.mesh_adapt: only an LC run",
+            "options.mesh_adapt: only an LC, LPC, PD or NS run",
         ),
     ];
     for (json, msg) in cases {

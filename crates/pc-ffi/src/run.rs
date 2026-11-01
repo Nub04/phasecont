@@ -24,14 +24,18 @@ impl Handle for RunHandle {
 /// newton_iters]`. A curve row is `[a2, x(n), a1, kappa (Hopf only), eig_re(n), eig_im(n),
 /// codim2(k), h, newton_iters]`, with `k` the number of codim-2 labels of the kind. A cycle
 /// row on N intervals of m points is `[alpha, u(n (N m + 1)), T, mesh(N + 1), mult_re(n),
-/// mult_im(n), psi_LPC, psi_PD, psi_NS, h, newton_iters]`, with the orbit point-major.
+/// mult_im(n), psi_LPC, psi_PD, psi_NS, h, newton_iters]`, with the orbit point-major. A
+/// row of an LPC or PD curve is `[a2, u(n (N m + 1)), T, a1, mesh(N + 1), mult_re(n),
+/// mult_im(n), codim2(k), h, newton_iters]`, and an NS curve adds kappa after a1.
 pub(crate) fn stride(kind: Kind, n: usize) -> usize {
     match kind {
         Kind::Ep => 3 * n + 6,
         Kind::Lp => 1 + (n + 1) + 2 * n + kind.labels().len() + 2,
         Kind::Hopf => 1 + (n + 2) + 2 * n + kind.labels().len() + 2,
         // The parser rejects sizes that overflow; MAX makes a copy fail rather than wrap.
-        Kind::Lc { ntst, ncol } => cycle_stride(n, ntst, ncol).unwrap_or(usize::MAX),
+        Kind::Lc { .. } | Kind::Lpc { .. } | Kind::Pd { .. } | Kind::Ns { .. } => {
+            cycle_stride(kind, n).unwrap_or(usize::MAX)
+        }
     }
 }
 
@@ -41,12 +45,16 @@ pub(crate) fn pack_row(kind: Kind, p: &Point, n: usize, out: &mut [f64]) {
     debug_assert_eq!(out.len(), stride(kind, n));
     let nan = f64::NAN;
     out[0] = p.alpha;
-    // The state block: `n` values, plus a1 (and kappa) on a curve, or the orbit and T.
+    // The state block: `n` values, plus a1 (and kappa) on a curve, or the orbit, T and
+    // what follows T on a curve of cycles.
     let (block, mesh) = match kind {
         Kind::Ep => (n, 0),
         Kind::Lp => (n + 1, 0),
         Kind::Hopf => (n + 2, 0),
-        Kind::Lc { ntst, ncol } => (n * (ntst * ncol + 1) + 1, ntst + 1),
+        Kind::Lc { ntst, ncol }
+        | Kind::Lpc { ntst, ncol }
+        | Kind::Pd { ntst, ncol }
+        | Kind::Ns { ntst, ncol } => (n * (ntst * ncol + 1) + kind.cycle_tail(), ntst + 1),
     };
     for i in 0..block {
         out[1 + i] = p.u.get(i).copied().unwrap_or(nan);
@@ -162,7 +170,7 @@ pub(crate) fn poll_json(h: &RunHandle, st: &Status) -> Result<Value> {
         "stride": stride(h.kind, h.n),
         "branches": branches,
     });
-    if let Kind::Lc { ntst, ncol } = h.kind {
+    if let Some((ntst, ncol)) = h.kind.mesh_size() {
         out["ntst"] = json!(ntst);
         out["ncol"] = json!(ncol);
     }
@@ -258,6 +266,57 @@ mod tests {
         p.mesh.clear();
         pack_row(lc, &p, 1, &mut row);
         assert!(row[5].is_nan() && row[6].is_nan());
+    }
+
+    #[test]
+    fn a_row_of_a_curve_of_cycles_has_a1_and_kappa_after_the_period() {
+        let mut p = point();
+        // n = 1 on 1 interval of 2 points: the orbit at 3 base points, T, a1 and kappa.
+        p.u = vec![1.0, 2.0, 3.0, 6.5, 4.0, 0.25];
+        p.alpha = 0.75;
+        p.mesh = vec![0.0, 1.0];
+        p.eigenvalues = vec![(-1.0, 0.0)];
+        p.codim2 = vec![7.0, 8.0];
+        for kind in [
+            Kind::Lpc { ntst: 1, ncol: 2 },
+            Kind::Pd { ntst: 1, ncol: 2 },
+        ] {
+            let mut row = vec![0.0; stride(kind, 1)];
+            // [a2, u(3), T, a1, mesh(2), mult_re, mult_im, codim2(2), h, iters]
+            assert_eq!(row.len(), 1 + 3 + 2 + 2 + 2 + 2 + 2);
+            pack_row(kind, &p, 1, &mut row);
+            assert_eq!(
+                &row[..10],
+                [0.75, 1.0, 2.0, 3.0, 6.5, 4.0, 0.0, 1.0, -1.0, 0.0]
+            );
+            assert_eq!(&row[10..], [7.0, 8.0, 0.125, 3.0]);
+            assert_eq!(kind.mesh_size(), Some((1, 2)));
+        }
+        let ns = Kind::Ns { ntst: 1, ncol: 2 };
+        let mut row = vec![0.0; stride(ns, 1)];
+        // [a2, u(3), T, a1, kappa, mesh(2), mult_re, mult_im, R1 to R4, LPNS, PDNS, h, iters]
+        assert_eq!(row.len(), 1 + 3 + 3 + 2 + 2 + 6 + 2);
+        pack_row(ns, &p, 1, &mut row);
+        assert_eq!(
+            &row[..11],
+            [0.75, 1.0, 2.0, 3.0, 6.5, 4.0, 0.25, 0.0, 1.0, -1.0, 0.0]
+        );
+        assert_eq!(&row[11..13], [7.0, 8.0]);
+        assert!(row[13..17].iter().all(|x| x.is_nan()));
+        assert_eq!(&row[17..], [0.125, 3.0]);
+        assert_eq!(
+            [
+                Kind::Lpc { ntst: 1, ncol: 2 }.name(),
+                Kind::Pd { ntst: 1, ncol: 2 }.name(),
+                ns.name()
+            ],
+            ["LPC", "PD", "NS"]
+        );
+        let huge = Kind::Ns {
+            ntst: usize::MAX / 2,
+            ncol: 3,
+        };
+        assert_eq!(stride(huge, 2), usize::MAX);
     }
 
     #[test]
