@@ -360,6 +360,12 @@ pub unsafe extern "C" fn model_info(model: u64, out_json: *mut *mut c_char) -> i
             "init": names.init,
             "aux": names.aux,
             "autonomous": names.autonomous,
+            "source_sha256": names.source_sha256,
+            "options": names
+                .options
+                .iter()
+                .map(|(k, v)| json!({ "name": k, "value": v }))
+                .collect::<Vec<_>>(),
             "evaluator": name,
             "aot_lib": aot_lib,
             "c_file": c_file,

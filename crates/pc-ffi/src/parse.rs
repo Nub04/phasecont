@@ -7,6 +7,7 @@ use crate::barrier::guarded;
 use crate::error::{Error, Result};
 use crate::json::diag;
 use crate::model::Names;
+use crate::sha256::sha256_hex;
 
 /// Diagnostics returned across the ABI. The rest are counted in `omitted`.
 pub const MAX_ABI_DIAGNOSTICS: usize = 1000;
@@ -72,6 +73,30 @@ fn first_error(v: &Value) -> String {
         .unwrap_or_else(|| "the model has errors".to_string())
 }
 
+/// The `@` options as (lower-case name, value) pairs in the order the names first appear, with the
+/// last value winning. XPPAUT 8.0 ignores an option that has a blank around `=`, so the parser
+/// warns about it and this list leaves it out. Unknown names stay. The ABI parses one text, so
+/// every span points into `text`.
+fn option_pairs(model: &pc_ode::Model, text: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for stmt in &model.statements {
+        let pc_ode::StmtKind::Options { entries } = &stmt.kind else {
+            continue;
+        };
+        for e in entries {
+            let gap = text.get(e.name.span.end..e.value_span.start).unwrap_or("");
+            if gap.contains([' ', '\t']) {
+                continue;
+            }
+            match out.iter_mut().find(|(k, _)| *k == e.name.key) {
+                Some(slot) => slot.1 = e.value.clone(),
+                None => out.push((e.name.key.clone(), e.value.clone())),
+            }
+        }
+    }
+    out
+}
+
 fn parse_inline(text: &str) -> Outcome {
     let mut map = SourceMap::new();
     let file = map.add(FILE_NAME, text);
@@ -96,6 +121,8 @@ fn parse_inline(text: &str) -> Outcome {
                 init: ir.init.clone(),
                 par_values: ir.par_values.clone(),
                 autonomous: ir.autonomous,
+                source_sha256: sha256_hex(text.as_bytes()),
+                options: option_pairs(&loaded.expanded, text),
             },
             ir,
             model: loaded.expanded,

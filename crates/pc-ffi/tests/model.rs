@@ -682,3 +682,61 @@ fn equilibrium_on_a_model_that_uses_t_gives_7() {
     assert_eq!(equil(&m, &[0.0], &[], None, &mut u, &mut eig), 7);
     assert_eq!(last_error(), "the model depends on t");
 }
+
+// The digest covers the exact bytes handed to `model_from_ode`: no line-ending or trailing
+// newline normalization. Expected values come from `sha256sum`.
+#[test]
+fn info_reports_the_sha256_of_the_source_bytes() {
+    let m = model("x'=-x\ndone\n");
+    assert_eq!(
+        info(&m)["source_sha256"],
+        "bff6ed39a3ab8f512c018020dceb9a5a51b8d7ba39fd52a50548bf4cbbd82892"
+    );
+    let crlf = model("x'=-x\r\ndone\r\n");
+    assert_eq!(
+        info(&crlf)["source_sha256"],
+        "3cba434fc678a0108dbd6476a0628f274d59393a6c542a4a72e1df0f427141f1"
+    );
+}
+
+fn options_of(m: &Mod) -> Vec<(String, String)> {
+    info(m)["options"]
+        .as_array()
+        .expect("options is an array")
+        .iter()
+        .map(|o| {
+            (
+                o["name"].as_str().unwrap().to_string(),
+                o["value"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
+    list.iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect()
+}
+
+#[test]
+fn info_reports_the_at_options() {
+    let m = model("par a=1\nx'=-a*x\n@ total=100, xp=X\ndone\n");
+    assert_eq!(options_of(&m), pairs(&[("total", "100"), ("xp", "X")]));
+    // No `@` line gives an empty list, not a missing key.
+    assert_eq!(options_of(&model("x'=-x\ndone\n")), pairs(&[]));
+}
+
+#[test]
+fn a_repeated_option_keeps_its_first_place_and_its_last_value() {
+    let m = model("x'=-x\n@ XP=a, total=5\n@ xp=b\n@ Total=7\ndone\n");
+    assert_eq!(options_of(&m), pairs(&[("xp", "b"), ("total", "7")]));
+}
+
+// XPPAUT 8.0 ignores an option with blanks around `=` (the parser warns about it), so the
+// list leaves it out instead of reporting a value XPPAUT would not use.
+#[test]
+fn an_option_with_blanks_around_the_equals_sign_is_left_out() {
+    let m = model("x'=-x\n@ total = 100, xp=v, yp =w, xlo= 1, ylo=2\ndone\n");
+    assert_eq!(options_of(&m), pairs(&[("xp", "v"), ("ylo", "2")]));
+}

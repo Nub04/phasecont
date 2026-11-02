@@ -17,6 +17,7 @@ mod model;
 pub mod parse;
 mod registry;
 mod run;
+mod sha256;
 
 pub use api::{debug_handle, debug_model_panic};
 

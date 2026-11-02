@@ -33,6 +33,10 @@ pub(crate) struct Names {
     pub init: Vec<f64>,
     pub par_values: Vec<f64>,
     pub autonomous: bool,
+    /// SHA-256 of the exact source bytes, as 64 lower-case hex digits.
+    pub source_sha256: String,
+    /// The `@` options, see `parse::option_pairs`.
+    pub options: Vec<(String, String)>,
 }
 
 enum Request {
