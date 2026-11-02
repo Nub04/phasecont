@@ -121,6 +121,10 @@ classdef Model < handle
                     "x must be a vector or a matrix, not an array with %d dimensions.", ...
                     ndims(x));
             end
+            if n >= 1 && isequal(size(x), [n 0])
+                f = zeros(n, 0);   % no points, no call
+                return
+            end
             single = isempty(x) || (isvector(x) && (numel(x) == n || n ~= 1));
             if single
                 if haveT

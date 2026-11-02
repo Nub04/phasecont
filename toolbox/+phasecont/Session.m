@@ -113,8 +113,17 @@ classdef Session
             m = phasecont.internal.sessionCodec.buildModel(S, options.Evaluator);
             items = cell(1, size(S.Items, 1));
             for k = 1:numel(items)
-                items{k} = phasecont.Session.rebuild(m, S.Records{S.Items(k, 1)}, ...
-                    S.Items(k, 2));
+                try
+                    items{k} = phasecont.Session.rebuild(m, ...
+                        S.Records{S.Items(k, 1)}, S.Items(k, 2));
+                catch err
+                    if startsWith(err.identifier, "phasecont:session:")
+                        rethrow(err);
+                    end
+                    error("phasecont:session:badFile", ...
+                        "Item %d cannot be rebuilt from its stored run: %s", ...
+                        k, err.message);
+                end
             end
             obj = phasecont.Session(m, items);
         end

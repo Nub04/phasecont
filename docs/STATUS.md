@@ -264,13 +264,16 @@ Verification:
 
 - `bash $SP/checks.sh` (fmt, clippy with `-D warnings`, `cargo test`, `cargo deny check`, Windows gnu release build of pc-ffi) ended with `all ok` and EXIT 0 on the tree of f9688eb and 1b34c1d.
 - `AppTest` passed 33 of 33 on the owner's machine with `pckern` loaded. Smart App Control blocks that load on some runs, so a local MEX run can fail on the first load.
-- The MEX suites ran on the owner's machine through `scripts/matlab-win` (runtests, full logs kept): `SessionFormatTest` 24, `SessionTest` 10, `TrajectoryTest` 20 and `ExampleTest` 2 passed with 0 failed and 0 incomplete, and `ModelTest` 26 and `GatewayTest` 18 passed with 0 failed and 0 incomplete. `checkcode` reports nothing on the changed files.
+- The MEX suites ran on the owner's machine through `scripts/matlab-win` (runtests, full logs kept): `SessionFormatTest` 24, `SessionTest` 10, `TrajectoryTest` 20 and `ExampleTest` 2 passed (before the review fixes below) with 0 failed and 0 incomplete, and `ModelTest` 26 and `GatewayTest` 18 passed with 0 failed and 0 incomplete. `checkcode` reports nothing on the changed files.
 - The first run of these suites found three bugs, all fixed: `Trajectory.plot` failed after its Model was deleted (`variableNames` now checks `isvalid`), the MATLAB Morris-Lecar EP run in `SessionTest` and the example used default step options and missed the Hopf point (they now pass `MaxSteps = 400, Hmax = 2, H0 = 0.5`, as the Rust test does), and the blow-up test asserted `t < 1` where explicit DP5 can land within 1e-6 of the pole (it now checks `|t - 1| < 1e-6`, as in Rust).
+- A read-through of the whole branch found four robustness gaps, now fixed with tests. The base64 reader accepted whitespace, missing padding and nonzero trailing bits that the Rust reader refuses, so it now requires the canonical form. A replay stopped at the first run that could not be rerun, so it now gives that run `Pass = false`, warns with `phasecont:session:runFailed` and replays the rest, as `pc-cli` does. `Session.load` let a raw MATLAB error escape from a damaged record, so it now raises `phasecont:session:badFile` with the item number. `m.rhs` on an n-by-0 batch went down the single-point path, so it now returns `zeros(n, 0)`. `SessionFormatTest` (25), `SessionTest` (12) and `ModelTest` (27) passed with 0 failed and 0 incomplete after the change, and `checkcode` reports nothing new.
 
 Open risks and questions from P7b:
 
 - Replay across platforms is untested. libm differences between Windows, Linux and macOS can change step counts and fail a replay. The Rust replay on one machine is bit-exact, which is not evidence for another platform.
 - The Morris-Lecar test uses a coarse mesh (NTST 40, NCOL 4), so the engine warns that the mesh is too coarse. The replay repeats the warning.
+- A replay has no deadline and no step cap of its own. It trusts the options stored in the file, so a file with a huge `max_steps` can run for a long time. Cancel from the MATLAB prompt works.
+- `Model.toOptions` turns `@` option names into field names with `matlab.lang.makeValidName`, so two names that differ only in characters MATLAB cannot use would collide. The names the app reads (`total`, `xp`, `yp`, `xlo`, `xhi`, `ylo`, `yhi`) are not affected.
 - Not covered by P7b: events and Poincaré sections, dense output, continuation from the app, and nullclines for n > 2 beyond the slice view.
 
 ## Next

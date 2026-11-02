@@ -126,6 +126,13 @@ classdef ModelTest < matlab.unittest.TestCase
             testCase.verifyError(@() m.rhs(ones(3, 3, 2)), "phasecont:model:badState");
         end
 
+        function rhsBatchOfNoPointsIsEmpty(testCase)
+            f = testCase.write("lorenz.ode", testCase.Lorenz);
+            m = phasecont.Model(f);
+            testCase.verifySize(m.rhs(zeros(3, 0)), [3 0]);
+            testCase.verifySize(m.rhs(zeros(3, 0), [5 20 1]), [3 0]);
+        end
+
         function rhsBatchForOneVariableTakesARow(testCase)
             m = phasecont.Model.fromSource("par a=2" + newline + "x'=-a*x" + ...
                 newline + "done" + newline);

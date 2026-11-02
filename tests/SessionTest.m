@@ -53,6 +53,30 @@ classdef SessionTest < matlab.unittest.TestCase
             testCase.addTeardown(@() delete(m));
         end
 
+        function rec = withChange(~, rec, field, value)
+            % A copy of a RunRecord with one field replaced.
+            f = struct("Kind", rec.Kind, "Problem", rec.Problem, ...
+                "U0", rec.U0, "P", rec.P, "ModelSha", rec.ModelSha, ...
+                "Type", rec.Type, "Free", rec.Free, "Grid", rec.Grid, ...
+                "N", rec.N, "Json", rec.Json, "Points", {rec.Points}, ...
+                "Specials", {rec.Specials}, "Stride", rec.Stride);
+            f.(field) = value;
+            rec = phasecont.internal.RunRecord(f);
+        end
+
+        function file = writeChanged(testCase, m, S, name)
+            % Write the records and items of S back out through the codec,
+            % for the tests that change a stored run first.
+            file = fullfile(testCase.Dir, name);
+            header = struct("Created", "2026-11-01T00:00:00Z", ...
+                "EngineName", "pckern", "EngineVersion", "x", ...
+                "Platform", string(computer("arch")), "Matlab", "2026b");
+            model = struct("Name", "model.ode", "Source", m.Source, ...
+                "Sha256", m.SourceSha256, "Evaluator", m.Evaluator);
+            phasecont.internal.sessionCodec.writeFile(file, header, model, ...
+                S.Records, S.Items);
+        end
+
         function [m, items] = diagram(testCase, ev)
             % The Morris-Lecar diagram: Newton solve, EP branch in I, LC
             % branch from the first Hopf point, LPC and H curves in
@@ -203,6 +227,42 @@ classdef SessionTest < matlab.unittest.TestCase
             loose = phasecont.session.replay(changed, Tol = 1);
             testCase.verifyTrue(loose.Pass);
             testCase.verifyFalse(loose.Identical);
+        end
+
+        function aRunThatCannotBeRerunDoesNotStopTheOthers(testCase)
+            m = testCase.model(testCase.Decay);
+            tr1 = phasecont.simulate(m, 1, [0 2]);
+            tr2 = phasecont.simulate(m, 2, [0 1]);
+            file = fullfile(testCase.Dir, "two.pcsession.json");
+            save(phasecont.Session(m, {tr1, tr2}), file);
+            S = phasecont.internal.sessionCodec.readFile(file);
+            S.Records{1} = testCase.withChange(S.Records{1}, ...
+                "Problem", regexprep(S.Records{1}.Problem, ...
+                '"tspan":\[[^\]]*\]', '"tspan":[0,0]'));
+            changed = testCase.writeChanged(m, S, "two_changed.pcsession.json");
+            testCase.applyFixture(matlab.unittest.fixtures.SuppressedWarningsFixture( ...
+                "phasecont:session:runFailed"));
+            lastwarn("");
+            r = phasecont.session.replay(changed);
+            [~, id] = lastwarn;
+            testCase.verifyEqual(string(id), "phasecont:session:runFailed");
+            testCase.verifySize(r, [1 2]);
+            testCase.verifyFalse(r(1).Pass);
+            testCase.verifyEqual(r(1).Kind, "simulate");
+            testCase.verifyTrue(r(2).Pass);
+        end
+
+        function loadRejectsARecordWithNoPoints(testCase)
+            m = testCase.model(testCase.Decay);
+            tr = phasecont.simulate(m, 1, [0 2]);
+            file = fullfile(testCase.Dir, "empty.pcsession.json");
+            save(phasecont.Session(m, {tr}), file);
+            S = phasecont.internal.sessionCodec.readFile(file);
+            S.Records{1} = testCase.withChange(S.Records{1}, ...
+                "Points", {zeros(0, S.Records{1}.Stride)});
+            changed = testCase.writeChanged(m, S, "empty_changed.pcsession.json");
+            testCase.verifyError(@() phasecont.Session.load(changed), ...
+                "phasecont:session:badFile");
         end
 
         function aChangedSourceIsAHashMismatch(testCase)

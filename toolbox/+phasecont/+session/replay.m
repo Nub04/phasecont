@@ -24,6 +24,9 @@ function r = replay(file, options)
 %   change the last digits, and a different step sequence in an adaptive
 %   run; Identical reports exact equality separately.
 %
+% A run that cannot be rerun gets Pass = false and a phasecont:session:runFailed
+% warning, and the other runs still replay.
+%
 % The error phasecont:session:hashMismatch means the stored source does not
 % match its stored SHA-256, and phasecont:session:badFile means the file is
 % not a version 1 session file.
@@ -40,24 +43,34 @@ empty = struct("Kind", "", "Type", "", "Rows", struct("Stored", [], "New", []), 
 r = repmat(empty, 1, numel(S.Records));
 for k = 1:numel(S.Records)
     rec = S.Records{k};
-    if rec.Kind == "equilibrium"
-        one = replayEquilibrium(m, rec);
-    else
-        out = phasecont.internal.runLoop(m, rec.Problem, rec.U0, rec.P);
-        c = phasecont.internal.sessionCodec.compareRun(rec, out.Points, ...
-            out.Specials, out.Json);
-        one = struct("Kind", rec.Kind, "Type", rec.Type, ...
-            "Rows", struct("Stored", c.Stored, "New", c.New), ...
-            "Identical", c.Same && c.Identical, "MaxRelDiff", c.MaxRelDiff, ...
-            "LabelsMatch", c.Labels, "StopMatch", c.Stops, ...
-            "Pass", c.Same && c.Structure && c.Labels && c.Stops ...
-                && c.MaxRelDiff <= options.Tol);
+    try
+        r(k) = replayRun(m, rec, options.Tol);
+    catch err
+        % One run that cannot be rerun does not stop the others, as in
+        % pc-cli. It stays at Pass = false and the reason is a warning.
+        r(k).Kind = rec.Kind;
+        r(k).Type = rec.Type;
+        warning("phasecont:session:runFailed", ...
+            "Run %d (%s) could not be rerun: %s", k, rec.Kind, err.message);
     end
-    if rec.Kind == "equilibrium"
-        one.Pass = one.Pass && one.MaxRelDiff <= options.Tol;
-    end
-    r(k) = one;
 end
+end
+
+function one = replayRun(m, rec, tol)
+if rec.Kind == "equilibrium"
+    one = replayEquilibrium(m, rec);
+    one.Pass = one.Pass && one.MaxRelDiff <= tol;
+    return
+end
+out = phasecont.internal.runLoop(m, rec.Problem, rec.U0, rec.P);
+c = phasecont.internal.sessionCodec.compareRun(rec, out.Points, ...
+    out.Specials, out.Json);
+one = struct("Kind", rec.Kind, "Type", rec.Type, ...
+    "Rows", struct("Stored", c.Stored, "New", c.New), ...
+    "Identical", c.Same && c.Identical, "MaxRelDiff", c.MaxRelDiff, ...
+    "LabelsMatch", c.Labels, "StopMatch", c.Stops, ...
+    "Pass", c.Same && c.Structure && c.Labels && c.Stops ...
+        && c.MaxRelDiff <= tol);
 end
 
 function one = replayEquilibrium(m, rec)

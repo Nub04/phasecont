@@ -90,6 +90,28 @@ classdef SessionFormatTest < matlab.unittest.TestCase
                 "phasecont:session:badFile");
         end
 
+        function rejectsBase64TheRustReaderRefuses(testCase)
+            % One float, 8 bytes, so a valid block is 12 characters ending in =.
+            good = phasecont.internal.sessionCodec.encode(1);
+            text = char(good.f64le);
+            decode = @(t) phasecont.internal.sessionCodec.decode( ...
+                struct("shape", [1 1], "f64le", t));
+            testCase.verifyEqual(decode(string(text)), 1);
+            bad = {text(1:end-1), ...                 % padding dropped
+                [text(1:4) newline text(5:end)], ...  % line break inside
+                [text(1:4) ' ' text(5:end)], ...      % space inside
+                [text ' '], ...                       % trailing space
+                [text(1:end-2) 'B='], ...             % nonzero trailing bits
+                strrep(text, '+', '-')};              % URL alphabet
+            if ~contains(text, '+')
+                bad = bad(1:end-1);
+            end
+            for k = 1:numel(bad)
+                testCase.verifyError(@() decode(string(bad{k})), ...
+                    "phasecont:session:badFile", sprintf("case %d", k));
+            end
+        end
+
         function elementsHandlesTheThreeShapesOfJsondecode(testCase)
             c = phasecont.internal.sessionCodec.elements(jsondecode('[{"a":1},{"a":2}]'));
             testCase.verifyEqual(numel(c), 2);

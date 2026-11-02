@@ -46,9 +46,16 @@ classdef sessionCodec
             if isempty(text)
                 bytes = zeros(1, 0, "uint8");
             else
+                % RFC 4648 as the Rust reader takes it: only the alphabet, full
+                % padding and zero trailing bits. base64decode is more lenient,
+                % so the text must survive an encode of the decoded bytes.
                 try
                     bytes = matlab.net.base64decode(text);
+                    canonical = isequal(char(matlab.net.base64encode(bytes)), text);
                 catch
+                    canonical = false;
+                end
+                if ~canonical
                     error("phasecont:session:badFile", ...
                         "The ""f64le"" of an array block is not valid base64.");
                 end
