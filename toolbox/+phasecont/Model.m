@@ -6,6 +6,8 @@ classdef Model < handle
     %   f = m.rhs(x)
     %   f = m.rhs(x, p)       % p: numeric vector or struct of parameters
     %   f = m.rhs(x, p, t)    % t: time, needed when the equations use t
+    %   F = m.rhs(X, p)       % X is n-by-k, one point per column; F is n-by-k
+    %   m = phasecont.Model.fromSource(text, Name = "model.ode")
     %
     % The model lives in the engine and is freed when the object is deleted
     % or cleared. Saving a Model stores its source text, and loading it
@@ -25,6 +27,14 @@ classdef Model < handle
             "Flags", "", "Library", "")
         % Autonomous is false when the equations use t.
         Autonomous (1,1) logical = true
+        % SourceSha256 is the SHA-256 of the exact source text, as 64 lower-case
+        % hex digits. A saved session stores it to check that a replay runs
+        % the same model.
+        SourceSha256 (1,1) string = ""
+        % Options holds the `@` options of the file as a struct of strings,
+        % with lower-case field names and the last value of a repeated name.
+        % An option with blanks around `=` is left out: XPPAUT 8.0 ignores it.
+        Options (1,1) struct = struct()
         Diagnostics (:,1) struct = repmat(struct("code", [], "severity", [], ...
             "file", [], "line", [], "col", [], "end_line", [], "end_col", [], ...
             "message", [], "fix_it", [], "notes", []), 0, 1)
@@ -39,18 +49,26 @@ classdef Model < handle
             arguments
                 file (1,1) string
                 options.Evaluator (1,1) string {mustBeMember(options.Evaluator, ["" "jit" "fallback" "aot"])} = ""
+                % Source: model text to use instead of reading FILE, which is then
+                % only the name. Use Model.fromSource rather than this option.
+                options.Source (1,1) string = string(missing)
             end
             if exist("pckern", "file") ~= 3
                 error("phasecont:engine:load", ...
                     "pckern.%s is not on the MATLAB path. Add the folder " + ...
                     "that holds the PhaseCont binaries to the path.", mexext);
             end
-            full = phasecont.Model.fullPath(file);
-            if ~isfile(full)
-                error("phasecont:model:fileNotFound", "%s", ...
-                    "The model file """ + full + """ does not exist.");
+            if ismissing(options.Source)
+                full = phasecont.Model.fullPath(file);
+                if ~isfile(full)
+                    error("phasecont:model:fileNotFound", "%s", ...
+                        "The model file """ + full + """ does not exist.");
+                end
+                text = string(fileread(full, Encoding = "UTF-8"));
+            else
+                full = file;
+                text = options.Source;
             end
-            text = string(fileread(full, Encoding = "UTF-8"));
             obj.File = full;
             obj.Source = text;
             if options.Evaluator == ""
@@ -67,6 +85,11 @@ classdef Model < handle
             % at X. A model that uses t (Autonomous is false) needs T; a model
             % that does not use t ignores it. P defaults to ParameterValues
             % when it is omitted.
+            %
+            % A vector X with one entry per variable is one point and F is a
+            % column. A matrix X with one row per variable is k points, one per
+            % column, and F is n-by-k. A model with one variable takes a row
+            % vector of k points the same way.
             arguments
                 obj (1,1) phasecont.Model
                 x {mustBeNumeric, mustBeReal}
@@ -92,12 +115,32 @@ classdef Model < handle
             else
                 p = obj.paramVector(p);
             end
-            if haveT
-                f = pckern("model_rhs", obj.Id, double(x), p, double(t));
-            else
-                f = pckern("model_rhs", obj.Id, double(x), p);
+            n = numel(obj.Variables);
+            if ~ismatrix(x)
+                error("phasecont:model:badState", ...
+                    "x must be a vector or a matrix, not an array with %d dimensions.", ...
+                    ndims(x));
             end
-            f = f(:);
+            single = isempty(x) || (isvector(x) && (numel(x) == n || n ~= 1));
+            if single
+                if haveT
+                    f = pckern("model_rhs", obj.Id, double(x), p, double(t));
+                else
+                    f = pckern("model_rhs", obj.Id, double(x), p);
+                end
+                f = f(:);
+                return
+            end
+            if size(x, 1) ~= n
+                error("phasecont:model:badState", ...
+                    "x must have %d rows, one per variable, but has %d.", ...
+                    n, size(x, 1));
+            end
+            if haveT
+                f = pckern("model_rhs_batch", obj.Id, double(x), p, double(t));
+            else
+                f = pckern("model_rhs_batch", obj.Id, double(x), p);
+            end
         end
 
         function delete(obj)
@@ -157,6 +200,21 @@ classdef Model < handle
     end
 
     methods (Static)
+        function obj = fromSource(text, options)
+            % M = phasecont.Model.fromSource(TEXT, Name = "model.ode",
+            % Evaluator = "jit") builds a model from source text. Name goes
+            % into File and the diagnostics; it is not read from disk. The
+            % text is hashed as it is, so the same text gives the same
+            % SourceSha256 on every platform.
+            arguments
+                text (1,1) string {mustBeNonmissing}
+                options.Name (1,1) string = "model.ode"
+                options.Evaluator (1,1) string {mustBeMember(options.Evaluator, ["" "jit" "fallback" "aot"])} = ""
+            end
+            obj = phasecont.Model(options.Name, ...
+                Evaluator = options.Evaluator, Source = text);
+        end
+
         function obj = loadobj(s)
             % Compile the saved source text again. Id is transient.
             obj = s;
@@ -223,6 +281,8 @@ classdef Model < handle
             obj.Evaluator = string(info.evaluator);
             obj.AotInfo = aot;
             obj.Autonomous = logical(info.autonomous);
+            obj.SourceSha256 = string(info.source_sha256);
+            obj.Options = phasecont.Model.toOptions(info.options);
             obj.Diagnostics = entries;
         end
     end
@@ -278,6 +338,16 @@ classdef Model < handle
                 names = strings(1, 0);
             else
                 names = reshape(string(v), 1, []);
+            end
+        end
+
+        function s = toOptions(v)
+            % The name/value list of model_info as a struct of strings.
+            % jsondecode gives [] for no entries and a struct array otherwise.
+            s = struct();
+            for k = 1:numel(v)
+                s.(matlab.lang.makeValidName(string(v(k).name))) = ...
+                    string(v(k).value);
             end
         end
 

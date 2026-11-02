@@ -122,6 +122,31 @@ classdef GatewayTest < matlab.unittest.TestCase
             clear cleanup
         end
 
+        function rhsBatchMatchesRhsPerColumn(testCase)
+            [m, ~] = pckern("model_from_ode", testCase.Lorenz);
+            cleanup = onCleanup(@() pckern("free", m));
+            p = testCase.P;
+            X = [1 2 3 -1; 2 0 1 5; 3 4 -2 0.5];
+            for ev = ["fallback" "jit"]
+                pckern("model_compile", m, "{""evaluator"":""" + ev + """}");
+                F = pckern("model_rhs_batch", m, X, p);
+                testCase.verifySize(F, [3 4]);
+                for k = 1:4
+                    testCase.verifyEqual(F(:, k), pckern("model_rhs", m, X(:, k), p), ...
+                        AbsTol = 0);
+                end
+            end
+            testCase.verifyError(@() pckern("model_rhs_batch", m, ones(2, 4), p), ...
+                "phasecont:engine:badArg");
+            testCase.verifyError(@() pckern("model_rhs_batch", m, single(X), p), ...
+                "phasecont:engine:badArg");
+            testCase.verifyError(@() pckern("model_rhs_batch", m, X, [1 2]), ...
+                "phasecont:engine:badArg");
+            testCase.verifyError(@() pckern("model_rhs_batch", uint64(1), X, p), ...
+                "phasecont:engine:badHandle");
+            clear cleanup
+        end
+
         function equilibriumAtTheLorenzOrigin(testCase)
             m = pckern("model_from_ode", testCase.Lorenz);
             cleanup = onCleanup(@() pckern("free", m));

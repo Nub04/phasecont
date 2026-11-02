@@ -18,6 +18,7 @@
  *   info = pckern("model_info", m)
  *   f = pckern("model_rhs", m, x, p)       a model that uses t raises nonAutonomous
  *   f = pckern("model_rhs", m, x, p, t)    f(x, p, t); t is a real double scalar
+ *   F = pckern("model_rhs_batch", m, X, p [, t])   X is n-by-k, one point per column; F is n-by-k
  *   [u, ev] = pckern("model_equilibrium", m, u0, p, opts)
  *   r = pckern("run_start", m, problem, u0, p)
  *   status = pckern("run_poll", r)
@@ -321,6 +322,19 @@ static const double *get_vec(const mxArray *a, const char *what, size_t *len)
     return d ? d : &none;
 }
 
+/* A real, full double matrix of rows-by-cols (either may be 0). Never NULL. */
+static const double *get_mat(const mxArray *a, const char *what, size_t *rows, size_t *cols)
+{
+    static const double none = 0.0;
+    const double *d;
+    if (!mxIsDouble(a) || mxIsComplex(a) || mxIsSparse(a) || mxGetNumberOfDimensions(a) != 2)
+        bad_arg("%s must be a real, full double matrix", what);
+    *rows = mxGetM(a);
+    *cols = mxGetN(a);
+    d = mxGetDoubles(a);
+    return d ? d : &none;
+}
+
 static double get_real_scalar(const mxArray *a, const char *what)
 {
     if (!mxIsDouble(a) || mxIsComplex(a) || mxIsSparse(a) || mxGetNumberOfElements(a) != 1)
@@ -568,6 +582,37 @@ static void cmd_model_rhs(int nlhs, mxArray *plhs[], int nrhs, const mxArray *pr
     plhs[0] = f;
 }
 
+/* The right-hand side at every column of X. The loop runs here, in C, so a direction
+ * field or a nullcline grid costs one MEX call. The columns are contiguous, so each
+ * call reads and writes in place. */
+static void cmd_model_rhs_batch(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
+{
+    uint64_t m;
+    const double *x, *p;
+    double *out;
+    size_t n, k, np, j;
+    double t = 0.0;
+    mxArray *f;
+    need_args(nrhs, 4, 5, "model_rhs_batch");
+    need_outs(nlhs, 1, "model_rhs_batch");
+    m = get_handle(prhs[1]);
+    x = get_mat(prhs[2], "X", &n, &k);
+    p = get_vec(prhs[3], "p", &np);
+    if (nrhs == 5)
+        t = get_real_scalar(prhs[4], "t");
+    if (n == 0)
+        bad_arg("%s", "X needs at least one row");
+    f = mxCreateDoubleMatrix(n, k, mxREAL);
+    out = mxGetDoubles(f);
+    for (j = 0; j < k; j++) {
+        if (nrhs == 5)
+            check(g_api->model_rhs_t(m, t, x + j * n, n, p, np, out + j * n, n));
+        else
+            check(g_api->model_rhs(m, x + j * n, n, p, np, out + j * n, n));
+    }
+    plhs[0] = f;
+}
+
 static void cmd_model_equilibrium(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 {
     uint64_t m;
@@ -702,6 +747,7 @@ static const struct {
     {"model_compile", cmd_model_compile},
     {"model_info", cmd_model_info},
     {"model_rhs", cmd_model_rhs},
+    {"model_rhs_batch", cmd_model_rhs_batch},
     {"model_equilibrium", cmd_model_equilibrium},
     {"run_start", cmd_run_start},
     {"run_poll", cmd_run_poll},

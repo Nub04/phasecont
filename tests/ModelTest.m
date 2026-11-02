@@ -105,6 +105,80 @@ classdef ModelTest < matlab.unittest.TestCase
             testCase.verifyEqual(m.rhs(x, struct(r = 20)), e3);
         end
 
+        function rhsBatchTakesOnePointPerColumn(testCase, Evaluator)
+            f = testCase.write("lorenz.ode", testCase.Lorenz);
+            m = phasecont.Model(f, Evaluator = Evaluator);
+            X = [1 2 3 -1; 2 0 1 5; 3 4 -2 0.5];
+            F = m.rhs(X);
+            testCase.verifySize(F, [3 4]);
+            for k = 1:4
+                testCase.verifyEqual(F(:, k), m.rhs(X(:, k)), AbsTol = 0);
+            end
+            p = [5 20 1];
+            F2 = m.rhs(X, p);
+            for k = 1:4
+                testCase.verifyEqual(F2(:, k), m.rhs(X(:, k), p), AbsTol = 0);
+            end
+            % One column is still a column, and a vector is still one point.
+            testCase.verifySize(m.rhs(X(:, 1)), [3 1]);
+            testCase.verifySize(m.rhs(X(:, [1 2])), [3 2]);
+            testCase.verifyError(@() m.rhs(ones(2, 4)), "phasecont:model:badState");
+            testCase.verifyError(@() m.rhs(ones(3, 3, 2)), "phasecont:model:badState");
+        end
+
+        function rhsBatchForOneVariableTakesARow(testCase)
+            m = phasecont.Model.fromSource("par a=2" + newline + "x'=-a*x" + ...
+                newline + "done" + newline);
+            testCase.verifyEqual(m.rhs([1 2 3]), [-2 -4 -6]);
+            testCase.verifyEqual(m.rhs(2), -4);
+        end
+
+        function rhsBatchNeedsTimeForANonAutonomousModel(testCase)
+            m = phasecont.Model.fromSource("par a=1" + newline + "x'=-a*x+sin(t)" + ...
+                newline + "done" + newline);
+            testCase.verifyError(@() m.rhs([0.5 1]), "phasecont:model:missingTime");
+            testCase.verifyEqual(m.rhs([0.5 1], 1, 1.3), [-0.5 -1] + sin(1.3), ...
+                AbsTol = 1e-15);
+        end
+
+        function sourceHashIsOfTheExactText(testCase)
+            f = testCase.write("lorenz.ode", testCase.Lorenz);
+            m = phasecont.Model(f);
+            testCase.verifyEqual(m.SourceSha256, ...
+                "47e45e95194ef01e743344e6395d3729eba964a2982044775674d5cd3d1bb06e");
+            crlf = phasecont.Model.fromSource(replace(testCase.Lorenz, newline, ...
+                char([13 10])));
+            testCase.verifyNotEqual(crlf.SourceSha256, m.SourceSha256);
+        end
+
+        function optionsAreAStructOfStrings(testCase)
+            m = phasecont.Model.fromSource("par a=1" + newline + "x'=-a*x" + ...
+                newline + "@ total=100, XP=x" + newline + "@ total=200" + ...
+                newline + "done" + newline);
+            testCase.verifyEqual(m.Options, struct(total = "200", xp = "x"));
+            plain = phasecont.Model.fromSource("x'=-x" + newline + "done" + newline);
+            testCase.verifyEqual(m.Parameters, "a");
+            testCase.verifyEqual(plain.Options, struct());
+        end
+
+        function fromSourceKeepsTheName(testCase)
+            m = phasecont.Model.fromSource(testCase.Lorenz, Name = "lorenz.ode", ...
+                Evaluator = "fallback");
+            testCase.verifyEqual(m.File, "lorenz.ode");
+            testCase.verifyEqual(m.Source, testCase.Lorenz);
+            testCase.verifyEqual(m.Evaluator, "fallback");
+            testCase.verifyEqual(m.rhs([1 2 3]), ...
+                [10*(2-1); 1*(28-3)-2; 1*2-2.6666666666666665*3]);
+            bad = "x'=-x" + newline + "foo(" + newline + "done";
+            try
+                phasecont.Model.fromSource(bad, Name = "bad.ode");
+                testCase.verifyFail("no error raised");
+            catch err
+                testCase.verifyEqual(string(err.identifier), "phasecont:engine:model");
+                testCase.verifyTrue(startsWith(string(err.message), "bad.ode:"));
+            end
+        end
+
         function argumentErrors(testCase)
             f = testCase.write("lorenz.ode", testCase.Lorenz);
             m = phasecont.Model(f);
