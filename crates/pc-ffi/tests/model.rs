@@ -394,12 +394,19 @@ fn equilibrium_argument_and_failure_codes() {
 }
 
 #[test]
-fn a_model_without_parameters_cannot_run_equilibrium() {
+fn a_model_without_parameters_runs_equilibrium() {
     let m = model(NO_PARAMS);
     assert_eq!(compile(&m, None), 0);
     let mut u = [0.0];
     let mut eig = [0.0; 2];
-    assert_eq!(equil(&m, &[1.0], &[], None, &mut u, &mut eig), 6);
+    assert_eq!(
+        equil(&m, &[1.0], &[], None, &mut u, &mut eig),
+        0,
+        "{}",
+        last_error()
+    );
+    assert!(u[0].abs() < 1e-9, "{u:?}");
+    assert!((eig[0] + 1.0).abs() < 1e-9 && eig[1] == 0.0, "{eig:?}");
 }
 
 #[test]

@@ -5,8 +5,8 @@ mod common;
 
 use common::load;
 use pc_engine::{
-    Branch, EngineError, EpSetup, Evaluator, Options, Problem, StopReason, build, continue_branch,
-    continue_ep, equilibrium,
+    Branch, EngineError, EpProblem, EpSetup, Evaluator, Options, Problem, StopReason, build,
+    continue_branch, continue_ep, equilibrium,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -414,13 +414,29 @@ fn bad_setups_are_refused() {
     let mut m = build(&model, &info, Evaluator::Jit).unwrap();
     let opts = Options::default();
     for setup in [
-        EpSetup::new(1, vec![0.0], vec![-1.0]),
         EpSetup::new(0, vec![0.0, 1.0], vec![-1.0]),
         EpSetup::new(0, vec![0.0], vec![-1.0, 0.0]),
     ] {
         let r = equilibrium(m.as_mut(), &setup, &opts);
         assert!(matches!(r, Err(EngineError::BadProblem(_))), "{r:?}");
     }
+}
+
+#[test]
+fn equilibrium_does_not_need_a_free_parameter() {
+    // The plain Newton solve never varies a parameter, so `free` is not checked.
+    let (model, info) = load("circle");
+    let mut m = build(&model, &info, Evaluator::Jit).unwrap();
+    let u = equilibrium(
+        m.as_mut(),
+        &EpSetup::new(1, vec![0.0], vec![-0.5]),
+        &Options::default(),
+    )
+    .unwrap();
+    assert!((u[0] + 1.0).abs() < 1e-12);
+    // A continuation problem still needs a parameter to vary.
+    let r = EpProblem::new(m.as_mut(), &EpSetup::new(1, vec![0.0], vec![-1.0]));
+    assert!(matches!(r, Err(EngineError::BadProblem(_))));
 }
 
 /// The circle with a state block whose evaluation fails only at alpha = 0.5, the bound.

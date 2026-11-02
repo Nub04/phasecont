@@ -57,7 +57,7 @@ impl<'a> EpProblem<'a> {
         model: &'a mut dyn ModelEval,
         setup: &EpSetup,
     ) -> Result<EpProblem<'a>, EngineError> {
-        check_setup(model, setup)?;
+        check_setup(model, setup, true)?;
         let mut p = setup.params.clone();
         p.push(0.0);
         let (n, n_p) = (model.n(), model.n_p());
@@ -71,7 +71,9 @@ impl<'a> EpProblem<'a> {
     }
 }
 
-fn check_setup(model: &dyn ModelEval, setup: &EpSetup) -> Result<(), EngineError> {
+/// `need_free` is false for a plain Newton solve, which never varies a parameter, so a model
+/// without parameters can run it.
+fn check_setup(model: &dyn ModelEval, setup: &EpSetup, need_free: bool) -> Result<(), EngineError> {
     if model.n() == 0 {
         return Err(EngineError::BadProblem("the model has no variables".into()));
     }
@@ -82,7 +84,7 @@ fn check_setup(model: &dyn ModelEval, setup: &EpSetup) -> Result<(), EngineError
             setup.params.len()
         )));
     }
-    if setup.free >= model.n_p() {
+    if need_free && setup.free >= model.n_p() {
         return Err(EngineError::BadProblem(format!(
             "parameter index {} is out of range",
             setup.free
@@ -137,7 +139,7 @@ pub fn equilibrium(
     setup: &EpSetup,
     opts: &Options,
 ) -> Result<Vec<f64>, EngineError> {
-    check_setup(model, setup)?;
+    check_setup(model, setup, false)?;
     let n = model.n();
     let mut p = setup.params.clone();
     p.push(0.0);
@@ -189,7 +191,7 @@ pub fn continue_ep(
     // fixed-alpha solve fails there.
     let special = setup.start_is_special && setup.tangent0.is_none();
     let u = if setup.tangent0.is_some() || special {
-        check_setup(model, setup)?;
+        check_setup(model, setup, true)?;
         setup.u0.clone()
     } else {
         equilibrium(model, setup, opts)?
