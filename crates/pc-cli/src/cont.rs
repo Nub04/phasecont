@@ -148,6 +148,7 @@ fn report(run: &Run, state: &RunState) -> ExitCode {
 /// A stable name for each stop reason.
 fn stop_name(s: &StopReason) -> &'static str {
     match s {
+        StopReason::End => "end",
         StopReason::MaxSteps => "max_steps",
         StopReason::Bounds => "bounds",
         StopReason::StepTooSmall => "step_too_small",

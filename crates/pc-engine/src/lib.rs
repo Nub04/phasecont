@@ -14,6 +14,7 @@ mod cycle;
 mod ep;
 mod error;
 mod hopfcurve;
+mod ivp;
 mod locate;
 mod lpcurve;
 mod model;
@@ -38,6 +39,7 @@ pub use cycle::{
 pub use ep::{EpProblem, EpSetup, continue_ep, equilibrium};
 pub use error::EngineError;
 pub use hopfcurve::{HOPF_CURVE_LABELS, HopfCurveProblem, continue_hopf_curve};
+pub use ivp::{IvpOptions, IvpSetup, integrate};
 pub use lpcurve::{LP_CURVE_LABELS, LpCurveProblem, continue_lp_curve};
 pub use model::{Evaluator, ModelEval, build, build_allowing_t};
 pub use normal::{

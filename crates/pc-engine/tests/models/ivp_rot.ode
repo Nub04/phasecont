@@ -1,0 +1,5 @@
+# Linear oscillator, x = cos t and y = -sin t from (1, 0).
+x'=y
+y'=-x
+init x=1,y=0
+done

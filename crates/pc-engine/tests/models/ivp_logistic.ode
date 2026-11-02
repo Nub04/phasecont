@@ -1,0 +1,5 @@
+# Logistic growth with the exact solution 1 / (1 + (1 / x0 - 1) exp(-r t)).
+par r=1.5
+x'=r*x*(1-x)
+init x=0.1
+done

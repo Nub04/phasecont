@@ -63,6 +63,8 @@ pub struct SpecialPoint {
 /// Why a run stopped.
 #[derive(Clone, Debug, PartialEq)]
 pub enum StopReason {
+    /// An initial value run reached its end time.
+    End,
     /// `max_steps` accepted steps.
     MaxSteps,
     /// The last step landed on a bound of alpha.

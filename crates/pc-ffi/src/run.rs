@@ -90,6 +90,7 @@ pub(crate) fn pack_row(kind: Kind, p: &Point, n: usize, out: &mut [f64]) {
 /// The variant name SPEC section 10 uses.
 pub(crate) fn stop_name(s: &StopReason) -> &'static str {
     match s {
+        StopReason::End => "End",
         StopReason::MaxSteps => "MaxSteps",
         StopReason::Bounds => "Bounds",
         StopReason::StepTooSmall => "StepTooSmall",
@@ -352,6 +353,7 @@ mod tests {
     #[test]
     fn stop_names_cover_every_reason() {
         let cases = [
+            (StopReason::End, "End"),
             (StopReason::MaxSteps, "MaxSteps"),
             (StopReason::Bounds, "Bounds"),
             (StopReason::StepTooSmall, "StepTooSmall"),

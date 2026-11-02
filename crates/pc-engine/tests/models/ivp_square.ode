@@ -1,0 +1,4 @@
+# Blows up at t = 1 / x0.
+x'=x^2
+init x=1
+done
