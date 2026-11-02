@@ -13,6 +13,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use args::{Command, HELP, USAGE, parse_args};
+use pc_cli::session::{ReplayOptions, Session, replay};
 use pc_ode::{FsLoader, Loaded, Severity, SourceMap, load};
 
 fn main() -> ExitCode {
@@ -37,6 +38,11 @@ fn main() -> ExitCode {
             problem,
             fallback,
         }) => cont::cont(&file, &problem, fallback),
+        Ok(Command::SessionReplay {
+            file,
+            tol,
+            fallback,
+        }) => session_replay(&file, tol, fallback),
         Err(e) => {
             eprintln!("pc-cli: {}", e.0);
             eprintln!("{USAGE}");
@@ -57,6 +63,31 @@ fn out(text: &str, code: u8) -> ExitCode {
         Err(e) => {
             let _ = writeln!(std::io::stderr(), "pc-cli: cannot write output: {e}");
             ExitCode::from(1)
+        }
+    }
+}
+
+/// Replays a session file and prints the JSON report. Exit code 0 when every run passes, 1
+/// when one does not, 2 when the file is not a version 1 session or its model does not load
+/// or does not match the stored hash.
+fn session_replay(file: &Path, tol: f64, fallback: bool) -> ExitCode {
+    let session = match Session::read(file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("pc-cli: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    match replay(&session, ReplayOptions { tol, fallback }) {
+        Ok(report) => {
+            let mut text = serde_json::to_string_pretty(&report.to_json())
+                .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"));
+            text.push('\n');
+            out(&text, u8::from(!report.pass()))
+        }
+        Err(e) => {
+            eprintln!("pc-cli: {e}");
+            ExitCode::from(2)
         }
     }
 }

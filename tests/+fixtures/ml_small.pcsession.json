@@ -1,0 +1,163 @@
+{
+  "created": "2026-11-01T00:00:00Z",
+  "engine": {
+    "name": "pckern",
+    "version": "0.0.0"
+  },
+  "format": "phasecont-session",
+  "items": [
+    {
+      "branch": 0,
+      "run": 1
+    },
+    {
+      "branch": 1,
+      "run": 2
+    },
+    {
+      "branch": 1,
+      "run": 3
+    }
+  ],
+  "matlab": "none",
+  "model": {
+    "evaluator": "jit",
+    "name": "morris_lecar.ode",
+    "sha256": "47cf08eefec873a8b4ccff58a846f5950a1d2d50b36caa7e2f216b0b03d8de1e",
+    "source": "# Morris-Lecar model with the type II parameter set of crates/pc-ode/tests/corpus,\n# with I and phi first so that they are parameters 0 and 1. The rest state loses\n# stability in a Hopf point and the stable cycle ends in a fold of cycles below it.\npar I=100,phi=0.04\npar C=20,gL=2,gK=8,gCa=4.4\npar vL=-60,vK=-84,vCa=120\npar v1=-1.2,v2=18,v3=2,v4=30\nminf=0.5*(1+tanh((v-v1)/v2))\nwinf=0.5*(1+tanh((v-v3)/v4))\ntauw=1/cosh((v-v3)/(2*v4))\nv'=(I-gL*(v-vL)-gK*w*(v-vK)-gCa*minf*(v-vCa))/C\nw'=phi*(winf-w)/tauw\ninit v=-20,w=0.1\ndone\n"
+  },
+  "platform": "rust-test",
+  "precision": "f64",
+  "runs": [
+    {
+      "free": [],
+      "grid": [],
+      "kind": "equilibrium",
+      "n": 2,
+      "p": {
+        "f64le": "AAAAAAAATkB7FK5H4XqkPwAAAAAAADRAAAAAAAAAAEAAAAAAAAAgQJqZmZmZmRFAAAAAAAAATsAAAAAAAABVwAAAAAAAAF5AMzMzMzMz878AAAAAAAAyQAAAAAAAAABAAAAAAAAAPkA=",
+        "shape": [
+          1,
+          13
+        ]
+      },
+      "problem": "{\"max_newton\":50,\"tol_x\":1e-10,\"tol_f\":1e-10}",
+      "result": {
+        "eig_im": {
+          "f64le": "TuWRVwQcsD9O5ZFXBBywvw==",
+          "shape": [
+            1,
+            2
+          ]
+        },
+        "eig_re": {
+          "f64le": "pjy8yqohrL+mPLzKqiGsvw==",
+          "shape": [
+            1,
+            2
+          ]
+        },
+        "u": {
+          "f64le": "LcuyXptgQsDQxJCkgfixPw==",
+          "shape": [
+            1,
+            2
+          ]
+        }
+      },
+      "type": "",
+      "u0": {
+        "f64le": "AAAAAAAAPsCamZmZmZm5Pw==",
+        "shape": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "free": [
+        "I"
+      ],
+      "grid": [],
+      "kind": "continuation",
+      "n": 2,
+      "p": {
+        "f64le": "AAAAAAAATkB7FK5H4XqkPwAAAAAAADRAAAAAAAAAAEAAAAAAAAAgQJqZmZmZmRFAAAAAAAAATsAAAAAAAABVwAAAAAAAAF5AMzMzMzMz878AAAAAAAAyQAAAAAAAAABAAAAAAAAAPkA=",
+        "shape": [
+          1,
+          13
+        ]
+      },
+      "problem": "{\"type\":\"EP\",\"free\":\"I\",\"start_is_special\":false,\"options\":{\"direction\":1,\"bounds\":[60.0,100.0],\"max_steps\":100,\"hmax\":2.0,\"h0\":0.5,\"detect\":{\"lp\":true,\"bp\":true,\"h\":true}}}",
+      "rows": [
+        {
+          "f64le": "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",
+          "shape": [
+            25,
+            12
+          ]
+        }
+      ],
+      "specials": [
+        {
+          "f64le": "X+YsOON2V0AyTOiXJUU5wHELnqPP4ME/AAAAAABFOzwAAAAAAEU7PC11p6tybLQ/LXWnq3JstL9zZvcwrzruP7KMGGPsmHs/AAAAAPWSqbz5sS/RtP71PwAAAAAAAAhA",
+          "shape": [
+            1,
+            12
+          ]
+        }
+      ],
+      "status": "{\"branches\":[{\"points\":25,\"specials\":[{\"coefficient\":0.006543186721673547,\"coefficient2\":null,\"coefficients\":{},\"index\":21,\"label\":\"H\",\"normalization\":\"<q,q>=1, <p,q>=1\",\"omega\":0.07977978411459635,\"refined\":true}],\"stop\":\"Bounds\",\"warnings\":[]}],\"codim2_labels\":[],\"kind\":\"EP\",\"n\":2,\"state\":\"done\",\"stride\":12}",
+      "type": "EP",
+      "u0": {
+        "f64le": "LcuyXptgQsDQxJCkgfixPw==",
+        "shape": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "free": [],
+      "grid": [],
+      "kind": "simulate",
+      "n": 2,
+      "p": {
+        "f64le": "AAAAAAAAWUB7FK5H4XqkPwAAAAAAADRAAAAAAAAAAEAAAAAAAAAgQJqZmZmZmRFAAAAAAAAATsAAAAAAAABVwAAAAAAAAF5AMzMzMzMz878AAAAAAAAyQAAAAAAAAABAAAAAAAAAPkA=",
+        "shape": [
+          1,
+          13
+        ]
+      },
+      "problem": "{\"type\":\"IVP\",\"tspan\":[0.0,12.0],\"options\":{\"rtol\":1e-6,\"atol\":1e-9,\"max_steps\":1000}}",
+      "rows": [
+        {
+          "f64le": "AAAAAAAAAAAAAAAAAAA0wJqZmZmZmbk/ete+LBlupD/mBDacOe0zwM/pTIFmo7k/R2iGnWIX3D+vb6UPNSwzwKTkekDvCLo/dnS9OhnW+D+OBDdMq9AwwNint79sSrs/qFHEfiwIBUCx4K1hRfkrwHAygC0axbw/DHdIT6AlDEC7R+WdhuYlwL1pKmsORb4/WUBtJCXREEDcyAwh6osfwKaK8bwcrb8/Nw11z50AE0DB3+/SdAcTwIAAGrZmgsA/qSpetonHFED4ULbZYJf5v7892gxzJ8E/BJ8VKow7FkB04/UQYnv3P4vVKskQxME/I8Cxp8mSF0BAVbDHJMESQLxrVrRjacI/G8S0PnxCGUCUo53+C1IiQG8sTgiwWcM/++SbAHB7G0Cmkg3Pr5cuQPLCMl2L0MQ/8UppDcCjHUBRMWAmq9w0QOy8Pkb2dsY/tuDBv7ACIEBYCTw7OQg6QD3/RUrufcg/CGmn5Rd+IUDAKuFAvc4+QFnwmlD8Nss/H2k0lG4rI0AyfKphOxVBQEJfVPE+bc4/qlKEQh+tJEDD/RHOhtZBQO0cEiccqtA/NAZoZ0s6JkB31W9uBA1CQIya1RJ8IdI/UYlItsfGJ0DsBRVD/thBQJA0GWLSitM/AAAAAAAAKEBRCKLKvMpBQFzy0ZicvdM/",
+          "shape": [
+            21,
+            3
+          ]
+        }
+      ],
+      "specials": [
+        {
+          "f64le": "",
+          "shape": [
+            0,
+            3
+          ]
+        }
+      ],
+      "status": "{\"branches\":[{\"points\":21,\"specials\":[],\"stop\":\"End\",\"warnings\":[]}],\"codim2_labels\":[],\"kind\":\"IVP\",\"n\":2,\"state\":\"done\",\"stride\":3}",
+      "type": "IVP",
+      "u0": {
+        "f64le": "AAAAAAAANMCamZmZmZm5Pw==",
+        "shape": [
+          1,
+          2
+        ]
+      }
+    }
+  ],
+  "version": 1
+}

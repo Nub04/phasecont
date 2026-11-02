@@ -12,7 +12,7 @@ pub const DEFAULT_POINTS: usize = 20;
 pub const DEFAULT_SEED: u64 = 1;
 
 /// What the command line asks for.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     /// Print the top-level help to stdout.
     Help,
@@ -47,6 +47,12 @@ pub enum Command {
         problem: PathBuf,
         fallback: bool,
     },
+    /// Rerun the runs of a session file and compare the results.
+    SessionReplay {
+        file: PathBuf,
+        tol: f64,
+        fallback: bool,
+    },
 }
 
 /// Why the command line is not valid. The text is a short usage line for
@@ -60,6 +66,7 @@ usage: pc-cli parse [--json] [--] <file.ode>
        pc-cli check-derivs [--points N] [--seed S] [--] <file.ode>
        pc-cli emit-c [-o out.c] [--] <file.ode>
        pc-cli cont [--fallback] [--] <file.ode> <problem.json>
+       pc-cli session replay [--tol X] [--fallback] [--] <file.pcsession.json>
        pc-cli dll-imports [--] <file.dll>
        pc-cli licenses --target TRIPLE [--package NAME] --out FILE [--overrides DIR]
        pc-cli --help | pc-cli --version";
@@ -73,6 +80,7 @@ usage:
   pc-cli check-derivs <file.ode> [--points N] [--seed S]
   pc-cli emit-c <file.ode> [-o out.c]
   pc-cli cont <file.ode> <problem.json> [--fallback]
+  pc-cli session replay <file.pcsession.json> [--tol X] [--fallback]
   pc-cli dll-imports <file.dll>
   pc-cli licenses --target TRIPLE [--package NAME] --out FILE [--overrides DIR]
   pc-cli --help
@@ -85,8 +93,37 @@ commands:
                 f64 fallback, and with finite differences
   emit-c        write C code for F, JacU and JacP
   cont          follow an equilibrium branch and print its points and special points
+  session       rerun the runs of a session file and compare them with the stored ones
   dll-imports   list the DLLs a 64-bit Windows PE file imports and check the allow-list
   licenses      write the license texts of the crates a package links
+";
+
+/// Largest relative difference a replay accepts when `--tol` is not given.
+pub const DEFAULT_TOL: f64 = 1e-8;
+
+pub const SESSION_HELP: &str = "\
+usage: pc-cli session replay [--tol X] [--fallback] [--] <file.pcsession.json>
+
+Loads the model of a session file through the engine library that MATLAB loads,
+checks that its source hashes to the stored SHA-256, then reruns every run of
+the file (equilibrium solves, continuations and trajectories) and compares the
+new rows with the stored ones. Prints one JSON report on stdout.
+
+A run passes when the row counts, the special point labels and indexes and the
+stop reasons are equal and no value differs by more than the tolerance,
+|a - b| / max(1, |b|). NaNs must sit in the same places and infinities must be
+equal. \"identical\" in the report says whether every value has the same bits.
+
+options:
+  --tol X     largest relative difference that passes, a finite number of at
+              least 0 (default 1e-8)
+  --fallback  evaluate the model with the f64 interpreter instead of the JIT
+  --          the next argument is the file, even if it starts with `-`
+  -h, --help  print this help
+
+exit codes: 0 every run passes, 1 a run does not match or cannot be rerun, 2
+usage error, a file that is not a version 1 session, or a model that does not
+load or does not match its stored hash
 ";
 
 pub const PARSE_HELP: &str = "\
@@ -281,6 +318,7 @@ where
         "check-derivs" => check_command(&args[1..]),
         "emit-c" => emit_command(&args[1..]),
         "cont" => cont_command(&args[1..]),
+        "session" => session_command(&args[1..]),
         "dll-imports" => dll_imports_command(&args[1..]),
         "licenses" => licenses_command(&args[1..]),
         "-h" | "--help" | "-V" | "--version" => {
@@ -475,6 +513,62 @@ fn dll_imports_command(rest: &[OsString]) -> Result<Command, UsageError> {
     match parts.file {
         Some(file) => Ok(Command::DllImports { file }),
         None => Err(UsageError("dll-imports needs a file".to_string())),
+    }
+}
+
+/// Parses the arguments of `session`. `replay` is the only subcommand.
+fn session_command(rest: &[OsString]) -> Result<Command, UsageError> {
+    let mut it = rest.iter();
+    match it.next().map(utf8).transpose()? {
+        Some("-h" | "--help") => return Ok(Command::ToolHelp(SESSION_HELP)),
+        Some("replay") => {}
+        Some(other) => {
+            return Err(UsageError(format!(
+                "unknown session command {other}, expected replay"
+            )));
+        }
+        None => return Err(UsageError("session needs a subcommand: replay".to_string())),
+    }
+    let mut file: Option<PathBuf> = None;
+    let mut tol: Option<f64> = None;
+    let mut fallback = false;
+    let mut literal = false;
+    while let Some(arg) = it.next() {
+        let text = utf8(arg)?;
+        if literal || !text.starts_with('-') || text == "-" {
+            if file.replace(PathBuf::from(arg)).is_some() {
+                return Err(UsageError(format!("unexpected extra argument {text}")));
+            }
+            continue;
+        }
+        match text {
+            "--" => literal = true,
+            "-h" | "--help" => return Ok(Command::ToolHelp(SESSION_HELP)),
+            "--fallback" => fallback = true,
+            "--tol" => {
+                let v = utf8(value("--tol", &mut it)?)?;
+                let x: f64 = v.parse().map_err(|_| {
+                    UsageError(format!("--tol needs a non-negative number, got {v}"))
+                })?;
+                if !(x.is_finite() && x >= 0.0) {
+                    return Err(UsageError(format!(
+                        "--tol needs a finite number of at least 0, got {v}"
+                    )));
+                }
+                tol = Some(x);
+            }
+            other => return Err(UsageError(format!("unknown option {other}"))),
+        }
+    }
+    match file {
+        Some(file) => Ok(Command::SessionReplay {
+            file,
+            tol: tol.unwrap_or(DEFAULT_TOL),
+            fallback,
+        }),
+        None => Err(UsageError(
+            "session replay needs a session file".to_string(),
+        )),
     }
 }
 
@@ -727,6 +821,49 @@ mod tests {
             &["cont", "a.ode", "p.json", "x"],
             &["cont", "a.ode", "p.json", "--json"],
             &["parse", "a.ode", "--fallback"],
+        ] {
+            assert!(p(args).is_err(), "{args:?}");
+        }
+    }
+
+    fn replay(file: &str, tol: f64, fallback: bool) -> Command {
+        Command::SessionReplay {
+            file: file.into(),
+            tol,
+            fallback,
+        }
+    }
+
+    #[test]
+    fn session_replay_takes_a_file_a_tolerance_and_a_flag() {
+        assert_eq!(
+            p(&["session", "replay", "a.json"]),
+            Ok(replay("a.json", DEFAULT_TOL, false))
+        );
+        assert_eq!(
+            p(&["session", "replay", "--tol", "1e-6", "a.json", "--fallback"]),
+            Ok(replay("a.json", 1e-6, true))
+        );
+        assert_eq!(
+            p(&["session", "replay", "--tol", "0", "--", "-a.json"]),
+            Ok(replay("-a.json", 0.0, false))
+        );
+        assert_eq!(p(&["session", "-h"]), Ok(Command::ToolHelp(SESSION_HELP)));
+        assert_eq!(
+            p(&["session", "replay", "-h"]),
+            Ok(Command::ToolHelp(SESSION_HELP))
+        );
+        for args in [
+            &["session"][..],
+            &["session", "play", "a.json"],
+            &["session", "replay"],
+            &["session", "replay", "a.json", "b.json"],
+            &["session", "replay", "a.json", "--tol"],
+            &["session", "replay", "a.json", "--tol", "x"],
+            &["session", "replay", "a.json", "--tol", "-1"],
+            &["session", "replay", "a.json", "--tol", "inf"],
+            &["session", "replay", "a.json", "--tol", "NaN"],
+            &["session", "replay", "a.json", "--json"],
         ] {
             assert!(p(args).is_err(), "{args:?}");
         }
