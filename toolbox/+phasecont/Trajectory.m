@@ -159,7 +159,7 @@ classdef Trajectory < handle
 
         function names = variableNames(tr)
             % The variable names, or x1, x2, ... when the Model is gone.
-            if isempty(tr.Model)
+            if isempty(tr.Model) || ~isvalid(tr.Model)
                 names = "x" + (1:size(tr.X, 2));
             else
                 names = tr.Model.Variables(:).';

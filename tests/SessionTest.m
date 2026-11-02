@@ -62,7 +62,8 @@ classdef SessionTest < matlab.unittest.TestCase
                 Params = struct(I = 80, phi = 0.04));
             rest = phasecont.equilibrium(m, [-60 0], ...
                 Params = struct(I = 0, phi = 0.04));
-            ep = phasecont.continuation(m, rest, Free = "I", Bounds = [0 150]);
+            ep = phasecont.continuation(m, rest, Free = "I", Bounds = [0 150], ...
+                MaxSteps = 400, Hmax = 2, H0 = 0.5);
             h = ep.points("H");
             testCase.assertNotEmpty(h, "the EP branch has no Hopf point");
             lc = phasecont.continuation(m, h(1), Type = "LC", Free = "I", ...
@@ -226,7 +227,8 @@ classdef SessionTest < matlab.unittest.TestCase
             m = testCase.model(testCase.MorrisLecar);
             rest = phasecont.equilibrium(m, [-60 0], ...
                 Params = struct(I = 0, phi = 0.04));
-            ep = phasecont.continuation(m, rest, Free = "I", Bounds = [0 150]);
+            ep = phasecont.continuation(m, rest, Free = "I", Bounds = [0 150], ...
+                MaxSteps = 400, Hmax = 2, H0 = 0.5);
             h = ep.points("H");
             testCase.assertNotEmpty(h);
             testCase.verifyError(@() phasecont.Session(m, {h(1)}), ...
@@ -250,7 +252,8 @@ classdef SessionTest < matlab.unittest.TestCase
             m = testCase.model(testCase.MorrisLecar);
             rest = phasecont.equilibrium(m, [-60 0], ...
                 Params = struct(I = 0, phi = 0.04));
-            ep = phasecont.continuation(m, rest, Free = "I", Bounds = [0 150]);
+            ep = phasecont.continuation(m, rest, Free = "I", Bounds = [0 150], ...
+                MaxSteps = 400, Hmax = 2, H0 = 0.5);
             eq = phasecont.equilibrium(m, [-20 0.1], ...
                 Params = struct(I = 80, phi = 0.04));
             % The same item twice is one run with two entries.

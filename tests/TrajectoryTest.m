@@ -139,14 +139,13 @@ classdef TrajectoryTest < matlab.unittest.TestCase
             testCase.verifyLessThanOrEqual(numel(tr.T), 6);
         end
 
-        function aBlowUpStopsBeforeTheSingularity(testCase)
+        function aBlowUpStopsAtTheSingularity(testCase)
             m = testCase.model(testCase.Blow);
             tr = testCase.verifyWarning( ...
                 @() phasecont.simulate(m, 1, [0 2]), ...
                 "phasecont:simulate:stoppedEarly");
             testCase.verifyTrue(any(tr.Stop == ["Error" "StepTooSmall"]), tr.Stop);
-            testCase.verifyLessThan(tr.T(end), 1);
-            testCase.verifyGreaterThan(tr.T(end), 0.99);
+            testCase.verifyEqual(tr.T(end), 1, AbsTol = 1e-6);
         end
 
         function theRecordHoldsTheRun(testCase)
