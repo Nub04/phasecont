@@ -30,6 +30,8 @@ impl Handle for RunHandle {
 pub(crate) fn stride(kind: Kind, n: usize) -> usize {
     match kind {
         Kind::Ep => 3 * n + 6,
+        // [t, x(n)]
+        Kind::Ivp => n + 1,
         Kind::Lp => 1 + (n + 1) + 2 * n + kind.labels().len() + 2,
         Kind::Hopf => 1 + (n + 2) + 2 * n + kind.labels().len() + 2,
         // The parser rejects sizes that overflow; MAX makes a copy fail rather than wrap.
@@ -45,10 +47,16 @@ pub(crate) fn pack_row(kind: Kind, p: &Point, n: usize, out: &mut [f64]) {
     debug_assert_eq!(out.len(), stride(kind, n));
     let nan = f64::NAN;
     out[0] = p.alpha;
+    if kind == Kind::Ivp {
+        for i in 0..n {
+            out[1 + i] = p.u.get(i).copied().unwrap_or(nan);
+        }
+        return;
+    }
     // The state block: `n` values, plus a1 (and kappa) on a curve, or the orbit, T and
     // what follows T on a curve of cycles.
     let (block, mesh) = match kind {
-        Kind::Ep => (n, 0),
+        Kind::Ep | Kind::Ivp => (n, 0),
         Kind::Lp => (n + 1, 0),
         Kind::Hopf => (n + 2, 0),
         Kind::Lc { ntst, ncol }

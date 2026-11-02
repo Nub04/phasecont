@@ -853,7 +853,7 @@ fn bad_curve_problems_give_6_at_run_start() {
         ),
         (
             r#"{"type":"XX","free":"b1"}"#,
-            r#"type: expected "EP", "LP", "H", "LC", "LPC", "PD" or "NS""#,
+            r#"type: expected "EP", "LP", "H", "LC", "LPC", "PD", "NS" or "IVP""#,
         ),
     ];
     for (json, msg) in cases {
@@ -1151,5 +1151,168 @@ fn bad_cycle_problems_give_6_and_bad_lengths_give_2() {
         let (rc, run) = start_with(&m, json, u0, &[1.0, 2.0]);
         assert_eq!((rc, run), (2, 0), "{json}");
         assert!(last_error().contains(msg), "{json}: {}", last_error());
+    }
+}
+
+const ROTATION: &str = "x'=y\ny'=-x\ninit x=1,y=0\ndone\n";
+
+fn ivp_problem(tspan: &str, options: &str) -> String {
+    format!(r#"{{"type":"IVP","tspan":{tspan}{options}}}"#)
+}
+
+#[test]
+fn an_ivp_run_gives_rows_of_t_and_x_and_ends_with_end() {
+    for evaluator in ["jit", "fallback"] {
+        let m = parse(ROTATION);
+        compile(&m, evaluator);
+        let json = ivp_problem("[0,6]", r#","options":{"rtol":1e-10,"atol":1e-12}"#);
+        let (rc, run) = start_with(&m, &json, &[1.0, 0.0], &[]);
+        assert_eq!(rc, 0, "{}", last_error());
+        let run = Id(run);
+        let st = wait(&run);
+        assert_eq!(st["state"], "done");
+        assert_eq!(st["kind"], "IVP");
+        assert_eq!(st["n"], 2);
+        assert_eq!(st["stride"], 3);
+        let b = &st["branches"][0];
+        assert_eq!(b["stop"], "End");
+        let count = b["points"].as_u64().unwrap() as usize;
+        assert!(count > 3, "{count}");
+        let (rc, rows, v) = copy(run.0, 0, 0, 0, count, 3);
+        assert_eq!((rc, rows), (0, count), "{}", last_error());
+        assert_eq!(v.len(), 3 * count);
+        // The first row is the start, the last lands on t = 6.
+        assert_eq!(&v[..3], [0.0, 1.0, 0.0]);
+        let last = &v[3 * (count - 1)..];
+        assert_eq!(last[0], 6.0);
+        assert!((last[1] - 6f64.cos()).abs() < 1e-8, "{last:?}");
+        assert!((last[2] + 6f64.sin()).abs() < 1e-8, "{last:?}");
+        // Times rise.
+        assert!(
+            v.chunks(3)
+                .collect::<Vec<_>>()
+                .windows(2)
+                .all(|w| w[0][0] < w[1][0])
+        );
+        // No special points.
+        assert_eq!(b["specials"].as_array().unwrap().len(), 0);
+    }
+}
+
+#[test]
+fn an_ivp_run_matches_the_engine_row_for_row() {
+    let m = parse(ROTATION);
+    compile(&m, "jit");
+    let json = ivp_problem("[0,2]", "");
+    let (rc, run) = start_with(&m, &json, &[1.0, 0.0], &[]);
+    assert_eq!(rc, 0, "{}", last_error());
+    let run = Id(run);
+    let st = wait(&run);
+    let count = st["branches"][0]["points"].as_u64().unwrap() as usize;
+    let (_, _, got) = copy(run.0, 0, 0, 0, count, 3);
+    let mut map = SourceMap::new();
+    let top = map.add("rot.ode", ROTATION);
+    let loaded = load(top, &mut map, &mut MapLoader::new());
+    let mut spec = RunSpec::new(
+        loaded.expanded,
+        loaded.info,
+        Evaluator::Jit,
+        EpSetup::new(0, Vec::new(), vec![1.0, 0.0]),
+        Options::default(),
+    );
+    spec.kind = RunKind::Ivp {
+        tspan: [0.0, 2.0],
+        opts: pc_engine::IvpOptions::default(),
+    };
+    let engine = Run::start(spec);
+    let mut want = Vec::new();
+    let status = loop {
+        let st = engine.poll();
+        if st.state != RunState::Running {
+            break st;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    assert_eq!(status.state, RunState::Done);
+    for p in engine.points(0, 0, status.points[0]) {
+        want.push(p.alpha);
+        want.extend(&p.u);
+    }
+    assert!(same_bits(&got, &want));
+}
+
+#[test]
+fn an_ivp_run_may_use_t_and_a_backward_span() {
+    let m = parse(NON_AUTONOMOUS);
+    compile(&m, "jit");
+    // x' = -x + sin t from x(0) = 0 with a = 1: x = (sin t - cos t + e^-t) / 2.
+    let json = ivp_problem("[0,3]", "");
+    let (rc, run) = start_with(&m, &json, &[0.0], &[1.0]);
+    assert_eq!(rc, 0, "{}", last_error());
+    let run = Id(run);
+    let st = wait(&run);
+    assert_eq!(st["state"], "done");
+    assert_eq!(st["n"], 1);
+    assert_eq!(st["stride"], 2);
+    let count = st["branches"][0]["points"].as_u64().unwrap() as usize;
+    let (_, _, v) = copy(run.0, 0, 0, 0, count, 2);
+    let (t, x) = (v[2 * (count - 1)], v[2 * (count - 1) + 1]);
+    assert_eq!(t, 3.0);
+    let exact = (3f64.sin() - 3f64.cos() + (-3f64).exp()) / 2.0;
+    assert!((x - exact).abs() < 1e-7, "{x} vs {exact}");
+    // Backward from t = 3 to 0 over the same model.
+    let json = ivp_problem("[3,0]", "");
+    let (rc, run) = start_with(&m, &json, &[exact], &[1.0]);
+    assert_eq!(rc, 0, "{}", last_error());
+    let run = Id(run);
+    let st = wait(&run);
+    let count = st["branches"][0]["points"].as_u64().unwrap() as usize;
+    let (_, _, v) = copy(run.0, 0, 0, 0, count, 2);
+    assert_eq!(v[0], 3.0);
+    assert_eq!(v[2 * (count - 1)], 0.0);
+    assert!(
+        v[2 * (count - 1) + 1].abs() < 1e-6,
+        "{}",
+        v[2 * (count - 1) + 1]
+    );
+}
+
+#[test]
+fn an_ivp_run_reports_max_steps_and_bad_problems() {
+    let m = parse(ROTATION);
+    compile(&m, "jit");
+    let json = ivp_problem("[0,1000]", r#","options":{"max_steps":5}"#);
+    let (rc, run) = start_with(&m, &json, &[1.0, 0.0], &[]);
+    assert_eq!(rc, 0, "{}", last_error());
+    let run = Id(run);
+    let st = wait(&run);
+    assert_eq!(st["state"], "done");
+    assert_eq!(st["branches"][0]["stop"], "MaxSteps");
+    assert_eq!(st["branches"][0]["points"], 6);
+    // A start state with NaN is a bad problem that the worker finds, so poll reports 6.
+    let (rc, run) = start_with(&m, &ivp_problem("[0,1]", ""), &[f64::NAN, 0.0], &[]);
+    assert_eq!(rc, 0, "{}", last_error());
+    let run = Id(run);
+    assert_eq!(wait_raw_failed(&run), 6);
+    // A malformed problem gives 6 at run_start.
+    let (rc, run) = start_with(&m, &ivp_problem("[1,1]", ""), &[1.0, 0.0], &[]);
+    assert_eq!((rc, run), (6, 0));
+    assert_eq!(last_error(), "tspan: the two times must differ");
+    // The wrong state length gives 2.
+    let (rc, run) = start_with(&m, &ivp_problem("[0,1]", ""), &[1.0], &[]);
+    assert_eq!((rc, run), (2, 0));
+}
+
+/// Polls until `run_poll` returns an error and gives its code.
+fn wait_raw_failed(run: &Id) -> i32 {
+    let t0 = Instant::now();
+    loop {
+        let (rc, v) = poll_raw(run.0);
+        if rc != 0 {
+            return rc;
+        }
+        assert_ne!(v.unwrap()["state"], "done", "the run should have failed");
+        assert!(t0.elapsed() < Duration::from_secs(60), "run did not finish");
+        std::thread::sleep(Duration::from_millis(5));
     }
 }

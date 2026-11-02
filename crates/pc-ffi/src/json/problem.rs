@@ -7,8 +7,8 @@
 
 use pc_engine::{
     CYCLE_LABELS, CurveSetup, CycleCurveStart, CycleSetup, CycleStart, EpSetup, Evaluator,
-    HOPF_CURVE_LABELS, HopfStart, LP_CURVE_LABELS, LPC_CURVE_LABELS, NCOL_RANGE, NS_CURVE_LABELS,
-    Options, PD_CURVE_LABELS, PdStart, RunKind, RunSpec,
+    HOPF_CURVE_LABELS, HopfStart, IvpOptions, LP_CURVE_LABELS, LPC_CURVE_LABELS, NCOL_RANGE,
+    NS_CURVE_LABELS, Options, PD_CURVE_LABELS, PdStart, RunKind, RunSpec,
 };
 use pc_ir::IrModel;
 use pc_ode::{Model, ModelInfo};
@@ -17,6 +17,7 @@ use serde_json::{Map, Value};
 /// What a run follows: an equilibrium branch, the curve of fold (LP) or Hopf points of two
 /// parameters, a branch of periodic orbits (LC), or the curve of LPC, PD or NS points of
 /// cycles in two parameters. Cycles live on N mesh intervals of m collocation points.
+/// An initial value run (`Ivp`) integrates the model over a time span.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Ep,
@@ -26,6 +27,7 @@ pub enum Kind {
     Lpc { ntst: usize, ncol: usize },
     Pd { ntst: usize, ncol: usize },
     Ns { ntst: usize, ncol: usize },
+    Ivp,
 }
 
 impl Kind {
@@ -39,6 +41,7 @@ impl Kind {
             Kind::Lpc { .. } => "LPC",
             Kind::Pd { .. } => "PD",
             Kind::Ns { .. } => "NS",
+            Kind::Ivp => "IVP",
         }
     }
 
@@ -46,7 +49,7 @@ impl Kind {
     /// curve or the LPC, PD and NS points of a cycle branch. Empty for an equilibrium branch.
     pub fn labels(self) -> &'static [&'static str] {
         match self {
-            Kind::Ep => &[],
+            Kind::Ep | Kind::Ivp => &[],
             Kind::Lp => &LP_CURVE_LABELS,
             Kind::Hopf => &HOPF_CURVE_LABELS,
             Kind::Lc { .. } => &CYCLE_LABELS,
@@ -127,6 +130,9 @@ pub struct Problem {
     pub curve_free: Option<[usize; 2]>,
     /// The start of an LC run.
     pub cycle: Option<CycleFrom>,
+    /// The time span and the solver options of an IVP run. The start state is `setup.u0` and
+    /// the parameters are `setup.params`.
+    pub ivp: Option<([f64; 2], IvpOptions)>,
 }
 
 impl Problem {
@@ -149,6 +155,10 @@ impl Problem {
             }
         };
         match (self.kind, self.curve_free, &self.cycle) {
+            (Kind::Ivp, ..) if let Some((tspan, opts)) = &self.ivp => RunKind::Ivp {
+                tspan: *tspan,
+                opts: opts.clone(),
+            },
             (Kind::Lp, Some(free), _) => RunKind::LpCurve(curve(free)),
             (Kind::Hopf, Some(free), _) => RunKind::HopfCurve(curve(free)),
             (Kind::Lc { ntst, ncol }, _, Some(from)) => {
@@ -244,6 +254,11 @@ impl Problem {
             RunKind::Ep => {
                 let mut spec = RunSpec::new(model, info, evaluator, self.setup, self.opts);
                 spec.switch_at = self.switch;
+                spec
+            }
+            RunKind::Ivp { .. } => {
+                let mut spec = RunSpec::new(model, info, evaluator, self.setup, self.opts);
+                spec.kind = kind;
                 spec
             }
             curve => RunSpec::curve(model, info, evaluator, curve, self.opts),
@@ -343,6 +358,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
             "ncol",
             "start",
             "mesh",
+            "tspan",
         ],
         "",
     )?;
@@ -351,6 +367,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         Some(Value::String(s)) if s == "EP" => Kind::Ep,
         Some(Value::String(s)) if s == "LP" => Kind::Lp,
         Some(Value::String(s)) if s == "H" => Kind::Hopf,
+        Some(Value::String(s)) if s == "IVP" => return parse_ivp(top, ir, mode),
         Some(Value::String(s)) if s == "LC" => {
             cycle_size(top, ir.n(), |ntst, ncol| Kind::Lc { ntst, ncol })?
         }
@@ -365,10 +382,14 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         }
         Some(_) => {
             return Err(
-                "type: expected \"EP\", \"LP\", \"H\", \"LC\", \"LPC\", \"PD\" or \"NS\"".into(),
+                "type: expected \"EP\", \"LP\", \"H\", \"LC\", \"LPC\", \"PD\", \"NS\" or \"IVP\""
+                    .into(),
             );
         }
     };
+    if top.contains_key("tspan") {
+        return Err("tspan: only an IVP run takes this key".into());
+    }
     let curve_of_cycles = matches!(kind, Kind::Lpc { .. } | Kind::Pd { .. } | Kind::Ns { .. });
     let one_free = matches!(kind, Kind::Ep | Kind::Lc { .. });
     let (free, curve_free) = match (one_free, top.get("free")) {
@@ -404,15 +425,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         }
     }
 
-    let mut params = ir.par_values.clone();
-    if let Some(p) = top.get("params") {
-        for (name, val) in object(p, "params")? {
-            let path = format!("params.{name}");
-            let i = param_index(ir, name)
-                .ok_or_else(|| format!("{path}: unknown parameter \"{name}\""))?;
-            params[i] = number(val, &path)?;
-        }
-    }
+    let params = parse_params(top, ir)?;
 
     let cycle = match kind {
         Kind::Lc { .. } => Some(cycle_from(top)?),
@@ -447,12 +460,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
             );
         }
         None => ir.init.clone(),
-        Some(Value::Array(a)) => a
-            .iter()
-            .enumerate()
-            .map(|(i, x)| number(x, &format!("u0[{i}]")))
-            .collect::<Result<Vec<f64>, String>>()?,
-        Some(_) => return Err("u0: expected an array of numbers".into()),
+        Some(v) => u0_values(v)?,
     };
 
     let opts = match top.get("options") {
@@ -510,11 +518,120 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         kind,
         curve_free,
         cycle,
+        ivp: None,
     };
     if mode == Mode::Cli {
         problem.check_u0_len(ir.n(), problem.setup.u0.len())?;
     }
     Ok(problem)
+}
+
+/// The model's parameter values with the ones that `params` sets.
+fn parse_params(top: &Map<String, Value>, ir: &IrModel) -> Result<Vec<f64>, String> {
+    let mut params = ir.par_values.clone();
+    if let Some(p) = top.get("params") {
+        for (name, val) in object(p, "params")? {
+            let path = format!("params.{name}");
+            let i = param_index(ir, name)
+                .ok_or_else(|| format!("{path}: unknown parameter \"{name}\""))?;
+            params[i] = number(val, &path)?;
+        }
+    }
+    Ok(params)
+}
+
+/// The numbers of a `u0` array.
+fn u0_values(v: &Value) -> Result<Vec<f64>, String> {
+    match v {
+        Value::Array(a) => a
+            .iter()
+            .enumerate()
+            .map(|(i, x)| number(x, &format!("u0[{i}]")))
+            .collect(),
+        _ => Err("u0: expected an array of numbers".into()),
+    }
+}
+
+/// An `IVP` problem: `tspan`, the solver options, and the start state and parameters.
+fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Problem, String> {
+    if top.contains_key("free") {
+        return Err("free: an IVP run has no free parameter".into());
+    }
+    if let Some(key) = CYCLE_KEYS.iter().find(|k| top.contains_key(**k)) {
+        return Err(format!(
+            "{key}: only an LC, LPC, PD or NS run takes this key"
+        ));
+    }
+    if top.contains_key("start") {
+        return Err("start: only an LC run takes this key".into());
+    }
+    if top.contains_key("switch") {
+        return Err("switch: only an EP run can switch branches".into());
+    }
+    if top.contains_key("start_is_special") {
+        return Err("start_is_special: only an EP run starts at a special point".into());
+    }
+    let tspan = match top.get("tspan") {
+        None => return Err("tspan: missing".into()),
+        Some(Value::Array(a)) if a.len() == 2 => {
+            [number(&a[0], "tspan[0]")?, number(&a[1], "tspan[1]")?]
+        }
+        Some(_) => return Err("tspan: expected two numbers".into()),
+    };
+    if tspan[0] == tspan[1] {
+        return Err("tspan: the two times must differ".into());
+    }
+    if mode == Mode::Abi {
+        if top.contains_key("u0") {
+            return Err("u0: not allowed here; pass the state as a buffer".into());
+        }
+        if top.contains_key("params") {
+            return Err("params: not allowed here; pass the parameters as a buffer".into());
+        }
+    }
+    let params = parse_params(top, ir)?;
+    let u0 = match top.get("u0") {
+        None => ir.init.clone(),
+        Some(v) => u0_values(v)?,
+    };
+    let opts = match top.get("options") {
+        None => IvpOptions::default(),
+        Some(o) => parse_ivp_options(o)?,
+    };
+    let problem = Problem {
+        setup: EpSetup::new(0, params, u0),
+        opts: Options::default(),
+        switch: None,
+        kind: Kind::Ivp,
+        curve_free: None,
+        cycle: None,
+        ivp: Some((tspan, opts)),
+    };
+    if mode == Mode::Cli {
+        problem.check_u0_len(ir.n(), problem.setup.u0.len())?;
+    }
+    Ok(problem)
+}
+
+/// The options of an IVP run: `rtol`, `atol`, `max_steps` and `hmax`. Missing ones keep
+/// the defaults of `IvpOptions`.
+fn parse_ivp_options(v: &Value) -> Result<IvpOptions, String> {
+    let map = object(v, "options")?;
+    only_keys(map, &["rtol", "atol", "max_steps", "hmax"], "options")?;
+    let mut opts = IvpOptions::default();
+    if let Some(x) = map.get("rtol") {
+        opts.rtol = positive(x, "options.rtol")?;
+    }
+    if let Some(x) = map.get("atol") {
+        opts.atol = positive(x, "options.atol")?;
+    }
+    if let Some(x) = map.get("max_steps") {
+        opts.max_steps = count(x, "options.max_steps")?;
+    }
+    if let Some(x) = map.get("hmax") {
+        opts.hmax = positive(x, "options.hmax")?;
+    }
+    Ok(opts)
 }
 
 /// Reads `ntst` and `ncol` of a problem of cycles and makes its kind with `make`.
@@ -772,7 +889,7 @@ mod tests {
             ),
             (
                 json!({"type": "BP", "free": "a"}),
-                "type: expected \"EP\", \"LP\", \"H\", \"LC\", \"LPC\", \"PD\" or \"NS\"",
+                "type: expected \"EP\", \"LP\", \"H\", \"LC\", \"LPC\", \"PD\", \"NS\" or \"IVP\"",
             ),
         ];
         for (v, msg) in cases {
@@ -1234,5 +1351,144 @@ mod tests {
                 assert_eq!(parse_problem(&v, &ir, Mode::Cli).unwrap_err(), msg, "{v}");
             }
         }
+    }
+
+    fn ivp() -> Value {
+        json!({"type": "IVP", "tspan": [0.0, 5.0]})
+    }
+
+    #[test]
+    fn an_ivp_problem_takes_tspan_and_its_own_options() {
+        let ir = model();
+        let p = parse_problem(&ivp(), &ir, Mode::Abi).unwrap();
+        assert_eq!(p.kind, Kind::Ivp);
+        assert_eq!(Kind::Ivp.name(), "IVP");
+        assert!(Kind::Ivp.labels().is_empty());
+        let (tspan, opts) = p.ivp.clone().unwrap();
+        assert_eq!(tspan, [0.0, 5.0]);
+        assert_eq!(opts, pc_engine::IvpOptions::default());
+        match p.run_kind() {
+            RunKind::Ivp { tspan, opts } => {
+                assert_eq!(tspan, [0.0, 5.0]);
+                assert_eq!(opts, pc_engine::IvpOptions::default());
+            }
+            other => panic!("{other:?}"),
+        }
+        let mut v = ivp();
+        v["tspan"] = json!([3.0, -1.0]);
+        v["options"] = json!({"rtol": 1e-6, "atol": 1e-9, "max_steps": 50, "hmax": 0.25});
+        let p = parse_problem(&v, &ir, Mode::Abi).unwrap();
+        let (tspan, opts) = p.ivp.unwrap();
+        assert_eq!(tspan, [3.0, -1.0]);
+        assert_eq!(opts.rtol, 1e-6);
+        assert_eq!(opts.atol, 1e-9);
+        assert_eq!(opts.max_steps, 50);
+        assert_eq!(opts.hmax, 0.25);
+    }
+
+    #[test]
+    fn an_ivp_problem_is_refused_when_it_is_malformed() {
+        let ir = model();
+        let put = |k: &str, x: Value| {
+            let mut v = ivp();
+            v[k] = x;
+            v
+        };
+        let opt = |o: Value| put("options", o);
+        let mut no_tspan = ivp();
+        no_tspan.as_object_mut().unwrap().remove("tspan");
+        let cases = [
+            (no_tspan, "tspan: missing"),
+            (put("tspan", json!([0.0])), "tspan: expected two numbers"),
+            (
+                put("tspan", json!([0.0, 1.0, 2.0])),
+                "tspan: expected two numbers",
+            ),
+            (put("tspan", json!("0 5")), "tspan: expected two numbers"),
+            (
+                put("tspan", json!([0.0, "x"])),
+                "tspan[1]: expected a number",
+            ),
+            (
+                put("tspan", json!([2.0, 2.0])),
+                "tspan: the two times must differ",
+            ),
+            (
+                put("free", json!("a")),
+                "free: an IVP run has no free parameter",
+            ),
+            (
+                put("switch", json!("BP1")),
+                "switch: only an EP run can switch branches",
+            ),
+            (
+                put("ntst", json!(4)),
+                "ntst: only an LC, LPC, PD or NS run takes this key",
+            ),
+            (
+                opt(json!({"rtol": 0})),
+                "options.rtol: must be greater than 0",
+            ),
+            (
+                opt(json!({"rtol": -1e-3})),
+                "options.rtol: must be greater than 0",
+            ),
+            (
+                opt(json!({"atol": 0})),
+                "options.atol: must be greater than 0",
+            ),
+            (
+                opt(json!({"hmax": 0})),
+                "options.hmax: must be greater than 0",
+            ),
+            (
+                opt(json!({"max_steps": 0})),
+                "options.max_steps: expected an integer of at least 1",
+            ),
+            (opt(json!({"hmin": 1e-9})), "options.hmin: unknown key"),
+            (opt(json!({"h0": 0.1})), "options.h0: unknown key"),
+            (
+                opt(json!({"direction": 1})),
+                "options.direction: unknown key",
+            ),
+            (opt(json!("fast")), "options: expected an object"),
+        ];
+        for (v, msg) in cases {
+            assert_eq!(parse_problem(&v, &ir, Mode::Abi).unwrap_err(), msg, "{v}");
+        }
+        // The ABI passes the state and the parameters as buffers.
+        let v = put("u0", json!([1.0, 2.0]));
+        assert!(
+            parse_problem(&v, &ir, Mode::Abi)
+                .unwrap_err()
+                .starts_with("u0:")
+        );
+    }
+
+    #[test]
+    fn the_command_line_reads_u0_and_params_of_an_ivp_problem() {
+        let ir = model();
+        let mut v = ivp();
+        v["u0"] = json!([1.0, 2.0]);
+        v["params"] = json!({"a": 7.0});
+        let p = parse_problem(&v, &ir, Mode::Cli).unwrap();
+        assert_eq!(p.setup.u0, vec![1.0, 2.0]);
+        assert_eq!(p.setup.params, vec![7.0]);
+        // Without u0 the run starts at the model's initial values.
+        let p = parse_problem(&ivp(), &ir, Mode::Cli).unwrap();
+        assert_eq!(p.setup.u0, vec![0.5, 1.5]);
+        let mut v = ivp();
+        v["u0"] = json!([1.0]);
+        assert_eq!(
+            parse_problem(&v, &ir, Mode::Cli).unwrap_err(),
+            "u0: expected 2 values, got 1"
+        );
+    }
+
+    #[test]
+    fn the_type_error_lists_ivp() {
+        let ir = model();
+        let msg = parse_problem(&json!({"type": "XX"}), &ir, Mode::Abi).unwrap_err();
+        assert!(msg.contains("\"IVP\""), "{msg}");
     }
 }

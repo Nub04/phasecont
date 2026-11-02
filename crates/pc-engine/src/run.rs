@@ -20,8 +20,9 @@ use crate::cycle::{
 use crate::ep::{EpSetup, continue_ep};
 use crate::error::EngineError;
 use crate::hopfcurve::continue_hopf_curve;
+use crate::ivp::{IvpOptions, IvpSetup, integrate};
 use crate::lpcurve::continue_lp_curve;
-use crate::model::{Evaluator, build};
+use crate::model::{Evaluator, build, build_allowing_t};
 use crate::panic::{clear_last_panic, install_hook, mark_worker, payload_message, take_last_panic};
 use crate::switch::{special_index, switch_bp};
 use pc_ode::{Model, ModelInfo};
@@ -47,6 +48,9 @@ pub enum RunKind {
     PdCurve(CycleCurveStart),
     /// The NS curve through an NS point of a cycle branch, in two parameters.
     NsCurve(CycleCurveStart),
+    /// An initial value run over `tspan` from the state `setup.u0` with the parameters
+    /// `setup.params`. The model may depend on t.
+    Ivp { tspan: [f64; 2], opts: IvpOptions },
 }
 
 /// What to run. The worker lowers and compiles the model on its own thread.
@@ -215,6 +219,15 @@ fn follow(
         RunKind::LpcCurve(cs) => continue_lpc_curve(model, cs, opts, &shared.cancel, on_point),
         RunKind::PdCurve(cs) => continue_pd_curve(model, cs, opts, &shared.cancel, on_point),
         RunKind::NsCurve(cs) => continue_ns_curve(model, cs, opts, &shared.cancel, on_point),
+        RunKind::Ivp { tspan, opts } => {
+            let ivp = IvpSetup {
+                x0: setup.u0.clone(),
+                params: setup.params.clone(),
+                t0: tspan[0],
+                t1: tspan[1],
+            };
+            integrate(model, &ivp, opts, &shared.cancel, on_point)
+        }
     };
     match &b {
         Ok(branch) => shared.lock().branches[idx] = branch.clone(),
@@ -233,7 +246,13 @@ fn body(shared: &Shared, spec: RunSpec) -> RunState {
             )),
         );
     }
-    let model = match build(&spec.model, &spec.info, spec.evaluator) {
+    // Only an initial value run may depend on t.
+    let built = if matches!(spec.kind, RunKind::Ivp { .. }) {
+        build_allowing_t(&spec.model, &spec.info, spec.evaluator)
+    } else {
+        build(&spec.model, &spec.info, spec.evaluator)
+    };
+    let model = match built {
         Ok(m) => m,
         Err(e) => return finish(shared, Err(e)),
     };

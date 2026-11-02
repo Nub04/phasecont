@@ -235,7 +235,8 @@ pub unsafe extern "C" fn run_start(
         expect_len("params", h.n_p(), np)?;
         problem.setup.u0 = unsafe { f64_arg(u0, nu, "u0") }?.to_vec();
         problem.setup.params = unsafe { f64_arg(p, np, "params") }?.to_vec();
-        if !h.names.autonomous {
+        // Only an IVP run takes the time from the integration.
+        if !h.names.autonomous && problem.kind != Kind::Ivp {
             return Err(Error::NonAutonomous(EngineError::NonAutonomous.to_string()));
         }
         let kind = problem.kind;
