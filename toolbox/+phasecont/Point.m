@@ -16,6 +16,11 @@ classdef Point
         Model phasecont.Model {mustBeScalarOrEmpty} = phasecont.Model.empty
     end
 
+    properties (SetAccess = immutable, Hidden)
+        % The run that produced the point; empty for a point read from a branch.
+        Record phasecont.internal.RunRecord {mustBeScalarOrEmpty} = phasecont.internal.RunRecord.empty
+    end
+
     methods
         function obj = Point(options)
             arguments
@@ -26,6 +31,7 @@ classdef Point
                 options.Index (1,1) double = NaN
                 options.Data (1,1) struct = struct()
                 options.Model phasecont.Model {mustBeScalarOrEmpty} = phasecont.Model.empty
+                options.Record phasecont.internal.RunRecord {mustBeScalarOrEmpty} = phasecont.internal.RunRecord.empty
             end
             obj.U = options.U;
             obj.P = options.P;
@@ -34,6 +40,7 @@ classdef Point
             obj.Index = options.Index;
             obj.Data = options.Data;
             obj.Model = options.Model;
+            obj.Record = options.Record;
         end
     end
 end

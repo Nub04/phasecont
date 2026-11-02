@@ -91,6 +91,21 @@ classdef Branch < handle
         Model phasecont.Model {mustBeScalarOrEmpty} = phasecont.Model.empty
     end
 
+    properties (SetAccess = private, Hidden)
+        % The run that produced the branch, and which of its branches this is.
+        Record phasecont.internal.RunRecord {mustBeScalarOrEmpty} = phasecont.internal.RunRecord.empty
+        RunBranch (1,1) double = NaN
+    end
+
+    methods (Hidden)
+        function attachRecord(obj, record, runBranch)
+            % Internal use: remember the run that produced the branch and which
+            % of the run's branches this is. A session stores the run.
+            obj.Record = record;
+            obj.RunBranch = runBranch;
+        end
+    end
+
     methods
         function obj = Branch(values)
             % Internal use: values is a struct with the property names as fields.

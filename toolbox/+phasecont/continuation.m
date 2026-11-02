@@ -266,50 +266,24 @@ elseif isCurve
 elseif isCycle
     yrow = 1 + varIdx + n*(0:grid(1)*grid(2));
 end
-run = phasecont.internal.Run(m, problem, u0, p);
-cleanup = onCleanup(@() delete(run)); %#ok<NASGU>
-pts = cell(1, 0);
 lines = gobjects(1, 0);
-pause_s = 0.05;
-while true
-    st = run.poll();
-    nb = numel(st.branches);
-    for b = 1:nb
-        if b > numel(pts)
-            pts{b} = zeros(st.stride, 0);
-        end
-        have = size(pts{b}, 2);
-        avail = st.branches(b).points;
-        if avail > have
-            pts{b} = [pts{b}, run.copy(b, 0, have + 1, avail - have, st.stride)];
-        end
-        if options.Plot
-            if b > numel(lines)
-                lines(b) = line(ax, NaN, NaN);
-            end
-            set(lines(b), XData = pts{b}(xrow, :), ...
-                YData = max(pts{b}(yrow, :), [], 1));
-        end
-    end
-    hook = phasecont.internal.pollHook();
-    if ~isempty(hook)
-        hook(run, st);
-    end
-    if options.Plot
-        drawnow limitrate
-    end
-    if st.state ~= "running"
-        break
-    end
-    pause(pause_s);
+if options.Plot
+    out = phasecont.internal.runLoop(m, problem, u0, p, @drawLive);
+else
+    out = phasecont.internal.runLoop(m, problem, u0, p);
 end
+st = out.Status;
 nb = numel(st.branches);
 br = phasecont.Branch.empty(1, 0);
+record = phasecont.internal.RunRecord(struct( ...
+    "Kind", "continuation", "Problem", problem, "U0", u0(:), "P", p(:), ...
+    "ModelSha", m.SourceSha256, "Type", type, "Free", free, "Grid", reshape(grid, 1, []), ...
+    "N", n, "Json", out.Json, "Points", {out.Points}, ...
+    "Specials", {out.Specials}, "Stride", out.Stride));
 for b = 1:nb
-    nsp = numel(st.branches(b).specials);
-    sp = run.copy(b, 1, 1, nsp, st.stride);
-    one = phasecont.internal.rows2branch(m, free, p, n, pts{b}, sp, ...
-        st.branches(b), type, grid);
+    one = phasecont.internal.rows2branch(m, free, p, n, out.Points{b}, ...
+        out.Specials{b}, st.branches(b), type, grid);
+    one.attachRecord(record, b);
     br(1, b) = one;
 end
 if options.Plot
@@ -324,7 +298,18 @@ if options.Plot
     end
     drawnow
 end
-delete(run);
+
+    function drawLive(pts, ~)
+        % Draws the rows copied so far, one line per branch.
+        for k = 1:numel(pts)
+            if k > numel(lines)
+                lines(k) = line(ax, NaN, NaN);
+            end
+            set(lines(k), XData = pts{k}(xrow, :), ...
+                YData = max(pts{k}(yrow, :), [], 1));
+        end
+        drawnow limitrate
+    end
 end
 
 function [u0, p, special] = startValues(m, start, params)

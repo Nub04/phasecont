@@ -12,6 +12,8 @@ classdef Run < handle
 
     properties (Hidden, SetAccess = private)
         Id (1,1) uint64 = uint64(0)
+        % The last status as the engine wrote it, a JSON string.
+        LastStatus (1,1) string = ""
     end
 
     methods
@@ -27,15 +29,9 @@ classdef Run < handle
 
         function s = poll(obj)
             % The decoded status. branches is a struct array.
-            s = jsondecode(pckern("run_poll", obj.Id));
-            s.state = string(s.state);
-            s.branches = phasecont.internal.Run.structArray(s.branches);
-            for k = 1:numel(s.branches)
-                if isfield(s.branches, "specials")
-                    s.branches(k).specials = ...
-                        phasecont.internal.Run.structArray(s.branches(k).specials);
-                end
-            end
+            raw = string(pckern("run_poll", obj.Id));
+            obj.LastStatus = raw;
+            s = phasecont.internal.Run.decode(raw);
         end
 
         function rows = copy(obj, branch, what, start, count, stride)
@@ -60,6 +56,22 @@ classdef Run < handle
             catch err
                 if err.identifier ~= "phasecont:engine:badHandle"
                     warning("phasecont:model:freeFailed", "%s", err.message);
+                end
+            end
+        end
+    end
+
+    methods (Static)
+        function s = decode(raw)
+            % Decode a status JSON string the way poll does. A session load
+            % uses it on the stored final status.
+            s = jsondecode(raw);
+            s.state = string(s.state);
+            s.branches = phasecont.internal.Run.structArray(s.branches);
+            for k = 1:numel(s.branches)
+                if isfield(s.branches, "specials")
+                    s.branches(k).specials = ...
+                        phasecont.internal.Run.structArray(s.branches(k).specials);
                 end
             end
         end
