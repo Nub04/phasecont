@@ -32,6 +32,18 @@ classdef ExampleTest < matlab.unittest.TestCase
                 testCase.verifyGreaterThan(hp(k).Data.omega, 0);
             end
         end
+
+        function morrisLecarSessionReplays(testCase)
+            dir = testCase.applyFixture( ...
+                matlab.unittest.fixtures.TemporaryFolderFixture).Folder;
+            file = fullfile(dir, "ml.pcsession.json");
+            out = evalc("r = morris_lecar_session_example(File = file);");
+            testCase.verifyNotEmpty(out);
+            testCase.verifyTrue(isfile(file));
+            testCase.verifyEqual([r.Type], ["EP" "LC" "LPC" "H" "IVP"]);
+            testCase.verifyTrue(all([r.Pass]), "a run did not reproduce");
+            testCase.verifyLessThanOrEqual(max([r.MaxRelDiff]), 1e-8);
+        end
     end
 end
 

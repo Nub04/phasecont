@@ -2,7 +2,7 @@
 
 ## Phase
 
-P6 (LPC, PD and NS curves of limit cycles; SPEC section 8) is built on branch `phase6-cycle-curves`, stacked on `phase5-limit-cycles`, and waits for the oracle files. P5 (limit cycles; SPEC section 7) is open as PR #3. P4b closed the open items of P4 and merged into `main` locally on 2026-10-31 as a fast-forward to 78be5c3. P4 (LP and H curves, codim-2 detection and normal forms; SPEC section 14) merged into `main` locally on 2026-10-30 (14d6455). Both reached `origin/main` on 2026-10-31 with 175b6e9. P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 78c5df6. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 as PR #2 (3748707). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
+P7b (trajectories, sessions, replay and the phase-plane app) is built on branch `phase7b-sessions`, stacked on `phase6-cycle-curves`, and is described under In progress. P6 (LPC, PD and NS curves of limit cycles; SPEC section 8) is built on branch `phase6-cycle-curves`, stacked on `phase5-limit-cycles`, and waits for the oracle files. P5 (limit cycles; SPEC section 7) is open as PR #3. P4b closed the open items of P4 and merged into `main` locally on 2026-10-31 as a fast-forward to 78be5c3. P4 (LP and H curves, codim-2 detection and normal forms; SPEC section 14) merged into `main` locally on 2026-10-30 (14d6455). Both reached `origin/main` on 2026-10-31 with 175b6e9. P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 78c5df6. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 as PR #2 (3748707). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
 
 ## Done
 
@@ -233,9 +233,49 @@ Rulings in P6 package 8:
 
 P6 is done except for formal acceptance. SPEC section 14 accepts it on the `references/*.json` oracles, which the owner produces with AUTO-07p or MatCont; until then the LC self-consistency checks and the RK4 shooting oracle of package 8 stand in. The MATLAB suites that load the MEX need a run on a machine without Smart App Control, or on CI.
 
+P7b (trajectories, sessions, replay and the phase-plane app; SPEC sections 10 to 12 and 14) is built on branch `phase7b-sessions`, stacked on `phase6-cycle-curves`. The plan was approved on 2026-10-31. Every package is done in code. The acceptance criterion of SPEC section 14, that a session round trip reproduces a full Morris-Lecar diagram, holds in Rust: `crates/pc-cli/tests/session_ml.rs` builds the diagram, writes a session and replays it with `identical` true on all six runs.
+
+Commits on top of `phase6-cycle-curves`, oldest first:
+
+- b334b0e: `pc-engine/src/ivp.rs`, a Dormand-Prince 5(4) integrator with FSAL and the step-size controller of Hairer, Nørsett and Wanner (SPEC section 15), with beta = 0.04. Tests check order 5 for the step and order 4 for the embedded estimate, exact solutions, backward runs and the stops.
+- e689a43: the IVP run kind in the engine and in the problem JSON, `{"type":"IVP","tspan":[t0,t1],"options":{...}}`. Rows are `[t, x(1..n)]` with stride n + 1. The last stop is `End`.
+- 1d725b1: `model_info` reports `source_sha256` (an in-repo FIPS 180-4 implementation, checked against the NIST vectors) and `options` (the `@` options, lower-case names, last value wins).
+- 9a15507: the gateway command `model_rhs_batch` (n-by-k states), `Model.Options` and `Model.fromSource`.
+- eadc29f: a run record on branches and points, so a session can store the exact problem string and the raw rows. The poll and copy loop moved into `phasecont.internal.runLoop`.
+- 8e323db: `phasecont.simulate` and `phasecont.Trajectory`.
+- 1acd5ee: `pc-cli session replay`, the Morris-Lecar acceptance test, and the dev profile with `opt-level = 2`.
+- 22af635: `phasecont.Session` with `save` and `load`, and `phasecont.session.replay`.
+- f9688eb: `equilibrium()` no longer needs a free parameter (see the ruling below).
+- 1b34c1d: `phasecont.app.PhasePlane` and `AppTest` (33 tests).
+- The docs commit adds SPEC sections 10 to 12 and 15, this entry, and the Morris-Lecar example (`toolbox/examples/morris_lecar.ode` and `morris_lecar_session_example.m`, with a test in `ExampleTest`).
+
+Contracts. The C ABI is unchanged (`PcApiV1` has 17 members, 128 bytes, `abi_version` 1). The IVP problem type and its row layout, the two new `model_info` keys and the gateway command `model_rhs_batch` are JSON and gateway contracts, listed in SPEC section 10.
+
+Rulings and choices:
+
+- An IVP run refuses `free` ("an IVP run has no free parameter") and any unknown key in `options`. Other problem types refuse `tspan`. The defaults are rtol 1e-8, atol 1e-10, max_steps 100000, and no cap on the step.
+- Behavior change. A plain Newton `equilibrium()` no longer needs a free parameter, so a model without parameters can run `phasecont.equilibrium`. Before f9688eb it failed with "parameter index 0 is out of range". Continuation still needs a free parameter. The tests `equilibrium_does_not_need_a_free_parameter` (pc-engine) and `a_model_without_parameters_runs_equilibrium` (pc-ffi) pin the new rule, and SPEC section 10 states it.
+- The dev profile builds the dependencies, `pc-linalg` and `pc-engine` at `opt-level = 2` (1acd5ee). A 300-step LC run in the test build drops from 18 s to 1 s. Release builds do not change. The small fixture `tests/+fixtures/ml_small.pcsession.json` is written by the Rust tests and read by `SessionFormatTest`.
+- Session JSON v1 stores the problem and status as exact strings and every f64 array as row-major little-endian base64, so NaN, Inf and -0 survive. SPEC section 11 has the layout.
+- Replay passes when the row counts, labels with indices and stop reasons match and no value differs by more than 1e-8 relative (floor of 1). `identical` (every bit the same) is reported next to it.
+- The app integrates with Dormand-Prince only and says so when the model sets `meth`, `dt` or `bounds`. It passes `Hmax = |T|/500`. It never picks a T: without `@ total` a click raises `phasecont:app:missingTime`. A change of a parameter removes the trajectories and equilibria. Clear removes every item. A model that uses `t` can integrate but gets no equilibria, field or nullclines. Branches from a session are kept and saved again but not drawn.
+
+Verification:
+
+- `bash $SP/checks.sh` (fmt, clippy with `-D warnings`, `cargo test`, `cargo deny check`, Windows gnu release build of pc-ffi) ended with `all ok` and EXIT 0 on the tree of f9688eb and 1b34c1d.
+- `AppTest` passed 33 of 33 on the owner's machine with `pckern` loaded. Smart App Control blocks that load on some runs, so a local MEX run can fail on the first load.
+- The MEX suites ran on the owner's machine through `scripts/matlab-win` (runtests, full logs kept): `SessionFormatTest` 24, `SessionTest` 10, `TrajectoryTest` 20 and `ExampleTest` 2 passed with 0 failed and 0 incomplete, and `ModelTest` 26 and `GatewayTest` 18 passed with 0 failed and 0 incomplete. `checkcode` reports nothing on the changed files.
+- The first run of these suites found three bugs, all fixed: `Trajectory.plot` failed after its Model was deleted (`variableNames` now checks `isvalid`), the MATLAB Morris-Lecar EP run in `SessionTest` and the example used default step options and missed the Hopf point (they now pass `MaxSteps = 400, Hmax = 2, H0 = 0.5`, as the Rust test does), and the blow-up test asserted `t < 1` where explicit DP5 can land within 1e-6 of the pole (it now checks `|t - 1| < 1e-6`, as in Rust).
+
+Open risks and questions from P7b:
+
+- Replay across platforms is untested. libm differences between Windows, Linux and macOS can change step counts and fail a replay. The Rust replay on one machine is bit-exact, which is not evidence for another platform.
+- The Morris-Lecar test uses a coarse mesh (NTST 40, NCOL 4), so the engine warns that the mesh is too coarse. The replay repeats the warning.
+- Not covered by P7b: events and Poincaré sections, dense output, continuation from the app, and nullclines for n > 2 beyond the slice view.
+
 ## Next
 
-- P7b (phase-plane app, sessions and replay) and P8 (v1.0 packaging and the release workflow), then the public switch.
+- P8 (v1.0 packaging and the release workflow), then the public switch. The P7b MEX suites passed locally; they also need to pass on a GitHub-hosted job once the runner jobs move.
 - P4 and later: a continuation that changes a parameter or state read by a table formula needs a new lowering of the model (P2 known difference).
 
 ## Blocked
