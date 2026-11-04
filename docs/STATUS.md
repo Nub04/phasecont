@@ -2,9 +2,9 @@
 
 ## Phase
 
-P8 (v1.0 packaging and the release workflow) is on `main` and waits for the public switch and the first hosted run (see In progress). P7b (trajectories, sessions, replay and the phase-plane app) is on `main` and is described under In progress. P6 (LPC, PD and NS curves of limit cycles; SPEC section 8) is on `main` and waits for the oracle files. P5 (limit cycles; SPEC section 7) is on `main`. P5 to P8 were built on stacked branches and reached `main` together on 2026-11-04. P4b closed the open items of P4 and merged into `main` locally on 2026-10-31 as a fast-forward to d1380c7. P4 (LP and H curves, codim-2 detection and normal forms; SPEC section 14) merged into `main` locally on 2026-10-30 (734c7a8). Both were pushed on 2026-10-31 with 27b47b4. P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 88fbffa. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 (714aac9). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 (390bfb1). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
+P8 (v1.0 packaging and the release workflow) is on `main`. The repo has been public since 2026-11-04, and P8 waits for green hosted MATLAB jobs and the `release.yml` dry run (see In progress). P7b (trajectories, sessions, replay and the phase-plane app) is on `main` and is described under In progress. P6 (LPC, PD and NS curves of limit cycles; SPEC section 8) is on `main` and waits for the oracle files. P5 (limit cycles; SPEC section 7) is on `main`. P5 to P8 were built on stacked branches and reached `main` together on 2026-11-04. P4b closed the open items of P4 and merged into `main` locally on 2026-10-31 as a fast-forward to d1380c7. P4 (LP and H curves, codim-2 detection and normal forms; SPEC section 14) merged into `main` locally on 2026-10-30 (734c7a8). Both were pushed on 2026-10-31 with 27b47b4. P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 88fbffa. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 (714aac9). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 (390bfb1). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
 
-The history was rewritten on 2026-11-04. CLAUDE.md and docs/KICKOFF.md were dropped from every commit, and the Windows user name in the spike files was replaced with `<user>`. The GitHub repo was then deleted and created again, so the old PRs #1 to #3 and the old Actions runs are gone. Every commit id in this file refers to the rewritten history.
+The history was rewritten on 2026-11-04. CLAUDE.md and docs/KICKOFF.md were dropped from every commit, and the Windows user name in the spike files was replaced with `<user>`. The old GitHub repo was renamed and kept private, with PRs #1 to #3 and the old Actions runs, and a new public repo got the rewritten `main`. Every commit id in this file refers to the rewritten history.
 
 ## Done
 
@@ -129,7 +129,12 @@ P8 (v1.0 packaging and the release workflow, plan approved) was built on branch 
 - Docs: README rewritten in run order (install, upgrade, first run, build from source). SPEC section 12 describes the hosted jobs and `release.yml`. The Windows user path is gone from `docs/` and the spike scripts; the recorded logs in `spikes/results/` keep it.
 - Verified here at e288173 on 2026-11-03. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo deny check` and the MinGW win64 build of `pc-ffi` pass. `scripts/matlab-win "buildtool cargo mex"` builds both binaries, and `check-host-paths` finds no host path in `pckern.dll`. The whole `tests/` folder, MEX suites included, gives 295 tests: 291 passed, 0 failed and 4 skipped by assumption (the three `references/*.json` oracle tests and `BuildTest/wslRootElsewhereUsesToolboxBin`). `checkcode` gives 13 warnings on 54 files, none of them an error or a bug. Every workflow parses as YAML, every `uses:` is pinned by SHA, every checkout sets `persist-credentials: false`, and no `self-hosted` label is left.
 - The self-hosted runner (id 21) was deleted from the repo on 2026-11-03, and the repo lists no runner. Its folder `C:\actions-runner` was deleted from the laptop on 2026-11-04, after a check found no runner service and no runner process. The recreated repo has never had a runner.
-- Not run yet: the hosted `matlab` legs, the `release.yml` dry run, the glibc check of the zig build (it runs on CI only; zig and cargo-zigbuild are not installed here), and any test on a Mac.
+- First hosted run of `ci.yml` (run 41787381298, 2026-11-04, at 56aa95f): `rust` on all three runners and `pckern-win` passed, and `macos-jit.yml` passed. The three `matlab` legs failed, for three reasons, each fixed after the run:
+  - Linux and macOS: `AotTest` failed because `mex` links with an export list that keeps only `mexFunction`, so the engine could not find `pc_aot_init`. `internal.aotBuild` now passes empty `LINKEXPORT` and `LINKEXPORTVER` there, and the build flags are part of the cache key. A `failure()` step in `ci.yml` lists the symbols of the AOT libraries if it fails again.
+  - Linux and macOS: `PackageTest` refused every POSIX stage path, since `packageToolbox` only knew drive and UNC paths. It now treats a path that starts with "/" as absolute off Windows and refuses `\` in a segment, and on macOS it also compares the current folder with the stage as `cd` resolves it (`/var` is a link to `/private/var`). A new test covers the POSIX rules.
+  - Windows: the install check started its example MATLAB with `matlab-batch` from inside the licensed MATLAB, and that MATLAB had no license. `cleanInstallCheck.m` now runs one step per `PHASECONT_INSTALL_STEP` (install, example, remove), and `ci.yml` and `release.yml` run each step with its own `run-command`.
+  - Found while testing that fix here: an install made by a MATLAB started with `-batch` is not registered for later sessions, though its files stay in the Add-Ons folder. A later `-batch` MATLAB and a later `-r` MATLAB both list nothing. An install from a `-r` MATLAB is listed, and on the path, in the next session. The remove step therefore installs the same `.mltbx` again when the toolbox is not listed but its folder exists, and then uninstalls it. The three steps, each in its own `-batch` MATLAB, passed here on win64 (Hopf at I = 1.4187187 and 0.33128134), and the Add-Ons folder was empty afterwards.
+- Not run yet: a green hosted `matlab` run, the `release.yml` dry run, the glibc check of the zig build (it runs on CI only; zig and cargo-zigbuild are not installed here), and any test on a Mac.
 
 P5 (limit cycles, plan approved on 2026-10-31) was built on branch `phase5-limit-cycles` and is now on `main`. All 10 packages are done:
 
@@ -290,7 +295,7 @@ Open risks and questions from P7b:
 
 ## Next
 
-- Make the repo public, run `release.yml` as a dry run and fix forward, then tag `v1.0.0`.
+- Get the hosted `matlab` jobs green, run `release.yml` as a dry run and fix forward, then tag `v1.0.0`.
 - P4 and later: a continuation that changes a parameter or state read by a table formula needs a new lowering of the model (P2 known difference).
 
 ## Blocked
@@ -317,9 +322,9 @@ Open risks and questions from P7b:
     - `cranelift-jit` registers no Windows unwind information. No panic or exception may unwind through JIT code, which rule 7's `catch_unwind` on the Rust side of every call already requires.
   - The JIT inside MATLAB on macOS arm64 (moved from P2 by the owner on 2026-10-28). The Rust side of the SPEC section 4 check passes on the macOS runner already (see "Done").
 - Deferred from P7a, with reasons:
-  - (a) The MATLAB jobs on Linux and macOS, and the in-MATLAB macOS JIT check. MathWorks' batch token pilot was closed to new requests (checked 2026-10-29), and the repo is private. These resume when a token or a public repo exists.
+  - (a) The MATLAB jobs on Linux and macOS, and the in-MATLAB macOS JIT check. MathWorks' batch token pilot was closed to new requests (checked 2026-10-29). They first ran in `ci.yml` on 2026-11-04, after the repo went public (see In progress).
   - (b) AOT through `mex`, moved to P8a on 2026-10-28.
-  - (c) ASan has never run on GitHub. The P8a `package-win` job and the licenses step in `pckern-win` have not run on a real runner either.
+  - (c) ASan has not run on GitHub yet; it runs on pull requests, the nightly schedule and manual runs. The licenses step in `pckern-win` passed on its first hosted run on 2026-11-04.
 - Known minors from reviews, parked:
   - `special_tangent` threshold flips LP orientation with refinement noise.
   - The BP rank threshold needs a comment.
@@ -335,7 +340,7 @@ Open risks and questions from P7b:
     - `scripts/build-pckern` and `buildfile.m` ignore `CARGO_TARGET_DIR`, and the `wsl.exe` command does not escape `$` or quotes in paths.
     - A `Branch` keeps its `Model` handle, so variable lookup fails after the Model is deleted, and `continuation` rejects a start Point from another Model object with the same source.
     - `BuildTest/gatewayIsBuiltIntoTheBinFolder` cannot fail when the gateway is missing.
-  - AOT cache: a cache hit trusts `isfile` alone, with no staged rename, no rebuild after a failed load and no flags in the key, so a partial library warns until the cache folder is deleted.
+  - AOT cache: a cache hit trusts `isfile` alone, with no staged rename and no rebuild after a failed load, so a partial library warns until the cache folder is deleted.
   - AOT hash: `textHash` is a per-byte MATLAB loop on every Model construction; read the hash from the `c_file` name when no hook is set.
   - AOT cache folder: the path is predictable in a shared `tempdir` with no ownership check (a Linux `/tmp` concern), and AotTest uses the real cache.
   - AOT Model: the class help does not mention `Evaluator="aot"`, `AotInfo` or the config key, `Evaluator=""` is accepted, and a failed AOT attempt compiles the JIT a second time.
