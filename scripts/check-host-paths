@@ -18,7 +18,9 @@ for f in "$@"; do
     status=1
     continue
   fi
-  hits="$(LC_ALL=C grep -a -o -E '/home/[A-Za-z0-9._-]+/|/Users/[A-Za-z0-9._-]+/|[A-Za-z]:\\\\?Users\\\\' "$f" | sort | uniq -c || true)"
+  # Each hit is printed with up to 160 printable characters after it, so
+  # the log shows which file or crate the path comes from.
+  hits="$(LC_ALL=C grep -a -o -E '(/home/[A-Za-z0-9._-]+/|/Users/[A-Za-z0-9._-]+/|[A-Za-z]:\\\\?Users\\\\?)[[:print:]]{0,160}' "$f" | sort | uniq -c || true)"
   if [[ -n "$hits" ]]; then
     echo "check-host-paths: $f holds host paths:" >&2
     echo "$hits" >&2
