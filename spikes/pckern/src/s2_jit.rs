@@ -21,7 +21,7 @@ use crate::RhsFn;
 use crate::ffi::{Args, Json, Result, bad_arg, barrier, internal, into_c_string, out_arg, str_arg};
 use crate::rng::SplitMix64;
 
-/// The parameter values from `docs/KICKOFF.md`.
+/// The nominal parameter values of the spike S2 model.
 pub const P_NOMINAL: [f64; 4] = [0.08, 0.7, 0.8, 0.5];
 
 /// Called from JIT code. Shims must not panic: JIT frames have no unwind

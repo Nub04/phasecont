@@ -1,6 +1,6 @@
 # Phase 0 spike report
 
-Phase 0 asked four feasibility questions (`docs/KICKOFF.md`) and answered each with a throwaway spike. Each section below has the same four parts: what was built, the commands that ran, the numbers measured and what went wrong. The report ends with one recommendation for each of four decisions. Phase 0 is accepted when the project owner approves those decisions (`docs/SPEC.md` section 14).
+Phase 0 asked four feasibility questions and answered each with a throwaway spike. Each section below has the same four parts: what was built, the commands that ran, the numbers measured and what went wrong. The report ends with one recommendation for each of four decisions. Phase 0 is accepted when the project owner approves those decisions (`docs/SPEC.md` section 14).
 
 | Spike | Question | Outcome |
 |---|---|---|
@@ -424,7 +424,7 @@ All three runs report `driver_version` 13040, as in WSL, the NVIDIA GeForce RTX 
 
 Use route 1: build `pckern.dll` for `x86_64-pc-windows-gnu` in WSL with Fedora's `rust-std-static-x86_64-pc-windows-gnu` and `mingw64-gcc`, and build the MEX gateway with the Microsoft Visual C++ 2026 compiler that Windows MATLAB already had.
 
-No Windows route was free of installs, although `docs/KICKOFF.md` (line 51) preferred one that needs no new install. At discovery WSL had the host std only, neither `rustup` nor `cargo-xwin` was installed, and Windows had no `cargo`, `rustc` or `rustup` on its `PATH` (`docs/ENVIRONMENT.md:30`, `:34`, `:61`, `:74`). Route 3 would have needed a Rust install on Windows, where Visual Studio 2026, the MSVC toolsets and the Windows SDK are present (`docs/ENVIRONMENT.md:75-77`). Route 2 would have needed `rustup` and `cargo-xwin`. Route 1 took the two `dnf` commands at `docs/ENVIRONMENT.md:132-133`, which installed the Windows std, `mingw64-gcc` and `mingw64-winpthreads-static` and moved the Rust packages from 1.99.0 to 1.99.1.
+No Windows route was free of installs, although the Phase 0 brief preferred one that needs no new install. At discovery WSL had the host std only, neither `rustup` nor `cargo-xwin` was installed, and Windows had no `cargo`, `rustc` or `rustup` on its `PATH` (`docs/ENVIRONMENT.md:30`, `:34`, `:61`, `:74`). Route 3 would have needed a Rust install on Windows, where Visual Studio 2026, the MSVC toolsets and the Windows SDK are present (`docs/ENVIRONMENT.md:75-77`). Route 2 would have needed `rustup` and `cargo-xwin`. Route 1 took the two `dnf` commands at `docs/ENVIRONMENT.md:132-133`, which installed the Windows std, `mingw64-gcc` and `mingw64-winpthreads-static` and moved the Rust packages from 1.99.0 to 1.99.1.
 
 Route 1 was picked anyway, for four reasons. It is the first choice in the project rules. Everything it installed is a Fedora package, and Fedora has no package for `cargo-xwin` (`docs/ENVIRONMENT.md:61`, `:149`). One `rustc` builds the Linux and the Windows targets. The Rust build runs in WSL on the repo, and only the finished DLL of that build is copied to `C:` (`spikes/stage.sh:30`, `:39`).
 

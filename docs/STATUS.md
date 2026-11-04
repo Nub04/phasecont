@@ -31,7 +31,7 @@ P8a (package v0.3, win64 only, branch `phase8a-package`, commits 5efc474 to cbbc
 P0 (accepted on 2026-10-22, when the owner approved the decisions in `docs/spikes.md`):
 
 - Discovery results are in `docs/ENVIRONMENT.md`.
-- The project license is Apache-2.0. Rule 2 of the project rules says so; `docs/KICKOFF.md` keeps the original wording.
+- The project license is Apache-2.0, as rule 2 of the project rules says.
 - Scaffold: a Cargo workspace with the nine crates of the planned layout, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `deny.toml`, `rustfmt.toml`, `buildfile.m` (only the `test` task works so far) and `tests/ScaffoldTest.m`.
 - Windows build route 1 is installed: the `x86_64-pc-windows-gnu` std and MinGW-w64, both from Fedora.
 - Four spikes in `spikes/` (a separate Cargo workspace) pass their checks: S1 FFI round trip through the MEX gateway, S2 Cranelift JIT, S3 collocation solve with faer, S4 NVRTC kernel launch. `docs/spikes.md` has the commands, numbers and lessons.
