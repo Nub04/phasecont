@@ -74,7 +74,10 @@ end
 stage = char(opts.StageFolder);
 checkStage(stage);
 stagePath = normalizedPath(stage, "phasecont:package:badStage");
-if isUnder(normalizedPath(pwd, "phasecont:package:badStage"), stagePath)
+% pwd may name the current folder with links resolved (macOS reaches /var
+% through /private/var), so the stage is compared in both forms.
+here = normalizedPath(pwd, "phasecont:package:badStage");
+if isUnder(here, stagePath) || (isfolder(stage) && isUnder(here, resolvedFolder(stage)))
     error("phasecont:package:badStage", ...
         "The current folder is inside the stage folder, which is deleted first: %s", pwd);
 end
@@ -243,12 +246,16 @@ end
 
 function checkSegments(parts, what, shown)
 % Reject segments that Windows would read differently from what they say.
+% The same rules hold on every platform, so a name that works on one works
+% on all. A segment never holds "\" on Windows, where it is a separator;
+% elsewhere it is a file name character and is refused.
 reserved = ["CON", "PRN", "AUX", "NUL", "COM" + (1:9), "LPT" + (1:9)];
 for k = 1:numel(parts)
     seg = parts(k);
     bad = strlength(strtrim(seg)) == 0 || seg == "." || seg == ".." ...
         || endsWith(seg, [" ", "."]) || contains(seg, ["<", ">", """", "|", "*"]) ...
-        || any(double(char(seg)) < 32) || (k > 1 && contains(seg, [":", "?"])) ...
+        || any(double(char(seg)) < 32) || contains(seg, "\") ...
+        || ((k > 1 || ~ispc) && contains(seg, [":", "?"])) ...
         || any(upper(extractBefore(seg + ".", ".")) == reserved) ...
         || (what == "Stage" && (contains(seg, ["&", ";"]) ...
         || (k == numel(parts) && startsWith(seg, "."))));
@@ -264,10 +271,10 @@ function checkStage(stage)
 % Refuse any stage folder that is not an absolute path of the form
 % <something>/package/<name>, with no suspicious segments, so that a typo
 % cannot make the rmdir below delete real files.
-parts = split(string(stage), ["\", "/"]);
-isAbsolute = ~isempty(regexp(stage, '^([A-Za-z]:[\\/]|[\\/]{2})', "once"));
-if isAbsolute && numel(parts) >= 2 && parts(end) ~= "" && parts(end-1) == "package"
-    % Empty segments come from doubled separators or the UNC prefix.
+parts = split(string(stage), separators());
+if isAbsolutePath(stage) && numel(parts) >= 2 && parts(end) ~= "" && parts(end-1) == "package"
+    % Empty segments come from doubled separators, the UNC prefix or the
+    % leading "/".
     checkSegments(parts(parts ~= ""), "Stage", stage);
 else
     error("phasecont:package:badStage", ...
@@ -279,7 +286,7 @@ end
 function outPath = checkOutput(output, stagePath)
 % Validate OutputFile and return its absolute, normalized path.
 outPath = normalizedPath(output, "phasecont:package:badOutput");
-parts = split(string(outPath), "\");
+parts = split(string(outPath), filesep);
 leaf = parts(end);
 if ~endsWith(leaf, ".mltbx", IgnoreCase = true) || strlength(leaf) <= strlength(".mltbx")
     error("phasecont:package:badOutput", ...
@@ -300,21 +307,22 @@ end
 end
 
 function p = normalizedPath(p, id)
-% Absolute path with "." and ".." resolved, "\" separators and no trailing
-% separator. Pure string work: the folder need not exist. A path must start
-% with a drive letter and a separator, with two separators (UNC), or be
-% relative to the current folder. A single leading separator or "C:x" is
-% refused with the error id given in id.
+% Absolute path with "." and ".." resolved, filesep separators and no
+% trailing separator. Pure string work: the folder need not exist. On
+% Windows a path must start with a drive letter and a separator, with two
+% separators (UNC), or be relative to the current folder; a single leading
+% separator or "C:x" is refused with the error id given in id. Elsewhere a
+% path that starts with "/" is absolute and any other is relative.
 p = char(p);
-if isempty(regexp(p, '^([A-Za-z]:[\\/]|[\\/]{2})', "once"))
-    if ~isempty(regexp(p, '^([\\/]|[A-Za-z]:)', "once"))
+if ~isAbsolutePath(p)
+    if ispc && ~isempty(regexp(p, '^([\\/]|[A-Za-z]:)', "once"))
         error(id, ...
             "Path '%s' must start with a drive letter and a separator, with a UNC prefix, or be relative to the current folder", p);
     end
     p = fullfile(pwd, p);
 end
-unc = ~isempty(regexp(p, '^[\\/]{2}', "once"));
-parts = split(string(p), ["\", "/"]);
+unc = ispc && ~isempty(regexp(p, '^[\\/]{2}', "once"));
+parts = split(string(p), separators());
 kept = strings(1, 0);
 for part = parts(:)'
     if part == "" || part == "."
@@ -327,15 +335,46 @@ for part = parts(:)'
         kept(end+1) = part; %#ok<AGROW>
     end
 end
-p = char(strjoin(kept, "\"));
+p = char(strjoin(kept, filesep));
 if unc
     p = ['\\' p];
+elseif ~ispc
+    p = ['/' p];
 end
 end
 
+function tf = isAbsolutePath(p)
+% Windows: a drive letter and a separator, or a UNC prefix. Elsewhere: a
+% leading "/".
+if ispc
+    tf = ~isempty(regexp(p, '^([A-Za-z]:[\\/]|[\\/]{2})', "once"));
+else
+    tf = startsWith(p, "/");
+end
+end
+
+function seps = separators()
+% Path separators: "\" and "/" on Windows, only "/" elsewhere.
+if ispc
+    seps = ["\", "/"];
+else
+    seps = "/";
+end
+end
+
+function p = resolvedFolder(folder)
+% The normalized path of an existing folder as pwd reports it after cd,
+% which resolves links on some systems.
+old = cd(folder);
+back = onCleanup(@() cd(old));
+p = normalizedPath(pwd, "phasecont:package:badStage");
+delete(back);
+end
+
 function tf = isUnder(p, folder)
-% True when p equals folder or lies below it (case-insensitive).
+% True when p equals folder or lies below it. The test ignores case on
+% every platform, which can only refuse more, never less.
 p = lower(string(p));
 folder = lower(string(folder));
-tf = p == folder || startsWith(p, folder + "\");
+tf = p == folder || startsWith(p, folder + filesep);
 end

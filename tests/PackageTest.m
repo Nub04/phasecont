@@ -378,6 +378,7 @@ classdef PackageTest < matlab.unittest.TestCase
         function uncAndMixedSeparatorsMatchTheStage(testCase)
             % The same stage written as \\localhost\C$\... must still catch
             % an input that uses forward slashes or a different case.
+            testCase.assumeTrue(ispc, "Windows drive and UNC rules");
             work = testCase.prepareStage();
             origStage = testCase.Stage;
             drive = extractBefore(string(work), 2);
@@ -405,6 +406,7 @@ classdef PackageTest < matlab.unittest.TestCase
         end
 
         function pathsWithoutDriveOrUncPrefixAreRejected(testCase)
+            testCase.assumeTrue(ispc, "Windows drive and UNC rules");
             work = testCase.prepareStage();
             origStage = testCase.Stage;
             drive = extractBefore(string(work), 2);
@@ -436,6 +438,29 @@ classdef PackageTest < matlab.unittest.TestCase
                 end
             end
             testCase.verifyFalse(isfolder(fullfile(drive + ":\", "phasecont_r3_none")));
+            testCase.verifyIntact(work);
+        end
+
+        function posixPathsMustBeAbsoluteWithoutBackslashes(testCase)
+            % Off Windows a path is absolute when it starts with "/", and
+            % "\" is a file name character, which the stage and the output
+            % may not hold.
+            testCase.assumeFalse(ispc, "POSIX path rules");
+            work = testCase.prepareStage();
+            origStage = testCase.Stage;
+            stages = ["package/PhaseCont", "~/package/PhaseCont", ...
+                "C:\phasecont_r3_none\package\PhaseCont", ...
+                string(work) + "/package\PhaseCont", ...
+                string(work) + "/package/Phase\Cont"];
+            for s = stages
+                testCase.Stage = s;
+                testCase.verifyError(@() testCase.build(), ...
+                    "phasecont:package:badStage", "stage: " + s);
+            end
+            testCase.Stage = origStage;
+            testCase.verifyError(@() testCase.build(strings(1, 0), ...
+                struct(OutputFile = string(work) + "/out\x.mltbx")), ...
+                "phasecont:package:badOutput");
             testCase.verifyIntact(work);
         end
 
