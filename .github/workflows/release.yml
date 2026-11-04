@@ -103,9 +103,15 @@ jobs:
       - name: Build libpckern.dylib
         run: |
           export RUSTFLAGS="--remap-path-prefix=$GITHUB_WORKSPACE=/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo"
-          cargo build --release --locked -p pc-ffi
+          # The linker sets the install name to the absolute output path,
+          # which holds the runner's home folder. The gateway opens the
+          # library by path, so a relative install name is enough. Setting it
+          # at link time keeps the linker's ad hoc signature valid.
+          cargo rustc --release --locked -p pc-ffi --lib --crate-type cdylib \
+            -- -C link-arg=-Wl,-install_name,@rpath/libpckern.dylib
       - name: Check the deployment target and host paths
         run: |
+          otool -D target/release/libpckern.dylib
           otool -l target/release/libpckern.dylib | grep -A3 LC_BUILD_VERSION
           scripts/check-host-paths target/release/libpckern.dylib
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
