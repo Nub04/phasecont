@@ -12,7 +12,7 @@ ignore = [
 ]
 
 [licenses]
-# CLAUDE.md rule 2. Ask before adding anything to this list.
+# Allowed licenses for third-party Rust dependencies. Ask before adding to this list.
 allow = [
     "MIT",
     "Apache-2.0",

@@ -426,7 +426,7 @@ Use route 1: build `pckern.dll` for `x86_64-pc-windows-gnu` in WSL with Fedora's
 
 No Windows route was free of installs, although `docs/KICKOFF.md` (line 51) preferred one that needs no new install. At discovery WSL had the host std only, neither `rustup` nor `cargo-xwin` was installed, and Windows had no `cargo`, `rustc` or `rustup` on its `PATH` (`docs/ENVIRONMENT.md:30`, `:34`, `:61`, `:74`). Route 3 would have needed a Rust install on Windows, where Visual Studio 2026, the MSVC toolsets and the Windows SDK are present (`docs/ENVIRONMENT.md:75-77`). Route 2 would have needed `rustup` and `cargo-xwin`. Route 1 took the two `dnf` commands at `docs/ENVIRONMENT.md:132-133`, which installed the Windows std, `mingw64-gcc` and `mingw64-winpthreads-static` and moved the Rust packages from 1.99.0 to 1.99.1.
 
-Route 1 was picked anyway, for four reasons. It is the first choice in `CLAUDE.md` (line 33). Everything it installed is a Fedora package, and Fedora has no package for `cargo-xwin` (`docs/ENVIRONMENT.md:61`, `:149`). One `rustc` builds the Linux and the Windows targets. The Rust build runs in WSL on the repo, and only the finished DLL of that build is copied to `C:` (`spikes/stage.sh:30`, `:39`).
+Route 1 was picked anyway, for four reasons. It is the first choice in the project rules. Everything it installed is a Fedora package, and Fedora has no package for `cargo-xwin` (`docs/ENVIRONMENT.md:61`, `:149`). One `rustc` builds the Linux and the Windows targets. The Rust build runs in WSL on the repo, and only the finished DLL of that build is copied to `C:` (`spikes/stage.sh:30`, `:39`).
 
 Evidence:
 
@@ -442,7 +442,7 @@ Upkeep: the Windows std and `rustc` must come from one Fedora build. After any R
 
 ### 2, default model backend
 
-Keep the Cranelift JIT as the default model backend, and keep AOT C as the optional path that is used only when `mex` finds a compiler. This follows rule 5 in `CLAUDE.md` (line 18, "Users never need a compiler."). On the two-variable model of S2 the median ratios of JIT loop time to C loop time ran from 0.976 to 1.124 in MATLAB (S2, Numbers), each loop also builds its inputs and folds its outputs, and the JIT and C code give the same results, so S2 shows no reason on win64 to make a compiler a requirement.
+Keep the Cranelift JIT as the default model backend, and keep AOT C as the optional path that is used only when `mex` finds a compiler. This follows rule 5 of the project rules ("Users never need a compiler."). On the two-variable model of S2 the median ratios of JIT loop time to C loop time ran from 0.976 to 1.124 in MATLAB (S2, Numbers), each loop also builds its inputs and folds its outputs, and the JIT and C code give the same results, so S2 shows no reason on win64 to make a compiler a requirement.
 
 Evidence:
 
@@ -453,7 +453,7 @@ Evidence:
 
 macOS arm64 was not tested, because the spikes ran only on Windows and WSL. The check that `docs/SPEC.md:99` assigns to S2 moves to Phase 2. Reading `cranelift-jit` 0.137.0 gives two points for that check (S2, What went wrong). `JITModule::new` accepts `is_pic=true` only on x86_64, and the spike sets it on every target, so the spike code would fail on aarch64. The default memory provider maps code pages without `MAP_JIT` and switches them to read-execute with `mprotect`, which under the hardened runtime needs an entitlement that allows unsigned executable memory in the MATLAB process. That last point follows Apple's documentation (item 4.4) and was not checked on a Mac.
 
-Owner decision: the fallback in `docs/SPEC.md:99` (AOT plus a documented requirement for the Xcode Command Line Tools on Macs) conflicts with rule 5 in `CLAUDE.md:18`. If the Phase 2 check fails, one of the two has to give way, and S2 does not settle which. Decided on 2026-10-22: rule 5 holds ("Decisions after review" below).
+Owner decision: the fallback in `docs/SPEC.md:99` (AOT plus a documented requirement for the Xcode Command Line Tools on Macs) conflicts with rule 5 of the project rules. If the Phase 2 check fails, one of the two has to give way, and S2 does not settle which. Decided on 2026-10-22: rule 5 holds ("Decisions after review" below).
 
 Not tested: macOS arm64, MATLAB on glnxa64, models larger than two variables, directional derivatives, calls from several threads, a shim that panics, and C emitted by `pc-codegen` (the C reference is the fixed file `spikes/mex/fhn_aot.c`). The results do not record the MSVC flags that `mex` used.
 
@@ -476,7 +476,7 @@ Not tested: the `s3` runs used n = 4 and m = 4 only, with N up to 400, and the `
 
 Upkeep: `pc-linalg` chooses the LU variant itself, sets faer's global parallelism once and owns its rayon pool, and it checks a memory budget before large solves because a failed allocation in `Vec` or in dyn-stack's `MemBuffer::new` aborts the MATLAB process (S3, What went wrong). These are the `docs/SPEC.md:168` and `:170` items of recommendation 4.
 
-### 4, changes to `CLAUDE.md` and `docs/SPEC.md`
+### 4, changes to the project rules and `docs/SPEC.md`
 
 All 17 items were approved on 2026-10-22 and are applied, with the changes to 4.4 and 4.16 that "Decisions after review" lists. The text below is the proposal as it was reviewed. Proposals for the same lines are merged into one item. The first group holds text that a spike result contradicts or that Phase 0 has settled. The second group holds text that is correct but lacks something the spikes found. Each item gives the line, a quote of the current text, the proposed wording and the evidence. "Not tested" marks what a spike did not exercise; it does not mean the current text is wrong.
 
@@ -484,7 +484,7 @@ Line numbers and quotes are from the working tree. Quotes and proposed wording l
 
 #### Group 1, text that a result contradicts or that Phase 0 settled
 
-##### 4.1, `CLAUDE.md:32`, the Rust toolchain
+##### 4.1, project rules, the Rust toolchain
 
 Current text:
 
@@ -500,7 +500,7 @@ The WSL Rust toolchain is Fedora's packaged `rustc`/`cargo` 1.99.1, not rustup, 
 
 Evidence: `docs/ENVIRONMENT.md:25-30` (versions, packages and targets, no rustup), `:34` and `:139` (the std and `rustc` must come from the same build), `:48` (MinGW gcc) and `:129-137` (the installs); `spikes/.cargo/config.toml:1-2` (the linker); `s1_ffi.txt:7-8` (a DLL from this toolchain loaded in MATLAB). Recommendation 1 gives the reasons for route 1.
 
-##### 4.2, `CLAUDE.md:36`, the gateway compiler
+##### 4.2, project rules, the gateway compiler
 
 Current text:
 
@@ -518,7 +518,7 @@ Evidence: `docs/ENVIRONMENT.md:88`, `:94`; `s1_gateway_nodll.txt:9-10`; `spikes/
 
 Not tested: a MinGW build of the gateway.
 
-##### 4.3, `CLAUDE.md:37`, the GPU line
+##### 4.3, project rules, the GPU line
 
 Two sentences of the line change. The first proposed block replaces the line's second sentence, and the second block replaces its fourth sentence.
 
@@ -540,8 +540,8 @@ Code that runs inside Windows MATLAB needs a Windows NVRTC DLL (`nvrtc64_*.dll`)
 
 Evidence for the first sentence:
 
-- `docs/ENVIRONMENT.md:90`: `gpuDevice` reports `ComputeCapability` 12.0 and `DeviceSupported` 1. `docs/ENVIRONMENT.md:117` says the range in `CLAUDE.md` does not hold for R2026b and leaves the change to this report.
-- `CLAUDE.md:24` allows Parallel Computing Toolbox only inside the optional `gpuArray` route.
+- `docs/ENVIRONMENT.md:90`: `gpuDevice` reports `ComputeCapability` 12.0 and `DeviceSupported` 1. `docs/ENVIRONMENT.md:117` says the range in the project rules does not hold for R2026b and leaves the change to this report.
+- Rule 8 of the project rules allows Parallel Computing Toolbox only inside the optional `gpuArray` route.
 - The `cudarc` backend ran on this card inside R2026b: `s4_matlab.txt:13`, `:36`; `s4_matlab_preload.txt:17`, `:42`.
 
 Evidence for the second sentence:
@@ -570,7 +570,7 @@ Phase 0 ran only on Windows and WSL, so this check moves to Phase 2. `cranelift-
 
 Evidence: the `is_pic` assert (`<registry>/cranelift-jit-0.137.0/src/backend.rs:370-374`), which `JITBuilder::new` satisfies through `with_flags`, which sets `is_pic` only on x86_64 (`:44-48`, `:75-80`), and the spike does not (`spikes/pckern/src/s2_jit.rs:71`). The default memory maps with `MmapMut::map_anon` (`<registry>/cranelift-jit-0.137.0/src/memory/system.rs:31`), which passes `PROT_READ | PROT_WRITE` and `MAP_PRIVATE | MAP_ANON` (`<registry>/memmap2-0.9.11/src/unix.rs:352-359`). It then calls `region::protect` with `READ_EXECUTE` (`<registry>/cranelift-jit-0.137.0/src/memory/mod.rs:60-66`), which calls `libc::mprotect` (`<registry>/region-3.0.2/src/os/unix.rs:50`). `grep -rn 'MAP_JIT\|pthread_jit'` over `<registry>/cranelift-jit-0.137.0/src` finds nothing. A custom provider implements `JITMemoryProvider` (`<registry>/cranelift-jit-0.137.0/src/memory/mod.rs:30`) and is set with `JITBuilder::memory_provider` (`<registry>/cranelift-jit-0.137.0/src/backend.rs:161-167`). Apple's entitlement pages say that `allow-unsigned-executable-memory` permits writable and executable memory without the `MAP_JIT` restrictions, that `disable-executable-page-protection` includes it, and that `allow-jit` permits `MAP_JIT` (https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.cs.allow-unsigned-executable-memory, https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.cs.disable-executable-page-protection, https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.cs.allow-jit). Apple's porting guide adds two limits for a `MAP_JIT` provider: a hardened app with `allow-jit` can create only one `MAP_JIT` region, and the `com.apple.security.cs.jit-write-allowlist` entitlement turns `pthread_jit_write_protect_np` off (https://developer.apple.com/documentation/apple-silicon/porting-just-in-time-compilers-to-apple-silicon). Whether MATLAB holds any of these entitlements or already uses its `MAP_JIT` region, and the `bin/maca64/MATLAB` path, were not checked.
 
-Not tested: macOS arm64, since S2 ran only on Windows and WSL, so S2 does not show the current text to be wrong. If the Phase 2 check fails, the fallback in this paragraph conflicts with rule 5 in `CLAUDE.md:18`, the owner decision in recommendation 2. Item 4.4 now carries the fallback chosen after review.
+Not tested: macOS arm64, since S2 ran only on Windows and WSL, so S2 does not show the current text to be wrong. If the Phase 2 check fails, the fallback in this paragraph conflicts with rule 5 of the project rules, the owner decision in recommendation 2. Item 4.4 now carries the fallback chosen after review.
 
 ##### 4.5, `docs/SPEC.md:293`, the `cuda` backend
 
@@ -589,13 +589,13 @@ Proposed:
 Evidence:
 
 - The `cudarc` path ran on this GPU in both passing MATLAB runs (`s4_matlab.txt:13`, `:15`, `:19`, `:36`; `s4_matlab_preload.txt:17`, `:19`, `:23`, `:42`) and in all six WSL entries (`s4_wsl.txt:6`, `:13`, `:20`, `:27`, `:34`, `:41`).
-- S4 shows that this path works, and nothing in it shows that the path is required. The reason `CLAUDE.md:37` gives for the native path, the `gpuArray` range, does not hold for R2026b (`docs/ENVIRONMENT.md:90`, `:117`).
+- S4 shows that this path works, and nothing in it shows that the path is required. The reason the project rules give for the native path, the `gpuArray` range, does not hold for R2026b (`docs/ENVIRONMENT.md:90`, `:117`).
 
 Not tested: `gpuArray` and the `opencl` backend on this GPU.
 
 #### Group 2, text that is correct but lacks what the spikes found
 
-##### 4.6, `CLAUDE.md:21`, the panic rule
+##### 4.6, project rules, the panic rule
 
 Current text:
 
@@ -613,7 +613,7 @@ Evidence: the exported symbol `pc_api_v1` and the table entries `info` and `last
 
 Not tested: neither NULL path ran in a capture, and no capture shows a panic on a worker thread outside a rayon pool.
 
-##### 4.7, `CLAUDE.md:33`, the GNU target and `mul_add`
+##### 4.7, project rules, the GNU target and `mul_add`
 
 Current text:
 
@@ -827,7 +827,7 @@ Not tested: an allow-list.
 Current text:
 
 ```text
-  - Kernels are emitted by `pc-codegen` and compiled at runtime. The precision policy is in `CLAUDE.md`, rule 6.
+  - Kernels are emitted by `pc-codegen` and compiled at runtime. The precision policy is rule 6 of the project rules.
 ```
 
 Proposed, two new lines after the current text:
@@ -845,10 +845,10 @@ Not tested: `--fmad=false`, a failed compile, and `f64::mul_add` on `x86_64-pc-w
 
 ## Decisions after review
 
-The owner approved recommendations 1 to 4 on 2026-10-22, which accepts Phase 0. The items of recommendation 4 are applied to `CLAUDE.md` and `docs/SPEC.md`. The owner left the five open questions of `docs/STATUS.md` to the recommendations below, which are applied too.
+The owner approved recommendations 1 to 4 on 2026-10-22, which accepts Phase 0. The items of recommendation 4 are applied to the project rules and `docs/SPEC.md`. The owner left the five open questions of `docs/STATUS.md` to the recommendations below, which are applied too.
 
 - Default backend: the Cranelift JIT is the default on every platform. The AOT C path is used only when `mex` finds a compiler and the user selects it with `phasecont.config("Codegen","aot")`. It does not switch on by itself when a compiler is found.
-- macOS arm64: rule 5 of `CLAUDE.md` holds, and the fallback in `docs/SPEC.md` section 4 changes. Phase 2 checks the entitlements of MATLAB on a Mac. Without the entitlements that the default memory provider or a `MAP_JIT` provider needs, models run on an `f64` evaluator in Rust built from the same code as the dual-number interpreter that section 3 already requires, and PhaseCont warns that it is slower. AOT through `mex` stays an optional speed-up on Macs with the Xcode Command Line Tools. This replaces item 4.4's last sentence, "With none of the three, the AOT fallback applies."
+- macOS arm64: rule 5 of the project rules holds, and the fallback in `docs/SPEC.md` section 4 changes. Phase 2 checks the entitlements of MATLAB on a Mac. Without the entitlements that the default memory provider or a `MAP_JIT` provider needs, models run on an `f64` evaluator in Rust built from the same code as the dual-number interpreter that section 3 already requires, and PhaseCont warns that it is slower. AOT through `mex` stays an optional speed-up on Macs with the Xcode Command Line Tools. This replaces item 4.4's last sentence, "With none of the three, the AOT fallback applies."
 - File Exchange: the license stays Apache-2.0. The File Exchange licensing FAQ says that a submission linked to GitHub can use a license other than BSD (https://www.mathworks.com/matlabcentral/content/fx/fx-transition-faq.html). It does not list Apache-2.0 by name, so Phase 8a confirms it on the submission form.
 - License notices in the `.mltbx`: the `package` task writes the license text of every crate linked into `pckern` into the toolbox. A Rust tool in this repo builds it from `cargo metadata --filter-platform` and each crate's license files (`docs/SPEC.md`, section 12). Installing `cargo-about` instead would need approval.
 - Rule 8: a test runs `matlab.codetools.requiredFilesAndProducts` on every file under `toolbox/` and fails on any product other than MATLAB, with Parallel Computing Toolbox allowed only in the `gpuArray` route (`docs/SPEC.md`, section 12).

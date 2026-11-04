@@ -1,5 +1,5 @@
 classdef BaseMatlabTest < matlab.unittest.TestCase
-    % Checks that the toolbox code needs only base MATLAB (CLAUDE.md rule 8).
+    % Checks that the toolbox code needs only base MATLAB. Parallel Computing Toolbox is allowed only on the optional gpuArray route.
 
     methods (TestClassSetup)
         function addToolboxToPath(testCase)
