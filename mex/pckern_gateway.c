@@ -42,6 +42,17 @@
 #include <stdlib.h>
 #endif
 
+#if defined(__linux__) && defined(__x86_64__)
+/* glibc 2.34 moved the dl* functions into libc.so.6 under the version
+ * GLIBC_2.34, so a MEX file built on a current distro would not load on glibc
+ * 2.28 (RHEL 8). Bind them to the GLIBC_2.2.5 versions, which every glibc
+ * since 2.2.5 provides. scripts/check-glibc checks the result. */
+__asm__(".symver dlopen,dlopen@GLIBC_2.2.5");
+__asm__(".symver dlsym,dlsym@GLIBC_2.2.5");
+__asm__(".symver dlerror,dlerror@GLIBC_2.2.5");
+__asm__(".symver dladdr,dladdr@GLIBC_2.2.5");
+#endif
+
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
