@@ -10,7 +10,7 @@ use std::io::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
 
-use pc_engine::{EngineError, Evaluator, Run, RunState, SpecialPoint, StopReason};
+use pc_engine::{EngineError, Evaluator, Point, Run, RunState, SpecialPoint, StopReason};
 use pckern::json::problem::{Mode, parse_problem};
 use serde_json::{Value, json};
 
@@ -79,22 +79,26 @@ pub fn cont(file: &Path, problem_file: &Path, fallback: bool) -> ExitCode {
 }
 
 /// Prints the branches and the special points and picks the exit code.
+///
+/// The JSON is written straight into one buffer. A `serde_json::Value` per point would
+/// allocate eight map keys for each of the points, which takes longer than the run itself
+/// on a small model. The keys come out in alphabetical order, as `json!` printed them.
 fn report(run: &Run, state: &RunState) -> ExitCode {
     let counts = run.poll().points;
     let mut err = String::new();
-    let mut branches = Vec::new();
+    let mut text: Vec<u8> = Vec::with_capacity(1 << 16);
+    text.extend_from_slice(b"{\"branches\":[");
     for (b, &n) in counts.iter().enumerate() {
-        let points: Vec<Value> = run
-            .points(b, 0, n)
-            .iter()
-            .map(|p| {
-                json!({
-                    "u": p.u, "alpha": p.alpha, "tests": p.tests, "codim2": p.codim2,
-                    "eigenvalues": p.eigenvalues, "mesh": p.mesh,
-                    "h": p.h, "newton_iters": p.newton_iters,
-                })
-            })
-            .collect();
+        if b > 0 {
+            text.push(b',');
+        }
+        text.extend_from_slice(b"{\"points\":[");
+        for (i, p) in run.points(b, 0, n).iter().enumerate() {
+            if i > 0 {
+                text.push(b',');
+            }
+            write_point(&mut text, p);
+        }
         let specials = run.specials(b);
         let stop = run.stop(b);
         let _ = writeln!(err, "branch {b}");
@@ -114,12 +118,14 @@ fn report(run: &Run, state: &RunState) -> ExitCode {
         } else {
             stop.as_ref().map_or("none", stop_name)
         };
-        branches.push(json!({
-            "points": points,
-            "specials": specials.iter().map(special_json).collect::<Vec<_>>(),
-            "stop": stop_text,
-        }));
+        text.extend_from_slice(b"],\"specials\":");
+        let specials_json: Vec<Value> = specials.iter().map(special_json).collect();
+        let _ = serde_json::to_writer(&mut text, &specials_json);
+        text.extend_from_slice(b",\"stop\":");
+        let _ = serde_json::to_writer(&mut text, stop_text);
+        text.push(b'}');
     }
+    text.extend_from_slice(b"]}\n");
     let code = match state {
         RunState::Done => 0,
         RunState::Failed(e) => {
@@ -140,9 +146,28 @@ fn report(run: &Run, state: &RunState) -> ExitCode {
         }
     };
     to_stderr(&err);
-    let mut text = json!({ "branches": branches }).to_string();
-    text.push('\n');
-    out(&text, code)
+    out(&String::from_utf8_lossy(&text), code)
+}
+
+/// One point as a JSON object with the keys in alphabetical order.
+fn write_point(text: &mut Vec<u8>, p: &Point) {
+    text.extend_from_slice(b"{\"alpha\":");
+    let _ = serde_json::to_writer(&mut *text, &p.alpha);
+    text.extend_from_slice(b",\"codim2\":");
+    let _ = serde_json::to_writer(&mut *text, &p.codim2);
+    text.extend_from_slice(b",\"eigenvalues\":");
+    let _ = serde_json::to_writer(&mut *text, &p.eigenvalues);
+    text.extend_from_slice(b",\"h\":");
+    let _ = serde_json::to_writer(&mut *text, &p.h);
+    text.extend_from_slice(b",\"mesh\":");
+    let _ = serde_json::to_writer(&mut *text, &p.mesh);
+    text.extend_from_slice(b",\"newton_iters\":");
+    let _ = serde_json::to_writer(&mut *text, &p.newton_iters);
+    text.extend_from_slice(b",\"tests\":");
+    let _ = serde_json::to_writer(&mut *text, &p.tests);
+    text.extend_from_slice(b",\"u\":");
+    let _ = serde_json::to_writer(&mut *text, &p.u);
+    text.push(b'}');
 }
 
 /// A stable name for each stop reason.
