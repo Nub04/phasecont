@@ -2,7 +2,7 @@
 
 ## Phase
 
-P7b (trajectories, sessions, replay and the phase-plane app) is built on branch `phase7b-sessions`, stacked on `phase6-cycle-curves`, and is described under In progress. P6 (LPC, PD and NS curves of limit cycles; SPEC section 8) is built on branch `phase6-cycle-curves`, stacked on `phase5-limit-cycles`, and waits for the oracle files. P5 (limit cycles; SPEC section 7) is open as PR #3. P4b closed the open items of P4 and merged into `main` locally on 2026-10-31 as a fast-forward to 78be5c3. P4 (LP and H curves, codim-2 detection and normal forms; SPEC section 14) merged into `main` locally on 2026-10-30 (14d6455). Both reached `origin/main` on 2026-10-31 with 175b6e9. P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 78c5df6. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 as PR #2 (3748707). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
+P8 (v1.0 packaging and the release workflow) is built on branch `phase8-release`, stacked on `phase7b-sessions`, and waits for the public switch and the first hosted run (see In progress). P7b (trajectories, sessions, replay and the phase-plane app) is built on branch `phase7b-sessions`, stacked on `phase6-cycle-curves`, and is described under In progress. P6 (LPC, PD and NS curves of limit cycles; SPEC section 8) is built on branch `phase6-cycle-curves`, stacked on `phase5-limit-cycles`, and waits for the oracle files. P5 (limit cycles; SPEC section 7) is open as PR #3. P4b closed the open items of P4 and merged into `main` locally on 2026-10-31 as a fast-forward to 78be5c3. P4 (LP and H curves, codim-2 detection and normal forms; SPEC section 14) merged into `main` locally on 2026-10-30 (14d6455). Both reached `origin/main` on 2026-10-31 with 175b6e9. P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 78c5df6. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 as PR #2 (3748707). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 as PR #1 (dfcfdab). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
 
 ## Done
 
@@ -116,6 +116,17 @@ P7a (complete on branch `phase7a-matlab-api`, cut from dfcfdab; merged into `mai
 - CI in `.github/workflows/ci.yml` has four jobs: rust (ubuntu, windows, macos), pckern-win (cross build, dll-imports, artifact), matlab-windows (self-hosted Windows runner `nubom-windows`, prebuilt DLL, no license secret) and asan. They first ran on GitHub on 2026-10-31, for `main` and for the P5 branch: rust on all three runners and pckern-win pass, and matlab-windows and package-win wait in the queue, because the self-hosted runner is offline.
 
 ## In progress
+
+P8 (v1.0 packaging and the release workflow, plan approved) on branch `phase8-release`, stacked on `phase7b-sessions`. P8 is accepted when `release.yml` publishes a `.mltbx` that installs and runs on all three platforms, which needs the public repo.
+
+- 9bf0042: `pc-cli licenses` takes several `--target` triples, so one file covers win64, glnxa64 and maca64.
+- d736ffe: version 1.0.0 with the same toolbox UUID. `packageToolbox` ships `bin/win64`, `bin/glnxa64` and `bin/maca64` and fails with `missingBinary` naming an absent file. `PackageTest` checks the six files and the path list with fake binaries. `cleanInstallCheck.m` takes the child MATLAB from `PHASECONT_CHILD_MATLAB`.
+- 6d5e3ad: `scripts/build-pckern` remaps the repo and cargo home paths. `scripts/check-host-paths` fails on `/home/`, `/Users/` and `C:\Users` in a binary, and `scripts/check-glibc` fails on a symbol version above `GLIBC_2.28`.
+- 4c78f41: the gateway pins `dlopen`, `dlsym`, `dlerror`, `dladdr` and `dlclose` to `GLIBC_2.2.5` on Linux x86_64. No C ABI change.
+- d3a4de9: `ci.yml`, `macos-jit.yml` and the new `release.yml` run on GitHub-hosted runners only, with every action pinned by SHA and `persist-credentials: false` on every checkout. The self-hosted Windows runner is no longer used by any workflow.
+- Docs: README rewritten in run order (install, upgrade, first run, build from source). SPEC section 12 describes the hosted jobs and `release.yml`. The Windows user path is gone from `docs/` and the spike scripts; the recorded logs in `spikes/results/` keep it.
+- Verified here: `PackageTest` 34 passed, 0 failed (through `scripts/matlab-win`); every workflow parses as YAML; no `self-hosted` label is left. Earlier in P8: the Rust checks, `buildtool cargo mex` and 41 MATLAB tests passed.
+- Not run yet: the hosted `matlab` legs, the `release.yml` dry run, the glibc check of the zig build (it runs on CI only; zig and cargo-zigbuild are not installed here), and any test on a Mac.
 
 P5 (limit cycles, plan approved on 2026-10-31) on branch `phase5-limit-cycles`, pushed and open as PR #3. All 10 packages are done:
 
@@ -278,7 +289,7 @@ Open risks and questions from P7b:
 
 ## Next
 
-- P8 (v1.0 packaging and the release workflow), then the public switch. The P7b MEX suites passed locally; they also need to pass on a GitHub-hosted job once the runner jobs move.
+- Merge P5 to P8 into `main`, delete the self-hosted runner, make the repo public, run `release.yml` as a dry run and fix forward, then tag `v1.0.0`.
 - P4 and later: a continuation that changes a parameter or state read by a table formula needs a new lowering of the model (P2 known difference).
 
 ## Blocked
@@ -292,9 +303,9 @@ Open risks and questions from P7b:
   - The BT coefficients use the sign convention a > 0, and the ZH coefficients use b > 0. The normalization strings record both. The owner may prefer another convention.
   - HH fifth-order coefficients S1 and S2 are not computed (see P4b). They need a second source for the formulas.
 - Owner: File Exchange route for v0.3, checked on 2026-10-29. Direct upload accepts BSD only. Apache-2.0 is allowed only for a GitHub-linked entry. The R2026b help says a package with MEX or DLL files cannot be submitted to File Exchange, and it does not say whether a GitHub-linked entry is exempt. The repo is private, which blocks the GitHub link route. Ask MathWorks before relying on either route.
-- P8 release build: `pckern.dll` embeds host paths, about 377 references to `/home/nub04/.cargo/registry` and 8 to `target/`. Path remapping belongs in the release build.
-- P8 or later: the gateway never unloads `pckern.dll`. Uninstalling or upgrading the toolbox in a MATLAB session that has used PhaseCont fails with "Permission denied" and leaves a stale folder under `%APPDATA%\MathWorks\MATLAB Add-Ons` until MATLAB exits. Add an unload or shutdown function.
-- P8: AOT on Linux and macOS. The mex link may not export `pc_aot_init` on glnxa64 or maca64. The win64 build exports it through `PC_EXPORT`. Check with a visibility attribute and a Linux test. The AOT test in `pc-codegen` still runs gcc only.
+- Settled in P8: release builds remap the repo and cargo home paths, and `scripts/check-host-paths` fails on a host path left in a binary.
+- After 1.0: the gateway never unloads `pckern.dll`. Uninstalling or upgrading the toolbox in a MATLAB session that has used PhaseCont fails with "Permission denied" and leaves a stale folder under `%APPDATA%\MathWorks\MATLAB Add-Ons` until MATLAB exits. The README tells users to close MATLAB before an upgrade. An unload or copy-on-load design waits for a later release.
+- Open after P8: AOT on Linux and macOS is unverified. The mex link may not export `pc_aot_init` on glnxa64 or maca64. The win64 build exports it through `PC_EXPORT`. Check with a visibility attribute and a Linux test. The AOT test in `pc-codegen` still runs gcc only.
 - Settled on 2026-10-28: the in-MATLAB part of the macOS arm64 check in SPEC section 4 moved to P7a. P7a did not run it; it is deferred (see below).
 - The P1 questions are settled for P2: division follows IEEE; `mod` is `fmod(x,y)` plus `y` when the remainder is negative, which probe `fn-mod-more` confirmed on eight more cases; `if` evaluates both branches and selects one.
 - Open from P7a: `model_from_ode` parses one in-memory string with no file loader, so `#include` lines fail with a diagnostic. The MATLAB layer has to inline included files, or a later task adds a loader callback.
