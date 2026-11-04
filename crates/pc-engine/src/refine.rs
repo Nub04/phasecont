@@ -445,13 +445,19 @@ impl DefiningSystem for HopfSystem<'_> {
 /// 0 at a branch point. The start is `b = 0` with `phi` the left null vector of `F_x`.
 /// The Jacobian block of `F_xᵀ phi` with respect to x has entries `phiᵀ F_xx[e_j, e_k]`.
 ///
-/// Source: derived, not from a primary source. The proof is in
-/// `.superpowers/sdd/phase3-pc-engine/sources.md`, item 5: at a simple branch point
-/// (`dim ker F_x = 2` and the 2 x 2 matrix `psiᵀ F_xx[tau_i, tau_j]` nonsingular, with
-/// the definition from Allgower and Georg, "Introduction to Numerical Continuation
-/// Methods", Def. 8.1.11) the Jacobian is nonsingular exactly when that matrix is
-/// nonsingular. The tests check the rank numerically and report the smallest singular
-/// value.
+/// Source: derived, not from a primary source. At a simple branch point (`dim ker F_x = 2`
+/// and the 2 x 2 matrix `alpha_ij = psiᵀ F_xx[tau_i, tau_j]` nonsingular, with the
+/// definition from Allgower and Georg, "Introduction to Numerical Continuation Methods",
+/// Def. 8.1.11) the Jacobian is nonsingular exactly when `alpha` is nonsingular. Proof: a
+/// null vector `(dx, db, dphi)` satisfies `F_x dx + phi db = 0`, `H dx + F_xᵀ dphi = 0`
+/// with `H = sum_i phi_i F_i`, and `phiᵀ dphi = 0`. Multiplying the first row by `phiᵀ`
+/// gives `db = 0`, so `dx = sum xi_i tau_i` lies in `ker F_x`. Multiplying the second row
+/// by `tau_jᵀ`, which is orthogonal to the range of `F_xᵀ`, gives `alpha xi = 0`, so
+/// `xi = 0`. Then `F_xᵀ dphi = 0` makes `dphi` parallel to `phi`, and `phiᵀ dphi = 0`
+/// gives `dphi = 0`. Conversely, a singular `alpha` gives a null vector. Along a regular
+/// branch (`rank F_x = n`), `F_xᵀ phi = 0` has only `phi = 0`, so the system has no
+/// spurious solutions there. The tests check the rank numerically and report the smallest
+/// singular value.
 pub struct BpSystem<'a> {
     ctx: Ctx<'a>,
     z0: Vec<f64>,

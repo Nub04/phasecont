@@ -11,7 +11,7 @@
 //! Sources: Yu. A. Kuznetsov, "Explicit normal form coefficients for all codim 2
 //! singularities of equilibria", lecture notes (1998), slides 3, 4 and 15; Kuznetsov,
 //! Elements of Applied Bifurcation Theory (2004), p. 180, through Kuehn, arXiv:1201.6595,
-//! eq. (9). See `.superpowers/sdd/phase3-pc-engine/sources.md`, items 1 and 2.
+//! eq. (9).
 
 use crate::branch::{Extras, SpecialPoint};
 use crate::error::EngineError;
