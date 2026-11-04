@@ -6,8 +6,9 @@ function [lib, info] = aotBuild(id)
 %   Version, Flags and Library.
 %
 %   The library lives under tempdir/phasecont-aot. Its folder name joins a
-%   hash of the C text with the compiler name and version, so the same text
-%   built by the same compiler is compiled once. Floating-point contraction
+%   hash of the C text and the build flags with the compiler name and
+%   version, so the same text built by the same compiler is compiled once.
+%   Floating-point contraction
 %   is turned off (/fp:strict on MSVC, -ffp-contract=off elsewhere) so the
 %   results match the JIT. A failed compile raises phasecont:aot:compile.
 arguments
@@ -26,8 +27,12 @@ if contains(name, "Visual C++", IgnoreCase = true) ...
     flags = "/fp:strict";
     flagArgs = {"COMPFLAGS=$COMPFLAGS /fp:strict"};
 else
-    flags = "-ffp-contract=off";
-    flagArgs = {"CFLAGS=$CFLAGS -ffp-contract=off"};
+    % mex links with an export list (a version script on Linux, an
+    % exported-symbols list on macOS) that keeps only mexFunction, so the
+    % engine could not find pc_aot_init. Empty export settings keep every
+    % symbol that the C text marks with default visibility.
+    flags = "-ffp-contract=off LINKEXPORT= LINKEXPORTVER=";
+    flagArgs = {"CFLAGS=$CFLAGS -ffp-contract=off", "LINKEXPORT=", "LINKEXPORTVER="};
 end
 
 root = fullfile(tempdir, "phasecont-aot");
@@ -44,7 +49,9 @@ if ~isempty(hook)
 end
 
 compilerKey = matlab.lang.makeValidName(name + "_" + version);
-key = textHash(text) + "_" + compilerKey;
+% The flags are part of the hash, so a library built with other flags or
+% link settings is never reused.
+key = textHash(text + newline + flags) + "_" + compilerKey;
 dest = fullfile(root, key);
 output = "pcaot_" + extractBefore(key + "_", "_");
 lib = string(fullfile(dest, output + "." + mexext));
