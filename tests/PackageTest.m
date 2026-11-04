@@ -11,6 +11,15 @@ classdef PackageTest < matlab.unittest.TestCase
         Output
         Identifier = "5b1f7c2e-9d34-4a6b-8e0f-123456789abc"
         Version = "9.8.7"
+        Platforms = ["win64", "glnxa64", "maca64"]
+    end
+
+    properties (Constant)
+        % Dummy binaries per platform: file name and the bytes written.
+        Binaries = struct( ...
+            win64 = {{"pckern.mexw64", uint8(1:200); "pckern.dll", uint8(255:-1:100)}}, ...
+            glnxa64 = {{"pckern.mexa64", uint8(3:90); "libpckern.so", uint8(7:150)}}, ...
+            maca64 = {{"pckern.mexmaca64", uint8(11:60); "libpckern.dylib", uint8(20:240)}})
     end
 
     methods (TestClassSetup)
@@ -27,9 +36,13 @@ classdef PackageTest < matlab.unittest.TestCase
                 matlab.unittest.fixtures.TemporaryFolderFixture);
             testCase.Temp = string(tmp.Folder);
             testCase.BinFolder = fullfile(testCase.Temp, "bin");
-            mkdir(testCase.BinFolder);
-            writeBytes(fullfile(testCase.BinFolder, "pckern.mexw64"), uint8(1:200));
-            writeBytes(fullfile(testCase.BinFolder, "pckern.dll"), uint8(255:-1:100));
+            for p = string(fieldnames(testCase.Binaries))'
+                mkdir(fullfile(testCase.BinFolder, p));
+                files = testCase.Binaries.(p);
+                for k = 1:size(files, 1)
+                    writeBytes(fullfile(testCase.BinFolder, p, files{k, 1}), files{k, 2});
+                end
+            end
             testCase.LicensesFile = fullfile(testCase.Temp, "licenses.txt");
             writelines(["Made-up license text"; "line two"], testCase.LicensesFile);
             testCase.Stage = fullfile(testCase.Temp, "package", "PhaseCont");
@@ -44,7 +57,9 @@ classdef PackageTest < matlab.unittest.TestCase
             testCase.verifyTrue(isfile(testCase.Output));
             [names, ~] = testCase.unpack();
             required = ["+phasecont/Model.m", "bin/win64/pckern.mexw64", ...
-                "bin/win64/pckern.dll", "examples/fitzhugh_nagumo_example.m", ...
+                "bin/win64/pckern.dll", "bin/glnxa64/pckern.mexa64", ...
+                "bin/glnxa64/libpckern.so", "bin/maca64/pckern.mexmaca64", ...
+                "bin/maca64/libpckern.dylib", "examples/fitzhugh_nagumo_example.m", ...
                 "examples/fitzhugh_nagumo.ode", "LICENSE", ...
                 "THIRD_PARTY_NOTICES.md", "THIRD_PARTY_LICENSES.txt"];
             for r = required
@@ -72,8 +87,8 @@ classdef PackageTest < matlab.unittest.TestCase
             testCase.verifyEqual(tagText(core, "dc:title"), "PhaseCont");
             req = readMetadata(folder, "systemRequirements.xml");
             testCase.verifyEqual(attribute(req, "win"), "true");
-            testCase.verifyEqual(attribute(req, "linux"), "false");
-            testCase.verifyEqual(attribute(req, "mac"), "false");
+            testCase.verifyEqual(attribute(req, "linux"), "true");
+            testCase.verifyEqual(attribute(req, "mac"), "true");
             testCase.verifyEqual(attribute(req, "MATLABOnline"), "false");
             testCase.verifyEqual(attribute(req, "start"), "R2026b");
         end
@@ -84,16 +99,21 @@ classdef PackageTest < matlab.unittest.TestCase
             cfg = readMetadata(folder, "configuration.xml");
             tok = regexp(cfg, '<matlabPath>([^<]*)</matlabPath>', "tokens");
             paths = string(cellfun(@(c) c{1}, tok, UniformOutput = false));
-            testCase.verifyEqual(sort(paths(:)), sort(["", "/bin/win64", "/examples"]'));
+            testCase.verifyEqual(sort(reshape(paths, 1, [])), sort(["", "/bin/win64", ...
+                "/bin/glnxa64", "/bin/maca64", "/examples"]));
         end
 
         function copiesBinariesByteForByte(testCase)
             testCase.build();
             [~, folder] = testCase.unpack();
-            for f = ["pckern.mexw64", "pckern.dll"]
-                testCase.verifyEqual( ...
-                    readBytes(fullfile(folder, "fsroot", "bin", "win64", f)), ...
-                    readBytes(fullfile(testCase.BinFolder, f)));
+            for p = testCase.Platforms
+                files = testCase.Binaries.(p);
+                for k = 1:size(files, 1)
+                    f = files{k, 1};
+                    testCase.verifyEqual( ...
+                        readBytes(fullfile(folder, "fsroot", "bin", p, f)), ...
+                        readBytes(fullfile(testCase.BinFolder, p, f)), p + "/" + f);
+                end
             end
         end
 
@@ -106,9 +126,61 @@ classdef PackageTest < matlab.unittest.TestCase
         end
 
         function missingBinaryRaisesError(testCase)
-            delete(fullfile(testCase.BinFolder, "pckern.dll"));
-            testCase.verifyError(@() testCase.build(), ...
-                "phasecont:package:missingBinary");
+            for p = testCase.Platforms
+                files = testCase.Binaries.(p);
+                for k = 1:size(files, 1)
+                    f = fullfile(testCase.BinFolder, p, files{k, 1});
+                    moved = f + ".away";
+                    movefile(f, moved);
+                    try
+                        testCase.build();
+                        testCase.verifyFail("expected an error for " + f);
+                    catch err
+                        testCase.verifyEqual(string(err.identifier), ...
+                            "phasecont:package:missingBinary");
+                        testCase.verifySubstring(err.message, files{k, 1});
+                    end
+                    movefile(moved, f);
+                end
+            end
+        end
+
+        function onePlatformPackagesOnlyThatPlatform(testCase)
+            rmdir(fullfile(testCase.BinFolder, "glnxa64"), "s");
+            rmdir(fullfile(testCase.BinFolder, "maca64"), "s");
+            testCase.Platforms = "win64";
+            testCase.build();
+            [names, folder] = testCase.unpack();
+            testCase.verifyFalse(any(startsWith(names, ["bin/glnxa64", "bin/maca64"])));
+            testCase.verifyTrue(any(names == "bin/win64/pckern.dll"));
+            req = readMetadata(folder, "systemRequirements.xml");
+            testCase.verifyEqual(attribute(req, "win"), "true");
+            testCase.verifyEqual(attribute(req, "linux"), "false");
+            testCase.verifyEqual(attribute(req, "mac"), "false");
+            addon = readMetadata(folder, "addonProperties.xml");
+            testCase.verifySubstring(tagText(addon, "description"), ...
+                "This package runs on Windows.");
+        end
+
+        function platformOrderDoesNotMatter(testCase)
+            testCase.Platforms = ["maca64", "win64", "glnxa64"];
+            testCase.build();
+            [~, folder] = testCase.unpack();
+            addon = readMetadata(folder, "addonProperties.xml");
+            testCase.verifySubstring(tagText(addon, "description"), ...
+                "This package runs on Windows, Linux and macOS on Apple silicon.");
+        end
+
+        function badPlatformsRaiseErrorAndKeepStage(testCase)
+            work = testCase.prepareStage();
+            values = {"maci64", ["win64", "win64"], strings(1, 0), ["win64", "x"], ...
+                "WIN64", string(missing), 5, ["win64"; "glnxa64"; "maca64"; "win64"]};
+            for k = 1:numel(values)
+                testCase.verifyError(@() testCase.build(strings(1, 0), ...
+                    struct(Platforms = {values{k}})), "phasecont:package:missingInput", ...
+                    "platforms value " + k);
+            end
+            testCase.verifyIntact(work);
         end
 
         function emptyLicensesRaisesError(testCase)
@@ -235,9 +307,9 @@ classdef PackageTest < matlab.unittest.TestCase
             writelines("x", fullfile(inStage, "LICENSE"));
             writelines("x", fullfile(inStage, "THIRD_PARTY_NOTICES.md"));
             bin = fullfile(testCase.Stage, "bin");
-            mkdir(bin);
-            writeBytes(fullfile(bin, "pckern.mexw64"), uint8(1:9));
-            writeBytes(fullfile(bin, "pckern.dll"), uint8(1:9));
+            mkdir(fullfile(bin, "win64"));
+            writeBytes(fullfile(bin, "win64", "pckern.mexw64"), uint8(1:9));
+            writeBytes(fullfile(bin, "win64", "pckern.dll"), uint8(1:9));
             lic = fullfile(testCase.Stage, "lic.txt");
             writelines("license text", lic);
             cases = {struct(Root = inStage), struct(BinFolder = bin), ...
@@ -248,7 +320,7 @@ classdef PackageTest < matlab.unittest.TestCase
                     "phasecont:package:inputInsideStage");
             end
             testCase.verifyTrue(isfile(lic));
-            testCase.verifyTrue(isfile(fullfile(bin, "pckern.dll")));
+            testCase.verifyTrue(isfile(fullfile(bin, "win64", "pckern.dll")));
             testCase.verifyTrue(isfile(fullfile(inStage, "LICENSE")));
             testCase.verifyIntact(work);
         end
@@ -454,10 +526,12 @@ classdef PackageTest < matlab.unittest.TestCase
             description = tagText(addon, "description");
             testCase.verifyEqual(summary, ...
                 "Equilibrium continuation and bifurcation detection for XPP .ode models.");
+            testCase.verifySubstring(description, ...
+                "This package runs on Windows, Linux and macOS on Apple silicon.");
             for text = [summary, description]
                 testCase.verifyNotEmpty(char(text));
                 testCase.verifyEmpty(regexpi(text, ...
-                    'phase[- ]plane|limit cycle|linux|macos', "once"));
+                    'phase[- ]plane|limit cycle|maci64|intel', "once"));
                 testCase.verifyTrue(all(double(char(text)) < 128), ...
                     "text must be ASCII (no em dashes): " + text);
             end
@@ -469,8 +543,14 @@ classdef PackageTest < matlab.unittest.TestCase
             leafs = regexp(names, '[^/]*$', "match", "once");
             testCase.verifyFalse(any(startsWith(leafs, ".")), ...
                 "package contains a dotfile");
-            binary = endsWith(names, [".dll", ".mexw64", ".so", ".dylib"]);
-            testCase.verifyTrue(all(startsWith(names(binary), "bin/win64/")));
+            ext = ["dll", "mexw64", "so", "mexa64", "dylib", "mexmaca64"];
+            dirs = ["win64", "win64", "glnxa64", "glnxa64", "maca64", "maca64"];
+            for k = 1:numel(ext)
+                hits = names(endsWith(names, "." + ext(k)));
+                testCase.verifyEqual(numel(hits), 1, "." + ext(k));
+                testCase.verifyTrue(all(startsWith(hits, "bin/" + dirs(k) + "/")), ...
+                    "." + ext(k) + " outside bin/" + dirs(k));
+            end
         end
 
         function licenseFilesMatchTheirSources(testCase)
@@ -490,8 +570,8 @@ classdef PackageTest < matlab.unittest.TestCase
         function buildfileDefinesVersionAndUuid(testCase)
             text = string(fileread(fullfile(testCase.Root, "buildfile.m")));
             testCase.verifyTrue(~isempty(regexp(text, ...
-                'function\s+\w+\s*=\s*toolboxVersion[^\n]*\n(\s*%[^\n]*\n)*\s*\w+\s*=\s*"0\.3\.0"\s*;', ...
-                "once")), "toolboxVersion must return ""0.3.0""");
+                'function\s+\w+\s*=\s*toolboxVersion[^\n]*\n(\s*%[^\n]*\n)*\s*\w+\s*=\s*"1\.0\.0"\s*;', ...
+                "once")), "toolboxVersion must return ""1.0.0""");
             uuid = regexp(text, ...
                 'function\s+\w+\s*=\s*toolboxUuid[^\n]*\n(?:\s*%[^\n]*\n)*\s*\w+\s*=\s*"([^"]*)"', ...
                 "tokens", "once");
@@ -520,7 +600,7 @@ classdef PackageTest < matlab.unittest.TestCase
                 "sibling of package/ was deleted");
             testCase.verifyTrue(isfile(fullfile(work, "package", "sibling.txt")), ...
                 "sibling inside package/ was deleted");
-            testCase.verifyTrue(isfile(testCase.BinFolder + "/pckern.dll"));
+            testCase.verifyTrue(isfile(testCase.BinFolder + "/win64/pckern.dll"));
         end
 
         function file = build(testCase, omit, override)
@@ -534,7 +614,7 @@ classdef PackageTest < matlab.unittest.TestCase
             args = struct(Root = testCase.Root, StageFolder = testCase.Stage, ...
                 OutputFile = testCase.Output, Version = testCase.Version, ...
                 Identifier = testCase.Identifier, BinFolder = testCase.BinFolder, ...
-                LicensesFile = testCase.LicensesFile);
+                Platforms = testCase.Platforms, LicensesFile = testCase.LicensesFile);
             for f = string(fieldnames(override))'
                 args.(f) = override.(f);
             end

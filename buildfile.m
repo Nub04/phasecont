@@ -6,8 +6,8 @@ function plan = buildfile
 %
 % "buildtool -tasks" lists the tasks. The cargo and mex tasks write to the
 % folder that tests/+fixtures/binFolder.m names. The package task builds
-% build/PhaseCont-0.3.0.mltbx from those binaries (win64 only, Windows MATLAB);
-% it needs the cargo and mex outputs and a THIRD_PARTY_LICENSES.txt (see packageTask).
+% build/PhaseCont-<version>.mltbx from those binaries for this platform, or
+% for win64, glnxa64 and maca64 when PHASECONT_BINROOT is set (see packageTask).
 
 plan = buildplan(localfunctions);
 
@@ -96,20 +96,31 @@ mex(args{:});
 end
 
 function packageTask(context)
-% Package the toolbox as build/PhaseCont-<version>.mltbx (win64 only in v0.3).
+% Package the toolbox as build/PhaseCont-<version>.mltbx.
 % scripts/packageToolbox.m does the staging and packaging; this task gathers
-% the inputs. It needs the binaries from the cargo and mex tasks, and a
-% THIRD_PARTY_LICENSES.txt: made by pc-cli licenses, or with PHASECONT_PREBUILT
-% set, the file that PHASECONT_LICENSES names.
+% the inputs: the binaries and a THIRD_PARTY_LICENSES.txt (made by pc-cli
+% licenses, or with PHASECONT_PREBUILT set, the file PHASECONT_LICENSES names).
+%   PHASECONT_BINROOT set:  a folder holding win64/, glnxa64/ and maca64/,
+%       each with the MEX file and the library (the release job sets it);
+%       the package covers all three platforms.
+%   Otherwise:  the package covers this platform only and takes the outputs
+%       of the cargo and mex tasks.
 root = context.Plan.RootFolder;
-if computer("arch") ~= "win64"
-    error("phasecont:package:platform", ...
-        "v0.3 packages win64 only; run the package task in Windows MATLAB (this is %s).", ...
-        computer("arch"));
-end
 oldPath = path;
-restorePath = onCleanup(@() path(oldPath)); %#ok<NASGU>
+restorePath = onCleanup(@() path(oldPath));
 addpath(fullfile(root, "tests"), fullfile(root, "scripts"));
+
+binRoot = string(getenv("PHASECONT_BINROOT"));
+if strlength(binRoot) > 0
+    platforms = ["win64", "glnxa64", "maca64"];
+else
+    platforms = string(computer("arch"));
+    if ~any(platforms == ["win64", "glnxa64", "maca64"])
+        error("phasecont:package:platform", ...
+            "PhaseCont packages win64, glnxa64 and maca64; this MATLAB is %s.", platforms);
+    end
+    binRoot = localBinRoot(root, platforms);
+end
 
 pkgVersion = toolboxVersion();
 packageToolbox( ...
@@ -118,18 +129,40 @@ packageToolbox( ...
     OutputFile = fullfile(root, "build", "PhaseCont-" + pkgVersion + ".mltbx"), ...
     Version = pkgVersion, ...
     Identifier = toolboxUuid(), ...
-    BinFolder = fixtures.binFolder(root), ...
-    LicensesFile = licensesFile(root));
+    BinFolder = binRoot, ...
+    Platforms = platforms, ...
+    LicensesFile = licensesFile(root, platforms));
 end
 
-function file = licensesFile(root)
-% Path of the third-party license text to ship. With PHASECONT_PREBUILT set it
-% is the file named by PHASECONT_LICENSES; otherwise pc-cli licenses writes it.
-if strlength(string(getenv("PHASECONT_PREBUILT"))) > 0
-    file = string(getenv("PHASECONT_LICENSES"));
+function binRoot = localBinRoot(root, arch)
+% Copy this platform's MEX file and library from the binary folder into
+% build/binroot/<arch>/, the layout packageToolbox expects, and return
+% build/binroot. A missing file is left for packageToolbox to report.
+binRoot = fullfile(root, "build", "binroot");
+dest = fullfile(binRoot, arch);
+if isfolder(binRoot)
+    rmdir(binRoot, "s");
+end
+mkdir(dest);
+bin = fixtures.binFolder(root);
+for f = ["pckern." + mexext, libraryFileName()]
+    src = fullfile(bin, f);
+    if isfile(src)
+        copyfile(src, dest);
+    end
+end
+end
+
+function file = licensesFile(root, platforms)
+% Path of the third-party license text to ship: the file that
+% PHASECONT_LICENSES names (the release job and PHASECONT_PREBUILT builds set
+% it), or else the output of pc-cli licenses for the Rust targets of the
+% packaged platforms.
+file = string(getenv("PHASECONT_LICENSES"));
+if strlength(file) > 0 || strlength(string(getenv("PHASECONT_PREBUILT"))) > 0
     if strlength(file) == 0 || ~isfile(file) || dir(file).bytes == 0
         error("phasecont:package:licenses", ...
-            "With PHASECONT_PREBUILT set, set PHASECONT_LICENSES to a non-empty THIRD_PARTY_LICENSES.txt (the output of pc-cli licenses).");
+            "Set PHASECONT_LICENSES to a non-empty THIRD_PARTY_LICENSES.txt (the output of pc-cli licenses). It is required when PHASECONT_PREBUILT is set.");
     end
     return
 end
@@ -142,7 +175,10 @@ file = fullfile(outDir, "THIRD_PARTY_LICENSES.txt");
 if isfile(file)
     delete(file);
 end
-args = "cargo run -q --locked -p pc-cli -- licenses --target x86_64-pc-windows-gnu" + ...
+triples = dictionary(["win64", "glnxa64", "maca64"], ...
+    ["x86_64-pc-windows-gnu", "x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]);
+args = "cargo run -q --locked -p pc-cli -- licenses" + ...
+    join(" --target " + triples(platforms), "") + ...
     " --out build/THIRD_PARTY_LICENSES.txt --overrides licenses/overrides";
 if ispc && isWslPath(root)
     [distro, linuxPath] = splitWslPath(root);
@@ -168,7 +204,7 @@ end
 
 function v = toolboxVersion
 % Toolbox version, used for the package metadata and the .mltbx file name.
-v = "0.3.0";
+v = "1.0.0";
 end
 
 function id = toolboxUuid

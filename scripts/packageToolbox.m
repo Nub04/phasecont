@@ -2,7 +2,8 @@ function outputFile = packageToolbox(opts)
 % Stage the toolbox files and build a .mltbx with matlab.addons.toolbox.
 %
 %   outputFile = packageToolbox(Root = r, StageFolder = s, OutputFile = o, ...
-%       Version = "0.3.0", Identifier = uuid, BinFolder = b, LicensesFile = l)
+%       Version = "1.0.0", Identifier = uuid, BinFolder = b, ...
+%       Platforms = ["win64" "glnxa64" "maca64"], LicensesFile = l)
 %
 % Every input is required. buildfile.m calls this from the package task, and
 % tests/PackageTest.m calls it with temporary folders.
@@ -11,13 +12,21 @@ function outputFile = packageToolbox(opts)
 %   StageFolder   folder to build the package tree in; deleted first. It must
 %                 be an absolute path directly inside a folder named "package".
 %   OutputFile    the .mltbx to write
-%   Version       dotted number such as "0.3.0"
+%   Version       dotted number such as "1.0.0"
 %   Identifier    fixed toolbox UUID
-%   BinFolder     folder with pckern.mexw64 and pckern.dll
+%   BinFolder     folder with one subfolder per platform, each holding the
+%                 MEX file and the pckern library for that platform:
+%                   win64/pckern.mexw64      win64/pckern.dll
+%                   glnxa64/pckern.mexa64    glnxa64/libpckern.so
+%                   maca64/pckern.mexmaca64  maca64/libpckern.dylib
+%   Platforms     the platforms to ship, a non-empty string array drawn from
+%                 "win64", "glnxa64" and "maca64". A release ships all three;
+%                 a local build ships the one it can make.
 %   LicensesFile  text file written into the package as THIRD_PARTY_LICENSES.txt
 %
-% v0.3 supports win64 only. To add a platform (P8), extend platformBinaries
-% and the SupportedPlatforms and path lists below.
+% Each platform goes to bin/<platform> in the package and on the toolbox
+% path. MATLAB loads only the MEX file with its own extension, and the
+% gateway loads the library from the folder of its MEX file.
 arguments
     opts.Root
     opts.StageFolder
@@ -25,6 +34,7 @@ arguments
     opts.Version
     opts.Identifier
     opts.BinFolder
+    opts.Platforms
     opts.LicensesFile
 end
 
@@ -40,16 +50,20 @@ for name = required
         opts.(name) = string(opts.(name));
     end
 end
+if ~isfield(opts, "Platforms") || ~isPlatformList(opts.Platforms)
+    absent(end+1) = "Platforms";
+end
 if ~isempty(absent)
     error("phasecont:package:missingInput", ...
         "Missing required input(s), each must be non-empty text: %s", ...
         strjoin(absent, ", "));
 end
+platforms = orderedPlatforms(string(opts.Platforms));
 
 if isempty(regexp(opts.Version, ...
         '^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$', "once"))
     error("phasecont:package:badVersion", ...
-        "Version must be a dotted number such as 0.3.0, got '%s'", opts.Version);
+        "Version must be a dotted number such as 1.0.0, got '%s'", opts.Version);
 end
 if isempty(regexp(opts.Identifier, ...
         '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', "once"))
@@ -85,7 +99,7 @@ if ~isfolder(fullfile(opts.Root, "toolbox", "examples"))
 end
 
 % Check every input before deleting or writing anything.
-binaries = platformBinaries(opts.BinFolder);
+binaries = platformBinaries(opts.BinFolder, platforms);
 for k = 1:numel(binaries)
     if ~isfile(binaries(k))
         error("phasecont:package:missingBinary", ...
@@ -135,10 +149,13 @@ for h = hidden(~[hidden.isdir])'
     delete(fullfile(h.folder, h.name));
 end
 
-binStage = fullfile(stage, "bin", "win64");
-mkdir(binStage);
-for k = 1:numel(binaries)
-    copyfile(binaries(k), binStage);
+binStages = strings(1, numel(platforms));
+for p = 1:numel(platforms)
+    binStages(p) = fullfile(stage, "bin", platforms(p));
+    mkdir(binStages(p));
+    for f = platformBinaries(opts.BinFolder, platforms(p))
+        copyfile(f, binStages(p));
+    end
 end
 copyfile(fullfile(opts.Root, "LICENSE"), stage);
 copyfile(fullfile(opts.Root, "THIRD_PARTY_NOTICES.md"), stage);
@@ -152,15 +169,15 @@ o.Summary = "Equilibrium continuation and bifurcation detection for XPP .ode mod
 o.Description = "PhaseCont reads XPP and XPPAUT .ode files and follows equilibria " + ...
     "from MATLAB, detecting saddle-node and Hopf points. The continuation engine " + ...
     "is written in Rust and compiles your model to native code inside MATLAB, " + ...
-    "so no compiler is needed. This release runs on Windows only.";
+    "so no compiler is needed. This package runs on " + platformText(platforms) + ".";
 files = dir(fullfile(stage, "**", "*"));
 files = files(~[files.isdir]);
 o.ToolboxFiles = string(fullfile({files.folder}, {files.name}))';
 o.ToolboxMatlabPath = [string(stage), ...
-    string(fullfile(stage, "examples")), string(binStage)];
-o.SupportedPlatforms.Win64 = true;
-o.SupportedPlatforms.Glnxa64 = false;
-o.SupportedPlatforms.Mac = false;
+    string(fullfile(stage, "examples")), binStages];
+o.SupportedPlatforms.Win64 = any(platforms == "win64");
+o.SupportedPlatforms.Glnxa64 = any(platforms == "glnxa64");
+o.SupportedPlatforms.Mac = any(platforms == "maca64");
 o.SupportedPlatforms.MatlabOnline = false;
 o.MinimumMatlabRelease = "R2026b";
 o.OutputFile = outPath;
@@ -169,9 +186,48 @@ matlab.addons.toolbox.packageToolbox(o);
 outputFile = string(outPath);
 end
 
-function files = platformBinaries(binFolder)
-% Binaries that go in bin/win64. Add other platforms here in P8.
-files = [fullfile(binFolder, "pckern.mexw64"), fullfile(binFolder, "pckern.dll")];
+function files = platformBinaries(binFolder, platforms)
+% MEX file and library for each platform, under BinFolder/<platform>.
+files = strings(1, 0);
+for p = platforms
+    switch p
+        case "win64"
+            names = ["pckern.mexw64", "pckern.dll"];
+        case "glnxa64"
+            names = ["pckern.mexa64", "libpckern.so"];
+        case "maca64"
+            names = ["pckern.mexmaca64", "libpckern.dylib"];
+    end
+    files = [files, string(fullfile(binFolder, p, names))]; %#ok<AGROW>
+end
+end
+
+function tf = isPlatformList(v)
+% True for a non-empty list of distinct known platform names.
+known = ["win64", "glnxa64", "maca64"];
+if iscellstr(v) || ischar(v)
+    v = string(v);
+end
+tf = isstring(v) && ~isempty(v) && isvector(v) && ~any(ismissing(v)) ...
+    && all(ismember(v, known)) && numel(unique(v)) == numel(v);
+end
+
+function p = orderedPlatforms(v)
+% Platforms in a fixed order, so the package does not depend on input order.
+known = ["win64", "glnxa64", "maca64"];
+p = known(ismember(known, v));
+end
+
+function text = platformText(platforms)
+% "Windows, Linux and macOS (Apple silicon)" for the platforms given.
+names = dictionary(["win64", "glnxa64", "maca64"], ...
+    ["Windows", "Linux", "macOS on Apple silicon"]);
+words = names(platforms);
+if isscalar(words)
+    text = words;
+else
+    text = strjoin(words(1:end-1), ", ") + " and " + words(end);
+end
 end
 
 function tf = isTextValue(v)

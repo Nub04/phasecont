@@ -2,11 +2,16 @@
 % files and uninstall it.
 %
 %   PHASECONT_MLTBX   path of the .mltbx to check (required)
+%   PHASECONT_CHILD_MATLAB   (optional) program that starts the child MATLAB,
+%       called as  PROGRAM "statement".  CI sets it to matlab-batch, which
+%       licenses MATLAB on GitHub-hosted runners. Without it the child is
+%       started as  matlabroot/bin/matlab -batch "statement".
 %
 % What it proves: the .mltbx installs and uninstalls with the expected version
 % and Guid, phasecont.Model resolves into the add-on folder and not the repo,
-% and the installed files (+phasecont, bin/win64, examples, licenses) run the
-% FitzHugh-Nagumo example in a MATLAB process that never loaded the DLL. What it
+% and the installed files (+phasecont, bin/<arch> for this platform, examples,
+% licenses) run the FitzHugh-Nagumo example in a MATLAB process that never
+% loaded the pckern library. What it
 % does not prove: the child process gets the installed folders by an explicit
 % addpath, so the check does not show that a brand new MATLAB session finds the
 % toolbox on its path.
@@ -108,9 +113,10 @@ mkdir(fileparts(ciChildFile));
 % so pass it the folders that the install put on this path by explicit addpath.
 ciDirs = string(strsplit(path, pathsep));
 ciDirs = ciDirs(startsWith(ciDirs, ciRoot));
-if numel(ciDirs) < 3
-    error("phasecont:install:path", "Expected the root, bin/win64 and examples on the path, found %d folders under %s", ...
-        numel(ciDirs), ciRoot);
+ciArchBin = fullfile(ciRoot, "bin", computer("arch"));
+if numel(ciDirs) < 3 || ~any(strcmpi(ciDirs, ciArchBin))
+    error("phasecont:install:path", "Expected the root, %s and examples on the path, found %d folders under %s", ...
+        ciArchBin, numel(ciDirs), ciRoot);
 end
 writelines([ ...
     "addpath(" + strjoin("'" + strrep(ciDirs, "'", "''") + "'", ", ") + ");"
@@ -127,10 +133,16 @@ writelines([ ...
     "    fprintf(""Hopf %d: I = %.8g, omega = %.8g\n"", k, hopf(k).P(idx), hopf(k).Data.omega);"
     "end"
     ], ciChildFile);
-ciExe = fullfile(matlabroot, "bin", "matlab");
 ciChildFolder = fileparts(ciChildFile);
-ciStatus = system(sprintf('"%s" -batch "cd(''%s''); run(''%s'')"', ciExe, ...
-    strrep(ciChildFolder, "'", "''"), strrep(ciChildFile, "'", "''")), "-echo");
+ciStatement = sprintf("cd('%s'); run('%s')", ...
+    strrep(ciChildFolder, "'", "''"), strrep(ciChildFile, "'", "''"));
+ciExe = string(getenv("PHASECONT_CHILD_MATLAB"));
+if strlength(ciExe) > 0
+    ciCommand = sprintf('"%s" "%s"', ciExe, ciStatement);
+else
+    ciCommand = sprintf('"%s" -batch "%s"', fullfile(matlabroot, "bin", "matlab"), ciStatement);
+end
+ciStatus = system(ciCommand, "-echo");
 rmdir(ciChildFolder, "s");
 if ciStatus ~= 0
     error("phasecont:install:example", "The example failed in the fresh MATLAB (exit %d)", ciStatus);
