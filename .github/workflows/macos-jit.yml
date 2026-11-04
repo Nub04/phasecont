@@ -7,16 +7,22 @@ name: macos-jit
 
 on:
   push:
-    branches: [main, phase2-pc-ir]
+    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   rust:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.99.1
           components: rustfmt, clippy
       - run: uname -a && rustc -vV
       - run: cargo fmt --check
@@ -24,7 +30,7 @@ jobs:
       - run: cargo test --no-fail-fast
       - name: Show the compiler the AOT test used
         run: cargo test -p pc-codegen --test aot -- --nocapture 2>&1 | grep -iE "gcc|clang|skip|flags" || true
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
         with:
           tool: cargo-deny
       - run: cargo deny check
@@ -32,8 +38,12 @@ jobs:
   hardened-runtime:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.99.1
       - run: cargo build --release -p pc-jit --example jit_probe
       - name: Run the probe with each entitlement set
         run: |
@@ -75,9 +85,9 @@ jobs:
   matlab-entitlements:
     runs-on: macos-latest
     steps:
-      - uses: matlab-actions/setup-matlab@v2
+      - uses: matlab-actions/setup-matlab@f9e43010f1ae678f7cfa0542fe2a4f60f7d1ad8d # v3.1.0
         with:
-          release: latest
+          release: R2026b
       - name: Print the entitlements of the MATLAB binary
         run: |
           root=$(dirname "$(dirname "$(realpath "$(command -v matlab)")")")

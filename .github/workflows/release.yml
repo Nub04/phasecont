@@ -1,0 +1,294 @@
+# Builds the PhaseCont .mltbx for win64, glnxa64 and maca64, installs it on
+# each platform and, for a v* tag, publishes it as a GitHub Release.
+#
+# A manual run (workflow_dispatch) is a dry run: it builds, tests and installs
+# the package and uploads it as a workflow artifact, but creates no release.
+#
+# Jobs:
+#   lib-win, lib-linux, lib-mac  build the pckern library of each platform
+#   licenses                     third-party license texts of the three targets
+#   mex                          MEX gateway and test suites on each platform
+#   package                      one .mltbx with the binaries of all three
+#   install                      install, run an example, uninstall, per platform
+#   release                      tag check, SHA256SUMS, gh release create
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: 1.99.1
+
+jobs:
+  lib-win:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-pc-windows-gnu
+      - name: Install MinGW
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+      - name: Cross build pckern.dll
+        run: |
+          export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc
+          export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS="--remap-path-prefix=$GITHUB_WORKSPACE=/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo"
+          cargo build --release --locked --target x86_64-pc-windows-gnu -p pc-ffi
+      - name: Check the DLL imports and host paths
+        run: |
+          cargo build --release --locked -p pc-cli
+          target/release/pc-cli dll-imports target/x86_64-pc-windows-gnu/release/pckern.dll
+          scripts/check-host-paths target/x86_64-pc-windows-gnu/release/pckern.dll
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lib-win64
+          path: target/x86_64-pc-windows-gnu/release/pckern.dll
+          if-no-files-found: error
+
+  # Linked against glibc 2.28 (RHEL 8, the oldest Linux that R2026b supports)
+  # with cargo-zigbuild, so the library loads on every supported distro.
+  lib-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-unknown-linux-gnu
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      - uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
+        with:
+          tool: cargo-zigbuild
+      - name: Build libpckern.so for glibc 2.28
+        run: |
+          export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="--remap-path-prefix=$GITHUB_WORKSPACE=/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo"
+          cargo zigbuild --release --locked --target x86_64-unknown-linux-gnu.2.28 -p pc-ffi
+      - name: Check glibc versions and host paths
+        run: |
+          scripts/check-glibc target/x86_64-unknown-linux-gnu/release/libpckern.so
+          scripts/check-host-paths target/x86_64-unknown-linux-gnu/release/libpckern.so
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lib-glnxa64
+          path: target/x86_64-unknown-linux-gnu/release/libpckern.so
+          if-no-files-found: error
+
+  # R2026b runs on macOS 15 and later, on Apple silicon only.
+  lib-mac:
+    runs-on: macos-latest
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Build libpckern.dylib
+        run: |
+          export RUSTFLAGS="--remap-path-prefix=$GITHUB_WORKSPACE=/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo"
+          cargo build --release --locked -p pc-ffi
+      - name: Check the deployment target and host paths
+        run: |
+          otool -l target/release/libpckern.dylib | grep -A3 LC_BUILD_VERSION
+          scripts/check-host-paths target/release/libpckern.dylib
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lib-maca64
+          path: target/release/libpckern.dylib
+          if-no-files-found: error
+
+  licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Collect the third-party license texts of the three platforms
+        run: >-
+          cargo run -q --release --locked -p pc-cli -- licenses
+          --target x86_64-pc-windows-gnu
+          --target x86_64-unknown-linux-gnu
+          --target aarch64-apple-darwin
+          --package pc-ffi
+          --out THIRD_PARTY_LICENSES.txt
+          --overrides licenses/overrides
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: third-party-licenses
+          path: THIRD_PARTY_LICENSES.txt
+          if-no-files-found: error
+
+  # Builds the MEX gateway against the release library and runs the test
+  # suites with it, then uploads bin/<arch> (MEX file and library).
+  mex:
+    needs: [lib-win, lib-linux, lib-mac]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, arch: win64, mexext: mexw64 }
+          - { os: ubuntu-latest, arch: glnxa64, mexext: mexa64 }
+          - { os: macos-latest, arch: maca64, mexext: mexmaca64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: lib-${{ matrix.arch }}
+          path: prebuilt
+      - name: Point the cargo task at the release library
+        shell: bash
+        run: echo "PHASECONT_PREBUILT=$GITHUB_WORKSPACE/prebuilt" >> "$GITHUB_ENV"
+      - uses: matlab-actions/setup-matlab@f9e43010f1ae678f7cfa0542fe2a4f60f7d1ad8d # v3.1.0
+        with:
+          release: R2026b
+      - name: Run buildtool cargo mex test
+        uses: matlab-actions/run-build@cf54c2229a74d57eb4e6ba1bbebd45793d37797e # v3.4.0
+        with:
+          tasks: cargo mex test
+      - name: Check the glibc versions the MEX file needs
+        if: runner.os == 'Linux'
+        run: scripts/check-glibc toolbox/bin/glnxa64/pckern.mexa64
+      - name: Check the MEX file for host paths
+        shell: bash
+        run: scripts/check-host-paths toolbox/bin/${{ matrix.arch }}/pckern.${{ matrix.mexext }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bin-${{ matrix.arch }}
+          path: toolbox/bin/${{ matrix.arch }}/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: junit-${{ matrix.arch }}
+          path: build/test-results/junit.xml
+          if-no-files-found: warn
+
+  package:
+    needs: [mex, licenses]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bin-win64
+          path: binroot/win64
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bin-glnxa64
+          path: binroot/glnxa64
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bin-maca64
+          path: binroot/maca64
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: third-party-licenses
+          path: licenses-out
+      - name: Point the package task at the binaries and the licenses
+        run: |
+          ls -lR binroot
+          echo "PHASECONT_BINROOT=$GITHUB_WORKSPACE/binroot" >> "$GITHUB_ENV"
+          echo "PHASECONT_LICENSES=$GITHUB_WORKSPACE/licenses-out/THIRD_PARTY_LICENSES.txt" >> "$GITHUB_ENV"
+      - uses: matlab-actions/setup-matlab@f9e43010f1ae678f7cfa0542fe2a4f60f7d1ad8d # v3.1.0
+        with:
+          release: R2026b
+      - name: Run buildtool package
+        uses: matlab-actions/run-build@cf54c2229a74d57eb4e6ba1bbebd45793d37797e # v3.4.0
+        with:
+          tasks: package
+          build-options: -skip cargo -skip mex -skip test
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: PhaseCont-mltbx
+          path: build/PhaseCont-*.mltbx
+          if-no-files-found: error
+
+  install:
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: PhaseCont-mltbx
+          path: dist
+      - name: Find the package
+        shell: bash
+        run: echo "PHASECONT_MLTBX=$(ls "$GITHUB_WORKSPACE"/dist/PhaseCont-*.mltbx)" >> "$GITHUB_ENV"
+      - uses: matlab-actions/setup-matlab@f9e43010f1ae678f7cfa0542fe2a4f60f7d1ad8d # v3.1.0
+        with:
+          release: R2026b
+      - name: Install the package and run the example from a clean folder
+        uses: matlab-actions/run-command@bfa857648f4895aa98a446fe41c85e0788421ed5 # v3.3.0
+        env:
+          PHASECONT_CHILD_MATLAB: matlab-batch
+        with:
+          command: cd(getenv("RUNNER_TEMP")); run(fullfile(getenv("GITHUB_WORKSPACE"), "scripts", "cleanInstallCheck.m"))
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: install
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: PhaseCont-mltbx
+          path: dist
+      - name: Check that the tag matches the buildfile version
+        run: |
+          version=$(sed -n '/^function v = toolboxVersion/,/^end/s/^v = "\(.*\)";$/\1/p' buildfile.m)
+          echo "buildfile version: $version, tag: $GITHUB_REF_NAME"
+          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match buildfile.m version $version"
+            exit 1
+          fi
+          test -f "dist/PhaseCont-$version.mltbx"
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          sha256sum PhaseCont-*.mltbx > SHA256SUMS
+          cat SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" PhaseCont-*.mltbx SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --title "PhaseCont $GITHUB_REF_NAME" --verify-tag --generate-notes

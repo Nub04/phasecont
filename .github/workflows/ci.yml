@@ -1,5 +1,9 @@
 # Checks for every push and pull request. macos-jit.yml stays as the separate
-# hardened-runtime probe.
+# hardened-runtime probe, and release.yml builds the release package.
+#
+# Every job runs on a GitHub-hosted runner, so a pull request from a fork never
+# runs on a machine of ours. Every third-party action is pinned by commit SHA,
+# and no checkout keeps the token in .git/config.
 name: ci
 
 on:
@@ -25,9 +29,12 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.99.1
           components: rustfmt, clippy
       - run: rustc -vV
       - run: cargo fmt --check
@@ -35,7 +42,7 @@ jobs:
       - run: cargo test --no-fail-fast
       - name: Install cargo-deny
         if: matrix.os == 'ubuntu-latest'
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
         with:
           tool: cargo-deny
       - name: Check licenses and advisories
@@ -46,119 +53,114 @@ jobs:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.99.1
           targets: x86_64-pc-windows-gnu
       - name: Install MinGW
         run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
       - name: Cross build pckern.dll
-        run: cargo build --release --locked --target x86_64-pc-windows-gnu -p pc-ffi
+        run: |
+          # Replace the checkout and cargo home paths, so the DLL holds no
+          # path of the runner. The flags apply to the Windows target only.
+          export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc
+          export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS="--remap-path-prefix=$GITHUB_WORKSPACE=/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo"
+          cargo build --release --locked --target x86_64-pc-windows-gnu -p pc-ffi
       - name: Build pc-cli for the host
         run: cargo build --release --locked -p pc-cli
-      - name: Check the DLL imports against the allow-list
-        run: target/release/pc-cli dll-imports target/x86_64-pc-windows-gnu/release/pckern.dll
-      - uses: actions/upload-artifact@v4
+      - name: Check the DLL imports and host paths
+        run: |
+          target/release/pc-cli dll-imports target/x86_64-pc-windows-gnu/release/pckern.dll
+          scripts/check-host-paths target/x86_64-pc-windows-gnu/release/pckern.dll
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pckern-win64
           path: target/x86_64-pc-windows-gnu/release/pckern.dll
           if-no-files-found: error
-      - name: Collect the third-party license texts
+      - name: Collect the third-party license texts of the three platforms
         run: >-
           target/release/pc-cli licenses
-          --target x86_64-pc-windows-gnu --package pc-ffi
+          --target x86_64-pc-windows-gnu
+          --target x86_64-unknown-linux-gnu
+          --target aarch64-apple-darwin
+          --package pc-ffi
           --out licenses/THIRD_PARTY_LICENSES.txt
           --overrides licenses/overrides
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: third-party-licenses
           path: licenses/THIRD_PARTY_LICENSES.txt
           if-no-files-found: error
 
-  # Needs a self-hosted Windows runner with the labels self-hosted, windows and
-  # matlab. On that machine: MATLAB R2026b with `matlab` on PATH, and Microsoft
-  # Visual C++ set up for `mex -setup C`. No Rust or MinGW is needed, because the
-  # job copies the pckern.dll built by pckern-win. There is no license secret.
-  matlab-windows:
-    if: >-
-      github.event_name != 'schedule' &&
-      (github.event.pull_request.head.repo.full_name == github.repository ||
-      github.event_name != 'pull_request')
+  # MATLAB R2026b on each platform: build the library and the MEX gateway, run
+  # the test suites, package the toolbox for that platform, then install the
+  # package from a folder outside the checkout, run an example in a fresh
+  # MATLAB and uninstall it. Windows takes the DLL from pckern-win; Linux and
+  # macOS build the library from source. setup-matlab licenses MATLAB for a
+  # public repository without a secret.
+  matlab:
+    if: github.event_name != 'schedule'
     needs: pckern-win
-    runs-on: [self-hosted, windows, matlab]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        if: runner.os != 'Windows'
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.99.1
+      - name: Download the Windows DLL
+        if: runner.os == 'Windows'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: pckern-win64
           path: prebuilt
-      - name: Point the cargo task at the prebuilt DLL
-        shell: cmd
-        run: echo PHASECONT_PREBUILT=%GITHUB_WORKSPACE%\prebuilt>>"%GITHUB_ENV%"
-      - name: Run buildtool cargo mex test
-        shell: cmd
-        run: matlab -batch "buildtool cargo mex test"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: matlab-windows-junit
-          path: build/test-results/junit.xml
-          if-no-files-found: warn
-
-  # Same runner as matlab-windows. Builds build/PhaseCont-<version>.mltbx from
-  # the prebuilt DLL and the license texts, then installs it into MATLAB from a
-  # folder outside the checkout, runs an example and uninstalls it. The runner
-  # must not have PhaseCont installed already (the check stops if it does).
-  package-win:
-    if: >-
-      github.event_name != 'schedule' &&
-      (github.event.pull_request.head.repo.full_name == github.repository ||
-      github.event_name != 'pull_request')
-    needs: pckern-win
-    runs-on: [self-hosted, windows, matlab]
-    timeout-minutes: 30
-    # One run at a time: installToolbox changes the shared MATLAB Add-Ons folder.
-    concurrency:
-      group: package-win-runner
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: pckern-win64
-          path: prebuilt
-      - uses: actions/download-artifact@v4
+      - name: Download the license texts
+        if: runner.os == 'Windows'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: third-party-licenses
           path: licenses-out
-      - name: Point the package task at the prebuilt DLL and the licenses
-        shell: cmd
+      - name: Point the cargo and package tasks at the downloads
+        if: runner.os == 'Windows'
+        shell: bash
         run: |
-          echo PHASECONT_PREBUILT=%GITHUB_WORKSPACE%\prebuilt>>"%GITHUB_ENV%"
-          echo PHASECONT_LICENSES=%GITHUB_WORKSPACE%\licenses-out\THIRD_PARTY_LICENSES.txt>>"%GITHUB_ENV%"
-      - name: Run buildtool cargo mex test package
-        shell: cmd
-        run: matlab -batch "buildtool cargo mex test package"
-      - name: Install the package and run the example from a clean folder
-        shell: cmd
-        run: |
-          for %%f in ("%GITHUB_WORKSPACE%\build\PhaseCont-*.mltbx") do set PHASECONT_MLTBX=%%~ff
-          set CHECK_SCRIPT=%GITHUB_WORKSPACE%\scripts\cleanInstallCheck.m
-          cd /d "%RUNNER_TEMP%"
-          matlab -batch "run(getenv('CHECK_SCRIPT'))" > "%GITHUB_WORKSPACE%\build\install.log" 2>&1
-          set CHECK_STATUS=%ERRORLEVEL%
-          type "%GITHUB_WORKSPACE%\build\install.log"
-          exit /b %CHECK_STATUS%
-      - uses: actions/upload-artifact@v4
+          echo "PHASECONT_PREBUILT=$GITHUB_WORKSPACE\\prebuilt" >> "$GITHUB_ENV"
+          echo "PHASECONT_LICENSES=$GITHUB_WORKSPACE\\licenses-out\\THIRD_PARTY_LICENSES.txt" >> "$GITHUB_ENV"
+      - uses: matlab-actions/setup-matlab@f9e43010f1ae678f7cfa0542fe2a4f60f7d1ad8d # v3.1.0
         with:
-          name: PhaseCont-mltbx
-          path: build/PhaseCont-*.mltbx
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+          release: R2026b
+      - name: Run buildtool cargo mex test package
+        uses: matlab-actions/run-build@cf54c2229a74d57eb4e6ba1bbebd45793d37797e # v3.4.0
+        with:
+          tasks: cargo mex test package
+      - name: Check the glibc versions the Linux binaries need
+        if: runner.os == 'Linux'
+        run: scripts/check-glibc toolbox/bin/glnxa64/pckern.mexa64
+      - name: Find the package
+        shell: bash
+        run: echo "PHASECONT_MLTBX=$(ls "$GITHUB_WORKSPACE"/build/PhaseCont-*.mltbx)" >> "$GITHUB_ENV"
+      - name: Install the package and run the example from a clean folder
+        uses: matlab-actions/run-command@bfa857648f4895aa98a446fe41c85e0788421ed5 # v3.3.0
+        env:
+          PHASECONT_CHILD_MATLAB: matlab-batch
+        with:
+          command: cd(getenv("RUNNER_TEMP")); run(fullfile(getenv("GITHUB_WORKSPACE"), "scripts", "cleanInstallCheck.m"))
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: package-win-install-log
-          path: build/install.log
+          name: matlab-${{ matrix.os }}-junit
+          path: build/test-results/junit.xml
           if-no-files-found: warn
 
   asan:
@@ -167,9 +169,12 @@ jobs:
     env:
       RUSTFLAGS: -Zsanitizer=address
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: nightly
           components: rust-src
           targets: x86_64-unknown-linux-gnu
       - name: Test pc-ffi under AddressSanitizer
