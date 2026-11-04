@@ -125,7 +125,8 @@ P8 (v1.0 packaging and the release workflow, plan approved) on branch `phase8-re
 - 4c78f41: the gateway pins `dlopen`, `dlsym`, `dlerror`, `dladdr` and `dlclose` to `GLIBC_2.2.5` on Linux x86_64. No C ABI change.
 - d3a4de9: `ci.yml`, `macos-jit.yml` and the new `release.yml` run on GitHub-hosted runners only, with every action pinned by SHA and `persist-credentials: false` on every checkout. The self-hosted Windows runner is no longer used by any workflow.
 - Docs: README rewritten in run order (install, upgrade, first run, build from source). SPEC section 12 describes the hosted jobs and `release.yml`. The Windows user path is gone from `docs/` and the spike scripts; the recorded logs in `spikes/results/` keep it.
-- Verified here: `PackageTest` 34 passed, 0 failed (through `scripts/matlab-win`); every workflow parses as YAML; no `self-hosted` label is left. Earlier in P8: the Rust checks, `buildtool cargo mex` and 41 MATLAB tests passed.
+- Verified here at 8d6717a on 2026-11-03. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo deny check` and the MinGW win64 build of `pc-ffi` pass. `scripts/matlab-win "buildtool cargo mex"` builds both binaries, and `check-host-paths` finds no host path in `pckern.dll`. The whole `tests/` folder, MEX suites included, gives 295 tests: 291 passed, 0 failed and 4 skipped by assumption (the three `references/*.json` oracle tests and `BuildTest/wslRootElsewhereUsesToolboxBin`). `checkcode` gives 13 warnings on 54 files, none of them an error or a bug. Every workflow parses as YAML, every `uses:` is pinned by SHA, every checkout sets `persist-credentials: false`, and no `self-hosted` label is left.
+- The self-hosted runner (id 21) was deleted from the repo on 2026-11-03, and the repo lists no runner. Its folder `C:\actions-runner` is still on the laptop, with no service and no process running.
 - Not run yet: the hosted `matlab` legs, the `release.yml` dry run, the glibc check of the zig build (it runs on CI only; zig and cargo-zigbuild are not installed here), and any test on a Mac.
 
 P5 (limit cycles, plan approved on 2026-10-31) on branch `phase5-limit-cycles`, pushed and open as PR #3. All 10 packages are done:
@@ -289,7 +290,7 @@ Open risks and questions from P7b:
 
 ## Next
 
-- Merge P5 to P8 into `main`, delete the self-hosted runner, make the repo public, run `release.yml` as a dry run and fix forward, then tag `v1.0.0`.
+- Merge P5 to P8 into `main`, make the repo public, run `release.yml` as a dry run and fix forward, then tag `v1.0.0`.
 - P4 and later: a continuation that changes a parameter or state read by a table formula needs a new lowering of the model (P2 known difference).
 
 ## Blocked
