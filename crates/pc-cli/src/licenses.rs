@@ -20,7 +20,8 @@ struct Krate {
     member: bool,
 }
 
-/// Writes the license texts of the closure of `package` for `target` to `out`.
+/// Writes the license texts of the closure of `package` to `out`. The closure
+/// holds the dependencies of every triple in `targets`, each crate once.
 ///
 /// Crates with several versions are ordered by name, then by version as plain
 /// text, so 0.10.0 sorts before 0.9.0. With `overrides`, a crate that ships no
@@ -30,8 +31,13 @@ struct Krate {
 /// `SOURCE`, a license file that is not UTF-8, and an `overrides` path that is
 /// not a folder are errors. Workspace crates add their `NOTICE*` files, which hold
 /// the notices of the code they port (see `THIRD_PARTY_NOTICES.md`).
-pub fn licenses(target: &str, package: &str, out: &Path, overrides: Option<&Path>) -> ExitCode {
-    match run(target, package, out, overrides) {
+pub fn licenses(
+    targets: &[String],
+    package: &str,
+    out: &Path,
+    overrides: Option<&Path>,
+) -> ExitCode {
+    match run(targets, package, out, overrides) {
         Ok(()) => ExitCode::SUCCESS,
         Err(msg) => {
             eprintln!("pc-cli: {msg}");
@@ -40,14 +46,23 @@ pub fn licenses(target: &str, package: &str, out: &Path, overrides: Option<&Path
     }
 }
 
-fn run(target: &str, package: &str, out: &Path, overrides: Option<&Path>) -> Result<(), String> {
+fn run(
+    targets: &[String],
+    package: &str,
+    out: &Path,
+    overrides: Option<&Path>,
+) -> Result<(), String> {
     if let Some(o) = overrides.filter(|o| !o.is_dir()) {
         return Err(format!("overrides folder not found: {}", o.display()));
     }
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let output = Command::new(&cargo)
-        .args(["metadata", "--format-version", "1", "--filter-platform"])
-        .arg(target)
+        .args(["metadata", "--format-version", "1"])
+        .args(
+            targets
+                .iter()
+                .flat_map(|t| ["--filter-platform", t.as_str()]),
+        )
         .arg("--locked")
         .output()
         .map_err(|e| format!("cannot run cargo: {e}"))?;

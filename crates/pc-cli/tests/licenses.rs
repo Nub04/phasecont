@@ -408,3 +408,54 @@ fn an_overrides_path_that_is_not_a_folder_fails_early() {
     assert!(err.contains("no-such-folder"), "{err}");
     assert!(!out.exists());
 }
+
+/// Writes `app` with a Windows-only and a macOS-only dependency and runs
+/// `licenses` with one `--target` per entry of `targets`.
+fn run_targets(root: &Path, targets: &[&str]) -> (std::process::Output, PathBuf) {
+    crate_in(root, "winonly", "winonly", "1.0.0", "win license\n");
+    crate_in(root, "maconly", "maconly", "1.0.0", "mac license\n");
+    let ws = app_with(
+        root,
+        "[target.'cfg(windows)'.dependencies]\nwinonly = { path = \"../../winonly\" }\n\
+         [target.'cfg(target_os = \"macos\")'.dependencies]\n\
+         maconly = { path = \"../../maconly\" }\n",
+    );
+    let out = root.join("out.txt");
+    let mut args = vec!["licenses", "--package", "app"];
+    for t in targets {
+        args.extend(["--target", t]);
+    }
+    args.extend(["--out", out.to_str().expect("utf-8 path")]);
+    (common::run(&ws, &args), out)
+}
+
+#[test]
+fn one_target_lists_only_its_platform_dependencies() {
+    let root = scratch("one-target");
+    let (o, out) = run_targets(&root, &[TARGET]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let text = fs::read_to_string(out).expect("output file");
+    assert_eq!(
+        text,
+        "== winonly 1.0.0 (MIT) ==\n--- LICENSE-MIT ---\nwin license\n\n"
+    );
+}
+
+#[test]
+fn several_targets_list_the_union_once() {
+    let root = scratch("many-targets");
+    let (o, out) = run_targets(
+        &root,
+        &[
+            TARGET,
+            "aarch64-apple-darwin",
+            "x86_64-unknown-linux-gnu",
+            TARGET,
+        ],
+    );
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let text = fs::read_to_string(out).expect("output file");
+    let want = "== maconly 1.0.0 (MIT) ==\n--- LICENSE-MIT ---\nmac license\n\n\
+                == winonly 1.0.0 (MIT) ==\n--- LICENSE-MIT ---\nwin license\n\n";
+    assert_eq!(text, want);
+}

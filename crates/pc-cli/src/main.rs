@@ -28,11 +28,11 @@ fn main() -> ExitCode {
         Ok(Command::EmitC { file, out }) => ircmd::emit_c(&file, out.as_deref()),
         Ok(Command::DllImports { file }) => dllimports::dll_imports(&file),
         Ok(Command::Licenses {
-            target,
+            targets,
             package,
             out,
             overrides,
-        }) => licenses::licenses(&target, &package, &out, overrides.as_deref()),
+        }) => licenses::licenses(&targets, &package, &out, overrides.as_deref()),
         Ok(Command::Cont {
             file,
             problem,

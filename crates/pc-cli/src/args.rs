@@ -36,7 +36,8 @@ pub enum Command {
     DllImports { file: PathBuf },
     /// Write the license texts of the dependency closure of a package.
     Licenses {
-        target: String,
+        /// Target triples; each `--target` adds one.
+        targets: Vec<String>,
         package: String,
         out: PathBuf,
         overrides: Option<PathBuf>,
@@ -68,7 +69,7 @@ usage: pc-cli parse [--json] [--] <file.ode>
        pc-cli cont [--fallback] [--] <file.ode> <problem.json>
        pc-cli session replay [--tol X] [--fallback] [--] <file.pcsession.json>
        pc-cli dll-imports [--] <file.dll>
-       pc-cli licenses --target TRIPLE [--package NAME] --out FILE [--overrides DIR]
+       pc-cli licenses --target TRIPLE... [--package NAME] --out FILE [--overrides DIR]
        pc-cli --help | pc-cli --version";
 
 pub const HELP: &str = "\
@@ -82,7 +83,7 @@ usage:
   pc-cli cont <file.ode> <problem.json> [--fallback]
   pc-cli session replay <file.pcsession.json> [--tol X] [--fallback]
   pc-cli dll-imports <file.dll>
-  pc-cli licenses --target TRIPLE [--package NAME] --out FILE [--overrides DIR]
+  pc-cli licenses --target TRIPLE... [--package NAME] --out FILE [--overrides DIR]
   pc-cli --help
   pc-cli --version
 
@@ -253,17 +254,18 @@ the file cannot be read or is not a 64-bit PE file, 2 usage error
 ";
 
 pub const LICENSES_HELP: &str = "\
-usage: pc-cli licenses --target TRIPLE [--package NAME] --out FILE [--overrides DIR]
+usage: pc-cli licenses --target TRIPLE... [--package NAME] --out FILE [--overrides DIR]
 
-Runs `cargo metadata --locked --filter-platform TRIPLE`, takes the dependency
-closure of the package without dev-dependencies and writes, for each crate that
-is not a workspace member, a header line `== name version (SPDX) ==` and the
-text of every file named LICENSE*, LICENCE*, COPYING* or NOTICE* in the crate
-folder. Crates are sorted by name, then version. Workspace members are covered
-by the repo LICENSE and are left out.
+Runs `cargo metadata --locked` with one `--filter-platform` per target, takes
+the dependency closure of the package on all of them without dev-dependencies
+and writes, for each crate that is not a workspace member, a header line
+`== name version (SPDX) ==` and the text of every file named LICENSE*,
+LICENCE*, COPYING* or NOTICE* in the crate folder. Crates are sorted by name,
+then version. Workspace members are covered by the repo LICENSE and are left
+out.
 
 options:
-  --target TRIPLE  Rust target triple (required)
+  --target TRIPLE  Rust target triple (required; repeat it for more targets)
   --package NAME   package whose closure is listed (default pc-ffi)
   --out FILE       file to write (required); not written on failure
   --overrides DIR  folder with one subfolder per crate that ships no license file;
@@ -572,9 +574,10 @@ fn session_command(rest: &[OsString]) -> Result<Command, UsageError> {
     }
 }
 
-/// Parses the arguments of `licenses`. `--target` and `--out` are required.
+/// Parses the arguments of `licenses`. `--out` and at least one `--target` are
+/// required; `--target` may repeat.
 fn licenses_command(rest: &[OsString]) -> Result<Command, UsageError> {
-    let mut target: Option<String> = None;
+    let mut targets: Vec<String> = Vec::new();
     let mut package: Option<String> = None;
     let mut overrides: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
@@ -582,7 +585,7 @@ fn licenses_command(rest: &[OsString]) -> Result<Command, UsageError> {
     while let Some(arg) = it.next() {
         match utf8(arg)? {
             "-h" | "--help" => return Ok(Command::ToolHelp(LICENSES_HELP)),
-            "--target" => target = Some(utf8(value("--target", &mut it)?)?.to_string()),
+            "--target" => targets.push(utf8(value("--target", &mut it)?)?.to_string()),
             "--package" => package = Some(utf8(value("--package", &mut it)?)?.to_string()),
             "--out" => out = Some(PathBuf::from(value("--out", &mut it)?)),
             "--overrides" => overrides = Some(PathBuf::from(value("--overrides", &mut it)?)),
@@ -594,9 +597,9 @@ fn licenses_command(rest: &[OsString]) -> Result<Command, UsageError> {
             }
         }
     }
-    match (target, out) {
-        (Some(target), Some(out)) => Ok(Command::Licenses {
-            target,
+    match (targets.is_empty(), out) {
+        (false, Some(out)) => Ok(Command::Licenses {
+            targets,
             package: package.unwrap_or_else(|| "pc-ffi".to_string()),
             out,
             overrides,
@@ -752,7 +755,7 @@ mod tests {
         assert_eq!(
             p(&["licenses", "--out", "o.txt", "--target", "t"]),
             Ok(Command::Licenses {
-                target: "t".into(),
+                targets: vec!["t".into()],
                 package: "pc-ffi".into(),
                 out: "o.txt".into(),
                 overrides: None
@@ -761,7 +764,7 @@ mod tests {
         assert_eq!(
             p(&["licenses", "--target", "t", "--out", "o", "--package", "x"]),
             Ok(Command::Licenses {
-                target: "t".into(),
+                targets: vec!["t".into()],
                 package: "x".into(),
                 out: "o".into(),
                 overrides: None
@@ -778,10 +781,19 @@ mod tests {
                 "d"
             ]),
             Ok(Command::Licenses {
-                target: "t".into(),
+                targets: vec!["t".into()],
                 package: "pc-ffi".into(),
                 out: "o".into(),
                 overrides: Some("d".into())
+            })
+        );
+        assert_eq!(
+            p(&["licenses", "--target", "a", "--out", "o", "--target", "b"]),
+            Ok(Command::Licenses {
+                targets: vec!["a".into(), "b".into()],
+                package: "pc-ffi".into(),
+                out: "o".into(),
+                overrides: None
             })
         );
         assert_eq!(p(&["licenses", "-h"]), Ok(Command::ToolHelp(LICENSES_HELP)));
