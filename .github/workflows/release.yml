@@ -253,10 +253,25 @@ jobs:
       - uses: matlab-actions/setup-matlab@f9e43010f1ae678f7cfa0542fe2a4f60f7d1ad8d # v3.1.0
         with:
           release: R2026b
-      - name: Install the package and run the example from a clean folder
+      # Each step runs in its own MATLAB, since only the MATLAB that the action
+      # starts is licensed. The example runs in a MATLAB that did not install
+      # the toolbox, so the uninstall can delete pckern on Windows.
+      - name: Install the package from a folder outside the checkout
         uses: matlab-actions/run-command@bfa857648f4895aa98a446fe41c85e0788421ed5 # v3.3.0
         env:
-          PHASECONT_CHILD_MATLAB: matlab-batch
+          PHASECONT_INSTALL_STEP: install
+        with:
+          command: cd(getenv("RUNNER_TEMP")); run(fullfile(getenv("GITHUB_WORKSPACE"), "scripts", "cleanInstallCheck.m"))
+      - name: Run the example from the installed package
+        uses: matlab-actions/run-command@bfa857648f4895aa98a446fe41c85e0788421ed5 # v3.3.0
+        env:
+          PHASECONT_INSTALL_STEP: example
+        with:
+          command: cd(getenv("RUNNER_TEMP")); run(fullfile(getenv("GITHUB_WORKSPACE"), "scripts", "cleanInstallCheck.m"))
+      - name: Uninstall the package
+        uses: matlab-actions/run-command@bfa857648f4895aa98a446fe41c85e0788421ed5 # v3.3.0
+        env:
+          PHASECONT_INSTALL_STEP: remove
         with:
           command: cd(getenv("RUNNER_TEMP")); run(fullfile(getenv("GITHUB_WORKSPACE"), "scripts", "cleanInstallCheck.m"))
 

@@ -97,8 +97,8 @@ jobs:
 
   # MATLAB R2026b on each platform: build the library and the MEX gateway, run
   # the test suites, package the toolbox for that platform, then install the
-  # package from a folder outside the checkout, run an example in a fresh
-  # MATLAB and uninstall it. Windows takes the DLL from pckern-win; Linux and
+  # package from a folder outside the checkout, run an example in a second
+  # MATLAB and uninstall it in a third. Windows takes the DLL from pckern-win; Linux and
   # macOS build the library from source. setup-matlab licenses MATLAB for a
   # public repository without a secret.
   matlab:
@@ -144,16 +144,40 @@ jobs:
         uses: matlab-actions/run-build@cf54c2229a74d57eb4e6ba1bbebd45793d37797e # v3.4.0
         with:
           tasks: cargo mex test package
+      - name: List the symbols that the AOT libraries export
+        if: failure() && runner.os != 'Windows'
+        shell: bash
+        run: |
+          find "$RUNNER_TEMP" /tmp "${TMPDIR:-/tmp}" -name 'pcaot_*.mex*' 2>/dev/null | sort -u |
+            while read -r lib; do
+              echo "== $lib"
+              if [ "$RUNNER_OS" = macOS ]; then nm -gU "$lib"; else nm -D --defined-only "$lib"; fi
+            done
       - name: Check the glibc versions the Linux binaries need
         if: runner.os == 'Linux'
         run: scripts/check-glibc toolbox/bin/glnxa64/pckern.mexa64
       - name: Find the package
         shell: bash
         run: echo "PHASECONT_MLTBX=$(ls "$GITHUB_WORKSPACE"/build/PhaseCont-*.mltbx)" >> "$GITHUB_ENV"
-      - name: Install the package and run the example from a clean folder
+      # Each step runs in its own MATLAB, since only the MATLAB that the action
+      # starts is licensed. The example runs in a MATLAB that did not install
+      # the toolbox, so the uninstall can delete pckern on Windows.
+      - name: Install the package from a folder outside the checkout
         uses: matlab-actions/run-command@bfa857648f4895aa98a446fe41c85e0788421ed5 # v3.3.0
         env:
-          PHASECONT_CHILD_MATLAB: matlab-batch
+          PHASECONT_INSTALL_STEP: install
+        with:
+          command: cd(getenv("RUNNER_TEMP")); run(fullfile(getenv("GITHUB_WORKSPACE"), "scripts", "cleanInstallCheck.m"))
+      - name: Run the example from the installed package
+        uses: matlab-actions/run-command@bfa857648f4895aa98a446fe41c85e0788421ed5 # v3.3.0
+        env:
+          PHASECONT_INSTALL_STEP: example
+        with:
+          command: cd(getenv("RUNNER_TEMP")); run(fullfile(getenv("GITHUB_WORKSPACE"), "scripts", "cleanInstallCheck.m"))
+      - name: Uninstall the package
+        uses: matlab-actions/run-command@bfa857648f4895aa98a446fe41c85e0788421ed5 # v3.3.0
+        env:
+          PHASECONT_INSTALL_STEP: remove
         with:
           command: cd(getenv("RUNNER_TEMP")); run(fullfile(getenv("GITHUB_WORKSPACE"), "scripts", "cleanInstallCheck.m"))
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
