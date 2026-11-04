@@ -8,7 +8,7 @@ This file records what the development machine has, as found on 2026-10-21 durin
 |---|---|
 | CPU | Intel Core Ultra 7 255H; Windows reports 16 cores and 16 logical processors |
 | Windows | Windows 11, `ver` prints `Microsoft Windows [Version 10.0.26300.9711]` |
-| WSL distro | Fedora Linux 45 (WSL), `VARIANT="WSL"`, `RELEASE_TYPE=stable`. It read "45 (WSL Prerelease)" until the `fedora-release` 45-13 packages were installed at 15:12Z on 2026-10-21. Its WSL name is `FedoraLinux-44` (`wsl.exe -l -v`), so Windows sees the repo as `\\wsl.localhost\FedoraLinux-44\home\nub04\dev\phasecont` |
+| WSL distro | Fedora Linux 45 (WSL), `VARIANT="WSL"`, `RELEASE_TYPE=stable`. It read "45 (WSL Prerelease)" until the `fedora-release` 45-13 packages were installed at 15:12Z on 2026-10-21. Its WSL name is `FedoraLinux-44` (`wsl.exe -l -v`), so Windows sees the repo as `\\wsl.localhost\FedoraLinux-44\home\<user>\dev\phasecont` |
 | WSL kernel | `6.18.54.1-microsoft-standard-WSL2` |
 | WSL limits | `.wslconfig` sets `processors=12`, `memory=20GB`, `swap=8GB` and `networkingMode=consomme` |
 | Free disk | 856 GB on the WSL root file system, 130 GB on `C:` |
@@ -95,7 +95,7 @@ Commands: `Get-Command cargo, rustc, rustup, git, nvcc` through `powershell.exe`
 
 A failed MATLAB command reaches WSL as a nonzero exit code. `scripts/matlab-win "error('phasecont:check','x')"` printed `ERROR: MATLAB error Exit Status: 0x00000001`, and the shell saw exit code 1. A MATLAB test script run this way can therefore report failure with `error` or `assert`.
 
-Every run whose current folder is the repo prints `Warning: Unable to obtain a change notification handle for \\wsl.localhost\fedoralinux-44\home\nub04\dev\phasecont.` MATLAB cannot watch a UNC folder for changes, so a desktop session may not see files edited from WSL until `rehash` runs. Each `-batch` run starts fresh, so `scripts/matlab-win` is not affected.
+Every run whose current folder is the repo prints `Warning: Unable to obtain a change notification handle for \\wsl.localhost\fedoralinux-44\home\<user>\dev\phasecont.` MATLAB cannot watch a UNC folder for changes, so a desktop session may not see files edited from WSL until `rehash` runs. Each `-batch` run starts fresh, so `scripts/matlab-win` is not affected.
 
 `ver` lists 120 products in all, each at 26.2, among them Parallel Computing Toolbox, Symbolic Math Toolbox, Optimization Toolbox, MATLAB Coder, GPU Coder and MATLAB Test. Rule 8 of `CLAUDE.md` forbids depending on most of these. They are all installed here, so an accidental dependency will not fail on this machine; the "Base MATLAB check" test in section 12 of `docs/SPEC.md` catches one.
 
@@ -134,7 +134,7 @@ The probe files and their runner are in `references/xpp-probes/`.
 
 ## Staging folder
 
-Windows MATLAB loads compiled binaries from the Windows file system, so Windows build outputs are staged under `/mnt/c/Users/<user>/phasecont-stage/` (`C:\Users\<user>\phasecont-stage\`). The spikes use its `spikes\` subfolder, which `spikes/stage.sh` creates. `scripts/build-pckern` and `buildtool cargo` stage `pckern.dll` in `C:\Users\<user>\phasecont-stage\bin\win64`.
+Windows MATLAB loads compiled binaries from the Windows file system, so Windows build outputs are staged under `/mnt/c/Users/<user>/phasecont-stage/` (`%USERPROFILE%\phasecont-stage\`). The spikes use its `spikes\` subfolder, which `spikes/stage.sh` creates. `scripts/build-pckern` and `buildtool cargo` stage `pckern.dll` in `%USERPROFILE%\phasecont-stage\bin\win64`.
 
 `cmd.exe` cannot use a `\\wsl.localhost\...` path as its working directory. Run from the repo folder, `scripts/matlab-win "[s,o]=system('cd'); disp(o)"` prints `UNC paths are not supported.  Defaulting to Windows directory.` followed by `C:\Windows`. MATLAB code that runs commands with `system` therefore changes to a folder on `C:` first. `mex` is not affected: spike S1 built the gateway from the repo folder with relative source paths, and the build succeeded (`spikes/results/s1_gateway_nodll.txt`).
 

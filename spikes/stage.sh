@@ -12,7 +12,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(dirname "$here")"
-stage="${PHASECONT_STAGE:-/mnt/c/Users/<user>/phasecont-stage/spikes}"
+stage="${PHASECONT_STAGE:-/mnt/c/Users/$(cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d "\r")/phasecont-stage/spikes}"
 target=x86_64-pc-windows-gnu
 
 mex_only=0

@@ -12,7 +12,7 @@
 here = fileparts(mfilename('fullpath'));
 addpath(here);
 repo = fileparts(fileparts(here));
-stage = 'C:\Users\<user>\phasecont-stage\spikes';
+stage = fullfile(getenv('USERPROFILE'), 'phasecont-stage', 'spikes');
 fprintf('MATLAB %s\nrepo:  %s\nstage: %s\n', version, repo, stage);
 
 probe = fullfile(tempdir, 'pckern_s1_nodll');

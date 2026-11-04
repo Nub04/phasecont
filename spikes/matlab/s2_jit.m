@@ -10,7 +10,7 @@
 
 here = fileparts(mfilename('fullpath'));
 addpath(here);
-stage = 'C:\Users\<user>\phasecont-stage\spikes';
+stage = fullfile(getenv('USERPROFILE'), 'phasecont-stage', 'spikes');
 fprintf('MATLAB %s, %s, maxNumCompThreads %d\n', version, computer('arch'), maxNumCompThreads);
 
 b = s2_baseline(1e5, 5);

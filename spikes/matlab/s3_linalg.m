@@ -17,7 +17,7 @@
 
 here = fileparts(mfilename('fullpath'));
 addpath(here);
-stage = 'C:\Users\<user>\phasecont-stage\spikes';
+stage = fullfile(getenv('USERPROFILE'), 'phasecont-stage', 'spikes');
 if ~isfile(fullfile(stage, 'pckern.dll'))
     error('spikes:nodll', 'no pckern.dll in %s (run spikes/stage.sh first)', stage);
 end
