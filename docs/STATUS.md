@@ -2,7 +2,7 @@
 
 ## Phase
 
-P8 (v1.0 packaging and the release workflow) is on `main`. The repo has been public since 2026-11-04, and The hosted MATLAB jobs and the `release.yml` dry run passed on 2026-11-04, and P8 waits for the `v1.0.0` tag (see In progress). P7b (trajectories, sessions, replay and the phase-plane app) is on `main` and is described under In progress. P6 (LPC, PD and NS curves of limit cycles; SPEC section 8) is on `main` and waits for the oracle files. P5 (limit cycles; SPEC section 7) is on `main`. P5 to P8 were built on stacked branches and reached `main` together on 2026-11-04. P4b closed the open items of P4 and merged into `main` locally on 2026-10-31 as a fast-forward to d1380c7. P4 (LP and H curves, codim-2 detection and normal forms; SPEC section 14) merged into `main` locally on 2026-10-30 (734c7a8). Both were pushed on 2026-10-31 with 27b47b4. P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 88fbffa. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 (714aac9). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 (390bfb1). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
+P8 (v1.0 packaging and the release workflow) is on `main`. P8 was accepted on 2026-11-04: the `v1.0.0` tag run published the GitHub Release https://github.com/Nub04/phasecont/releases/tag/v1.0.0 with `PhaseCont-1.0.0.mltbx` and `SHA256SUMS`. The repo has been public since 2026-11-04. P7b (trajectories, sessions, replay and the phase-plane app) is on `main` and is described under In progress. P6 (LPC, PD and NS curves of limit cycles; SPEC section 8) is on `main` and waits for the oracle files. P5 (limit cycles; SPEC section 7) is on `main`. P5 to P8 were built on stacked branches and reached `main` together on 2026-11-04. P4b closed the open items of P4 and merged into `main` locally on 2026-10-31 as a fast-forward to d1380c7. P4 (LP and H curves, codim-2 detection and normal forms; SPEC section 14) merged into `main` locally on 2026-10-30 (734c7a8). Both were pushed on 2026-10-31 with 27b47b4. P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 88fbffa. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 (714aac9). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 (390bfb1). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
 
 The history was rewritten on 2026-11-04. CLAUDE.md and docs/KICKOFF.md were dropped from every commit, and the Windows user name in the spike files was replaced with `<user>`. The old GitHub repo was renamed and kept private, with PRs #1 to #3 and the old Actions runs, and a new public repo got the rewritten `main`. Every commit id in this file refers to the rewritten history.
 
@@ -119,7 +119,7 @@ P7a (complete on branch `phase7a-matlab-api`, cut from 390bfb1; merged into `mai
 
 ## In progress
 
-P8 (v1.0 packaging and the release workflow, plan approved) was built on branch `phase8-release` and is now on `main`. P8 is accepted when `release.yml` publishes a `.mltbx` that installs and runs on all three platforms, which needs the public repo.
+P8 (v1.0 packaging and the release workflow, plan approved) was built on branch `phase8-release` and is now on `main`. It was accepted on 2026-11-04, when the tagged `release.yml` run published a `.mltbx` that installs and runs on all three platforms.
 
 - 1ec01ec: `pc-cli licenses` takes several `--target` triples, so one file covers win64, glnxa64 and maca64.
 - 3204096: version 1.0.0 with the same toolbox UUID. `packageToolbox` ships `bin/win64`, `bin/glnxa64` and `bin/maca64` and fails with `missingBinary` naming an absent file. `PackageTest` checks the six files and the path list with fake binaries. `cleanInstallCheck.m` takes the child MATLAB from `PHASECONT_CHILD_MATLAB`.
@@ -137,7 +137,8 @@ P8 (v1.0 packaging and the release workflow, plan approved) was built on branch 
 - Second hosted run of `ci.yml` (run 41792490823, 2026-11-04, at ee109cc) passed on every job. The `matlab` legs gave 290 passed, 0 failed and 6 incomplete on ubuntu and macos, and 291 passed, 0 failed and 5 incomplete on windows. The incompletes are assumption filters, among them the three oracle tests whose `references/*.json` files are missing. `AotTest` passes on Linux and macOS, and the install check passed on all three runners with the same Hopf values. The `-batch` install was not registered for later sessions on any of the three runners either, so the reinstall in the remove step ran on each.
 - `release.yml` dry runs on 2026-11-04. Run 41795127149 (ee109cc) failed in `lib-mac`: `check-host-paths` found `/Users/runner/` in `libpckern.dylib`. With the full string printed (baddf87), run 41796036606 showed that it is the dylib's install name, which the macOS linker sets to the absolute build path. `lib-mac` now links the cdylib with `cargo rustc` and passes `-install_name @rpath/libpckern.dylib` to the final link (21fc71e). The gateway opens the library by path, so the install name has no effect at run time.
 - Run 41912379730 (21fc71e) passed every job except `release`, which runs on a tag only. `lib-linux` needs at most GLIBC_2.28 and the Linux MEX file at most GLIBC_2.14, and `check-host-paths` finds no host path in any library or MEX file. The `mex` legs gave the same test counts as run 41792490823. `package` built `PhaseCont-1.0.0.mltbx` (11.5 MB artifact), and the install, example and remove steps passed on windows, ubuntu and macos with Hopf 1 at I = 1.4187187 and Hopf 2 at I = 0.33128134, omega = 0.27550681.
-- Not run yet: the tagged release run, and any test on a real Mac outside CI (the maca64 binaries are unsigned).
+- Tagged run 41925211997 (`v1.0.0` at b045897) passed every job, `release` included. The Release holds `PhaseCont-1.0.0.mltbx` (11516604 bytes) and `SHA256SUMS`, and `sha256sum -c SHA256SUMS` on the downloaded files gives OK.
+- Not run yet: any test on a real Mac outside CI (the maca64 binaries are unsigned).
 
 P5 (limit cycles, plan approved on 2026-10-31) was built on branch `phase5-limit-cycles` and is now on `main`. All 10 packages are done:
 
@@ -298,7 +299,7 @@ Open risks and questions from P7b:
 
 ## Next
 
-- Tag `v1.0.0` on `main` once the owner agrees; the tag run publishes the GitHub Release with the `.mltbx` and `SHA256SUMS`.
+- Link the GitHub repo to a File Exchange entry from the owner's MathWorks account, so each GitHub Release appears there.
 - P4 and later: a continuation that changes a parameter or state read by a table formula needs a new lowering of the model (P2 known difference).
 
 ## Blocked
@@ -314,7 +315,7 @@ Open risks and questions from P7b:
 - Owner: File Exchange route for v0.3, checked on 2026-10-29. Direct upload accepts BSD only. Apache-2.0 is allowed only for a GitHub-linked entry. The R2026b help says a package with MEX or DLL files cannot be submitted to File Exchange, and it does not say whether a GitHub-linked entry is exempt. The repo is private, which blocks the GitHub link route. Ask MathWorks before relying on either route.
 - Settled in P8: release builds remap the repo and cargo home paths, and `scripts/check-host-paths` fails on a host path left in a binary.
 - After 1.0: the gateway never unloads `pckern.dll`. Uninstalling or upgrading the toolbox in a MATLAB session that has used PhaseCont fails with "Permission denied" and leaves a stale folder under `%APPDATA%\MathWorks\MATLAB Add-Ons` until MATLAB exits. The README tells users to close MATLAB before an upgrade. An unload or copy-on-load design waits for a later release.
-- Open after P8: AOT on Linux and macOS is unverified. The mex link may not export `pc_aot_init` on glnxa64 or maca64. The win64 build exports it through `PC_EXPORT`. Check with a visibility attribute and a Linux test. The AOT test in `pc-codegen` still runs gcc only.
+- Settled in P8: AOT works on Linux and macOS. `AotTest` passes on the hosted ubuntu and macos runners since `internal.aotBuild` passes empty `LINKEXPORT` and `LINKEXPORTVER`. The AOT test in `pc-codegen` still runs gcc only.
 - Settled on 2026-10-28: the in-MATLAB part of the macOS arm64 check in SPEC section 4 moved to P7a. P7a did not run it; it is deferred (see below).
 - The P1 questions are settled for P2: division follows IEEE; `mod` is `fmod(x,y)` plus `y` when the remainder is negative, which probe `fn-mod-more` confirmed on eight more cases; `if` evaluates both branches and selects one.
 - Open from P7a: `model_from_ode` parses one in-memory string with no file loader, so `#include` lines fail with a diagnostic. The MATLAB layer has to inline included files, or a later task adds a loader callback.
