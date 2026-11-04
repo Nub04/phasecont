@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Fail when a release binary holds a build host path (a home folder or a
+# Windows user profile), which the --remap-path-prefix flags should remove.
+#
+# Usage:
+#   scripts/check-host-paths FILE...
+set -euo pipefail
+
+if [[ $# -eq 0 ]]; then
+  echo "usage: scripts/check-host-paths FILE..." >&2
+  exit 2
+fi
+
+status=0
+for f in "$@"; do
+  if [[ ! -f "$f" ]]; then
+    echo "check-host-paths: no such file: $f" >&2
+    status=1
+    continue
+  fi
+  hits="$(LC_ALL=C grep -a -o -E '/home/[A-Za-z0-9._-]+/|/Users/[A-Za-z0-9._-]+/|[A-Za-z]:\\\\?Users\\\\' "$f" | sort | uniq -c || true)"
+  if [[ -n "$hits" ]]; then
+    echo "check-host-paths: $f holds host paths:" >&2
+    echo "$hits" >&2
+    status=1
+  else
+    echo "check-host-paths: $f is clean"
+  fi
+done
+exit "$status"

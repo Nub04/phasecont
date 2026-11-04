@@ -35,11 +35,17 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo"
 
 export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="${CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER:-x86_64-w64-mingw32-gcc}"
+# Replace the repo and cargo home paths in panic messages and debug info, so
+# the DLL holds no path of this machine. The flags apply to the Windows target
+# only, so the host build of pc-cli keeps its cache.
+cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS="--remap-path-prefix=$repo=/src --remap-path-prefix=$cargo_home=/cargo ${CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS:-}"
 cargo build --release --locked --target x86_64-pc-windows-gnu -p pc-ffi
 
 dll=target/x86_64-pc-windows-gnu/release/pckern.dll
 cargo build --release --locked -p pc-cli
 target/release/pc-cli dll-imports "$dll"
+scripts/check-host-paths "$dll"
 
 mkdir -p "$stage"
 if ! err="$(cp "$dll" "$stage/pckern.dll" 2>&1)"; then

@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Fail when a Linux binary needs a glibc symbol version above the limit, so
+# the release loads on every distro MATLAB supports (glibc 2.28, RHEL 8).
+#
+# Usage:
+#   scripts/check-glibc FILE...
+#
+# Set PHASECONT_MAX_GLIBC to change the limit (default 2.28).
+set -euo pipefail
+
+max="${PHASECONT_MAX_GLIBC:-2.28}"
+if [[ $# -eq 0 ]]; then
+  echo "usage: scripts/check-glibc FILE..." >&2
+  exit 2
+fi
+
+status=0
+for f in "$@"; do
+  if [[ ! -f "$f" ]]; then
+    echo "check-glibc: no such file: $f" >&2
+    status=1
+    continue
+  fi
+  # Versions of the undefined (imported) symbols only.
+  need="$(objdump -T "$f" | awk '$0 ~ /\*UND\*/' | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/^GLIBC_//' | sort -u -V || true)"
+  top="$(printf '%s\n' "$need" | sed '/^$/d' | tail -n 1)"
+  if [[ -z "$top" ]]; then
+    echo "check-glibc: $f imports no versioned glibc symbol"
+    continue
+  fi
+  if [[ "$(printf '%s\n%s\n' "$max" "$top" | sort -V | tail -n 1)" != "$max" ]]; then
+    echo "check-glibc: $f needs GLIBC_$top, above GLIBC_$max. Symbols:" >&2
+    objdump -T "$f" | awk '$0 ~ /\*UND\*/' | grep -E "GLIBC_($(printf '%s\n' "$need" | awk -v m="$max" 'BEGIN{split(m,a,".")} {split($0,b,"."); if (b[1]>a[1] || (b[1]==a[1] && b[2]+0>a[2]+0)) print}' | sed 's/\./\\./g' | paste -sd'|'))\b" >&2 || true
+    status=1
+  else
+    echo "check-glibc: $f needs at most GLIBC_$top"
+  fi
+done
+exit "$status"
