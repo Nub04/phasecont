@@ -119,7 +119,7 @@ P7a (complete on branch `phase7a-matlab-api`, cut from 390bfb1; merged into `mai
 
 ## In progress
 
-P9 (GPU ensemble engine) and P10 (model input routes and the editor app) have an approved plan. P9 is on branch `phase9-gpu-ensemble` and P10 will be on `phase10-model-input`. The plan approval covers the appended C ABI functions, the MATLAB API additions, the new dependencies and the new hosted CI jobs. It does not cover a push. Nothing in P9 or P10 has run on MATLAB, a GPU or Windows yet.
+P9 (GPU ensemble engine) and P10 (model input routes and the editor app) have an approved plan. P9a to P9c are on branch `phase9-gpu-ensemble` (c5bc4b4), P10 is on `phase10-model-input` (3115bf3), and P9d is on `phase9d-ensemble-api` (b3d4035), stacked on P10. The plan approval covers the appended C ABI functions, the MATLAB API additions, the new dependencies and the new hosted CI jobs. It does not cover a push or a merge into `main`, and none has happened. Nothing in P9 or P10 has run on MATLAB, a GPU or Windows yet. Only `cargo` on the CPU has run.
 
 P9a (core types, CPU backend, kernel text, device list, self-test and the CLI) is committed on `phase9-gpu-ensemble`, with no C ABI change and no MATLAB API change.
 
@@ -139,7 +139,7 @@ P9a (core types, CPU backend, kernel text, device list, self-test and the CLI) i
   - `ensemble --bench` runs both precisions on every device, labels each row and prints its sizes (1000, 10000 and 100000 members unless `--members` says otherwise). A device without double precision gets a `skipped` row.
   - The job file needs every key except `device`. `bounds` is a positive number, or `null` for no limit. Unknown keys are errors and each error names its key.
   - The self-test JSON has a `commit` field that is the value of `PC_GIT_COMMIT` at build time, or `null`. There is no `build.rs`.
-- Not done yet: the C ABI and MATLAB API (P9d, which asks before any default tolerance), Metal (P9e), the README "Test your GPU" section, the CI jobs and the `benches/RESULTS.md` entry.
+- Not done yet from this stage: Metal (P9e), the README "Test your GPU" section, the CI jobs and the `benches/RESULTS.md` entry. The C ABI and MATLAB API are P9d, below.
 
 P9b (the CUDA backend) is written and tested on the CPU side only. Nothing ran on the GPU, MATLAB or Windows, because the owner asked for no local hardware runs on 2026-11-05.
 
@@ -156,6 +156,19 @@ P9c (the OpenCL backend) is written and tested on the CPU side only. Nothing ran
 - Checks, run with `CUDA_VISIBLE_DEVICES=""`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --workspace` (1249 passed, 0 failed, 3 ignored) and `cargo deny check`. `tests/opencl_compile.rs` ran for real: clang 23.1.4 parsed every model and variant as OpenCL C 1.2, and it rejected a deliberately broken kernel.
 - `pc-cli gpu list` now reports OpenCL as `available` or `unavailable`, not `not_built`. Only Metal is `not_built`.
 - Open risks: `run_opencl` has never run on a device. A driver may ignore `FP_CONTRACT OFF`. The 1.5 s `gpuTimeout` rule is a guess. The macOS build of `opencl3` is unverified.
+
+P9d (the ensemble C ABI and the MATLAB API) is written and tested on the CPU side only, on branch `phase9d-ensemble-api`. Nothing ran on MATLAB, a GPU or Windows, and the gateway C has not been built with `mex`.
+
+- C ABI (d6077d3, 0e47795, c9776f5): five functions are appended after `import`, `ens_devices` (offset 136), `ens_start` (144), `ens_poll` (152), `ens_copy` (160) and `ens_cancel` (168). `abi_version` stays 1 and the table has 23 members in 176 bytes. Error codes 9 to 13 are gpuUnavailable, gpuCompile, gpuLaunch, gpuTimeout and unsupportedModel. The job parser moved from `pc-cli` into `pc-ffi`, and the CPU backend reads the cancel flag every 65536 steps.
+- A run is an `EnsHandle` in `crates/pc-ffi/src/ensemble.rs`. A worker thread runs under the panic barrier, a panic on it reaches MATLAB from `ens_poll` or `ens_copy`, and freeing the handle cancels the run and joins the worker. A bad job and a tolerance that is too tight both map to `badProblem` and are told apart by the message prefix.
+- Gateway (0bd376a): `ens_devices`, `ens_start`, `ens_poll`, `ens_copy` and `ens_cancel` commands, and the five error IDs `phasecont:engine:<kind>`. `gcc -fsyntax-only` is the only check it has had.
+- MATLAB (5942b85, b53ddbe, 3f7a19e, 6147d05): `phasecont.gpuDevices`, `phasecont.ensemble` with `EnsembleResult` and `refine`, and `phasecont.gpuSelfTest`, with `tests/EnsembleTest.m` and the helper tests. `Precision`, `t0`, `t1` and `Rtol` with `Atol` (or `Dt`) have no defaults and raise named errors. A tolerance below what the precision can resolve raises `phasecont:ensemble:toleranceTooTight`. GPU test cases honour `PC_REQUIRE_GPU`.
+- SPEC sections 10 and 11 describe the ABI and the API (b3d4035).
+- Checks at b3d4035, run with `CUDA_VISIBLE_DEVICES=""`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --workspace` (1353 passed, 0 failed, 3 ignored) and `cargo deny check` pass.
+- Rulings: `Backend` defaults to `"auto"` and `Device` to 0, the 0-based index within a backend. `MaxSteps` (100000), `Hmax` (Inf) and `Bounds` (Inf) default to the limits `simulate` uses. The method is inferred from the options (`Dt` gives RK4, `Rtol` with `Atol` gives Dormand-Prince). `refine` returns an `EnsembleResult`, not a `Trajectory`. Ensemble results are not saved in sessions.
+- `gpuSelfTest` runs in MATLAB with no extra ABI call. Its pass thresholds (5e-4 and 1e-3 in single precision, 1e-8 and 1e-7 in double) are my own and unvalidated. `pc-cli gpu selftest` runs the full tiers.
+- Things the first MATLAB run may break on: the step-count ranges in `EnsembleTest` (4000 to 4003 is my assumption about RK4 segment rounding), the self-test thresholds in single precision, `jsondecode` shapes for one-element arrays in `gpuDevices`, and the warning and error IDs the tests expect.
+- Not done yet: Metal (P9e), the README "Test your GPU" section, the CI jobs and the `benches/RESULTS.md` entry.
 
 P10b (`pc-import` and the `import` C ABI function) is written and tested on the CPU side only, on branch `phase10-model-input`. Nothing ran on MATLAB or Windows, because the owner asked for no local runs on 2026-11-05.
 
