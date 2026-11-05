@@ -860,6 +860,13 @@ dependencies = [
 [[package]]
 name = "pc-ensemble"
 version = "0.0.0"
+dependencies = [
+ "libm",
+ "pc-engine",
+ "pc-ir",
+ "pc-ode",
+ "rayon",
+]
 
 [[package]]
 name = "pc-ffi"

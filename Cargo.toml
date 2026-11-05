@@ -26,3 +26,6 @@ opt-level = 2
 
 [profile.dev.package.pc-engine]
 opt-level = 2
+
+[profile.dev.package.pc-ensemble]
+opt-level = 2
