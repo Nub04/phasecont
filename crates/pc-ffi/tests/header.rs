@@ -52,6 +52,11 @@ fields!(
     version,
     model_rhs_t,
     import,
+    ens_devices,
+    ens_start,
+    ens_poll,
+    ens_copy,
+    ens_cancel,
 );
 
 #[test]
@@ -127,7 +132,7 @@ fn member_names_follow_rust_order() {
 
 #[test]
 fn codes_match() {
-    let codes: [(&str, i32); 9] = [
+    let codes: [(&str, i32); 14] = [
         ("PC_OK", PC_OK),
         ("PC_ERR_PANIC", PC_ERR_PANIC),
         ("PC_ERR_BAD_ARG", PC_ERR_BAD_ARG),
@@ -137,10 +142,31 @@ fn codes_match() {
         ("PC_ERR_BAD_PROBLEM", PC_ERR_BAD_PROBLEM),
         ("PC_ERR_NON_AUTONOMOUS", PC_ERR_NON_AUTONOMOUS),
         ("PC_ERR_NUMERIC", PC_ERR_NUMERIC),
+        ("PC_ERR_GPU_UNAVAILABLE", PC_ERR_GPU_UNAVAILABLE),
+        ("PC_ERR_GPU_COMPILE", PC_ERR_GPU_COMPILE),
+        ("PC_ERR_GPU_LAUNCH", PC_ERR_GPU_LAUNCH),
+        ("PC_ERR_GPU_TIMEOUT", PC_ERR_GPU_TIMEOUT),
+        ("PC_ERR_UNSUPPORTED_MODEL", PC_ERR_UNSUPPORTED_MODEL),
     ];
     for (name, value) in codes {
         assert_eq!(need(name), value as u64, "{name}");
     }
     assert_eq!(need("PC_COPY_POINTS"), 0);
     assert_eq!(need("PC_COPY_SPECIALS"), 1);
+}
+
+#[test]
+fn ensemble_selectors_match() {
+    use pckern::ensemble::*;
+    let selectors: [(&str, u32); 6] = [
+        ("PC_ENS_STATES", PC_ENS_STATES),
+        ("PC_ENS_TIMES", PC_ENS_TIMES),
+        ("PC_ENS_STATUS", PC_ENS_STATUS),
+        ("PC_ENS_T_REACHED", PC_ENS_T_REACHED),
+        ("PC_ENS_ACCEPTED", PC_ENS_ACCEPTED),
+        ("PC_ENS_REJECTED", PC_ENS_REJECTED),
+    ];
+    for (name, value) in selectors {
+        assert_eq!(need(name), value as u64, "{name}");
+    }
 }

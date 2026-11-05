@@ -11,6 +11,7 @@ use std::panic::catch_unwind;
 
 mod api;
 mod barrier;
+pub mod ensemble;
 pub mod error;
 mod import;
 pub mod json;
@@ -21,6 +22,7 @@ mod run;
 mod sha256;
 
 pub use api::{debug_handle, debug_model_panic};
+pub use ensemble::debug_ensemble_panic;
 
 pub const PC_ABI_VERSION: u32 = 1;
 
@@ -78,6 +80,19 @@ pub struct PcApiV1 {
     ) -> i32,
     pub import:
         unsafe extern "C" fn(u32, *const c_char, usize, *const c_char, *mut *mut c_char) -> i32,
+    pub ens_devices: unsafe extern "C" fn(*mut *mut c_char) -> i32,
+    pub ens_start: unsafe extern "C" fn(
+        u64,
+        *const c_char,
+        *const f64,
+        usize,
+        *const f64,
+        usize,
+        *mut u64,
+    ) -> i32,
+    pub ens_poll: unsafe extern "C" fn(u64, *mut *mut c_char) -> i32,
+    pub ens_copy: unsafe extern "C" fn(u64, u32, *mut f64, usize) -> i32,
+    pub ens_cancel: extern "C" fn(u64) -> i32,
 }
 
 static API: PcApiV1 = PcApiV1 {
@@ -99,6 +114,11 @@ static API: PcApiV1 = PcApiV1 {
     version: api::version,
     model_rhs_t: api::model_rhs_t,
     import: api::import,
+    ens_devices: api::ens_devices,
+    ens_start: api::ens_start,
+    ens_poll: api::ens_poll,
+    ens_copy: api::ens_copy,
+    ens_cancel: api::ens_cancel,
 };
 
 /// The only exported symbol. Returns NULL only if a panic was caught.

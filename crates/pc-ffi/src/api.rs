@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use crate::barrier::{
     barrier, bytes_arg, f64_arg, f64_out, into_c_string, out_ptr, ptr_barrier, str_arg,
 };
+use crate::ensemble::{self, EnsHandle};
 use crate::error::{Error, Result, bad_arg};
 use crate::import;
 use crate::json::problem::{Kind, Mode, parse_options, parse_problem};
@@ -472,6 +473,86 @@ pub unsafe extern "C" fn import(
             None => Ok(()),
             Some(message) => Err(Error::Model(message)),
         }
+    })
+}
+
+fn ens_handle(id: u64) -> Result<Arc<EnsHandle>> {
+    registry::get::<EnsHandle>(id)
+}
+
+/// Lists the ensemble backends and their devices as JSON. The caller frees the string.
+///
+/// # Safety
+/// `out_json` must be valid for one pointer write.
+pub unsafe extern "C" fn ens_devices(out_json: *mut *mut c_char) -> i32 {
+    barrier(|| {
+        let slot = unsafe { out_ptr(out_json, "devices_json") }?;
+        *slot = std::ptr::null_mut();
+        *slot = into_c_string(&ensemble::devices()?);
+        Ok(())
+    })
+}
+
+/// Checks an ensemble job and starts it on a worker thread. `x0` holds `nx / n` members, one
+/// after the other, and `params` one set or one per member (the job says which).
+///
+/// # Safety
+/// `job_json` must be NUL-terminated, `x0` and `params` valid for `nx` and `np` reads, and
+/// `out_ens` valid for one `u64` write.
+pub unsafe extern "C" fn ens_start(
+    model: u64,
+    job_json: *const c_char,
+    x0: *const f64,
+    nx: usize,
+    params: *const f64,
+    np: usize,
+    out_ens: *mut u64,
+) -> i32 {
+    barrier(|| {
+        let out_ens = unsafe { out_ptr(out_ens, "ens") }?;
+        *out_ens = 0;
+        let h = model_handle(model)?;
+        let text = unsafe { str_arg(job_json, "job_json") }?;
+        let x0 = unsafe { f64_arg(x0, nx, "x0") }?;
+        let params = unsafe { f64_arg(params, np, "params") }?;
+        *out_ens = ensemble::start(&h, text, x0, params)?;
+        Ok(())
+    })
+}
+
+/// Reports `running`, `cancelled` or `done` as JSON. A run that failed returns its error here.
+///
+/// # Safety
+/// `status_json` must be valid for one pointer write.
+pub unsafe extern "C" fn ens_poll(ens: u64, status_json: *mut *mut c_char) -> i32 {
+    barrier(|| {
+        let slot = unsafe { out_ptr(status_json, "status_json") }?;
+        *slot = std::ptr::null_mut();
+        let h = ens_handle(ens)?;
+        let s = serde_json::to_string(&ensemble::poll(&h)?)
+            .map_err(|e| Error::Internal(format!("status JSON: {e}")))?;
+        *slot = into_c_string(&s);
+        Ok(())
+    })
+}
+
+/// Copies one array of a finished run (`PC_ENS_*`) into `buf`, which must have its exact length.
+///
+/// # Safety
+/// `buf` must be valid for `buf_len` writes.
+pub unsafe extern "C" fn ens_copy(ens: u64, what: u32, buf: *mut f64, buf_len: usize) -> i32 {
+    barrier(|| {
+        let buf = unsafe { f64_out(buf, buf_len, "buf") }?;
+        let h = ens_handle(ens)?;
+        ensemble::copy(&h, what, buf)
+    })
+}
+
+pub extern "C" fn ens_cancel(ens: u64) -> i32 {
+    barrier(|| {
+        let h = ens_handle(ens)?;
+        ensemble::cancel(&h);
+        Ok(())
     })
 }
 

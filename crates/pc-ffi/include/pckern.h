@@ -50,10 +50,26 @@ extern "C" {
 #define PC_ERR_BAD_PROBLEM 6
 #define PC_ERR_NON_AUTONOMOUS 7
 #define PC_ERR_NUMERIC 8        /* singular matrix, Newton failure, step too small */
+#define PC_ERR_GPU_UNAVAILABLE 9 /* no such backend or device, or its library is missing */
+#define PC_ERR_GPU_COMPILE 10   /* the device compiler refused the kernel */
+#define PC_ERR_GPU_LAUNCH 11    /* a launch or a copy to or from the device failed */
+#define PC_ERR_GPU_TIMEOUT 12   /* one launch ran past the time limit */
+#define PC_ERR_UNSUPPORTED_MODEL 13 /* the model uses something a kernel cannot lower */
 
 /* Selectors for the "what" argument of run_copy. */
 #define PC_COPY_POINTS 0
 #define PC_COPY_SPECIALS 1
+
+/* Selectors for the "what" argument of ens_copy. Lengths are exact: states is
+ * members * samples * n values (member, then sample, then state), times is samples
+ * values, and the other four are members values. status holds 0 ok, 1 bounds,
+ * 2 step too small, 3 max steps, 4 not finite. */
+#define PC_ENS_STATES 0
+#define PC_ENS_TIMES 1
+#define PC_ENS_STATUS 2
+#define PC_ENS_T_REACHED 3
+#define PC_ENS_ACCEPTED 4
+#define PC_ENS_REJECTED 5
 
 /*
  * problem_json (run_start): the problem object without "u0" and "params",
@@ -196,6 +212,59 @@ typedef struct pc_api_v1_t {
    * read text and never run it. */
   int32_t (*import)(uint32_t format, const char *bytes, size_t len,
                     const char *opts_json, char **result_json);
+
+  /* Ensemble runs: many trajectories of one model, on the CPU or a GPU. These
+   * five members were appended after import; they change nothing before it. */
+
+  /* Lists every backend and its devices as JSON, for example
+   *   {"backends":[{"backend":"cpu","state":"available"},
+   *                {"backend":"cuda","state":"unavailable","why":"..."},
+   *                {"backend":"metal","state":"not_built"}],
+   *    "devices":[{"backend":"cpu","index":0,"name":"...","driver":"...",
+   *                "fp32":true,"fp64":true,"memory_bytes":0}]}
+   * *out_json is NULL unless set; free it with free_string. */
+  int32_t (*ens_devices)(char **out_json);
+
+  /* Checks an ensemble job and starts it on a worker thread. job_json is
+   *   {"backend":"cpu"|"cuda"|"opencl"|"metal","device":0,
+   *    "precision":"single"|"double","t0":0,"t1":10,
+   *    "method":{"type":"rk4","dt":0.01}
+   *            or {"type":"dp5","rtol":1e-6,"atol":1e-9,"hmax":null},
+   *    "output":"final" or {"samples":[t, ...]},
+   *    "bounds":null or a positive number,"max_steps":100000,
+   *    "params":"shared"|"per_member"}
+   * Every key but "device" is required; nothing is filled in. x0 holds nx / n
+   * states per member, one member after the other, where n is the number of
+   * states. params holds one set of the model's parameters, or one set per
+   * member when "params" is "per_member". A job that is wrong in any way,
+   * including a tolerance that single precision cannot resolve (the message
+   * starts "tolerance too tight"), is PC_ERR_BAD_PROBLEM and nothing starts.
+   * A missing backend or device is PC_ERR_GPU_UNAVAILABLE. *out_ens is 0 unless
+   * set; free the handle with free_handle, which cancels a run that is still
+   * going and waits for its worker. */
+  int32_t (*ens_start)(uint64_t model, const char *job_json, const double *x0,
+                       size_t nx, const double *params, size_t np,
+                       uint64_t *out_ens);
+
+  /* {"state":"running"} or {"state":"cancelled"}, or on a finished run
+   *   {"state":"done","members":M,"n":N,"samples":S,
+   *    "counts":{"ok":0,"bounds":0,"step_too_small":0,"max_steps":0,
+   *              "nonfinite":0},
+   *    "label":{"backend":"cpu","device":"...","driver":"...",
+   *             "precision":"double","single_precision":false}}
+   * A run that failed returns its error code here and *status_json stays NULL:
+   * PC_ERR_PANIC if the worker panicked, or a GPU code. Free the string with
+   * free_string. */
+  int32_t (*ens_poll)(uint64_t ens, char **status_json);
+
+  /* Copies one array of a finished run (PC_ENS_*) into buf. buf_len must be
+   * the exact length. A run that has not finished, or was cancelled, is
+   * PC_ERR_BAD_ARG. */
+  int32_t (*ens_copy)(uint64_t ens, uint32_t what, double *buf, size_t buf_len);
+
+  /* Asks the worker to stop at its next check. Safe to call twice and after the
+   * run ended. The run then polls as cancelled. */
+  int32_t (*ens_cancel)(uint64_t ens);
 } pc_api_v1_t;
 
 #define PC_IMPORT_SBML 1
@@ -208,7 +277,7 @@ typedef struct pc_api_v1_t {
 typedef const pc_api_v1_t *(*pc_api_v1_fn)(void);
 
 /* Layout of pc_api_v1_t on 64-bit targets, in bytes. */
-#define PC_API_V1_SIZE 136
+#define PC_API_V1_SIZE 176
 #define PC_API_V1_OFFSET_ABI_VERSION 0
 #define PC_API_V1_OFFSET_STRUCT_SIZE 4
 #define PC_API_V1_OFFSET_MODEL_FROM_ODE 8
@@ -227,6 +296,11 @@ typedef const pc_api_v1_t *(*pc_api_v1_fn)(void);
 #define PC_API_V1_OFFSET_VERSION 112
 #define PC_API_V1_OFFSET_MODEL_RHS_T 120
 #define PC_API_V1_OFFSET_IMPORT 128
+#define PC_API_V1_OFFSET_ENS_DEVICES 136
+#define PC_API_V1_OFFSET_ENS_START 144
+#define PC_API_V1_OFFSET_ENS_POLL 152
+#define PC_API_V1_OFFSET_ENS_COPY 160
+#define PC_API_V1_OFFSET_ENS_CANCEL 168
 
 #ifndef PCKERN_NO_LAYOUT_CHECK
 /* C89 negative-array checks: _Static_assert needs /std:c11 on MSVC. */
@@ -252,6 +326,11 @@ PC_CHECK_OFFSET(debug_panic, PC_API_V1_OFFSET_DEBUG_PANIC);
 PC_CHECK_OFFSET(version, PC_API_V1_OFFSET_VERSION);
 PC_CHECK_OFFSET(model_rhs_t, PC_API_V1_OFFSET_MODEL_RHS_T);
 PC_CHECK_OFFSET(import, PC_API_V1_OFFSET_IMPORT);
+PC_CHECK_OFFSET(ens_devices, PC_API_V1_OFFSET_ENS_DEVICES);
+PC_CHECK_OFFSET(ens_start, PC_API_V1_OFFSET_ENS_START);
+PC_CHECK_OFFSET(ens_poll, PC_API_V1_OFFSET_ENS_POLL);
+PC_CHECK_OFFSET(ens_copy, PC_API_V1_OFFSET_ENS_COPY);
+PC_CHECK_OFFSET(ens_cancel, PC_API_V1_OFFSET_ENS_CANCEL);
 #endif
 
 #ifdef __cplusplus
