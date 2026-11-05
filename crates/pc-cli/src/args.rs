@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use pc_ensemble::Precision;
 use pc_ensemble::device::Backend;
+use pckern::json::ensemble::precision_from_name;
 
 /// Random points per entry when `--points` is not given.
 pub const DEFAULT_POINTS: usize = 20;
@@ -770,13 +771,6 @@ fn gpu_command(rest: &[OsString]) -> Result<Command, UsageError> {
             "gpu selftest needs --precision (single or double)".to_string(),
         )),
     }
-}
-
-/// `single` or `double`.
-pub fn precision_from_name(name: &str) -> Option<Precision> {
-    [Precision::Single, Precision::Double]
-        .into_iter()
-        .find(|p| p.name() == name)
 }
 
 /// Parses the arguments of `ensemble`: a model and a job file, or `--bench`.

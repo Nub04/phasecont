@@ -6,26 +6,15 @@
 use std::process::ExitCode;
 
 use pc_ensemble::Precision;
-use pc_ensemble::device::{Backend, BackendState, DeviceInfo, list_devices};
+use pc_ensemble::device::{Backend, list_devices};
 use pc_ensemble::selftest::{Report, Selected, SelfTestError, run_selftest};
+use pckern::json::ensemble::devices_json;
 use serde_json::{Value, json};
 
 use crate::out;
 
 /// Exit code when the backend is not built in or has no such device.
 pub const NO_DEVICE: u8 = 3;
-
-pub fn device_json(d: &DeviceInfo) -> Value {
-    json!({
-        "backend": d.backend.name(),
-        "index": d.index,
-        "name": d.name,
-        "driver": d.driver,
-        "fp32": d.fp32,
-        "fp64": d.fp64,
-        "memory_bytes": d.memory_bytes,
-    })
-}
 
 fn to_text(v: &Value) -> String {
     let mut text =
@@ -36,23 +25,7 @@ fn to_text(v: &Value) -> String {
 
 /// `gpu list`: the state of every backend and the devices that can run a job now.
 pub fn list() -> ExitCode {
-    let list = list_devices();
-    let backends: Vec<Value> = list
-        .backends
-        .iter()
-        .map(|(b, state)| match state {
-            BackendState::Available => json!({"backend": b.name(), "state": "available"}),
-            BackendState::NotBuilt => json!({"backend": b.name(), "state": "not_built"}),
-            BackendState::Unavailable(why) => {
-                json!({"backend": b.name(), "state": "unavailable", "why": why})
-            }
-        })
-        .collect();
-    let devices: Vec<Value> = list.devices.iter().map(device_json).collect();
-    out(
-        &to_text(&json!({"backends": backends, "devices": devices})),
-        0,
-    )
+    out(&to_text(&devices_json(&list_devices())), 0)
 }
 
 /// The report as JSON. `commit` is the git commit the binary was built from when the

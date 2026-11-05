@@ -12,33 +12,21 @@ use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
-use pc_ensemble::device::{Backend, DeviceInfo, find_device, list_devices};
+use pc_ensemble::device::{DeviceInfo, find_device, list_devices};
 use pc_ensemble::run::run_on;
 use pc_ensemble::{EnsembleError, EnsembleResult, Job, Method, Output, Params, Precision};
 use pc_ir::IrModel;
-use serde_json::{Map, Value, json};
+use pckern::json::ensemble::{
+    HEAD_KEYS, Head, Parsed, numbers, object, only_keys, parse_head, required, rows,
+};
+use serde_json::{Value, json};
 
-use crate::args::precision_from_name;
 use crate::gpu::NO_DEVICE;
 use crate::ircmd::{Prepared, prepare};
 use crate::out;
 
 /// Exit code for a bad job file.
 const BAD_JOB: u8 = 2;
-
-const KEYS: [&str; 11] = [
-    "backend",
-    "device",
-    "precision",
-    "t0",
-    "t1",
-    "method",
-    "x0",
-    "params",
-    "output",
-    "bounds",
-    "max_steps",
-];
 
 fn to_stderr(text: &str) {
     let _ = std::io::stderr().write_all(text.as_bytes());
@@ -63,114 +51,9 @@ enum ParamsFile {
 /// A job file after the keys and types are checked. The sizes are checked against the
 /// model later.
 struct JobFile {
-    backend: Backend,
-    device: usize,
-    precision: Precision,
-    t0: f64,
-    t1: f64,
-    method: Method,
+    head: Head,
     x0: Vec<Vec<f64>>,
     params: ParamsFile,
-    output: Output,
-    bounds: f64,
-    max_steps: u32,
-}
-
-type Parsed<T> = Result<T, String>;
-
-fn object<'a>(v: &'a Value, key: &str) -> Parsed<&'a Map<String, Value>> {
-    v.as_object()
-        .ok_or_else(|| format!("{key} must be an object"))
-}
-
-fn required<'a>(m: &'a Map<String, Value>, key: &str, path: &str) -> Parsed<&'a Value> {
-    m.get(key).ok_or_else(|| format!("{path}missing key {key}"))
-}
-
-fn only_keys(m: &Map<String, Value>, allowed: &[&str], path: &str) -> Parsed<()> {
-    match m.keys().find(|k| !allowed.contains(&k.as_str())) {
-        Some(k) => Err(format!("{path}unknown key {k}")),
-        None => Ok(()),
-    }
-}
-
-fn number(v: &Value, key: &str) -> Parsed<f64> {
-    v.as_f64()
-        .ok_or_else(|| format!("{key} must be a number, got {v}"))
-}
-
-fn numbers(v: &Value, key: &str) -> Parsed<Vec<f64>> {
-    let items = v
-        .as_array()
-        .ok_or_else(|| format!("{key} must be an array of numbers"))?;
-    items
-        .iter()
-        .enumerate()
-        .map(|(i, x)| number(x, &format!("{key}[{i}]")))
-        .collect()
-}
-
-fn rows(v: &Value, key: &str) -> Parsed<Vec<Vec<f64>>> {
-    let items = v
-        .as_array()
-        .ok_or_else(|| format!("{key} must be an array of arrays of numbers"))?;
-    items
-        .iter()
-        .enumerate()
-        .map(|(i, r)| numbers(r, &format!("{key}[{i}]")))
-        .collect()
-}
-
-fn string<'a>(v: &'a Value, key: &str) -> Parsed<&'a str> {
-    v.as_str()
-        .ok_or_else(|| format!("{key} must be a string, got {v}"))
-}
-
-/// A positive number, or `null` for no limit.
-fn limit(v: &Value, key: &str) -> Parsed<f64> {
-    if v.is_null() {
-        return Ok(f64::INFINITY);
-    }
-    let x = number(v, key)?;
-    if x > 0.0 {
-        Ok(x)
-    } else {
-        Err(format!("{key} must be positive or null, got {x}"))
-    }
-}
-
-fn method(v: &Value) -> Parsed<Method> {
-    let m = object(v, "method")?;
-    let kind = string(required(m, "type", "method: ")?, "method.type")?;
-    let field = |key: &str| required(m, key, "method: ");
-    match kind {
-        "rk4" => {
-            only_keys(m, &["type", "dt"], "method: ")?;
-            let dt = number(field("dt")?, "method.dt")?;
-            if dt > 0.0 && dt.is_finite() {
-                Ok(Method::Rk4 { dt })
-            } else {
-                Err(format!("method.dt must be positive and finite, got {dt}"))
-            }
-        }
-        "dp5" => {
-            only_keys(m, &["type", "rtol", "atol", "hmax"], "method: ")?;
-            let rtol = number(field("rtol")?, "method.rtol")?;
-            let atol = number(field("atol")?, "method.atol")?;
-            let hmax = limit(field("hmax")?, "method.hmax")?;
-            for (name, x) in [("rtol", rtol), ("atol", atol)] {
-                if !(x > 0.0 && x.is_finite()) {
-                    return Err(format!(
-                        "method.{name} must be positive and finite, got {x}"
-                    ));
-                }
-            }
-            Ok(Method::Dp5 { rtol, atol, hmax })
-        }
-        other => Err(format!(
-            "method.type must be rk4 or dp5, got {other}; method is {{\"type\": \"rk4\", \"dt\": X}} or {{\"type\": \"dp5\", \"rtol\": X, \"atol\": X, \"hmax\": X or null}}"
-        )),
-    }
 }
 
 fn params(v: &Value) -> Parsed<ParamsFile> {
@@ -184,59 +67,20 @@ fn params(v: &Value) -> Parsed<ParamsFile> {
     }
 }
 
-fn output(v: &Value) -> Parsed<Output> {
-    match v {
-        Value::String(s) if s == "final" => Ok(Output::Final),
-        Value::Object(m) => {
-            only_keys(m, &["samples"], "output: ")?;
-            let times = numbers(required(m, "samples", "output: ")?, "output.samples")?;
-            Ok(Output::Samples(times))
-        }
-        _ => Err(format!(
-            "output must be \"final\" or {{\"samples\": [t, ..]}}, got {v}"
-        )),
-    }
-}
-
-fn index(v: &Value, key: &str) -> Parsed<usize> {
-    v.as_u64()
-        .and_then(|n| usize::try_from(n).ok())
-        .ok_or_else(|| format!("{key} must be a non-negative integer, got {v}"))
+/// The keys of a job file: the shared head plus the two arrays.
+fn file_keys() -> Vec<&'static str> {
+    let mut keys = HEAD_KEYS.to_vec();
+    keys.extend(["x0", "params"]);
+    keys
 }
 
 fn parse_job(value: &Value) -> Parsed<JobFile> {
     let m = object(value, "the job file")?;
-    only_keys(m, &KEYS, "")?;
-    let get = |key: &str| required(m, key, "");
-    let backend_name = string(get("backend")?, "backend")?;
-    let backend = Backend::from_name(backend_name)
-        .ok_or_else(|| format!("backend must be cpu, cuda, opencl or metal, got {backend_name}"))?;
-    let precision_name = string(get("precision")?, "precision")?;
-    let precision = precision_from_name(precision_name)
-        .ok_or_else(|| format!("precision must be single or double, got {precision_name}"))?;
-    let max_steps = get("max_steps")?
-        .as_u64()
-        .and_then(|n| u32::try_from(n).ok())
-        .filter(|&n| n >= 1)
-        .ok_or_else(|| {
-            format!(
-                "max_steps must be an integer from 1 to {}, got {}",
-                u32::MAX,
-                m["max_steps"]
-            )
-        })?;
+    only_keys(m, &file_keys(), "")?;
     Ok(JobFile {
-        backend,
-        device: m.get("device").map_or(Ok(0), |v| index(v, "device"))?,
-        precision,
-        t0: number(get("t0")?, "t0")?,
-        t1: number(get("t1")?, "t1")?,
-        method: method(get("method")?)?,
-        x0: rows(get("x0")?, "x0")?,
-        params: params(get("params")?)?,
-        output: output(get("output")?)?,
-        bounds: limit(get("bounds")?, "bounds")?,
-        max_steps,
+        head: parse_head(m)?,
+        x0: rows(required(m, "x0", "")?, "x0")?,
+        params: params(required(m, "params", "")?)?,
     })
 }
 
@@ -318,7 +162,7 @@ pub fn ensemble(file: &Path, job_path: &Path) -> ExitCode {
         Ok(v) => v,
         Err(why) => return bad_job(job_path, &why),
     };
-    let device = match find_device(spec.backend, spec.device) {
+    let device = match find_device(spec.head.backend, spec.head.device) {
         Ok(d) => d,
         Err(why) => {
             to_stderr(&format!("pc-cli: {why}\n"));
@@ -334,13 +178,13 @@ pub fn ensemble(file: &Path, job_path: &Path) -> ExitCode {
             ParamsFile::Shared(_) => Params::Shared(&params),
             ParamsFile::PerMember(_) => Params::PerMember(&params),
         },
-        t0: spec.t0,
-        t1: spec.t1,
-        output: spec.output,
-        method: spec.method,
-        bounds: spec.bounds,
-        max_steps: spec.max_steps,
-        precision: spec.precision,
+        t0: spec.head.t0,
+        t1: spec.head.t1,
+        output: spec.head.output,
+        method: spec.head.method,
+        bounds: spec.head.bounds,
+        max_steps: spec.head.max_steps,
+        precision: spec.head.precision,
     };
     match run_on(&device, &job, &AtomicBool::new(false)) {
         Ok(result) => out(&to_text(&result_json(&result)), 0),
