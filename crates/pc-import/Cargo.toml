@@ -1,0 +1,17 @@
+[package]
+name = "pc-import"
+description = "Turns MATLAB function handles, MATLAB function files and SBML into .ode text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pc-ode = { path = "../pc-ode" }
+roxmltree = "0.21.2"
+
+[dev-dependencies]
+pc-engine = { path = "../pc-engine" }
+pc-ir = { path = "../pc-ir" }
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }
