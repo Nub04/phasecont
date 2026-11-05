@@ -164,7 +164,14 @@ P10b (`pc-import` and the `import` C ABI function) is written and tested on the 
 - A refused import returns `PC_ERR_MODEL` and a JSON object with the importer's id (`phasecont:import:<kind>`), so no new error code is needed. Bad arguments return `PC_ERR_BAD_ARG` and leave the slot NULL. Input over 17 MiB is a bad argument. The import runs on an 8 MiB thread under the panic barrier.
 - The gateway has an `import` command (`mex/pckern_gateway.c`). It returns the JSON for a refusal without raising, and MATLAB raises the importer's id from it. The gateway C has not been compiled, because there is no `mex.h` in WSL.
 - Tests: `cargo test -p pc-ffi --test import --test header` gives 14 and 6 passing. The import tests cover both formats, options, every failure kind, bad arguments, NULL pointers, oversize input and deep nesting (20 000 parentheses, 50 000 nested XML tags) without a panic.
-- Not done yet: `Model.fromEquations`, `fromTable`, `fromFunction`, `fromFile` and `phasecont.app.ModelEditor` (MATLAB side), the CellML reader, and MATLAB tests for all of them.
+- Not done yet: the CellML reader.
+
+The MATLAB side of P10 is written and has never run, for the same reason (no MATLAB run on 2026-11-05). SPEC section 11 describes it.
+
+- `Model.fromEquations`, `fromTable`, `fromFunction` and `fromFile` are in `toolbox/+phasecont/Model.m`. The helpers are in `toolbox/+phasecont/+internal/`: `odeText`, `num2ode`, `tableToEquations`, `readSbml`, `importRequest` and `importText`.
+- `phasecont.app.ModelEditor` is the editor app, with tabs for equations, a table and `.ode` text, a diagnostics list, file open for `.ode`, SBML and `.m`, and a button that opens the last good model in the phase plane.
+- Tests: `tests/ModelInputHelperTest.m` (no engine needed), `tests/ModelInputTest.m` (engine) and `tests/ModelEditorTest.m` (app). None has run.
+- Things the first MATLAB run may break on: `uitable` cell data with `[]` in numeric columns, `fileread` with an `Encoding` option, `native2unicode` on odd bytes, the exact id `MATLAB:validators:mustBeMember` that `ModelEditorTest` expects from `selectTab`, and the `uigetfile` and `inputdlg` calls, which no test covers.
 
 P8 (v1.0 packaging and the release workflow, plan approved) was built on branch `phase8-release` and is now on `main`. It was accepted on 2026-11-04, when the tagged `release.yml` run published a `.mltbx` that installs and runs on all three platforms.
 

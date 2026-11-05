@@ -12,6 +12,7 @@ PhaseCont (working name) is a MATLAB toolbox for phase-plane and bifurcation ana
 - Continue LP, H, LPC, PD and NS points in two parameters, and detect the codim-2 points on LP and H curves (CP, BT, ZH, GH, HH).
 - Save a model and its results to a session file, load it again, and replay every run to check the result (`phasecont.Session`, `phasecont.session.replay`).
 - Explore a model in the phase-plane app, with direction field, nullclines, trajectories and equilibria (`phasecont.app.PhasePlane`).
+- Build a model from equation text, a table, a MATLAB function handle, a MATLAB function file or an SBML file, with no `.ode` file (`phasecont.Model.fromEquations`, `fromTable`, `fromFunction`, `fromFile`), or type it into the model editor (`phasecont.app.ModelEditor`).
 
 Users never need a compiler. The engine ships as a prebuilt library, and models are compiled to native code inside the MATLAB process.
 
@@ -69,6 +70,45 @@ lp.Data.coefficient                                % the normal form coefficient
 ```
 
 `continuation` blocks while it runs and polls the engine about every 50 ms. Ctrl+C cancels the run and frees it. It returns a `phasecont.Branch` that holds copies of the data, so it stays valid after the model is deleted. `Type` selects the problem: `"EP"` (the default), `"LC"` from a Hopf point, and `"LP"`, `"H"`, `"LPC"`, `"PD"` or `"NS"` with two free parameters. `help phasecont.continuation` lists the options.
+
+## Models without an `.ode` file
+
+Every route below writes `.ode` text and builds the model from it, so sessions, continuation and the phase-plane app work the same way. Nothing is defaulted: a missing initial value or parameter value raises an error that names it.
+
+Equation text, with the parameters and initial values in structs:
+
+```matlab
+m = phasecont.Model.fromEquations(["x' = y" "dy/dt = -x - c*y"], ...
+        Params=struct(c=0.1), Init=struct(x=1, y=0));
+```
+
+A table (or a struct) per part:
+
+```matlab
+states = table(["x"; "y"], ["y"; "-x - c*y"], [1; 0], VariableNames=["Name" "Rhs" "Init"]);
+params = table("c", 0.1, VariableNames=["Name" "Value"]);
+m = phasecont.Model.fromTable(States=states, Params=params);
+```
+
+A function handle or a function file. PhaseCont reads the text of the handle and never calls it, so only arithmetic, indexing and the usual math functions work. A loop, an `if` or an unknown call raises `phasecont:import:unsupported` with its position:
+
+```matlab
+m = phasecont.Model.fromFunction(@(t, x, p) [x(2); -x(1) - p(1)*x(2)], ...
+        Init=[1; 0], Params=struct(c=0.1));
+m = phasecont.Model.fromFile("pendulum.m", Init=[1; 0], Params=struct(c=0.1));
+```
+
+An SBML file (level 2 or 3: species, parameters, compartments, reactions, rate rules and assignment rules). Events, delays and algebraic rules are refused by name:
+
+```matlab
+m = phasecont.Model.fromFile("decay.xml");
+```
+
+The model editor has a tab for equations, a tab for a table and a tab for `.ode` text. It lists each error with its line and column, opens `.ode`, SBML and `.m` files, and opens the last good model in the phase-plane app:
+
+```matlab
+app = phasecont.app.ModelEditor;
+```
 
 ## Build from source
 
