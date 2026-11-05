@@ -73,6 +73,13 @@ pub enum Command {
     Ensemble { file: PathBuf, job: PathBuf },
     /// Time the ensemble engine on a built-in model.
     EnsembleBench { members: Vec<usize> },
+    /// Render a LaTeX figure or table from a JSON document.
+    Latex {
+        kind: pc_latex::Kind,
+        file: PathBuf,
+        out: Option<PathBuf>,
+        standalone: bool,
+    },
 }
 
 /// Why the command line is not valid. The text is a short usage line for
@@ -93,6 +100,7 @@ usage: pc-cli parse [--json] [--] <file.ode>
        pc-cli ensemble --bench [--members N,N,...]
        pc-cli dll-imports [--] <file.dll>
        pc-cli licenses --target TRIPLE... [--package NAME] --out FILE [--overrides DIR]
+       pc-cli latex pgfplots|table [--standalone] [--out FILE.tex] [--] <input.json>
        pc-cli --help | pc-cli --version";
 
 pub const HELP: &str = "\
@@ -111,6 +119,7 @@ usage:
   pc-cli ensemble --bench [--members N,N,...]
   pc-cli dll-imports <file.dll>
   pc-cli licenses --target TRIPLE... [--package NAME] --out FILE [--overrides DIR]
+  pc-cli latex pgfplots|table [--standalone] [--out FILE.tex] [--] <input.json>
   pc-cli --help
   pc-cli --version
 
@@ -126,6 +135,7 @@ commands:
   ensemble      run many trajectories of one model, or time the engine
   dll-imports   list the DLLs a 64-bit Windows PE file imports and check the allow-list
   licenses      write the license texts of the crates a package links
+  latex         write a pgfplots figure or a booktabs table from a JSON document
 ";
 
 /// Largest relative difference a replay accepts when `--tol` is not given.
@@ -373,6 +383,34 @@ exit codes: 0 the file was written, 1 cargo failed, the package is unknown, a
 crate ships no license file or the file cannot be written, 2 usage error
 ";
 
+pub const LATEX_HELP: &str = "\
+usage: pc-cli latex pgfplots|table [--standalone] [--out FILE.tex] [--] <input.json>
+
+Writes LaTeX for a figure (pgfplots) or a table of special points (booktabs)
+from a JSON document. The document must name `digits`, the number of
+significant digits to print (1 to 17); nothing is filled in for it. A value
+that is null, NaN or infinite is an error that names the series and the point.
+
+pgfplots keys: xlabel, ylabel, digits (required); title, data (\"inline\" or
+\"external\"), basename (required for external), series[] with class (\"stable\" or
+\"unstable\"), x[], y[] and optional name and color (#RRGGBB), marks[] with
+label, x, y. table keys: columns[], rows[] with label, type, values[], digits.
+Unknown keys are errors. See docs/SPEC.md section 13.
+
+Without --out the text goes to stdout, which works for inline data only. With
+external data, --out is required: the data files BASENAME-s1.dat, BASENAME-s2.dat,
+... are written into the folder of the output file.
+
+options:
+  --standalone  write a whole `standalone` document instead of a fragment for \\input
+  --out FILE    write the text to FILE instead of stdout
+  --            the next argument is the input file, even if it starts with `-`
+  -h, --help    print this help
+
+exit codes: 0 the text was written, 1 the document is invalid, a file cannot be
+read or written, or external data has no --out, 2 usage error
+";
+
 pub const EMIT_HELP: &str = "\
 usage: pc-cli emit-c [-o out.c] [--] <file.ode>
 
@@ -421,6 +459,7 @@ where
         "ensemble" => ensemble_command(&args[1..]),
         "dll-imports" => dll_imports_command(&args[1..]),
         "licenses" => licenses_command(&args[1..]),
+        "latex" => latex_command(&args[1..]),
         "-h" | "--help" | "-V" | "--version" => {
             Err(UsageError(format!("unexpected argument after {first}")))
         }
@@ -703,6 +742,53 @@ fn licenses_command(rest: &[OsString]) -> Result<Command, UsageError> {
             overrides,
         }),
         _ => Err(UsageError("licenses needs --target and --out".to_string())),
+    }
+}
+
+/// Parses the arguments of `latex`: a kind, an input file and the flags.
+fn latex_command(rest: &[OsString]) -> Result<Command, UsageError> {
+    let mut it = rest.iter();
+    let kind = match it.next().map(utf8).transpose()? {
+        Some("-h" | "--help") => return Ok(Command::ToolHelp(LATEX_HELP)),
+        Some(name) => pc_latex::Kind::from_name(name).ok_or_else(|| {
+            UsageError(format!(
+                "unknown latex kind {name}, expected pgfplots or table"
+            ))
+        })?,
+        None => {
+            return Err(UsageError(
+                "latex needs a kind: pgfplots or table".to_string(),
+            ));
+        }
+    };
+    let mut file: Option<PathBuf> = None;
+    let mut out: Option<PathBuf> = None;
+    let mut standalone = false;
+    let mut literal = false;
+    while let Some(arg) = it.next() {
+        let text = utf8(arg)?;
+        if literal || !text.starts_with('-') || text == "-" {
+            if file.replace(PathBuf::from(arg)).is_some() {
+                return Err(UsageError(format!("unexpected extra argument {text}")));
+            }
+            continue;
+        }
+        match text {
+            "--" => literal = true,
+            "-h" | "--help" => return Ok(Command::ToolHelp(LATEX_HELP)),
+            "--standalone" => standalone = true,
+            "--out" | "-o" => out = Some(PathBuf::from(value(text, &mut it)?)),
+            other => return Err(UsageError(format!("unknown option {other}"))),
+        }
+    }
+    match file {
+        Some(file) => Ok(Command::Latex {
+            kind,
+            file,
+            out,
+            standalone,
+        }),
+        None => Err(UsageError("latex needs an input file".to_string())),
     }
 }
 
@@ -1356,5 +1442,50 @@ mod tests {
                 json: false
             })
         );
+    }
+
+    #[test]
+    fn latex_command_parses_kind_file_and_flags() {
+        use pc_latex::Kind;
+        let latex = |kind, file: &str, out: Option<&str>, standalone| {
+            Ok(Command::Latex {
+                kind,
+                file: file.into(),
+                out: out.map(Into::into),
+                standalone,
+            })
+        };
+        assert_eq!(
+            p(&["latex", "pgfplots", "f.json"]),
+            latex(Kind::Pgfplots, "f.json", None, false)
+        );
+        assert_eq!(
+            p(&["latex", "table", "--standalone", "--out", "t.tex", "t.json"]),
+            latex(Kind::Table, "t.json", Some("t.tex"), true)
+        );
+        assert_eq!(
+            p(&["latex", "pgfplots", "f.json", "-o", "x.tex"]),
+            latex(Kind::Pgfplots, "f.json", Some("x.tex"), false)
+        );
+        assert_eq!(
+            p(&["latex", "table", "--", "--standalone"]),
+            latex(Kind::Table, "--standalone", None, false)
+        );
+        assert_eq!(p(&["latex", "-h"]), Ok(Command::ToolHelp(LATEX_HELP)));
+        assert_eq!(
+            p(&["latex", "table", "--help"]),
+            Ok(Command::ToolHelp(LATEX_HELP))
+        );
+        for args in [
+            &["latex"][..],
+            &["latex", "figure", "f.json"],
+            &["latex", "pgfplots"],
+            &["latex", "pgfplots", "a.json", "b.json"],
+            &["latex", "pgfplots", "f.json", "--out"],
+            &["latex", "pgfplots", "f.json", "--digits", "4"],
+            &["latex", "pgfplots", "--"],
+        ] {
+            assert!(p(args).is_err(), "{args:?}");
+        }
     }
 }

@@ -974,6 +974,7 @@ dependencies = [
  "pc-ffi",
  "pc-ir",
  "pc-jit",
+ "pc-latex",
  "pc-ode",
  "serde_json",
 ]

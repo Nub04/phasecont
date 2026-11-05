@@ -6,6 +6,7 @@ mod dllimports;
 mod ensemble;
 mod gpu;
 mod ircmd;
+mod latexcmd;
 mod licenses;
 mod pe;
 mod text;
@@ -35,6 +36,12 @@ fn main() -> ExitCode {
             out,
             overrides,
         }) => licenses::licenses(&targets, &package, &out, overrides.as_deref()),
+        Ok(Command::Latex {
+            kind,
+            file,
+            out,
+            standalone,
+        }) => latexcmd::latex(kind, &file, out.as_deref(), standalone),
         Ok(Command::Cont {
             file,
             problem,
