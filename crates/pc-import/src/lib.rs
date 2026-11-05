@@ -8,12 +8,15 @@
 pub mod emit;
 pub mod error;
 pub mod expr;
+pub mod mathml;
 pub mod matlab;
 pub mod names;
+pub mod sbml;
 
 pub use emit::{Imported, OdeModel, State, emit};
 pub use error::{ImportError, Kind, Result};
 pub use matlab::FunctionInput;
+pub use sbml::from_sbml;
 
 /// Translates a MATLAB function handle (the text of `func2str`) or a function file.
 pub fn from_function(input: &FunctionInput<'_>) -> Result<Imported> {
