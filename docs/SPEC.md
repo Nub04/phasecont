@@ -476,15 +476,17 @@ plot(br, Var="x");                                        % stable solid, unstab
 
 ## 13. Later phases (pointers only)
 
-- **GPU ensemble engine** (`pc-ensemble`). Backends:
-  - `cuda`: `cudarc`, driver API plus NVRTC; primary for NVIDIA. Spike S4 compiled and ran an `sm_120` kernel with it on the developer's GPU, inside MATLAB R2026b and in WSL.
-  - `opencl`: the `opencl3` crate; for AMD, Intel, and NVIDIA as a fallback.
-  - `metal`: the `objc2-metal` crate; for every Mac, in `f32`.
-  - `hip`: bindgen bindings loaded with `libloading`; for AMD.
-  - `cpu`: rayon.
-  - Kernels are emitted by `pc-codegen` and compiled at runtime. The engine uses `f64` everywhere. `f32` exists only in GPU ensemble screening, and those results are labeled as single precision and recomputed in `f64` before they feed continuation, normal forms or Floquet multipliers.
+- **GPU ensemble engine** (`pc-ensemble`). One thread runs one trajectory. A kernel advances each trajectory by at most K steps and the host relaunches until all are done, with K sized so one launch takes about 100 ms (the Windows watchdog). A GPU speeds up ensembles only: one run and all continuation stay on the CPU in `f64`. Backends:
+  - `cpu`: rayon; the reference for every other backend, in both precisions.
+  - `cuda`: `cudarc`, driver API plus NVRTC; primary for NVIDIA. Spike S4 compiled and ran an `sm_120` kernel with it on the developer's GPU, inside MATLAB R2026b and in WSL. NVRTC is not bundled, since it is a proprietary NVIDIA binary. The engine looks for it at run time, first MATLAB's own copy and then a CUDA toolkit on the machine. With neither, an NVIDIA GPU runs through `opencl`.
+  - `opencl`: the `opencl3` crate with its `dynamic` feature, so the library is loaded at run time and never linked; for AMD, Intel and NVIDIA. AMD and Intel have no other backend. The kernel uses `f` literals and `-cl-single-precision-constant`, and double precision needs `cl_khr_fp64`.
+  - `metal`: the `objc2-metal` crate, macOS only, `f32` only (MSL has no `double`).
+  - There is no `hip` backend. `hiprtc` is not shipped with consumer AMD drivers.
+  - Kernels are emitted as text for each dialect (C, CUDA C, OpenCL C, MSL) from one shared body and compiled at runtime. The engine uses `f64` everywhere. `f32` exists only in GPU ensemble screening, and those results are labeled as single precision and recomputed in `f64` before they feed continuation, normal forms or Floquet multipliers.
+  - A job has no default precision and no default time span, and a tolerance that single precision cannot resolve (`rtol < 13 * 2^-23`) is an error, not a clamp. Every result carries its backend, device, driver and precision.
   - `cuda` host code calls `is_culib_present` for the driver and NVRTC before any other `cudarc` call, because `cudarc` panics when it cannot load a library. It compiles kernels through the raw NVRTC calls and destroys the program on every path: when a compile fails and reading the program log fails too, `cudarc`'s `compile_ptx_with_opts` panics, and the `Drop` of its program panics again if destroying the program also fails. That second panic aborts the process, which `catch_unwind` cannot stop.
-  - NVRTC contracts `a*b + c` into an FMA by default (`--fmad`, "Default: true" in `/usr/local/cuda-13.4/include/nvrtc.h:960-965`). A test that compares a GPU result with a CPU reference at the level of single ulps rounds each contracted operation once in the reference, and does not get that rounding from `f32::mul_add` on `x86_64-pc-windows-gnu` at the baseline target features.
+  - NVRTC contracts `a*b + c` into an FMA by default (`--fmad`, "Default: true" in `/usr/local/cuda-13.4/include/nvrtc.h:960-965`). Kernels are compiled with `--fmad=false`, and a test that compares a GPU result with a CPU reference at the level of single ulps rounds each operation once in the reference. It does not get that rounding from `f32::mul_add` on `x86_64-pc-windows-gnu` at the baseline target features.
+  - `pc-cli gpu list` prints every backend and device. `pc-cli gpu selftest --backend B --precision P [--device N]` checks closed-form error, determinism and, for a device that is not the CPU, bit-exactness with the CPU backend. It exits 0 on a pass, 1 on a failure and 3 when the backend is not built or the device does not exist, which is never a pass. `pc-cli ensemble MODEL JOB` runs a job file, and `pc-cli ensemble --bench` times it.
 - **LaTeX companion toolbox:** pgfplots figures, tables of special points, a side-by-side editor with a pdf.js preview driving `latexmk` or Tectonic.
 - **VS Code extension:** a TypeScript client plus `pc-lsp` (Rust, `tower-lsp`) that reuses `pc-ode` diagnostics.
 - **Optional external backends:** AUTO-07p and XPPAUT, run as subprocesses the user installs separately.

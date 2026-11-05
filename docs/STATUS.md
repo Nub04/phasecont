@@ -119,6 +119,28 @@ P7a (complete on branch `phase7a-matlab-api`, cut from 390bfb1; merged into `mai
 
 ## In progress
 
+P9 (GPU ensemble engine) and P10 (model input routes and the editor app) have an approved plan. P9 is on branch `phase9-gpu-ensemble` and P10 will be on `phase10-model-input`. The plan approval covers the appended C ABI functions, the MATLAB API additions, the new dependencies and the new hosted CI jobs. It does not cover a push. Nothing in P9 or P10 has run on MATLAB, a GPU or Windows yet.
+
+P9a (core types, CPU backend, kernel text, device list, self-test and the CLI) is committed on `phase9-gpu-ensemble`, with no C ABI change and no MATLAB API change.
+
+- `pc-ensemble` has the job types, a rayon CPU backend in `f32` and `f64` with fixed-step RK4 and adaptive Dormand-Prince 5(4), the C-dialect kernel text with a bit-exact shim test against the CPU backend, `list_devices`, `find_device`, `run_on` and the self-test. `pc-cli gpu list`, `gpu selftest` and `ensemble` (with `--bench`) sit on top of it.
+- Checks at e6f4860: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (no failures) and `cargo deny check` pass. These ran on the CPU backend only.
+- Rulings made while building P9a:
+  - A job has a `nonfinite` status in addition to ok, bounds, step_too_small and max_steps. A member whose state becomes NaN or infinite stops and reports it, and the run still succeeds.
+  - Time runs forward only (`t0 < t1`). Samples are strictly increasing in (t0, t1] and the last one is `t1`.
+  - The RK4 `dt` is a maximum step, and the last step of an interval is shortened to land on it. The Dormand-Prince steps are cut to land on each sample time.
+  - The single-precision unit roundoff is 2^-23. A Dormand-Prince `rtol` below `13 * UROUND` for the job precision is `ToleranceTooTight`, an error and not a clamp.
+  - A NaN error estimate shrinks the step by 5 until the step-size check fails, and the member then reports `nonfinite`.
+  - The ensemble kernels use `libm::pow`, so the CPU backend and the shim agree bit for bit. `emit_c` in `pc-codegen` is not changed.
+  - `refine(i)` (P9d) will run member i again through the CPU backend in `f64`.
+  - The self-test reports `bit_exact: null` for the CPU backend, because it is the reference. A backend that is not built, or a device index that does not exist, gives exit 3 and nothing on stdout, never a pass. A device that refuses a job gives exit 1.
+  - The tier limits of the self-test come from measurements on the CPU backend, with the margins written next to each limit in `selftest.rs`.
+  - `gpu selftest` needs `--backend` and `--precision`. `--device` defaults to 0, and the JSON names the device that ran.
+  - `ensemble --bench` runs both precisions on every device, labels each row and prints its sizes (1000, 10000 and 100000 members unless `--members` says otherwise). A device without double precision gets a `skipped` row.
+  - The job file needs every key except `device`. `bounds` is a positive number, or `null` for no limit. Unknown keys are errors and each error names its key.
+  - The self-test JSON has a `commit` field that is the value of `PC_GIT_COMMIT` at build time, or `null`. There is no `build.rs`.
+- Not done yet: CUDA (P9b), OpenCL (P9c), the C ABI and MATLAB API (P9d, which asks before any default tolerance), Metal (P9e), the README "Test your GPU" section, the CI jobs, the `dllimports` check for `nvcuda`, `nvrtc` and `OpenCL`, and the `benches/RESULTS.md` entry.
+
 P8 (v1.0 packaging and the release workflow, plan approved) was built on branch `phase8-release` and is now on `main`. It was accepted on 2026-11-04, when the tagged `release.yml` run published a `.mltbx` that installs and runs on all three platforms.
 
 - 1ec01ec: `pc-cli licenses` takes several `--target` triples, so one file covers win64, glnxa64 and maca64.
