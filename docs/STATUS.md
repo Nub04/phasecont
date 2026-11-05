@@ -119,7 +119,12 @@ P7a (complete on branch `phase7a-matlab-api`, cut from 390bfb1; merged into `mai
 
 ## In progress
 
-P11 (VS Code extension and language server) is on branch `phase11-vscode-lsp`, approved with P12 on 2026-11-05. The plan is in SPEC section 13. Nothing is pushed.
+P11 (VS Code extension and language server) was merged into `main` locally on 2026-11-05 (9ace6ef). P12 (LaTeX companion) is on branch `phase12-latex`, approved with P11. The plan is in SPEC section 13. Nothing is pushed.
+
+P12a (`crates/pc-latex` and `pc-cli latex`): no C ABI change and no MATLAB API change yet. The crate has no new third-party dependency (`serde_json` and `proptest` were already in the tree). The `standalone` JSON key and the CLI flag go beyond the approved option list and are reported to the owner.
+
+- Tests: `pc-latex` has unit and `proptest` tests, 12 error tests, 7 golden tests and 3 compile tests. The compile tests ran against TeX Live 2026 `latexmk` with `PC_REQUIRE_LATEX=1`. `pc-cli` has 9 integration tests for `latex` and a parser test.
+- Not run: the MATLAB side, the C ABI function, the gateway command and `LatexStudio` are P12b and P12c.
 
 P11a (`crates/pc-lsp`, commits 5be3cff and e9c5cc5): no C ABI change, no MATLAB API change. New direct dependencies: `lsp-server` 0.10.0, `lsp-types` 0.97.0 and `serde_json` (already in the tree), all with licences on the allowed list.
 
