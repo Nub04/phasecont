@@ -1,0 +1,9 @@
+{
+  "columns": ["I_ext", "x", "y"],
+  "digits": 5,
+  "rows": [
+    { "label": "HB1", "type": "Hopf", "values": [1.25, -0.5, 0.0000123456] },
+    { "label": "LP_2", "type": "Limit point", "values": [3.5, 100000, 1234567] },
+    { "label": "BP#3", "type": "Branch point & more", "values": [-0.0, 0.1, 0.25] }
+  ]
+}

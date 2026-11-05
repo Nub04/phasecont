@@ -1068,6 +1068,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pc-latex"
+version = "0.0.0"
+dependencies = [
+ "proptest",
+ "serde_json",
+]
+
+[[package]]
 name = "pc-linalg"
 version = "0.0.0"
 dependencies = [

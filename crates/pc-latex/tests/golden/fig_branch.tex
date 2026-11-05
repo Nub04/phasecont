@@ -1,0 +1,29 @@
+% PhaseCont figure. Needs \usepackage{pgfplots} and \pgfplotsset{compat=1.18}.
+\begin{tikzpicture}
+\begin{axis}[
+  xlabel={I\_ext},
+  ylabel={max x},
+  title={Branch of equilibria},
+]
+\addplot+[mark=none, color={rgb,255:red,31;green,119;blue,180}] coordinates {
+  (0,-1)
+  (0.5,-0.5)
+  (1.25,0.125)
+};
+\addlegendentry{stable}
+\addplot+[mark=none, dashed, color={rgb,255:red,31;green,119;blue,180}] coordinates {
+  (1.25,0.125)
+  (2,1e-7)
+  (3.5,1.23457e8)
+};
+\addlegendentry{unstable}
+\addplot+[mark=none, forget plot] coordinates {
+  (0,2)
+  (1,2)
+};
+\addplot[only marks, mark=*, forget plot] coordinates {(1.25,0.125)};
+\node[above right] at (axis cs:1.25,0.125) {HB1};
+\addplot[only marks, mark=*, forget plot] coordinates {(3.5,1.23457e8)};
+\node[above right] at (axis cs:3.5,1.23457e8) {LP\_2};
+\end{axis}
+\end{tikzpicture}

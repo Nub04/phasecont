@@ -1,0 +1,31 @@
+{
+  "xlabel": "I_ext",
+  "ylabel": "max x",
+  "title": "Branch of equilibria",
+  "digits": 6,
+  "series": [
+    {
+      "name": "stable",
+      "class": "stable",
+      "color": "#1F77B4",
+      "x": [0, 0.5, 1.25],
+      "y": [-1, -0.5, 0.125]
+    },
+    {
+      "name": "unstable",
+      "class": "unstable",
+      "color": "#1F77B4",
+      "x": [1.25, 2, 3.5],
+      "y": [0.125, 1.0e-7, 123456789]
+    },
+    {
+      "class": "stable",
+      "x": [0, 1],
+      "y": [2, 2]
+    }
+  ],
+  "marks": [
+    { "label": "HB1", "type": "Hopf", "x": 1.25, "y": 0.125 },
+    { "label": "LP_2", "type": "LP", "x": 3.5, "y": 123456789 }
+  ]
+}

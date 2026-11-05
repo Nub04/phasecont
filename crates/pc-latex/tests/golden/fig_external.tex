@@ -1,0 +1,14 @@
+% PhaseCont figure. Needs \usepackage{pgfplots} and \pgfplotsset{compat=1.18}.
+% Data files: fold-curve-s1.dat, fold-curve-s2.dat (keep them next to the document that reads this file).
+\begin{tikzpicture}
+\begin{axis}[
+  xlabel={a},
+  ylabel={x},
+]
+\addplot+[mark=none] table[x=x, y=y] {fold-curve-s1.dat};
+\addlegendentry{fold}
+\addplot+[mark=none, dashed, forget plot] table[x=x, y=y] {fold-curve-s2.dat};
+\addplot[only marks, mark=*, forget plot] coordinates {(0.3,9)};
+\node[above right] at (axis cs:0.3,9) {CP};
+\end{axis}
+\end{tikzpicture}
