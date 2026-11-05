@@ -38,7 +38,7 @@ use pc_codegen::kernel::{Dialect, Scalar};
 
 use crate::abi::{Packed, integrator_of, pack};
 use crate::device::{Backend, BackendState, DeviceInfo};
-use crate::gpu::{drive, guard, kernel_err};
+use crate::gpu::{check_alloc, drive, global_size, guard, kernel_err};
 use crate::job::{Checked, EnsembleError, EnsembleResult, Job, Label, Precision, validate};
 use crate::kernel::kernel_source;
 use crate::real::Real;
@@ -241,42 +241,6 @@ fn build_options(correct_div: bool) -> String {
         o.push_str(" -cl-fp32-correctly-rounded-divide-sqrt");
     }
     o
-}
-
-/// The global size of a launch: `members` rounded up to a whole number of groups.
-fn global_size(members: usize, group: usize) -> usize {
-    members.div_ceil(group) * group
-}
-
-/// Checks the buffers of a run against what the device allows.
-///
-/// `buffers` are the buffer names and byte sizes. A single buffer above `max_alloc`, or a
-/// total above `memory`, is an error that says how to shrink the run.
-fn check_alloc(
-    buffers: &[(&str, u64)],
-    max_alloc: u64,
-    memory: Option<u64>,
-) -> Result<(), EnsembleError> {
-    if let Some(&(name, bytes)) = buffers
-        .iter()
-        .filter(|(_, b)| max_alloc > 0 && *b > max_alloc)
-        .max_by_key(|(_, b)| *b)
-    {
-        return Err(EnsembleError::BadJob(format!(
-            "the {name} buffer needs {bytes} bytes and the device allows {max_alloc} in one \
-             buffer: run fewer members at a time"
-        )));
-    }
-    let total: u64 = buffers.iter().map(|(_, b)| *b).sum();
-    if let Some(mem) = memory
-        && total > mem
-    {
-        return Err(EnsembleError::BadJob(format!(
-            "the run needs {total} bytes on the device, which has {mem}: run fewer members at a \
-             time"
-        )));
-    }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------
@@ -540,15 +504,6 @@ mod tests {
     }
 
     #[test]
-    fn the_global_size_covers_every_member_in_whole_groups() {
-        assert_eq!(global_size(1, 64), 64);
-        assert_eq!(global_size(64, 64), 64);
-        assert_eq!(global_size(65, 64), 128);
-        assert_eq!(global_size(1000, 32), 1024);
-        assert_eq!(global_size(7, 1), 7);
-    }
-
-    #[test]
     fn a_slow_out_of_resources_is_a_timeout_and_a_fast_one_is_not() {
         let e = ClError(CL_OUT_OF_RESOURCES);
         let slow = launch_error("synchronize", &e, Duration::from_secs(2));
@@ -565,32 +520,6 @@ mod tests {
         let text = cl_text("copy rc to device", &ClError(CL_OUT_OF_RESOURCES));
         assert!(text.starts_with("copy rc to device: "));
         assert!(text.contains(&format!("({CL_OUT_OF_RESOURCES})")));
-    }
-
-    #[test]
-    fn a_buffer_above_the_device_limit_is_named() {
-        let e = check_alloc(&[("rc", 100), ("out", 5000), ("work", 900)], 1000, None).unwrap_err();
-        let EnsembleError::BadJob(m) = e else {
-            panic!("expected BadJob");
-        };
-        assert!(
-            m.contains("out") && m.contains("5000") && m.contains("1000"),
-            "{m}"
-        );
-    }
-
-    #[test]
-    fn a_run_above_the_device_memory_is_an_error() {
-        let buffers = [("rc", 400), ("out", 400), ("work", 400)];
-        // Each buffer fits, the sum does not.
-        let e = check_alloc(&buffers, 500, Some(1000)).unwrap_err();
-        assert!(
-            matches!(&e, EnsembleError::BadJob(m) if m.contains("1200")),
-            "{e}"
-        );
-        assert!(check_alloc(&buffers, 500, Some(1200)).is_ok());
-        // A device that reports no limit passes.
-        assert!(check_alloc(&buffers, 0, None).is_ok());
     }
 
     #[test]

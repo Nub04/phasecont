@@ -116,11 +116,83 @@ pub fn drive(
     }
 }
 
+/// The global size of a launch: `members` rounded up to a whole number of groups.
+pub fn global_size(members: usize, group: usize) -> usize {
+    members.div_ceil(group) * group
+}
+
+/// Checks the buffers of a run against what the device allows.
+///
+/// `buffers` are the buffer names and byte sizes. A single buffer above `max_alloc`, or a
+/// total above `memory`, is an error that says how to shrink the run. A `max_alloc` of 0 means
+/// the driver gave no per-buffer limit.
+pub fn check_alloc(
+    buffers: &[(&str, u64)],
+    max_alloc: u64,
+    memory: Option<u64>,
+) -> Result<(), EnsembleError> {
+    if let Some(&(name, bytes)) = buffers
+        .iter()
+        .filter(|(_, b)| max_alloc > 0 && *b > max_alloc)
+        .max_by_key(|(_, b)| *b)
+    {
+        return Err(EnsembleError::BadJob(format!(
+            "the {name} buffer needs {bytes} bytes and the device allows {max_alloc} in one \
+             buffer: run fewer members at a time"
+        )));
+    }
+    let total: u64 = buffers.iter().map(|(_, b)| *b).sum();
+    if let Some(mem) = memory
+        && total > mem
+    {
+        return Err(EnsembleError::BadJob(format!(
+            "the run needs {total} bytes on the device, which has {mem}: run fewer members at a \
+             time"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::job::Status;
     use crate::kernel::CTL;
+
+    #[test]
+    fn the_global_size_covers_every_member_in_whole_groups() {
+        assert_eq!(global_size(1, 64), 64);
+        assert_eq!(global_size(64, 64), 64);
+        assert_eq!(global_size(65, 64), 128);
+        assert_eq!(global_size(1000, 32), 1024);
+        assert_eq!(global_size(7, 1), 7);
+    }
+
+    #[test]
+    fn a_buffer_above_the_device_limit_is_named() {
+        let e = check_alloc(&[("rc", 100), ("out", 5000), ("work", 900)], 1000, None).unwrap_err();
+        let EnsembleError::BadJob(m) = e else {
+            panic!("expected BadJob");
+        };
+        assert!(
+            m.contains("out") && m.contains("5000") && m.contains("1000"),
+            "{m}"
+        );
+    }
+
+    #[test]
+    fn a_run_above_the_device_memory_is_an_error() {
+        let buffers = [("rc", 400), ("out", 400), ("work", 400)];
+        // Each buffer fits, the sum does not.
+        let e = check_alloc(&buffers, 500, Some(1000)).unwrap_err();
+        assert!(
+            matches!(&e, EnsembleError::BadJob(m) if m.contains("1200")),
+            "{e}"
+        );
+        assert!(check_alloc(&buffers, 500, Some(1200)).is_ok());
+        // A device that reports no limit passes.
+        assert!(check_alloc(&buffers, 0, None).is_ok());
+    }
 
     fn words(members: usize, status: Status, count: u32) -> Vec<u32> {
         let mut c = vec![0; members * CTL];
