@@ -333,3 +333,53 @@ fn zero_steps_per_launch_is_refused() {
         Err(EnsembleError::BadJob(_))
     ));
 }
+
+#[test]
+fn an_rk4_interval_with_too_many_steps_is_refused() {
+    use pc_ensemble::job::validate;
+    let m = build_model(DECAY);
+    // Single precision counts steps exactly only up to 2^24.
+    let at_cap = job(
+        &m,
+        1,
+        &[1.0],
+        &[1.0],
+        16_777_216.0,
+        Method::Rk4 { dt: 1.0 },
+        Precision::Single,
+    );
+    assert!(validate(&at_cap).is_ok());
+    let over = job(
+        &m,
+        1,
+        &[1.0],
+        &[1.0],
+        1.0,
+        Method::Rk4 { dt: 5e-8 },
+        Precision::Single,
+    );
+    assert!(bad(validate(&over).unwrap_err()).contains("step limit"));
+    // Double precision counts steps in 32 bits.
+    let over = job(
+        &m,
+        1,
+        &[1.0],
+        &[1.0],
+        1.0,
+        Method::Rk4 { dt: 1e-10 },
+        Precision::Double,
+    );
+    assert!(bad(validate(&over).unwrap_err()).contains("step limit"));
+    // The limit is per sample interval, so several short intervals pass.
+    let mut j = job(
+        &m,
+        1,
+        &[1.0],
+        &[1.0],
+        2.0,
+        Method::Rk4 { dt: 1e-8 },
+        Precision::Double,
+    );
+    j.output = Output::Samples(vec![1.0, 2.0]);
+    assert!(validate(&j).is_ok());
+}

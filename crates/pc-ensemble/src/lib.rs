@@ -1,7 +1,9 @@
 //! CPU and GPU ensemble integrators.
 
+pub mod abi;
 pub mod cpu;
 pub mod job;
+pub mod kernel;
 pub mod real;
 pub mod tape;
 pub mod traj;

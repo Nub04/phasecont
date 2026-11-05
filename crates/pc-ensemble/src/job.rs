@@ -107,6 +107,19 @@ impl Status {
     pub fn code(self) -> u8 {
         self as u8
     }
+
+    /// The status of a code written by a kernel, `None` for a code no status has.
+    pub fn from_code(code: u32) -> Option<Status> {
+        match code {
+            0 => Some(Status::Ok),
+            1 => Some(Status::Bounds),
+            2 => Some(Status::StepTooSmall),
+            3 => Some(Status::MaxSteps),
+            4 => Some(Status::NonFinite),
+            5 => Some(Status::Running),
+            _ => None,
+        }
+    }
 }
 
 /// Where and how a result was computed.
@@ -268,6 +281,23 @@ pub fn validate(job: &Job) -> Result<Checked, EnsembleError> {
         Method::Rk4 { dt } => {
             if !(dt.is_finite() && dt > 0.0) {
                 return bad(format!("dt must be positive and finite, got {dt}"));
+            }
+            // The step counters of a kernel are 32 bit, and in single precision the step
+            // index is exact only up to 2^24.
+            let cap = match job.precision {
+                Precision::Single => 16_777_216.0,
+                Precision::Double => f64::from(u32::MAX),
+            };
+            let mut a = job.t0;
+            for &b in &times {
+                let m = ((b - a) / dt).ceil().max(1.0);
+                if m > cap || m.is_nan() {
+                    return bad(format!(
+                        "dt {dt:e} needs {m:e} steps between {a} and {b}, over the step limit of {cap:e} per sample interval in {} precision",
+                        job.precision.name()
+                    ));
+                }
+                a = b;
             }
         }
         Method::Dp5 { rtol, atol, hmax } => {

@@ -2,6 +2,8 @@
 
 #![allow(dead_code)]
 
+pub mod shim;
+
 use std::sync::atomic::AtomicBool;
 
 use pc_engine::{Evaluator, ModelEval};
