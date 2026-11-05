@@ -159,6 +159,56 @@ The ensemble engine has backends for the CPU, for CUDA (NVIDIA, through NVRTC), 
 
 If you have an AMD or Apple GPU, the most useful report is the JSON that `pc-cli gpu selftest --backend opencl --precision single` prints (`--backend metal` on a Mac), together with the output of `pc-cli gpu list`. Please attach both to an issue. AMD runs through OpenCL, and nobody has run it on AMD hardware yet. Nobody has run the Metal backend on a Mac yet either.
 
+## LaTeX figures and tables
+
+PhaseCont writes a branch as a pgfplots figure and its special points as a booktabs table. The text comes from the engine, so the same branch always gives the same LaTeX. To compile a document you need `latexmk` from TeX Live or MiKTeX. PhaseCont does not ship a TeX distribution and has not been tested with MiKTeX.
+
+Your document needs these lines in its preamble:
+
+```latex
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usepackage{booktabs}
+```
+
+Build a figure from a branch, then render it. `Digits` counts significant digits, from 1 to 17, and has no default, so the call raises `phasecont:latex:missingDigits` without it:
+
+```matlab
+fig = phasecont.latex.figureFromBranch(br, Var = "x", Title = "Equilibria");
+r = phasecont.latex.pgfplots(fig, Digits = 6, Folder = "paper");
+```
+
+`r.Tex` holds the text and `paper/figure.tex` holds the same text, ready for `\input{figure}`. Stable runs are solid, unstable runs are dashed and each special point has a mark and a label. The points are written into the `.tex` file. Pass `Data = "external"` to write one `.dat` table per series next to it instead. Edit the fields of `fig` (`XLabel`, `YLabel`, `Title`) before you render to rename the axes.
+
+The special points of a branch come out as a table the same way:
+
+```matlab
+t = phasecont.latex.specialTable(br, Digits = 4, Folder = "paper");
+```
+
+Both calls take `Standalone = true`, which adds a preamble so the file compiles on its own. To compile it, pass the text to `build`:
+
+```matlab
+r = phasecont.latex.pgfplots(fig, Digits = 6, Standalone = true);
+b = phasecont.latex.build(r.Tex, Files = r.Files);
+```
+
+`b.Ok` is true when a PDF came out, `b.Pdf` is its path, and `b.Errors` lists each TeX error with its line. A TeX error does not raise, and a missing `latexmk` raises `phasecont:latex:engineNotFound`. `build` writes the document to a new folder under `tempdir`, runs `latexmk` there with shell escape off, and leaves the folder in place. It sets no time limit.
+
+The editor opens with:
+
+```matlab
+app = phasecont.app.LatexStudio;
+```
+
+Type or open a `.tex` file, enter `Digits`, pick a branch variable from the workspace and press Insert figure or Insert table. Compile runs `latexmk` and lists the errors. Selecting one shows the lines around it with the error line marked. Open PDF hands the file to your system viewer. The window does not respond while a compile runs.
+
+The command line renders the same text from a JSON file. The format is in `docs/SPEC.md`, section 13:
+
+```sh
+cargo run -p pc-cli -- latex pgfplots figure.json --standalone --out figure.tex
+```
+
 ## Build from source
 
 You need this only to change PhaseCont itself.
