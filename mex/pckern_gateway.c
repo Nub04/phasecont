@@ -29,6 +29,8 @@
  *   status = pckern("ens_poll", e)         JSON; a run that failed raises its error
  *   v = pckern("ens_copy", e, what, count) count-by-1 double, what is PC_ENS_*
  *   pckern("ens_cancel", e)
+ *   json = pckern("latex", kind, doc)      kind "pgfplots" or "table", doc is JSON text;
+ *                                          json holds ok, tex and data_files, or the error
  *   pckern("free", h)                      also frees an ensemble handle
  *
  * Only this thread (the MATLAB thread) calls mx* and mex* functions. The
@@ -584,6 +586,36 @@ static void cmd_import(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[
     plhs[0] = take_rust_string(json);
 }
 
+/* pckern("latex", "pgfplots"|"table", docJson) -> resultJson.
+ * A document the renderer rejects (PC_ERR_BAD_PROBLEM) is not raised here. The
+ * JSON holds ok=false and the error id, kind and message, and the MATLAB caller
+ * raises phasecont:latex:<kind> from it. Any other failure is raised here. */
+static void cmd_latex(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
+{
+    char *kind_name, *doc, *json = NULL;
+    uint32_t kind = 0;
+    int32_t rc;
+    need_args(nrhs, 3, 3, "latex");
+    need_outs(nlhs, 1, "latex");
+    kind_name = get_text(prhs[1], "the latex kind");
+    if (strcmp(kind_name, "pgfplots") == 0)
+        kind = PC_LATEX_PGFPLOTS;
+    else if (strcmp(kind_name, "table") == 0)
+        kind = PC_LATEX_TABLE;
+    else
+        fail("phasecont:engine:badArg", "latex kind must be \"pgfplots\" or \"table\", got \"%s\"",
+             kind_name);
+    mxFree(kind_name);
+    doc = get_text(prhs[2], "the latex document");
+    rc = g_api->latex_render(kind, doc, &json);
+    mxFree(doc);
+    if (rc != PC_OK && rc != PC_ERR_BAD_PROBLEM) {
+        g_api->free_string(json);
+        check(rc);
+    }
+    plhs[0] = take_rust_string(json);
+}
+
 static void cmd_model_compile(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 {
     uint64_t m;
@@ -880,6 +912,7 @@ static const struct {
     {"model_rhs_batch", cmd_model_rhs_batch},
     {"model_equilibrium", cmd_model_equilibrium},
     {"import", cmd_import},
+    {"latex", cmd_latex},
     {"run_start", cmd_run_start},
     {"run_poll", cmd_run_poll},
     {"run_copy", cmd_run_copy},
