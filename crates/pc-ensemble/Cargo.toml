@@ -19,5 +19,11 @@ pc-ir = { path = "../pc-ir" }
 pc-ode = { path = "../pc-ode" }
 rayon = "1.11"
 
+# Metal, on macOS only. Metal.framework is linked by objc2-metal; there is no other route.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6.5", default-features = false, features = ["std"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSError", "NSObject", "NSProcessInfo", "NSString"] }
+objc2-metal = { version = "0.3.2", default-features = false, features = ["std", "MTLBuffer", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLComputeCommandEncoder", "MTLComputePipeline", "MTLDevice", "MTLLibrary", "MTLResource", "MTLTypes"] }
+
 [dev-dependencies]
 pc-engine = { path = "../pc-engine" }
