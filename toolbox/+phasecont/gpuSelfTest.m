@@ -7,7 +7,7 @@ function s = gpuSelfTest(options)
 %
 %   Options
 %     Precision   "single" or "double". Required; it has no default.
-%     Backend     "auto" (default), "cpu", "cuda" or "opencl"
+%     Backend     "auto" (default), "cpu", "cuda", "opencl" or "metal"
 %     Device      index within the backend, counting from 0 (default 0)
 %
 %   Checks

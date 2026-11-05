@@ -1,9 +1,9 @@
 function [devices, backends] = gpuDevices()
 %GPUDEVICES List the devices that can run an ensemble.
 %   DEVICES = phasecont.gpuDevices() returns a table with one row per device
-%   the engine found: the CPU, and every CUDA and OpenCL device. The columns
+%   the engine found: the CPU, and every CUDA, OpenCL and Metal device. The columns
 %   are
-%     Backend    "cpu", "cuda" or "opencl"
+%     Backend    "cpu", "cuda", "opencl" or "metal"
 %     Index      position among the devices of that backend, counting from 0.
 %                This is the value of the Device option of phasecont.ensemble
 %                and the --device value of pc-cli

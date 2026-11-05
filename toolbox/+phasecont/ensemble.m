@@ -29,9 +29,10 @@ function r = ensemble(m, x0, p, tspan, options)
 %   phasecont:ensemble:toleranceTooTight. It is never changed for you.
 %
 %   Other name-value options
-%     Backend     "auto" (default), "cpu", "cuda" or "opencl". "auto" takes
-%                 the first of CUDA, OpenCL and then the CPU that has a
-%                 device for the Precision. R.Label says which one ran.
+%     Backend     "auto" (default), "cpu", "cuda", "opencl" or "metal".
+%                 "auto" takes the first of CUDA, OpenCL, Metal and then the
+%                 CPU that has a device for the Precision. R.Label says
+%                 which one ran.
 %     Device      index of the device within its backend, counting from 0, as
 %                 in phasecont.gpuDevices (default 0). Not with "auto".
 %     Hmax        largest step length for Rtol/Atol, positive; Inf means no
