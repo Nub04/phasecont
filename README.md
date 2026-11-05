@@ -110,6 +110,55 @@ The model editor has a tab for equations, a tab for a table and a tab for `.ode`
 app = phasecont.app.ModelEditor;
 ```
 
+## Test your GPU
+
+An ensemble runs many trajectories of one model at once, for a grid of start states or parameter sets. It does not speed up a single run or a continuation. Those stay on the CPU in double precision.
+
+The ensemble engine has backends for the CPU, for CUDA (NVIDIA, through NVRTC) and for OpenCL (NVIDIA, AMD and Intel). A Metal backend for Apple GPUs is not built yet. No GPU backend has run on a GPU so far. The code is tested on the CPU only, so a GPU run is the first real check. Run these in order:
+
+1. List what the engine finds:
+
+   ```matlab
+   [devices, backends] = phasecont.gpuDevices()
+   ```
+
+   `devices` has one row per device, and `backends` says why a backend is unavailable (for example no driver, or no NVRTC for CUDA). A missing library only changes that backend's state. CUDA needs NVRTC, which MATLAB ships and a CUDA toolkit also provides. Without it, an NVIDIA GPU runs through OpenCL.
+
+2. Run the self-test on one device. It compares small ensembles with closed-form solutions and checks that a repeated run and a smaller run give the same numbers. `Precision` has no default:
+
+   ```matlab
+   s = phasecont.gpuSelfTest(Backend="opencl", Device=0, Precision="single")
+   s.Checks
+   ```
+
+   `s.Pass` is true when all four checks pass. The thresholds are the test's own and not a general accuracy claim.
+
+3. Run an ensemble and check a member in double precision. A single-precision result is labeled and is for screening. `refine` runs members again on the CPU in double precision, and only that result may feed continuation:
+
+   ```matlab
+   r = phasecont.ensemble(m, X0, [], [0 50], Backend="auto", Precision="single", ...
+           Rtol=1e-4, Atol=1e-6);
+   r.Label
+   f64 = r.refine(3);
+   ```
+
+4. From a shell, the command line tool gives the same answers and runs the full tiers. It exits with 0 on a pass, 1 on a failure and 3 when the backend or device does not exist (which is not a pass):
+
+   ```sh
+   target/debug/pc-cli gpu list
+   target/debug/pc-cli gpu selftest --backend opencl --device 0 --precision single
+   target/debug/pc-cli ensemble --bench
+   ```
+
+5. Run the test suites so that a missing GPU fails instead of skipping. Without the variable, a GPU test with no device prints `SKIPPED: no <backend> device` and passes:
+
+   ```sh
+   PC_REQUIRE_GPU=cuda,opencl cargo test -p pc-ensemble
+   PC_REQUIRE_GPU=cuda,opencl scripts/matlab-win "buildtool test"
+   ```
+
+If you have an AMD or Apple GPU, the most useful report is the JSON that `pc-cli gpu selftest --backend opencl --precision single` prints, together with the output of `pc-cli gpu list`. Please attach both to an issue. AMD runs through OpenCL, and nobody has run it on AMD hardware yet.
+
 ## Build from source
 
 You need this only to change PhaseCont itself.
