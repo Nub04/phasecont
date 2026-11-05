@@ -114,7 +114,7 @@ app = phasecont.app.ModelEditor;
 
 An ensemble runs many trajectories of one model at once, for a grid of start states or parameter sets. It does not speed up a single run or a continuation. Those stay on the CPU in double precision.
 
-The ensemble engine has backends for the CPU, for CUDA (NVIDIA, through NVRTC) and for OpenCL (NVIDIA, AMD and Intel). A Metal backend for Apple GPUs is not built yet. No GPU backend has run on a GPU so far. The code is tested on the CPU only, so a GPU run is the first real check. Run these in order:
+The ensemble engine has backends for the CPU, for CUDA (NVIDIA, through NVRTC), for OpenCL (NVIDIA, AMD and Intel) and for Metal (Apple GPUs, single precision only). No GPU backend has run on a GPU so far. The code is tested on the CPU only, and the Metal host code has been type-checked for macOS but never run, so a GPU run is the first real check. Run these in order:
 
 1. List what the engine finds:
 
@@ -157,7 +157,7 @@ The ensemble engine has backends for the CPU, for CUDA (NVIDIA, through NVRTC) a
    PC_REQUIRE_GPU=cuda,opencl scripts/matlab-win "buildtool test"
    ```
 
-If you have an AMD or Apple GPU, the most useful report is the JSON that `pc-cli gpu selftest --backend opencl --precision single` prints, together with the output of `pc-cli gpu list`. Please attach both to an issue. AMD runs through OpenCL, and nobody has run it on AMD hardware yet.
+If you have an AMD or Apple GPU, the most useful report is the JSON that `pc-cli gpu selftest --backend opencl --precision single` prints (`--backend metal` on a Mac), together with the output of `pc-cli gpu list`. Please attach both to an issue. AMD runs through OpenCL, and nobody has run it on AMD hardware yet. Nobody has run the Metal backend on a Mac yet either.
 
 ## Build from source
 

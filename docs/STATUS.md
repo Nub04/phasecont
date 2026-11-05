@@ -139,7 +139,7 @@ P9a (core types, CPU backend, kernel text, device list, self-test and the CLI) i
   - `ensemble --bench` runs both precisions on every device, labels each row and prints its sizes (1000, 10000 and 100000 members unless `--members` says otherwise). A device without double precision gets a `skipped` row.
   - The job file needs every key except `device`. `bounds` is a positive number, or `null` for no limit. Unknown keys are errors and each error names its key.
   - The self-test JSON has a `commit` field that is the value of `PC_GIT_COMMIT` at build time, or `null`. There is no `build.rs`.
-- Not done yet from this stage: Metal (P9e), the README "Test your GPU" section, the CI jobs and the `benches/RESULTS.md` entry. The C ABI and MATLAB API are P9d, below.
+- Not done in this stage: the CUDA, OpenCL and Metal backends (P9b, P9c, P9e), the C ABI and MATLAB API (P9d), the CI jobs and the `benches/RESULTS.md` entry. The sections below cover each.
 
 P9b (the CUDA backend) is written and tested on the CPU side only. Nothing ran on the GPU, MATLAB or Windows, because the owner asked for no local hardware runs on 2026-11-05.
 
@@ -154,7 +154,7 @@ P9c (the OpenCL backend) is written and tested on the CPU side only. Nothing ran
 - `crates/pc-ensemble/src/opencl.rs` adds the platform and device probe, `run_opencl` and the OpenCL launch code. `gpu.rs` holds what `cuda.rs` and `opencl.rs` share: `guard`, `kernel_err`, the chunk sizing and the `drive` launch loop. `kernel.rs` has the OpenCL entry point, and the OpenCL prelude in `pc-codegen` has `#pragma OPENCL FP_CONTRACT OFF`.
 - `opencl3` 0.12.4 is a new dependency (`dynamic` feature, default features off). `cargo deny check` passes with its transitive crates (`cl3`, `opencl-sys`, `dlopen2`).
 - Checks, run with `CUDA_VISIBLE_DEVICES=""`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --workspace` (1249 passed, 0 failed, 3 ignored) and `cargo deny check`. `tests/opencl_compile.rs` ran for real: clang 23.1.4 parsed every model and variant as OpenCL C 1.2, and it rejected a deliberately broken kernel.
-- `pc-cli gpu list` now reports OpenCL as `available` or `unavailable`, not `not_built`. Only Metal is `not_built`.
+- `pc-cli gpu list` now reports OpenCL as `available` or `unavailable`, not `not_built`. Only Metal is `not_built` (on every platform but macOS since P9e).
 - Open risks: `run_opencl` has never run on a device. A driver may ignore `FP_CONTRACT OFF`. The 1.5 s `gpuTimeout` rule is a guess. The macOS build of `opencl3` is unverified.
 
 P9d (the ensemble C ABI and the MATLAB API) is written and tested on the CPU side only, on branch `phase9d-ensemble-api`. Nothing ran on MATLAB, a GPU or Windows, and the gateway C has not been built with `mex`.
@@ -168,7 +168,15 @@ P9d (the ensemble C ABI and the MATLAB API) is written and tested on the CPU sid
 - Rulings: `Backend` defaults to `"auto"` and `Device` to 0, the 0-based index within a backend. `MaxSteps` (100000), `Hmax` (Inf) and `Bounds` (Inf) default to the limits `simulate` uses. The method is inferred from the options (`Dt` gives RK4, `Rtol` with `Atol` gives Dormand-Prince). `refine` returns an `EnsembleResult`, not a `Trajectory`. Ensemble results are not saved in sessions.
 - `gpuSelfTest` runs in MATLAB with no extra ABI call. Its pass thresholds (5e-4 and 1e-3 in single precision, 1e-8 and 1e-7 in double) are my own and unvalidated. `pc-cli gpu selftest` runs the full tiers.
 - Things the first MATLAB run may break on: the step-count ranges in `EnsembleTest` (4000 to 4003 is my assumption about RK4 segment rounding), the self-test thresholds in single precision, `jsondecode` shapes for one-element arrays in `gpuDevices`, and the warning and error IDs the tests expect.
-- Not done yet: Metal (P9e), the README "Test your GPU" section, the CI jobs and the `benches/RESULTS.md` entry.
+- Not done yet: the CI jobs and the `benches/RESULTS.md` entry.
+
+P9e (the Metal backend) is written and type-checked only, on branch `phase9d-ensemble-api`. Nothing was linked or run on a Mac, and Metal has never compiled the kernel text.
+
+- `crates/pc-ensemble/src/metal.rs` holds what builds on every platform: the entry-point name, `group_for` (threads per threadgroup), `command_error` (a watchdog stop is `gpuTimeout`, any other failure is `gpuLaunch`) and a stub that reports `not_built` and `unsupported` off macOS. `metal/host.rs` is built on macOS only. It lists devices with `MTLCopyAllDevices`, compiles the kernel with safe math, runs the launches through `gpu::drive` and reads the results back from shared buffers. A double-precision job on Metal is `gpuUnavailable`, since MSL has no `double`.
+- `objc2`, `objc2-foundation` and `objc2-metal` are macOS-only dependencies (MIT, Apache-2.0 or Zlib; `cargo deny check` passes). `list_devices` and `run_on` route to the backend, and `pc-cli gpu list` shows `not_built` on Linux.
+- Checks, run with `CUDA_VISIBLE_DEVICES=""`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --workspace` (1364 passed, 0 failed, 3 ignored) and `cargo deny check`.
+- The macOS build can be type-checked on Linux: `RUSTC_BOOTSTRAP=1 cargo check -Zbuild-std=std,panic_abort --target aarch64-apple-darwin -p pc-ensemble`, and the same with `clippy --all-targets -- -D warnings`. Both pass. They cover the macOS builds of `cudarc`, `opencl3` and the objc2 crates. They link and run nothing.
+- Open risks, all unverified on a Mac: whether Metal accepts hex-float literals, the `fp math_mode` and `fp contract` pragmas and `ulong` at its default language version, whether a watchdog stop arrives as error code 2 or as "Impacting Interactivity", and whether `FP_CONTRACT` is honoured. An Objective-C exception is not a panic, so `guard` cannot catch it. The calls used return `nil` or an `NSError` on failure.
 
 P10b (`pc-import` and the `import` C ABI function) is written and tested on the CPU side only, on branch `phase10-model-input`. Nothing ran on MATLAB or Windows, because the owner asked for no local runs on 2026-11-05.
 
