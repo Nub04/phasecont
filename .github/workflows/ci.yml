@@ -95,6 +95,116 @@ jobs:
           path: licenses/THIRD_PARTY_LICENSES.txt
           if-no-files-found: error
 
+  # Hosted runners have no GPU, and a self-hosted runner on a public repository
+  # is unsafe, so there is none. The three jobs below run what a machine without
+  # a GPU can run. PC_REQUIRE_GPU turns a skipped GPU test into a failure, so a
+  # green job shows that the test ran.
+
+  # The OpenCL host code on PoCL, which runs OpenCL kernels on the CPU. This
+  # covers device listing, compiling, launching, reading back and the self-test.
+  # clang checks the OpenCL C text and, through a shim, the Metal text.
+  gpu-pocl:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PC_REQUIRE_GPU: opencl,clang-opencl,clang-msl
+      PC_REQUIRE_FP64: opencl
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.99.1
+      - name: Install PoCL, clinfo and clang
+        run: sudo apt-get update && sudo apt-get install -y pocl-opencl-icd clinfo clang
+      - name: List the OpenCL devices
+        run: clinfo -l
+      - name: Run the OpenCL host path and the kernel text checks
+        run: cargo test --locked --no-fail-fast -p pc-ensemble --test device_selftest --test dispatch --test opencl_compile --test msl_syntax
+      - name: Run the command-line self-test on the PoCL device
+        run: |
+          set -eu
+          for p in single double; do
+            cargo run --locked -q -p pc-cli -- gpu selftest --backend opencl --precision "$p"
+          done
+
+  # NVRTC without a driver or a device: compile the CUDA kernel to PTX for the
+  # oldest and the newest architecture. NVRTC is NVIDIA's binary and is not part
+  # of PhaseCont. The job downloads it from NVIDIA's redistributable archive,
+  # checks the SHA-256 and uses it for this run only.
+  gpu-nvrtc:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PC_REQUIRE_GPU: nvrtc
+      NVRTC_ARCHIVE: cuda_nvrtc-linux-x86_64-13.4.59-archive
+      NVRTC_SHA256: fe5de48fa0eb8aaf3f72cb2a86f913c727bf684f9d59072d359285dde32de783
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.99.1
+      - name: Download NVRTC
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP"
+          curl -fsSL --retry 3 -o nvrtc.tar.xz "https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvrtc/linux-x86_64/$NVRTC_ARCHIVE.tar.xz"
+          echo "$NVRTC_SHA256  nvrtc.tar.xz" | sha256sum -c -
+          mkdir cuda
+          tar xJf nvrtc.tar.xz -C cuda --strip-components=1
+          # The engine looks for NVRTC in $CUDA_PATH/lib64.
+          mv cuda/lib cuda/lib64
+          echo "CUDA_PATH=$RUNNER_TEMP/cuda" >> "$GITHUB_ENV"
+      - name: Compile the CUDA kernel to PTX
+        run: cargo test --locked --no-fail-fast -p pc-ensemble --test cuda_compile
+
+  # The Metal and Apple OpenCL host code on a hosted Mac, which may show a
+  # partial paravirtual GPU or none. Nothing here has run on a Mac yet, so the
+  # job does not block a merge. It compiles the Metal text with Apple's `metal`
+  # tool, then runs the self-test on every device it finds. PC_REQUIRE_GPU is
+  # left unset here: a runner without a device reports SKIPPED and the job stays
+  # green, and the log says which it was.
+  gpu-macos:
+    if: github.event_name != 'schedule'
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.99.1
+      - name: List the devices
+        run: |
+          system_profiler SPDisplaysDataType || true
+          cargo run --locked -q -p pc-cli -- gpu list
+      - name: Write the Metal kernels
+        run: PC_DUMP_MSL="$RUNNER_TEMP/msl" cargo test --locked -p pc-ensemble --test msl_syntax
+      - name: Compile the Metal kernels with Apple's metal tool
+        run: |
+          set -eu
+          # Xcode 26 ships the Metal compiler as a separate component.
+          xcodebuild -downloadComponent MetalToolchain || true
+          for f in "$RUNNER_TEMP"/msl/*.metal; do
+            echo "== $f"
+            xcrun -sdk macosx metal -c "$f" -o /dev/null
+          done
+      - name: Run the self-test on the Metal and OpenCL devices
+        run: cargo test --locked --no-fail-fast -p pc-ensemble --test device_selftest -- --include-ignored --nocapture
+      - name: Run the command-line self-test on Metal
+        run: cargo run --locked -q -p pc-cli -- gpu selftest --backend metal --precision single
+
   # MATLAB R2026b on each platform: build the library and the MEX gateway, run
   # the test suites, package the toolbox for that platform, then install the
   # package from a folder outside the checkout, run an example in a second
