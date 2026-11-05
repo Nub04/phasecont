@@ -861,7 +861,9 @@ dependencies = [
 name = "pc-ensemble"
 version = "0.0.0"
 dependencies = [
+ "libloading",
  "libm",
+ "pc-codegen",
  "pc-engine",
  "pc-ir",
  "pc-ode",

@@ -8,6 +8,7 @@
 //! Constructs the kernels cannot lower are refused when the tape is built, by name:
 //! tables, `erf`, `erfc`, `lgamma`, Bessel functions and `polygamma`.
 
+use pc_codegen::kernel::unsupported_op;
 use pc_ir::IrModel;
 use pc_ir::dag::{Cmp, Fn1, Fn2, NodeId, Op};
 use pc_ir::eval::live_set;
@@ -23,27 +24,6 @@ pub struct Tape {
     pub ops: Vec<Op>,
     /// The slot of each state's right-hand side.
     pub outputs: Vec<u32>,
-}
-
-fn unsupported_name(op: &Op) -> Option<&'static str> {
-    match *op {
-        Op::Dir(_) => Some("directional derivative input"),
-        Op::Table(..) => Some("table"),
-        Op::TableSlope(..) => Some("table slope"),
-        Op::Call1(f, _) => match f {
-            Fn1::Erf => Some("erf"),
-            Fn1::Erfc => Some("erfc"),
-            Fn1::Lgamma => Some("lgamma"),
-            _ => None,
-        },
-        Op::Call2(f, ..) => match f {
-            Fn2::BesselJ => Some("besselj"),
-            Fn2::BesselY => Some("bessely"),
-            Fn2::Polygamma => Some("polygamma"),
-            _ => None,
-        },
-        _ => None,
-    }
 }
 
 fn remap(op: &Op, m: &[u32]) -> Op {
@@ -80,7 +60,7 @@ impl Tape {
                 continue;
             }
             let op = ir.dag.op(NodeId(i as u32));
-            if let Some(name) = unsupported_name(op) {
+            if let Some(name) = unsupported_op(op) {
                 if !names.contains(&name) {
                     names.push(name);
                 }

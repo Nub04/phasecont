@@ -9,9 +9,11 @@ rust-version.workspace = true
 
 [dependencies]
 libm = "0.2.16"
+pc-codegen = { path = "../pc-codegen" }
 pc-ir = { path = "../pc-ir" }
 pc-ode = { path = "../pc-ode" }
 rayon = "1.11"
 
 [dev-dependencies]
+libloading = "0.9.0"
 pc-engine = { path = "../pc-engine" }
