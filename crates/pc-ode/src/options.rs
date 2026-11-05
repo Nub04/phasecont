@@ -7,7 +7,7 @@
 //! gives a warning.
 
 /// Option names without a trailing plot or slider number, in lower case.
-const NAMES: &[&str] = &[
+pub const NAMES: &[&str] = &[
     "quiet",
     "logfile",
     "maxstor",
@@ -131,8 +131,8 @@ const NAMES: &[&str] = &[
 ];
 
 /// Option names that take a number: plot axes and windows 2 to 8, sliders
-/// 1 to 3.
-const NUMBERED: &[(&str, u8, u8)] = &[
+/// 1 to 3. Each entry is the name root and the first and last number.
+pub const NUMBERED: &[(&str, u8, u8)] = &[
     ("xp", 2, 8),
     ("yp", 2, 8),
     ("zp", 2, 8),
