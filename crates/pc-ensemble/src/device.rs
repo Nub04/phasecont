@@ -1,0 +1,91 @@
+//! The backends an ensemble run can use and the devices each one found.
+
+/// Where an ensemble run executes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backend {
+    Cpu,
+    Cuda,
+    OpenCl,
+    Metal,
+}
+
+impl Backend {
+    pub const ALL: [Backend; 4] = [Backend::Cpu, Backend::Cuda, Backend::OpenCl, Backend::Metal];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Backend::Cpu => "cpu",
+            Backend::Cuda => "cuda",
+            Backend::OpenCl => "opencl",
+            Backend::Metal => "metal",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Backend> {
+        Backend::ALL.into_iter().find(|b| b.name() == name)
+    }
+}
+
+/// One device a backend can run on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceInfo {
+    pub backend: Backend,
+    /// Position among the devices of this backend.
+    pub index: usize,
+    pub name: String,
+    pub driver: String,
+    pub fp32: bool,
+    pub fp64: bool,
+    pub memory_bytes: Option<u64>,
+}
+
+/// Whether a backend can run in this process.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BackendState {
+    Available,
+    /// The binary does not contain the backend.
+    NotBuilt,
+    /// The backend is built in but cannot start. The text says why, for example that the
+    /// driver library is missing.
+    Unavailable(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct DeviceList {
+    pub devices: Vec<DeviceInfo>,
+    /// One entry per backend, in the order of [`Backend::ALL`].
+    pub backends: Vec<(Backend, BackendState)>,
+}
+
+/// The driver string of the CPU backend.
+pub fn cpu_driver() -> String {
+    format!("pc-ensemble {}", env!("CARGO_PKG_VERSION"))
+}
+
+fn cpu_device() -> DeviceInfo {
+    DeviceInfo {
+        backend: Backend::Cpu,
+        index: 0,
+        name: format!("CPU (rayon, {} threads)", rayon::current_num_threads()),
+        driver: cpu_driver(),
+        fp32: true,
+        fp64: true,
+        memory_bytes: None,
+    }
+}
+
+/// Every device that can run an ensemble now.
+pub fn list_devices() -> DeviceList {
+    let devices = vec![cpu_device()];
+    let backends = Backend::ALL
+        .into_iter()
+        .map(|b| {
+            let state = match b {
+                Backend::Cpu => BackendState::Available,
+                _ => BackendState::NotBuilt,
+            };
+            (b, state)
+        })
+        .collect();
+    DeviceList { devices, backends }
+}

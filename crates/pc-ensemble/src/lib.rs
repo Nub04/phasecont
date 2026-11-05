@@ -2,9 +2,11 @@
 
 pub mod abi;
 pub mod cpu;
+pub mod device;
 pub mod job;
 pub mod kernel;
 pub mod real;
+pub mod selftest;
 pub mod tape;
 pub mod traj;
 
