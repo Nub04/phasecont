@@ -2,7 +2,7 @@
 
 ## Phase
 
-P8 (v1.0 packaging and the release workflow) is on `main`. P8 was accepted on 2026-11-04: the `v1.0.0` tag run published the GitHub Release https://github.com/Nub04/phasecont/releases/tag/v1.0.0 with `PhaseCont-1.0.0.mltbx` and `SHA256SUMS`. The repo has been public since 2026-11-04. P7b (trajectories, sessions, replay and the phase-plane app) is on `main` and is described under In progress. P6 (LPC, PD and NS curves of limit cycles; SPEC section 8) is on `main` and waits for the oracle files. P5 (limit cycles; SPEC section 7) is on `main`. P5 to P8 were built on stacked branches and reached `main` together on 2026-11-04. P4b closed the open items of P4 and merged into `main` locally on 2026-10-31 as a fast-forward to d1380c7. P4 (LP and H curves, codim-2 detection and normal forms; SPEC section 14) merged into `main` locally on 2026-10-30 (734c7a8). Both were pushed on 2026-10-31 with 27b47b4. P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 88fbffa. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 (714aac9). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 (390bfb1). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
+P9 (GPU ensemble engine) and P10 (model input routes and the editor app) are on local `main` and not pushed; see In progress. P8 (v1.0 packaging and the release workflow) is on `main`. P8 was accepted on 2026-11-04: the `v1.0.0` tag run published the GitHub Release https://github.com/Nub04/phasecont/releases/tag/v1.0.0 with `PhaseCont-1.0.0.mltbx` and `SHA256SUMS`. The repo has been public since 2026-11-04. P7b (trajectories, sessions, replay and the phase-plane app) is on `main` and is described under In progress. P6 (LPC, PD and NS curves of limit cycles; SPEC section 8) is on `main` and waits for the oracle files. P5 (limit cycles; SPEC section 7) is on `main`. P5 to P8 were built on stacked branches and reached `main` together on 2026-11-04. P4b closed the open items of P4 and merged into `main` locally on 2026-10-31 as a fast-forward to d1380c7. P4 (LP and H curves, codim-2 detection and normal forms; SPEC section 14) merged into `main` locally on 2026-10-30 (734c7a8). Both were pushed on 2026-10-31 with 27b47b4. P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 88fbffa. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 (714aac9). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 (390bfb1). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
 
 The history was rewritten on 2026-11-04. CLAUDE.md and docs/KICKOFF.md were dropped from every commit, and the Windows user name in the spike files was replaced with `<user>`. The old GitHub repo was renamed and kept private, with PRs #1 to #3 and the old Actions runs, and a new public repo got the rewritten `main`. Every commit id in this file refers to the rewritten history.
 
@@ -119,7 +119,7 @@ P7a (complete on branch `phase7a-matlab-api`, cut from 390bfb1; merged into `mai
 
 ## In progress
 
-P9 (GPU ensemble engine) and P10 (model input routes and the editor app) have an approved plan. P9a to P9c are on branch `phase9-gpu-ensemble` (c5bc4b4), P10 is on `phase10-model-input` (3115bf3), and P9d is on `phase9d-ensemble-api` (b3d4035), stacked on P10. The plan approval covers the appended C ABI functions, the MATLAB API additions, the new dependencies and the new hosted CI jobs. It does not cover a push or a merge into `main`, and none has happened. Nothing in P9 or P10 has run on MATLAB, a GPU or Windows yet. Only `cargo` on the CPU has run.
+P9 (GPU ensemble engine) and P10 (model input routes and the editor app) had an approved plan. The stacked branches `phase9-gpu-ensemble`, `phase10-model-input` and `phase9d-ensemble-api` were fast-forwarded into `main` locally on 2026-11-05 (835ff12), with the version kept at 1.0.0. Nothing is pushed: `origin/main` is still at efd172e. The plan approval covered the appended C ABI functions, the MATLAB API additions, the new dependencies and the new hosted CI jobs. Nothing in P9 or P10 has run on MATLAB, a GPU or Windows yet. Only `cargo` on the CPU has run.
 
 P9a (core types, CPU backend, kernel text, device list, self-test and the CLI) is committed on `phase9-gpu-ensemble`, with no C ABI change and no MATLAB API change.
 
@@ -382,6 +382,9 @@ Open risks and questions from P7b:
 
 ## Next
 
+- Push `main` after the owner's OK, then watch the first run of the `gpu-pocl`, `gpu-nvrtc` and `gpu-macos` jobs.
+- Run the MATLAB suite and the GPU self-test on the RTX 5060 and the Arc 140T (see README, Test your GPU). Nothing in P9 or P10 has run there.
+- Optional P10 leftover: the CellML importer.
 - Link the GitHub repo to a File Exchange entry from the owner's MathWorks account, so each GitHub Release appears there.
 - P4 and later: a continuation that changes a parameter or state read by a table formula needs a new lowering of the model (P2 known difference).
 
