@@ -6,10 +6,16 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+use pc_ensemble::Precision;
+use pc_ensemble::device::Backend;
+
 /// Random points per entry when `--points` is not given.
 pub const DEFAULT_POINTS: usize = 20;
 /// Seed when `--seed` is not given.
 pub const DEFAULT_SEED: u64 = 1;
+/// Ensemble sizes of `ensemble --bench` when `--members` is not given. The sizes are
+/// printed with the results, so they are a measurement setting and not a hidden default.
+pub const DEFAULT_BENCH_MEMBERS: [usize; 3] = [1_000, 10_000, 100_000];
 
 /// What the command line asks for.
 #[derive(Debug, Clone, PartialEq)]
@@ -54,6 +60,18 @@ pub enum Command {
         tol: f64,
         fallback: bool,
     },
+    /// List the ensemble backends and their devices.
+    GpuList,
+    /// Run the self-test on one device.
+    GpuSelftest {
+        backend: Backend,
+        device: usize,
+        precision: Precision,
+    },
+    /// Run the ensemble described by a job file.
+    Ensemble { file: PathBuf, job: PathBuf },
+    /// Time the ensemble engine on a built-in model.
+    EnsembleBench { members: Vec<usize> },
 }
 
 /// Why the command line is not valid. The text is a short usage line for
@@ -68,6 +86,10 @@ usage: pc-cli parse [--json] [--] <file.ode>
        pc-cli emit-c [-o out.c] [--] <file.ode>
        pc-cli cont [--fallback] [--] <file.ode> <problem.json>
        pc-cli session replay [--tol X] [--fallback] [--] <file.pcsession.json>
+       pc-cli gpu list
+       pc-cli gpu selftest --backend B [--device N] --precision P
+       pc-cli ensemble [--] <file.ode> <job.json>
+       pc-cli ensemble --bench [--members N,N,...]
        pc-cli dll-imports [--] <file.dll>
        pc-cli licenses --target TRIPLE... [--package NAME] --out FILE [--overrides DIR]
        pc-cli --help | pc-cli --version";
@@ -82,6 +104,10 @@ usage:
   pc-cli emit-c <file.ode> [-o out.c]
   pc-cli cont <file.ode> <problem.json> [--fallback]
   pc-cli session replay <file.pcsession.json> [--tol X] [--fallback]
+  pc-cli gpu list
+  pc-cli gpu selftest --backend B [--device N] --precision P
+  pc-cli ensemble <file.ode> <job.json>
+  pc-cli ensemble --bench [--members N,N,...]
   pc-cli dll-imports <file.dll>
   pc-cli licenses --target TRIPLE... [--package NAME] --out FILE [--overrides DIR]
   pc-cli --help
@@ -95,6 +121,8 @@ commands:
   emit-c        write C code for F, JacU and JacP
   cont          follow an equilibrium branch and print its points and special points
   session       rerun the runs of a session file and compare them with the stored ones
+  gpu           list the ensemble devices and test one of them
+  ensemble      run many trajectories of one model, or time the engine
   dll-imports   list the DLLs a 64-bit Windows PE file imports and check the allow-list
   licenses      write the license texts of the crates a package links
 ";
@@ -125,6 +153,73 @@ options:
 exit codes: 0 every run passes, 1 a run does not match or cannot be rerun, 2
 usage error, a file that is not a version 1 session, or a model that does not
 load or does not match its stored hash
+";
+
+pub const GPU_HELP: &str = "\
+usage: pc-cli gpu list
+       pc-cli gpu selftest --backend B [--device N] --precision P
+
+`list` prints one JSON object: the state of every backend (cpu, cuda, opencl,
+metal) and the devices that can run an ensemble now. A backend is `available`,
+`not_built` (this binary does not contain it) or `unavailable` (it is built in
+but cannot start; the reason follows).
+
+`selftest` runs a few small ensembles on one device and prints one JSON object:
+the device, the driver, the precision, the worst error of each tier against its
+limit, whether the device matches the CPU backend bit for bit (`null` for the
+CPU backend itself) and `pass`. The device is the first of the backend unless
+--device says otherwise, and the report names the device that ran.
+
+options:
+  --backend B    cpu, cuda, opencl or metal (required)
+  --device N     index among the devices of the backend (default 0)
+  --precision P  single or double (required)
+  -h, --help     print this help
+
+exit codes: 0 every check passes (list: always), 1 a check fails or the device
+refuses a job, 2 usage error, 3 the backend is not built in or has no such
+device (no report is printed, and this is never a pass)
+";
+
+pub const ENSEMBLE_HELP: &str = "\
+usage: pc-cli ensemble [--] <file.ode> <job.json>
+       pc-cli ensemble --bench [--members N,N,...]
+
+Runs many trajectories of one model and prints one JSON object. The job file
+needs every key below except `device`; nothing is filled in for a missing key.
+
+  backend     cpu, cuda, opencl or metal
+  device      index among the devices of the backend (default 0)
+  precision   single or double
+  t0, t1      start and end time, t0 < t1
+  method      {\"type\": \"rk4\", \"dt\": X}, a largest fixed step, or
+              {\"type\": \"dp5\", \"rtol\": X, \"atol\": X, \"hmax\": X or null}
+  x0          one array of initial states per member
+  params      {\"shared\": [..]} for one set, or {\"per_member\": [[..], ..]}
+  output      \"final\", or {\"samples\": [t, ..]} (increasing, in (t0, t1], last = t1)
+  bounds      stop a member when a state leaves [-X, X]; a number or null
+  max_steps   most steps per member, at least 1
+
+The result has members, n, times, status (one of ok, bounds, step_too_small,
+max_steps, nonfinite per member), states[member][sample][state] (null for a
+value that is not finite), t_reached, accepted, rejected and a label with the
+backend, the device, the driver, the precision and single_precision. A result
+with single_precision true is a screening result: run the member again in double
+precision before it feeds continuation, normal forms or Floquet multipliers.
+
+--bench times a built-in van der Pol ensemble on every device, in both
+precisions, at each size (default 1000,10000,100000) and prints one row each.
+
+options:
+  --bench        time the engine instead of reading a job file
+  --members L    sizes for --bench, a comma-separated list of integers >= 1
+  --             the next argument is the file, even if it starts with `-`
+  -h, --help     print this help
+
+exit codes: 0 the ensemble ran (members that did not finish are reported in
+status), 1 the model does not load or the engine refuses the job, 2 usage error
+or a bad job file (the message names the key), 3 the backend is not built in or
+has no such device
 ";
 
 pub const PARSE_HELP: &str = "\
@@ -321,6 +416,8 @@ where
         "emit-c" => emit_command(&args[1..]),
         "cont" => cont_command(&args[1..]),
         "session" => session_command(&args[1..]),
+        "gpu" => gpu_command(&args[1..]),
+        "ensemble" => ensemble_command(&args[1..]),
         "dll-imports" => dll_imports_command(&args[1..]),
         "licenses" => licenses_command(&args[1..]),
         "-h" | "--help" | "-V" | "--version" => {
@@ -606,6 +703,141 @@ fn licenses_command(rest: &[OsString]) -> Result<Command, UsageError> {
         }),
         _ => Err(UsageError("licenses needs --target and --out".to_string())),
     }
+}
+
+/// Parses the arguments of `gpu`: `list` and `selftest`.
+fn gpu_command(rest: &[OsString]) -> Result<Command, UsageError> {
+    let mut it = rest.iter();
+    let sub = match it.next().map(utf8).transpose()? {
+        Some("-h" | "--help") => return Ok(Command::ToolHelp(GPU_HELP)),
+        Some(s @ ("list" | "selftest")) => s,
+        Some(other) => {
+            return Err(UsageError(format!(
+                "unknown gpu command {other}, expected list or selftest"
+            )));
+        }
+        None => {
+            return Err(UsageError(
+                "gpu needs a subcommand: list or selftest".to_string(),
+            ));
+        }
+    };
+    let mut backend: Option<Backend> = None;
+    let mut device: Option<usize> = None;
+    let mut precision: Option<Precision> = None;
+    while let Some(arg) = it.next() {
+        let text = utf8(arg)?;
+        match (sub, text) {
+            (_, "-h" | "--help") => return Ok(Command::ToolHelp(GPU_HELP)),
+            ("selftest", "--backend") => {
+                let v = utf8(value("--backend", &mut it)?)?;
+                backend = Some(Backend::from_name(v).ok_or_else(|| {
+                    UsageError(format!(
+                        "--backend needs cpu, cuda, opencl or metal, got {v}"
+                    ))
+                })?);
+            }
+            ("selftest", "--device") => {
+                device = Some(number("--device", value("--device", &mut it)?)?);
+            }
+            ("selftest", "--precision") => {
+                let v = utf8(value("--precision", &mut it)?)?;
+                precision = Some(precision_from_name(v).ok_or_else(|| {
+                    UsageError(format!("--precision needs single or double, got {v}"))
+                })?);
+            }
+            (_, other) if other.starts_with('-') => {
+                return Err(UsageError(format!("unknown option {other}")));
+            }
+            (_, other) => {
+                return Err(UsageError(format!("unexpected extra argument {other}")));
+            }
+        }
+    }
+    if sub == "list" {
+        return Ok(Command::GpuList);
+    }
+    match (backend, precision) {
+        (Some(backend), Some(precision)) => Ok(Command::GpuSelftest {
+            backend,
+            device: device.unwrap_or(0),
+            precision,
+        }),
+        (None, _) => Err(UsageError(
+            "gpu selftest needs --backend (cpu, cuda, opencl or metal)".to_string(),
+        )),
+        (_, None) => Err(UsageError(
+            "gpu selftest needs --precision (single or double)".to_string(),
+        )),
+    }
+}
+
+/// `single` or `double`.
+pub fn precision_from_name(name: &str) -> Option<Precision> {
+    [Precision::Single, Precision::Double]
+        .into_iter()
+        .find(|p| p.name() == name)
+}
+
+/// Parses the arguments of `ensemble`: a model and a job file, or `--bench`.
+fn ensemble_command(rest: &[OsString]) -> Result<Command, UsageError> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut bench = false;
+    let mut members: Option<Vec<usize>> = None;
+    let mut literal = false;
+    let mut it = rest.iter();
+    while let Some(arg) = it.next() {
+        let flag = if literal { None } else { arg.to_str() };
+        match flag {
+            Some("--") => literal = true,
+            Some("-h" | "--help") => return Ok(Command::ToolHelp(ENSEMBLE_HELP)),
+            Some("--bench") => bench = true,
+            Some("--members") => {
+                let v = utf8(value("--members", &mut it)?)?;
+                members = Some(member_list(v)?);
+            }
+            Some(other) if other.starts_with('-') && other.len() > 1 => {
+                return Err(UsageError(format!("unknown option {other}")));
+            }
+            _ => files.push(PathBuf::from(arg)),
+        }
+    }
+    if bench {
+        if !files.is_empty() {
+            return Err(UsageError(
+                "ensemble --bench takes no model or job file".to_string(),
+            ));
+        }
+        return Ok(Command::EnsembleBench {
+            members: members.unwrap_or_else(|| DEFAULT_BENCH_MEMBERS.to_vec()),
+        });
+    }
+    if members.is_some() {
+        return Err(UsageError("--members only goes with --bench".to_string()));
+    }
+    let mut files = files.into_iter();
+    match (files.next(), files.next(), files.next()) {
+        (Some(file), Some(job), None) => Ok(Command::Ensemble { file, job }),
+        (_, _, Some(extra)) => Err(UsageError(format!(
+            "unexpected extra argument {}",
+            extra.display()
+        ))),
+        _ => Err(UsageError(
+            "ensemble needs a model file and a job file, or --bench".to_string(),
+        )),
+    }
+}
+
+/// `10,2000,5`: positive integers separated by commas.
+fn member_list(text: &str) -> Result<Vec<usize>, UsageError> {
+    text.split(',')
+        .map(|part| match part.parse::<usize>() {
+            Ok(n) if n >= 1 => Ok(n),
+            _ => Err(UsageError(format!(
+                "--members needs integers of at least 1 separated by commas, got {text}"
+            ))),
+        })
+        .collect()
 }
 
 fn cont_command(rest: &[OsString]) -> Result<Command, UsageError> {
@@ -919,6 +1151,194 @@ mod tests {
             &["parse", "a.ode", "--frob"],
             &["--help", "x"],
             &["--version", "x"],
+        ] {
+            assert!(p(args).is_err(), "{args:?}");
+        }
+    }
+
+    fn selftest(backend: Backend, device: usize, precision: Precision) -> Command {
+        Command::GpuSelftest {
+            backend,
+            device,
+            precision,
+        }
+    }
+
+    #[test]
+    fn gpu_list_takes_no_arguments() {
+        assert_eq!(p(&["gpu", "list"]), Ok(Command::GpuList));
+        assert!(p(&["gpu", "list", "x"]).is_err());
+        assert!(p(&["gpu", "list", "--json"]).is_err());
+    }
+
+    #[test]
+    fn gpu_selftest_needs_a_backend_and_a_precision() {
+        assert_eq!(
+            p(&[
+                "gpu",
+                "selftest",
+                "--backend",
+                "cuda",
+                "--precision",
+                "single"
+            ]),
+            Ok(selftest(Backend::Cuda, 0, Precision::Single))
+        );
+        assert_eq!(
+            p(&[
+                "gpu",
+                "selftest",
+                "--precision",
+                "double",
+                "--device",
+                "2",
+                "--backend",
+                "opencl"
+            ]),
+            Ok(selftest(Backend::OpenCl, 2, Precision::Double))
+        );
+        let missing_backend = p(&["gpu", "selftest", "--precision", "single"]).unwrap_err();
+        assert!(
+            missing_backend.0.contains("--backend"),
+            "{missing_backend:?}"
+        );
+        let missing_precision = p(&["gpu", "selftest", "--backend", "cpu"]).unwrap_err();
+        assert!(
+            missing_precision.0.contains("--precision"),
+            "{missing_precision:?}"
+        );
+    }
+
+    #[test]
+    fn gpu_selftest_names_a_bad_value() {
+        let e = p(&[
+            "gpu",
+            "selftest",
+            "--backend",
+            "hip",
+            "--precision",
+            "single",
+        ])
+        .unwrap_err();
+        assert!(e.0.contains("hip") && e.0.contains("cuda"), "{e:?}");
+        let e = p(&["gpu", "selftest", "--backend", "cpu", "--precision", "half"]).unwrap_err();
+        assert!(e.0.contains("half") && e.0.contains("single"), "{e:?}");
+        for args in [
+            &["gpu", "selftest", "--backend"][..],
+            &["gpu", "selftest", "--backend", "cpu", "--precision"],
+            &[
+                "gpu",
+                "selftest",
+                "--backend",
+                "cpu",
+                "--precision",
+                "single",
+                "--device",
+                "x",
+            ],
+            &[
+                "gpu",
+                "selftest",
+                "--backend",
+                "cpu",
+                "--precision",
+                "single",
+                "--device",
+                "-1",
+            ],
+            &[
+                "gpu",
+                "selftest",
+                "--backend",
+                "cpu",
+                "--precision",
+                "single",
+                "extra",
+            ],
+            &[
+                "gpu",
+                "selftest",
+                "--backend",
+                "cpu",
+                "--precision",
+                "single",
+                "--frob",
+            ],
+        ] {
+            assert!(p(args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn gpu_needs_a_subcommand_and_has_help() {
+        assert!(p(&["gpu"]).is_err());
+        assert!(p(&["gpu", "frob"]).unwrap_err().0.contains("frob"));
+        assert_eq!(p(&["gpu", "--help"]), Ok(Command::ToolHelp(GPU_HELP)));
+        assert_eq!(p(&["gpu", "-h"]), Ok(Command::ToolHelp(GPU_HELP)));
+        assert_eq!(
+            p(&["gpu", "selftest", "-h"]),
+            Ok(Command::ToolHelp(GPU_HELP))
+        );
+        assert_eq!(p(&["gpu", "list", "-h"]), Ok(Command::ToolHelp(GPU_HELP)));
+    }
+
+    #[test]
+    fn ensemble_takes_a_model_and_a_job() {
+        assert_eq!(
+            p(&["ensemble", "a.ode", "job.json"]),
+            Ok(Command::Ensemble {
+                file: "a.ode".into(),
+                job: "job.json".into()
+            })
+        );
+        assert_eq!(
+            p(&["ensemble", "--", "-a.ode", "job.json"]),
+            Ok(Command::Ensemble {
+                file: "-a.ode".into(),
+                job: "job.json".into()
+            })
+        );
+        for args in [
+            &["ensemble"][..],
+            &["ensemble", "a.ode"],
+            &["ensemble", "a.ode", "b.json", "c"],
+            &["ensemble", "--members", "10"],
+            &["ensemble", "a.ode", "b.json", "--frob"],
+        ] {
+            assert!(p(args).is_err(), "{args:?}");
+        }
+        assert_eq!(
+            p(&["ensemble", "--help"]),
+            Ok(Command::ToolHelp(ENSEMBLE_HELP))
+        );
+    }
+
+    #[test]
+    fn ensemble_bench_takes_sizes() {
+        assert_eq!(
+            p(&["ensemble", "--bench"]),
+            Ok(Command::EnsembleBench {
+                members: DEFAULT_BENCH_MEMBERS.to_vec()
+            })
+        );
+        assert_eq!(
+            p(&["ensemble", "--bench", "--members", "10,2000,5"]),
+            Ok(Command::EnsembleBench {
+                members: vec![10, 2000, 5]
+            })
+        );
+        assert_eq!(
+            p(&["ensemble", "--members", "7", "--bench"]),
+            Ok(Command::EnsembleBench { members: vec![7] })
+        );
+        for args in [
+            &["ensemble", "--bench", "--members", "0"][..],
+            &["ensemble", "--bench", "--members", "10,x"],
+            &["ensemble", "--bench", "--members", "10,,20"],
+            &["ensemble", "--bench", "--members", ""],
+            &["ensemble", "--bench", "--members"],
+            &["ensemble", "--bench", "a.ode"],
+            &["ensemble", "--bench", "a.ode", "b.json"],
         ] {
             assert!(p(args).is_err(), "{args:?}");
         }

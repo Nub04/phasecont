@@ -3,6 +3,8 @@
 mod args;
 mod cont;
 mod dllimports;
+mod ensemble;
+mod gpu;
 mod ircmd;
 mod licenses;
 mod pe;
@@ -38,6 +40,14 @@ fn main() -> ExitCode {
             problem,
             fallback,
         }) => cont::cont(&file, &problem, fallback),
+        Ok(Command::GpuList) => gpu::list(),
+        Ok(Command::GpuSelftest {
+            backend,
+            device,
+            precision,
+        }) => gpu::selftest(backend, device, precision),
+        Ok(Command::Ensemble { file, job }) => ensemble::ensemble(&file, &job),
+        Ok(Command::EnsembleBench { members }) => ensemble::bench(&members),
         Ok(Command::SessionReplay {
             file,
             tol,

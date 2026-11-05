@@ -828,6 +828,7 @@ version = "0.0.0"
 dependencies = [
  "pc-codegen",
  "pc-engine",
+ "pc-ensemble",
  "pc-ffi",
  "pc-ir",
  "pc-jit",
