@@ -17,10 +17,11 @@ use std::sync::atomic::AtomicBool;
 use pc_ir::IrModel;
 
 use crate::cpu::run_cpu;
-use crate::device::{Backend, DeviceInfo, list_devices};
+use crate::device::{Backend, DeviceInfo, find_device};
 use crate::job::{
     EnsembleError, EnsembleResult, Job, Label, Method, Output, Params, Precision, Status,
 };
+use crate::run::run_on;
 
 /// A backend as the checks see it.
 pub type Runner<'a> = &'a dyn Fn(&Job) -> Result<EnsembleResult, EnsembleError>;
@@ -345,57 +346,18 @@ pub fn run_with(
 
 /// Runs the self-test on the chosen device.
 pub fn run_selftest(sel: Selected) -> Result<Report, SelfTestError> {
-    let list = list_devices();
-    let Some(device) = list
-        .devices
-        .iter()
-        .find(|d| d.backend == sel.backend && d.index == sel.device)
-        .cloned()
-    else {
-        let found = list
-            .devices
-            .iter()
-            .filter(|d| d.backend == sel.backend)
-            .count();
-        let state = list
-            .backends
-            .iter()
-            .find(|(b, _)| *b == sel.backend)
-            .map(|(_, s)| s.clone());
-        return Err(SelfTestError::NoDevice(match state {
-            Some(crate::device::BackendState::NotBuilt) => format!(
-                "no {} device: the {} backend is not built into this binary",
-                sel.backend.name(),
-                sel.backend.name()
-            ),
-            Some(crate::device::BackendState::Unavailable(why)) => format!(
-                "no {} device: the {} backend cannot start: {why}",
-                sel.backend.name(),
-                sel.backend.name()
-            ),
-            _ => format!(
-                "no {} device {}: the backend lists {found}",
-                sel.backend.name(),
-                sel.device
-            ),
-        }));
-    };
+    let device = find_device(sel.backend, sel.device).map_err(SelfTestError::NoDevice)?;
     let label = Label {
         backend: device.backend.name().to_string(),
         device: device.name.clone(),
         driver: device.driver.clone(),
         precision: sel.precision,
     };
-    match sel.backend {
-        Backend::Cpu => {
-            let cancel = AtomicBool::new(false);
-            let run = |j: &Job| run_cpu(j, u64::MAX, &cancel);
-            run_with(&run, device, label, false)
-        }
-        other => Err(SelfTestError::NoDevice(format!(
-            "no {} device: the {} backend is not built into this binary",
-            other.name(),
-            other.name()
-        ))),
-    }
+    let cancel = AtomicBool::new(false);
+    let on = device.clone();
+    let run = |j: &Job| run_on(&on, j, &cancel);
+    // Comparing the CPU backend with the CPU loop proves nothing, so only a device of
+    // another backend gets the bit comparison.
+    let compare_bits = sel.backend != Backend::Cpu;
+    run_with(&run, device, label, compare_bits)
 }

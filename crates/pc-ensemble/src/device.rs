@@ -89,3 +89,36 @@ pub fn list_devices() -> DeviceList {
         .collect();
     DeviceList { devices, backends }
 }
+
+/// The device `index` of `backend`, or the reason there is none.
+///
+/// A backend that is not built into this binary, one that cannot start and an index past
+/// the end of the list each get their own message, so a caller can print it as it is.
+pub fn find_device(backend: Backend, index: usize) -> Result<DeviceInfo, String> {
+    let list = list_devices();
+    if let Some(d) = list
+        .devices
+        .iter()
+        .find(|d| d.backend == backend && d.index == index)
+    {
+        return Ok(d.clone());
+    }
+    let name = backend.name();
+    let state = list
+        .backends
+        .iter()
+        .find(|(b, _)| *b == backend)
+        .map(|(_, s)| s);
+    Err(match state {
+        Some(BackendState::NotBuilt) => {
+            format!("no {name} device: the {name} backend is not built into this binary")
+        }
+        Some(BackendState::Unavailable(why)) => {
+            format!("no {name} device: the {name} backend cannot start: {why}")
+        }
+        _ => {
+            let found = list.devices.iter().filter(|d| d.backend == backend).count();
+            format!("no {name} device {index}: the backend lists {found}")
+        }
+    })
+}

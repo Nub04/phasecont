@@ -6,6 +6,7 @@ pub mod device;
 pub mod job;
 pub mod kernel;
 pub mod real;
+pub mod run;
 pub mod selftest;
 pub mod tape;
 pub mod traj;
