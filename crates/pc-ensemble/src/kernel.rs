@@ -10,8 +10,8 @@
 //! the buffers described in [`crate::abi`], so the host relaunches until no member is
 //! running.
 //!
-//! The C, CUDA and OpenCL dialects have an entry point so far. The Metal entry comes with its
-//! backend.
+//! Every dialect has an entry point: C loops over the members, the others run one thread or
+//! work item per member. Metal has no double, so its kernels exist for `f32` only.
 
 use pc_codegen::kernel::{Dialect, KernelError, Scalar, emit_rhs, float_literal, prelude};
 
@@ -47,12 +47,7 @@ pub fn kernel_source(
         Dialect::C => ENTRY_C,
         Dialect::Cuda => ENTRY_CUDA,
         Dialect::OpenCl => ENTRY_OPENCL,
-        Dialect::Msl => {
-            return Err(KernelError::Unsupported(format!(
-                "{} entry point",
-                dialect.name()
-            )));
-        }
+        Dialect::Msl => ENTRY_MSL,
     };
     s.push_str(&format!("#define PC_N {}u\n", tape.n));
     s.push_str(&format!("#define PC_WL {}u\n", work_len(tape.n)));
@@ -540,6 +535,31 @@ __kernel void pc_ens(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
                      pc_uint ns, pc_ulong pstride)
 {
     pc_ulong m = (pc_ulong)get_global_id(0);
+    if (m >= members) {
+        return;
+    }
+    pc_member(rc, segm, x0 + m * PC_N, par + m * pstride, work + m * PC_WL,
+              out + m * (pc_ulong)ns * PC_N, ctl + m * PC_CTL, steps, max_steps, ns);
+}
+"#;
+
+/// One thread per member. Metal passes every buffer by index and every scalar as a one-value
+/// buffer, so the host binds them in this order: the seven buffers at 0 to 6, then `members`,
+/// `steps`, `max_steps`, `ns` and `pstride` at 7 to 11. The grid is rounded up to a whole
+/// threadgroup, so the guard comes first.
+const ENTRY_MSL: &str = r#"
+kernel void pc_ens(PC_IN pc_real *rc [[buffer(0)]], PC_IN pc_ulong *segm [[buffer(1)]],
+                   PC_IN pc_real *x0 [[buffer(2)]], PC_IN pc_real *par [[buffer(3)]],
+                   PC_GLOBAL pc_real *work [[buffer(4)]], PC_GLOBAL pc_real *out [[buffer(5)]],
+                   PC_GLOBAL pc_uint *ctl [[buffer(6)]],
+                   constant pc_ulong &members [[buffer(7)]],
+                   constant pc_ulong &steps [[buffer(8)]],
+                   constant pc_uint &max_steps [[buffer(9)]],
+                   constant pc_uint &ns [[buffer(10)]],
+                   constant pc_ulong &pstride [[buffer(11)]],
+                   uint gid [[thread_position_in_grid]])
+{
+    pc_ulong m = (pc_ulong)gid;
     if (m >= members) {
         return;
     }

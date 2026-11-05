@@ -235,6 +235,12 @@ pub fn prelude(d: Dialect, s: Scalar) -> Result<String, KernelError> {
         }
         Dialect::Msl => {
             t.push_str("#include <metal_stdlib>\nusing namespace metal;\n");
+            // Metal compiles with fast math unless told otherwise, and the kernel tests for
+            // NaN and infinity. Safe math also stops the compiler from fusing a multiply and
+            // an add on its own, so a run matches the CPU backend operation for operation.
+            // The pragmas are Metal 3.2; an older compiler ignores them, and the host sets the
+            // same modes through the compile options.
+            t.push_str("#pragma METAL fp math_mode(safe)\n#pragma METAL fp contract(off)\n");
             t.push_str("typedef float pc_real;\ntypedef uint pc_uint;\ntypedef ulong pc_ulong;\n");
             t.push_str(
                 "#define PC_FN inline\n#define PC_GLOBAL device\n#define PC_IN device const\n#define PC_CONSTANT constant\n",
