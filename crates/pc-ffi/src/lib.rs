@@ -12,6 +12,7 @@ use std::panic::catch_unwind;
 mod api;
 mod barrier;
 pub mod error;
+mod import;
 pub mod json;
 mod model;
 pub mod parse;
@@ -75,6 +76,8 @@ pub struct PcApiV1 {
         *mut f64,
         usize,
     ) -> i32,
+    pub import:
+        unsafe extern "C" fn(u32, *const c_char, usize, *const c_char, *mut *mut c_char) -> i32,
 }
 
 static API: PcApiV1 = PcApiV1 {
@@ -95,6 +98,7 @@ static API: PcApiV1 = PcApiV1 {
     debug_panic: api::debug_panic,
     version: api::version,
     model_rhs_t: api::model_rhs_t,
+    import: api::import,
 };
 
 /// The only exported symbol. Returns NULL only if a panic was caught.

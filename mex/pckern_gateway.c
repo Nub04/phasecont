@@ -540,6 +540,40 @@ static void cmd_model_from_ode(int nlhs, mxArray *plhs[], int nrhs, const mxArra
     }
 }
 
+/* pckern("import", "sbml"|"matlab", text [, optionsJson]) -> resultJson.
+ * An import the library refuses (PC_ERR_MODEL) is not raised here. The JSON
+ * holds the error id, kind, message and position, and the MATLAB caller raises
+ * phasecont:import:<kind> from it. Any other failure is raised here. */
+static void cmd_import(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
+{
+    char *fmt, *text, *opts = NULL, *json = NULL;
+    uint32_t format = 0;
+    int32_t rc;
+    need_args(nrhs, 3, 4, "import");
+    need_outs(nlhs, 1, "import");
+    fmt = get_text(prhs[1], "the import format");
+    if (strcmp(fmt, "sbml") == 0)
+        format = PC_IMPORT_SBML;
+    else if (strcmp(fmt, "matlab") == 0)
+        format = PC_IMPORT_MATLAB;
+    else
+        fail("phasecont:engine:badArg", "import format must be \"sbml\" or \"matlab\", got \"%s\"",
+             fmt);
+    mxFree(fmt);
+    text = get_text(prhs[2], "the text to import");
+    if (nrhs == 4)
+        opts = get_text(prhs[3], "the import options");
+    rc = g_api->import(format, text, strlen(text), opts && opts[0] ? opts : NULL, &json);
+    mxFree(text);
+    if (opts)
+        mxFree(opts);
+    if (rc != PC_OK && rc != PC_ERR_MODEL) {
+        g_api->free_string(json);
+        check(rc);
+    }
+    plhs[0] = take_rust_string(json);
+}
+
 static void cmd_model_compile(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 {
     uint64_t m;
@@ -760,6 +794,7 @@ static const struct {
     {"model_rhs", cmd_model_rhs},
     {"model_rhs_batch", cmd_model_rhs_batch},
     {"model_equilibrium", cmd_model_equilibrium},
+    {"import", cmd_import},
     {"run_start", cmd_run_start},
     {"run_poll", cmd_run_poll},
     {"run_copy", cmd_run_copy},

@@ -157,6 +157,15 @@ P9c (the OpenCL backend) is written and tested on the CPU side only. Nothing ran
 - `pc-cli gpu list` now reports OpenCL as `available` or `unavailable`, not `not_built`. Only Metal is `not_built`.
 - Open risks: `run_opencl` has never run on a device. A driver may ignore `FP_CONTRACT OFF`. The 1.5 s `gpuTimeout` rule is a guess. The macOS build of `opencl3` is unverified.
 
+P10b (`pc-import` and the `import` C ABI function) is written and tested on the CPU side only, on branch `phase10-model-input`. Nothing ran on MATLAB or Windows, because the owner asked for no local runs on 2026-11-05.
+
+- `crates/pc-import` reads a MATLAB function (the text of `func2str(h)` or of a function file), SBML (with a MathML reader) and turns each into `.ode` text. Input is read as text and never run. A refusal names its kind: syntax, unsupported, undeclared, missingValue, mismatch, nameCollision, tooLarge, noDynamics or xml, with a line and column when the position is known. SBML events, delays and algebraic rules are refused by name. `roxmltree` is the only new dependency and it refuses a DTD.
+- `import` is appended to the C ABI after `model_rhs_t`: `int32_t import(uint32_t format, const char *bytes, size_t len, const char *opts_json, char **result_json)`. `abi_version` stays 1. The table has 18 members and 136 bytes, and `import` is at offset 128. `PC_IMPORT_SBML` is 1 and `PC_IMPORT_MATLAB` is 2.
+- A refused import returns `PC_ERR_MODEL` and a JSON object with the importer's id (`phasecont:import:<kind>`), so no new error code is needed. Bad arguments return `PC_ERR_BAD_ARG` and leave the slot NULL. Input over 17 MiB is a bad argument. The import runs on an 8 MiB thread under the panic barrier.
+- The gateway has an `import` command (`mex/pckern_gateway.c`). It returns the JSON for a refusal without raising, and MATLAB raises the importer's id from it. The gateway C has not been compiled, because there is no `mex.h` in WSL.
+- Tests: `cargo test -p pc-ffi --test import --test header` gives 14 and 6 passing. The import tests cover both formats, options, every failure kind, bad arguments, NULL pointers, oversize input and deep nesting (20 000 parentheses, 50 000 nested XML tags) without a panic.
+- Not done yet: `Model.fromEquations`, `fromTable`, `fromFunction`, `fromFile` and `phasecont.app.ModelEditor` (MATLAB side), the CellML reader, and MATLAB tests for all of them.
+
 P8 (v1.0 packaging and the release workflow, plan approved) was built on branch `phase8-release` and is now on `main`. It was accepted on 2026-11-04, when the tagged `release.yml` run published a `.mltbx` that installs and runs on all three platforms.
 
 - 1ec01ec: `pc-cli licenses` takes several `--target` triples, so one file covers win64, glnxa64 and maca64.

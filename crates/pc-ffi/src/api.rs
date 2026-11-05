@@ -16,6 +16,7 @@ use crate::barrier::{
     barrier, bytes_arg, f64_arg, f64_out, into_c_string, out_ptr, ptr_barrier, str_arg,
 };
 use crate::error::{Error, Result, bad_arg};
+use crate::import;
 use crate::json::problem::{Kind, Mode, parse_options, parse_problem};
 use crate::model::{ModelHandle, NOT_COMPILED};
 use crate::parse::{MAX_MODEL_TEXT, parse_model};
@@ -439,6 +440,38 @@ pub unsafe extern "C" fn model_equilibrium(
             eig_out[n + i] = *im;
         }
         Ok(())
+    })
+}
+
+/// Translates SBML or a MATLAB function into `.ode` text. `opts` is NULL or a JSON object, and
+/// `out_json` is NULL unless the call sets it. A failed import returns `PC_ERR_MODEL` and sets
+/// `out_json` to the error object (see `import.rs`); the caller frees the string either way.
+///
+/// # Safety
+/// `bytes` must be valid for `len` bytes, `opts` NULL or NUL-terminated, and `out_json` valid
+/// for one pointer write.
+pub unsafe extern "C" fn import(
+    format: u32,
+    bytes: *const c_char,
+    len: usize,
+    opts: *const c_char,
+    out_json: *mut *mut c_char,
+) -> i32 {
+    barrier(|| {
+        let slot = unsafe { out_ptr(out_json, "result_json") }?;
+        *slot = std::ptr::null_mut();
+        let input = unsafe { bytes_arg(bytes, len, "bytes") }?;
+        let opts = if opts.is_null() {
+            None
+        } else {
+            Some(unsafe { str_arg(opts, "options") }?)
+        };
+        let outcome = import::run(format, input, opts)?;
+        *slot = into_c_string(&outcome.json);
+        match outcome.failure {
+            None => Ok(()),
+            Some(message) => Err(Error::Model(message)),
+        }
     })
 }
 

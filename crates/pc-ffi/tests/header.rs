@@ -51,6 +51,7 @@ fields!(
     debug_panic,
     version,
     model_rhs_t,
+    import,
 );
 
 #[test]

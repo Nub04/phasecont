@@ -15,6 +15,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 pc-codegen = { path = "../pc-codegen" }
 pc-engine = { path = "../pc-engine" }
+pc-import = { path = "../pc-import" }
 pc-ir = { path = "../pc-ir" }
 pc-jit = { path = "../pc-jit" }
 pc-linalg = { path = "../pc-linalg" }

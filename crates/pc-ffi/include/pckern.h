@@ -173,7 +173,33 @@ typedef struct pc_api_v1_t {
    * (PC_ERR_BAD_ARG otherwise). A model that does not use t ignores it. */
   int32_t (*model_rhs_t)(uint64_t model, double t, const double *x, size_t nx,
                          const double *p, size_t np, double *out, size_t nout);
+
+  /* Translates a model written in another form into .ode text. format is
+   * PC_IMPORT_SBML (bytes is SBML, UTF-8) or PC_IMPORT_MATLAB (bytes is the
+   * text of func2str(h) or of a function file, UTF-8). At most 17 MiB. opts_json
+   * is NULL or a JSON object. SBML takes no options (NULL or {}). MATLAB takes
+   *   {"captures":[{"name":"k","value":[1,2]}],      values a handle captured
+   *    "params":[{"name":"a","value":0.1}],          p(1), p(2), ... in order
+   *    "state_names":["v","w"],                      one per state
+   *    "init":[0,1],                                 one per state
+   *    "title":"text"}
+   * Every key is optional. A one-element list may be written as its item, as
+   * MATLAB's jsonencode does. Any other key is PC_ERR_BAD_ARG. *result_json is NULL
+   * unless set; free it with free_string. On PC_OK it is
+   *   {"ok":true,"ode":"...","warnings":["..."]}
+   * A model the importer refuses (syntax, unsupported, undeclared, missingValue,
+   * mismatch, nameCollision, tooLarge, noDynamics, xml) returns PC_ERR_MODEL and
+   *   {"ok":false,"error":{"id":"phasecont:import:<kind>","kind":"<kind>",
+   *                        "message":"...","line":3,"col":9}}
+   * with line and col only when the error has a position. Nothing defaults to 0:
+   * a missing initial value or an undeclared name is an error. The importers
+   * read text and never run it. */
+  int32_t (*import)(uint32_t format, const char *bytes, size_t len,
+                    const char *opts_json, char **result_json);
 } pc_api_v1_t;
+
+#define PC_IMPORT_SBML 1
+#define PC_IMPORT_MATLAB 2
 
 /* The entry point, for loaders that resolve it by name. It returns NULL only
  * if a panic was caught. It is deliberately not declared as an imported
@@ -182,7 +208,7 @@ typedef struct pc_api_v1_t {
 typedef const pc_api_v1_t *(*pc_api_v1_fn)(void);
 
 /* Layout of pc_api_v1_t on 64-bit targets, in bytes. */
-#define PC_API_V1_SIZE 128
+#define PC_API_V1_SIZE 136
 #define PC_API_V1_OFFSET_ABI_VERSION 0
 #define PC_API_V1_OFFSET_STRUCT_SIZE 4
 #define PC_API_V1_OFFSET_MODEL_FROM_ODE 8
@@ -200,6 +226,7 @@ typedef const pc_api_v1_t *(*pc_api_v1_fn)(void);
 #define PC_API_V1_OFFSET_DEBUG_PANIC 104
 #define PC_API_V1_OFFSET_VERSION 112
 #define PC_API_V1_OFFSET_MODEL_RHS_T 120
+#define PC_API_V1_OFFSET_IMPORT 128
 
 #ifndef PCKERN_NO_LAYOUT_CHECK
 /* C89 negative-array checks: _Static_assert needs /std:c11 on MSVC. */
@@ -224,6 +251,7 @@ PC_CHECK_OFFSET(model_equilibrium, PC_API_V1_OFFSET_MODEL_EQUILIBRIUM);
 PC_CHECK_OFFSET(debug_panic, PC_API_V1_OFFSET_DEBUG_PANIC);
 PC_CHECK_OFFSET(version, PC_API_V1_OFFSET_VERSION);
 PC_CHECK_OFFSET(model_rhs_t, PC_API_V1_OFFSET_MODEL_RHS_T);
+PC_CHECK_OFFSET(import, PC_API_V1_OFFSET_IMPORT);
 #endif
 
 #ifdef __cplusplus
