@@ -124,7 +124,7 @@ P11 (VS Code extension and language server) was merged into `main` locally on 20
 P12a (`crates/pc-latex` and `pc-cli latex`): no C ABI change and no MATLAB API change yet. The crate has no new third-party dependency (`serde_json` and `proptest` were already in the tree). The `standalone` JSON key and the CLI flag go beyond the approved option list and are reported to the owner.
 
 - Tests: `pc-latex` has unit and `proptest` tests, 12 error tests, 7 golden tests and 3 compile tests. The compile tests ran against TeX Live 2026 `latexmk` with `PC_REQUIRE_LATEX=1`. `pc-cli` has 9 integration tests for `latex` and a parser test.
-- Not run: the MATLAB side and `LatexStudio` are P12b and P12c.
+- Not run on MATLAB: see P12b and P12c below.
 
 P12b, Rust side (`latex_render` in `pc-ffi`, gateway command `latex`): the C ABI grows from 23 to 24 members and from 176 to 184 bytes, with `abi_version` still 1. The owner approved this append and the gateway command. `pc-ffi` takes `pc-latex` as an in-workspace path dependency, so there is no new third-party crate.
 
@@ -132,6 +132,16 @@ P12b, Rust side (`latex_render` in `pc-ffi`, gateway command `latex`): the C ABI
 - Tests: `crates/pc-ffi/tests/latex.rs` (7 tests: figure equals the crate's output, table, external data files, every error kind, unknown kind, null and non-UTF-8 arguments) and `tests/header.rs` (the new member, offset 176, table size 184, and `PC_LATEX_*` against the Rust constants).
 - Checks: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (1514 passed, 0 failed, 3 ignored, with `PC_REQUIRE_LATEX=1` and `CUDA_VISIBLE_DEVICES=""`) and `cargo deny check` (advisories, bans, licenses, sources ok) pass.
 - Not run: the gateway command is only syntax-checked (`gcc -fsyntax-only -Wall -Wextra -std=c99` against the R2026b headers, no output). Nothing ran in MATLAB.
+
+P12b, MATLAB side (commits dd5c90b and 6927797, tests in 7d16cc7): `phasecont.latex.{figureFromBranch,pgfplots,specialTable,build}` and the internal helpers `latexJson`, `latexRender`, `latexWrite` and `latexTable`. `tests/LatexTest.m` checks that the API text equals the Rust output for the same figure, that a missing `Digits` raises, and the build and error paths. Nothing here has run in MATLAB, and the `latex` gateway command has not run in `mex`. Tests that need the gateway or `latexmk` are filtered when they are missing.
+
+P12c (commits f52e5d4 and fbe8860): `phasecont.app.LatexStudio` and `tests/LatexStudioTest.m` (20 tests that drive the app through its methods). Not run in MATLAB. The Branch menu and the toolbar callbacks are not driven by any test.
+
+- Scope cut: the optional pdf.js preview is not built, so `LatexStudio` has no `Preview` option and only opens the PDF in the system viewer. No pdf.js code is bundled, so `THIRD_PARTY_NOTICES.md` has no new entry.
+- Error "jump" is a context pane that shows the lines around the error. The `uitextarea` cursor API is not confirmed, so the editor does not move its cursor.
+- Insert always writes inline data, and Compile blocks the window.
+- Beyond the approved list, for the owner to rule on: the `Standalone` option (CLI flag, JSON key, MATLAB option); the `Executable` option on `build` and `LatexStudio`; the `Basename` option (defaults "figure" and "table"); the `Color` option of `figureFromBranch` (default black, `#000000`); the MATLAB error ids `phasecont:latex:{writeFailed,engineNotFound,badEngine}` and `phasecont:app:{badOpener,openFailed,saveFailed,empty,noSuchError,noPdf,noBranch}`.
+- Choices to confirm: `specialTable` columns are the free parameters plus the state variables for EP, LP and H, with row labels like `LP1` and type names from a small map; `Folder` is optional, and external data without `Folder` writes nothing; a one-point series renders invisibly; `build` has no time limit and leaves its temp folder; axis labels and titles are always escaped, so raw math labels are not supported; `compat=1.18` needs pgfplots 1.18 or newer; non-ASCII text passes through unescaped.
 
 P11a (`crates/pc-lsp`, commits 5be3cff and e9c5cc5): no C ABI change, no MATLAB API change. New direct dependencies: `lsp-server` 0.10.0, `lsp-types` 0.97.0 and `serde_json` (already in the tree), all with licences on the allowed list.
 
