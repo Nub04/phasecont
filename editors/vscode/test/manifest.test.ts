@@ -50,6 +50,35 @@ test("only approved runtime dependencies", () => {
   }
 });
 
+test("bundled packages have their license text shipped", () => {
+  const lock = JSON.parse(
+    fs.readFileSync(path.join(root, "package-lock.json"), "utf8"),
+  );
+  const text = fs.readFileSync(
+    path.join(root, "THIRD_PARTY_LICENSES.txt"),
+    "utf8",
+  );
+  const prod = Object.entries<{ version: string; dev?: boolean }>(
+    lock.packages,
+  ).filter(([name, p]) => name !== "" && !p.dev);
+  assert.ok(prod.length >= 8, `found ${prod.length} production packages`);
+  for (const [name, p] of prod) {
+    const short = name.replace(/^.*node_modules\//, "");
+    assert.ok(
+      text.includes(`${short} ${p.version} (`),
+      `${short} ${p.version} is missing from THIRD_PARTY_LICENSES.txt`,
+    );
+  }
+});
+
+test("shipped files are whitelisted", () => {
+  const ignore = fs.readFileSync(path.join(root, ".vscodeignore"), "utf8");
+  for (const f of ["LICENSE", "THIRD_PARTY_LICENSES.txt", "README.md"]) {
+    assert.ok(ignore.includes(`!${f}`), f);
+    assert.ok(fs.existsSync(path.join(root, f)), f);
+  }
+});
+
 test("language configuration compiles", () => {
   const cfg = JSON.parse(
     fs.readFileSync(path.join(root, "language-configuration.json"), "utf8"),

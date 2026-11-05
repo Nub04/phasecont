@@ -2,6 +2,7 @@
 !package.json
 !README.md
 !LICENSE
+!THIRD_PARTY_LICENSES.txt
 !language-configuration.json
 !syntaxes/**
 !dist/extension.js
