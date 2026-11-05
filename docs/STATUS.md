@@ -139,7 +139,7 @@ P9a (core types, CPU backend, kernel text, device list, self-test and the CLI) i
   - `ensemble --bench` runs both precisions on every device, labels each row and prints its sizes (1000, 10000 and 100000 members unless `--members` says otherwise). A device without double precision gets a `skipped` row.
   - The job file needs every key except `device`. `bounds` is a positive number, or `null` for no limit. Unknown keys are errors and each error names its key.
   - The self-test JSON has a `commit` field that is the value of `PC_GIT_COMMIT` at build time, or `null`. There is no `build.rs`.
-- Not done in this stage: the CUDA, OpenCL and Metal backends (P9b, P9c, P9e), the C ABI and MATLAB API (P9d), the CI jobs and the `benches/RESULTS.md` entry. The sections below cover each.
+- Not done in this stage: the CUDA, OpenCL and Metal backends (P9b, P9c, P9e), the C ABI and MATLAB API (P9d) and the hosted CI jobs. The sections below cover each.
 
 P9b (the CUDA backend) is written and tested on the CPU side only. Nothing ran on the GPU, MATLAB or Windows, because the owner asked for no local hardware runs on 2026-11-05.
 
@@ -168,7 +168,7 @@ P9d (the ensemble C ABI and the MATLAB API) is written and tested on the CPU sid
 - Rulings: `Backend` defaults to `"auto"` and `Device` to 0, the 0-based index within a backend. `MaxSteps` (100000), `Hmax` (Inf) and `Bounds` (Inf) default to the limits `simulate` uses. The method is inferred from the options (`Dt` gives RK4, `Rtol` with `Atol` gives Dormand-Prince). `refine` returns an `EnsembleResult`, not a `Trajectory`. Ensemble results are not saved in sessions.
 - `gpuSelfTest` runs in MATLAB with no extra ABI call. Its pass thresholds (5e-4 and 1e-3 in single precision, 1e-8 and 1e-7 in double) are my own and unvalidated. `pc-cli gpu selftest` runs the full tiers.
 - Things the first MATLAB run may break on: the step-count ranges in `EnsembleTest` (4000 to 4003 is my assumption about RK4 segment rounding), the self-test thresholds in single precision, `jsondecode` shapes for one-element arrays in `gpuDevices`, and the warning and error IDs the tests expect.
-- Not done yet: the CI jobs and the `benches/RESULTS.md` entry.
+- Not done yet: the GPU speed numbers in `benches/RESULTS.md`, which need a GPU run.
 
 P9e (the Metal backend) is written and type-checked only, on branch `phase9d-ensemble-api`. Nothing was linked or run on a Mac, and Metal has never compiled the kernel text.
 
@@ -177,6 +177,14 @@ P9e (the Metal backend) is written and type-checked only, on branch `phase9d-ens
 - Checks, run with `CUDA_VISIBLE_DEVICES=""`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --workspace` (1364 passed, 0 failed, 3 ignored) and `cargo deny check`.
 - The macOS build can be type-checked on Linux: `RUSTC_BOOTSTRAP=1 cargo check -Zbuild-std=std,panic_abort --target aarch64-apple-darwin -p pc-ensemble`, and the same with `clippy --all-targets -- -D warnings`. Both pass. They cover the macOS builds of `cudarc`, `opencl3` and the objc2 crates. They link and run nothing.
 - Open risks, all unverified on a Mac: whether Metal accepts hex-float literals, the `fp math_mode` and `fp contract` pragmas and `ulong` at its default language version, whether a watchdog stop arrives as error code 2 or as "Impacting Interactivity", and whether `FP_CONTRACT` is honoured. An Objective-C exception is not a panic, so `guard` cannot catch it. The calls used return `nil` or an `NSError` on failure.
+
+The hosted CI jobs (a1e0576, 08f1998) are written on `phase9d-ensemble-api` and have never run on GitHub. GitHub-hosted runners have no GPU, and there is no self-hosted runner.
+
+- `gpu-pocl` (ubuntu-latest, blocking): installs `pocl-opencl-icd`, `clinfo` and `clang`, then runs `device_selftest`, `dispatch`, `opencl_compile` and `msl_syntax`, and `pc-cli gpu selftest --backend opencl` in single and double precision. `PC_REQUIRE_GPU=opencl,clang-opencl,clang-msl` and `PC_REQUIRE_FP64=opencl` make a skip or a missing `cl_khr_fp64` fail the job. This is the only job that runs the OpenCL host path end to end, and it runs it on a CPU.
+- `gpu-nvrtc` (ubuntu-latest, blocking): downloads NVIDIA's `cuda_nvrtc` 13.4.59 redistributable archive, checks its SHA-256 and runs `cuda_compile` with `PC_REQUIRE_GPU=nvrtc`. It compiles the kernel to PTX and needs no driver or device. The same recipe passed locally against the pinned archive (6 tests).
+- `gpu-macos` (macos-15 and macos-26, `continue-on-error`): lists devices, writes the Metal kernels with `PC_DUMP_MSL`, compiles each with `xcrun metal`, then runs `device_selftest` with `--include-ignored` and `pc-cli gpu selftest --backend metal`. `PC_REQUIRE_GPU` is not set, so a runner with no Metal device prints `SKIPPED` and stays green.
+- Open risks: the PoCL package names and ICD loader on the runner image, whether the bit-exact tier passes on PoCL (its divide and contraction behaviour is unknown), whether the Metal toolchain downloads on the hosted Macs, and whether the hosted Macs show any Metal device. The `gpu-pocl` job is blocking, so it may fail on the first push.
+- New test: `tests/device_selftest.rs` runs the self-test on device 0 of each backend, in every precision the device supports. It skips loudly with no device. On macOS the OpenCL and Metal cases are `#[ignore]`d for the blocking `cargo test`. `msl_syntax` writes the kernels as `.metal` files when `PC_DUMP_MSL` names a folder.
 
 P10b (`pc-import` and the `import` C ABI function) is written and tested on the CPU side only, on branch `phase10-model-input`. Nothing ran on MATLAB or Windows, because the owner asked for no local runs on 2026-11-05.
 

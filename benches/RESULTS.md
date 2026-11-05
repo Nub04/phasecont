@@ -35,3 +35,13 @@ The Morris-Lecar end point agrees: pc-cli gives v = -35.950125, w = 0.13281562 a
 - Before commit 2e4e8c9, pc-cli took 235 ms on Morris-Lecar. Most of that was building a `serde_json::Value` for each of about 51000 points. The result is now written straight into one buffer, and the output is byte-identical.
 - Startup is about 2 ms slower than XPPAUT.
 - These are single runs on one machine and one build. Treat them as a rough comparison.
+
+# GPU ensemble
+
+Not measured yet. No GPU backend has run on a GPU. The numbers go here once someone runs the benchmark on hardware:
+
+```sh
+pc-cli ensemble --bench
+```
+
+Record the machine, the driver, the commit, the backend, the precision and N for each row, and include the sizes where the GPU is slower than the rayon CPU backend.
