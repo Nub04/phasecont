@@ -23,6 +23,8 @@ fn a_device_index_past_the_list_is_named() {
     assert!(e.contains("lists 1"), "{e}");
 }
 
+// Metal is built on macOS only. Every other backend is built everywhere.
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn a_backend_that_is_not_built_is_named() {
     let e = find_device(Backend::Metal, 0).unwrap_err();
@@ -112,6 +114,7 @@ fn run_on_the_cpu_matches_run_cpu_bit_for_bit() {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn run_on_a_device_of_an_unbuilt_backend_is_an_error() {
     let m = build_model(DECAY);

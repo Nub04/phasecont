@@ -34,11 +34,17 @@ fn list_names_every_backend_and_the_cpu_device() {
     for b in &backends[1..] {
         let state = b["state"].as_str().unwrap();
         match b["backend"].as_str().unwrap() {
-            // CUDA and OpenCL are built in. Each is available, or says why not.
+            // CUDA and OpenCL are built in everywhere, and Metal is built in on macOS. Each is
+            // available, or says why not.
             name @ ("cuda" | "opencl") => match state {
                 "available" => {}
                 "unavailable" => assert!(!b["why"].as_str().unwrap().is_empty(), "{b}"),
                 other => panic!("{name} is {other}: {b}"),
+            },
+            "metal" if cfg!(target_os = "macos") => match state {
+                "available" => {}
+                "unavailable" => assert!(!b["why"].as_str().unwrap().is_empty(), "{b}"),
+                other => panic!("metal is {other}: {b}"),
             },
             _ => assert_eq!(state, "not_built", "{b}"),
         }
@@ -85,6 +91,7 @@ fn the_cpu_selftest_passes_in_both_precisions() {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn a_backend_that_is_not_built_has_no_device() {
     let b = "metal";
