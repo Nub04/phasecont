@@ -1,0 +1,200 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "XPP ODE",
+  "scopeName": "source.ode",
+  "comment": "Written from crates/pc-ode/docs/language.md and the pc-ode lexer. Not derived from any other grammar. Names are case-insensitive, so every keyword rule uses (?i).",
+  "patterns": [
+    { "include": "#include" },
+    { "include": "#comment" },
+    { "include": "#active-comment" },
+    { "include": "#array-block" },
+    { "include": "#derived" },
+    { "include": "#options" },
+    { "include": "#declaration" },
+    { "include": "#word-statement" },
+    { "include": "#ode-left-side" },
+    { "include": "#function-definition" },
+    { "include": "#expression" }
+  ],
+  "repository": {
+    "include": {
+      "comment": "Only a lower-case #include followed by a blank is an include. #includes and #INCLUDE are comments.",
+      "match": "^[ \\t]*(#include)(?=[ \\t])[ \\t]*([^#\\r\\n]*?)[ \\t]*(?=#|$)",
+      "captures": {
+        "1": { "name": "keyword.control.import.include.ode" },
+        "2": { "name": "string.unquoted.filename.ode" }
+      },
+      "name": "meta.preprocessor.include.ode"
+    },
+    "comment": {
+      "name": "comment.line.number-sign.ode",
+      "match": "#.*$"
+    },
+    "active-comment": {
+      "comment": "A line that starts with a double quote is an XPPAUT active comment.",
+      "name": "comment.line.double-quote.ode",
+      "match": "^[ \\t]*\".*$"
+    },
+    "array-block": {
+      "patterns": [
+        {
+          "comment": "%[i1..i2] opens a block. The bracket part is tokenized by #index.",
+          "match": "^[ \\t]*(%)(?=\\[)",
+          "captures": { "1": { "name": "keyword.control.array.begin.ode" } }
+        },
+        {
+          "comment": "A % alone on its line closes the block.",
+          "match": "^[ \\t]*(%)[ \\t]*$",
+          "captures": { "1": { "name": "keyword.control.array.end.ode" } }
+        }
+      ]
+    },
+    "derived": {
+      "comment": "!name=expr is a derived parameter.",
+      "match": "^[ \\t]*(!)[ \\t]*([A-Za-z][A-Za-z0-9_]*(?:\\.(?!\\.)[A-Za-z0-9_]*)*)",
+      "captures": {
+        "1": { "name": "punctuation.definition.derived.ode" },
+        "2": { "name": "variable.other.derived.ode" }
+      }
+    },
+    "options": {
+      "comment": "An @ line is a list of name=value entries kept as text up to the next comma, blank or #.",
+      "begin": "^[ \\t]*(@)",
+      "beginCaptures": { "1": { "name": "punctuation.definition.options.ode" } },
+      "end": "(?=#)|$",
+      "name": "meta.options.ode",
+      "patterns": [
+        {
+          "match": "[A-Za-z_][A-Za-z0-9_]*(?=[ \\t]*=)",
+          "name": "entity.other.attribute-name.option.ode"
+        },
+        {
+          "match": "(?<==)[+-]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][+-]?\\d+)?(?=[\\s,#]|$)",
+          "name": "constant.numeric.ode"
+        },
+        {
+          "match": "(?<==)[^\\s,#]+",
+          "name": "string.unquoted.option-value.ode"
+        },
+        { "match": "=", "name": "keyword.operator.assignment.ode" },
+        { "match": ",", "name": "punctuation.separator.comma.ode" }
+      ]
+    },
+    "declaration": {
+      "comment": "For these nine declarations only the first letter counts (pzz a=2 declares a parameter). The word is a keyword only when a blank or the end of the line follows and the next non-blank character is not =.",
+      "match": "(?i)^[ \\t]*([mpwtaibgd][A-Za-z0-9_.]*)(?=[ \\t]*$|[ \\t]+[^=\\s])",
+      "captures": { "1": { "name": "keyword.control.declaration.ode" } }
+    },
+    "word-statement": {
+      "comment": "These keywords need the full word.",
+      "match": "(?i)^[ \\t]*(number|set|options|only|special|solv|export|volt|hom_bcs)(?=[ \\t]|$)(?![ \\t]*=)",
+      "captures": { "1": { "name": "keyword.control.declaration.ode" } }
+    },
+    "ode-left-side": {
+      "comment": "Only the state name is scoped here. The index, the quote, the /dt and the (0) or (t+1) parts are scoped by #expression.",
+      "patterns": [
+        {
+          "comment": "x'=...  and  x[j]'=...",
+          "match": "^[ \\t]*([A-Za-z][A-Za-z0-9_]*(?:\\.(?!\\.)[A-Za-z0-9_]*)*)(?=(?:\\[[^\\]\\r\\n]*\\])?'[ \\t]*=)",
+          "captures": { "1": { "name": "entity.name.variable.state.ode" } }
+        },
+        {
+          "comment": "dx/dt=...  and  dx[j]/dt=...",
+          "match": "(?i)^[ \\t]*(d[A-Za-z][A-Za-z0-9_]*(?:\\.(?!\\.)[A-Za-z0-9_]*)*)(?=(?:\\[[^\\]\\r\\n]*\\])?/dt[ \\t]*=)",
+          "captures": { "1": { "name": "entity.name.variable.state.ode" } }
+        },
+        {
+          "comment": "x(t+1)=...  and  x(0)=...  and  x[j](0)=...",
+          "match": "(?i)^[ \\t]*([A-Za-z][A-Za-z0-9_]*(?:\\.(?!\\.)[A-Za-z0-9_]*)*)(?=(?:\\[[^\\]\\r\\n]*\\])?\\([ \\t]*(?:t[ \\t]*\\+[ \\t]*1|0)[ \\t]*\\)[ \\t]*=)",
+          "captures": { "1": { "name": "entity.name.variable.state.ode" } }
+        }
+      ]
+    },
+    "function-definition": {
+      "comment": "f(u,v)=... A call-like left side whose arguments are all names.",
+      "match": "^[ \\t]*([A-Za-z][A-Za-z0-9_]*(?:\\.(?!\\.)[A-Za-z0-9_]*)*)[ \\t]*(\\()([ \\t]*[A-Za-z][A-Za-z0-9_.]*(?:[ \\t]*,[ \\t]*[A-Za-z][A-Za-z0-9_.]*)*[ \\t]*)(\\))(?=[ \\t]*=)",
+      "captures": {
+        "1": { "name": "entity.name.function.definition.ode" },
+        "2": { "name": "punctuation.section.parens.begin.ode" },
+        "3": {
+          "patterns": [
+            {
+              "match": "[A-Za-z][A-Za-z0-9_]*(?:\\.(?!\\.)[A-Za-z0-9_]*)*",
+              "name": "variable.parameter.function.ode"
+            },
+            { "match": ",", "name": "punctuation.separator.comma.ode" }
+          ]
+        },
+        "4": { "name": "punctuation.section.parens.end.ode" }
+      }
+    },
+    "index": {
+      "comment": "An array index: [1..10], [j], [j+1], [j-1], [j*2].",
+      "begin": "\\[",
+      "beginCaptures": { "0": { "name": "punctuation.section.brackets.begin.ode" } },
+      "end": "\\]",
+      "endCaptures": { "0": { "name": "punctuation.section.brackets.end.ode" } },
+      "name": "meta.array.index.ode",
+      "patterns": [
+        { "match": "\\.\\.", "name": "keyword.operator.range.ode" },
+        { "match": "(?i)\\bj\\b", "name": "variable.language.index.ode" },
+        { "match": "\\d+", "name": "constant.numeric.integer.ode" },
+        { "match": "[-+*]", "name": "keyword.operator.arithmetic.ode" }
+      ]
+    },
+    "number": {
+      "comment": "5, .5, 5., 1e2, 1.e-2. A dot followed by a dot ends the number, so 1..10 is 1, .., 10. e starts an exponent only before a digit or a sign and a digit.",
+      "match": "(?:\\d+(?:\\.(?!\\.)\\d*)?|\\.(?!\\.)\\d+)(?:[eE][+-]?\\d+)?",
+      "name": "constant.numeric.ode"
+    },
+    "expression": {
+      "patterns": [
+        { "include": "#index" },
+        { "match": "\\.\\.", "name": "keyword.operator.range.ode" },
+        {
+          "comment": "pi is a constant. e is not.",
+          "match": "(?i)pi(?![A-Za-z0-9_.])",
+          "name": "constant.language.pi.ode"
+        },
+        {
+          "match": "(?i)t(?![A-Za-z0-9_.])",
+          "name": "variable.language.time.ode"
+        },
+        {
+          "match": "(?i)arg[1-9](?![A-Za-z0-9_.])",
+          "name": "variable.language.argument.ode"
+        },
+        {
+          "match": "(?i)(?:if|then|else)(?![A-Za-z0-9_.])",
+          "name": "keyword.control.conditional.ode"
+        },
+        {
+          "match": "(?i)not(?![A-Za-z0-9_.])",
+          "name": "keyword.operator.logical.word.ode"
+        },
+        {
+          "comment": "The names in crates/pc-ode/src/builtins.rs, plus sum, which starts sum(..)of(..).",
+          "match": "(?i)(?:sin|cos|tan|asin|acos|atan|atan2|sinh|cosh|tanh|exp|ln|log|log10|sqrt|abs|heav|sign|mod|min|max|flr|ceil|erf|erfc|lgamma|besselj|bessely|ran|normal|poisson|delay|shift|del_shft|sum)(?![A-Za-z0-9_.])(?=\\()",
+          "name": "support.function.builtin.ode"
+        },
+        {
+          "match": "[A-Za-z][A-Za-z0-9_]*(?:\\.(?!\\.)[A-Za-z0-9_]*)*(?=\\()",
+          "name": "entity.name.function.call.ode"
+        },
+        { "include": "#number" },
+        {
+          "match": "[A-Za-z][A-Za-z0-9_]*(?:\\.(?!\\.)[A-Za-z0-9_]*)*",
+          "name": "variable.other.ode"
+        },
+        { "match": "\\*\\*|\\^|[-+*/]", "name": "keyword.operator.arithmetic.ode" },
+        { "match": "<=|>=|==|!=|<|>", "name": "keyword.operator.comparison.ode" },
+        { "match": "[&|]", "name": "keyword.operator.logical.ode" },
+        { "match": "=", "name": "keyword.operator.assignment.ode" },
+        { "match": "[!%]", "name": "keyword.operator.other.ode" },
+        { "match": "'", "name": "punctuation.definition.derivative.ode" },
+        { "match": "[{}]", "name": "punctuation.section.braces.ode" },
+        { "match": "[(),;]", "name": "punctuation.separator.ode" }
+      ]
+    }
+  }
+}

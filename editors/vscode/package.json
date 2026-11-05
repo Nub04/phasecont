@@ -1,0 +1,99 @@
+{
+  "name": "phasecont-ode",
+  "displayName": "PhaseCont .ode",
+  "description": "Syntax highlighting, diagnostics, hover, completion and quick fixes for XPP/XPPAUT .ode files, from the PhaseCont language server.",
+  "version": "0.1.0",
+  "publisher": "nub04",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Nub04/phasecont.git",
+    "directory": "editors/vscode"
+  },
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "keywords": [
+    "ode",
+    "xpp",
+    "xppaut",
+    "phasecont",
+    "dynamical systems"
+  ],
+  "main": "./dist/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    }
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "ode",
+        "aliases": [
+          "XPP ODE",
+          "ode"
+        ],
+        "extensions": [
+          ".ode"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "ode",
+        "scopeName": "source.ode",
+        "path": "./syntaxes/ode.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "PhaseCont",
+      "properties": {
+        "phasecont.server.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "Path to the `pc-lsp` executable. Leave empty to use the server that ships inside this extension. A path that does not exist is an error; the extension does not fall back to the bundled server."
+        },
+        "phasecont.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Log the messages between VS Code and the language server in the PhaseCont output channel."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "phasecont.restartServer",
+        "title": "PhaseCont: Restart Language Server"
+      }
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p .",
+    "build": "tsc -p .",
+    "bundle": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node22 --minify",
+    "test": "tsc -p . && node --test \"out/test/**/*.test.js\""
+  },
+  "dependencies": {
+    "vscode-languageclient": "9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/vscode": "1.100.0",
+    "esbuild": "0.28.2",
+    "typescript": "6.0.3",
+    "vscode-oniguruma": "2.0.1",
+    "vscode-textmate": "9.3.2"
+  }
+}
