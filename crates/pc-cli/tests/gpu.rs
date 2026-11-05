@@ -1,5 +1,6 @@
-//! Runs `pc-cli gpu list` and `pc-cli gpu selftest`. Only the CPU backend exists in this
-//! build, so every other backend must report that it has no device.
+//! Runs `pc-cli gpu list` and `pc-cli gpu selftest`. The CPU and CUDA backends exist in this
+//! build. Backends that are not built must report that they have no device, and so must
+//! CUDA on a machine without a driver.
 
 mod common;
 
@@ -31,7 +32,16 @@ fn list_names_every_backend_and_the_cpu_device() {
     assert_eq!(names, ["cpu", "cuda", "opencl", "metal"]);
     assert_eq!(backends[0]["state"], "available");
     for b in &backends[1..] {
-        assert_eq!(b["state"], "not_built", "{b}");
+        let state = b["state"].as_str().unwrap();
+        match b["backend"].as_str().unwrap() {
+            // CUDA is built in. It is available, or it says why not.
+            "cuda" => match state {
+                "available" => {}
+                "unavailable" => assert!(!b["why"].as_str().unwrap().is_empty(), "{b}"),
+                other => panic!("cuda is {other}: {b}"),
+            },
+            _ => assert_eq!(state, "not_built", "{b}"),
+        }
     }
     let d = &v["devices"][0];
     assert_eq!(d["backend"], "cpu");
@@ -77,7 +87,7 @@ fn the_cpu_selftest_passes_in_both_precisions() {
 
 #[test]
 fn a_backend_that_is_not_built_has_no_device() {
-    for b in ["cuda", "opencl", "metal"] {
+    for b in ["opencl", "metal"] {
         let o = run(
             &scratch(),
             &["gpu", "selftest", "--backend", b, "--precision", "single"],

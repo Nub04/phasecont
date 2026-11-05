@@ -5,7 +5,7 @@ mod common;
 use std::sync::atomic::AtomicBool;
 
 use common::*;
-use pc_ensemble::device::{Backend, DeviceInfo, find_device};
+use pc_ensemble::device::{Backend, BackendState, DeviceInfo, find_device, list_devices};
 use pc_ensemble::run::run_on;
 use pc_ensemble::{EnsembleError, Method, Precision, run_cpu};
 
@@ -25,10 +25,44 @@ fn a_device_index_past_the_list_is_named() {
 
 #[test]
 fn a_backend_that_is_not_built_is_named() {
-    for b in [Backend::Cuda, Backend::OpenCl, Backend::Metal] {
+    for b in [Backend::OpenCl, Backend::Metal] {
         let e = find_device(b, 0).unwrap_err();
         assert!(e.contains(b.name()), "{e}");
         assert!(e.contains("not built"), "{e}");
+    }
+}
+
+#[test]
+fn the_cuda_lookup_agrees_with_the_backend_state() {
+    // This holds on a machine with a GPU and on one without.
+    let list = list_devices();
+    let state = list
+        .backends
+        .iter()
+        .find(|(b, _)| *b == Backend::Cuda)
+        .map(|(_, s)| s.clone())
+        .expect("cuda is listed");
+    let count = list
+        .devices
+        .iter()
+        .filter(|d| d.backend == Backend::Cuda)
+        .count();
+    match state {
+        BackendState::Available => {
+            assert!(count > 0);
+            let d = find_device(Backend::Cuda, 0).expect("device 0");
+            assert!(d.fp32 && d.fp64);
+            assert!(d.driver.contains("NVRTC"), "{}", d.driver);
+            let e = find_device(Backend::Cuda, count).unwrap_err();
+            assert!(e.contains(&format!("lists {count}")), "{e}");
+        }
+        BackendState::Unavailable(why) => {
+            assert_eq!(count, 0);
+            let e = find_device(Backend::Cuda, 0).unwrap_err();
+            assert!(e.contains("cannot start") && e.contains(&why), "{e}");
+            skip_gpu("cuda", &why);
+        }
+        BackendState::NotBuilt => panic!("the cuda backend is built into this binary"),
     }
 }
 
@@ -59,20 +93,57 @@ fn run_on_a_device_of_an_unbuilt_backend_is_an_error() {
         Method::Rk4 { dt: 0.01 },
         Precision::Double,
     );
-    let fake = DeviceInfo {
-        backend: Backend::Cuda,
-        index: 0,
+    let e = run_on(&fake(Backend::OpenCl, 0), &j, &AtomicBool::new(false)).unwrap_err();
+    let EnsembleError::Unsupported(text) = e else {
+        panic!("expected Unsupported, got {e:?}");
+    };
+    assert!(text.contains("opencl"), "{text}");
+}
+
+#[test]
+fn run_on_a_cuda_device_that_is_not_there_is_unavailable() {
+    // Device 9999 does not exist on any machine, and a machine with no driver has none at all.
+    let m = build_model(DECAY);
+    let j = job(
+        &m,
+        1,
+        &[1.0],
+        &[1.0],
+        1.0,
+        Method::Rk4 { dt: 0.01 },
+        Precision::Double,
+    );
+    let e = run_on(&fake(Backend::Cuda, 9999), &j, &AtomicBool::new(false)).unwrap_err();
+    assert!(matches!(e, EnsembleError::GpuUnavailable(_)), "{e:?}");
+}
+
+#[test]
+fn the_job_is_checked_before_the_cuda_library_is_touched() {
+    let m = build_model(DECAY);
+    let j = job(
+        &m,
+        1,
+        &[1.0, 2.0],
+        &[1.0],
+        1.0,
+        Method::Rk4 { dt: 0.01 },
+        Precision::Double,
+    );
+    let want = run_cpu(&j, u64::MAX, &AtomicBool::new(false)).unwrap_err();
+    let got = run_on(&fake(Backend::Cuda, 0), &j, &AtomicBool::new(false)).unwrap_err();
+    assert_eq!(got, want);
+}
+
+fn fake(backend: Backend, index: usize) -> DeviceInfo {
+    DeviceInfo {
+        backend,
+        index,
         name: "fake".into(),
         driver: "0".into(),
         fp32: true,
         fp64: true,
         memory_bytes: None,
-    };
-    let e = run_on(&fake, &j, &AtomicBool::new(false)).unwrap_err();
-    let EnsembleError::Unsupported(text) = e else {
-        panic!("expected Unsupported, got {e:?}");
-    };
-    assert!(text.contains("cuda"), "{text}");
+    }
 }
 
 #[test]

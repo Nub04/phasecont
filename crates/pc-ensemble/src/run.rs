@@ -3,6 +3,7 @@
 use std::sync::atomic::AtomicBool;
 
 use crate::cpu::run_cpu;
+use crate::cuda::run_cuda;
 use crate::device::{Backend, DeviceInfo};
 use crate::job::{EnsembleError, EnsembleResult, Job};
 
@@ -17,6 +18,7 @@ pub fn run_on(
 ) -> Result<EnsembleResult, EnsembleError> {
     match device.backend {
         Backend::Cpu => run_cpu(job, u64::MAX, cancel),
+        Backend::Cuda => run_cuda(device, job, cancel),
         other => Err(EnsembleError::Unsupported(format!(
             "the {} backend is not built into this binary",
             other.name()

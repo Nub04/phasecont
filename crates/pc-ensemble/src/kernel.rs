@@ -10,7 +10,7 @@
 //! the buffers described in [`crate::abi`], so the host relaunches until no member is
 //! running.
 //!
-//! Only the C dialect has an entry point so far. The OpenCL, CUDA and Metal entries come
+//! The C and CUDA dialects have an entry point so far. The OpenCL and Metal entries come
 //! with their backends.
 
 use pc_codegen::kernel::{Dialect, KernelError, Scalar, emit_rhs, float_literal, prelude};
@@ -43,12 +43,16 @@ pub fn kernel_source(
 ) -> Result<String, KernelError> {
     // The prelude comes first so that a dialect without the scalar reports that first.
     let mut s = prelude(dialect, scalar)?;
-    if !matches!(dialect, Dialect::C) {
-        return Err(KernelError::Unsupported(format!(
-            "{} entry point",
-            dialect.name()
-        )));
-    }
+    let entry = match dialect {
+        Dialect::C => ENTRY_C,
+        Dialect::Cuda => ENTRY_CUDA,
+        Dialect::OpenCl | Dialect::Msl => {
+            return Err(KernelError::Unsupported(format!(
+                "{} entry point",
+                dialect.name()
+            )));
+        }
+    };
     s.push_str(&format!("#define PC_N {}u\n", tape.n));
     s.push_str(&format!("#define PC_WL {}u\n", work_len(tape.n)));
     s.push_str(&format!("#define PC_CTL {CTL}u\n"));
@@ -72,7 +76,7 @@ pub fn kernel_source(
             s.push_str(DP5);
         }
     }
-    s.push_str(ENTRY_C);
+    s.push_str(entry);
     Ok(s)
 }
 
@@ -504,5 +508,23 @@ void pc_ens(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0, PC_IN pc
         pc_member(rc, segm, x0 + m * PC_N, par + m * pstride, work + m * PC_WL,
                   out + m * (pc_ulong)ns * PC_N, ctl + m * PC_CTL, steps, max_steps, ns);
     }
+}
+"#;
+
+/// One thread per member. The grid may hold more threads than members, so the guard comes
+/// first. `extern "C"` keeps the name that the host looks up.
+const ENTRY_CUDA: &str = r#"
+extern "C" __global__ void pc_ens(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
+                                  PC_IN pc_real *par, PC_GLOBAL pc_real *work,
+                                  PC_GLOBAL pc_real *out, PC_GLOBAL pc_uint *ctl,
+                                  pc_ulong members, pc_ulong steps, pc_uint max_steps,
+                                  pc_uint ns, pc_ulong pstride)
+{
+    pc_ulong m = (pc_ulong)blockIdx.x * blockDim.x + threadIdx.x;
+    if (m >= members) {
+        return;
+    }
+    pc_member(rc, segm, x0 + m * PC_N, par + m * pstride, work + m * PC_WL,
+              out + m * (pc_ulong)ns * PC_N, ctl + m * PC_CTL, steps, max_steps, ns);
 }
 "#;

@@ -8,6 +8,9 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# Loaded at run time (dynamic-loading), never linked. cuda-13000 only picks the library names.
+cudarc = { version = "0.19.10", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-13000"] }
+libloading = "0.9.0"
 libm = "0.2.16"
 pc-codegen = { path = "../pc-codegen" }
 pc-ir = { path = "../pc-ir" }
@@ -15,5 +18,4 @@ pc-ode = { path = "../pc-ode" }
 rayon = "1.11"
 
 [dev-dependencies]
-libloading = "0.9.0"
 pc-engine = { path = "../pc-engine" }

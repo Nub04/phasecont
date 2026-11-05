@@ -106,3 +106,19 @@ pub fn run_err(job: &Job) -> EnsembleError {
 pub fn bits(v: &[f64]) -> Vec<u64> {
     v.iter().map(|x| x.to_bits()).collect()
 }
+
+/// True when `PC_REQUIRE_GPU` (a comma list such as `cuda,opencl`) names `backend`.
+pub fn gpu_required(backend: &str) -> bool {
+    std::env::var("PC_REQUIRE_GPU")
+        .map(|v| v.split(',').any(|b| b.trim() == backend))
+        .unwrap_or(false)
+}
+
+/// Ends a GPU test that cannot run. It prints `SKIPPED: ...` so a green run shows that no
+/// GPU ran, and it panics when `PC_REQUIRE_GPU` names the backend.
+pub fn skip_gpu(backend: &str, why: &str) {
+    if gpu_required(backend) {
+        panic!("PC_REQUIRE_GPU names {backend}, but there is no {backend} device: {why}");
+    }
+    eprintln!("SKIPPED: no {backend} device ({why})");
+}

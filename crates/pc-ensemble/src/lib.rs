@@ -2,6 +2,7 @@
 
 pub mod abi;
 pub mod cpu;
+pub mod cuda;
 pub mod device;
 pub mod job;
 pub mod kernel;

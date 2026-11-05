@@ -215,13 +215,24 @@ fn a_job_file_that_is_not_json_is_a_usage_error() {
 }
 
 #[test]
-fn a_backend_that_is_not_built_has_no_device() {
-    let mut job = decay_job();
-    job["backend"] = json!("cuda");
-    let o = run_job("cuda", DECAY, &job);
-    assert_eq!(code(&o), 3);
-    assert!(stderr(&o).contains("cuda"), "{}", stderr(&o));
-    assert_eq!(stdout(&o), "");
+fn a_backend_that_cannot_run_has_no_device() {
+    // Pick a GPU backend that is not usable in this process: not built, or built but with no
+    // driver or device. A machine where every backend works skips this part, loudly.
+    let list = pc_ensemble::device::list_devices();
+    let down = list.backends.iter().find(|(b, s)| {
+        *b != pc_ensemble::device::Backend::Cpu
+            && *s != pc_ensemble::device::BackendState::Available
+    });
+    if let Some((backend, _)) = down {
+        let mut job = decay_job();
+        job["backend"] = json!(backend.name());
+        let o = run_job("down", DECAY, &job);
+        assert_eq!(code(&o), 3);
+        assert!(stderr(&o).contains(backend.name()), "{}", stderr(&o));
+        assert_eq!(stdout(&o), "");
+    } else {
+        eprintln!("SKIPPED: every GPU backend works here, so none can be missing");
+    }
     let mut job = decay_job();
     job["device"] = json!(5);
     let o = run_job("device5", DECAY, &job);

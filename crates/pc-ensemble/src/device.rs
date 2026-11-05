@@ -75,13 +75,18 @@ fn cpu_device() -> DeviceInfo {
 }
 
 /// Every device that can run an ensemble now.
+///
+/// The first call probes the GPU libraries, so it can take a moment on a machine with a
+/// driver. A library that is missing shows up as [`BackendState::Unavailable`].
 pub fn list_devices() -> DeviceList {
-    let devices = vec![cpu_device()];
+    let mut devices = vec![cpu_device()];
+    devices.extend(crate::cuda::devices());
     let backends = Backend::ALL
         .into_iter()
         .map(|b| {
             let state = match b {
                 Backend::Cpu => BackendState::Available,
+                Backend::Cuda => crate::cuda::backend_state(),
                 _ => BackendState::NotBuilt,
             };
             (b, state)

@@ -173,6 +173,16 @@ pub enum EnsembleError {
     ToleranceTooTight(String),
     /// The model uses a construct the ensemble kernels cannot run. The text names it.
     Unsupported(String),
+    /// The backend cannot start: a library is missing, the driver is too old or there is no
+    /// device. The text says which.
+    GpuUnavailable(String),
+    /// The device compiler rejected the kernel, or the compiled kernel did not load. The text
+    /// carries the compiler log when there is one.
+    GpuCompile(String),
+    /// A copy, a launch or a synchronize failed on the device. The text names the step.
+    GpuLaunch(String),
+    /// The driver stopped a launch that ran too long (the Windows display watchdog).
+    GpuTimeout(String),
     Cancelled,
 }
 
@@ -182,6 +192,10 @@ impl fmt::Display for EnsembleError {
             EnsembleError::BadJob(m) => write!(f, "bad ensemble job: {m}"),
             EnsembleError::ToleranceTooTight(m) => write!(f, "tolerance too tight: {m}"),
             EnsembleError::Unsupported(m) => write!(f, "unsupported model: {m}"),
+            EnsembleError::GpuUnavailable(m) => write!(f, "GPU unavailable: {m}"),
+            EnsembleError::GpuCompile(m) => write!(f, "GPU compile failed: {m}"),
+            EnsembleError::GpuLaunch(m) => write!(f, "GPU launch failed: {m}"),
+            EnsembleError::GpuTimeout(m) => write!(f, "GPU launch timed out: {m}"),
             EnsembleError::Cancelled => write!(f, "ensemble run cancelled"),
         }
     }

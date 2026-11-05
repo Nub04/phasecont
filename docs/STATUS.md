@@ -139,7 +139,15 @@ P9a (core types, CPU backend, kernel text, device list, self-test and the CLI) i
   - `ensemble --bench` runs both precisions on every device, labels each row and prints its sizes (1000, 10000 and 100000 members unless `--members` says otherwise). A device without double precision gets a `skipped` row.
   - The job file needs every key except `device`. `bounds` is a positive number, or `null` for no limit. Unknown keys are errors and each error names its key.
   - The self-test JSON has a `commit` field that is the value of `PC_GIT_COMMIT` at build time, or `null`. There is no `build.rs`.
-- Not done yet: CUDA (P9b), OpenCL (P9c), the C ABI and MATLAB API (P9d, which asks before any default tolerance), Metal (P9e), the README "Test your GPU" section, the CI jobs, the `dllimports` check for `nvcuda`, `nvrtc` and `OpenCL`, and the `benches/RESULTS.md` entry.
+- Not done yet: OpenCL (P9c), the C ABI and MATLAB API (P9d, which asks before any default tolerance), Metal (P9e), the README "Test your GPU" section, the CI jobs and the `benches/RESULTS.md` entry.
+
+P9b (the CUDA backend) is written and tested on the CPU side only. Nothing ran on the GPU, MATLAB or Windows, because the owner asked for no local hardware runs on 2026-11-05.
+
+- `crates/pc-ensemble/src/cuda.rs` adds the NVRTC lookup, the PTX or cubin route, the probe, `compile_ptx_text`, `run_cuda` and the chunked launch loop. `list_devices` and `run_on` use it. The error type has `GpuUnavailable`, `GpuCompile`, `GpuLaunch` and `GpuTimeout`.
+- `cudarc` 0.19.10 is a new dependency (MIT or Apache-2.0, `cargo deny check` passes), and `libloading` moved from a dev-dependency to a dependency.
+- Checks, run with `CUDA_VISIBLE_DEVICES=""`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (no failures) and `cargo deny check`. `tests/cuda_compile.rs` ran for real against the WSL toolkit's NVRTC. The dispatch tests print `SKIPPED: no cuda device (cuInit: CUDA_ERROR_NO_DEVICE)`.
+- `pc-cli dll-imports` already rejects every DLL that is not on its allow-list, so `nvcuda`, `nvrtc` and `OpenCL` fail it. A unit test now says so. The staged `pckern.dll` was not rechecked.
+- Open risks: `run_cuda` has never run on a device. The macOS build of `cudarc` is unverified. A test that calls `list_devices` starts CUDA when `libcuda` is visible, so a machine with a GPU and a driver runs those tests on the device.
 
 P8 (v1.0 packaging and the release workflow, plan approved) was built on branch `phase8-release` and is now on `main`. It was accepted on 2026-11-04, when the tagged `release.yml` run published a `.mltbx` that installs and runs on all three platforms.
 

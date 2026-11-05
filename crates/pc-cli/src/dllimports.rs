@@ -105,4 +105,21 @@ mod tests {
             assert!(!is_allowed(bad), "{bad}");
         }
     }
+
+    /// The GPU backends load their libraries at run time. A static or delay-load import of one
+    /// would stop `pckern.dll` from loading on a machine without that driver.
+    #[test]
+    fn gpu_libraries_are_never_allowed_imports() {
+        for gpu in [
+            "nvcuda.dll",
+            "NVCUDA.dll",
+            "nvrtc64_130_0.dll",
+            "nvrtc64_120_0.dll",
+            "nvrtc-builtins64_130.dll",
+            "OpenCL.dll",
+            "opencl.dll",
+        ] {
+            assert!(!is_allowed(gpu), "{gpu}");
+        }
+    }
 }
