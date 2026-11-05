@@ -124,7 +124,14 @@ P11 (VS Code extension and language server) was merged into `main` locally on 20
 P12a (`crates/pc-latex` and `pc-cli latex`): no C ABI change and no MATLAB API change yet. The crate has no new third-party dependency (`serde_json` and `proptest` were already in the tree). The `standalone` JSON key and the CLI flag go beyond the approved option list and are reported to the owner.
 
 - Tests: `pc-latex` has unit and `proptest` tests, 12 error tests, 7 golden tests and 3 compile tests. The compile tests ran against TeX Live 2026 `latexmk` with `PC_REQUIRE_LATEX=1`. `pc-cli` has 9 integration tests for `latex` and a parser test.
-- Not run: the MATLAB side, the C ABI function, the gateway command and `LatexStudio` are P12b and P12c.
+- Not run: the MATLAB side and `LatexStudio` are P12b and P12c.
+
+P12b, Rust side (`latex_render` in `pc-ffi`, gateway command `latex`): the C ABI grows from 23 to 24 members and from 176 to 184 bytes, with `abi_version` still 1. The owner approved this append and the gateway command. `pc-ffi` takes `pc-latex` as an in-workspace path dependency, so there is no new third-party crate.
+
+- Ruling: a document the renderer rejects returns `PC_ERR_BAD_PROBLEM` (6) with the error object in `out_json`, and an unknown kind or a bad pointer returns `PC_ERR_BAD_ARG` (2) and leaves the slot NULL. No new error code. This follows the `import` and ensemble precedents. SPEC section 10 has the details.
+- Tests: `crates/pc-ffi/tests/latex.rs` (7 tests: figure equals the crate's output, table, external data files, every error kind, unknown kind, null and non-UTF-8 arguments) and `tests/header.rs` (the new member, offset 176, table size 184, and `PC_LATEX_*` against the Rust constants).
+- Checks: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (1514 passed, 0 failed, 3 ignored, with `PC_REQUIRE_LATEX=1` and `CUDA_VISIBLE_DEVICES=""`) and `cargo deny check` (advisories, bans, licenses, sources ok) pass.
+- Not run: the gateway command is only syntax-checked (`gcc -fsyntax-only -Wall -Wextra -std=c99` against the R2026b headers, no output). Nothing ran in MATLAB.
 
 P11a (`crates/pc-lsp`, commits 5be3cff and e9c5cc5): no C ABI change, no MATLAB API change. New direct dependencies: `lsp-server` 0.10.0, `lsp-types` 0.97.0 and `serde_json` (already in the tree), all with licences on the allowed list.
 
