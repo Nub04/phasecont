@@ -106,11 +106,16 @@ pub fn pack<T: Real>(job: &Job, checked: &Checked, tape: &Tape) -> Packed<T> {
     }
 }
 
+/// True when no member of the first `members` is still running in `ctl`.
+pub fn ctl_done(ctl: &[u32], members: usize) -> bool {
+    let running = u32::from(Status::Running.code());
+    (0..members).all(|m| ctl[m * CTL] != running)
+}
+
 impl<T: Real> Packed<T> {
     /// True when no member is still running.
     pub fn done(&self) -> bool {
-        let running = u32::from(Status::Running.code());
-        (0..self.members).all(|m| self.ctl[m * CTL] != running)
+        ctl_done(&self.ctl, self.members)
     }
 
     /// Turns the buffers of a finished run into a result.

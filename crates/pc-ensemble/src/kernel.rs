@@ -10,8 +10,8 @@
 //! the buffers described in [`crate::abi`], so the host relaunches until no member is
 //! running.
 //!
-//! The C and CUDA dialects have an entry point so far. The OpenCL and Metal entries come
-//! with their backends.
+//! The C, CUDA and OpenCL dialects have an entry point so far. The Metal entry comes with its
+//! backend.
 
 use pc_codegen::kernel::{Dialect, KernelError, Scalar, emit_rhs, float_literal, prelude};
 
@@ -46,7 +46,8 @@ pub fn kernel_source(
     let entry = match dialect {
         Dialect::C => ENTRY_C,
         Dialect::Cuda => ENTRY_CUDA,
-        Dialect::OpenCl | Dialect::Msl => {
+        Dialect::OpenCl => ENTRY_OPENCL,
+        Dialect::Msl => {
             return Err(KernelError::Unsupported(format!(
                 "{} entry point",
                 dialect.name()
@@ -521,6 +522,24 @@ extern "C" __global__ void pc_ens(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN
                                   pc_uint ns, pc_ulong pstride)
 {
     pc_ulong m = (pc_ulong)blockIdx.x * blockDim.x + threadIdx.x;
+    if (m >= members) {
+        return;
+    }
+    pc_member(rc, segm, x0 + m * PC_N, par + m * pstride, work + m * PC_WL,
+              out + m * (pc_ulong)ns * PC_N, ctl + m * PC_CTL, steps, max_steps, ns);
+}
+"#;
+
+/// One work item per member, as in the CUDA entry. The global size is rounded up to a whole
+/// work group, so the guard comes first.
+const ENTRY_OPENCL: &str = r#"
+__kernel void pc_ens(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
+                     PC_IN pc_real *par, PC_GLOBAL pc_real *work,
+                     PC_GLOBAL pc_real *out, PC_GLOBAL pc_uint *ctl,
+                     pc_ulong members, pc_ulong steps, pc_uint max_steps,
+                     pc_uint ns, pc_ulong pstride)
+{
+    pc_ulong m = (pc_ulong)get_global_id(0);
     if (m >= members) {
         return;
     }

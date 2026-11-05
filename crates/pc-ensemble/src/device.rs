@@ -81,12 +81,14 @@ fn cpu_device() -> DeviceInfo {
 pub fn list_devices() -> DeviceList {
     let mut devices = vec![cpu_device()];
     devices.extend(crate::cuda::devices());
+    devices.extend(crate::opencl::devices());
     let backends = Backend::ALL
         .into_iter()
         .map(|b| {
             let state = match b {
                 Backend::Cpu => BackendState::Available,
                 Backend::Cuda => crate::cuda::backend_state(),
+                Backend::OpenCl => crate::opencl::backend_state(),
                 _ => BackendState::NotBuilt,
             };
             (b, state)

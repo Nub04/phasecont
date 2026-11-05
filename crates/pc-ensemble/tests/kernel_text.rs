@@ -1,6 +1,7 @@
-//! The CUDA kernel text, checked without a compiler or a device.
+//! The CUDA and OpenCL kernel text, checked without a compiler or a device.
 //!
-//! These tests read the text. Whether NVRTC accepts it is checked in `cuda_compile.rs`.
+//! These tests read the text. Whether NVRTC accepts the CUDA text is checked in
+//! `cuda_compile.rs`, and whether clang accepts the OpenCL text in `opencl_compile.rs`.
 
 mod common;
 
@@ -90,13 +91,70 @@ fn the_same_model_gives_the_same_text() {
 }
 
 #[test]
+fn the_opencl_entry_is_one_guarded_work_item_per_member() {
+    for (i, s) in BOTH {
+        let text = source(VDP, i, s, Dialect::OpenCl);
+        assert_eq!(text.matches("__kernel").count(), 1, "{i:?} {s:?}");
+        assert!(text.contains("__kernel void pc_ens("), "{i:?} {s:?}");
+        assert!(text.contains("get_global_id(0)"), "{i:?} {s:?}");
+        let guard = text.find("if (m >= members)").expect("guard");
+        let call = text.rfind("pc_member(rc").expect("call");
+        assert!(guard < call, "the guard comes before the member call");
+        assert!(!text.contains("for (m = 0u"), "{i:?} {s:?}");
+    }
+}
+
+#[test]
+fn the_opencl_text_rounds_every_operation() {
+    for (i, s) in BOTH {
+        let text = source(VDP, i, s, Dialect::OpenCl);
+        assert!(
+            text.contains("#pragma OPENCL FP_CONTRACT OFF"),
+            "{i:?} {s:?}"
+        );
+        assert!(!text.contains("fast_relaxed"), "{i:?} {s:?}");
+    }
+}
+
+#[test]
+fn the_opencl_text_asks_for_fp64_only_in_double() {
+    let single = source(VDP, Integrator::Rk4, Scalar::F32, Dialect::OpenCl);
+    let double = source(VDP, Integrator::Rk4, Scalar::F64, Dialect::OpenCl);
+    assert!(!single.contains("cl_khr_fp64"));
+    assert!(double.contains("cl_khr_fp64"));
+    assert!(single.contains("typedef float pc_real;"));
+    assert!(double.contains("typedef double pc_real;"));
+}
+
+#[test]
+fn the_opencl_text_has_no_host_only_constructs() {
+    for (i, s) in BOTH {
+        let text = source(VDP, i, s, Dialect::OpenCl);
+        for bad in ["#include", "pc_shim_init", "static inline", "pc_tbl"] {
+            assert!(!text.contains(bad), "{i:?} {s:?}: {bad}");
+        }
+    }
+}
+
+#[test]
+fn the_opencl_dp5_tables_live_in_constant_memory() {
+    let text = source(VDP, Integrator::Dp5, Scalar::F64, Dialect::OpenCl);
+    assert!(text.contains("#define PC_CONSTANT __constant"));
+    for table in ["pc_cn", "pc_am", "pc_em"] {
+        assert!(
+            text.contains(&format!("PC_CONSTANT pc_real {table}[")),
+            "{table}"
+        );
+    }
+}
+
+#[test]
 fn a_dialect_without_an_entry_point_is_named() {
     let tape = Tape::build(&build_model(DECAY)).expect("tape");
-    for d in [Dialect::OpenCl, Dialect::Msl] {
-        let e = kernel_source(&tape, Integrator::Rk4, Scalar::F32, d).unwrap_err();
-        let KernelError::Unsupported(m) = e else {
-            panic!("expected Unsupported, got {e:?}");
-        };
-        assert!(m.contains(d.name()), "{m}");
-    }
+    let d = Dialect::Msl;
+    let e = kernel_source(&tape, Integrator::Rk4, Scalar::F32, d).unwrap_err();
+    let KernelError::Unsupported(m) = e else {
+        panic!("expected Unsupported, got {e:?}");
+    };
+    assert!(m.contains(d.name()), "{m}");
 }

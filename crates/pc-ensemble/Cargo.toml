@@ -12,6 +12,8 @@ rust-version.workspace = true
 cudarc = { version = "0.19.10", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-13000"] }
 libloading = "0.9.0"
 libm = "0.2.16"
+# Loaded at run time (dynamic), never linked. Default features off, so no extension bindings.
+opencl3 = { version = "0.12.4", default-features = false, features = ["dynamic"] }
 pc-codegen = { path = "../pc-codegen" }
 pc-ir = { path = "../pc-ir" }
 pc-ode = { path = "../pc-ode" }

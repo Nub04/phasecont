@@ -6,6 +6,7 @@ use crate::cpu::run_cpu;
 use crate::cuda::run_cuda;
 use crate::device::{Backend, DeviceInfo};
 use crate::job::{EnsembleError, EnsembleResult, Job};
+use crate::opencl::run_opencl;
 
 /// Runs `job` on `device`, in one launch on the CPU and in chunked launches on a GPU.
 ///
@@ -19,6 +20,7 @@ pub fn run_on(
     match device.backend {
         Backend::Cpu => run_cpu(job, u64::MAX, cancel),
         Backend::Cuda => run_cuda(device, job, cancel),
+        Backend::OpenCl => run_opencl(device, job, cancel),
         other => Err(EnsembleError::Unsupported(format!(
             "the {} backend is not built into this binary",
             other.name()

@@ -197,6 +197,9 @@ pub fn prelude(d: Dialect, s: Scalar) -> Result<String, KernelError> {
             if !f32_ {
                 t.push_str("#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n");
             }
+            // A compiler may fuse a multiply and an add on its own. The ensemble kernel must
+            // round every operation, so it matches the CPU backend operation for operation.
+            t.push_str("#pragma OPENCL FP_CONTRACT OFF\n");
             let _ = writeln!(t, "typedef {real} pc_real;");
             t.push_str("typedef uint pc_uint;\ntypedef ulong pc_ulong;\n");
             t.push_str(

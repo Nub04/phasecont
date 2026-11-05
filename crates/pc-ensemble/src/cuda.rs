@@ -20,24 +20,22 @@
 //! K starts small and follows the measured time of the last launch so that one launch takes
 //! about 100 ms, well under the 2 s Windows display watchdog.
 
-use std::any::Any;
 use std::ffi::{CString, c_char};
-use std::mem::ManuallyDrop;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::atomic::AtomicBool;
+use std::time::Instant;
 
 use cudarc::driver::{
     CudaContext, CudaFunction, DeviceRepr, DriverError, LaunchConfig, PushKernelArg, result,
     sys as dsys,
 };
 use cudarc::nvrtc::{self, CompileError, CompileOptions, Ptx, compile_ptx_with_opts, sys as nsys};
-use pc_codegen::kernel::{Dialect, KernelError, Scalar};
+use pc_codegen::kernel::{Dialect, Scalar};
 
 use crate::abi::{Packed, integrator_of, pack};
 use crate::device::{Backend, BackendState, DeviceInfo};
+use crate::gpu::{drive, guard, kernel_err};
 use crate::job::{EnsembleError, EnsembleResult, Job, Label, Precision, validate};
 use crate::kernel::{Integrator, kernel_source};
 use crate::real::Real;
@@ -47,39 +45,8 @@ use crate::tape::Tape;
 const ENTRY: &str = "pc_ens";
 /// Threads per block. Small enough for a register-heavy double precision kernel.
 const BLOCK: u32 = 64;
-/// How long one launch should take.
-const TARGET: Duration = Duration::from_millis(100);
-/// Step attempts of the first launch, which also times a cold kernel.
-const FIRST_STEPS: u64 = 16;
-/// Most step attempts one launch may ask for.
-const MAX_STEPS_PER_LAUNCH: u64 = 1 << 32;
 /// `CUDA_ERROR_LAUNCH_TIMEOUT`: the driver stopped a launch that ran too long.
 const LAUNCH_TIMEOUT: u32 = 702;
-
-/// Runs `f` and returns its panic as text.
-fn guard<T>(f: impl FnOnce() -> T) -> Result<T, String> {
-    catch_unwind(AssertUnwindSafe(f)).map_err(|payload| {
-        let msg = payload_text(&*payload);
-        // Dropping the payload runs its Drop code, which could panic again. A second panic
-        // leaves the payload undropped for good, which is what we want.
-        let mut payload = ManuallyDrop::new(payload);
-        // SAFETY: the payload is dropped at most once, here, and never used afterwards.
-        let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
-            ManuallyDrop::drop(&mut payload)
-        }));
-        msg
-    })
-}
-
-fn payload_text(p: &(dyn Any + Send)) -> String {
-    if let Some(s) = p.downcast_ref::<&str>() {
-        (*s).to_owned()
-    } else if let Some(s) = p.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "a panic with no text".to_owned()
-    }
-}
 
 /// Formats a driver error as "step: CUDA_ERROR_NAME".
 fn drv_text(step: &str, e: &DriverError) -> String {
@@ -450,28 +417,8 @@ pub fn compile_ptx_text(
     guard(|| ptx.to_src()).map_err(|m| EnsembleError::GpuCompile(format!("panic in NVRTC: {m}")))
 }
 
-fn kernel_err(e: KernelError) -> EnsembleError {
-    match e {
-        KernelError::Unsupported(m) => EnsembleError::Unsupported(m),
-        other => EnsembleError::Unsupported(format!("{other:?}")),
-    }
-}
-
 // ---------------------------------------------------------------------------------------
 // Running
-
-/// The step attempts of the next launch, given that `steps` took `took`.
-///
-/// It aims at [`TARGET`], grows at most fourfold per launch (the first launches time a cold
-/// kernel) and shrinks at once.
-pub fn next_steps(steps: u64, took: Duration) -> u64 {
-    let secs = took.as_secs_f64().max(1e-6);
-    let want = steps as f64 * TARGET.as_secs_f64() / secs;
-    let capped = want
-        .min(steps as f64 * 4.0)
-        .min(MAX_STEPS_PER_LAUNCH as f64);
-    (capped as u64).max(1)
-}
 
 /// Runs `job` on the CUDA device `device`.
 ///
@@ -592,12 +539,7 @@ fn launch_all<T: Real + DeviceRepr>(
     let pstride = packed.pstride as u64;
     let max_steps = packed.max_steps;
 
-    let mut steps = FIRST_STEPS;
-    let mut before = packed.ctl.clone();
-    let ctl = loop {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(EnsembleError::Cancelled);
-        }
+    drive(&mut packed.ctl, members as usize, cancel, |steps| {
         let started = Instant::now();
         {
             let mut b = stream.launch_builder(function);
@@ -624,21 +566,8 @@ fn launch_all<T: Real + DeviceRepr>(
         stream
             .synchronize()
             .map_err(drv("synchronize after copy"))?;
-        packed.ctl.clone_from(&ctl);
-        if packed.done() {
-            break ctl;
-        }
-        // A launch asks every running member for at least one step attempt, and an attempt
-        // changes a counter. Control words that did not change mean the kernel did nothing.
-        if ctl == before {
-            return Err(EnsembleError::GpuLaunch(
-                "no member advanced in a launch of the kernel".into(),
-            ));
-        }
-        before = ctl;
-        steps = next_steps(steps, took);
-    };
-    packed.ctl = ctl;
+        Ok((took, ctl))
+    })?;
     packed.out = stream.clone_dtoh(&out).map_err(drv("copy out to host"))?;
     packed.work = stream.clone_dtoh(&work).map_err(drv("copy work to host"))?;
     stream
@@ -650,6 +579,7 @@ fn launch_all<T: Real + DeviceRepr>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pc_codegen::kernel::KernelError;
 
     #[test]
     fn the_route_follows_the_driver_and_nvrtc_release() {
@@ -658,29 +588,6 @@ mod tests {
         assert_eq!(select(13000, 13, 1), Some(Route::Cubin));
         assert_eq!(select(12080, 13, 4), None);
         assert_eq!(select(13010, 13, 1), Some(Route::Ptx));
-    }
-
-    #[test]
-    fn a_panic_becomes_text_and_the_guard_stays_usable() {
-        let msg = guard::<()>(|| panic!("inner {}", 7)).unwrap_err();
-        assert_eq!(msg, "inner 7");
-        let msg = guard::<()>(|| panic!("plain")).unwrap_err();
-        assert_eq!(msg, "plain");
-        assert_eq!(guard(|| 5), Ok(5));
-    }
-
-    #[test]
-    fn the_launch_size_aims_at_the_target() {
-        // A launch that took half the target doubles; one that took far less grows fourfold.
-        assert_eq!(next_steps(1000, TARGET / 2), 2000);
-        assert_eq!(next_steps(1000, Duration::from_micros(10)), 4000);
-        // A launch that took twice the target halves, and the size never reaches zero.
-        assert_eq!(next_steps(1000, TARGET * 2), 500);
-        assert_eq!(next_steps(1, TARGET * 100), 1);
-        assert_eq!(
-            next_steps(MAX_STEPS_PER_LAUNCH, Duration::from_micros(1)),
-            MAX_STEPS_PER_LAUNCH
-        );
     }
 
     #[test]

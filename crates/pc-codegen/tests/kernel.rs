@@ -253,6 +253,7 @@ fn the_other_dialects_name_their_address_spaces() {
     let cl = prelude(Dialect::OpenCl, Scalar::F64).unwrap();
     assert!(cl.contains("cl_khr_fp64"));
     assert!(cl.contains("__global"));
+    assert!(cl.contains("#pragma OPENCL FP_CONTRACT OFF"));
     assert!(
         !prelude(Dialect::OpenCl, Scalar::F32)
             .unwrap()
