@@ -49,6 +49,55 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo deny check
 
+  # The VS Code extension and the pc-lsp server it starts. This job stages the
+  # extension folder with the linux-x64 server. It builds no .vsix, because
+  # the packaging tool is not approved yet (docs/STATUS.md, open decisions).
+  vscode:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.99.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Build pc-lsp
+        run: cargo build --release -p pc-lsp
+      - name: Place the server and check that it starts
+        run: |
+          set -eu
+          mkdir -p editors/vscode/server/linux-x64
+          cp target/release/pc-lsp editors/vscode/server/linux-x64/pc-lsp
+          editors/vscode/server/linux-x64/pc-lsp --version
+      - name: Install the npm packages without running install scripts
+        working-directory: editors/vscode
+        run: npm ci --ignore-scripts
+      - name: Typecheck and run the tests
+        working-directory: editors/vscode
+        run: npm test
+      - name: Bundle the extension
+        working-directory: editors/vscode
+        run: npm run bundle
+      - name: Stage the extension folder
+        run: |
+          set -eu
+          s=build/vscode-extension
+          mkdir -p "$s"
+          cd editors/vscode
+          cp -r package.json README.md LICENSE THIRD_PARTY_LICENSES.txt \
+            language-configuration.json syntaxes server "../../$s/"
+          mkdir "../../$s/dist"
+          cp dist/extension.js "../../$s/dist/"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vscode-extension-linux-x64
+          path: build/vscode-extension
+          if-no-files-found: error
+
   pckern-win:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
