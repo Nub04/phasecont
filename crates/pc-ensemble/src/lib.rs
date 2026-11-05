@@ -7,6 +7,7 @@ pub mod device;
 pub mod gpu;
 pub mod job;
 pub mod kernel;
+pub mod metal;
 pub mod opencl;
 pub mod real;
 pub mod run;
