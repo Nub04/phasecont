@@ -646,6 +646,15 @@ fn a_byte_order_mark_is_accepted() {
     from_sbml(&bytes).unwrap();
 }
 
+/// MATLAB decodes a file with a non-UTF-8 `encoding="..."` declaration and hands over UTF-8, so
+/// the reader must not trust the declaration.
+#[test]
+fn a_declared_latin1_encoding_is_ignored_for_utf8_text() {
+    let text = doc(3, &decay("initialConcentration=\"1\"")).replace("UTF-8", "ISO-8859-1");
+    assert!(text.contains("ISO-8859-1"));
+    from_sbml(text.as_bytes()).unwrap();
+}
+
 #[test]
 fn oversize_files_are_refused() {
     let big = vec![b' '; sbml::MAX_XML + 1];
