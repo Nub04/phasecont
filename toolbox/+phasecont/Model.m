@@ -8,6 +8,13 @@ classdef Model < handle
     %   f = m.rhs(x, p, t)    % t: time, needed when the equations use t
     %   F = m.rhs(X, p)       % X is n-by-k, one point per column; F is n-by-k
     %   m = phasecont.Model.fromSource(text, Name = "model.ode")
+    %   m = phasecont.Model.fromEquations(text, Params = P, Init = X0)
+    %   m = phasecont.Model.fromTable(States = T, Params = P, Init = X0)
+    %   m = phasecont.Model.fromFunction(@(t,x,p) ..., Init = X0)
+    %   m = phasecont.Model.fromFile("model.xml")   % .ode, .xml, .sbml, .m
+    %
+    % Every route ends as .ode text handed to fromSource, so sessions,
+    % continuation and the ensemble engine treat all models alike.
     %
     % The model lives in the engine and is freed when the object is deleted
     % or cleared. Saving a Model stores its source text, and loading it
@@ -217,6 +224,172 @@ classdef Model < handle
             end
             obj = phasecont.Model(options.Name, ...
                 Evaluator = options.Evaluator, Source = text);
+        end
+
+        function obj = fromEquations(text, options)
+            % M = phasecont.Model.fromEquations(TEXT, Params = struct(...),
+            % Init = struct(...), Name = "equations.ode") builds a model from
+            % equation lines such as
+            %
+            %   x' = y
+            %   dy/dt = -x - c*y
+            %
+            % Params and Init are structs of numbers. The engine reads them as
+            % `par` and `init` lines added after the equations, so a parser
+            % diagnostic keeps the line number of TEXT. TEXT is one string or
+            % a string array with one line per entry.
+            %
+            % Nothing is defaulted. A state without an Init entry raises
+            % phasecont:model:missingInit, an Init name that is not a state
+            % raises phasecont:model:unknownInit, and a symbol that is neither
+            % a state nor a parameter is a parse error with its line and
+            % column. TEXT must not hold `init` lines; use fromSource for a
+            % complete .ode text.
+            arguments
+                text string {mustBeNonmissing}
+                options.Params (1,1) struct = struct()
+                options.Init (1,1) struct = struct()
+                options.Name (1,1) string = "equations.ode"
+                options.Evaluator (1,1) string {mustBeMember(options.Evaluator, ["" "jit" "fallback" "aot"])} = ""
+            end
+            text = join(text(:), newline);
+            lines = splitlines(text);
+            if any(~cellfun(@isempty, regexp(cellstr(lines), ...
+                    '^\s*(i|ic|init)\s+[A-Za-z_]', 'once', 'ignorecase')))
+                error("phasecont:model:initInText", ...
+                    "The equation text has an init line. Remove it and " + ...
+                    "pass Init, or use Model.fromSource for a complete " + ...
+                    ".ode text.");
+            end
+            source = phasecont.internal.odeText(text, options.Params, ...
+                options.Init);
+            obj = phasecont.Model.fromSource(source, Name = options.Name, ...
+                Evaluator = options.Evaluator);
+            given = string(fieldnames(options.Init));
+            missing = setdiff(obj.Variables, given, "stable");
+            if ~isempty(missing)
+                error("phasecont:model:missingInit", ...
+                    "No initial value for %s. Give one in Init.", ...
+                    join(missing, ", "));
+            end
+            extra = setdiff(given, obj.Variables, "stable");
+            if ~isempty(extra)
+                error("phasecont:model:unknownInit", ...
+                    "Init has names that are not states of the model: %s.", ...
+                    join(extra, ", "));
+            end
+        end
+
+        function obj = fromTable(options)
+            % M = phasecont.Model.fromTable(States = T, Params = P, Init = X,
+            % Aux = A) builds a model from tables or structs.
+            %
+            %   States  table with Name and Rhs columns (and an optional Init
+            %           column), or a struct of right-hand sides
+            %   Params  table with Name and Value columns, or a struct
+            %   Init    table with Name and Value columns, or a struct
+            %   Aux     table with Name and Expr columns, or a struct
+            %
+            % A right-hand side is text, or a number for a constant. A NaN in
+            % the Init column of States means no value was given, and the
+            % model then raises phasecont:model:missingInit. The rules of
+            % fromEquations apply from there on.
+            arguments
+                options.States = []
+                options.Params = struct()
+                options.Init = struct()
+                options.Aux = struct()
+                options.Name (1,1) string = "table.ode"
+                options.Evaluator (1,1) string {mustBeMember(options.Evaluator, ["" "jit" "fallback" "aot"])} = ""
+            end
+            if isnumeric(options.States) && isempty(options.States)
+                error("phasecont:model:badTable", ...
+                    "States is required: a table with Name and Rhs columns " + ...
+                    "or a struct of right-hand sides.");
+            end
+            [eq, p, x0] = phasecont.internal.tableToEquations( ...
+                options.States, options.Params, options.Init, options.Aux);
+            obj = phasecont.Model.fromEquations(eq, Params = p, Init = x0, ...
+                Name = options.Name, Evaluator = options.Evaluator);
+        end
+
+        function obj = fromFunction(h, options)
+            % M = phasecont.Model.fromFunction(@(t,x,p) [...], Init = x0,
+            % Params = struct(...), StateNames = ["x" "y"]) translates a
+            % MATLAB function handle into a model. The engine reads the text
+            % of the handle and never calls it, so only a subset of MATLAB
+            % works: arithmetic, indexing, the usual math functions, and
+            % assignments in a function file. Loops, if and unknown calls
+            % raise phasecont:import:unsupported with their position.
+            %
+            % Numeric vectors the handle captured become constants. Params is
+            % a struct whose field order gives p(1), p(2), and so on. Init
+            % holds one value per state and has no default; leaving it out
+            % raises phasecont:import:missingValue.
+            arguments
+                h (1,1) function_handle
+                options.Init double = zeros(0, 1)
+                options.Params (1,1) struct = struct()
+                options.StateNames string = strings(0, 1)
+                options.Name (1,1) string = "function.ode"
+                options.Evaluator (1,1) string {mustBeMember(options.Evaluator, ["" "jit" "fallback" "aot"])} = ""
+            end
+            [text, opts, skipped] = phasecont.internal.importRequest(h, ...
+                options.Init(:), options.Params, options.StateNames(:), "");
+            ode = phasecont.internal.importText("matlab", text, opts, skipped);
+            obj = phasecont.Model.fromSource(ode, Name = options.Name, ...
+                Evaluator = options.Evaluator);
+        end
+
+        function obj = fromFile(file, options)
+            % M = phasecont.Model.fromFile(FILE) reads a model by file
+            % extension:
+            %
+            %   .ode            an XPP/XPPAUT file, as phasecont.Model(FILE)
+            %   .xml, .sbml     SBML levels 2 and 3 (species, parameters,
+            %                   compartments, reactions, rate and assignment
+            %                   rules; events, delays and algebraic rules are
+            %                   refused by name)
+            %   .m              a MATLAB function file, translated as in
+            %                   fromFunction
+            %
+            % Init, Params and StateNames apply to .m files only. Passing them
+            % with another extension raises phasecont:model:badOption.
+            arguments
+                file (1,1) string
+                options.Init double = zeros(0, 1)
+                options.Params (1,1) struct = struct()
+                options.StateNames string = strings(0, 1)
+                options.Evaluator (1,1) string {mustBeMember(options.Evaluator, ["" "jit" "fallback" "aot"])} = ""
+            end
+            [~, stem, ext] = fileparts(file);
+            ext = lower(string(ext));
+            given = ~isempty(options.Init) || ~isempty(fieldnames(options.Params)) ...
+                || ~isempty(options.StateNames);
+            if ext == ".m"
+                [text, opts, skipped] = phasecont.internal.importRequest( ...
+                    file, options.Init(:), options.Params, ...
+                    options.StateNames(:), "");
+                ode = phasecont.internal.importText("matlab", text, opts, skipped);
+            elseif any(ext == [".ode" ".xml" ".sbml"])
+                if given
+                    error("phasecont:model:badOption", ...
+                        "Init, Params and StateNames apply to .m files only. " + ...
+                        "A %s file holds its own values.", ext);
+                end
+                if ext == ".ode"
+                    obj = phasecont.Model(file, Evaluator = options.Evaluator);
+                    return
+                end
+                text = phasecont.internal.readSbml(file);
+                ode = phasecont.internal.importText("sbml", text);
+            else
+                error("phasecont:model:badOption", ...
+                    "Cannot read a %s file. The extensions are .ode, .xml, " + ...
+                    ".sbml and .m.", ext);
+            end
+            obj = phasecont.Model.fromSource(ode, Name = string(stem) + ".ode", ...
+                Evaluator = options.Evaluator);
         end
 
         function obj = loadobj(s)
