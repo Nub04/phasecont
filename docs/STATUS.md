@@ -119,6 +119,18 @@ P7a (complete on branch `phase7a-matlab-api`, cut from 390bfb1; merged into `mai
 
 ## In progress
 
+P11 (VS Code extension and language server) is on branch `phase11-vscode-lsp`, approved with P12 on 2026-11-05. The plan is in SPEC section 13. Nothing is pushed.
+
+P11a (`crates/pc-lsp`, commits 5be3cff and e9c5cc5): no C ABI change, no MATLAB API change. New direct dependencies: `lsp-server` 0.10.0, `lsp-types` 0.97.0 and `serde_json` (already in the tree), all with licences on the allowed list.
+
+- The server is `lsp-server` plus a loop of its own: requests before `initialize` are refused, queued messages are applied in order and each changed document is analysed once, and a request flushes the queue first. Open buffers are served to `#include` before disk, and includes are read only inside the workspace folders or the document's directory. A diagnostic in an included file goes to that file, and an edit to an included file re-checks the open documents that read it. `shutdown` then `exit` gives code 0, `exit` alone gives 1. Every handler and every analysis runs under `catch_unwind`.
+- Features: hover, completion (trigger `@`), document symbols, go to definition, quick fixes from fix-its.
+- `pc-ode` change: `options::NAMES` and `options::NUMBERED` are public, so completion can list option names.
+- Checks at e9c5cc5: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (1460 passed, 0 failed, 3 ignored) and `cargo deny check` (advisories, bans, licenses, sources ok) pass, with `CUDA_VISIBLE_DEVICES=""`. `pc-lsp` has unit tests, `tests/diagnostics.rs` (every file in `pc-ode/tests/invalid`), `tests/overlay.rs`, `tests/session.rs` (14, over an in-memory connection) and `tests/stdio.rs` (6, over the real binary's pipes).
+- `#![allow(clippy::mutable_key_type)]` is set for the crate: `lsp_types::Uri` holds a `Cell`, but its `Hash` and `Eq` read only the text.
+- Known limits: an include that changes on disk outside the editor is picked up at the next edit of the file that includes it, and an include that did not exist is not seen as a dependency until then. Malformed message headers are resynchronised on a best-effort basis. Windows `file:///C:/...` handling has not run on Windows.
+- Still to do in P11: `editors/vscode/` (P11b), packaging, CI job `vscode` and the README section (P11c). The VS Code UI is never run here.
+
 P9 (GPU ensemble engine) and P10 (model input routes and the editor app) had an approved plan. The stacked branches `phase9-gpu-ensemble`, `phase10-model-input` and `phase9d-ensemble-api` were fast-forwarded into `main` locally on 2026-11-05 (835ff12), with the version kept at 1.0.0. Nothing is pushed: `origin/main` is still at efd172e. The plan approval covered the appended C ABI functions, the MATLAB API additions, the new dependencies and the new hosted CI jobs. Nothing in P9 or P10 has run on MATLAB, a GPU or Windows yet. Only `cargo` on the CPU has run.
 
 P9a (core types, CPU backend, kernel text, device list, self-test and the CLI) is committed on `phase9-gpu-ensemble`, with no C ABI change and no MATLAB API change.
