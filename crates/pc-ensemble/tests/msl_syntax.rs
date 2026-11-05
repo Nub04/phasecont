@@ -7,7 +7,9 @@
 //! check what only Metal's compiler knows (address-space rules, the `[[buffer]]` attributes,
 //! the pragmas), so it shows nothing about whether a Mac accepts the text. A machine without
 //! clang++ skips these tests with a `SKIPPED` line, and `PC_REQUIRE_GPU=clang-msl` turns that
-//! skip into a failure. The hosted macOS job compiles the text with Metal itself.
+//! skip into a failure. The hosted macOS job compiles the text with Metal itself: it sets
+//! `PC_DUMP_MSL` to a folder, this file writes each kernel there as a `.metal` file, and the
+//! job runs Apple's `metal` tool on them.
 
 mod common;
 
@@ -74,6 +76,15 @@ fn check(src: &str, name: &str) -> Result<Option<()>, String> {
     }
 }
 
+/// Writes `src` to `$PC_DUMP_MSL/<name>.metal` when that variable is set.
+fn dump(src: &str, name: &str) {
+    if let Some(dir) = std::env::var_os("PC_DUMP_MSL") {
+        let dir = PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).expect("create the dump folder");
+        std::fs::write(dir.join(format!("{name}.metal")), src).expect("write the kernel");
+    }
+}
+
 fn kernel(model: &str, i: Integrator) -> String {
     let tape = Tape::build(&build_model(model)).expect("tape");
     kernel_source(&tape, i, Scalar::F32, Dialect::Msl).expect("kernel source")
@@ -84,6 +95,7 @@ fn every_model_and_integrator_parses_as_cpp_with_the_shim() {
     for (n, model) in [DECAY, VDP, OSC, MIXED].into_iter().enumerate() {
         for i in VARIANTS {
             let src = kernel(model, i);
+            dump(&src, &format!("m{n}-{i:?}"));
             match check(&src, &format!("m{n}-{i:?}")) {
                 Ok(Some(())) => {}
                 Ok(None) => {
