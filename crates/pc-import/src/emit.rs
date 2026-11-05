@@ -93,9 +93,10 @@ pub fn emit(m: &OdeModel) -> Result<Imported> {
     known.extend(m.params.iter().map(|(n, _)| n.as_str()));
     known.extend(m.states.iter().map(|s| s.name.as_str()));
     let fixed_names: HashSet<&str> = m.fixed.iter().map(|(n, _)| n.as_str()).collect();
-    for (i, (n, e)) in m.fixed.iter().enumerate() {
-        let earlier: HashSet<&str> = m.fixed[..i].iter().map(|(n, _)| n.as_str()).collect();
+    let mut earlier: HashSet<&str> = HashSet::new();
+    for (n, e) in &m.fixed {
         check_reads(e, n, &known, &earlier, &fixed_names)?;
+        earlier.insert(n.as_str());
     }
     let all_fixed = fixed_names.clone();
     for s in &m.states {

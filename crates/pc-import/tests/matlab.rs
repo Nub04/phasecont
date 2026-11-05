@@ -373,3 +373,27 @@ mod no_panic {
         }
     }
 }
+
+#[test]
+fn longest_allowed_chain_still_loads() {
+    // A left-nested sum is printed with one bracket pair per term. Find how many terms the
+    // translator accepts and check that the `.ode` reader accepts the same text.
+    let mut accepted = 0;
+    for terms in [10usize, 60, 100, 140, 149, 150, 160, 400] {
+        let body: String = std::iter::once("x(1)".to_string())
+            .chain((1..terms).map(|_| "+x(1)".to_string()))
+            .collect();
+        let r = from_function(&FunctionInput {
+            text: &format!("@(t,x) {body}"),
+            state_names: Some(&s(&["x"])),
+            init: &[1.0],
+            ..Default::default()
+        });
+        if let Ok(imp) = r {
+            let mut m = load(&imp.ode);
+            near(m.f(&[1.0], &[], 0.0)[0], terms as f64);
+            accepted = terms;
+        }
+    }
+    assert!(accepted >= 100, "only {accepted} terms accepted");
+}
