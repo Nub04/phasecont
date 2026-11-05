@@ -19,6 +19,7 @@ use crate::ensemble::{self, EnsHandle};
 use crate::error::{Error, Result, bad_arg};
 use crate::import;
 use crate::json::problem::{Kind, Mode, parse_options, parse_problem};
+use crate::latex;
 use crate::model::{ModelHandle, NOT_COMPILED};
 use crate::parse::{MAX_MODEL_TEXT, parse_model};
 use crate::registry::{self, Handle};
@@ -472,6 +473,32 @@ pub unsafe extern "C" fn import(
         match outcome.failure {
             None => Ok(()),
             Some(message) => Err(Error::Model(message)),
+        }
+    })
+}
+
+/// Renders a figure or table document to LaTeX (`kind` 1 is pgfplots, 2 is a table). On
+/// success `out_json` is `{"ok":true,"tex":...,"data_files":[{"name","content"}]}`. A document
+/// that `pc-latex` rejects returns `PC_ERR_BAD_PROBLEM` and sets `out_json` to
+/// `{"ok":false,"error":{"id","kind","message"}}`. An unknown `kind` or a bad pointer returns
+/// `PC_ERR_BAD_ARG` and leaves `out_json` NULL. The caller frees the string either way.
+///
+/// # Safety
+/// `doc_json` must be NUL-terminated and `out_json` valid for one pointer write.
+pub unsafe extern "C" fn latex_render(
+    kind: u32,
+    doc_json: *const c_char,
+    out_json: *mut *mut c_char,
+) -> i32 {
+    barrier(|| {
+        let slot = unsafe { out_ptr(out_json, "result_json") }?;
+        *slot = std::ptr::null_mut();
+        let doc = unsafe { str_arg(doc_json, "doc_json") }?;
+        let outcome = latex::run(kind, doc)?;
+        *slot = into_c_string(&outcome.json);
+        match outcome.failure {
+            None => Ok(()),
+            Some(message) => Err(Error::BadProblem(message)),
         }
     })
 }

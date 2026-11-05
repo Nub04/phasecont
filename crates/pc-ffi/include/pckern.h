@@ -265,10 +265,24 @@ typedef struct pc_api_v1_t {
   /* Asks the worker to stop at its next check. Safe to call twice and after the
    * run ended. The run then polls as cancelled. */
   int32_t (*ens_cancel)(uint64_t ens);
+
+  /* Renders a figure or table document (UTF-8 JSON, NUL-terminated) to LaTeX.
+   * kind is PC_LATEX_*. On success *result_json is
+   * {"ok":true,"tex":"...","data_files":[{"name":"...","content":"..."}]}.
+   * A document the renderer rejects returns PC_ERR_BAD_PROBLEM and sets
+   * *result_json to {"ok":false,"error":{"id":"phasecont:latex:<kind>",
+   * "kind":"<kind>","message":"..."}}. An unknown kind or a bad pointer is
+   * PC_ERR_BAD_ARG and leaves *result_json NULL. Free the string with
+   * free_string. The call reads and writes no files. */
+  int32_t (*latex_render)(uint32_t kind, const char *doc_json,
+                          char **result_json);
 } pc_api_v1_t;
 
 #define PC_IMPORT_SBML 1
 #define PC_IMPORT_MATLAB 2
+
+#define PC_LATEX_PGFPLOTS 1
+#define PC_LATEX_TABLE 2
 
 /* The entry point, for loaders that resolve it by name. It returns NULL only
  * if a panic was caught. It is deliberately not declared as an imported
@@ -277,7 +291,7 @@ typedef struct pc_api_v1_t {
 typedef const pc_api_v1_t *(*pc_api_v1_fn)(void);
 
 /* Layout of pc_api_v1_t on 64-bit targets, in bytes. */
-#define PC_API_V1_SIZE 176
+#define PC_API_V1_SIZE 184
 #define PC_API_V1_OFFSET_ABI_VERSION 0
 #define PC_API_V1_OFFSET_STRUCT_SIZE 4
 #define PC_API_V1_OFFSET_MODEL_FROM_ODE 8
@@ -301,6 +315,7 @@ typedef const pc_api_v1_t *(*pc_api_v1_fn)(void);
 #define PC_API_V1_OFFSET_ENS_POLL 152
 #define PC_API_V1_OFFSET_ENS_COPY 160
 #define PC_API_V1_OFFSET_ENS_CANCEL 168
+#define PC_API_V1_OFFSET_LATEX_RENDER 176
 
 #ifndef PCKERN_NO_LAYOUT_CHECK
 /* C89 negative-array checks: _Static_assert needs /std:c11 on MSVC. */
@@ -331,6 +346,7 @@ PC_CHECK_OFFSET(ens_start, PC_API_V1_OFFSET_ENS_START);
 PC_CHECK_OFFSET(ens_poll, PC_API_V1_OFFSET_ENS_POLL);
 PC_CHECK_OFFSET(ens_copy, PC_API_V1_OFFSET_ENS_COPY);
 PC_CHECK_OFFSET(ens_cancel, PC_API_V1_OFFSET_ENS_CANCEL);
+PC_CHECK_OFFSET(latex_render, PC_API_V1_OFFSET_LATEX_RENDER);
 #endif
 
 #ifdef __cplusplus

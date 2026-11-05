@@ -19,6 +19,7 @@ pc-ensemble = { path = "../pc-ensemble" }
 pc-import = { path = "../pc-import" }
 pc-ir = { path = "../pc-ir" }
 pc-jit = { path = "../pc-jit" }
+pc-latex = { path = "../pc-latex" }
 pc-linalg = { path = "../pc-linalg" }
 pc-ode = { path = "../pc-ode" }
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }

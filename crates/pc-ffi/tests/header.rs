@@ -57,6 +57,7 @@ fields!(
     ens_poll,
     ens_copy,
     ens_cancel,
+    latex_render,
 );
 
 #[test]
@@ -169,4 +170,10 @@ fn ensemble_selectors_match() {
     for (name, value) in selectors {
         assert_eq!(need(name), value as u64, "{name}");
     }
+}
+
+#[test]
+fn latex_kinds_match() {
+    assert_eq!(need("PC_LATEX_PGFPLOTS"), pckern::latex::PGFPLOTS as u64);
+    assert_eq!(need("PC_LATEX_TABLE"), pckern::latex::TABLE as u64);
 }

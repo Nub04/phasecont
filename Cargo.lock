@@ -1029,6 +1029,7 @@ dependencies = [
  "pc-import",
  "pc-ir",
  "pc-jit",
+ "pc-latex",
  "pc-linalg",
  "pc-ode",
  "serde_json",

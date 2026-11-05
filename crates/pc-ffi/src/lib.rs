@@ -15,6 +15,7 @@ pub mod ensemble;
 pub mod error;
 mod import;
 pub mod json;
+pub mod latex;
 mod model;
 pub mod parse;
 mod registry;
@@ -93,6 +94,7 @@ pub struct PcApiV1 {
     pub ens_poll: unsafe extern "C" fn(u64, *mut *mut c_char) -> i32,
     pub ens_copy: unsafe extern "C" fn(u64, u32, *mut f64, usize) -> i32,
     pub ens_cancel: extern "C" fn(u64) -> i32,
+    pub latex_render: unsafe extern "C" fn(u32, *const c_char, *mut *mut c_char) -> i32,
 }
 
 static API: PcApiV1 = PcApiV1 {
@@ -119,6 +121,7 @@ static API: PcApiV1 = PcApiV1 {
     ens_poll: api::ens_poll,
     ens_copy: api::ens_copy,
     ens_cancel: api::ens_cancel,
+    latex_render: api::latex_render,
 };
 
 /// The only exported symbol. Returns NULL only if a panic was caught.
