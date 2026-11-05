@@ -119,7 +119,7 @@ P7a (complete on branch `phase7a-matlab-api`, cut from 390bfb1; merged into `mai
 
 ## In progress
 
-P11 (VS Code extension and language server) was merged into `main` locally on 2026-11-05 (9ace6ef). P12 (LaTeX companion) is on branch `phase12-latex`, approved with P11. The plan is in SPEC section 13. Nothing is pushed.
+P11 (VS Code extension and language server) was merged into `main` locally on 2026-11-05 (9ace6ef). P12 (LaTeX companion) was merged into `main` locally on 2026-11-05 (32f1609, fast-forward from `phase12-latex`). The plan is in SPEC section 13. Nothing is pushed.
 
 P12a (`crates/pc-latex` and `pc-cli latex`): no C ABI change and no MATLAB API change yet. The crate has no new third-party dependency (`serde_json` and `proptest` were already in the tree). The `standalone` JSON key and the CLI flag go beyond the approved option list and are reported to the owner.
 
