@@ -24,7 +24,12 @@
  *   status = pckern("run_poll", r)
  *   rows = pckern("run_copy", r, branch, what, start, count, stride)
  *   pckern("run_cancel", r)
- *   pckern("free", h)
+ *   json = pckern("ens_devices")           backends and devices as JSON
+ *   e = pckern("ens_start", m, job, x0, p) x0 and p are vectors, member after member
+ *   status = pckern("ens_poll", e)         JSON; a run that failed raises its error
+ *   v = pckern("ens_copy", e, what, count) count-by-1 double, what is PC_ENS_*
+ *   pckern("ens_cancel", e)
+ *   pckern("free", h)                      also frees an ensemble handle
  *
  * Only this thread (the MATLAB thread) calls mx* and mex* functions. The
  * library returns error codes, and the gateway raises phasecont:engine:<kind>.
@@ -121,6 +126,11 @@ static const char *kind_id(int32_t rc)
     case PC_ERR_BAD_PROBLEM: return "phasecont:engine:badProblem";
     case PC_ERR_NON_AUTONOMOUS: return "phasecont:engine:nonAutonomous";
     case PC_ERR_NUMERIC: return "phasecont:engine:numeric";
+    case PC_ERR_GPU_UNAVAILABLE: return "phasecont:engine:gpuUnavailable";
+    case PC_ERR_GPU_COMPILE: return "phasecont:engine:gpuCompile";
+    case PC_ERR_GPU_LAUNCH: return "phasecont:engine:gpuLaunch";
+    case PC_ERR_GPU_TIMEOUT: return "phasecont:engine:gpuTimeout";
+    case PC_ERR_UNSUPPORTED_MODEL: return "phasecont:engine:unsupportedModel";
     default: return NULL;
     }
 }
@@ -771,6 +781,81 @@ static void cmd_run_cancel(int nlhs, mxArray *plhs[], int nrhs, const mxArray *p
     check(g_api->run_cancel(get_handle(prhs[1])));
 }
 
+static void cmd_ens_devices(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
+{
+    char *json = NULL;
+    int32_t rc;
+    (void)prhs;
+    need_args(nrhs, 1, 1, "ens_devices");
+    need_outs(nlhs, 1, "ens_devices");
+    rc = g_api->ens_devices(&json);
+    if (rc != PC_OK) {
+        g_api->free_string(json);
+        check(rc);
+    }
+    plhs[0] = take_rust_string(json);
+}
+
+static void cmd_ens_start(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
+{
+    uint64_t m, ens = 0;
+    char *job;
+    const double *x0, *p;
+    size_t nx, np;
+    int32_t rc;
+    need_args(nrhs, 5, 5, "ens_start");
+    need_outs(nlhs, 1, "ens_start");
+    m = get_handle(prhs[1]);
+    job = get_text(prhs[2], "the ensemble job");
+    x0 = get_vec(prhs[3], "x0", &nx);
+    p = get_vec(prhs[4], "p", &np);
+    rc = g_api->ens_start(m, job, x0, nx, p, np, &ens);
+    mxFree(job);
+    check(rc);
+    plhs[0] = uint64_scalar(ens);
+}
+
+static void cmd_ens_poll(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
+{
+    char *json = NULL;
+    int32_t rc;
+    need_args(nrhs, 2, 2, "ens_poll");
+    need_outs(nlhs, 1, "ens_poll");
+    rc = g_api->ens_poll(get_handle(prhs[1]), &json);
+    if (rc != PC_OK) {
+        g_api->free_string(json);
+        check(rc);
+    }
+    plhs[0] = take_rust_string(json);
+}
+
+static void cmd_ens_copy(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
+{
+    uint64_t e;
+    uint32_t what;
+    size_t count;
+    mxArray *out;
+    need_args(nrhs, 4, 4, "ens_copy");
+    need_outs(nlhs, 1, "ens_copy");
+    e = get_handle(prhs[1]);
+    what = get_u32(prhs[2], "what");
+    count = get_size(prhs[3], "count");
+    /* The library wants the exact length for the array, so the caller takes it
+     * from the status JSON. A wrong count is badArg. The call runs for count = 0
+     * too, so the handle and the selector are always checked. */
+    out = mxCreateDoubleMatrix(count, 1, mxREAL);
+    check(g_api->ens_copy(e, what, count > 0 ? mxGetDoubles(out) : NULL, count));
+    plhs[0] = out;
+}
+
+static void cmd_ens_cancel(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
+{
+    (void)plhs;
+    need_args(nrhs, 2, 2, "ens_cancel");
+    need_outs(nlhs, 0, "ens_cancel");
+    check(g_api->ens_cancel(get_handle(prhs[1])));
+}
+
 static void cmd_free(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 {
     (void)plhs;
@@ -799,6 +884,11 @@ static const struct {
     {"run_poll", cmd_run_poll},
     {"run_copy", cmd_run_copy},
     {"run_cancel", cmd_run_cancel},
+    {"ens_devices", cmd_ens_devices},
+    {"ens_start", cmd_ens_start},
+    {"ens_poll", cmd_ens_poll},
+    {"ens_copy", cmd_ens_copy},
+    {"ens_cancel", cmd_ens_cancel},
     {"free", cmd_free},
 };
 
