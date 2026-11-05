@@ -195,6 +195,22 @@ scripts/matlab-win "buildtool cargo mex test"
 
 If a MATLAB session still has the engine library loaded, the copy fails. Close that session and run the task again.
 
+## VS Code extension
+
+`editors/vscode` holds a VS Code extension for `.ode` files: syntax highlighting, and diagnostics, hover, completion, go to definition and an outline from `pc-lsp`, a language server that runs the PhaseCont parser. There is no Marketplace listing yet. To try it from a checkout:
+
+```sh
+cargo build --release -p pc-lsp
+mkdir -p editors/vscode/server/linux-x64
+cp target/release/pc-lsp editors/vscode/server/linux-x64/
+cd editors/vscode
+npm ci --ignore-scripts
+npm test
+npm run bundle
+```
+
+Then open `editors/vscode` in VS Code and press F5. On Windows and macOS use the folder `server/win32-x64` (`pc-lsp.exe`), `server/darwin-arm64` or `server/darwin-x64`, or set `phasecont.server.path` to the binary. `editors/vscode/README.md` lists the features and settings.
+
 ## Checks
 
 Before a commit:
@@ -220,6 +236,8 @@ cargo deny check
 | `crates/pc-engine` | continuation core and problem types |
 | `crates/pc-ffi` | C ABI, handle registry, panic barrier |
 | `crates/pc-cli` | headless runner |
+| `crates/pc-lsp` | language server for `.ode` files |
+| `editors/vscode` | VS Code extension (TypeScript client) |
 | `mex/` | the MEX gateway (C) |
 | `toolbox/+phasecont` | MATLAB API and the phase-plane app |
 | `toolbox/examples` | the examples above |

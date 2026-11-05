@@ -129,7 +129,12 @@ P11a (`crates/pc-lsp`, commits 5be3cff and e9c5cc5): no C ABI change, no MATLAB 
 - Checks at e9c5cc5: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (1460 passed, 0 failed, 3 ignored) and `cargo deny check` (advisories, bans, licenses, sources ok) pass, with `CUDA_VISIBLE_DEVICES=""`. `pc-lsp` has unit tests, `tests/diagnostics.rs` (every file in `pc-ode/tests/invalid`), `tests/overlay.rs`, `tests/session.rs` (14, over an in-memory connection) and `tests/stdio.rs` (6, over the real binary's pipes).
 - `#![allow(clippy::mutable_key_type)]` is set for the crate: `lsp_types::Uri` holds a `Cell`, but its `Hash` and `Eq` read only the text.
 - Known limits: an include that changes on disk outside the editor is picked up at the next edit of the file that includes it, and an include that did not exist is not seen as a dependency until then. Malformed message headers are resynchronised on a best-effort basis. Windows `file:///C:/...` handling has not run on Windows.
-- Still to do in P11: `editors/vscode/` (P11b), packaging, CI job `vscode` and the README section (P11c). The VS Code UI is never run here.
+P11b and P11c (`editors/vscode/`, commit 9e9ebd7 and the commits after it): TypeScript client, TextMate grammar written from `crates/pc-ode/docs/language.md`, language configuration, `README.md`, `LICENSE` and `THIRD_PARTY_LICENSES.txt`. No C ABI change and no MATLAB API change.
+
+- npm packages, installed only under `editors/vscode/` with exact versions: `vscode-languageclient` 9.0.1 (runtime); `@types/node`, `@types/vscode`, `esbuild`, `typescript`, `vscode-oniguruma` and `vscode-textmate` (dev). `vscode-languageclient` 10.1.2 was refused: it pulls `minimatch` 10.2.6 (BlueOak-1.0.0) and an advisory. Version 9.0.1 has only MIT and ISC packages and `npm audit` reports 0 vulnerabilities. `esbuild` bundles the client into `dist/extension.js`, so the extension ships no `node_modules`.
+- `npm test` runs `tsc` and 34 `node --test` tests: server lookup (9), grammar (16, including a check against every builtin in `builtins.rs`), manifest and licence files (9). The grammar tests were checked against a deliberately broken grammar and failed as they should.
+- CI job `vscode` builds `pc-lsp`, checks `--version`, runs `npm ci --ignore-scripts`, `npm test` and `npm run bundle`, and uploads the staged extension folder with the linux-x64 server. It builds no `.vsix`. The job has not run on GitHub.
+- Not run: the VS Code UI, the `win32-x64`, `darwin-arm64` and `darwin-x64` server builds, and a `.vsix` of any platform.
 
 P9 (GPU ensemble engine) and P10 (model input routes and the editor app) had an approved plan. The stacked branches `phase9-gpu-ensemble`, `phase10-model-input` and `phase9d-ensemble-api` were fast-forwarded into `main` locally on 2026-11-05 (835ff12), with the version kept at 1.0.0. Nothing is pushed: `origin/main` is still at efd172e. The plan approval covered the appended C ABI functions, the MATLAB API additions, the new dependencies and the new hosted CI jobs. Nothing in P9 or P10 has run on MATLAB, a GPU or Windows yet. Only `cargo` on the CPU has run.
 
@@ -394,6 +399,7 @@ Open risks and questions from P7b:
 
 ## Next
 
+- Owner decision for the `.vsix` (P11). `@vscode/vsce` was on the approved npm list, but every recent version (4.1.0, 3.0.0, 2.32.0) depends on `@vscode/vsce-sign`, which has a proprietary licence ("SEE LICENSE IN LICENSE.txt"), and on packages under Artistic-2.0, BlueOak-1.0.0, 0BSD and Python-2.0. `npm audit` also lists advisories. It is not installed. Options: (a) approve `@vscode/vsce` as a build-tool exception that never ships in the `.vsix`; (b) run `npx @vscode/vsce package --target <platform>` on the owner's machine at release time; (c) write a small packager in the repo (a `.vsix` is a zip with `extension.vsixmanifest` and `[Content_Types].xml`).
 - Push `main` after the owner's OK, then watch the first run of the `gpu-pocl`, `gpu-nvrtc` and `gpu-macos` jobs.
 - Run the MATLAB suite and the GPU self-test on the RTX 5060 and the Arc 140T (see README, Test your GPU). Nothing in P9 or P10 has run there.
 - Optional P10 leftover: the CellML importer.
