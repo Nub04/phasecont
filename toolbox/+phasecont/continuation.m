@@ -39,13 +39,31 @@ function br = continuation(m, start, options)
 %   values regrid its orbit.
 %   Detect, Switch and Var do not apply.
 %
+%   C = phasecont.continuation(M, LC, Type = "HOM", Index = I, Free = ["a"
+%   "b"]) follows the curve of orbits homoclinic to a saddle that starts
+%   from point I of LC, an LC branch of long period. The engine moves the
+%   slowest point of that orbit to both ends and takes the period as the
+%   fixed truncation time T. NTST and NCOL default to those of LC, and other
+%   values regrid the orbit. START can instead be a struct with fields t
+%   (times, increasing), x (the states at those times, one row per time)
+%   and p (the parameters, a struct or a vector) that holds an orbit close
+%   to a homoclinic one; T is then t(end) - t(1), the orbit is resampled
+%   with pchip on a uniform mesh, and NTST and NCOL are required. C.Alpha
+%   holds [a b], C.X0 the saddle, C.Eigenvalues the eigenvalues of the
+%   Jacobian at the saddle and C.cycle(i) the orbit at point i. The codim-2
+%   points (NSA, BLS, BLU, NSF, NDS, NDU, TLS, TLU, ZES, ZEU, OFS, OFU) are
+%   in C.Specials. Detect, Switch and Var do not apply.
+%
 %   Name-value options
-%     Type       "EP" (default), "LP", "H", "LC", "LPC", "PD" or "NS"
+%     Type       "EP" (default), "LP", "H", "LC", "LPC", "PD", "NS" or "HOM"
 %     Free       free parameter, one of M.Parameters (required); two names
-%                for Type "LP", "H", "LPC", "PD" or "NS"
+%                for Type "LP", "H", "LPC", "PD", "NS" or "HOM"
 %     NTST NCOL  mesh intervals and collocation points per interval,
-%                positive integers (required for Type "LC"; for "LPC",
-%                "PD" and "NS" they default to those of the start point)
+%                positive integers (required for Type "LC" and for "HOM"
+%                from a struct; for "LPC", "PD", "NS" and "HOM" from an LC
+%                branch they default to those of the start)
+%     Index      the point of the LC branch a HOM curve starts from
+%                (required for Type "HOM" from a Branch)
 %     MaxSteps   most steps per branch
 %     Direction  1 or -1, the first direction along the parameter
 %     Bounds     [lo hi], finite, the run stops outside them; on a curve
@@ -74,6 +92,7 @@ arguments
     options.Free = []
     options.NTST = []
     options.NCOL = []
+    options.Index = []
     options.MaxSteps = []
     options.Direction = []
     options.Bounds = []
@@ -92,24 +111,29 @@ end
 import phasecont.internal.num2json
 
 type = string(options.Type);
-if ~isscalar(type) || ~ismember(type, ["EP" "LP" "H" "LC" "LPC" "PD" "NS"])
+if ~isscalar(type) || ~ismember(type, ["EP" "LP" "H" "LC" "LPC" "PD" "NS" "HOM"])
     error("phasecont:model:badOption", ...
-        "Type must be ""EP"", ""LP"", ""H"", ""LC"", ""LPC"", ""PD"" or ""NS"".");
+        "Type must be ""EP"", ""LP"", ""H"", ""LC"", ""LPC"", ""PD"", ""NS"" or ""HOM"".");
 end
 isCycle = type == "LC";
 % A curve of cycles has two free parameters like an LP or H curve.
 isCycleCurve = type == "LPC" || type == "PD" || type == "NS";
-isCurve = type == "LP" || type == "H" || isCycleCurve;
+isHom = type == "HOM";
+isCurve = type == "LP" || type == "H" || isCycleCurve || isHom;
 grid = [];
 if isCycle
     if ~isa(options.Detect, "missing") || ~isempty(options.Switch)
         error("phasecont:model:badOption", ...
             "Detect and Switch do not apply to Type = ""LC"".");
     end
-    grid = [countOption(options.NTST, "NTST"), countOption(options.NCOL, "NCOL")];
-elseif ~isCycleCurve && (~isempty(options.NTST) || ~isempty(options.NCOL))
+    grid = [countOption(options.NTST, "NTST", type), ...
+        countOption(options.NCOL, "NCOL", type)];
+elseif ~isCycleCurve && ~isHom && (~isempty(options.NTST) || ~isempty(options.NCOL))
     error("phasecont:model:badOption", ...
-        "NTST and NCOL apply to Type = ""LC"", ""LPC"", ""PD"" and ""NS"" only.");
+        "NTST and NCOL apply to Type = ""LC"", ""LPC"", ""PD"", ""NS"" and ""HOM"" only.");
+end
+if ~isHom && ~isempty(options.Index)
+    error("phasecont:model:badOption", "Index applies to Type = ""HOM"" only.");
 end
 if isempty(options.Free)
     error("phasecont:model:badOption", "The Free option is required.");
@@ -139,11 +163,13 @@ if isCycle
 elseif isCycleCurve
     [u0, p, mesh, grid] = curveCycleStart(m, start, options.Params, type);
     if ~isempty(options.NTST)
-        grid(1) = countOption(options.NTST, "NTST");
+        grid(1) = countOption(options.NTST, "NTST", type);
     end
     if ~isempty(options.NCOL)
-        grid(2) = countOption(options.NCOL, "NCOL");
+        grid(2) = countOption(options.NCOL, "NCOL", type);
     end
+elseif isHom
+    [u0, p, from, mesh, grid] = homStart(m, start, options);
 else
     [u0, p, special] = startValues(m, start, options.Params);
 end
@@ -188,7 +214,16 @@ if type == "EP"
 end
 parts = parts(strlength(parts) > 0);
 
-if isCycleCurve
+if isHom
+    problem = "{""type"":""HOM"",""free"":" + jsonencode(free) + ...
+        ",""ntst"":" + num2json(grid(1)) + ",""ncol"":" + num2json(grid(2)) + ...
+        ",""start"":""" + from + """";
+    if from == "cycle"
+        problem = problem + ",""mesh"":[" + ...
+            strjoin(arrayfun(@num2json, mesh), ",") + "]";
+    end
+    problem = problem + ",""options"":{" + strjoin(parts, ",") + "}";
+elseif isCycleCurve
     problem = "{""type"":""" + type + """,""free"":" + jsonencode(free) + ...
         ",""ntst"":" + num2json(grid(1)) + ",""ncol"":" + num2json(grid(2)) + ...
         ",""mesh"":[" + strjoin(arrayfun(@num2json, mesh), ",") + "]" + ...
@@ -254,11 +289,15 @@ end
 
 n = numel(m.Variables);
 % Live plot rows: a curve draws a2 against a1, which sits after the n states,
-% or after the orbit and the period on a curve of cycles; a cycle draws the
-% maximum of the variable over its base points.
+% after the orbit and the period on a curve of cycles, or after the orbit,
+% T and the saddle on a HOM curve; a cycle draws the maximum of the
+% variable over its base points.
 xrow = 1;
 yrow = 1 + varIdx;
-if isCycleCurve
+if isHom
+    xrow = 3 + n*(grid(1)*grid(2) + 1) + n;
+    yrow = 1;
+elseif isCycleCurve
     xrow = 3 + n*(grid(1)*grid(2) + 1);
     yrow = 1;
 elseif isCurve
@@ -404,6 +443,85 @@ mesh = double(start.Data.mesh(:)).';
 grid = double([start.Data.ntst start.Data.ncol]);
 end
 
+function [u0, p, from, mesh, grid] = homStart(m, start, options)
+% Start values of a HOM curve: point Index of an LC branch ("cycle"), or a
+% struct with an orbit t, x and parameters p ("orbit").
+n = numel(m.Variables);
+if isa(start, "phasecont.Branch")
+    if ~isscalar(start) || start.Type ~= "LC"
+        error("phasecont:model:badStart", ...
+            "A HOM curve starts from one LC Branch or from a struct with fields t, x and p.");
+    end
+    if ~isempty(start.Model) && start.Model ~= m
+        error("phasecont:model:badStart", ...
+            "The start branch belongs to a different model.");
+    end
+    i = options.Index;
+    npts = numel(start.Period);
+    if isempty(i)
+        error("phasecont:model:badOption", ...
+            "The Index option is required for Type = ""HOM"" from an LC branch.");
+    end
+    if ~(isnumeric(i) && isscalar(i) && isreal(i) && i == round(i) ...
+            && i >= 1 && i <= npts)
+        error("phasecont:model:badOption", ...
+            "Index must be an integer from 1 to %d.", npts);
+    end
+    if numel(start.P) ~= numel(m.Parameters)
+        error("phasecont:model:badStart", ...
+            "The start branch needs %d parameters.", numel(m.Parameters));
+    end
+    u0 = [start.U(i, :).'; start.Period(i)];
+    p = start.P;
+    p(start.FreeIndex) = start.Alpha(i);
+    p = overrideParams(m, p, options.Params);
+    mesh = start.Mesh(i, :);
+    grid = [start.NTST start.NCOL];
+    if ~isempty(options.NTST)
+        grid(1) = countOption(options.NTST, "NTST", "HOM");
+    end
+    if ~isempty(options.NCOL)
+        grid(2) = countOption(options.NCOL, "NCOL", "HOM");
+    end
+    from = "cycle";
+elseif isstruct(start) && isscalar(start) && all(isfield(start, ["t" "x" "p"]))
+    if ~isempty(options.Index)
+        error("phasecont:model:badOption", ...
+            "Index applies to a HOM curve that starts from an LC branch.");
+    end
+    t = start.t;
+    x = start.x;
+    if ~(isnumeric(t) && isreal(t) && isvector(t) && numel(t) >= 2 ...
+            && all(isfinite(t)) && all(diff(t(:)) > 0))
+        error("phasecont:model:badStart", ...
+            "The field t must hold at least two finite, increasing times.");
+    end
+    t = double(t(:));
+    if ~(isnumeric(x) && isreal(x) && isequal(size(x), [numel(t) n]) ...
+            && all(isfinite(x), "all"))
+        error("phasecont:model:badStart", ...
+            "The field x must be %d-by-%d, one row of finite states per time.", ...
+            numel(t), n);
+    end
+    if isempty(start.p) && ~isstruct(start.p)
+        error("phasecont:model:badStart", "The field p must hold the parameters.");
+    end
+    p = overrideParams(m, m.paramVector(start.p), options.Params);
+    grid = [countOption(options.NTST, "NTST", "HOM from a struct"), ...
+        countOption(options.NCOL, "NCOL", "HOM from a struct")];
+    period = t(end) - t(1);
+    % A uniform mesh: its base points are equally spaced over [0, 1].
+    tau = (0:grid(1)*grid(2)).' / (grid(1)*grid(2));
+    xs = interp1(t, double(x), t(1) + tau*period, "pchip");
+    u0 = [reshape(xs.', [], 1); period];
+    mesh = [];
+    from = "orbit";
+else
+    error("phasecont:model:badStart", ...
+        "A HOM curve starts from one LC Branch or from a struct with fields t, x and p.");
+end
+end
+
 function p = overrideParams(m, p, params)
 % P with the entries that PARAMS names replaced, or PARAMS as a whole vector.
 if isstruct(params)
@@ -415,11 +533,11 @@ elseif ~isempty(params)
 end
 end
 
-function v = countOption(value, name)
+function v = countOption(value, name, type)
 % A required positive integer option.
 if isempty(value)
     error("phasecont:model:badOption", ...
-        "The %s option is required for Type = ""LC"".", name);
+        "The %s option is required for Type = ""%s"".", name, type);
 end
 if ~(isnumeric(value) && isreal(value) && isscalar(value) && isfinite(value) ...
         && value >= 1 && value == round(value))
