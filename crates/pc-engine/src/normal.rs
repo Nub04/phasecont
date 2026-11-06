@@ -42,7 +42,7 @@ impl<'a> At<'a> {
         At { model, n, u, p }
     }
 
-    fn jac_u(&mut self) -> Result<Vec<f64>, EngineError> {
+    pub(crate) fn jac_u(&mut self) -> Result<Vec<f64>, EngineError> {
         let mut a = vec![0.0; self.n * self.n];
         self.model
             .eval(&EntryKind::JacU, self.u, &self.p, &[], &mut a)?;
@@ -59,7 +59,7 @@ impl<'a> At<'a> {
 
     /// The complex multilinear form with all slots `U`: `B(a, b)` for two directions,
     /// `C(a, b, c)` for three, and so on up to five.
-    fn form(&mut self, dirs: &[&Cv]) -> Result<Cv, EngineError> {
+    pub(crate) fn form(&mut self, dirs: &[&Cv]) -> Result<Cv, EngineError> {
         let n = self.n;
         let kind = EntryKind::Dir(vec![Slot::U; dirs.len()]);
         let re: Vec<&[f64]> = dirs.iter().map(|d| d.0.as_slice()).collect();

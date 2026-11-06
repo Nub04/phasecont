@@ -1,0 +1,16 @@
+# The fold of cycles of cyc_lpc in the coordinates u = x + 0.7 y, v = y, a constant
+# linear map that is not orthogonal. A change of coordinates leaves the normal form
+# coefficient unchanged, so b = -4 here too, while the adjoint eigenfunction differs
+# from the one of cyc_lpc. Own test model.
+par mu=0
+x=u-0.7*v
+y=v
+s=x^2+y^2
+P=mu+2*s-s^2
+Om=1+s
+fx=x*P-y*Om
+fy=y*P+x*Om
+u'=fx+0.7*fy
+v'=fy
+init u=1,v=0
+done

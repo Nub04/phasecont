@@ -1,0 +1,13 @@
+# A fold of cycles with shear, in polar form r' = r P(s), theta' = Om(s) with s = r^2,
+# P = mu + 2 s - s^2 and Om = 1 + s. The cycle of squared radius s has the period
+# 2 pi / (1 + s). The fold is at mu = -1, s = 1, where Om = 2 and T = pi. With omega0 = 2
+# and shear sigma = dOm/ds = 1 the normal form coefficient of the fold is b = -2 omega0 /
+# sigma = -4. Own test model.
+par mu=0
+s=x^2+y^2
+P=mu+2*s-s^2
+Om=1+s
+x'=x*P-y*Om
+y'=y*P+x*Om
+init x=1,y=0
+done
