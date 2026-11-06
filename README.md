@@ -193,7 +193,7 @@ r = phasecont.latex.pgfplots(fig, Digits = 6, Standalone = true);
 b = phasecont.latex.build(r.Tex, Files = r.Files);
 ```
 
-`b.Ok` is true when a PDF came out, `b.Pdf` is its path, and `b.Errors` lists each TeX error with its line. A TeX error does not raise, and a missing `latexmk` raises `phasecont:latex:engineNotFound`. `build` writes the document to a new folder under `tempdir`, runs `latexmk` there with shell escape off, and leaves the folder in place. It sets no time limit.
+`b.Ok` is true when a PDF came out, `b.Pdf` is its path, and `b.Errors` lists each TeX error with its line. A TeX error does not raise, and a missing `latexmk` raises `phasecont:latex:engineNotFound`. `build` writes the document to a new folder under `tempdir`, runs `latexmk` there with shell escape off, and leaves the folder in place. It stops `latexmk` and the TeX programs it started after 300 seconds, and `b.TimedOut` is then true. Pass `Timeout = 60` for another limit or `Timeout = Inf` for none. A finite limit runs `latexmk` through the JVM of MATLAB. When MATLAB cannot do that, `build` warns with `phasecont:latex:noTimeout` and runs `latexmk` with no limit.
 
 The editor opens with:
 
@@ -201,7 +201,7 @@ The editor opens with:
 app = phasecont.app.LatexStudio;
 ```
 
-Type or open a `.tex` file, enter `Digits`, pick a branch variable from the workspace and press Insert figure or Insert table. Compile runs `latexmk` and lists the errors. Selecting one shows the lines around it with the error line marked. Open PDF hands the file to your system viewer. The window does not respond while a compile runs.
+Type or open a `.tex` file, enter `Digits`, pick a branch variable from the workspace and press Insert figure or Insert table. Compile runs `latexmk` and lists the errors. Selecting one shows the lines around it with the error line marked. Open PDF hands the file to your system viewer. The window does not respond while a compile runs, which is at most `Timeout` seconds (default 300, set with `phasecont.app.LatexStudio(Timeout = 60)`).
 
 The command line renders the same text from a JSON file. The format is in `docs/SPEC.md`, section 13:
 
