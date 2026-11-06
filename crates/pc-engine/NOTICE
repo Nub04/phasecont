@@ -1,6 +1,7 @@
 PhaseCont pc-engine
 
-src/cycle/mesh.rs is ported from AUTO-07p src/mesh.f90 (EQDF, NEWMSH and INTERP),
+src/cycle/mesh.rs is ported from AUTO-07p src/mesh.f90 (EQDF with IPER true and false,
+NEWMSH and INTERP),
 https://github.com/auto-07p/auto-07p at commit cb5dd4616be3fabd3ace9fb9f9b22fcbac9fc447.
 AUTO-07p is distributed under the following license.
 

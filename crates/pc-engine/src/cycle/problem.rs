@@ -772,7 +772,7 @@ impl Problem for CycleProblem<'_> {
         self.adapted_here = true;
         let n = self.model.n();
         let k = self.profile_len();
-        let Some(new) = mesh::new_mesh(&self.basis, n, &self.mesh, &x[..k]) else {
+        let Some(new) = mesh::new_mesh(&self.basis, n, &self.mesh, &x[..k], true) else {
             return false;
         };
         let m = self.basis.m();

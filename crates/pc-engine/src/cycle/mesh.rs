@@ -1,9 +1,11 @@
-//! Mesh adaptation for periodic orbits (SPEC §7). The N + 1 mesh points move so that a
+//! Mesh adaptation for periodic orbits (SPEC §7) and, with the non-periodic end rule, for
+//! homoclinic orbits (SPEC §8b). The N + 1 mesh points move so that a
 //! monitor of the jumps of the m-th derivative of the orbit is equidistributed (Russell
 //! and Christiansen 1978), and the orbit and the tangent are interpolated onto the new
 //! mesh. N and m stay the same.
 //!
-//! Ported from AUTO-07p src/mesh.f90 (EQDF, NEWMSH and INTERP, the mesh part of ADAPT),
+//! Ported from AUTO-07p src/mesh.f90 (EQDF with IPER true and false, NEWMSH and INTERP,
+//! the mesh part of ADAPT),
 //! https://github.com/auto-07p/auto-07p at commit cb5dd4616be3fabd3ace9fb9f9b22fcbac9fc447,
 //! BSD license, Copyright (c) 1979-2007 E. J. Doedel, California Institute of Technology,
 //! and Concordia University. See THIRD_PARTY_NOTICES.md.
@@ -34,15 +36,18 @@ fn mth_derivative(
 }
 
 /// The equidistribution function at the N + 1 mesh points and its slope on each interval
-/// (EQDF, periodic case). The slope on interval j sums, over the components, the jump of
-/// the m-th derivative at its left end, over the mean length of the two intervals there,
-/// to the power 1 / (m + 1). Interval N - 1 takes the jump across the end of the period.
-/// `None` when every m-th derivative is below [`SMALL_DERIVATIVE`].
+/// (EQDF). The slope on interval j sums, over the components, the jump of the m-th
+/// derivative at its left end, over the mean length of the two intervals there, to the
+/// power 1 / (m + 1). On a periodic orbit interval N - 1 takes the jump across the end of
+/// the period. Otherwise it takes the jump between intervals N - 2 and N - 1 again, over
+/// the length of interval N - 1, as EQDF does when IPER is false. `None` when every m-th
+/// derivative is below [`SMALL_DERIVATIVE`].
 fn equidistribution(
     basis: &CollocationBasis,
     n: usize,
     mesh: &[f64],
     u: &[f64],
+    periodic: bool,
 ) -> Option<(Vec<f64>, Vec<f64>)> {
     let ntst = mesh.len() - 1;
     let pwr = 1.0 / (basis.m() as f64 + 1.0);
@@ -68,9 +73,14 @@ fn equidistribution(
             deqf[j - 1] = e;
         }
     }
-    // Extend by periodicity: the jump from the last interval to the first.
-    mth_derivative(basis, n, mesh, u, 0, &mut nd);
-    let dtav = (h(ntst - 1) + h(0)) / 2.0;
+    // Extend by periodicity (the jump from the last interval to the first) or, on an
+    // orbit that is not periodic, by extrapolation (the last jump again).
+    let (j, dtav) = if periodic {
+        (0, (h(ntst - 1) + h(0)) / 2.0)
+    } else {
+        (ntst - 2, h(ntst - 1))
+    };
+    mth_derivative(basis, n, mesh, u, j, &mut nd);
     let mut e = 0.0;
     for c in 0..n {
         e += ((nd[c] - hd[c]) / dtav).abs().powf(pwr);
@@ -86,18 +96,20 @@ fn equidistribution(
 /// The new mesh for the orbit `u` on `mesh` (NEWMSH with the same N): the points where
 /// the equidistribution function takes the values i / N of its range. `None` keeps the
 /// mesh: when the derivatives are small, when the monitor is zero or not finite, or when
-/// the new points are not strictly increasing.
+/// the new points are not strictly increasing. `periodic` selects the end rule of
+/// [`equidistribution`].
 pub(crate) fn new_mesh(
     basis: &CollocationBasis,
     n: usize,
     mesh: &[f64],
     u: &[f64],
+    periodic: bool,
 ) -> Option<Vec<f64>> {
     let ntst = mesh.len() - 1;
     if ntst < 2 {
         return None;
     }
-    let (eqf, deqf) = equidistribution(basis, n, mesh, u)?;
+    let (eqf, deqf) = equidistribution(basis, n, mesh, u, periodic)?;
     let total = eqf[ntst];
     if !(total.is_finite() && total > 0.0) {
         return None;
@@ -227,7 +239,7 @@ mod tests {
         let basis = CollocationBasis::new(4).unwrap();
         let mesh = uniform(8);
         let u = sample(&basis, &mesh, |t| 1.0 + 0.1 * t);
-        assert_eq!(new_mesh(&basis, 1, &mesh, &u), None);
+        assert_eq!(new_mesh(&basis, 1, &mesh, &u, true), None);
     }
 
     /// A steep front at tau = 0.5 pulls mesh points towards it.
@@ -237,10 +249,52 @@ mod tests {
         let mesh = uniform(20);
         let f = |t: f64| ((t - 0.5) / 0.02).tanh();
         let u = sample(&basis, &mesh, f);
-        let new = new_mesh(&basis, 1, &mesh, &u).unwrap();
+        let new = new_mesh(&basis, 1, &mesh, &u, true).unwrap();
         assert_eq!((new[0], new[20]), (0.0, 1.0));
         assert!(new.windows(2).all(|w| w[1] > w[0]));
         let near = |m: &[f64]| m.iter().filter(|t| (*t - 0.5).abs() < 0.1).count();
         assert!(near(&new) > near(&mesh), "{new:?}");
+    }
+
+    /// Without periodicity the last slope repeats the jump between intervals N - 2 and
+    /// N - 1, over the length of interval N - 1.
+    #[test]
+    fn non_periodic_end_rule() {
+        let basis = CollocationBasis::new(3).unwrap();
+        let mesh = [0.0, 0.1, 0.3, 0.45, 0.7, 1.0];
+        let f = |t: f64| (3.0 * t).exp() + (t - 0.4).powi(5);
+        let u = sample(&basis, &mesh, f);
+        let (_, deqf) = equidistribution(&basis, 1, &mesh, &u, false).unwrap();
+        let (_, deqf_p) = equidistribution(&basis, 1, &mesh, &u, true).unwrap();
+        let ntst = mesh.len() - 1;
+        let (mut a, mut b) = ([0.0], [0.0]);
+        mth_derivative(&basis, 1, &mesh, &u, ntst - 2, &mut a);
+        mth_derivative(&basis, 1, &mesh, &u, ntst - 1, &mut b);
+        let want = ((a[0] - b[0]) / (mesh[ntst] - mesh[ntst - 1]))
+            .abs()
+            .powf(0.25);
+        assert!(
+            (deqf[ntst - 1] - want).abs() <= 1e-12 * want,
+            "{} {want}",
+            deqf[ntst - 1]
+        );
+        // The interior slopes do not depend on the end rule.
+        for j in 0..ntst - 1 {
+            assert_eq!(deqf[j], deqf_p[j]);
+        }
+    }
+
+    /// The periodic rule sees a jump across tau = 1 that an orbit with different ends does
+    /// not have, and crowds the last interval; the non-periodic rule does not.
+    #[test]
+    fn non_periodic_mesh_ignores_the_wrap() {
+        let basis = CollocationBasis::new(4).unwrap();
+        let mesh = uniform(10);
+        let u = sample(&basis, &mesh, |t| t.powi(5));
+        let p = new_mesh(&basis, 1, &mesh, &u, true).unwrap();
+        let q = new_mesh(&basis, 1, &mesh, &u, false).unwrap();
+        assert_eq!((q[0], q[10]), (0.0, 1.0));
+        assert!(q.windows(2).all(|w| w[1] > w[0]));
+        assert!(q[10] - q[9] > p[10] - p[9], "{p:?} {q:?}");
     }
 }
