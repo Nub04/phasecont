@@ -2,7 +2,7 @@
 
 ## Phase
 
-P9 (GPU ensemble engine) and P10 (model input routes and the editor app) are on local `main` and not pushed; see In progress. P8 (v1.0 packaging and the release workflow) is on `main`. P8 was accepted on 2026-11-04: the `v1.0.0` tag run published the GitHub Release https://github.com/Nub04/phasecont/releases/tag/v1.0.0 with `PhaseCont-1.0.0.mltbx` and `SHA256SUMS`. The repo has been public since 2026-11-04. P7b (trajectories, sessions, replay and the phase-plane app) is on `main` and is described under In progress. P6 (LPC, PD and NS curves of limit cycles; SPEC section 8) is on `main` and waits for the oracle files. P5 (limit cycles; SPEC section 7) is on `main`. P5 to P8 were built on stacked branches and reached `main` together on 2026-11-04. P4b closed the open items of P4 and merged into `main` locally on 2026-10-31 as a fast-forward to d1380c7. P4 (LP and H curves, codim-2 detection and normal forms; SPEC section 14) merged into `main` locally on 2026-10-30 (734c7a8). Both were pushed on 2026-10-31 with 27b47b4. P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 88fbffa. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 (714aac9). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 (390bfb1). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
+P13 (periodic normal forms of cycle bifurcations, engine phase E7; SPEC section 8a) is on branch `phase13-periodic-normal-forms` with E7a done and E7b waiting for the owner. P9 (GPU ensemble engine) and P10 (model input routes and the editor app) are on local `main` and not pushed; see In progress. P8 (v1.0 packaging and the release workflow) is on `main`. P8 was accepted on 2026-11-04: the `v1.0.0` tag run published the GitHub Release https://github.com/Nub04/phasecont/releases/tag/v1.0.0 with `PhaseCont-1.0.0.mltbx` and `SHA256SUMS`. The repo has been public since 2026-11-04. P7b (trajectories, sessions, replay and the phase-plane app) is on `main` and is described under In progress. P6 (LPC, PD and NS curves of limit cycles; SPEC section 8) is on `main` and waits for the oracle files. P5 (limit cycles; SPEC section 7) is on `main`. P5 to P8 were built on stacked branches and reached `main` together on 2026-11-04. P4b closed the open items of P4 and merged into `main` locally on 2026-10-31 as a fast-forward to d1380c7. P4 (LP and H curves, codim-2 detection and normal forms; SPEC section 14) merged into `main` locally on 2026-10-30 (734c7a8). Both were pushed on 2026-10-31 with 27b47b4. P8a (package v0.3; SPEC section 14) was accepted and merged into `main` on 2026-10-30 as a fast-forward to 88fbffa. P7a (C ABI, MEX gateway and the first MATLAB API; SPEC section 14) merged into `main` on 2026-10-29 (714aac9). P3 (continuation core, equilibria, LP/H/BP, a, l1, BP switching) merged into `main` on 2026-10-28 (390bfb1). P2 was accepted on 2026-10-28 and merged into `main`. P1 was accepted on 2026-10-24.
 
 The history was rewritten on 2026-11-04. CLAUDE.md and docs/KICKOFF.md were dropped from every commit, and the Windows user name in the spike files was replaced with `<user>`. The old GitHub repo was renamed and kept private, with PRs #1 to #3 and the old Actions runs, and a new public repo got the rewritten `main`. Every commit id in this file refers to the rewritten history.
 
@@ -118,6 +118,17 @@ P7a (complete on branch `phase7a-matlab-api`, cut from 390bfb1; merged into `mai
 - CI in `.github/workflows/ci.yml` has four jobs: rust (ubuntu, windows, macos), pckern-win (cross build, dll-imports, artifact), matlab-windows (self-hosted Windows runner `nubom-windows`, prebuilt DLL, no license secret) and asan. They first ran on GitHub on 2026-10-31, for `main` and for the P5 branch: rust on all three runners and pckern-win pass, and matlab-windows and package-win wait in the queue, because the self-hosted runner is offline. P8 moved every job to GitHub-hosted runners (see In progress).
 
 ## In progress
+
+P13 (branch `phase13-periodic-normal-forms`, commits 9360baf to 55c86fc, Rust and docs only: no MATLAB API change, no C ABI change, no new dependency).
+
+- 9360baf writes SPEC section 8a with the formulas and the acceptance tests. 07b0eda, 6f03089 and 3be6732 add the coefficient b of an LPC point, c of a PD point and d (Re and Im) of an NS point in `crates/pc-engine/src/cycle/normal.rs`, by periodic normalization on the collocation mesh. da31f0d stores the coefficient in `Extras` at LPC, PD and NS special points of a cycle branch (`coefficient` is b, c or Re d, `coefficient2` is Im d for NS). `curve_point_normal_form` evaluates it at any point of an LPC, PD or NS curve.
+- Tests: `crates/pc-engine/tests/cycle_normal_forms.rs` has 19 tests and 14 own models `cyc_*.ode` in `tests/models`. All oracles are closed forms with T = pi, so a missing factor of T shows. LPC b = -4 (plain and with a linear change of coordinates), PD c = -1/pi (plain, nonlinear change, nonzero alpha1), NS d = -(2 + i)/pi (four variants with Re d and Im d asserted in each). Errors are at the 1e-14 level on the `ntst = 40` mesh, and each mesh doubling cuts the PD and NS errors by 200 and 285.
+- Rossler, a = b = 0.2: the first PD is at c = 2.8324450279 and its coefficient is -0.0037643658, so the flip is supercritical. This is the only check against a model that is not ours, and it checks the sign only.
+- Curves (SPEC test 6): the coefficient matches its closed form at every point of five curve runs, to 7e-10 or better, and changes sign at CPC, GPD and CH. The R1 and R2 products of the stored multipliers match their closed forms to 1e-6 and change sign.
+- Checks at 55c86fc: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (every suite ok) and `cargo deny check` (advisories, bans, licenses, sources ok), with `CUDA_VISIBLE_DEVICES=""`.
+- Differences from the plan, for the owner: the polar fold model with Omega = 1 has no shear and cannot test b, so test 1 uses a sheared model; PD, NS and curve oracles are constructed exact models, not an RK4 fit of a Poincare map; R1 and R2 are tests of multiplier products with no check for a Jordan block; the engine writes no criticality text, only the sign.
+- Not done, needs the owner: E7b, the CPC, GPD, CH, R1 and R2 labels on curve runs. It changes the `cycle_stride` row layout in `pc-ffi`, the `codim2_labels` lists of SPEC section 10, `rows2branch.m`, `Branch.m`, the `continuation.m` help and the MATLAB and FFI tests, so it needs the owner's approval first.
+- Not run: nothing in P13 touches MATLAB, so the MATLAB suite was not needed. All earlier MATLAB, GPU and Windows code is still unrun this session.
 
 P11 (VS Code extension and language server) was merged into `main` locally on 2026-11-05 (9ace6ef). P12 (LaTeX companion) was merged into `main` locally on 2026-11-05 (32f1609, fast-forward from `phase12-latex`). The plan is in SPEC section 13. Nothing is pushed.
 
@@ -428,6 +439,7 @@ Open risks and questions from P7b:
 
 ## Next
 
+- E7b: label CPC, GPD, CH, R1 and R2 on LPC, PD and NS curve runs (SPEC section 8a). Needs the owner's approval of the row layout and `codim2_labels` change.
 - Build the `win32-x64`, `darwin-arm64` and `darwin-x64` `.vsix` files on those systems (or add CI jobs for them), install one in VS Code and check the server starts. Marketplace publishing needs the owner's publisher account and token.
 - Push `main` after the owner's OK, then watch the first run of the `gpu-pocl`, `gpu-nvrtc` and `gpu-macos` jobs.
 - Run the MATLAB suite and the GPU self-test on the RTX 5060 and the Arc 140T (see README, Test your GPU). Nothing in P9 or P10 has run there.
@@ -441,6 +453,7 @@ Open risks and questions from P7b:
 
 ## Open questions
 
+- Open from P13: a codim-2 test that is exactly zero at the first point of a curve run gives the warning "could not locate" and the label is lost. It showed with PDNS at nu = 0.5 in the `cyc_r2` model. A test with a sign change between two points is not affected.
 - Open from P5: the engine option `mesh_adapt` (default 3) is not exposed in MATLAB, so a MATLAB LC run always adapts the mesh every 3 accepted points. A `MeshAdapt` option would change the public API.
 - Open from P4:
   - The BT coefficients use the sign convention a > 0, and the ZH coefficients use b > 0. The normalization strings record both. The owner may prefer another convention.
