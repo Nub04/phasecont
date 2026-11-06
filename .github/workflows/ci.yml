@@ -49,9 +49,9 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo deny check
 
-  # The VS Code extension and the pc-lsp server it starts. This job stages the
-  # extension folder with the linux-x64 server. It builds no .vsix, because
-  # the packaging tool is not approved yet (docs/STATUS.md, open decisions).
+  # The VS Code extension and the pc-lsp server it starts. This job builds the
+  # linux-x64 .vsix with vsce, a dev-only build tool (docs/STATUS.md lists its
+  # licence exception). It does not publish to the Marketplace.
   vscode:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
@@ -79,23 +79,27 @@ jobs:
       - name: Typecheck and run the tests
         working-directory: editors/vscode
         run: npm test
-      - name: Bundle the extension
+      - name: Build the .vsix
         working-directory: editors/vscode
-        run: npm run bundle
-      - name: Stage the extension folder
         run: |
           set -eu
-          s=build/vscode-extension
-          mkdir -p "$s"
-          cd editors/vscode
-          cp -r package.json README.md LICENSE THIRD_PARTY_LICENSES.txt \
-            language-configuration.json syntaxes server "../../$s/"
-          mkdir "../../$s/dist"
-          cp dist/extension.js "../../$s/dist/"
+          mkdir -p ../../build
+          npx --no-install vsce package --no-dependencies --target linux-x64 --out ../../build/
+      - name: List the .vsix and check that no node_modules ship
+        run: |
+          set -eu
+          v=$(ls build/*.vsix)
+          unzip -l "$v"
+          if unzip -l "$v" | grep -q node_modules; then
+            echo "node_modules is inside the .vsix" >&2
+            exit 1
+          fi
+          unzip -l "$v" | grep -q 'extension/server/linux-x64/pc-lsp$'
+          unzip -l "$v" | grep -q 'extension/dist/extension.js$'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vscode-extension-linux-x64
-          path: build/vscode-extension
+          path: build/*.vsix
           if-no-files-found: error
 
   pckern-win:
