@@ -14,21 +14,23 @@ use super::basis::{CollocationBasis, NCOL_RANGE};
 use crate::branch::Point;
 use crate::error::EngineError;
 use crate::model::ModelEval;
-use crate::normal::At;
+use crate::normal::{At, Cv};
 use pc_ir::EntryKind;
-use pc_linalg::{BlockSystem, CondenseShape, Condenser, null_left};
+use pc_linalg::{BlockSystem, CondenseShape, Condenser, null_left, null_right};
 
 /// A bifurcation of a limit cycle that has a normal form coefficient.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CycleBifurcation {
     /// A fold of cycles (limit point of cycles).
     Lpc,
+    /// A period doubling (flip).
+    Pd,
 }
 
 /// The normal form coefficient of a cycle bifurcation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CycleNormalForm {
-    /// `b` of an LPC point.
+    /// `b` of an LPC point, `c` of a PD point.
     pub coefficient: f64,
     /// The imaginary part of the coefficient of an NS point; `None` otherwise.
     pub coefficient2: Option<f64>,
@@ -101,6 +103,7 @@ pub(crate) fn normal_form(
     let orb = grid.orbit(model, p, orbit)?;
     match kind {
         CycleBifurcation::Lpc => lpc(&grid, model, p, &orb),
+        CycleBifurcation::Pd => pd(&grid, model, p, &orb),
     }
 }
 
@@ -357,17 +360,25 @@ fn minus_transpose(a: &[Vec<f64>], n: usize) -> Vec<Vec<f64>> {
         .collect()
 }
 
-/// B(a, b) of the real directions a and b at the state u.
-fn form2(
+/// The multilinear form of the real directions `dirs` at the state u: B(a, b) for two,
+/// C(a, b, c) for three.
+fn real_form(
     model: &mut dyn ModelEval,
     p: &[f64],
     u: &[f64],
-    a: &[f64],
-    b: &[f64],
+    dirs: &[&[f64]],
 ) -> Result<Vec<f64>, EngineError> {
     let z = vec![0.0; u.len()];
-    let mut at = At::new(model, u.len(), u, p.to_vec());
-    Ok(at.form(&[&(a.to_vec(), z.clone()), &(b.to_vec(), z)])?.0)
+    let cv: Vec<Cv> = dirs.iter().map(|d| (d.to_vec(), z.clone())).collect();
+    let refs: Vec<&Cv> = cv.iter().collect();
+    Ok(At::new(model, u.len(), u, p.to_vec()).form(&refs)?.0)
+}
+
+/// `A x` for A n by n column-major.
+fn matvec(a: &[f64], n: usize, x: &[f64]) -> Vec<f64> {
+    (0..n)
+        .map(|r| (0..n).map(|c| a[r + n * c] * x[c]).sum())
+        .collect()
 }
 
 /// `b` of a fold of cycles, from BLSK eq. 60 (SPEC §8a): with F = u0', phi1 the periodic
@@ -432,14 +443,8 @@ fn lpc(
     }
     let mut total = Vec::with_capacity(g.nodes());
     for q in 0..g.nodes() {
-        let bb = form2(model, p, &orb.u[q], &phi1_nodes[q], &phi1_nodes[q])?;
-        let a_phi: Vec<f64> = (0..n)
-            .map(|c| {
-                (0..n)
-                    .map(|c2| orb.a[q][c + n * c2] * phi1_nodes[q][c2])
-                    .sum()
-            })
-            .collect();
+        let bb = real_form(model, p, &orb.u[q], &[&phi1_nodes[q], &phi1_nodes[q]])?;
+        let a_phi = matvec(&orb.a[q], n, &phi1_nodes[q]);
         let rhs: Vec<f64> = (0..n).map(|c| bb[c] - 2.0 * a_phi[c]).collect();
         total.push(dot(&ps_nodes[q], &rhs));
     }
@@ -451,5 +456,107 @@ fn lpc(
         coefficient: b,
         coefficient2: None,
         normalization: "periodic: int <phi*, phi1> = 1 over [0, T]",
+    })
+}
+
+/// `c` of a period doubling, from DWDGK eq. 28-35 (SPEC §8a): v is the antiperiodic
+/// solution of v' = A v with int <v, v> = 1, v* the antiperiodic solution of v*' = -A^T v*
+/// with int <v*, v> = 1, phi* the periodic adjoint with int <phi*, F> = 1, alpha1 =
+/// 1/2 int <phi*, B(v, v)>, h2 the periodic solution of h2' = A h2 + B(v, v) - 2 alpha1 F
+/// with int <phi*, h2> = 0, and c = 1/6 int <v*, C(v, v, v) + 3 B(v, h2) - 6 alpha1 A v>.
+fn pd(
+    g: &Grid,
+    model: &mut dyn ModelEval,
+    p: &[f64],
+    orb: &Orbit,
+) -> Result<CycleNormalForm, EngineError> {
+    let n = g.n;
+    let nodes = g.nodes();
+    let zero = vec![0.0; n * g.points()];
+    // v(0) and v*(0) span the right and left null spaces of M + I, M the monodromy matrix.
+    let mut mono = g.monodromy(n, &orb.a)?;
+    for c in 0..n {
+        mono[c + n * c] += 1.0;
+    }
+    let v0 = null_right(&mono, n, n, 1)?.swap_remove(0);
+    let w0 = null_left(&mono, n, n, 1)?.swap_remove(0);
+    let initial = |mat: &[Vec<f64>], w: Vec<f64>| {
+        g.solve(
+            n,
+            &Lin {
+                mat,
+                rhs: None,
+                col: None,
+                bc: Bc::Initial(w),
+                border: zero.clone(),
+                border_s: 1.0,
+                border_rhs: 0.0,
+            },
+        )
+    };
+    let adj = minus_transpose(&orb.a, n);
+    let mut v = g.at_nodes(n, &initial(&orb.a, v0)?.0);
+    let mut vs = g.at_nodes(n, &initial(&adj, w0)?.0);
+    let norm: Vec<f64> = v.iter().map(|x| dot(x, x)).collect();
+    let nv = g.integrate(&norm).sqrt();
+    let overlap: Vec<f64> = (0..nodes).map(|q| dot(&vs[q], &v[q])).collect();
+    let ov = g.integrate(&overlap);
+    if !(nv.is_finite() && nv > 0.0 && ov.is_finite() && ov != 0.0) {
+        return Err(EngineError::Singular(
+            "the flip eigenfunctions are degenerate".into(),
+        ));
+    }
+    v.iter_mut().flatten().for_each(|x| *x /= nv);
+    vs.iter_mut().flatten().for_each(|x| *x *= nv / ov);
+    // phi*: the periodic adjoint, with the column F and the border int <F, g> = 1.
+    let (phi, _) = g.solve(
+        n,
+        &Lin {
+            mat: &adj,
+            rhs: None,
+            col: Some(&orb.f),
+            bc: Bc::Periodic(1.0),
+            border: g.functional(n, &orb.f),
+            border_s: 0.0,
+            border_rhs: 1.0,
+        },
+    )?;
+    let phi = g.at_nodes(n, &phi);
+    let bvv = (0..nodes)
+        .map(|q| real_form(model, p, &orb.u[q], &[&v[q], &v[q]]))
+        .collect::<Result<Vec<_>, _>>()?;
+    let weighted: Vec<f64> = (0..nodes).map(|q| dot(&phi[q], &bvv[q])).collect();
+    let alpha1 = 0.5 * g.integrate(&weighted);
+    let (h2, _) = g.solve(
+        n,
+        &Lin {
+            mat: &orb.a,
+            rhs: Some(&bvv),
+            col: Some(&orb.f),
+            bc: Bc::Periodic(1.0),
+            border: g.functional(n, &phi),
+            border_s: 0.0,
+            border_rhs: 0.0,
+        },
+    )?;
+    let h2 = g.at_nodes(n, &h2);
+    let mut total = Vec::with_capacity(nodes);
+    for q in 0..nodes {
+        let cvvv = real_form(model, p, &orb.u[q], &[&v[q], &v[q], &v[q]])?;
+        let bvh = real_form(model, p, &orb.u[q], &[&v[q], &h2[q]])?;
+        let av = matvec(&orb.a[q], n, &v[q]);
+        let rhs: Vec<f64> = (0..n)
+            .map(|c| cvvv[c] + 3.0 * bvh[c] - 6.0 * alpha1 * av[c])
+            .collect();
+        total.push(dot(&vs[q], &rhs));
+    }
+    let c = g.integrate(&total) / 6.0;
+    if !c.is_finite() {
+        return Err(EngineError::NotFinite("the flip coefficient c".into()));
+    }
+    Ok(CycleNormalForm {
+        coefficient: c,
+        coefficient2: None,
+        normalization: "periodic: int <v, v> = 1, int <v*, v> = 1, int <phi*, F> = 1 over [0, T]",
     })
 }

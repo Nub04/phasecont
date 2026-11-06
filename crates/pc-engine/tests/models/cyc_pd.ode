@@ -1,0 +1,15 @@
+# A period doubling of cycles with a closed-form coefficient. The pair (x1, y1) = z runs
+# on the cycle |z| = sqrt(beta), z = r exp(i Om t), with Om = 2 and the period T = pi.
+# w = x2 + i y2 obeys w' = (lam + i Om/2) w + eps z conj(w) - gam |w|^2 w with lam = -1/2,
+# eps = 1 and gam = 1. In the frame q = w exp(-i Om t / 2) the linearization is
+# q' = lam q + eps r conj(q), so the multipliers are -exp((lam +- eps r) T) and the flip is
+# at r = 1/2, beta = 1/4. Its normal form coefficient is c = -gam / T = -1/pi. Own model.
+par beta=0.2
+Om=2
+r2=x2^2+y2^2
+x1'=beta*x1-Om*y1-(x1^2+y1^2)*x1
+y1'=beta*y1+Om*x1-(x1^2+y1^2)*y1
+x2'=-0.5*x2-0.5*Om*y2+(x1*x2+y1*y2)-r2*x2
+y2'=-0.5*y2+0.5*Om*x2+(y1*x2-x1*y2)-r2*y2
+init x1=0.45,y1=0,x2=0,y2=0
+done

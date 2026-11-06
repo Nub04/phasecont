@@ -1,0 +1,17 @@
+# The flip of cyc_pd with an amplitude dependent frequency, z' = (beta + i (Om + kap |w|^2)) z
+# - |z|^2 z with kap = 0.8. In the frame q = w exp(-i arg(z) / 2) the equations for q and |z|
+# do not depend on the angle, and q' = lam q + eps r conj(q) - gam |q|^2 q - i kap |q|^2 q / 2.
+# The flip is still at beta = 1/4. The cubic term of the center manifold gets no
+# contribution from the change of the return time, which is of fifth order, so
+# c = -gam / T = -1/pi as for cyc_pd. The coefficient alpha1 of the period is nonzero, so
+# this tests the terms of the periodic normalization that carry it. Own test model.
+par beta=0.2
+Om=2
+r2=x2^2+y2^2
+fr=Om+0.8*r2
+x1'=beta*x1-fr*y1-(x1^2+y1^2)*x1
+y1'=beta*y1+fr*x1-(x1^2+y1^2)*y1
+x2'=-0.5*x2-0.5*Om*y2+(x1*x2+y1*y2)-r2*x2
+y2'=-0.5*y2+0.5*Om*x2+(y1*x2-x1*y2)-r2*y2
+init x1=0.45,y1=0,x2=0,y2=0
+done

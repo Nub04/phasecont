@@ -95,3 +95,64 @@ fn lpc_coefficient_of_the_sheared_fold() {
 fn lpc_coefficient_is_invariant_under_a_linear_map() {
     check_lpc("cyc_lpc_lin", 0.7);
 }
+
+/// The cycle z = r exp(i Om t), w = 0 of `cyc_pd` at squared radius `beta`, with Om = 2 and
+/// the period pi, at the N m + 1 points of a uniform mesh with N m = `nm`.
+fn ring_orbit(beta: f64, nm: usize) -> (Vec<f64>, f64) {
+    let r = beta.sqrt();
+    let orbit = (0..=nm)
+        .flat_map(|k| {
+            let a = 2.0 * PI * k as f64 / nm as f64;
+            [r * a.cos(), r * a.sin(), 0.0, 0.0]
+        })
+        .collect();
+    (orbit, PI)
+}
+
+/// The PD of `cyc_pd` at beta = 1/4, found by an LC run from beta = 0.2 upward.
+fn pd_point(m: &mut dyn ModelEval, ntst: usize) -> Point {
+    let (orbit, period) = ring_orbit(0.2, ntst * NCOL);
+    let setup = CycleSetup::new(0, vec![0.2], ntst, NCOL, orbit, period);
+    let opts = Options {
+        direction: 1.0,
+        max_newton: 15,
+        hmax: 0.03,
+        bounds: (0.05, 0.4),
+        ..Options::default()
+    };
+    lc_special(m, setup, &opts, "PD")
+}
+
+fn check_pd(name: &str) {
+    let mut m = model_of(name);
+    let pt = pd_point(m.as_mut(), NTST);
+    assert!((pt.alpha - 0.25).abs() <= 1e-8, "PD at beta = {}", pt.alpha);
+    let nf = lc_point_normal_form(m.as_mut(), CycleBifurcation::Pd, 0, &[0.0], &pt, NCOL).unwrap();
+    let exact = -1.0 / PI;
+    println!("{name}: c = {} against {exact}", nf.coefficient);
+    assert!(nf.coefficient2.is_none());
+    assert!(
+        rel(nf.coefficient, exact) <= 1e-5,
+        "c = {} against {exact}",
+        nf.coefficient
+    );
+}
+
+/// SPEC §8a test 2: c = -gamma / T = -1/pi at the flip of `cyc_pd`.
+#[test]
+fn pd_coefficient_of_the_constructed_flip() {
+    check_pd("cyc_pd");
+}
+
+/// The same flip after a nonlinear change of coordinates that makes h2 nonzero (alpha1
+/// stays zero by symmetry).
+#[test]
+fn pd_coefficient_is_invariant_under_a_nonlinear_change() {
+    check_pd("cyc_pd_shear");
+}
+
+/// The same flip with an amplitude dependent frequency, which makes alpha1 nonzero.
+#[test]
+fn pd_coefficient_with_a_nonzero_period_coefficient() {
+    check_pd("cyc_pd_phase");
+}
