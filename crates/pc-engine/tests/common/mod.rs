@@ -242,3 +242,46 @@ pub fn ulp_dist(a: f64, b: f64) -> u64 {
     };
     key(a).abs_diff(key(b))
 }
+
+/// RK4 with step `dt` from `x` for time `settle` onto the attractor at `params`, then
+/// on to two upward crossings of x[coord] = level, which give the period. Returns the
+/// orbit from the first crossing at the N m + 1 points of a uniform mesh with N m =
+/// `nm`, and the period.
+pub fn attractor_orbit(
+    m: &mut dyn ModelEval,
+    params: &[f64],
+    mut x: Vec<f64>,
+    (settle, dt): (f64, f64),
+    (coord, level): (usize, f64),
+    nm: usize,
+) -> (Vec<f64>, f64) {
+    let mut p = params.to_vec();
+    p.push(0.0);
+    for _ in 0..(settle / dt) as usize {
+        rk4(m, &p, 1.0, &mut x, dt);
+    }
+    let (mut t, mut at, mut first) = (0.0, Vec::new(), Vec::new());
+    while at.len() < 2 {
+        let y0 = x[coord];
+        rk4(m, &p, 1.0, &mut x, dt);
+        t += dt;
+        if y0 < level && x[coord] >= level {
+            at.push(t);
+            if first.is_empty() {
+                first = x.clone();
+            }
+        }
+        assert!(t <= settle, "no cycle at {params:?}");
+    }
+    let period = at[1] - at[0];
+    let sub = 20;
+    let mut y = first;
+    let mut orbit = y.clone();
+    for _ in 0..nm {
+        for _ in 0..sub {
+            rk4(m, &p, period, &mut y, 1.0 / (nm * sub) as f64);
+        }
+        orbit.extend(&y);
+    }
+    (orbit, period)
+}

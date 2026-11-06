@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::load;
+use common::{attractor_orbit, load};
 use pc_engine::{
     Branch, CycleBifurcation, CycleSetup, CycleStart, Evaluator, ModelEval, Options, Point,
     SpecialPoint, build, continue_cycle, lc_point_normal_form,
@@ -57,13 +57,13 @@ fn polar_orbit(s: f64, nm: usize) -> (Vec<f64>, f64) {
 /// The LPC of `cyc_lpc` at mu = -1, found by an LC run from the unstable cycle at
 /// mu = -1/2 (s = 1 - sqrt(1/2)) in the direction of falling mu. `shear` is the k of the
 /// coordinates X = x + k y, Y = y of `cyc_lpc_lin`, and 0 for `cyc_lpc` itself.
-fn lpc_run(m: &mut dyn ModelEval, shear: f64) -> Branch {
+fn lpc_run(m: &mut dyn ModelEval, shear: f64, ntst: usize) -> Branch {
     let s0 = 1.0 - 0.5_f64.sqrt();
-    let (mut orbit, period) = polar_orbit(s0, NTST * NCOL);
+    let (mut orbit, period) = polar_orbit(s0, ntst * NCOL);
     for p in orbit.as_chunks_mut::<2>().0 {
         p[0] += shear * p[1];
     }
-    let setup = CycleSetup::new(0, vec![-0.5], NTST, NCOL, orbit, period);
+    let setup = CycleSetup::new(0, vec![-0.5], ntst, NCOL, orbit, period);
     let opts = Options {
         direction: -1.0,
         max_newton: 15,
@@ -74,13 +74,13 @@ fn lpc_run(m: &mut dyn ModelEval, shear: f64) -> Branch {
     lc_run(m, setup, &opts)
 }
 
-fn lpc_point(m: &mut dyn ModelEval, shear: f64) -> Point {
-    only_special(&lpc_run(m, shear), "LPC").point.clone()
+fn lpc_point(m: &mut dyn ModelEval, shear: f64, ntst: usize) -> Point {
+    only_special(&lpc_run(m, shear, ntst), "LPC").point.clone()
 }
 
 fn check_lpc(name: &str, shear: f64) {
     let mut m = model_of(name);
-    let pt = lpc_point(m.as_mut(), shear);
+    let pt = lpc_point(m.as_mut(), shear, NTST);
     assert!((pt.alpha + 1.0).abs() <= 1e-8, "LPC at mu = {}", pt.alpha);
     let nf = lc_point_normal_form(m.as_mut(), CycleBifurcation::Lpc, 0, &[0.0], &pt, NCOL).unwrap();
     println!("{name}: b = {} against -4", nf.coefficient);
@@ -230,7 +230,7 @@ fn ns_coefficient_with_a_nonzero_period_coefficient() {
 #[test]
 fn a_cycle_run_attaches_the_coefficient_to_an_lpc_point() {
     let mut m = model_of("cyc_lpc");
-    let b = lpc_run(m.as_mut(), 0.0);
+    let b = lpc_run(m.as_mut(), 0.0, NTST);
     let ex = &only_special(&b, "LPC").extras;
     let c = ex.coefficient.expect("the LPC point has b");
     assert!(rel(c, -4.0) <= 1e-5, "b = {c}");
@@ -261,4 +261,86 @@ fn a_cycle_run_attaches_both_parts_of_d_to_an_ns_point() {
     assert!(rel(re, -2.0 / PI) <= 1e-5, "Re d = {re}");
     assert!(rel(im, -1.0 / PI) <= 1e-5, "Im d = {im}");
     assert!(ex.normalization.is_some());
+}
+
+/// The first period doubling of Rössler (a = b = 0.2) found by the LC run in c from the
+/// attractor at c = 2.5, on a mesh of `ntst` intervals.
+fn rossler_pd(m: &mut dyn ModelEval, ntst: usize) -> Point {
+    let p = vec![0.2, 0.2, 2.5];
+    let (orbit, period) = attractor_orbit(
+        m,
+        &p,
+        vec![1.0, 1.0, 1.0],
+        (1000.0, 0.005),
+        (1, 0.0),
+        ntst * NCOL,
+    );
+    let setup = CycleSetup::new(2, p, ntst, NCOL, orbit, period);
+    let opts = Options {
+        max_newton: 15,
+        hmax: 0.05,
+        bounds: (2.0, 2.9),
+        ..Options::default()
+    };
+    only_special(&lc_run(m, setup, &opts), "PD").point.clone()
+}
+
+fn rossler_c(m: &mut dyn ModelEval, ntst: usize) -> (f64, f64) {
+    let pt = rossler_pd(m, ntst);
+    let nf = lc_point_normal_form(m, CycleBifurcation::Pd, 2, &[0.2, 0.2, 0.0], &pt, NCOL).unwrap();
+    (pt.alpha, nf.coefficient)
+}
+
+/// SPEC §8a test 4: the first period doubling of Rössler is supercritical, since the doubled
+/// cycle exists for c above it (`cycle_continuation.rs`), so c < 0. The sign comes from the
+/// collocation alone. The value is c = -0.0037643658 on the ntst = 80 mesh and differs
+/// from it by 1.2e-7 relative at ntst = 20 and by 4.6e-9 at ntst = 40.
+#[test]
+fn rossler_first_flip_is_supercritical() {
+    let mut m = model_of("rossler");
+    let (c80, coef80) = rossler_c(m.as_mut(), 80);
+    assert!((c80 - 2.832445028).abs() <= 1e-6, "PD at c = {c80}");
+    assert!(coef80 < 0.0, "c = {coef80}");
+    let d: Vec<f64> = [20, 40]
+        .into_iter()
+        .map(|ntst| {
+            let (_, coef) = rossler_c(m.as_mut(), ntst);
+            assert!(coef < 0.0, "ntst {ntst}: c = {coef}");
+            rel(coef, coef80)
+        })
+        .collect();
+    assert!(d[0] <= 1e-6 && d[1] <= 1e-8 && d[1] < d[0], "{d:?}");
+}
+
+/// SPEC §8a test 5: each doubling of the mesh cuts the error by more than 10. For PD and NS
+/// the measured factors are 200 and 285 (order 2 ncol = 8 of the collocation at the mesh
+/// points), and the error at ntst = 40 is 4e-14. The LPC error is at rounding level from
+/// ntst = 20, so only its first step is a rate.
+#[test]
+fn the_error_falls_with_the_mesh() {
+    let errors = |name: &str, kind: CycleBifurcation| -> Vec<f64> {
+        [10, 20, 40]
+            .into_iter()
+            .map(|ntst| {
+                let mut m = model_of(name);
+                let (pt, exact) = match kind {
+                    CycleBifurcation::Lpc => (lpc_point(m.as_mut(), 0.0, ntst), -4.0),
+                    CycleBifurcation::Pd => (ring_point(m.as_mut(), ntst, "PD"), -1.0 / PI),
+                    CycleBifurcation::Ns => (ring_point(m.as_mut(), ntst, "NS"), -2.0 / PI),
+                };
+                let nf = lc_point_normal_form(m.as_mut(), kind, 0, &[0.0], &pt, NCOL).unwrap();
+                rel(nf.coefficient, exact)
+            })
+            .collect()
+    };
+    for (name, kind) in [
+        ("cyc_lpc", CycleBifurcation::Lpc),
+        ("cyc_pd", CycleBifurcation::Pd),
+        ("cyc_ns", CycleBifurcation::Ns),
+    ] {
+        let e = errors(name, kind);
+        println!("{name}: errors at ntst 10, 20, 40: {e:?}");
+        assert!(e[1] < e[0] / 10.0, "{name}: {e:?}");
+        assert!(e[2] < e[1] / 10.0 || e[2] < 1e-13, "{name}: {e:?}");
+    }
 }
