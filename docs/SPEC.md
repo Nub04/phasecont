@@ -356,7 +356,7 @@ E7a:
    - CH. NS curve of the model of test 3 with $\operatorname{Re}\gamma = \nu$, $\operatorname{Im}\gamma = 0.5$ and the same quintic term. Then $d = -2\gamma/T$, so $\operatorname{Re} d = -2\nu/T$ and $\operatorname{Im} d = -1/\pi$ on the curve $\beta = \beta_0$, and $\operatorname{Re} d$ changes sign at $\nu = 0$. The largest error over 17 points is $3.7\times10^{-12}$.
    - R1. For the model of test 1 plus $\dot w = \nu w$ (three states), the LPC is at $\mu = -1$ for every $\nu$, the multipliers are $1$ (twice) and $e^{\nu T}$, and $\prod(\mu - 1) = e^{\nu T} - 1$ over the multiplier other than the two at $1$ changes sign at $\nu = 0$. The stored multipliers agree to $10^{-6}$ and the points with $|\nu| < 0.1$ are skipped.
    - R2. For the model of test 2 plus a second plane $\dot w_2 = (\nu - \tfrac12 + i\Omega/2)w_2 + z\bar w_2 - |w_2|^2 w_2$ (six states), the multipliers on the curve $\beta = \tfrac14$ are $1$, $e^{-\pi/2}$, $-1$, $-e^{-\pi}$, $-e^{\nu T}$ and $-e^{(\nu - 1)T}$. The product $\prod(\mu + 1)$ over those other than $1$ and $-1$ is $(1 + e^{-\pi/2})(1 - e^{-\pi})(1 - e^{\nu T})(1 - e^{(\nu - 1)T})$ and changes sign at $\nu = 0$. The stored multipliers agree to $10^{-6}$. The run starts at $\nu = 0.45$, because at $\nu = 0.5$ the second plane has a PDNS zero with real multipliers of product 1, and the locator warns that it cannot place a test that is exactly zero at the first point.
-7. **Regression.** The existing `cargo test` suite, including the cycle tests, stays green. It did at the last E7b commit (1540 passed, 0 failed), with `crates/pc-engine/tests/cycle_normal_forms.rs` at 25 tests.
+7. **Regression.** The existing `cargo test` suite, including the cycle tests, stays green. It did at 1b23b6d, the last commit that changed Rust (1540 passed, 0 failed), with `crates/pc-engine/tests/cycle_normal_forms.rs` at 25 tests.
 
 E7b:
 
@@ -652,7 +652,7 @@ plot(br, Var="x");                                        % stable solid, unstab
 | P8 | Package v1.0 | Release workflow publishes a `.mltbx` for all platforms |
 | P11 | `pc-lsp` and the VS Code client | The P11 checks in section 13 pass; the extension has not run inside VS Code |
 | P12 | `pc-latex`, `phasecont.latex.*`, `LatexStudio` | The P12 checks in section 13 pass; the MATLAB tests are written and not run until a MATLAB session is available |
-| P13 | Periodic normal forms (E7): $b$, $c$, $d$ at LPC, PD and NS points | Tests 1 to 9 of section 8a pass, including the CPC, GPD, CH, R1 and R2 labels on curves (E7b) |
+| P13 | Periodic normal forms (E7): $b$, $c$, $d$ at LPC, PD and NS points | Tests 1 to 8 and the Rust, FFI and CLI part of test 9 of section 8a pass, including the CPC, GPD, CH, R1 and R2 labels on curves (E7b). The MATLAB part of test 9 is written and has not run |
 
 ## 15. References
 

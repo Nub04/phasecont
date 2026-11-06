@@ -450,7 +450,7 @@ Open risks and questions from P7b:
 
 ## Next
 
-- Run the MATLAB suite once: it covers the E7b label lists and row widths, the LaTeX table names and the `Inf` build default, none of which has run.
+- Run the MATLAB suite once: it covers the E7b label lists and row widths, the LaTeX table names and the `Inf` build default, none of which has run. Rebuild and restage the Windows `pckern` DLL first (`scripts/build-pckern win64 STAGE`, or `buildtool`), since the staged DLL predates the E7b row layout and every LPC, PD and NS curve call would fail the stride check.
 - Build the `win32-x64`, `darwin-arm64` and `darwin-x64` `.vsix` files on those systems (or add CI jobs for them), install one in VS Code and check the server starts. Marketplace publishing needs the owner's publisher account and token.
 - Push `main` after the owner's OK, then watch the first run of the `gpu-pocl`, `gpu-nvrtc` and `gpu-macos` jobs.
 - Run the MATLAB suite and the GPU self-test on the RTX 5060 and the Arc 140T (see README, Test your GPU). Nothing in P9 or P10 has run there.
@@ -467,6 +467,7 @@ Open risks and questions from P7b:
 - Open from P13: a codim-2 test that is exactly zero at the first point of a curve run gives the warning "could not locate" and the label is lost. It showed with PDNS at nu = 0.5 in the `cyc_r2` model, so the R2 runs start at nu = 0.45. A test with a sign change between two points is not affected.
 - Open from P13: no pole of b, c or d was observed in any E7b model, so the `POLE_TOL` guard in `locate.rs` has not dropped a real pole. A model with a resonance that makes a bordered solve singular would test it.
 - Open from P13: with the `Inf` default the Compile button of `LatexStudio` and `phasecont.latex.build` cannot be cancelled on a document that never ends, since `system` ignores Ctrl-C. Sending `Inf` through the JVM wait loop that a finite Timeout uses would fix it, and needs the owner's go-ahead.
+- Open from P13, owner decision: a `.pcsession.json` file saved with v1.0.0 that holds an LPC, PD or NS curve run stores rows of the old width (24 for LPC and PD, 29 for NS at n = 2, ntst = 2, ncol = 2). `Session.load` rebuilds items through `rows2branch`, which now raises `phasecont:model:badRows`, so the load fails with `phasecont:session:badFile`. EP, LC, IVP and other runs are not affected. Two options: read old rows by their stride and fill the new tests (CPC, R1, GPD, R2, CH) with NaN, or document the break in the release notes. No code was changed.
 - Open from P12, deferred by the owner on 2026-11-06: `vsce` (the VS Code packaging tool) has a licence that the project rules do not cover, and the owner said "later, or we will make our own". PhaseCont may write its own `.vsix` packager later. No code for it exists, and the dev-only exception recorded under P12 stays in place until then.
 - Open from P5: the engine option `mesh_adapt` (default 3) is not exposed in MATLAB, so a MATLAB LC run always adapts the mesh every 3 accepted points. A `MeshAdapt` option would change the public API.
 - Open from P4:
