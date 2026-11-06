@@ -32,8 +32,9 @@ pub use branch::{Branch, Extras, Options, Point, SpecialPoint, StopReason};
 pub use curve2::CurveSetup;
 pub use cycle::{
     CYCLE_LABELS, CollocationBasis, CycleBifurcation, CycleCurveStart, CycleNormalForm,
-    CycleProblem, CycleSetup, CycleStart, HopfStart, LPC_CURVE_LABELS, LpcProblem, NCOL_RANGE,
-    NS_CURVE_LABELS, NsProblem, PD_CURVE_LABELS, PdProblem, PdStart, PeriodicOrbit, continue_cycle,
+    CycleProblem, CycleSetup, CycleStart, HOM_CURVE_LABELS, HomProblem, HomStart, HomStartKind,
+    HopfStart, LPC_CURVE_LABELS, LpcProblem, NCOL_RANGE, NS_CURVE_LABELS, NsProblem,
+    PD_CURVE_LABELS, PdProblem, PdStart, PeriodicOrbit, continue_cycle, continue_hom_curve,
     continue_lpc_curve, continue_ns_curve, continue_pd_curve, curve_point_normal_form,
     lc_point_normal_form, periodic_orbit,
 };

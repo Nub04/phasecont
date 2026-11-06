@@ -14,8 +14,8 @@
 use crate::branch::{Branch, Options, Point, SpecialPoint, StopReason};
 use crate::curve2::CurveSetup;
 use crate::cycle::{
-    CycleCurveStart, CycleStart, continue_cycle, continue_lpc_curve, continue_ns_curve,
-    continue_pd_curve,
+    CycleCurveStart, CycleStart, HomStart, continue_cycle, continue_hom_curve, continue_lpc_curve,
+    continue_ns_curve, continue_pd_curve,
 };
 use crate::ep::{EpSetup, continue_ep};
 use crate::error::EngineError;
@@ -48,6 +48,8 @@ pub enum RunKind {
     PdCurve(CycleCurveStart),
     /// The NS curve through an NS point of a cycle branch, in two parameters.
     NsCurve(CycleCurveStart),
+    /// The HOM curve of orbits homoclinic to a saddle, in two parameters.
+    HomCurve(HomStart),
     /// An initial value run over `tspan` from the state `setup.u0` with the parameters
     /// `setup.params`. The model may depend on t.
     Ivp { tspan: [f64; 2], opts: IvpOptions },
@@ -219,6 +221,7 @@ fn follow(
         RunKind::LpcCurve(cs) => continue_lpc_curve(model, cs, opts, &shared.cancel, on_point),
         RunKind::PdCurve(cs) => continue_pd_curve(model, cs, opts, &shared.cancel, on_point),
         RunKind::NsCurve(cs) => continue_ns_curve(model, cs, opts, &shared.cancel, on_point),
+        RunKind::HomCurve(hs) => continue_hom_curve(model, hs, opts, &shared.cancel, on_point),
         RunKind::Ivp { tspan, opts } => {
             let ivp = IvpSetup {
                 x0: setup.u0.clone(),

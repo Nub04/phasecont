@@ -23,9 +23,9 @@ Each ported source gets one section in this form:
 
 ### AUTO-07p (BSD license, three clauses)
 
-- Source: https://github.com/auto-07p/auto-07p, `src/mesh.f90` at commit cb5dd4616be3fabd3ace9fb9f9b22fcbac9fc447. The license text below is taken from `doc/auto.tex` at commit 44cc1c42a888179bdbd608a40613caee9cbc4675.
-- Ported into: `crates/pc-engine/src/cycle/mesh.rs`
-- What was ported: EQDF, NEWMSH and INTERP, the mesh adaptation part of ADAPT, with a fixed number of mesh intervals. The periodic case came first. The non-periodic end rule of EQDF (IPER false), used for homoclinic orbits, was read at commit 44cc1c42a888179bdbd608a40613caee9cbc4675, where `src/mesh.f90` is unchanged from cb5dd461.
+- Source: https://github.com/auto-07p/auto-07p, `src/mesh.f90` at commit cb5dd4616be3fabd3ace9fb9f9b22fcbac9fc447 and `src/homcont.f90` at commit 44cc1c42a888179bdbd608a40613caee9cbc4675. The license text below is taken from `doc/auto.tex` at commit 44cc1c42a888179bdbd608a40613caee9cbc4675.
+- Ported into: `crates/pc-engine/src/cycle/mesh.rs` and `crates/pc-engine/src/cycle/hom.rs`
+- What was ported: EQDF, NEWMSH and INTERP, the mesh adaptation part of ADAPT, with a fixed number of mesh intervals. The periodic case came first. The non-periodic end rule of EQDF (IPER false), used for homoclinic orbits, was read at commit 44cc1c42a888179bdbd608a40613caee9cbc4675, where `src/mesh.f90` is unchanged from cb5dd461. From `src/homcont.f90`: test functions 1 to 12 of PSIHO (with test 1 split from test 4 by the type of the leading eigenvalues, see SPEC Section 8b), the sign rule of the left eigenvectors in EIGHO, and the rotation of the projection bases in PRJCTN. The bases come from our own matrix sign function, not from HomCont's Schur form.
 - Notice (also in `crates/pc-engine/NOTICE`, which `pc-cli licenses` copies into `THIRD_PARTY_LICENSES.txt`):
 
 ```

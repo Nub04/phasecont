@@ -3,6 +3,9 @@ PhaseCont pc-engine
 src/cycle/mesh.rs is ported from AUTO-07p src/mesh.f90 (EQDF with IPER true and false,
 NEWMSH and INTERP),
 https://github.com/auto-07p/auto-07p at commit cb5dd4616be3fabd3ace9fb9f9b22fcbac9fc447.
+src/cycle/hom.rs ports test functions 1 to 12 of PSIHO, the sign rule of EIGHO and the
+basis rotation of PRJCTN from AUTO-07p src/homcont.f90 at commit
+44cc1c42a888179bdbd608a40613caee9cbc4675.
 AUTO-07p is distributed under the following license.
 
 Copyright (c) 1979-2007, E. J. Doedel, California Institute of

@@ -1,0 +1,9 @@
+# Sandstede's model (B. Sandstede, J. Dyn. Diff. Eq. 9 (1997) 269-288), written from the
+# equations in docs/SPEC.md section 8b. At mu=mut=alpha=0 the plane z=0 is invariant and
+# holds an orbit homoclinic to the origin for |a| < b.
+par a=0,b=1,c=-2,mu=0,mut=0,alpha=0,beta=0,gamma=0
+x'=a*x+b*y-a*x^2+(mut-alpha*z)*x*(2-3*x)
+y'=b*x+a*y-1.5*b*x^2-1.5*a*x*y-2*y*(mut-alpha*z)
+z'=c*z+mu*x+gamma*x*z+alpha*beta*(x^2*(1-x)-y^2)
+init x=0,y=0,z=0
+done

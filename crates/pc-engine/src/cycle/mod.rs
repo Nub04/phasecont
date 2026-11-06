@@ -6,6 +6,7 @@ mod bordered;
 mod codim2;
 mod continuation;
 mod curve;
+mod hom;
 mod lpc;
 mod mesh;
 mod normal;
@@ -17,6 +18,7 @@ pub use basis::{CollocationBasis, NCOL_RANGE};
 pub use codim2::{LPC_CURVE_LABELS, NS_CURVE_LABELS, PD_CURVE_LABELS};
 pub use continuation::{CycleStart, HopfStart, PdStart, continue_cycle};
 pub use curve::CycleCurveStart;
+pub use hom::{HOM_CURVE_LABELS, HomProblem, HomStart, HomStartKind, continue_hom_curve};
 pub use lpc::{LpcProblem, continue_lpc_curve};
 pub use normal::{
     CycleBifurcation, CycleNormalForm, curve_point_normal_form, lc_point_normal_form,
