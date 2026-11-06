@@ -178,6 +178,24 @@ classdef LatexStudioTest < matlab.unittest.TestCase
             testCase.verifyError(@() app.compile(), "phasecont:latex:engineNotFound");
         end
 
+        function timeoutMustBePositive(testCase)
+            testCase.verifyError(@() phasecont.app.LatexStudio( ...
+                Visible = "off", Timeout = 0), ?MException);
+        end
+
+        function compileShowsATimeout(testCase)
+            testCase.assumeLatexmk();
+            app = phasecont.app.LatexStudio(Visible = "off", Timeout = 3);
+            testCase.addTeardown(@() delete(app));
+            app.setSource(["\documentclass{article}"; "\begin{document}"; ...
+                "\def\a{\a}\a"; "\end{document}"]);
+            r = app.compile();
+            testCase.verifyTrue(r.TimedOut);
+            testCase.verifyFalse(r.Ok);
+            testCase.verifySubstring(app.Status, "stopped after 3 s");
+            testCase.verifyError(@() app.openPdf(), "phasecont:app:noPdf");
+        end
+
         function noPdfBeforeCompile(testCase)
             app = testCase.makeApp();
             testCase.verifyError(@() app.openPdf(), "phasecont:app:noPdf");

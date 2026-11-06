@@ -298,6 +298,13 @@ classdef LatexTest < matlab.unittest.TestCase
                 "phasecont:latex:engineNotFound");
         end
 
+        function buildRejectsANonPositiveTimeout(testCase)
+            for t = [0 -1 NaN]
+                testCase.verifyError( ...
+                    @() phasecont.latex.build("x", Timeout = t), ?MException);
+            end
+        end
+
         function buildOnlyKnowsLatexmk(testCase)
             testCase.verifyError(@() phasecont.latex.build("x", Engine = "tectonic"), ...
                 "MATLAB:validators:mustBeMember");
@@ -427,6 +434,46 @@ classdef LatexTest < matlab.unittest.TestCase
                 Basename = "main", Standalone = true);
             r = phasecont.latex.build(f.Tex, Files = f.Files);
             testCase.verifyTrue(r.Ok, r.Log);
+        end
+
+        function buildTimesOut(testCase)
+            testCase.assumeTrue(testCase.HasLatexmk, "latexmk is not installed");
+            % \def\a{\a}\a calls itself without end and without using memory.
+            tex = "\documentclass{article}" + newline + "\begin{document}" + newline + ...
+                "\def\a{\a}\a" + newline + "\end{document}" + newline;
+            clock = tic;
+            r = phasecont.latex.build(tex, Timeout = 3);
+            testCase.verifyLessThan(toc(clock), 60);
+            testCase.verifyTrue(r.TimedOut);
+            testCase.verifyFalse(r.Ok);
+            testCase.verifyEqual(r.Pdf, "");
+            if isunix && ~ismac
+                % No process may keep the build folder as its working directory.
+                pause(1);
+                [~, n] = system("ls -l /proc/[0-9]*/cwd 2>/dev/null | grep -c " + ...
+                    """" + r.Folder + """");
+                testCase.verifyEqual(str2double(n), 0, ...
+                    "latexmk or a TeX program is still running");
+            end
+        end
+
+        function buildWithoutALimitStillWorks(testCase)
+            testCase.assumeTrue(testCase.HasLatexmk, "latexmk is not installed");
+            tex = "\documentclass{article}" + newline + "\begin{document}" + newline + ...
+                "x" + newline + "\end{document}" + newline;
+            r = phasecont.latex.build(tex, Timeout = Inf);
+            testCase.verifyTrue(r.Ok, r.Log);
+            testCase.verifyFalse(r.TimedOut);
+            testCase.verifyTrue(isfile(r.Pdf));
+        end
+
+        function buildWithinTheLimitIsNotTimedOut(testCase)
+            testCase.assumeTrue(testCase.HasLatexmk, "latexmk is not installed");
+            tex = "\documentclass{article}" + newline + "\begin{document}" + newline + ...
+                "x" + newline + "\end{document}" + newline;
+            r = phasecont.latex.build(tex, Timeout = 120);
+            testCase.verifyTrue(r.Ok, r.Log);
+            testCase.verifyFalse(r.TimedOut);
         end
 
         function buildReportsATexErrorWithItsLine(testCase)
