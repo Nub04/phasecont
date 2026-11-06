@@ -32,10 +32,12 @@ pub struct Point {
 /// Extra data stored with a special point.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Extras {
-    /// Normal form coefficient: a for LP, l1 for H, c for CP, a for BT, l2 for GH.
+    /// Normal form coefficient: a for LP, l1 for H, c for CP, a for BT, l2 for GH, and on a
+    /// cycle branch b for LPC, c for PD and Re d for NS.
     pub coefficient: Option<f64>,
     /// Second normal form coefficient: b of a Bogdanov-Takens point (`coefficient` is a), c
-    /// of a zero-Hopf point (`coefficient` is b).
+    /// of a zero-Hopf point (`coefficient` is b), Im d of a torus bifurcation (`coefficient` is
+    /// Re d).
     pub coefficient2: Option<f64>,
     /// Frequency of a Hopf point.
     pub omega: Option<f64>,

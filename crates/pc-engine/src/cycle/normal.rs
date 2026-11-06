@@ -11,7 +11,7 @@
 //! solver, as the continuation does for the cycle itself.
 
 use super::basis::{CollocationBasis, NCOL_RANGE};
-use crate::branch::Point;
+use crate::branch::{Branch, Point};
 use crate::error::EngineError;
 use crate::model::ModelEval;
 use crate::normal::{At, Cv};
@@ -71,6 +71,70 @@ pub fn lc_point_normal_form(
     p[free] = point.alpha;
     p.push(0.0);
     normal_form(model, kind, &p, orbit, *period, &point.mesh, ncol)
+}
+
+/// The normal form coefficient at `point` of a curve of cycles in the parameters `free` =
+/// [a1, a2] (as in [`continue_lpc_curve`](super::continue_lpc_curve)), with the other
+/// parameters from `params`. The point holds the orbit, T and a1 in `Point::u` and a2 in
+/// `Point::alpha`. `kind` is the bifurcation the curve follows. `ncol` is the number of
+/// collocation points per interval of the point's mesh.
+pub fn curve_point_normal_form(
+    model: &mut dyn ModelEval,
+    kind: CycleBifurcation,
+    free: [usize; 2],
+    params: &[f64],
+    point: &Point,
+    ncol: usize,
+) -> Result<CycleNormalForm, EngineError> {
+    let bad = |m: String| Err(EngineError::BadProblem(m));
+    let (n, n_p) = (model.n(), model.n_p());
+    if params.len() != n_p || free[0] >= n_p || free[1] >= n_p || free[0] == free[1] {
+        return bad("normal form: parameters or free indices do not fit the model".into());
+    }
+    let [orbit @ .., period, a1] = &point.u[..] else {
+        return bad("normal form: the curve point has no orbit".into());
+    };
+    let nint = point.mesh.len().saturating_sub(1);
+    if nint == 0 || !NCOL_RANGE.contains(&ncol) || orbit.len() != n * (nint * ncol + 1) {
+        return bad("normal form: the point does not match the mesh and NCOL".into());
+    }
+    let mut p = params.to_vec();
+    p[free[0]] = *a1;
+    p[free[1]] = point.alpha;
+    p.push(0.0);
+    normal_form(model, kind, &p, orbit, *period, &point.mesh, ncol)
+}
+
+/// Gives every LPC, PD and NS special point of the cycle branch `branch` its normal form
+/// coefficient: `Extras::coefficient` is b, c or Re d, `coefficient2` is Im d of an NS
+/// point and `normalization` names the conditions. A point whose coefficient cannot be
+/// computed keeps empty extras and adds a warning, the run itself is not affected.
+pub(crate) fn attach_coefficients(
+    model: &mut dyn ModelEval,
+    branch: &mut Branch,
+    free: usize,
+    params: &[f64],
+    ncol: usize,
+) {
+    for sp in branch.specials.iter_mut() {
+        let kind = match sp.label.as_str() {
+            "LPC" => CycleBifurcation::Lpc,
+            "PD" => CycleBifurcation::Pd,
+            "NS" => CycleBifurcation::Ns,
+            _ => continue,
+        };
+        match lc_point_normal_form(model, kind, free, params, &sp.point, ncol) {
+            Ok(nf) => {
+                sp.extras.coefficient = Some(nf.coefficient);
+                sp.extras.coefficient2 = nf.coefficient2;
+                sp.extras.normalization = Some(nf.normalization.to_string());
+            }
+            Err(e) => branch.warnings.push(format!(
+                "{} point at alpha = {}: no normal form coefficient: {e}",
+                sp.label, sp.point.alpha
+            )),
+        }
+    }
 }
 
 /// The coefficient for the orbit at the base points of `mesh`, with `p` the parameters

@@ -7,8 +7,8 @@ mod common;
 
 use common::load;
 use pc_engine::{
-    CycleBifurcation, CycleSetup, CycleStart, Evaluator, ModelEval, Options, Point, build,
-    continue_cycle, lc_point_normal_form,
+    Branch, CycleBifurcation, CycleSetup, CycleStart, Evaluator, ModelEval, Options, Point,
+    SpecialPoint, build, continue_cycle, lc_point_normal_form,
 };
 use std::f64::consts::PI;
 use std::sync::atomic::AtomicBool;
@@ -25,14 +25,19 @@ fn rel(a: f64, b: f64) -> f64 {
     (a - b).abs() / b.abs()
 }
 
-/// The one special point labeled `label` of the LC run from `setup`.
-fn lc_special(m: &mut dyn ModelEval, setup: CycleSetup, opts: &Options, label: &str) -> Point {
+/// The LC run from `setup`, which must finish without warnings.
+fn lc_run(m: &mut dyn ModelEval, setup: CycleSetup, opts: &Options) -> Branch {
     let cancel = AtomicBool::new(false);
     let b = continue_cycle(m, &CycleStart::Orbit(setup), opts, &cancel, &mut |_| ()).unwrap();
     assert!(b.warnings.is_empty(), "{:?}", b.warnings);
+    b
+}
+
+/// The one special point labeled `label` of `b`.
+fn only_special<'a>(b: &'a Branch, label: &str) -> &'a SpecialPoint {
     let found: Vec<_> = b.specials.iter().filter(|s| s.label == label).collect();
     assert_eq!(found.len(), 1, "{:?}", b.specials);
-    found[0].point.clone()
+    found[0]
 }
 
 /// The exact cycle of squared radius `s` of `cyc_lpc` at the N m + 1 points of a uniform
@@ -52,7 +57,7 @@ fn polar_orbit(s: f64, nm: usize) -> (Vec<f64>, f64) {
 /// The LPC of `cyc_lpc` at mu = -1, found by an LC run from the unstable cycle at
 /// mu = -1/2 (s = 1 - sqrt(1/2)) in the direction of falling mu. `shear` is the k of the
 /// coordinates X = x + k y, Y = y of `cyc_lpc_lin`, and 0 for `cyc_lpc` itself.
-fn lpc_point(m: &mut dyn ModelEval, shear: f64) -> Point {
+fn lpc_run(m: &mut dyn ModelEval, shear: f64) -> Branch {
     let s0 = 1.0 - 0.5_f64.sqrt();
     let (mut orbit, period) = polar_orbit(s0, NTST * NCOL);
     for p in orbit.as_chunks_mut::<2>().0 {
@@ -66,7 +71,11 @@ fn lpc_point(m: &mut dyn ModelEval, shear: f64) -> Point {
         bounds: (-3.0, 0.5),
         ..Options::default()
     };
-    lc_special(m, setup, &opts, "LPC")
+    lc_run(m, setup, &opts)
+}
+
+fn lpc_point(m: &mut dyn ModelEval, shear: f64) -> Point {
+    only_special(&lpc_run(m, shear), "LPC").point.clone()
 }
 
 fn check_lpc(name: &str, shear: f64) {
@@ -109,9 +118,9 @@ fn ring_orbit(beta: f64, nm: usize) -> (Vec<f64>, f64) {
     (orbit, PI)
 }
 
-/// The special point `label` of the LC run of a `cyc_pd` or `cyc_ns` model from the ring at
-/// beta = 0.2 upward. Both bifurcations are at beta = 1/4.
-fn ring_point(m: &mut dyn ModelEval, ntst: usize, label: &str) -> Point {
+/// The LC run of a `cyc_pd` or `cyc_ns` model from the ring at beta = 0.2 upward. Both
+/// bifurcations are at beta = 1/4.
+fn ring_run(m: &mut dyn ModelEval, ntst: usize) -> Branch {
     let (orbit, period) = ring_orbit(0.2, ntst * NCOL);
     let setup = CycleSetup::new(0, vec![0.2], ntst, NCOL, orbit, period);
     let opts = Options {
@@ -121,7 +130,11 @@ fn ring_point(m: &mut dyn ModelEval, ntst: usize, label: &str) -> Point {
         bounds: (0.05, 0.4),
         ..Options::default()
     };
-    lc_special(m, setup, &opts, label)
+    lc_run(m, setup, &opts)
+}
+
+fn ring_point(m: &mut dyn ModelEval, ntst: usize, label: &str) -> Point {
+    only_special(&ring_run(m, ntst), label).point.clone()
 }
 
 fn pd_point(m: &mut dyn ModelEval, ntst: usize) -> Point {
@@ -210,4 +223,42 @@ fn ns_coefficient_with_a_nonzero_h11() {
 #[test]
 fn ns_coefficient_with_a_nonzero_period_coefficient() {
     check_ns("cyc_ns_phase");
+}
+
+/// The run itself stores the coefficient at each LPC, PD and NS point, the same value the
+/// evaluator gives for the stored point.
+#[test]
+fn a_cycle_run_attaches_the_coefficient_to_an_lpc_point() {
+    let mut m = model_of("cyc_lpc");
+    let b = lpc_run(m.as_mut(), 0.0);
+    let ex = &only_special(&b, "LPC").extras;
+    let c = ex.coefficient.expect("the LPC point has b");
+    assert!(rel(c, -4.0) <= 1e-5, "b = {c}");
+    assert!(ex.coefficient2.is_none());
+    assert!(ex.normalization.is_some());
+}
+
+#[test]
+fn a_cycle_run_attaches_the_coefficient_to_a_pd_point() {
+    let mut m = model_of("cyc_pd");
+    let b = ring_run(m.as_mut(), NTST);
+    let ex = &only_special(&b, "PD").extras;
+    let c = ex.coefficient.expect("the PD point has c");
+    assert!(rel(c, -1.0 / PI) <= 1e-5, "c = {c}");
+    assert!(ex.coefficient2.is_none());
+    assert!(ex.normalization.is_some());
+}
+
+#[test]
+fn a_cycle_run_attaches_both_parts_of_d_to_an_ns_point() {
+    let mut m = model_of("cyc_ns");
+    let b = ring_run(m.as_mut(), NTST);
+    let ex = &only_special(&b, "NS").extras;
+    let (re, im) = (
+        ex.coefficient.expect("Re d"),
+        ex.coefficient2.expect("Im d"),
+    );
+    assert!(rel(re, -2.0 / PI) <= 1e-5, "Re d = {re}");
+    assert!(rel(im, -1.0 / PI) <= 1e-5, "Im d = {im}");
+    assert!(ex.normalization.is_some());
 }

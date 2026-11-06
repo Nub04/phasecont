@@ -10,6 +10,7 @@
 
 use super::basis::CollocationBasis;
 use super::mesh;
+use super::normal;
 use super::problem::{CycleProblem, CycleSetup, check_dims, try_zeros};
 use crate::branch::{Branch, Options, Point, StopReason};
 use crate::error::EngineError;
@@ -185,6 +186,12 @@ pub fn continue_cycle(
     }
     early.append(&mut branch.warnings);
     branch.warnings = early;
+    let (free, params, ncol) = match start {
+        CycleStart::Orbit(s) => (s.free, &s.params, s.ncol),
+        CycleStart::Hopf(h) => (h.free, &h.params, h.ncol),
+        CycleStart::Pd(s) => (s.free, &s.params, s.ncol),
+    };
+    normal::attach_coefficients(model, &mut branch, free, params, ncol);
     floquet_warning(&mut branch, 1);
     Ok(branch)
 }

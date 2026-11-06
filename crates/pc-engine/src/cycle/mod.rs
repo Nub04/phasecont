@@ -18,7 +18,9 @@ pub use codim2::{LPC_CURVE_LABELS, NS_CURVE_LABELS, PD_CURVE_LABELS};
 pub use continuation::{CycleStart, HopfStart, PdStart, continue_cycle};
 pub use curve::CycleCurveStart;
 pub use lpc::{LpcProblem, continue_lpc_curve};
-pub use normal::{CycleBifurcation, CycleNormalForm, lc_point_normal_form};
+pub use normal::{
+    CycleBifurcation, CycleNormalForm, curve_point_normal_form, lc_point_normal_form,
+};
 pub use ns::{NsProblem, continue_ns_curve};
 pub use pd::{PdProblem, continue_pd_curve};
 pub use problem::{CYCLE_LABELS, CycleProblem, CycleSetup, PeriodicOrbit, periodic_orbit};
