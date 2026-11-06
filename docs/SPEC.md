@@ -288,7 +288,76 @@ For $|\kappa| < 1$ the real kernel of $M^2 - 2\kappa M + I$ has even dimension, 
 
 A zero of LPNS on an LPC curve or of PDNS on a PD curve gets its label only when the pair whose product is closest to 1 is complex, since a real pair with product 1 is a neutral saddle. On an LPC curve the multiplier 1 is double with a Jordan block, so the trivial multiplier check of Section 7 uses the mean of the two multipliers nearest to 1.
 
-**Deferred to E7.** CPC, GPD and CH need periodic normal forms. R1 on an LPC curve and R2 on a PD curve need a coalescence of multipliers that the exclusion rule cannot separate.
+**Deferred to E7.** CPC, GPD and CH need periodic normal forms, and R1 on an LPC curve and R2 on a PD curve need a test that the exclusion rule cannot give. Section 8a defines them.
+
+## 8a. Periodic normal forms of cycle bifurcations (phase E7)
+
+Phase E7 computes one normal form coefficient at each LPC, PD and NS point, and uses its zero as a codim-2 test on the curves of Section 8. It uses periodic normalization (Kuznetsov, Govaerts, Doedel and Dhooge 2005, KGDD below), which needs no derivatives of the Poincaré map. The 2005 paper is not available as a free text. The formulas below were checked against two free restatements: De Witte, Della Rossa, Govaerts and Kuznetsov (arXiv 1111.4445, DWDGK) and Bosschaert, Lentjes, Spek and Kuznetsov (arXiv 2505.19786, BLSK, the delay version, taken at the ODE limit). Equation numbers below are those of the restatements.
+
+E7 has two parts. E7a computes the coefficients at special points and at the points of a curve, and changes no interface. E7b adds the codim-2 labels (CPC, GPD, CH, R1 on LPC, R2 on PD) to the curve runs. It changes the per-point row layout and the `codim2_labels` lists of Section 10, which `rows2branch.m` and `cycle_stride` fix today, so it needs the owner's approval before it is wired in.
+
+**Notation.** The cycle is $u_0(t)$ with period $T$, $F = f(u_0) = \dot u_0$, $A(t) = f_x(u_0(t))$, and $B$, $C$ are the second and third derivatives of $f$ in $u$ at $u_0(t)$, as symmetric multilinear forms. The inner product is $\langle u, v\rangle = \bar u^\top v$. Every integral runs over $[0, T]$ and every function is $T$-periodic unless the text says it is antiperiodic. A prime is $d/dt$.
+
+**Time scale.** The engine solves on $\tau = t/T \in [0, 1]$ with $U(\tau) = u_0(T\tau)$. Each equation below is written once in $t$ and solved in $\tau$ with $d/dt = T^{-1} d/d\tau$, $\int_0^T g\, dt = T \int_0^1 g\, d\tau$, $A = f_x(U)$ and $F = f(U) = U_\tau / T$. The normalizations $\int_0^T \langle v, v\rangle\, dt = 1$ become $T \int_0^1 \langle V, V\rangle\, d\tau = 1$. A test model with $T = 1$ would hide a missing factor of $T$, so every oracle below has $T = \pi$.
+
+**LPC.** The normal form is $\tau' = 1 + \xi + a\xi^2$, $\xi' = b\xi^2$ (BLSK; DWDGK Appendix A.2.1 has the same form after $\xi \to -\xi$). Solve
+$$\varphi_1' - A\varphi_1 = -F,\quad \int \langle \varphi_1, F\rangle = 0,$$
+$$\varphi^{*\prime} + A^\top \varphi^* = 0,\quad \int \langle \varphi^*, \varphi_1\rangle = 1,$$
+$$b = \tfrac12 \int \langle \varphi^*,\ B(\varphi_1, \varphi_1) - 2A\varphi_1\rangle \qquad \text{(BLSK eq. 60)}.$$
+DWDGK writes $v' - Av - F = 0$ (eq. 15, 21, §3.1) and $b = \tfrac12 \int \langle \varphi^*, B(v, v) + 2Av\rangle$. Since $v = -\varphi_1$ and the DWDGK adjoint is $-\varphi^*$, the two conventions give opposite signs. The engine uses the BLSK one. The sign does not change the nondegeneracy test $b \ne 0$ or the detection of CPC. $b$ does not change under a phase shift $\varphi_1 \to \varphi_1 + cF$ or under a constant invertible linear change of coordinates.
+
+**PD.** The normal form is $\tau' = 1 + a\xi^2$, $\xi' = c\xi^3$, supercritical for $c < 0$. Solve (DWDGK eq. 28–35)
+$$v' = Av,\quad v(T) = -v(0),\quad \int \langle v, v\rangle = 1 \quad (28)$$
+$$\varphi^{*\prime} + A^\top \varphi^* = 0 \text{ (periodic)},\quad \int \langle \varphi^*, F\rangle = 1 \quad (29)$$
+$$v^{*\prime} + A^\top v^* = 0,\quad v^*(T) = -v^*(0),\quad \int \langle v^*, v\rangle = 1 \quad (30)$$
+$$\alpha_1 = \tfrac12 \int \langle \varphi^*, B(v, v)\rangle \quad (32)$$
+$$h_2' - Ah_2 - B(v, v) + 2\alpha_1 F = 0,\quad \int \langle \varphi^*, h_2\rangle = 0 \quad (33)$$
+$$c = \tfrac16 \int \langle v^*,\ C(v, v, v) + 3B(v, h_2) - 6\alpha_1 A v\rangle \quad (35).$$
+$h_2$ is $T$-periodic and the integrand of $c$ is $T$-periodic. BLSK eq. 64 prints $\tfrac13$ for the prefactor, which equals this formula if its integral runs over $[0, 2T]$. The engine integrates over $[0, T]$ with $\tfrac16$, and the exact oracle of test 2 below confirms it.
+
+**NS.** The normal form is $\xi' = i\omega\xi + d\,\xi|\xi|^2$, with $\omega = \theta / T$ for the critical multipliers $e^{\pm i\theta}$, $0 < \theta < \pi$, and supercritical for $\operatorname{Re} d < 0$. Solve (DWDGK eq. 42–45)
+$$v' - Av + i\omega v = 0,\quad \int \langle v, v\rangle = 1,\qquad v^{*\prime} + A^\top v^* + i\omega v^* = 0,\quad \int \langle v^*, v\rangle = 1 \quad (42)$$
+$$h_{20}' - Ah_{20} + 2i\omega h_{20} - B(v, v) = 0 \quad (43)$$
+$$\alpha_1 = \int \langle \varphi^*, B(v, \bar v)\rangle \quad (44)$$
+$$h_{11}' - Ah_{11} - B(v, \bar v) + \alpha_1 F = 0,\quad \int \langle \varphi^*, h_{11}\rangle = 0 \quad (45)$$
+$$d = \tfrac12 \int \langle v^*,\ B(h_{20}, \bar v) + 2B(h_{11}, v) + C(v, v, \bar v) - 2\alpha_1 A v\rangle + i\alpha_1\omega \quad \text{(BLSK supplement S9)}.$$
+All functions are $T$-periodic and $\varphi^*$ is as for PD. Only $\operatorname{Re} d$ gives the criticality and the CH test. $\operatorname{Im} d$ depends on the branch chosen for $\omega$, so it is tested only in the unsheared oracle, where $\alpha_1 = 0$. With $\langle v, v\rangle = 1$ for a complex $v$ the real plane coordinate is $2\operatorname{Re}(\xi v)$, so $|w|^2 = 2|\xi|^2 / T$ and the complex coefficient doubles, as for $l_1$ in Section 9.
+
+**Inputs.** $B$ and $C$ come from the `Dir` forms of the JIT that `normal.rs` already uses for equilibria, and $A$ from `Model2`. The `pc_ir::check` test already compares those forms with finite differences to order 5, so E7 needs no change in `pc-ir` or `pc-jit`. Each linear periodic problem above is discretized on the mesh of the cycle ($N$ intervals, $m$ Gauss points), solved with the condensation of Section 7, and integrated with the Gauss weights.
+
+**Outputs (E7a).** At an LPC, PD or NS special point of a cycle branch, `Extras.coefficient` is $b$, $c$ or $\operatorname{Re} d$, `coefficient2` is $\operatorname{Im} d$ for NS and null otherwise, and `normalization` names the conditions used (for PD, `<v,v>=1, <phi*,F>=1, <v*,v>=1`). The sign gives the criticality, as $l_1$ does for H, and the engine adds no label text. A function in `cycle/normal.rs` also evaluates the coefficient at any point of an LPC, PD or NS curve, so a curve run can be checked against the closed forms below. E7a adds no field to `Point`, the run JSON or the C ABI.
+
+**Codim-2 tests (E7b).** The coefficient is evaluated at every accepted point of an LPC, PD or NS curve and appended to the tests of Section 8, after the existing ones, so existing indexes keep their meaning.
+
+| Curve | `codim2_labels` after E7b |
+|---|---|
+| LPC | `["LPPD","LPNS","CPC","R1"]`, with CPC $= b$ and R1 $= \prod(\mu - 1)$ |
+| PD | `["LPPD","PDNS","GPD","R2"]`, with GPD $= c$ and R2 $= \prod(\mu + 1)$ |
+| NS | `["R1","R2","R3","R4","LPNS","PDNS","CH"]`, with CH $= \operatorname{Re} d$ |
+
+R1 and R2 are multiplier tests over the multipliers left after the exclusion rule of Section 8, and are NaN for $n = 2$. The sources give only the Jordan-structure definitions of R1 and R2 and the codim-2 coefficients (DWDGK §3.4–3.5, eq. 64, 67, 84), not a test function. The label means that a further multiplier is at $+1$ (R1) or $-1$ (R2), and the engine does not check for the Jordan block. The error of the multipliers near a Jordan block limits the location of these two labels to about $10^{-5}$. The new tests change the number of columns of a curve row (two more for LPC and PD, one more for NS), the `codim2_labels` lists of Section 10, `cycle_stride` in `pc-ffi`, and `rows2branch.m` and `Branch.m` on the MATLAB side. That is an interface change, and E7b waits for the owner's approval of it.
+
+**Out of scope.** Codim-2 normal form coefficients, a center manifold of dimension above 3, homoclinic orbits (E8) and delays (E9).
+
+**Acceptance.** Every model is our own and has a closed form that shares no code with the engine. Models live in `crates/pc-engine/tests/models`, and the tests in `crates/pc-engine/tests/cycle_normal_forms.rs` use `ntst = 40`, `ncol = 4`. Each test asserts to $10^{-5}$ relative unless it says otherwise, and the first run records the measured error in the test comment.
+
+E7a:
+
+1. **LPC `b`.** The planar model $\dot x = xP - y\Omega$, $\dot y = yP + x\Omega$ with $s = x^2 + y^2$, $P = \mu + 2s - s^2$ and $\Omega = \omega_0 + \sigma(s - 1)$ has a fold of cycles at $\mu = -1$, $r = 1$. The radius obeys $\dot r = rP$, so $g_{rr} = -8$ there, the phase rate has $\Omega_r = 2\sigma$, and $b = \tfrac12 g_{rr}\,\omega_0/\Omega_r = -2\omega_0/\sigma$. With $\omega_0 = 2$ and $\sigma = 1$, $T = \pi$ and $b = -4$. A second run applies a fixed non-orthogonal constant linear map to the state, which does not change $b$ and makes the $\langle \varphi^*, A\varphi_1\rangle$ term matter. The same model with $\Omega = 1$ has no shear and no generalized eigenfunction $\varphi_1$, so it cannot test $b$. The start is the Hopf point at $\mu = 0$, which is subcritical, and the branch folds at $\mu = -1$.
+2. **PD `c`.** The model is $\dot z = (\beta + i\Omega)z - |z|^2 z$ and $\dot w = (\lambda_0 + i\Omega/2)w + \varepsilon z\bar w - \gamma|w|^2 w$, with $\Omega = 2$, $\lambda_0 = -\tfrac12$, $\varepsilon = 1$ and $\gamma = 1$, so $T = \pi$. The cycle has $r^2 = \beta$ and the PD is at $r = \tfrac12$, $\beta = \tfrac14$. In the frame $w = e^{i\Omega t/2} y$ the equation is autonomous and gives $c = -\gamma / T = -1/\pi \approx -0.3183$. A second run writes the same system in the variables $(u_1, w)$ with $u_1 = z + Q(w)$ for a fixed quadratic $Q$. The change is tangent to the identity on the cycle, so $c$ does not change, while $B(v, v)$, $h_2$ and $\alpha_1$ become nonzero. The test asserts the same $c$ for both.
+3. **NS `d`.** The model is $\dot z = (\beta + 2i)z - |z|^2 z$ and $\dot w = (\beta - \beta_0 + i\omega_w)w - \gamma|w|^2 w$ with $\beta_0 = \tfrac14$ and $\omega_w = 0.8$, so $T = \pi$, $\theta = 0.8\pi$ and $\kappa = \cos\theta \approx -0.809$. The doubling of the complex coefficient gives $d = -2\gamma / T$. For $\gamma = 1 + 0.5i$ the test asserts $\operatorname{Re} d$ and $\operatorname{Im} d$ in the unsheared model and $\operatorname{Re} d$ in the sheared one (the same change of variables as in test 2).
+4. **Sign on a published example.** At the first PD point of the Rössler branch (`references/rossler.json`), $c < 0$, since the doubled cycle that the existing PD switch test follows is stable.
+5. **Convergence.** For tests 1 to 3 the error at `ntst = 40` is below the error at `ntst = 20`.
+6. **Coefficients along curves.** The evaluation function of `cycle/normal.rs` is applied to stored points of curve runs, and the sign changes it finds are the zeros E7b will label.
+   - LPC curve of the model of test 1 with $P = \mu + \nu q - q^3$, $q = s - 1$. The fold curve is $\nu = 3q^2$, $\mu = -2q^3$, with $g_{rr} = -24 r^3 q$, so $b(q) = -6r^2 q\,\Omega/\sigma$ with $r^2 = 1 + q$ and $\Omega = \omega_0 + \sigma q$. The test compares $b$ with this value at five curve points and checks that it changes sign between the points on either side of $q = 0$, the cusp at $(\mu, \nu) = (0, 0)$, $r = 1$.
+   - PD curve of the model of test 2 with $\gamma = \nu$ and an extra $-|w|^4 w$ that keeps the doubled cycle bounded. Then $c = -\nu/T$ on the curve $\beta = \tfrac14$, and it changes sign at $\nu = 0$.
+   - NS curve of the model of test 3 with $\operatorname{Re}\gamma = \nu$, $\operatorname{Im}\gamma = 0.5$ and the same quintic term. Then $\operatorname{Re} d = -2\nu/T$ on the curve $\beta = \beta_0$, and it changes sign at $\nu = 0$.
+   - R1 and R2 from the stored multipliers. For the model of test 1 plus $\dot w = \nu w$, the LPC is at $\mu = -1$ for every $\nu$, the multipliers are $1$ (twice) and $e^{\nu T}$, and $\prod(\mu - 1) = e^{\nu T} - 1$ changes sign at $\nu = 0$. For the model of test 2 plus a second plane $\dot w_2 = (\nu - \tfrac12 + i\Omega/2)w_2 + z\bar w_2 - |w_2|^2 w_2$ (six states), the multipliers of the second plane on the curve $\beta = \tfrac14$ are $-e^{\nu T}$ and $-e^{(\nu - 1)T}$, and $\prod(\mu + 1)$ changes sign at $\nu = 0$.
+7. **Regression.** The existing `cargo test` suite, including the cycle tests, stays green.
+
+E7b, after the owner approves the interface change: the same curve runs locate CPC, GPD, CH, R1 and R2 at the values above, with $|\nu| < 10^{-5}$ (for CPC, $|\mu|, |\nu| < 10^{-6}$ and $|r - 1| < 10^{-4}$). R1 is NaN on the planar models, and the status JSON, `cycle_stride` and the MATLAB tests change with the labels.
+
+STATUS records that tests 2, 3 and 6 use constructed models with closed forms, and that no published value was available for PD, NS, GPD or CH.
 
 ## 9. Acceptance tests
 
@@ -556,7 +625,7 @@ plot(br, Var="x");                                        % stable solid, unstab
   - `LatexStudio` has an editor, a Summary pane, an error Context pane and Errors and Log tabs. The preview is the system PDF viewer. Selecting an error shows its context lines with the error line marked with `>`, because the `uitextarea` cursor API is not confirmed here. Insert figure and Insert table always write inline data, and Compile blocks the window. The app raises `phasecont:app:{badOpener,openFailed,saveFailed,empty,noSuchError,noPdf,noBranch}`. A pdf.js preview in a `uihtml` page was in the plan as an option and is not built, since it cannot be tried without MATLAB. `LatexStudio` has no `Preview` option, and `THIRD_PARTY_NOTICES.md` has no pdf.js entry.
   - Acceptance: `cargo test -p pc-latex` and `cargo test -p pc-cli` pass. `pc-latex` covers a `proptest` that `escape` leaves no raw special character outside a backslash command, a `proptest` that 17 digits round-trip a double, golden `.tex` files (stable and unstable series with marks, a table, external data with its `.dat` files), a standalone wrap, the error cases (null, 1e999, empty series and table, missing and bad digits, length mismatch, basename rules, unknown keys), and a compile of every golden file, as a fragment inside an `article` and as a `standalone` document, with the `latexmk` flags above to a PDF. A machine without `latexmk` prints `SKIPPED: no latexmk`, and `PC_REQUIRE_LATEX=1` turns the skip into a failure. `pc-cli` covers the command line cases above, including that a failed render writes no file. The C ABI gains one function, `latex_render`, with a matching gateway command. The MATLAB tests (`tests/LatexTest.m`) check that the API output equals the Rust output for the same figure and that a missing `Digits` raises.
 - **Optional external backends:** AUTO-07p and XPPAUT, run as subprocesses the user installs separately.
-- **Engine phases E7 to E9:** periodic normal forms, homoclinic orbits, delay equations.
+- **Engine phases E8 and E9:** homoclinic orbits, delay equations. Phase E7, the periodic normal forms, is Section 8a.
 
 ## 14. Phases and acceptance
 
@@ -575,6 +644,7 @@ plot(br, Var="x");                                        % stable solid, unstab
 | P8 | Package v1.0 | Release workflow publishes a `.mltbx` for all platforms |
 | P11 | `pc-lsp` and the VS Code client | The P11 checks in section 13 pass; the extension has not run inside VS Code |
 | P12 | `pc-latex`, `phasecont.latex.*`, `LatexStudio` | The P12 checks in section 13 pass; the MATLAB tests are written and not run until a MATLAB session is available |
+| P13 | Periodic normal forms (E7): $b$, $c$, $d$ at LPC, PD and NS points | E7a tests 1 to 7 of section 8a pass; E7b (the CPC, GPD, CH, R1 and R2 labels) waits for approval of the row layout change |
 
 ## 15. References
 
@@ -587,7 +657,8 @@ Check every citation before quoting it in user-facing docs.
 - Doedel, E., Keller, H. B., and Kernévez, J. P. "Numerical analysis and control of bifurcation problems," Parts I and II. *Int. J. Bifurcation and Chaos*, 1991.
 - Doedel, E., Govaerts, W., and Kuznetsov, Yu. A. "Computation of periodic solution bifurcations in ODEs using bordered systems." *SIAM J. Numer. Anal.*, 2003.
 - Kuznetsov, Yu. A., Govaerts, W., Doedel, E., and Dhooge, A. "Numerical periodic normalization for codim 1 bifurcations of limit cycles." *SIAM J. Numer. Anal.*, 2005.
-- De Witte, V., Della Rossa, F., Govaerts, W., and Kuznetsov, Yu. A. "Numerical periodic normalization for codim 2 bifurcations of limit cycles." *SIAM J. Appl. Dyn. Syst.*, 2013.
+- De Witte, V., Della Rossa, F., Govaerts, W., and Kuznetsov, Yu. A. "Numerical periodic normalization for codim 2 bifurcations of limit cycles." *SIAM J. Appl. Dyn. Syst.*, 2013. The open copy is arXiv:1111.4445, and Section 8a cites it as DWDGK.
+- Bosschaert, M. M., Lentjes, B., Spek, L., and Kuznetsov, Yu. A. Periodic normalization for delay differential equations, arXiv:2505.19786, 2025. Section 8a cites it as BLSK and takes the ODE limit of its formulas.
 - Fairgrieve, T. F., and Jepson, A. D. "O.K. Floquet multipliers." *SIAM J. Numer. Anal.*, 1991.
 - Russell, R. D., and Christiansen, J. "Adaptive mesh selection strategies for solving boundary value problems." *SIAM J. Numer. Anal.*, 1978.
 - Beyn, W.-J. "The numerical computation of connecting orbits in dynamical systems." *IMA J. Numer. Anal.*, 1990.
