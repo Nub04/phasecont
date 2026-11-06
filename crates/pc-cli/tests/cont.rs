@@ -438,3 +438,64 @@ fn an_lpc_curve_run_follows_the_bautin_fold() {
         assert!((b - want).abs() < 1e-3 * want.abs(), "b = {b}, want {want}");
     }
 }
+
+/// The orbit of Sandstede's model at mu = mut = alpha = 0 on `pts` uniform points over
+/// [-period/2, period/2]: w solves w' = (1 - w^2)(1 - a w) / 2 from w(0) = 0 by RK4, and
+/// (x, y, z) = (1 - w^2, -w (1 - w^2), 0).
+fn sandstede_orbit(a: f64, period: f64, pts: usize) -> Vec<f64> {
+    let f = |w: f64| (1.0 - w * w) * (1.0 - a * w) / 2.0;
+    (0..pts)
+        .flat_map(|k| {
+            let t = period * (k as f64 / (pts - 1) as f64 - 0.5);
+            let steps = ((t.abs() * 1000.0).ceil() as usize).max(1);
+            let h = t / steps as f64;
+            let w = (0..steps).fold(0.0, |w: f64, _| {
+                let k1 = f(w);
+                let k2 = f(w + h / 2.0 * k1);
+                let k3 = f(w + h / 2.0 * k2);
+                let k4 = f(w + h * k3);
+                w + h / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+            });
+            [1.0 - w * w, -w * (1.0 - w * w), 0.0]
+        })
+        .collect()
+}
+
+#[test]
+fn a_hom_curve_run_prints_the_orbit_the_saddle_and_twelve_tests() {
+    let (n, ntst, ncol, period) = (3, 60, 4, 20.0);
+    let pts = ntst * ncol + 1;
+    let mut u0 = sandstede_orbit(-0.25, period, pts);
+    u0.push(period);
+    let problem = serde_json::json!({
+        "type": "HOM", "free": ["mut", "a"], "start": "orbit",
+        "params": {"a": -0.25, "b": 1, "c": -2},
+        "u0": u0, "ntst": ntst, "ncol": ncol,
+        "options": {"hmax": 0.05, "max_newton": 15, "max_steps": 6, "bounds": [-0.26, 0.26]}
+    });
+    let path = scratch().join("hom.json");
+    std::fs::write(&path, problem.to_string()).unwrap();
+    let o = run(
+        &scratch(),
+        &["cont", &model("sandstede"), path.to_str().unwrap()],
+    );
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+    let pts_json = v["branches"][0]["points"].as_array().unwrap();
+    assert!(pts_json.len() > 3, "{v}");
+    for p in pts_json {
+        // The orbit at 60 * 4 + 1 points of 3 states, then T, the saddle and mut; alpha is a.
+        let u = p["u"].as_array().unwrap();
+        assert_eq!(u.len(), n * pts + 1 + n + 1);
+        assert_eq!(p["mesh"].as_array().unwrap().len(), ntst + 1);
+        assert_eq!(p["eigenvalues"].as_array().unwrap().len(), n);
+        assert_eq!(p["codim2"].as_array().unwrap().len(), 12);
+        near(num(&u[n * pts]), period, "T");
+        for k in 0..n {
+            let x0 = num(&u[n * pts + 1 + k]);
+            assert!(x0.abs() < 1e-10, "x0[{k}] = {x0:e}");
+        }
+        let mut_ = num(&u[n * pts + 1 + n]);
+        assert!(mut_.abs() < 1e-6, "mut = {mut_:e}");
+    }
+}
