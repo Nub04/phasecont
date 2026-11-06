@@ -26,7 +26,10 @@ impl Handle for RunHandle {
 /// row on N intervals of m points is `[alpha, u(n (N m + 1)), T, mesh(N + 1), mult_re(n),
 /// mult_im(n), psi_LPC, psi_PD, psi_NS, h, newton_iters]`, with the orbit point-major. A
 /// row of an LPC or PD curve is `[a2, u(n (N m + 1)), T, a1, mesh(N + 1), mult_re(n),
-/// mult_im(n), codim2(k), h, newton_iters]`, and an NS curve adds kappa after a1.
+/// mult_im(n), codim2(k), h, newton_iters]`, and an NS curve adds kappa after a1. A row
+/// of a HOM curve is `[a2, u(n (N m + 1)), T, x0(n), a1, mesh(N + 1), eig_re(n),
+/// eig_im(n), codim2(12), h, newton_iters]`, with x0 the saddle and the eigenvalues those
+/// of the Jacobian at x0.
 pub(crate) fn stride(kind: Kind, n: usize) -> usize {
     match kind {
         Kind::Ep => 3 * n + 6,
@@ -35,9 +38,11 @@ pub(crate) fn stride(kind: Kind, n: usize) -> usize {
         Kind::Lp => 1 + (n + 1) + 2 * n + kind.labels().len() + 2,
         Kind::Hopf => 1 + (n + 2) + 2 * n + kind.labels().len() + 2,
         // The parser rejects sizes that overflow; MAX makes a copy fail rather than wrap.
-        Kind::Lc { .. } | Kind::Lpc { .. } | Kind::Pd { .. } | Kind::Ns { .. } => {
-            cycle_stride(kind, n).unwrap_or(usize::MAX)
-        }
+        Kind::Lc { .. }
+        | Kind::Lpc { .. }
+        | Kind::Pd { .. }
+        | Kind::Ns { .. }
+        | Kind::Hom { .. } => cycle_stride(kind, n).unwrap_or(usize::MAX),
     }
 }
 
@@ -54,7 +59,7 @@ pub(crate) fn pack_row(kind: Kind, p: &Point, n: usize, out: &mut [f64]) {
         return;
     }
     // The state block: `n` values, plus a1 (and kappa) on a curve, or the orbit, T and
-    // what follows T on a curve of cycles.
+    // what follows T on a curve of cycles or a HOM curve.
     let (block, mesh) = match kind {
         Kind::Ep | Kind::Ivp => (n, 0),
         Kind::Lp => (n + 1, 0),
@@ -62,7 +67,12 @@ pub(crate) fn pack_row(kind: Kind, p: &Point, n: usize, out: &mut [f64]) {
         Kind::Lc { ntst, ncol }
         | Kind::Lpc { ntst, ncol }
         | Kind::Pd { ntst, ncol }
-        | Kind::Ns { ntst, ncol } => (n * (ntst * ncol + 1) + kind.cycle_tail(), ntst + 1),
+        | Kind::Ns { ntst, ncol }
+        | Kind::Hom { ntst, ncol } => (
+            // `stride` has checked these sizes for overflow.
+            n * (ntst * ncol + 1) + kind.cycle_tail(n).unwrap_or(0),
+            ntst + 1,
+        ),
     };
     for i in 0..block {
         out[1 + i] = p.u.get(i).copied().unwrap_or(nan);
@@ -327,6 +337,37 @@ mod tests {
             ncol: 3,
         };
         assert_eq!(stride(huge, 2), usize::MAX);
+    }
+
+    #[test]
+    fn a_row_of_a_hom_curve_has_the_saddle_and_a1_after_t() {
+        let mut p = point();
+        // n = 2 on 1 interval of 2 points: the orbit at 3 base points, T, x0(2) and a1.
+        p.u = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 20.0, 0.5, -0.5, 0.25];
+        p.alpha = 0.75;
+        p.mesh = vec![0.0, 1.0];
+        p.eigenvalues = vec![(-1.0, 0.0), (2.0, 0.0)];
+        p.codim2 = (0..12).map(f64::from).collect();
+        let hom = Kind::Hom { ntst: 1, ncol: 2 };
+        let mut row = vec![0.0; stride(hom, 2)];
+        // [a2, u(6), T, x0(2), a1, mesh(2), eig_re(2), eig_im(2), codim2(12), h, iters]
+        assert_eq!(row.len(), 1 + 6 + 1 + 2 + 1 + 2 + 4 + 12 + 2);
+        pack_row(hom, &p, 2, &mut row);
+        assert_eq!(
+            &row[..17],
+            [
+                0.75, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 20.0, 0.5, -0.5, 0.25, 0.0, 1.0, -1.0, 2.0,
+                0.0, 0.0
+            ]
+        );
+        assert_eq!(&row[17..29], p.codim2.as_slice());
+        assert_eq!(&row[29..], [0.125, 3.0]);
+        assert_eq!(hom.name(), "HOM");
+        assert_eq!(hom.labels(), pc_engine::HOM_CURVE_LABELS);
+        assert_eq!(hom.mesh_size(), Some((1, 2)));
+        assert_eq!(hom.cycle_tail(2), Some(4));
+        assert_eq!(hom.cycle_tail(usize::MAX), None);
+        assert_eq!(cycle_stride(hom, usize::MAX), None);
     }
 
     #[test]

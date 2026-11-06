@@ -7,8 +7,9 @@
 
 use pc_engine::{
     CYCLE_LABELS, CurveSetup, CycleCurveStart, CycleSetup, CycleStart, EpSetup, Evaluator,
-    HOPF_CURVE_LABELS, HopfStart, IvpOptions, LP_CURVE_LABELS, LPC_CURVE_LABELS, NCOL_RANGE,
-    NS_CURVE_LABELS, Options, PD_CURVE_LABELS, PdStart, RunKind, RunSpec,
+    HOM_CURVE_LABELS, HOPF_CURVE_LABELS, HomStart, HomStartKind, HopfStart, IvpOptions,
+    LP_CURVE_LABELS, LPC_CURVE_LABELS, NCOL_RANGE, NS_CURVE_LABELS, Options, PD_CURVE_LABELS,
+    PdStart, RunKind, RunSpec,
 };
 use pc_ir::IrModel;
 use pc_ode::{Model, ModelInfo};
@@ -16,8 +17,9 @@ use serde_json::{Map, Value};
 
 /// What a run follows: an equilibrium branch, the curve of fold (LP) or Hopf points of two
 /// parameters, a branch of periodic orbits (LC), or the curve of LPC, PD or NS points of
-/// cycles in two parameters. Cycles live on N mesh intervals of m collocation points.
-/// An initial value run (`Ivp`) integrates the model over a time span.
+/// cycles in two parameters, or the curve of orbits homoclinic to a saddle (HOM) in two
+/// parameters. Cycles and homoclinic orbits live on N mesh intervals of m collocation
+/// points. An initial value run (`Ivp`) integrates the model over a time span.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Ep,
@@ -27,6 +29,7 @@ pub enum Kind {
     Lpc { ntst: usize, ncol: usize },
     Pd { ntst: usize, ncol: usize },
     Ns { ntst: usize, ncol: usize },
+    Hom { ntst: usize, ncol: usize },
     Ivp,
 }
 
@@ -41,12 +44,14 @@ impl Kind {
             Kind::Lpc { .. } => "LPC",
             Kind::Pd { .. } => "PD",
             Kind::Ns { .. } => "NS",
+            Kind::Hom { .. } => "HOM",
             Kind::Ivp => "IVP",
         }
     }
 
     /// Labels of the test values in `Point::codim2`, in order: the codim-2 points of a
-    /// curve or the LPC, PD and NS points of a cycle branch. Empty for an equilibrium branch.
+    /// curve, the LPC, PD and NS points of a cycle branch, or the codim-2 points of a HOM
+    /// curve. Empty for an equilibrium branch.
     pub fn labels(self) -> &'static [&'static str] {
         match self {
             Kind::Ep | Kind::Ivp => &[],
@@ -56,28 +61,33 @@ impl Kind {
             Kind::Lpc { .. } => &LPC_CURVE_LABELS,
             Kind::Pd { .. } => &PD_CURVE_LABELS,
             Kind::Ns { .. } => &NS_CURVE_LABELS,
+            Kind::Hom { .. } => &HOM_CURVE_LABELS,
         }
     }
 
-    /// (N, m) of a run of cycles, `None` for the other kinds.
+    /// (N, m) of a run of cycles or of a HOM curve, `None` for the other kinds.
     pub fn mesh_size(self) -> Option<(usize, usize)> {
         match self {
             Kind::Lc { ntst, ncol }
             | Kind::Lpc { ntst, ncol }
             | Kind::Pd { ntst, ncol }
-            | Kind::Ns { ntst, ncol } => Some((ntst, ncol)),
+            | Kind::Ns { ntst, ncol }
+            | Kind::Hom { ntst, ncol } => Some((ntst, ncol)),
             _ => None,
         }
     }
 
-    /// Values of `Point::u` after the profile in a run of cycles: T on an LC branch,
-    /// (T, a1) on an LPC or PD curve and (T, a1, κ) on an NS curve. 0 for the other kinds.
-    pub fn cycle_tail(self) -> usize {
+    /// Values of `Point::u` after the profile in a run of cycles with `n` states: T on an
+    /// LC branch, (T, a1) on an LPC or PD curve, (T, a1, κ) on an NS curve and (T, x0, a1)
+    /// on a HOM curve, with x0 the saddle. 0 for the other kinds, and `None` when `n + 2`
+    /// overflows.
+    pub fn cycle_tail(self, n: usize) -> Option<usize> {
         match self {
-            Kind::Lc { .. } => 1,
-            Kind::Lpc { .. } | Kind::Pd { .. } => 2,
-            Kind::Ns { .. } => 3,
-            _ => 0,
+            Kind::Lc { .. } => Some(1),
+            Kind::Lpc { .. } | Kind::Pd { .. } => Some(2),
+            Kind::Ns { .. } => Some(3),
+            Kind::Hom { .. } => n.checked_add(2),
+            _ => Some(0),
         }
     }
 }
@@ -88,27 +98,32 @@ pub enum CycleFrom {
     /// A Hopf point: the equilibrium there, `n` values.
     Hopf,
     /// A guessed orbit on the uniform mesh: the orbit at the N m + 1 base points,
-    /// point-major, then the period.
+    /// point-major, then the period. On a HOM curve the orbit is the homoclinic orbit and
+    /// the period is the truncation time T.
     Orbit,
     /// A PD point of an earlier LC run: its orbit at the base points of `mesh`, then its
     /// period. The new run doubles the orbit onto its own N and m.
     Pd { mesh: Vec<f64> },
     /// The start of an LPC, PD or NS curve, a special point of an LC run: its orbit at the
     /// base points of `mesh`, then its period. The curve moves the orbit onto its own N
-    /// and m.
+    /// and m. The start of a HOM curve from a long-period point of an LC run has the same
+    /// layout.
     Point { mesh: Vec<f64> },
 }
 
 /// Keys that only a run of cycles takes.
 const CYCLE_KEYS: [&str; 3] = ["ntst", "ncol", "mesh"];
 
-/// Values in one row of a run of cycles of `kind` with `n` states, or `None` when that
-/// overflows or `kind` is not a run of cycles: `n (N m + 1) + N + 2 n` plus 8 for LC, LPC
-/// and PD, 13 for NS. `pc-ffi`'s row layout documents the parts.
+/// Values in one row of a run of cycles or a HOM curve of `kind` with `n` states, or
+/// `None` when that overflows or `kind` has no mesh: `n (N m + 1) + N + 2 n` plus 8 for
+/// LC, LPC and PD, 13 for NS and `n + 18` for HOM. `pc-ffi`'s row layout documents the
+/// parts.
 pub fn cycle_stride(kind: Kind, n: usize) -> Option<usize> {
     let (ntst, ncol) = kind.mesh_size()?;
     // alpha, the tail of u, the last mesh point, the tests, h and iters
-    let rest = 1 + kind.cycle_tail() + 1 + kind.labels().len() + 2;
+    let rest = kind
+        .cycle_tail(n)?
+        .checked_add(1 + 1 + kind.labels().len() + 2)?;
     ntst.checked_mul(ncol)?
         .checked_add(1)?
         .checked_mul(n)?
@@ -173,6 +188,24 @@ impl Problem {
             (Kind::Ns { .. }, Some(free), Some(CycleFrom::Point { mesh })) => {
                 RunKind::NsCurve(point(free, mesh))
             }
+            (Kind::Hom { ntst, ncol }, Some(free), Some(from)) => {
+                let (orbit, period) = self.orbit_period();
+                let (kind, mesh) = match from {
+                    CycleFrom::Point { mesh } => (HomStartKind::Cycle, Some(mesh.clone())),
+                    // The parser gives a HOM run only `Orbit` or `Point` starts.
+                    _ => (HomStartKind::Orbit, None),
+                };
+                RunKind::HomCurve(HomStart {
+                    kind,
+                    free,
+                    params: self.setup.params.clone(),
+                    orbit,
+                    period,
+                    mesh,
+                    ntst,
+                    ncol,
+                })
+            }
             _ => RunKind::Ep,
         }
     }
@@ -215,11 +248,14 @@ impl Problem {
     }
 
     /// Checks that a start state of `got` values fits the run: `n` values, except for an
-    /// LC run from an orbit or a PD point and for a curve of cycles, where it is the orbit
-    /// at the base points of its mesh followed by the period.
+    /// LC or HOM run from an orbit, an LC run from a PD point, a curve of cycles and a HOM
+    /// curve from a cycle, where it is the orbit at the base points of its mesh followed by
+    /// the period.
     pub fn check_u0_len(&self, n: usize, got: usize) -> Result<(), String> {
         let want = match (self.kind, &self.cycle) {
-            (Kind::Lc { ntst, ncol }, Some(CycleFrom::Orbit)) => n * (ntst * ncol + 1) + 1,
+            (Kind::Lc { ntst, ncol } | Kind::Hom { ntst, ncol }, Some(CycleFrom::Orbit)) => {
+                n * (ntst * ncol + 1) + 1
+            }
             (_, Some(CycleFrom::Pd { mesh } | CycleFrom::Point { mesh })) => {
                 // got = n (N m + 1) + 1, with N from the mesh and m in NCOL_RANGE.
                 let old = mesh.len() - 1;
@@ -380,9 +416,13 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         Some(Value::String(s)) if s == "NS" => {
             cycle_size(top, ir.n(), |ntst, ncol| Kind::Ns { ntst, ncol })?
         }
+        Some(Value::String(s)) if s == "HOM" => {
+            cycle_size(top, ir.n(), |ntst, ncol| Kind::Hom { ntst, ncol })?
+        }
         Some(_) => {
             return Err(
-                "type: expected \"EP\", \"LP\", \"H\", \"LC\", \"LPC\", \"PD\", \"NS\" or \"IVP\""
+                "type: expected \"EP\", \"LP\", \"H\", \"LC\", \"LPC\", \"PD\", \
+                        \"NS\", \"HOM\" or \"IVP\""
                     .into(),
             );
         }
@@ -429,15 +469,16 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
 
     let cycle = match kind {
         Kind::Lc { .. } => Some(cycle_from(top)?),
+        Kind::Hom { .. } => Some(hom_from(top)?),
         _ if curve_of_cycles => Some(point_from(top)?),
         _ => {
             if let Some(key) = CYCLE_KEYS.iter().find(|k| top.contains_key(**k)) {
                 return Err(format!(
-                    "{key}: only an LC, LPC, PD or NS run takes this key"
+                    "{key}: only an LC, LPC, PD, NS or HOM run takes this key"
                 ));
             }
             if top.contains_key("start") {
-                return Err("start: only an LC run takes this key".into());
+                return Err("start: only an LC or HOM run takes this key".into());
             }
             None
         }
@@ -445,6 +486,12 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
 
     let u0 = match top.get("u0") {
         // A start from an orbit has no default state.
+        None if matches!(kind, Kind::Hom { .. }) && mode == Mode::Cli => {
+            return Err(
+                "u0: missing; a HOM curve needs the orbit and the period (or T) of its start"
+                    .into(),
+            );
+        }
         None if matches!(cycle, Some(CycleFrom::Orbit | CycleFrom::Pd { .. }))
             && mode == Mode::Cli =>
         {
@@ -477,8 +524,14 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
             return Err("options.detect: a curve of cycles always runs its codim-2 tests".into());
         }
         _ if curve_of_cycles => {}
+        Kind::Hom { .. } if has_option("detect") => {
+            return Err("options.detect: a HOM curve always runs its codim-2 tests".into());
+        }
+        Kind::Hom { .. } => {}
         _ if has_option("mesh_adapt") => {
-            return Err("options.mesh_adapt: only an LC, LPC, PD or NS run adapts its mesh".into());
+            return Err(
+                "options.mesh_adapt: only an LC, LPC, PD, NS or HOM run adapts its mesh".into(),
+            );
         }
         _ => {}
     }
@@ -559,11 +612,11 @@ fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Probl
     }
     if let Some(key) = CYCLE_KEYS.iter().find(|k| top.contains_key(**k)) {
         return Err(format!(
-            "{key}: only an LC, LPC, PD or NS run takes this key"
+            "{key}: only an LC, LPC, PD, NS or HOM run takes this key"
         ));
     }
     if top.contains_key("start") {
-        return Err("start: only an LC run takes this key".into());
+        return Err("start: only an LC or HOM run takes this key".into());
     }
     if top.contains_key("switch") {
         return Err("switch: only an EP run can switch branches".into());
@@ -686,7 +739,7 @@ fn cycle_from(top: &Map<String, Value>) -> Result<CycleFrom, String> {
 /// Reads `mesh` of an LPC, PD or NS problem, whose start is a special point of an LC run.
 fn point_from(top: &Map<String, Value>) -> Result<CycleFrom, String> {
     if top.contains_key("start") {
-        return Err("start: only an LC run takes this key".into());
+        return Err("start: only an LC or HOM run takes this key".into());
     }
     let v = top
         .get("mesh")
@@ -694,6 +747,30 @@ fn point_from(top: &Map<String, Value>) -> Result<CycleFrom, String> {
     Ok(CycleFrom::Point {
         mesh: parse_mesh(v)?,
     })
+}
+
+/// Reads `start` and `mesh` of a HOM problem. The start has no default: `"orbit"` is an
+/// orbit on the uniform mesh and takes no `mesh`, `"cycle"` is a long-period point of an
+/// LC run and needs the mesh of its orbit.
+fn hom_from(top: &Map<String, Value>) -> Result<CycleFrom, String> {
+    match top.get("start") {
+        None => Err("start: missing; a HOM run starts from \"orbit\" or \"cycle\"".into()),
+        Some(Value::String(s)) if s == "orbit" => {
+            if top.contains_key("mesh") {
+                return Err("mesh: a HOM start from an orbit uses the uniform mesh".into());
+            }
+            Ok(CycleFrom::Orbit)
+        }
+        Some(Value::String(s)) if s == "cycle" => {
+            let v = top
+                .get("mesh")
+                .ok_or("mesh: missing; a HOM start from a cycle needs the mesh of its orbit")?;
+            Ok(CycleFrom::Point {
+                mesh: parse_mesh(v)?,
+            })
+        }
+        Some(_) => Err("start: expected \"orbit\" or \"cycle\"".into()),
+    }
 }
 
 /// A mesh: at least two numbers that rise strictly from exactly 0 to exactly 1.
@@ -889,7 +966,7 @@ mod tests {
             ),
             (
                 json!({"type": "BP", "free": "a"}),
-                "type: expected \"EP\", \"LP\", \"H\", \"LC\", \"LPC\", \"PD\", \"NS\" or \"IVP\"",
+                "type: expected \"EP\", \"LP\", \"H\", \"LC\", \"LPC\", \"PD\", \"NS\", \"HOM\" or \"IVP\"",
             ),
         ];
         for (v, msg) in cases {
@@ -1124,7 +1201,7 @@ mod tests {
             ),
             (
                 with("options", json!({"mesh_adapt": 3})),
-                "options.mesh_adapt: only an LC, LPC, PD or NS run adapts its mesh".into(),
+                "options.mesh_adapt: only an LC, LPC, PD, NS or HOM run adapts its mesh".into(),
             ),
         ];
         for (v, msg) in cases {
@@ -1134,11 +1211,11 @@ mod tests {
             let e = parse_problem(&with(key, json!(2)), &ir, Mode::Abi).unwrap_err();
             assert_eq!(
                 e,
-                format!("{key}: only an LC, LPC, PD or NS run takes this key")
+                format!("{key}: only an LC, LPC, PD, NS or HOM run takes this key")
             );
         }
         let e = parse_problem(&with("start", json!(2)), &ir, Mode::Abi).unwrap_err();
-        assert_eq!(e, "start: only an LC run takes this key");
+        assert_eq!(e, "start: only an LC or HOM run takes this key");
         let p = parse_problem(
             &put(lc("hopf"), "options", json!({"mesh_adapt": 0})),
             &ir,
@@ -1224,6 +1301,128 @@ mod tests {
             None
         );
         assert_eq!(cycle_stride(Kind::Ep, 2), None);
+        // [a2, u(2 * 7), T, x0(2), a1, mesh(3), eig(4), codim2(12), h, iters]
+        let hom = Kind::Hom { ntst: 2, ncol: 3 };
+        assert_eq!(cycle_stride(hom, 2), Some(1 + 14 + 4 + 3 + 4 + 12 + 2));
+    }
+
+    /// A HOM problem on N = 2, m = 3, from an orbit on that mesh.
+    fn hom_orbit() -> Value {
+        let mut u0: Vec<f64> = (0..14).map(f64::from).collect();
+        u0.push(20.0);
+        json!({
+            "type": "HOM",
+            "free": ["b", "a"],
+            "start": "orbit",
+            "ntst": 2,
+            "ncol": 3,
+            "u0": u0,
+        })
+    }
+
+    #[test]
+    fn a_hom_problem_from_an_orbit_builds_a_hom_run() {
+        let ir = model2();
+        let p = parse_problem(&hom_orbit(), &ir, Mode::Cli).unwrap();
+        assert_eq!(p.kind, Kind::Hom { ntst: 2, ncol: 3 });
+        assert_eq!(p.curve_free, Some([1, 0]));
+        assert_eq!(p.cycle, Some(CycleFrom::Orbit));
+        let RunKind::HomCurve(h) = p.run_kind() else {
+            panic!("expected a HOM run");
+        };
+        assert_eq!(h.kind, HomStartKind::Orbit);
+        assert_eq!(h.free, [1, 0]);
+        assert_eq!(h.params, [2.0, 3.0]);
+        assert_eq!(h.orbit, (0..14).map(f64::from).collect::<Vec<_>>());
+        assert_eq!(h.period, 20.0);
+        assert_eq!(h.mesh, None);
+        assert_eq!((h.ntst, h.ncol), (2, 3));
+        // The orbit sits on the uniform mesh of the run, so u0 has n (N m + 1) + 1 values.
+        let mut short = hom_orbit();
+        short["u0"] = json!([1.0, 2.0]);
+        assert_eq!(
+            parse_problem(&short, &ir, Mode::Cli).unwrap_err(),
+            "u0: expected 15 values, got 2"
+        );
+    }
+
+    #[test]
+    fn a_hom_problem_from_a_cycle_takes_the_mesh_of_the_cycle() {
+        let ir = model2();
+        let mut v = curve_of_cycles("HOM");
+        v["start"] = json!("cycle");
+        let p = parse_problem(&v, &ir, Mode::Cli).unwrap();
+        assert_eq!(
+            p.cycle,
+            Some(CycleFrom::Point {
+                mesh: vec![0.0, 1.0]
+            })
+        );
+        let RunKind::HomCurve(h) = p.run_kind() else {
+            panic!("expected a HOM run");
+        };
+        assert_eq!(h.kind, HomStartKind::Cycle);
+        assert_eq!(h.orbit, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(h.period, 7.5);
+        assert_eq!(h.mesh, Some(vec![0.0, 1.0]));
+        assert_eq!((h.ntst, h.ncol), (2, 3));
+    }
+
+    #[test]
+    fn hom_problems_reject_bad_starts_and_keys() {
+        let ir = model2();
+        let err = |edit: &dyn Fn(&mut Value)| {
+            let mut v = hom_orbit();
+            edit(&mut v);
+            parse_problem(&v, &ir, Mode::Cli).unwrap_err()
+        };
+        // No default start.
+        assert_eq!(
+            err(&|v| {
+                v.as_object_mut().unwrap().remove("start");
+            }),
+            "start: missing; a HOM run starts from \"orbit\" or \"cycle\""
+        );
+        assert_eq!(
+            err(&|v| v["start"] = json!("hopf")),
+            "start: expected \"orbit\" or \"cycle\""
+        );
+        assert_eq!(
+            err(&|v| v["mesh"] = json!([0.0, 1.0])),
+            "mesh: a HOM start from an orbit uses the uniform mesh"
+        );
+        assert_eq!(
+            err(&|v| v["start"] = json!("cycle")),
+            "mesh: missing; a HOM start from a cycle needs the mesh of its orbit"
+        );
+        assert_eq!(
+            err(&|v| v["free"] = json!("a")),
+            "free: expected two parameter names"
+        );
+        assert_eq!(
+            err(&|v| v["options"] = json!({"detect": {"lp": false}})),
+            "options.detect: a HOM curve always runs its codim-2 tests"
+        );
+        assert_eq!(
+            err(&|v| {
+                v.as_object_mut().unwrap().remove("u0");
+            }),
+            "u0: missing; a HOM curve needs the orbit and the period (or T) of its start"
+        );
+        assert_eq!(
+            err(&|v| {
+                v.as_object_mut().unwrap().remove("ntst");
+            }),
+            "ntst: missing"
+        );
+        // The C ABI passes the start as a buffer and adapts the mesh when asked.
+        let mut v = hom_orbit();
+        v.as_object_mut().unwrap().remove("u0");
+        v["options"] = json!({"mesh_adapt": 3});
+        let p = parse_problem(&v, &ir, Mode::Abi).unwrap();
+        assert_eq!(p.opts.mesh_adapt, 3);
+        assert!(p.check_u0_len(2, 15).is_ok());
+        assert!(p.check_u0_len(2, 14).is_err());
     }
 
     /// An LPC, PD or NS problem on N = 2, m = 3 from a point of a run on 1 interval of 2
@@ -1325,7 +1524,7 @@ mod tests {
                 ),
                 (
                     put(c(), "start", json!("pd")),
-                    "start: only an LC run takes this key",
+                    "start: only an LC or HOM run takes this key",
                 ),
                 (
                     drop(c(), "u0"),
@@ -1424,7 +1623,7 @@ mod tests {
             ),
             (
                 put("ntst", json!(4)),
-                "ntst: only an LC, LPC, PD or NS run takes this key",
+                "ntst: only an LC, LPC, PD, NS or HOM run takes this key",
             ),
             (
                 opt(json!({"rtol": 0})),

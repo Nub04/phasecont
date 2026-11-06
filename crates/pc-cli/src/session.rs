@@ -160,11 +160,11 @@ pub struct RunRec {
     pub problem: String,
     /// The final status JSON of a run, as the engine wrote it. Empty for an equilibrium.
     pub status: String,
-    /// "EP", "LP", "H", "LC", "LPC", "PD", "NS" or "IVP"; empty for an equilibrium.
+    /// "EP", "LP", "H", "LC", "LPC", "PD", "NS", "HOM" or "IVP"; empty for an equilibrium.
     pub ty: String,
     /// The free parameter names.
     pub free: Vec<String>,
-    /// `[ntst, ncol]` of a run of cycles, else empty.
+    /// `[ntst, ncol]` of a run of cycles or a HOM curve, else empty.
     pub grid: Vec<usize>,
     /// Number of states.
     pub n: usize,

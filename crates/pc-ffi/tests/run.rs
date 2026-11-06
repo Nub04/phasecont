@@ -5,8 +5,8 @@ use std::ptr;
 use std::time::{Duration, Instant};
 
 use pc_engine::{
-    CurveSetup, CycleCurveStart, CycleStart, EpSetup, Evaluator, HopfStart, Options, Point, Run,
-    RunKind, RunSpec, RunState, StopReason, build,
+    CurveSetup, CycleCurveStart, CycleStart, EpSetup, Evaluator, HOM_CURVE_LABELS, HomStart,
+    HomStartKind, HopfStart, Options, Point, Run, RunKind, RunSpec, RunState, StopReason, build,
 };
 use pc_ode::{MapLoader, SourceMap, load};
 use pckern::{PcApiV1, pc_api_v1};
@@ -853,7 +853,7 @@ fn bad_curve_problems_give_6_at_run_start() {
         ),
         (
             r#"{"type":"XX","free":"b1"}"#,
-            r#"type: expected "EP", "LP", "H", "LC", "LPC", "PD", "NS" or "IVP""#,
+            r#"type: expected "EP", "LP", "H", "LC", "LPC", "PD", "NS", "HOM" or "IVP""#,
         ),
     ];
     for (json, msg) in cases {
@@ -978,6 +978,123 @@ fn an_lpc_curve_run_has_curve_rows_with_a1_after_the_period() {
     for row in got.chunks(stride) {
         let (b2, b1) = (row[0], row[2 + profile]);
         assert!((b1 + b2 * b2 / 4.0).abs() < 1e-4, "b1 = {b1}, b2 = {b2}");
+    }
+}
+
+/// Sandstede's model (J. Dyn. Diff. Eq. 9 (1997) 269-288), as in the pc-engine HOM tests.
+/// At mu = mut = alpha = 0 the plane z = 0 holds the orbit x = 1 - w^2, y = -w (1 - w^2)
+/// with w' = (1 - w^2)(b - a w) / 2, homoclinic to the origin for |a| < b.
+const SANDSTEDE: &str = "par a=-0.25,b=1,c=-2,mu=0,mut=0,alpha=0,beta=0,gamma=0\n\
+x'=a*x+b*y-a*x^2+(mut-alpha*z)*x*(2-3*x)\n\
+y'=b*x+a*y-1.5*b*x^2-1.5*a*x*y-2*y*(mut-alpha*z)\n\
+z'=c*z+mu*x+gamma*x*z+alpha*beta*(x^2*(1-x)-y^2)\n\
+init x=0,y=0,z=0\ndone\n";
+
+/// The plane orbit of Sandstede's model at (a, b = 1) over [-T/2, T/2], at the base
+/// points of a uniform mesh, by RK4 on w from w(0) = 0.
+fn sandstede_orbit(a: f64, period: f64, pts: usize) -> Vec<f64> {
+    let f = |w: f64| (1.0 - w * w) * (1.0 - a * w) / 2.0;
+    (0..pts)
+        .flat_map(|k| {
+            let t = period * (k as f64 / (pts - 1) as f64 - 0.5);
+            let steps = ((t.abs() * 1000.0).ceil() as usize).max(1);
+            let h = t / steps as f64;
+            let w = (0..steps).fold(0.0, |w: f64, _| {
+                let k1 = f(w);
+                let k2 = f(w + h / 2.0 * k1);
+                let k3 = f(w + h / 2.0 * k2);
+                let k4 = f(w + h * k3);
+                w + h / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+            });
+            [1.0 - w * w, -w * (1.0 - w * w), 0.0]
+        })
+        .collect()
+}
+
+#[test]
+fn a_hom_curve_run_has_rows_with_the_saddle_and_a1_after_the_period() {
+    let m = compiled(SANDSTEDE);
+    let (n, ntst, ncol, period) = (3, 60, 4, 20.0);
+    let profile = n * (ntst * ncol + 1);
+    let orbit = sandstede_orbit(-0.25, period, ntst * ncol + 1);
+    let mut u0 = orbit.clone();
+    u0.push(period);
+    let json = format!(
+        r#"{{"type":"HOM","free":["mut","a"],"ntst":{ntst},"ncol":{ncol},"start":"orbit","options":{{"hmax":0.05,"max_newton":15,"max_steps":6,"bounds":[-0.26,0.26]}}}}"#
+    );
+    let params = [-0.25, 1.0, -2.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let (rc, run) = start_with(&m, &json, &u0, &params);
+    assert_eq!(rc, 0, "{}", last_error());
+    let run = Id(run);
+    let st = wait(&run);
+    assert_eq!(st["state"], "done", "{st}");
+    assert_eq!(st["kind"], "HOM");
+    assert_eq!(st["codim2_labels"], serde_json::json!(HOM_CURVE_LABELS));
+    assert_eq!(st["ntst"], ntst);
+    assert_eq!(st["ncol"], ncol);
+    let stride = st["stride"].as_u64().unwrap() as usize;
+    assert_eq!(
+        stride,
+        1 + profile + 1 + n + 1 + (ntst + 1) + 2 * n + 12 + 2
+    );
+
+    let start = HomStart {
+        kind: HomStartKind::Orbit,
+        free: [4, 0],
+        params: params.to_vec(),
+        orbit,
+        period,
+        mesh: None,
+        ntst,
+        ncol,
+    };
+    let opts = Options {
+        hmax: 0.05,
+        max_newton: 15,
+        max_steps: 6,
+        bounds: (-0.26, 0.26),
+        ..Options::default()
+    };
+    let mut map = SourceMap::new();
+    let f = map.add("model.ode", SANDSTEDE);
+    let l = load(f, &mut map, &mut MapLoader::new());
+    let engine = Run::start(RunSpec::curve(
+        l.expanded,
+        l.info,
+        Evaluator::Jit,
+        RunKind::HomCurve(start),
+        opts,
+    ));
+    let t0 = Instant::now();
+    while engine.poll().state == RunState::Running {
+        assert!(t0.elapsed() < Duration::from_secs(60));
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let want = engine.points(0, 0, usize::MAX);
+    let count = st["branches"][0]["points"].as_u64().unwrap() as usize;
+    assert_eq!(count, want.len());
+    assert!(count > 3, "{st}");
+    let (rc, rows, got) = copy(run.0, 0, 0, 0, count, stride);
+    assert_eq!((rc, rows), (0, count), "{}", last_error());
+    for (i, point) in want.iter().enumerate() {
+        let w = cycle_row(point, n, (ntst, ncol), n + 2, 12);
+        assert!(same_bits(&got[i * stride..(i + 1) * stride], &w), "row {i}");
+    }
+    // Each row has a2 = a first, then T, the saddle x0 = 0 and a1 = mut = 0 after the
+    // profile, and the eigenvalues a - 1, a + 1 and -2 of the origin.
+    for row in got.chunks(stride) {
+        let a = row[0];
+        assert_eq!(row[1 + profile], period);
+        let x0 = &row[2 + profile..2 + profile + n];
+        assert!(x0.iter().all(|v| v.abs() < 1e-10), "x0 = {x0:?}");
+        let mutv = row[2 + profile + n];
+        assert!(mutv.abs() < 1e-6, "mut = {mutv:e}");
+        let eig = 3 + profile + n + ntst + 1;
+        let mut re = row[eig..eig + n].to_vec();
+        re.sort_by(f64::total_cmp);
+        for (got, want) in re.iter().zip([-2.0, a - 1.0, a + 1.0]) {
+            assert!((got - want).abs() < 1e-8, "eig {re:?} at a = {a}");
+        }
     }
 }
 
@@ -1119,11 +1236,11 @@ fn bad_cycle_problems_give_6_and_bad_lengths_give_2() {
         ),
         (
             r#"{"type":"EP","free":"b","ntst":4}"#,
-            "ntst: only an LC, LPC, PD or NS run takes this key",
+            "ntst: only an LC, LPC, PD, NS or HOM run takes this key",
         ),
         (
             r#"{"type":"EP","free":"b","options":{"mesh_adapt":2}}"#,
-            "options.mesh_adapt: only an LC, LPC, PD or NS run",
+            "options.mesh_adapt: only an LC, LPC, PD, NS or HOM run",
         ),
     ];
     for (json, msg) in cases {
