@@ -83,7 +83,9 @@
     "typecheck": "tsc --noEmit -p .",
     "build": "tsc -p .",
     "bundle": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node22 --minify",
-    "test": "tsc -p . && node --test \"out/test/**/*.test.js\""
+    "vscode:prepublish": "npm run bundle",
+    "test": "tsc -p . && node --test \"out/test/**/*.test.js\"",
+    "package": "vsce package --no-dependencies"
   },
   "dependencies": {
     "vscode-languageclient": "9.0.1"
@@ -91,6 +93,7 @@
   "devDependencies": {
     "@types/node": "22.20.5",
     "@types/vscode": "1.100.0",
+    "@vscode/vsce": "4.1.0",
     "esbuild": "0.28.2",
     "typescript": "6.0.3",
     "vscode-oniguruma": "2.0.1",
