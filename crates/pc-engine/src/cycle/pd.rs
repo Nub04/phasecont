@@ -20,7 +20,7 @@
 use super::bordered::{Bordered, unit};
 use super::codim2::{PD_CURVE_LABELS, pd_curve_label, pd_curve_tests};
 use super::continuation::Scaled;
-use super::curve::{CycleCurveStart, run_curve};
+use super::curve::{CURVE_HINT, CycleCurveStart, run_curve};
 use super::mesh;
 use super::normal::CycleBifurcation;
 use super::problem::{CycleProblem, Extra};
@@ -280,5 +280,13 @@ pub fn continue_pd_curve(
     p.outer.adapt_every = opts.mesh_adapt;
     let x0 = p.x0.clone();
     let (k, points) = (p.outer.profile_len(), p.outer.points());
-    run_curve(Scaled::new(p, k, points), x0, 1, opts, cancel, on_point)
+    run_curve(
+        Scaled::new(p, k, points),
+        x0,
+        Some(1),
+        CURVE_HINT,
+        opts,
+        cancel,
+        on_point,
+    )
 }

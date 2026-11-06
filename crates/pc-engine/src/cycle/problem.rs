@@ -140,6 +140,8 @@ pub struct CycleProblem<'a> {
     /// the current point.
     since: usize,
     adapted_here: bool,
+    /// Whether the mesh monitor treats the orbit as periodic (false on a HOM curve).
+    periodic: bool,
 }
 
 /// A zeroed vector, or an error instead of an abort when the memory is not there.
@@ -281,6 +283,7 @@ impl<'a> CycleProblem<'a> {
             adapt_every: 0,
             since: 0,
             adapted_here: false,
+            periodic: true,
         };
         problem.set_reference(&setup.profile);
         Ok(problem)
@@ -366,7 +369,7 @@ impl<'a> CycleProblem<'a> {
     }
 
     /// Sets the parameters of the `Extra::Param`s from x and returns T.
-    fn read_extras(&mut self, x: &[f64]) -> f64 {
+    pub(super) fn read_extras(&mut self, x: &[f64]) -> f64 {
         let k = self.profile_len();
         for (i, e) in self.extras.iter().enumerate() {
             if let Extra::Param(a) = e {
@@ -595,6 +598,34 @@ impl<'a> CycleProblem<'a> {
         self.parallel
     }
 
+    /// Sets whether mesh adaptation treats the orbit as periodic. It is true from `new`.
+    pub(super) fn set_periodic(&mut self, periodic: bool) {
+        self.periodic = periodic;
+    }
+
+    /// The n by 2n + k boundary block (`bc[r + n q]`), for a curve whose boundary rows
+    /// are not the periodicity rows. `bordered_solve` and `write_dense` use it as it is.
+    pub(super) fn bc_mut(&mut self) -> &mut [f64] {
+        &mut self.bc
+    }
+
+    /// Evaluates the model entry `kind` at state `u`, with the parameters of x.
+    pub(super) fn eval_at(
+        &mut self,
+        x: &[f64],
+        kind: &EntryKind,
+        u: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), EngineError> {
+        self.read_extras(x);
+        self.model.eval(kind, u, &self.p, &[], out)
+    }
+
+    /// Number of model parameters.
+    pub(super) fn n_p(&self) -> usize {
+        self.model.n_p()
+    }
+
     /// Replaces the mesh, with `uref` on the new mesh as the reference of the phase
     /// condition.
     pub(crate) fn set_mesh(&mut self, mesh: Vec<f64>, uref: &[f64]) {
@@ -772,7 +803,7 @@ impl Problem for CycleProblem<'_> {
         self.adapted_here = true;
         let n = self.model.n();
         let k = self.profile_len();
-        let Some(new) = mesh::new_mesh(&self.basis, n, &self.mesh, &x[..k], true) else {
+        let Some(new) = mesh::new_mesh(&self.basis, n, &self.mesh, &x[..k], self.periodic) else {
             return false;
         };
         let m = self.basis.m();

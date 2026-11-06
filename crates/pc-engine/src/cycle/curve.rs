@@ -152,17 +152,23 @@ impl CycleCurveStart {
     }
 }
 
+/// The hint of a failed start on an LPC, PD or NS curve.
+pub(super) const CURVE_HINT: &str = "start from a matching special point of a cycle branch";
+
 /// Runs a curve from `x0`, in the original unknowns, on the scaled problem `p`. The start
 /// is corrected at fixed a2 first. A correction that fails, hits a singular matrix or
 /// leaves the finite numbers is a start off the curve, such as a special point of another
 /// type, and returns `BadProblem`. The first tangent is bordered by the a2 direction, or
 /// by the next unknown when that bordered matrix is singular, and points to growing a2,
 /// times the sign of `Options::direction`. `trivial` is the multiplicity of the multiplier
-/// 1 on the curve, for the mesh warning of `floquet_warning`.
+/// 1 on the curve, for the mesh warning of `floquet_warning`, or `None` on a curve whose
+/// eigenvalues are not Floquet multipliers. `hint` ends the message of a failed start.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run_curve<P: Problem>(
     mut p: Scaled<P>,
     mut x0: Vec<f64>,
-    trivial: usize,
+    trivial: Option<usize>,
+    hint: &str,
     opts: &Options,
     cancel: &AtomicBool,
     on_point: &mut dyn FnMut(&Point),
@@ -172,7 +178,6 @@ pub(super) fn run_curve<P: Problem>(
     }
     let dim = p.dim();
     p.scale(&mut x0);
-    let hint = "start from a matching special point of a cycle branch";
     let x0 = match fixed_alpha(&mut p, x0, opts, cancel) {
         Err(EngineError::NewtonFailed { iters, .. }) => {
             return Err(EngineError::BadProblem(format!(
@@ -214,6 +219,8 @@ pub(super) fn run_curve<P: Problem>(
     for sp in branch.specials.iter_mut() {
         unscale_point(&mut sp.point, k, s);
     }
-    floquet_warning(&mut branch, trivial);
+    if let Some(trivial) = trivial {
+        floquet_warning(&mut branch, trivial);
+    }
     Ok(branch)
 }

@@ -29,7 +29,7 @@
 use super::bordered::{Bordered, orthonormal};
 use super::codim2::{NS_CURVE_LABELS, neutral_saddle_gap, ns_curve_label, ns_curve_tests};
 use super::continuation::Scaled;
-use super::curve::{CycleCurveStart, run_curve};
+use super::curve::{CURVE_HINT, CycleCurveStart, run_curve};
 use super::mesh;
 use super::normal::CycleBifurcation;
 use super::problem::{CycleProblem, Extra};
@@ -392,7 +392,15 @@ pub fn continue_ns_curve(
     p.outer.adapt_every = opts.mesh_adapt;
     let x0 = p.x0.clone();
     let (k, points) = (p.outer.profile_len(), p.outer.points());
-    let mut branch = run_curve(Scaled::new(p, k, points), x0, 1, opts, cancel, on_point)?;
+    let mut branch = run_curve(
+        Scaled::new(p, k, points),
+        x0,
+        Some(1),
+        CURVE_HINT,
+        opts,
+        cancel,
+        on_point,
+    )?;
     neutral_saddle_warning(&mut branch);
     Ok(branch)
 }
