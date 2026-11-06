@@ -11,9 +11,9 @@ function result = build(tex, options)
 %     Executable  path of the latexmk program, default the name "latexmk"
 %                 on the system path. Letters, digits, spaces and
 %                 _ - . / \ : ( ) + only, else phasecont:latex:badEngine.
-%     Timeout     seconds that latexmk may run, default 300. Inf sets no
-%                 limit. When the time is up, latexmk and the TeX programs
-%                 it started are stopped.
+%     Timeout     seconds that latexmk may run, default Inf, which sets no
+%                 limit. When a finite time is up, latexmk and the TeX
+%                 programs it started are stopped.
 %
 %   R has the fields Ok (true when a PDF came out), Pdf (its path, "" when
 %   there is none), Folder (the build folder, which is not deleted), Log
@@ -30,13 +30,15 @@ function result = build(tex, options)
 %   A finite Timeout starts latexmk through the JVM of MATLAB, since SYSTEM
 %   cannot be interrupted. When that is not possible the call warns with
 %   phasecont:latex:noTimeout and runs latexmk with no limit, as it does
-%   for Timeout = Inf. Details are in phasecont.internal.runBounded.
+%   for Timeout = Inf. With the default, a document that never ends keeps
+%   MATLAB waiting, and Ctrl-C does not stop it. Details are in
+%   phasecont.internal.runBounded.
 arguments
     tex (1,1) string {mustBeNonmissing}
     options.Files (:,1) struct = repmat(struct("Name", "", "Content", ""), 0, 1)
     options.Engine (1,1) string {mustBeMember(options.Engine, "latexmk")} = "latexmk"
     options.Executable (1,1) string = ""
-    options.Timeout (1,1) double {mustBePositive} = 300
+    options.Timeout (1,1) double {mustBePositive} = Inf
 end
 
 exe = options.Executable;

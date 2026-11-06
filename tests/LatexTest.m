@@ -467,6 +467,15 @@ classdef LatexTest < matlab.unittest.TestCase
             testCase.verifyTrue(isfile(r.Pdf));
         end
 
+        function buildHasNoLimitByDefault(testCase)
+            testCase.assumeTrue(testCase.HasLatexmk, "latexmk is not installed");
+            tex = "\documentclass{article}" + newline + "\begin{document}" + newline + ...
+                "x" + newline + "\end{document}" + newline;
+            r = phasecont.latex.build(tex);
+            testCase.verifyTrue(r.Ok, r.Log);
+            testCase.verifyFalse(r.TimedOut);
+        end
+
         function buildWithinTheLimitIsNotTimedOut(testCase)
             testCase.assumeTrue(testCase.HasLatexmk, "latexmk is not installed");
             tex = "\documentclass{article}" + newline + "\begin{document}" + newline + ...

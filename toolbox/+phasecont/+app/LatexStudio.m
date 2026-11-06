@@ -20,9 +20,9 @@ classdef LatexStudio < handle
     %
     % Compile runs phasecont.latex.build on the editor text, so it needs
     % latexmk from TeX Live or MiKTeX on the system path, or Executable. The
-    % window blocks while latexmk runs, for at most Timeout seconds (default
-    % 300, Inf for no limit). The right side shows the result of
-    % the last compile. The Errors tab lists each TeX error with its line,
+    % window blocks while latexmk runs. By default there is no time limit,
+    % so a document that never ends blocks it for good; Timeout sets a
+    % limit in seconds. The right side shows the result of the last compile. The Errors tab lists each TeX error with its line,
     % and selecting one shows the lines of the document around it. The Log
     % tab holds the TeX log. Open PDF hands the file to the system viewer;
     % there is no preview inside the window.
@@ -59,7 +59,7 @@ classdef LatexStudio < handle
     properties (Access = private)
         Ui (1,1) struct = struct()
         Executable (1,1) string = ""
-        Timeout (1,1) double = 300
+        Timeout (1,1) double = Inf
         Opener = []
         % The document text that the last Compile read.
         CompiledSource (1,1) string = ""
@@ -76,7 +76,7 @@ classdef LatexStudio < handle
             arguments
                 options.Visible (1,1) string {mustBeMember(options.Visible, ["on" "off"])} = "on"
                 options.Executable (1,1) string = ""
-                options.Timeout (1,1) double {mustBePositive} = 300
+                options.Timeout (1,1) double {mustBePositive} = Inf
                 options.Opener = []
             end
             if ~isempty(options.Opener) && ~isa(options.Opener, "function_handle")
