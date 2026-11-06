@@ -261,6 +261,15 @@ npm run bundle
 
 Then open `editors/vscode` in VS Code and press F5. On Windows and macOS use the folder `server/win32-x64` (`pc-lsp.exe`), `server/darwin-arm64` or `server/darwin-x64`, or set `phasecont.server.path` to the binary. `editors/vscode/README.md` lists the features and settings.
 
+To build an installable package for the platform of the server you copied, run this in `editors/vscode`, with `<platform>` set to `linux-x64`, `win32-x64`, `darwin-arm64` or `darwin-x64`:
+
+```sh
+npm run package -- --target <platform>
+code --install-extension phasecont-ode-<platform>-0.1.0.vsix
+```
+
+`npm run package` calls `vsce`, which is a build tool only. It never goes into the `.vsix`, and the `.vsix` holds `dist/extension.js`, the server binary and the manifest files, with no `node_modules`.
+
 ## Checks
 
 Before a commit:

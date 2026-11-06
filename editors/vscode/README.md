@@ -9,6 +9,8 @@ Syntax highlighting and a language server for XPP/XPPAUT `.ode` files, as PhaseC
 3. Put the server where the extension looks for it: copy the binary to `editors/vscode/server/<platform>-<arch>/pc-lsp`, for example `server/linux-x64/pc-lsp`. The platforms are `linux-x64`, `win32-x64`, `darwin-arm64` and `darwin-x64`.
 4. Run the extension from the checkout: open `editors/vscode` in VS Code and press F5.
 
+To install it as a normal extension, run `npm run package -- --target <platform>` in `editors/vscode` after step 3, then `code --install-extension phasecont-ode-<platform>-0.1.0.vsix`. The command builds one `.vsix` for the platform you name, with the server for that platform inside.
+
 To keep the server somewhere else, set `phasecont.server.path` to the absolute path of the binary. A non-empty setting never falls back to the bundled server, so a wrong path is reported instead of ignored. The setting has machine scope, so a workspace cannot choose the executable that VS Code starts.
 
 ## What it does
