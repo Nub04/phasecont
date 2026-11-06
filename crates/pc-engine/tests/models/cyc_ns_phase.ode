@@ -1,0 +1,15 @@
+# The torus bifurcation of cyc_ns with an amplitude dependent frequency of z,
+# z' = (beta + i (Om + kap |w|^2)) z - |z|^2 z with kap = 0.8. The return time depends on
+# |w|^2 now, which makes alpha1 nonzero. The coefficient does not change, d = -2 gam / T. Own
+# test model.
+par beta=0.2
+Om=2
+lam=beta-0.25
+r2=x2^2+y2^2
+fr=Om+0.8*r2
+x1'=beta*x1-fr*y1-(x1^2+y1^2)*x1
+y1'=beta*y1+fr*x1-(x1^2+y1^2)*y1
+x2'=lam*x2-0.8*y2-r2*(x2-0.5*y2)
+y2'=lam*y2+0.8*x2-r2*(y2+0.5*x2)
+init x1=0.45,y1=0,x2=0,y2=0
+done

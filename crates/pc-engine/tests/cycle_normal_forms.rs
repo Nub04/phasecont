@@ -109,8 +109,9 @@ fn ring_orbit(beta: f64, nm: usize) -> (Vec<f64>, f64) {
     (orbit, PI)
 }
 
-/// The PD of `cyc_pd` at beta = 1/4, found by an LC run from beta = 0.2 upward.
-fn pd_point(m: &mut dyn ModelEval, ntst: usize) -> Point {
+/// The special point `label` of the LC run of a `cyc_pd` or `cyc_ns` model from the ring at
+/// beta = 0.2 upward. Both bifurcations are at beta = 1/4.
+fn ring_point(m: &mut dyn ModelEval, ntst: usize, label: &str) -> Point {
     let (orbit, period) = ring_orbit(0.2, ntst * NCOL);
     let setup = CycleSetup::new(0, vec![0.2], ntst, NCOL, orbit, period);
     let opts = Options {
@@ -120,7 +121,11 @@ fn pd_point(m: &mut dyn ModelEval, ntst: usize) -> Point {
         bounds: (0.05, 0.4),
         ..Options::default()
     };
-    lc_special(m, setup, &opts, "PD")
+    lc_special(m, setup, &opts, label)
+}
+
+fn pd_point(m: &mut dyn ModelEval, ntst: usize) -> Point {
+    ring_point(m, ntst, "PD")
 }
 
 fn check_pd(name: &str) {
@@ -155,4 +160,54 @@ fn pd_coefficient_is_invariant_under_a_nonlinear_change() {
 #[test]
 fn pd_coefficient_with_a_nonzero_period_coefficient() {
     check_pd("cyc_pd_phase");
+}
+
+/// The torus bifurcation of a `cyc_ns` model: the point and its coefficient d, which is
+/// -2 gam / T = -(2 + i) / pi in every variant (the coordinate changes and the change of the
+/// return time leave Re d alone, and the runs show they leave Im d alone as well).
+fn check_ns(name: &str) {
+    let mut m = model_of(name);
+    let pt = ring_point(m.as_mut(), NTST, "NS");
+    assert!((pt.alpha - 0.25).abs() <= 1e-8, "NS at beta = {}", pt.alpha);
+    let nf = lc_point_normal_form(m.as_mut(), CycleBifurcation::Ns, 0, &[0.0], &pt, NCOL).unwrap();
+    let c2 = nf.coefficient2.expect("an NS point has Im d");
+    let (re, im) = (-2.0 / PI, -1.0 / PI);
+    println!(
+        "{name}: d = {} + {c2} i against {re} + {im} i",
+        nf.coefficient
+    );
+    assert!(
+        rel(nf.coefficient, re) <= 1e-5,
+        "Re d = {} against {re}",
+        nf.coefficient
+    );
+    assert!(rel(c2, im) <= 1e-5, "Im d = {c2} against {im}");
+}
+
+/// SPEC §8a test 3: d = -2 gam / T at the torus bifurcation of `cyc_ns`. Measured on the
+/// first run: Re d and Im d within 3e-15 relative of the closed form.
+#[test]
+fn ns_coefficient_of_the_constructed_torus_bifurcation() {
+    check_ns("cyc_ns");
+}
+
+/// The same bifurcation after a nonlinear change of coordinates that makes h20 nonzero
+/// (max |h20| = 0.19, alpha1 and h11 are zero).
+#[test]
+fn ns_coefficient_is_invariant_under_a_nonlinear_change() {
+    check_ns("cyc_ns_shear");
+}
+
+/// The same bifurcation after a change of coordinates that makes h11 nonzero (max |h11| =
+/// 0.19): B(v, conj v) then has a component across the cycle, and alpha1 stays zero.
+#[test]
+fn ns_coefficient_with_a_nonzero_h11() {
+    check_ns("cyc_ns_radial");
+}
+
+/// The same bifurcation with an amplitude dependent frequency, which makes alpha1 nonzero
+/// (0.2546 here) and leaves h11 zero.
+#[test]
+fn ns_coefficient_with_a_nonzero_period_coefficient() {
+    check_ns("cyc_ns_phase");
 }

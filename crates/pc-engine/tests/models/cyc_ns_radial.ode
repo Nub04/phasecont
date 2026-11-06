@@ -1,0 +1,19 @@
+# The torus bifurcation of cyc_ns after the change of coordinates u1 = x1 + 0.3 |w|^2, which
+# leaves the cycle (w = 0) and its linearization alone but adds a term across the cycle to
+# B(v, conj v), so the correction h11 is nonzero and alpha1 is zero. The coefficient does not
+# change, d = -2 gam / T. Own test model.
+par beta=0.2
+Om=2
+lam=beta-0.25
+r2=x2^2+y2^2
+x1=u1-0.3*r2
+f1=beta*x1-Om*y1-(x1^2+y1^2)*x1
+g1=beta*y1+Om*x1-(x1^2+y1^2)*y1
+f2=lam*x2-0.8*y2-r2*(x2-0.5*y2)
+g2=lam*y2+0.8*x2-r2*(y2+0.5*x2)
+u1'=f1+0.3*(2*x2*f2+2*y2*g2)
+y1'=g1
+x2'=f2
+y2'=g2
+init u1=0.45,y1=0,x2=0,y2=0
+done

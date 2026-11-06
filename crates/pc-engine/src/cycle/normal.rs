@@ -16,7 +16,10 @@ use crate::error::EngineError;
 use crate::model::ModelEval;
 use crate::normal::{At, Cv};
 use pc_ir::EntryKind;
-use pc_linalg::{BlockSystem, CondenseShape, Condenser, null_left, null_right};
+use pc_linalg::{
+    BlockSystem, CondenseShape, Condenser, eigenvalues, eigvec, null_left, null_right,
+};
+use std::f64::consts::PI;
 
 /// A bifurcation of a limit cycle that has a normal form coefficient.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,12 +28,14 @@ pub enum CycleBifurcation {
     Lpc,
     /// A period doubling (flip).
     Pd,
+    /// A torus bifurcation (Neimark-Sacker).
+    Ns,
 }
 
 /// The normal form coefficient of a cycle bifurcation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CycleNormalForm {
-    /// `b` of an LPC point, `c` of a PD point.
+    /// `b` of an LPC point, `c` of a PD point, the real part of `d` of an NS point.
     pub coefficient: f64,
     /// The imaginary part of the coefficient of an NS point; `None` otherwise.
     pub coefficient2: Option<f64>,
@@ -104,6 +109,7 @@ pub(crate) fn normal_form(
     match kind {
         CycleBifurcation::Lpc => lpc(&grid, model, p, &orb),
         CycleBifurcation::Pd => pd(&grid, model, p, &orb),
+        CycleBifurcation::Ns => ns(&grid, model, p, &orb),
     }
 }
 
@@ -558,5 +564,245 @@ fn pd(
         coefficient: c,
         coefficient2: None,
         normalization: "periodic: int <v, v> = 1, int <v*, v> = 1, int <phi*, F> = 1 over [0, T]",
+    })
+}
+
+/// The complex vector of a doubled profile value, (re, im) with n entries each.
+fn split(x: &[f64]) -> Cv {
+    let n = x.len() / 2;
+    (x[..n].to_vec(), x[n..].to_vec())
+}
+
+/// The doubled vector (re, im) of a complex vector.
+fn join(c: &Cv) -> Vec<f64> {
+    c.0.iter().chain(&c.1).copied().collect()
+}
+
+/// `<a, b> = conj(a)^T b` of two complex vectors.
+fn herm(a: &Cv, b: &Cv) -> (f64, f64) {
+    (
+        dot(&a.0, &b.0) + dot(&a.1, &b.1),
+        dot(&a.0, &b.1) - dot(&a.1, &b.0),
+    )
+}
+
+/// The conjugate of a complex vector.
+fn conj(a: &Cv) -> Cv {
+    (a.0.clone(), a.1.iter().map(|x| -x).collect())
+}
+
+/// The real form of the complex matrix `Mr + i c I` at each node, 2n by 2n column-major:
+/// `[[Mr, -c I], [c I, Mr]]` acting on (re; im).
+fn doubled(mats: &[Vec<f64>], n: usize, c: f64) -> Vec<Vec<f64>> {
+    let nn = 2 * n;
+    mats.iter()
+        .map(|m| {
+            let mut d = vec![0.0; nn * nn];
+            for col in 0..n {
+                for row in 0..n {
+                    let v = m[row + n * col];
+                    d[row + nn * col] = v;
+                    d[(row + n) + nn * (col + n)] = v;
+                }
+            }
+            for k in 0..n {
+                d[k + nn * (k + n)] = -c;
+                d[(k + n) + nn * k] = c;
+            }
+            d
+        })
+        .collect()
+}
+
+/// The complex multilinear form of the complex directions `dirs` at the state u.
+fn complex_form(
+    model: &mut dyn ModelEval,
+    p: &[f64],
+    u: &[f64],
+    dirs: &[&Cv],
+) -> Result<Cv, EngineError> {
+    At::new(model, u.len(), u, p.to_vec()).form(dirs)
+}
+
+/// `d` of a torus bifurcation, from DWDGK eq. 42-45 (SPEC §8a). With the multiplier
+/// exp(i theta) of the monodromy matrix, theta in (0, pi), and omega = theta / T: v and v*
+/// are the periodic solutions of v' = (A - i omega) v and v*' = -(A^T + i omega) v* with
+/// int <v, v> = 1 and int <v*, v> = 1, phi* is the periodic adjoint with int <phi*, F> = 1,
+/// alpha1 = int <phi*, B(v, conj v)>, h11 is the periodic solution of h11' = A h11 +
+/// B(v, conj v) - alpha1 F with int <phi*, h11> = 0, h20 the periodic solution of
+/// h20' = (A - 2 i omega) h20 + B(v, v), and d = 1/2 int <v*, B(h20, conj v) + 2 B(h11, v) +
+/// C(v, v, conj v) - 2 alpha1 A v> + i alpha1 omega. The complex problems are solved as
+/// real ones of twice the size.
+fn ns(
+    g: &Grid,
+    model: &mut dyn ModelEval,
+    p: &[f64],
+    orb: &Orbit,
+) -> Result<CycleNormalForm, EngineError> {
+    let (n, nn) = (g.n, 2 * g.n);
+    let (nodes, pts) = (g.nodes(), g.points());
+    let mono = g.monodromy(n, &orb.a)?;
+    // The multiplier of the pair with the argument in (0, pi) that is closest to the unit
+    // circle.
+    let mu = eigenvalues(&mono, n)?
+        .into_iter()
+        .filter(|&(_, im)| im > 0.0)
+        .min_by(|a, b| {
+            (a.0.hypot(a.1) - 1.0)
+                .abs()
+                .total_cmp(&(b.0.hypot(b.1) - 1.0).abs())
+        })
+        .ok_or_else(|| EngineError::Singular("the monodromy matrix has no complex pair".into()))?;
+    let theta = mu.1.atan2(mu.0);
+    if !(theta > 1e-6 && theta < PI - 1e-6) {
+        return Err(EngineError::Singular(
+            "the multiplier is too close to 1 or -1 (strong resonance R1 or R2)".into(),
+        ));
+    }
+    let omega = theta / g.period;
+    // v(0) is the right eigenvector of the monodromy matrix for exp(i theta), and v*(0) the
+    // eigenvector of its transpose for exp(-i theta), as then <v*, v> is the complex
+    // pairing that stays constant along the orbit.
+    let v0 = eigvec(&mono, n, mu)?;
+    let mut mono_t = vec![0.0; n * n];
+    for c in 0..n {
+        for r in 0..n {
+            mono_t[r + n * c] = mono[c + n * r];
+        }
+    }
+    let w0 = eigvec(&mono_t, n, (mu.0, -mu.1))?;
+    let zero2 = vec![0.0; nn * pts];
+    let initial = |mat: &[Vec<f64>], w: &Cv| {
+        g.solve(
+            nn,
+            &Lin {
+                mat,
+                rhs: None,
+                col: None,
+                bc: Bc::Initial(join(w)),
+                border: zero2.clone(),
+                border_s: 1.0,
+                border_rhs: 0.0,
+            },
+        )
+    };
+    let adj = minus_transpose(&orb.a, n);
+    let mut v = g.at_nodes(nn, &initial(&doubled(&orb.a, n, -omega), &v0)?.0);
+    let mut vs = g.at_nodes(nn, &initial(&doubled(&adj, n, -omega), &w0)?.0);
+    let norm: Vec<f64> = v.iter().map(|x| dot(x, x)).collect();
+    let nv = g.integrate(&norm).sqrt();
+    if !(nv.is_finite() && nv > 0.0) {
+        return Err(EngineError::Singular(
+            "the torus eigenfunction is degenerate".into(),
+        ));
+    }
+    v.iter_mut().flatten().for_each(|x| *x /= nv);
+    let (mut ov_re, mut ov_im) = (Vec::with_capacity(nodes), Vec::with_capacity(nodes));
+    for q in 0..nodes {
+        let (re, im) = herm(&split(&vs[q]), &split(&v[q]));
+        ov_re.push(re);
+        ov_im.push(im);
+    }
+    let (ov_re, ov_im) = (g.integrate(&ov_re), g.integrate(&ov_im));
+    let ov2 = ov_re * ov_re + ov_im * ov_im;
+    if !(ov2.is_finite() && ov2 > 0.0) {
+        return Err(EngineError::Singular(
+            "the torus eigenfunctions are degenerate".into(),
+        ));
+    }
+    // <a v*, v> = conj(a) <v*, v> = 1 for a = <v*, v> / |<v*, v>|^2.
+    let (ar, ai) = (ov_re / ov2, ov_im / ov2);
+    for x in &mut vs {
+        let c = split(x);
+        let (re, im): (Vec<f64>, Vec<f64>) = (0..n)
+            .map(|k| (ar * c.0[k] - ai * c.1[k], ar * c.1[k] + ai * c.0[k]))
+            .unzip();
+        *x = join(&(re, im));
+    }
+    let vc: Vec<Cv> = v.iter().map(|x| split(x)).collect();
+    let vsc: Vec<Cv> = vs.iter().map(|x| split(x)).collect();
+    let vbar: Vec<Cv> = vc.iter().map(conj).collect();
+    // phi*: the periodic adjoint, with the column F and the border int <F, g> = 1.
+    let (phi, _) = g.solve(
+        n,
+        &Lin {
+            mat: &adj,
+            rhs: None,
+            col: Some(&orb.f),
+            bc: Bc::Periodic(1.0),
+            border: g.functional(n, &orb.f),
+            border_s: 0.0,
+            border_rhs: 1.0,
+        },
+    )?;
+    let phi = g.at_nodes(n, &phi);
+    let mut b11 = Vec::with_capacity(nodes);
+    let mut b20 = Vec::with_capacity(nodes);
+    for q in 0..nodes {
+        b11.push(complex_form(model, p, &orb.u[q], &[&vc[q], &vbar[q]])?.0);
+        b20.push(join(&complex_form(model, p, &orb.u[q], &[&vc[q], &vc[q]])?));
+    }
+    let weighted: Vec<f64> = (0..nodes).map(|q| dot(&phi[q], &b11[q])).collect();
+    let alpha1 = g.integrate(&weighted);
+    let (h11, _) = g.solve(
+        n,
+        &Lin {
+            mat: &orb.a,
+            rhs: Some(&b11),
+            col: Some(&orb.f),
+            bc: Bc::Periodic(1.0),
+            border: g.functional(n, &phi),
+            border_s: 0.0,
+            border_rhs: 0.0,
+        },
+    )?;
+    let h11 = g.at_nodes(n, &h11);
+    let (h20, _) = g.solve(
+        nn,
+        &Lin {
+            mat: &doubled(&orb.a, n, -2.0 * omega),
+            rhs: Some(&b20),
+            col: None,
+            bc: Bc::Periodic(1.0),
+            border: zero2.clone(),
+            border_s: 1.0,
+            border_rhs: 0.0,
+        },
+    )?;
+    let h20 = g.at_nodes(nn, &h20);
+    let (mut tot_re, mut tot_im) = (Vec::with_capacity(nodes), Vec::with_capacity(nodes));
+    let zero = vec![0.0; n];
+    for q in 0..nodes {
+        let u = &orb.u[q];
+        let h20q = split(&h20[q]);
+        let h11q = (h11[q].clone(), zero.clone());
+        let b_h20 = complex_form(model, p, u, &[&h20q, &vbar[q]])?;
+        let b_h11 = complex_form(model, p, u, &[&h11q, &vc[q]])?;
+        let c_vvv = complex_form(model, p, u, &[&vc[q], &vc[q], &vbar[q]])?;
+        let (av_re, av_im) = (
+            matvec(&orb.a[q], n, &vc[q].0),
+            matvec(&orb.a[q], n, &vc[q].1),
+        );
+        let rhs: Cv = (
+            (0..n)
+                .map(|k| b_h20.0[k] + 2.0 * b_h11.0[k] + c_vvv.0[k] - 2.0 * alpha1 * av_re[k])
+                .collect(),
+            (0..n)
+                .map(|k| b_h20.1[k] + 2.0 * b_h11.1[k] + c_vvv.1[k] - 2.0 * alpha1 * av_im[k])
+                .collect(),
+        );
+        let (re, im) = herm(&vsc[q], &rhs);
+        tot_re.push(re);
+        tot_im.push(im);
+    }
+    let d_re = 0.5 * g.integrate(&tot_re);
+    let d_im = 0.5 * g.integrate(&tot_im) + alpha1 * omega;
+    if !(d_re.is_finite() && d_im.is_finite()) {
+        return Err(EngineError::NotFinite("the torus coefficient d".into()));
+    }
+    Ok(CycleNormalForm {
+        coefficient: d_re,
+        coefficient2: Some(d_im),
+        normalization: "periodic: int <v, v> = 1, int <v*, v> = 1, int <phi*, F> = 1 over [0, T], theta in (0, pi)",
     })
 }
