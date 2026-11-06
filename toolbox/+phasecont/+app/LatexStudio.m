@@ -4,6 +4,7 @@ classdef LatexStudio < handle
     %   app = phasecont.app.LatexStudio
     %   app = phasecont.app.LatexStudio(Visible = "off")
     %   app = phasecont.app.LatexStudio(Executable = "C:\texlive\bin\latexmk.exe")
+    %   app = phasecont.app.LatexStudio(Timeout = 60)
     %
     % The editor on the left holds a whole LaTeX document. Insert figure and
     % Insert table add the LaTeX of a Branch from the base workspace, as a
@@ -19,7 +20,8 @@ classdef LatexStudio < handle
     %
     % Compile runs phasecont.latex.build on the editor text, so it needs
     % latexmk from TeX Live or MiKTeX on the system path, or Executable. The
-    % window blocks while latexmk runs. The right side shows the result of
+    % window blocks while latexmk runs, for at most Timeout seconds (default
+    % 300, Inf for no limit). The right side shows the result of
     % the last compile. The Errors tab lists each TeX error with its line,
     % and selecting one shows the lines of the document around it. The Log
     % tab holds the TeX log. Open PDF hands the file to the system viewer;
@@ -33,8 +35,8 @@ classdef LatexStudio < handle
     %   Source, Digits, Result, File, Status, Figure
     %
     % Result is the struct of phasecont.latex.build (Ok, Pdf, Folder, Log,
-    % Errors, Command) for the last Compile. Digits is NaN while the field is
-    % empty or is not a number.
+    % Errors, Command, TimedOut) for the last Compile. Digits is NaN while
+    % the field is empty or is not a number.
 
     properties (Dependent, SetAccess = private)
         % The text of the editor.
@@ -47,7 +49,7 @@ classdef LatexStudio < handle
         % The result of the last Compile.
         Result (1,1) struct = struct("Ok", false, "Pdf", "", "Folder", "", ...
             "Log", "", "Errors", repmat(struct("File", "", "Line", 0, ...
-            "Message", ""), 0, 1), "Command", "")
+            "Message", ""), 0, 1), "Command", "", "TimedOut", false)
         % The file that Open or Save last used, or "".
         File (1,1) string = ""
         Status (1,1) string = ""
@@ -57,6 +59,7 @@ classdef LatexStudio < handle
     properties (Access = private)
         Ui (1,1) struct = struct()
         Executable (1,1) string = ""
+        Timeout (1,1) double = 300
         Opener = []
         % The document text that the last Compile read.
         CompiledSource (1,1) string = ""
@@ -67,10 +70,13 @@ classdef LatexStudio < handle
             % APP = LatexStudio builds the window. Visible = "off" builds it
             % without showing it. Executable is the path of latexmk, and
             % Opener is a function handle that takes the PDF path, both for
-            % tests and for a TeX install that is not on the path.
+            % tests and for a TeX install that is not on the path. Timeout is
+            % the number of seconds that one Compile may take, Inf for no
+            % limit.
             arguments
                 options.Visible (1,1) string {mustBeMember(options.Visible, ["on" "off"])} = "on"
                 options.Executable (1,1) string = ""
+                options.Timeout (1,1) double {mustBePositive} = 300
                 options.Opener = []
             end
             if ~isempty(options.Opener) && ~isa(options.Opener, "function_handle")
@@ -78,6 +84,7 @@ classdef LatexStudio < handle
                     "Opener must be a function handle that takes the PDF path.");
             end
             app.Executable = options.Executable;
+            app.Timeout = options.Timeout;
             if isempty(options.Opener)
                 app.Opener = @defaultOpener;
             else
@@ -196,7 +203,8 @@ classdef LatexStudio < handle
         function result = compile(app)
             % RESULT = COMPILE(APP) builds the document with latexmk and
             % shows the outcome. A TeX error is part of RESULT and does not
-            % raise. A missing latexmk raises phasecont:latex:engineNotFound.
+            % raise, and neither does a run that the Timeout stopped (TimedOut
+            % is true). A missing latexmk raises phasecont:latex:engineNotFound.
             arguments
                 app (1,1) phasecont.app.LatexStudio
             end
@@ -208,9 +216,9 @@ classdef LatexStudio < handle
             app.setStatus("Compiling ...");
             app.setBusy(true);
             idle = onCleanup(@() app.setBusy(false));
-            args = {};
+            args = {"Timeout", app.Timeout};
             if app.Executable ~= ""
-                args = {"Executable", app.Executable};
+                args = [args, {"Executable", app.Executable}];
             end
             r = phasecont.latex.build(tex, args{:});
             clear idle
@@ -317,7 +325,7 @@ classdef LatexStudio < handle
             r = app.Result;
             yesNo = ["no" "yes"];
             app.Ui.Summary.Value = textLines([ ...
-                "Compiled: " + yesNo(1 + r.Ok); ...
+                "Compiled: " + yesNo(1 + r.Ok) + timedOutNote(r.TimedOut, app.Timeout); ...
                 "PDF: " + r.Pdf; ...
                 "Folder: " + r.Folder; ...
                 "Command: " + r.Command]);
@@ -339,6 +347,10 @@ classdef LatexStudio < handle
             end
             if r.Ok
                 app.setStatus("Compiled. Click Open PDF to read it.");
+            elseif r.TimedOut
+                app.setStatus(sprintf( ...
+                    "Compile stopped after %g s. Raise Timeout, or look for a loop in the document.", ...
+                    app.Timeout));
             elseif n > 0
                 app.setStatus(sprintf("Compile failed with %d error(s).", n));
             else
@@ -557,4 +569,12 @@ if isempty(text)
 end
 lines = splitlines(join(text, newline));
 c = cellstr(lines);
+end
+
+function s = timedOutNote(timedOut, seconds)
+% " (stopped after 60 s)" for a run that the time limit ended, else "".
+s = "";
+if timedOut
+    s = string(sprintf(" (stopped after %g s)", seconds));
+end
 end
