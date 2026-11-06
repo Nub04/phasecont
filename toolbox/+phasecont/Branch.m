@@ -1,8 +1,9 @@
 classdef Branch < handle
     % A computed branch with its special points: a branch of equilibria
     % (Type "EP"), a curve of fold points ("LP") or Hopf points ("H"), a
-    % branch of periodic orbits ("LC"), or a curve of fold ("LPC"),
-    % period-doubling ("PD") or Neimark-Sacker ("NS") points of cycles.
+    % branch of periodic orbits ("LC"), a curve of fold ("LPC"),
+    % period-doubling ("PD") or Neimark-Sacker ("NS") points of cycles, or
+    % a curve of orbits homoclinic to a saddle ("HOM").
     %
     %   br = phasecont.continuation(m, eq, Free = "r")
     %   h  = br.points("H")     % special points with label H
@@ -21,23 +22,28 @@ classdef Branch < handle
     %       Free = ["r" "b"])
     %   plot(pd)                % the curve in the (r, b) plane
     %
+    %   hom = phasecont.continuation(m, lc, Type = "HOM", Index = 30, ...
+    %       Free = ["r" "b"])
+    %   [t, x] = hom.cycle(1)   % the homoclinic orbit at point 1
+    %
     % A Branch holds copied data and no engine handle, so it stays valid
     % after the Model is deleted. Rows are points: N points give N-by-k or
     % N-by-n arrays. Call points on one Branch at a time, not on an array.
     %
     % Properties
-    %   Type         "EP", "LP", "H", "LC", "LPC", "PD" or "NS"
+    %   Type         "EP", "LP", "H", "LC", "LPC", "PD", "NS" or "HOM"
     %   Free         name of the free parameter; [a1 a2] for a curve
     %   FreeIndex    its index in Model.Parameters; [i1 i2] for a curve
     %   P            parameter vector the run started from
     %   Alpha        free parameter value at each point, N-by-1; [a1 a2] in
     %                the order of Free, N-by-2, for a curve
     %   U            states, N-by-n (on a curve, the state at each point of
-    %                it); for "LC", "LPC", "PD" and "NS", the orbit at the
-    %                NTST*NCOL+1 base points, point-major, N-by-n(NTST*NCOL+1)
-    %                (see cycle)
+    %                it); for "LC", "LPC", "PD", "NS" and "HOM", the orbit at
+    %                the NTST*NCOL+1 base points, point-major,
+    %                N-by-n(NTST*NCOL+1) (see cycle)
     %   Eigenvalues  N-by-n complex; the Floquet multipliers for "LC",
-    %                "LPC", "PD" and "NS"
+    %                "LPC", "PD" and "NS"; for "HOM", the eigenvalues of the
+    %                Jacobian at the saddle X0
     %   Stable       true where all eigenvalues have negative real part; for
     %                "LC", where all multipliers except the one closest to 1
     %                have modulus below 1; false everywhere on a curve, whose
@@ -49,13 +55,18 @@ classdef Branch < handle
     %   Codim2Labels the k labels of the columns of Codim2: ["CP" "BT" "ZH"]
     %                for "LP", ["GH" "BT" "ZH" "HH"] for "H", ["LPPD" "LPNS"
     %                "CPC" "R1"] for "LPC", ["LPPD" "PDNS" "GPD" "R2"] for
-    %                "PD", ["R1" "R2" "R3" "R4" "LPNS" "PDNS" "CH"] for "NS"
-    %   Period       period of the orbit at each point, N-by-1 (cycles only)
+    %                "PD", ["R1" "R2" "R3" "R4" "LPNS" "PDNS" "CH"] for "NS",
+    %                ["NSA" "BLS" "BLU" "NSF" "NDS" "NDU" "TLS" "TLU" "ZES"
+    %                "ZEU" "OFS" "OFU"] for "HOM"
+    %   Period       period of the orbit at each point, N-by-1 (cycles
+    %                only); for "HOM", the fixed truncation time T
+    %   X0           the saddle at each point, N-by-n ("HOM" only)
     %   Kappa        cos(theta) of the critical multipliers exp(+-i theta)
     %                at each point, N-by-1 ("NS" only)
     %   Mesh         mesh points from 0 to 1 at each point, N-by-(NTST+1)
-    %                (cycles only); the mesh moves when the run adapts it
+    %                (cycles and "HOM"); the mesh moves when the run adapts it
     %   NTST NCOL    mesh intervals and collocation points of a run of cycles
+    %                or a HOM curve
     %   StepSize     step length used to reach each point
     %   NewtonIters  Newton iterations used at each point
     %   Specials     column of phasecont.Point
@@ -80,6 +91,7 @@ classdef Branch < handle
         Codim2Labels (1,:) string = strings(1,0)
         Period (:,1) double = zeros(0,1)
         Kappa (:,1) double = zeros(0,1)
+        X0 (:,:) double = zeros(0,0)
         Mesh (:,:) double = zeros(0,0)
         NTST (1,1) double = NaN
         NCOL (1,1) double = NaN
@@ -148,14 +160,17 @@ classdef Branch < handle
             % NTST*NCOL+1 base-point times from 0 to the period, as a
             % column. X holds the state at those times, one row per time and
             % one column per variable. The last row closes the orbit and
-            % equals the first.
+            % equals the first. On a HOM curve it returns the homoclinic
+            % orbit over the truncation time T. That orbit is not closed:
+            % its first and last rows lie near the saddle X0(I,:) on its
+            % unstable and stable sides.
             if ~isscalar(br)
                 error("phasecont:model:badBranch", ...
                     "cycle works on one Branch at a time; call it per element.");
             end
             if ~br.isCycleType()
                 error("phasecont:model:badBranch", ...
-                    "cycle needs a Branch of Type ""LC"", ""LPC"", ""PD"" or ""NS"", not ""%s"".", ...
+                    "cycle needs a Branch of Type ""LC"", ""LPC"", ""PD"", ""NS"" or ""HOM"", not ""%s"".", ...
                     br.Type);
             end
             npts = numel(br.Period);
@@ -180,7 +195,7 @@ classdef Branch < handle
             % be a 1-by-K array. Stable runs are solid (Tag "pc-stable"),
             % unstable runs dashed (Tag "pc-unstable"). Special points get a
             % marker (Tag "pc-special") and a text label (Tag "pc-label").
-            % A curve (Type "LP", "H", "LPC", "PD" or "NS") is one solid line
+            % A curve (Type "LP", "H", "LPC", "PD", "NS" or "HOM") is one solid line
             % (Tag "pc-curve") in the plane of its two free parameters and
             % takes no Var. An LC branch draws the
             % max and the min of Var over each orbit, both styled by
@@ -330,8 +345,9 @@ classdef Branch < handle
         end
 
         function tf = isCycleType(br)
-            % True for a branch whose points are cycles.
-            tf = any(br.Type == ["LC" "LPC" "PD" "NS"]);
+            % True for a branch whose points hold an orbit on a mesh: cycles
+            % and HOM orbits.
+            tf = any(br.Type == ["LC" "LPC" "PD" "NS" "HOM"]);
         end
     end
 end

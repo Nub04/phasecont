@@ -3,7 +3,7 @@ function br = rows2branch(m, free, p, n, points, specials, branchStatus, kind, g
 %   BR = rows2branch(M, FREE, P, N, POINTS, SPECIALS, ST)
 %   BR = rows2branch(M, FREE, P, N, POINTS, SPECIALS, ST, KIND)
 %   BR = rows2branch(M, FREE, P, N, POINTS, SPECIALS, ST, "LC", [NTST NCOL])
-%   BR = rows2branch(..., "LPC" | "PD" | "NS", [NTST NCOL])
+%   BR = rows2branch(..., "LPC" | "PD" | "NS" | "HOM", [NTST NCOL])
 %
 %   M         the phasecont.Model (empty is allowed in tests)
 %   FREE      name of the free parameter, or its 1-based index; a curve
@@ -13,9 +13,9 @@ function br = rows2branch(m, free, p, n, points, specials, branchStatus, kind, g
 %   POINTS    stride-by-N matrix from run_copy, one column per point
 %   SPECIALS  stride-by-K matrix of the special points
 %   ST        the status struct of this branch (stop, warnings, specials)
-%   KIND      "EP" (default), "LP", "H", "LC", "LPC", "PD" or "NS"
-%   GRID      [NTST NCOL] of a run of cycles: mesh intervals and
-%             collocation points
+%   KIND      "EP" (default), "LP", "H", "LC", "LPC", "PD", "NS" or "HOM"
+%   GRID      [NTST NCOL] of a run of cycles or a HOM curve: mesh
+%             intervals and collocation points
 %
 % An equilibrium column has the layout [alpha, u(1..n), eig_re(1..n),
 % eig_im(1..n), psi_LP, psi_BP, psi_H, h, newton_iters].
@@ -27,7 +27,10 @@ function br = rows2branch(m, free, p, n, points, specials, branchStatus, kind, g
 % with the orbit at the base points, point-major.
 % A column of a curve of cycles is [a2, orbit, T, a1, (kappa for NS,)
 % mesh(1..NTST+1), mult_re(1..n), mult_im(1..n), codim2(1..k), h,
-% newton_iters]. All have NaN for missing values. The function makes no
+% newton_iters]. A HOM column is [a2, orbit, T, x0(1..n), a1,
+% mesh(1..NTST+1), eig_re(1..n), eig_im(1..n), codim2(1..12), h,
+% newton_iters], with the eigenvalues of the Jacobian at the saddle x0.
+% All have NaN for missing values. The function makes no
 % engine calls.
 if nargin < 8
     kind = "EP";
@@ -68,11 +71,20 @@ switch kind
             labels = ["R1" "R2" "R3" "R4" "LPNS" "PDNS" "CH"];
         end
         extra = numel(labels);
+    case "HOM"
+        [ntst, ncol] = cycleGrid(kind, grid);
+        block = n*(ntst*ncol + 1) + n + 2;
+        nmesh = ntst + 1;
+        labels = ["NSA" "BLS" "BLU" "NSF" "NDS" "NDU" "TLS" "TLU" ...
+            "ZES" "ZEU" "OFS" "OFU"];
+        extra = numel(labels);
     otherwise
         error("phasecont:model:badOption", ...
-            "The kind must be ""EP"", ""LP"", ""H"", ""LC"", ""LPC"", ""PD"" or ""NS"".");
+            "The kind must be ""EP"", ""LP"", ""H"", ""LC"", ""LPC"", ""PD"", ""NS"" or ""HOM"".");
 end
-isCycle = kind == "LC" || kind == "LPC" || kind == "PD" || kind == "NS";
+% A HOM orbit is not periodic, but its row shares the orbit, T and mesh
+% layout of a cycle row.
+isCycle = any(kind == ["LC" "LPC" "PD" "NS" "HOM"]);
 isCurve = ~(kind == "EP" || kind == "LC");
 % Length of the orbit in a cycle row.
 np = 0;
@@ -111,6 +123,14 @@ switch kind
         tests = zeros(npts, 0);
         codim2 = tail;
         stable = false(npts, 1);
+    case "HOM"
+        u = s(:, 1:np);
+        period = s(:, np+1);
+        x0 = s(:, np+2:np+1+n);
+        alpha = [s(:, np+n+2) alpha];
+        tests = zeros(npts, 0);
+        codim2 = tail;
+        stable = false(npts, 1);
     otherwise
         u = s(:, 1:n);
         alpha = [s(:, n+1) alpha];
@@ -138,7 +158,9 @@ end
 for k = 1:numel(info)
     [a2, sk, mk, ek] = unpack(specials(:, k), n, block, nmesh, extra);
     pk = p;
-    if isCycle && isCurve
+    if kind == "HOM"
+        pk(idx) = [sk(np+n+2), a2];
+    elseif isCycle && isCurve
         pk(idx) = [sk(np+2), a2];
     elseif isCurve
         pk(idx) = [sk(n+1), a2];
@@ -166,6 +188,9 @@ for k = 1:numel(info)
     if kind == "NS"
         data.kappa = sk(np+3);
     end
+    if kind == "HOM"
+        data.x0 = reshape(sk(np+2:np+1+n), [], 1);
+    end
     pts(end+1, 1) = phasecont.Point(U = uk(:), P = pk, ...
         Eigenvalues = ek(:), Label = string(info{k}.label), ...
         Index = double(info{k}.index) + 1, Data = data, Model = m); %#ok<AGROW>
@@ -185,6 +210,9 @@ if isCycle
 end
 if kind == "NS"
     values.Kappa = kappa;
+end
+if kind == "HOM"
+    values.X0 = x0;
 end
 br = phasecont.Branch(values);
 end

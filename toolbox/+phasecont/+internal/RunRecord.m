@@ -15,10 +15,10 @@ classdef RunRecord < handle
     %   U0         start state buffer, or the Newton guess of an equilibrium
     %   P          parameter vector of the run
     %   ModelSha   SHA-256 of the model source, 64 hex digits
-    %   Type       "EP", "LP", "H", "LC", "LPC", "PD" or "NS"; "IVP" for a
-    %              trajectory; "" for an equilibrium
+    %   Type       "EP", "LP", "H", "LC", "LPC", "PD", "NS" or "HOM"; "IVP"
+    %              for a trajectory; "" for an equilibrium
     %   Free       free parameter name or names, as passed to rows2branch
-    %   Grid       [NTST NCOL] of a run of cycles, else []
+    %   Grid       [NTST NCOL] of a run of cycles or a HOM curve, else []
     %   N          number of states
     %   Json       the final status JSON string, as the engine wrote it
     %   Points     1-by-nb cell, one stride-by-k matrix per branch

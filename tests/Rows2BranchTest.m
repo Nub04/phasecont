@@ -394,5 +394,70 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
             testCase.verifySize(br.Alpha, [0 2]);
             testCase.verifySize(br.Period, [0 1]);
         end
+
+        function homCurveRows(testCase)
+            % HOM curve, n = 2, NTST = 2, NCOL = 2: rows of [a2, orbit(10),
+            % T, x0(2), a1, mesh(3), eig_re(2), eig_im(2), codim2(12), h,
+            % it], 36 rows in all.
+            c2 = [1:12; NaN(1, 10) 0.5 0.6];
+            pts = [ ...
+                0.5, 0 0 1 2 3 4 1 1 0.1 0.1, 20, 0.01 0.02, -0.1, 0 0.4 1, -1 2, 0 0, c2(1, :), 0.01, 2; ...
+                0.6, 0 0 2 3 4 5 2 2 0.1 0.1, 20, 0.03 0.04, -0.2, 0 0.5 1, -1.5 2.5, 0 0, c2(2, :), 0.02, 3].';
+            st = struct("points", 2, "stop", "Bounds", "warnings", [], ...
+                "specials", struct("label", "OFS", "index", 1));
+            br = phasecont.internal.rows2branch(phasecont.Model.empty, ...
+                [3 1], [10; 20; 30], 2, pts, pts(:, 2), st, "HOM", [2 2]);
+            testCase.verifyEqual(br.Type, "HOM");
+            testCase.verifyEqual(br.Free, ["p3" "p1"]);
+            testCase.verifyEqual(br.Alpha, [-0.1 0.5; -0.2 0.6]);
+            testCase.verifyEqual(br.U, pts(2:11, :).');
+            testCase.verifyEqual(br.Period, [20; 20]);
+            testCase.verifyEqual(br.X0, [0.01 0.02; 0.03 0.04]);
+            testCase.verifyEqual(br.Mesh, [0 0.4 1; 0 0.5 1]);
+            testCase.verifyEqual([br.NTST br.NCOL], [2 2]);
+            testCase.verifyEqual(br.Eigenvalues, complex([-1 2; -1.5 2.5], 0));
+            testCase.verifyEqual(br.Stable, false(2, 1));
+            testCase.verifySize(br.Tests, [2 0]);
+            testCase.verifyEqual(br.Codim2, c2);
+            testCase.verifyEqual(br.Codim2Labels, ["NSA" "BLS" "BLU" "NSF" ...
+                "NDS" "NDU" "TLS" "TLU" "ZES" "ZEU" "OFS" "OFU"]);
+            testCase.verifySize(br.Kappa, [0 1]);
+            testCase.verifyEqual(br.StepSize, [0.01; 0.02]);
+            testCase.verifyEqual(br.NewtonIters, [2; 3]);
+            sp = br.Specials(1);
+            testCase.verifyEqual(sp.Label, "OFS");
+            testCase.verifyEqual(sp.Index, 2);
+            testCase.verifyEqual(sp.P, [0.6; 20; -0.2]);
+            testCase.verifyEqual(sp.U, [0 0 2 3 4 5 2 2 0.1 0.1].');
+            testCase.verifyEqual(sp.Eigenvalues, [-1.5; 2.5]);
+            testCase.verifyEqual(sp.Data.x0, [0.03; 0.04]);
+            testCase.verifyEqual(sp.Data.period, 20);
+            testCase.verifyEqual(sp.Data.mesh, [0 0.5 1]);
+            testCase.verifyEqual([sp.Data.ntst sp.Data.ncol], [2 2]);
+            % The orbit over T, not closed: it starts and ends near X0.
+            [t, x] = br.cycle(1);
+            testCase.verifyEqual(t, [0; 0.2; 0.4; 0.7; 1] * 20, AbsTol = 1e-13);
+            testCase.verifyEqual(x, [0 0; 1 2; 3 4; 1 1; 0.1 0.1]);
+        end
+
+        function homCurveRowErrors(testCase)
+            st = struct("points", 0, "stop", [], "warnings", [], ...
+                "specials", []);
+            e = phasecont.Model.empty;
+            % The stride for n = 2, NTST = 2, NCOL = 2 is 36.
+            testCase.verifyError(@() phasecont.internal.rows2branch(e, [1 2], ...
+                [0; 0], 2, zeros(36, 0), zeros(36, 0), st, "HOM"), ...
+                "phasecont:model:badOption");
+            testCase.verifyError(@() phasecont.internal.rows2branch(e, [1 2], ...
+                [0; 0], 2, zeros(26, 0), zeros(26, 0), st, "HOM", [2 2]), ...
+                "phasecont:model:badRows");
+            br = phasecont.internal.rows2branch(e, [1 2], [0; 0], 2, ...
+                zeros(36, 0), zeros(36, 0), st, "HOM", [2 2]);
+            testCase.verifySize(br.Alpha, [0 2]);
+            testCase.verifySize(br.U, [0 10]);
+            testCase.verifySize(br.X0, [0 2]);
+            testCase.verifySize(br.Codim2, [0 12]);
+            testCase.verifySize(br.Period, [0 1]);
+        end
     end
 end

@@ -64,6 +64,17 @@ switch label
     case "R2", name = "1:2 resonance";
     case "R3", name = "1:3 resonance";
     case "R4", name = "1:4 resonance";
+    case "BLS", name = "Saddle to saddle-focus, stable side";
+    case "BLU", name = "Saddle to saddle-focus, unstable side";
+    case "NSF", name = "Neutral saddle-focus";
+    case "NDS", name = "Neutrally divergent, stable side";
+    case "NDU", name = "Neutrally divergent, unstable side";
+    case "TLS", name = "Three leading eigenvalues, stable side";
+    case "TLU", name = "Three leading eigenvalues, unstable side";
+    case "ZES", name = "Zero or Hopf at the saddle, stable side";
+    case "ZEU", name = "Zero or Hopf at the saddle, unstable side";
+    case "OFS", name = "Orbit flip, stable side";
+    case "OFU", name = "Orbit flip, unstable side";
     otherwise, name = label;
 end
 end

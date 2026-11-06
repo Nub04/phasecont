@@ -6,8 +6,8 @@ function fig = figureFromBranch(br, options)
 %   A branch of equilibria is one series of Var against the free
 %   parameter. A branch of limit cycles (Type "LC") is two series, the
 %   maximum and the minimum of Var over each orbit. A curve (Type "LP",
-%   "H", "LPC", "PD" or "NS") is one series in the plane of its two free
-%   parameters and takes no Var. Stable runs are solid and unstable runs
+%   "H", "LPC", "PD", "NS" or "HOM") is one series in the plane of its two
+%   free parameters and takes no Var. Stable runs are solid and unstable runs
 %   dashed, and each special point is a mark with its label.
 %
 %   Options
