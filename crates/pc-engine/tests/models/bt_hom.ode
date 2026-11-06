@@ -1,0 +1,8 @@
+# Bogdanov-Takens normal form with the unfolding b1 + b2*x (docs/SPEC.md section 8b,
+# test 4). At b2 < 0 and b1 = 0 the origin is a Hopf point and x = -b2 is a saddle; the
+# cycles born at the Hopf point end in an orbit homoclinic to that saddle.
+par b1=0,b2=-0.1
+x'=y
+y'=b1+b2*x+x^2+x*y
+init x=0,y=0
+done

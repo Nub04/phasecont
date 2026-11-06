@@ -1,0 +1,12 @@
+# Our own 4D extension of the (x, y) part of Sandstede's model (docs/SPEC.md section 8b,
+# test 3). At mut=0 the (x, y) plane holds the orbit homoclinic to the origin for |a| < b,
+# and the linear z block, forced by x, has the eigenvalues c +- sqrt(-delta). They are
+# real for delta < 0 and complex for delta > 0, so the saddle turns into a saddle-focus
+# at delta = 0 when they lead.
+par a=0,b=1,c=-0.4,e=0.5,delta=-0.1,mut=0
+x'=a*x+b*y-a*x^2+mut*x*(2-3*x)
+y'=b*x+a*y-1.5*b*x^2-1.5*a*x*y-2*y*mut
+z1'=c*z1+z2+e*x
+z2'=-delta*z1+c*z2
+init x=0,y=0,z1=0,z2=0
+done
