@@ -630,3 +630,107 @@ fn the_r2_product_changes_sign_along_a_flip_curve() {
     }
     assert!(sides.0 >= 2 && sides.1 >= 2, "{sides:?}");
 }
+
+// SPEC §8a, E7b: the codim-2 points that need the coefficients. Each test runs the same
+// curve as the sign-change test above and checks the located special point against the
+// closed form, which puts the zero at nu = 0 (and at the cusp for CPC).
+
+/// The one special point labeled `label` of `b`, with its two parameters (a1, a2).
+fn located(b: &Branch, label: &str) -> (Point, f64, f64) {
+    let pt = only_special(b, label).point.clone();
+    let a1 = pt.u[pt.u.len() - 1];
+    (pt.clone(), a1, pt.alpha)
+}
+
+fn count(b: &Branch, label: &str) -> usize {
+    b.specials.iter().filter(|s| s.label == label).count()
+}
+
+/// The CPC on the fold curve of `cyc_cpc` is at (mu, nu) = (0, 0) on the cycle r = 1.
+#[test]
+fn the_cpc_is_located_on_the_fold_curve_of_the_cusp_model() {
+    let q0 = 0.3_f64;
+    let start = curve_start(
+        vec![-2.0 * q0.powi(3), 3.0 * q0 * q0],
+        polar_orbit(1.0 + q0, CURVE_NTST * NCOL),
+    );
+    let (_, b) = curve_run("cyc_cpc", lpc_curve, &start, -1.0, (-0.5, 0.3));
+    let (pt, mu, nu) = located(&b, "CPC");
+    let r = pt.u[0].hypot(pt.u[1]);
+    println!("CPC at mu = {mu:.3e}, nu = {nu:.3e}, r = {r:.8}");
+    assert!(mu.abs() < 1e-6 && nu.abs() < 1e-6, "{mu:e} {nu:e}");
+    assert!((r - 1.0).abs() < 1e-4, "{r}");
+}
+
+/// The GPD on the flip line beta = 1/4 of `cyc_gpd` is at nu = 0.
+#[test]
+fn the_gpd_is_located_on_the_flip_curve_of_the_gpd_model() {
+    let start = curve_start(vec![0.25, 0.5], ring_orbit(0.25, CURVE_NTST * NCOL));
+    let (_, b) = curve_run("cyc_gpd", pd_curve, &start, -1.0, (-0.5, 0.6));
+    let (_, beta, nu) = located(&b, "GPD");
+    println!("GPD at beta = {beta:.10}, nu = {nu:.3e}");
+    assert!((beta - 0.25).abs() < 1e-8, "{beta}");
+    assert!(nu.abs() < 1e-5, "{nu:e}");
+}
+
+/// The CH on the torus line beta = 1/4 of `cyc_ch` is at nu = 0.
+#[test]
+fn the_ch_is_located_on_the_ns_curve_of_the_ch_model() {
+    let start = curve_start(vec![0.25, 0.5], ring_orbit(0.25, CURVE_NTST * NCOL));
+    let (_, b) = curve_run("cyc_ch", ns_curve, &start, -1.0, (-0.5, 0.6));
+    let (pt, nu) = (
+        &only_special(&b, "CH").point,
+        only_special(&b, "CH").point.alpha,
+    );
+    let beta = pt.u[pt.u.len() - 2];
+    println!("CH at beta = {beta:.10}, nu = {nu:.3e}");
+    assert!((beta - 0.25).abs() < 1e-8, "{beta}");
+    assert!(nu.abs() < 1e-5, "{nu:e}");
+}
+
+/// The R1 point on the fold line mu = -1 of `cyc_r1` is at nu = 0, where the third
+/// multiplier reaches 1. The constant b = -4 gives no CPC along the way.
+#[test]
+fn the_r1_is_located_on_the_fold_curve_of_the_r1_model() {
+    let orbit = polar_orbit(1.0, CURVE_NTST * NCOL);
+    let start = curve_start(vec![-1.0, 0.5], (pad(&orbit.0, 2, 3), orbit.1));
+    let (_, b) = curve_run("cyc_r1", lpc_curve, &start, -1.0, (-0.5, 0.6));
+    let (_, mu, nu) = located(&b, "R1");
+    println!("R1 at mu = {mu:.10}, nu = {nu:.3e}");
+    assert!((mu + 1.0).abs() < 1e-8, "{mu}");
+    assert!(nu.abs() < 1e-5, "{nu:e}");
+    assert_eq!(count(&b, "CPC"), 0, "{:?}", b.specials);
+}
+
+/// With no multiplier left after the trivial one and the second 1, as on a planar model,
+/// the R1 test is NaN and no R1 point is found, while the CPC test is defined.
+#[test]
+fn the_r1_test_is_nan_on_a_planar_model() {
+    let q0 = 0.3_f64;
+    let start = curve_start(
+        vec![-2.0 * q0.powi(3), 3.0 * q0 * q0],
+        polar_orbit(1.0 + q0, CURVE_NTST * NCOL),
+    );
+    let (_, b) = curve_run("cyc_cpc", lpc_curve, &start, -1.0, (-0.5, 0.3));
+    assert_eq!(count(&b, "R1"), 0, "{:?}", b.specials);
+    for pt in &b.points {
+        assert_eq!(pt.codim2.len(), 4, "{:?}", pt.codim2);
+        assert!(pt.codim2[3].is_nan(), "R1 test {:?}", pt.codim2);
+        assert!(pt.codim2[2].is_finite(), "CPC test {:?}", pt.codim2);
+    }
+}
+
+/// The R2 points on the flip line beta = 1/4 of `cyc_r2` are at nu = 0 (run down from 0.45)
+/// and at nu = 1 (run up from 0.45), the two zeros of the product of mu + 1.
+#[test]
+fn the_r2_points_are_located_on_the_flip_curve_of_the_r2_model() {
+    let orbit = ring_orbit(0.25, CURVE_NTST * NCOL);
+    let start = curve_start(vec![0.25, 0.45], (pad(&orbit.0, 4, 6), orbit.1));
+    for (dir, bounds, at) in [(-1.0, (-0.5, 0.6), 0.0), (1.0, (0.3, 1.2), 1.0)] {
+        let (_, b) = curve_run("cyc_r2", pd_curve, &start, dir, bounds);
+        let (_, beta, nu) = located(&b, "R2");
+        println!("R2 at beta = {beta:.10}, nu = {nu:.3e}");
+        assert!((beta - 0.25).abs() < 1e-8, "{beta}");
+        assert!((nu - at).abs() < 1e-5, "{nu:e} against {at}");
+    }
+}

@@ -21,6 +21,7 @@ use super::codim2::{LPC_CURVE_LABELS, lpc_curve_label, lpc_curve_tests};
 use super::continuation::Scaled;
 use super::curve::{CycleCurveStart, run_curve};
 use super::mesh;
+use super::normal::CycleBifurcation;
 use super::problem::{CycleProblem, Extra};
 use crate::branch::{Branch, Options, Point};
 use crate::error::EngineError;
@@ -213,14 +214,19 @@ impl Problem for LpcProblem<'_> {
         &LPC_CURVE_LABELS
     }
 
-    /// LPPD and LPNS over the multipliers without the two at 1.
+    /// LPPD, LPNS, CPC (the coefficient b) and R1 over the multipliers without the two at 1.
+    /// The coefficient is NaN at a point where the normal form is not defined.
     fn codim2_tests(
         &mut self,
-        _x: &[f64],
+        x: &[f64],
         _tangent: &[f64],
         eigs: &[(f64, f64)],
     ) -> Result<Vec<f64>, EngineError> {
-        Ok(lpc_curve_tests(eigs))
+        let b = self
+            .outer
+            .coefficient(CycleBifurcation::Lpc, x)
+            .unwrap_or(f64::NAN);
+        Ok(lpc_curve_tests(eigs, b))
     }
 
     fn codim2_label(&self, i: usize, eigs: &[(f64, f64)]) -> Option<&'static str> {

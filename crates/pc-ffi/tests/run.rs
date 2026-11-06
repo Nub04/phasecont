@@ -924,12 +924,15 @@ fn an_lpc_curve_run_has_curve_rows_with_a1_after_the_period() {
     let st = wait(&run);
     assert_eq!(st["state"], "done", "{st}");
     assert_eq!(st["kind"], "LPC");
-    assert_eq!(st["codim2_labels"], serde_json::json!(["LPPD", "LPNS"]));
+    assert_eq!(
+        st["codim2_labels"],
+        serde_json::json!(["LPPD", "LPNS", "CPC", "R1"])
+    );
     assert_eq!(st["ntst"], ntst);
     assert_eq!(st["ncol"], ncol);
     let stride = st["stride"].as_u64().unwrap() as usize;
     let profile = n * (ntst * ncol + 1);
-    assert_eq!(stride, 1 + profile + 2 + (ntst + 1) + 2 * n + 2 + 2);
+    assert_eq!(stride, 1 + profile + 2 + (ntst + 1) + 2 * n + 4 + 2);
 
     let start = CycleCurveStart {
         free: [0, 1],
@@ -968,7 +971,7 @@ fn an_lpc_curve_run_has_curve_rows_with_a1_after_the_period() {
     let (rc, rows, got) = copy(run.0, 0, 0, 0, count, stride);
     assert_eq!((rc, rows), (0, count), "{}", last_error());
     for (i, point) in want.iter().enumerate() {
-        let w = cycle_row(point, n, (ntst, ncol), 2, 2);
+        let w = cycle_row(point, n, (ntst, ncol), 2, 4);
         assert!(same_bits(&got[i * stride..(i + 1) * stride], &w), "row {i}");
     }
     // Each row has a2 = b2 first and a1 = b1 after the period, on b1 = -b2^2 / 4.

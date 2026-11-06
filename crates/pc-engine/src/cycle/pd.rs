@@ -22,6 +22,7 @@ use super::codim2::{PD_CURVE_LABELS, pd_curve_label, pd_curve_tests};
 use super::continuation::Scaled;
 use super::curve::{CycleCurveStart, run_curve};
 use super::mesh;
+use super::normal::CycleBifurcation;
 use super::problem::{CycleProblem, Extra};
 use crate::branch::{Branch, Options, Point};
 use crate::error::EngineError;
@@ -203,14 +204,19 @@ impl Problem for PdProblem<'_> {
         &PD_CURVE_LABELS
     }
 
-    /// LPPD and PDNS over the multipliers without the ones at 1 and -1.
+    /// LPPD, PDNS, GPD (the coefficient c) and R2 over the multipliers without the ones at 1
+    /// and -1. The coefficient is NaN at a point where the normal form is not defined.
     fn codim2_tests(
         &mut self,
-        _x: &[f64],
+        x: &[f64],
         _tangent: &[f64],
         eigs: &[(f64, f64)],
     ) -> Result<Vec<f64>, EngineError> {
-        Ok(pd_curve_tests(eigs))
+        let c = self
+            .outer
+            .coefficient(CycleBifurcation::Pd, x)
+            .unwrap_or(f64::NAN);
+        Ok(pd_curve_tests(eigs, c))
     }
 
     fn codim2_label(&self, i: usize, eigs: &[(f64, f64)]) -> Option<&'static str> {

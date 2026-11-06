@@ -422,8 +422,19 @@ fn an_lpc_curve_run_follows_the_bautin_fold() {
         let u = p["u"].as_array().unwrap();
         assert_eq!(u.len(), 2 * 19 + 2);
         assert_eq!(p["mesh"].as_array().unwrap().len(), ntst + 1);
-        assert_eq!(p["codim2"].as_array().unwrap().len(), 2);
+        // LPPD, LPNS, CPC and R1: the planar model has b but no other multipliers, so JSON
+        // null (NaN) stands for the three that are not defined.
+        let c2 = p["codim2"].as_array().unwrap();
+        assert_eq!(c2.len(), 4);
+        assert!(
+            c2[0].is_null() && c2[1].is_null() && c2[3].is_null(),
+            "{c2:?}"
+        );
         let (b1, b2) = (u[39].as_f64().unwrap(), p["alpha"].as_f64().unwrap());
         assert!((b1 + b2 * b2 / 4.0).abs() < 1e-3, "b1 = {b1}, b2 = {b2}");
+        // b = -2 b2 (1 + b2 / 4), SPEC 8a.
+        let b = c2[2].as_f64().unwrap();
+        let want = -2.0 * b2 * (1.0 + b2 / 4.0);
+        assert!((b - want).abs() < 1e-3 * want.abs(), "b = {b}, want {want}");
     }
 }

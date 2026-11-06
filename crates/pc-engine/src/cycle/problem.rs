@@ -23,6 +23,7 @@
 use super::basis::{CollocationBasis, NCOL_RANGE};
 use super::codim2::{nearest_pair_is_complex, nontrivial, pair_product, shifted_product};
 use super::mesh;
+use super::normal::{CycleBifurcation, normal_form};
 use crate::branch::Options;
 use crate::error::EngineError;
 use crate::model::ModelEval;
@@ -341,6 +342,27 @@ impl<'a> CycleProblem<'a> {
         for (q, v) in row.iter().enumerate() {
             self.border[r + k * q] = *v;
         }
+    }
+
+    /// The normal form coefficient of `kind` at x: b, c or Re d (SPEC §8a). The orbit and T
+    /// are those of x, and the parameters of the `Extra::Param`s are read from it.
+    pub(super) fn coefficient(
+        &mut self,
+        kind: CycleBifurcation,
+        x: &[f64],
+    ) -> Result<f64, EngineError> {
+        let period = self.read_extras(x);
+        let k = self.profile_len();
+        let nf = normal_form(
+            self.model,
+            kind,
+            &self.p,
+            &x[..k],
+            period,
+            &self.mesh,
+            self.basis.m(),
+        )?;
+        Ok(nf.coefficient)
     }
 
     /// Sets the parameters of the `Extra::Param`s from x and returns T.

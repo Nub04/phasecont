@@ -31,6 +31,7 @@ use super::codim2::{NS_CURVE_LABELS, neutral_saddle_gap, ns_curve_label, ns_curv
 use super::continuation::Scaled;
 use super::curve::{CycleCurveStart, run_curve};
 use super::mesh;
+use super::normal::CycleBifurcation;
 use super::problem::{CycleProblem, Extra};
 use crate::branch::{Branch, Options, Point};
 use crate::error::EngineError;
@@ -309,15 +310,21 @@ impl Problem for NsProblem<'_> {
         &NS_CURVE_LABELS
     }
 
-    /// The resonances from kappa, and LPNS and PDNS over the multipliers without the one
-    /// at 1 and the pair of kappa.
+    /// The resonances from kappa, LPNS and PDNS over the multipliers without the one at 1
+    /// and the pair of kappa, and CH (Re d). Re d is NaN at a point where the normal form is
+    /// not defined.
     fn codim2_tests(
         &mut self,
         x: &[f64],
         _tangent: &[f64],
         eigs: &[(f64, f64)],
     ) -> Result<Vec<f64>, EngineError> {
-        Ok(ns_curve_tests(x[self.outer.profile_len() + 2], eigs))
+        let kappa = x[self.outer.profile_len() + 2];
+        let d = self
+            .outer
+            .coefficient(CycleBifurcation::Ns, x)
+            .unwrap_or(f64::NAN);
+        Ok(ns_curve_tests(kappa, eigs, d))
     }
 
     fn codim2_label(&self, i: usize, _eigs: &[(f64, f64)]) -> Option<&'static str> {

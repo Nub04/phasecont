@@ -285,34 +285,35 @@ mod tests {
         p.alpha = 0.75;
         p.mesh = vec![0.0, 1.0];
         p.eigenvalues = vec![(-1.0, 0.0)];
-        p.codim2 = vec![7.0, 8.0];
+        p.codim2 = vec![7.0, 8.0, 9.0, 10.0];
         for kind in [
             Kind::Lpc { ntst: 1, ncol: 2 },
             Kind::Pd { ntst: 1, ncol: 2 },
         ] {
             let mut row = vec![0.0; stride(kind, 1)];
-            // [a2, u(3), T, a1, mesh(2), mult_re, mult_im, codim2(2), h, iters]
-            assert_eq!(row.len(), 1 + 3 + 2 + 2 + 2 + 2 + 2);
+            // [a2, u(3), T, a1, mesh(2), mult_re, mult_im, codim2(4), h, iters]
+            assert_eq!(row.len(), 1 + 3 + 2 + 2 + 2 + 4 + 2);
             pack_row(kind, &p, 1, &mut row);
             assert_eq!(
                 &row[..10],
                 [0.75, 1.0, 2.0, 3.0, 6.5, 4.0, 0.0, 1.0, -1.0, 0.0]
             );
-            assert_eq!(&row[10..], [7.0, 8.0, 0.125, 3.0]);
+            assert_eq!(&row[10..], [7.0, 8.0, 9.0, 10.0, 0.125, 3.0]);
             assert_eq!(kind.mesh_size(), Some((1, 2)));
         }
         let ns = Kind::Ns { ntst: 1, ncol: 2 };
         let mut row = vec![0.0; stride(ns, 1)];
-        // [a2, u(3), T, a1, kappa, mesh(2), mult_re, mult_im, R1 to R4, LPNS, PDNS, h, iters]
-        assert_eq!(row.len(), 1 + 3 + 3 + 2 + 2 + 6 + 2);
+        // [a2, u(3), T, a1, kappa, mesh(2), mult_re, mult_im, R1 to R4, LPNS, PDNS, CH, h,
+        // iters]
+        assert_eq!(row.len(), 1 + 3 + 3 + 2 + 2 + 7 + 2);
         pack_row(ns, &p, 1, &mut row);
         assert_eq!(
             &row[..11],
             [0.75, 1.0, 2.0, 3.0, 6.5, 4.0, 0.25, 0.0, 1.0, -1.0, 0.0]
         );
-        assert_eq!(&row[11..13], [7.0, 8.0]);
-        assert!(row[13..17].iter().all(|x| x.is_nan()));
-        assert_eq!(&row[17..], [0.125, 3.0]);
+        assert_eq!(&row[11..15], [7.0, 8.0, 9.0, 10.0]);
+        assert!(row[15..18].iter().all(|x| x.is_nan()));
+        assert_eq!(&row[18..], [0.125, 3.0]);
         assert_eq!(
             [
                 Kind::Lpc { ntst: 1, ncol: 2 }.name(),

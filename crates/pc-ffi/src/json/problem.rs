@@ -1203,16 +1203,17 @@ mod tests {
         let lc = Kind::Lc { ntst: 2, ncol: 3 };
         // [alpha, u(2 * 7), T, mesh(3), mult(4), tests(3), h, iters]
         assert_eq!(cycle_stride(lc, 2), Some(1 + 14 + 1 + 3 + 4 + 3 + 2));
-        // [a2, u(2 * 7), T, a1, mesh(3), mult(4), LPPD and LPNS or PDNS, h, iters]
+        // [a2, u(2 * 7), T, a1, mesh(3), mult(4), LPPD, LPNS or PDNS, CPC or GPD, R1 or R2,
+        // h, iters]
         for kind in [
             Kind::Lpc { ntst: 2, ncol: 3 },
             Kind::Pd { ntst: 2, ncol: 3 },
         ] {
-            assert_eq!(cycle_stride(kind, 2), Some(1 + 14 + 2 + 3 + 4 + 2 + 2));
+            assert_eq!(cycle_stride(kind, 2), Some(1 + 14 + 2 + 3 + 4 + 4 + 2));
         }
-        // [a2, u(2 * 7), T, a1, kappa, mesh(3), mult(4), R1 to R4, LPNS, PDNS, h, iters]
+        // [a2, u(2 * 7), T, a1, kappa, mesh(3), mult(4), R1 to R4, LPNS, PDNS, CH, h, iters]
         let ns = Kind::Ns { ntst: 2, ncol: 3 };
-        assert_eq!(cycle_stride(ns, 2), Some(1 + 14 + 3 + 3 + 4 + 6 + 2));
+        assert_eq!(cycle_stride(ns, 2), Some(1 + 14 + 3 + 3 + 4 + 7 + 2));
         let huge = Kind::Lc {
             ntst: usize::MAX / 2,
             ncol: 3,

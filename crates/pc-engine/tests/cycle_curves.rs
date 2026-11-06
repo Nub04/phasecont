@@ -147,8 +147,10 @@ fn lpc_curve_follows_the_bautin_fold() {
         assert!(branch.points.len() > 5);
         let last = branch.points.last().unwrap();
         assert!((last.alpha - 1.5).abs() < 1e-9, "{which:?}: {}", last.alpha);
-        // The planar model has no multipliers besides the two at 1, so the codim-2 tests
-        // are undefined.
+        // The planar model has no multipliers besides the two at 1, so LPPD, LPNS and R1
+        // are undefined. The CPC slot holds b, which has the closed form
+        // b = -2 b2 (1 + b2 / 4) here (polar coordinates, SPEC 8a) and no zero on the
+        // curve, so there is no special point.
         assert!(
             branch.specials.is_empty(),
             "{which:?}: {:?}",
@@ -156,7 +158,15 @@ fn lpc_curve_follows_the_bautin_fold() {
         );
         for pt in &branch.points {
             assert_eq!(pt.codim2.len(), LPC_CURVE_LABELS.len());
-            assert!(pt.codim2.iter().all(|v| v.is_nan()), "{:?}", pt.codim2);
+            for i in [0, 1, 3] {
+                assert!(pt.codim2[i].is_nan(), "{:?}", pt.codim2);
+            }
+            let b = -2.0 * pt.alpha * (1.0 + pt.alpha / 4.0);
+            assert!(
+                (pt.codim2[2] - b).abs() < 1e-6 * b.abs(),
+                "{which:?}: b {} against {b}",
+                pt.codim2[2]
+            );
         }
         let (mut e_b1, mut e_t, mut e_r, mut iters) = (0.0_f64, 0.0_f64, 0.0_f64, 0);
         for pt in &branch.points {

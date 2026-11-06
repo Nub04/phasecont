@@ -8,11 +8,11 @@
 //! R2 = kappa + 1, R3 = kappa + 1/2 and R4 = kappa.
 
 /// Names of the codim-2 tests on an LPC curve.
-pub const LPC_CURVE_LABELS: [&str; 2] = ["LPPD", "LPNS"];
+pub const LPC_CURVE_LABELS: [&str; 4] = ["LPPD", "LPNS", "CPC", "R1"];
 /// Names of the codim-2 tests on a PD curve.
-pub const PD_CURVE_LABELS: [&str; 2] = ["LPPD", "PDNS"];
+pub const PD_CURVE_LABELS: [&str; 4] = ["LPPD", "PDNS", "GPD", "R2"];
 /// Names of the codim-2 tests on an NS curve.
-pub const NS_CURVE_LABELS: [&str; 6] = ["R1", "R2", "R3", "R4", "LPNS", "PDNS"];
+pub const NS_CURVE_LABELS: [&str; 7] = ["R1", "R2", "R3", "R4", "LPNS", "PDNS", "CH"];
 
 fn cmul(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
     (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0)
@@ -122,11 +122,18 @@ fn rest_product(mu: &[(f64, f64)], s: f64) -> f64 {
     }
 }
 
-/// LPPD = prod(mu + 1) and LPNS = prod(mu_i mu_j - 1) over the multipliers of an LPC
-/// point other than the double multiplier 1. NaN without multipliers to test.
-pub(super) fn lpc_curve_tests(eigs: &[(f64, f64)]) -> Vec<f64> {
+/// LPPD = prod(mu + 1), LPNS = prod(mu_i mu_j - 1), the coefficient b of the fold (CPC)
+/// and R1 = prod(mu - 1) over the multipliers of an LPC point other than the double
+/// multiplier 1. The products are NaN without multipliers to test, and `coeff` is NaN
+/// where the normal form is not defined.
+pub(super) fn lpc_curve_tests(eigs: &[(f64, f64)], coeff: f64) -> Vec<f64> {
     let mu = lpc_rest(eigs);
-    vec![rest_product(&mu, 1.0), pair_product(&mu)]
+    vec![
+        rest_product(&mu, 1.0),
+        pair_product(&mu),
+        coeff,
+        rest_product(&mu, -1.0),
+    ]
 }
 
 /// The label of a zero of LPC curve test `i`. A zero of LPNS from a real pair of product
@@ -138,11 +145,18 @@ pub(super) fn lpc_curve_label(i: usize, eigs: &[(f64, f64)]) -> Option<&'static 
     }
 }
 
-/// LPPD = prod(mu - 1) and PDNS = prod(mu_i mu_j - 1) over the multipliers of a PD point
-/// other than 1 and -1. NaN without multipliers to test.
-pub(super) fn pd_curve_tests(eigs: &[(f64, f64)]) -> Vec<f64> {
+/// LPPD = prod(mu - 1), PDNS = prod(mu_i mu_j - 1), the coefficient c of the flip (GPD)
+/// and R2 = prod(mu + 1) over the multipliers of a PD point other than 1 and -1. The
+/// products are NaN without multipliers to test, and `coeff` is NaN where the normal form
+/// is not defined.
+pub(super) fn pd_curve_tests(eigs: &[(f64, f64)], coeff: f64) -> Vec<f64> {
     let mu = pd_rest(eigs);
-    vec![rest_product(&mu, -1.0), pair_product(&mu)]
+    vec![
+        rest_product(&mu, -1.0),
+        pair_product(&mu),
+        coeff,
+        rest_product(&mu, 1.0),
+    ]
 }
 
 /// The label of a zero of PD curve test `i`. A zero of PDNS from a real pair of product 1
@@ -155,9 +169,10 @@ pub(super) fn pd_curve_label(i: usize, eigs: &[(f64, f64)]) -> Option<&'static s
 }
 
 /// R1 to R4 from kappa, then LPNS = prod(mu - 1) and PDNS = prod(mu + 1) over the
-/// multipliers of an NS point other than 1 and the roots of mu^2 - 2 kappa mu + 1. The
-/// last two are NaN without multipliers to test.
-pub(super) fn ns_curve_tests(kappa: f64, eigs: &[(f64, f64)]) -> Vec<f64> {
+/// multipliers of an NS point other than 1 and the roots of mu^2 - 2 kappa mu + 1, then
+/// Re d of the torus normal form (CH), which is `coeff` and NaN where the normal form is
+/// not defined. LPNS and PDNS are NaN without multipliers to test.
+pub(super) fn ns_curve_tests(kappa: f64, eigs: &[(f64, f64)], coeff: f64) -> Vec<f64> {
     let mu = ns_rest(kappa, eigs);
     vec![
         kappa - 1.0,
@@ -166,6 +181,7 @@ pub(super) fn ns_curve_tests(kappa: f64, eigs: &[(f64, f64)]) -> Vec<f64> {
         kappa,
         rest_product(&mu, -1.0),
         rest_product(&mu, 1.0),
+        coeff,
     ]
 }
 
@@ -218,7 +234,7 @@ mod tests {
             polar(0.8, 0.3),
             polar(0.8, -0.3),
         ];
-        let t = lpc_curve_tests(&eigs);
+        let t = lpc_curve_tests(&eigs, f64::NAN);
         let pair = |a: (f64, f64), b: (f64, f64)| {
             let q = cmul(a, b);
             (q.0 - 1.0, q.1)
@@ -239,24 +255,54 @@ mod tests {
             polar(0.8, 0.3),
             polar(0.8, -0.3),
         ];
-        let s = lpc_curve_tests(&split);
+        let s = lpc_curve_tests(&split, f64::NAN);
         assert!((s[0] - lppd).abs() < 1e-14 && (s[1] - lpns.0).abs() < 1e-14);
     }
 
     #[test]
     fn lpc_curve_zeros_get_their_labels() {
         let lppd = [(1.0, 0.0), (1.0, 0.0), (-1.0, 0.0), (0.3, 0.0)];
-        assert_eq!(lpc_curve_tests(&lppd)[0], 0.0);
+        assert_eq!(lpc_curve_tests(&lppd, f64::NAN)[0], 0.0);
         assert_eq!(lpc_curve_label(0, &lppd), Some("LPPD"));
         let lpns = [(1.0, 0.0), (1.0, 0.0), polar(1.0, 1.1), polar(1.0, -1.1)];
-        assert!(lpc_curve_tests(&lpns)[1].abs() < 1e-15);
+        assert!(lpc_curve_tests(&lpns, f64::NAN)[1].abs() < 1e-15);
         assert_eq!(lpc_curve_label(1, &lpns), Some("LPNS"));
+    }
+
+    #[test]
+    fn the_curve_tests_carry_the_coefficient_and_the_resonance_product() {
+        // LPC: R1 = prod(mu - 1) over the rest, and the coefficient in slot 2.
+        let lpc = [(1.0, 0.0), (1.0, 0.0), (0.4, 0.0), (-0.7, 0.0)];
+        let t = lpc_curve_tests(&lpc, -4.0);
+        assert_eq!(t.len(), LPC_CURVE_LABELS.len());
+        assert_eq!(t[2], -4.0);
+        assert!((t[3] - (0.4 - 1.0) * (-0.7 - 1.0)).abs() < 1e-15, "{t:?}");
+        assert_eq!(lpc_curve_label(2, &lpc), Some("CPC"));
+        assert_eq!(lpc_curve_label(3, &lpc), Some("R1"));
+        // Planar: nothing left, so R1 is NaN and the coefficient is kept.
+        let planar = lpc_curve_tests(&[(1.0, 0.0), (1.0, 0.0)], 2.5);
+        assert!(planar[3].is_nan() && planar[2] == 2.5, "{planar:?}");
+        // PD: R2 = prod(mu + 1) over the rest, and the coefficient in slot 2.
+        let pd = [(1.0, 0.0), (-1.0, 0.0), (0.4, 0.0), (-0.7, 0.0)];
+        let t = pd_curve_tests(&pd, 0.3);
+        assert_eq!(t.len(), PD_CURVE_LABELS.len());
+        assert_eq!(t[2], 0.3);
+        assert!((t[3] - (0.4 + 1.0) * (-0.7 + 1.0)).abs() < 1e-15, "{t:?}");
+        assert_eq!(pd_curve_label(2, &pd), Some("GPD"));
+        assert_eq!(pd_curve_label(3, &pd), Some("R2"));
+        let planar = pd_curve_tests(&[(1.0, 0.0), (-1.0, 0.0)], -1.5);
+        assert!(planar[3].is_nan() && planar[2] == -1.5, "{planar:?}");
+        // NS: Re d in the last slot, with its label.
+        let ns = ns_curve_tests(0.3, &[(1.0, 0.0)], 7.0);
+        assert_eq!(ns.len(), NS_CURVE_LABELS.len());
+        assert_eq!(ns[6], 7.0);
+        assert_eq!(ns_curve_label(6), Some("CH"));
     }
 
     #[test]
     fn lpc_curve_drops_a_neutral_saddle_zero() {
         let saddle = [(1.0, 0.0), (1.0, 0.0), (4.0, 0.0), (0.25, 0.0)];
-        assert_eq!(lpc_curve_tests(&saddle)[1], 0.0);
+        assert_eq!(lpc_curve_tests(&saddle, f64::NAN)[1], 0.0);
         assert_eq!(lpc_curve_label(1, &saddle), None);
     }
 
@@ -269,28 +315,28 @@ mod tests {
             polar(0.9, 2.0),
             polar(0.9, -2.0),
         ];
-        let t = pd_curve_tests(&eigs);
+        let t = pd_curve_tests(&eigs, f64::NAN);
         let c = 0.9 * 2.0_f64.cos();
         let lppd = -0.5 * ((c - 1.0).powi(2) + (0.9 * 2.0_f64.sin()).powi(2));
         assert!((t[0] - lppd).abs() < 1e-14, "{t:?}");
         assert!(t[1].is_finite());
         let single = [(1.0, 0.0), (-1.0, 0.0), (0.2, 0.0)];
-        let s = pd_curve_tests(&single);
+        let s = pd_curve_tests(&single, f64::NAN);
         assert!((s[0] - (0.2 - 1.0)).abs() < 1e-15 && s[1].is_nan(), "{s:?}");
-        let planar = pd_curve_tests(&[(1.0, 0.0), (-1.0, 0.0)]);
+        let planar = pd_curve_tests(&[(1.0, 0.0), (-1.0, 0.0)], f64::NAN);
         assert!(planar.iter().all(|v| v.is_nan()));
     }
 
     #[test]
     fn pd_curve_zeros_get_their_labels_and_a_neutral_saddle_none() {
         let lppd = [(1.0, 0.0), (-1.0, 0.0), (1.0, 0.0), (0.3, 0.0)];
-        assert_eq!(pd_curve_tests(&lppd)[0], 0.0);
+        assert_eq!(pd_curve_tests(&lppd, f64::NAN)[0], 0.0);
         assert_eq!(pd_curve_label(0, &lppd), Some("LPPD"));
         let pdns = [(1.0, 0.0), (-1.0, 0.0), polar(1.0, 0.7), polar(1.0, -0.7)];
-        assert!(pd_curve_tests(&pdns)[1].abs() < 1e-15);
+        assert!(pd_curve_tests(&pdns, f64::NAN)[1].abs() < 1e-15);
         assert_eq!(pd_curve_label(1, &pdns), Some("PDNS"));
         let saddle = [(1.0, 0.0), (-1.0, 0.0), (-3.0, 0.0), (-1.0 / 3.0, 0.0)];
-        assert!(pd_curve_tests(&saddle)[1].abs() < 1e-15);
+        assert!(pd_curve_tests(&saddle, f64::NAN)[1].abs() < 1e-15);
         assert_eq!(pd_curve_label(1, &saddle), None);
     }
 
@@ -305,7 +351,7 @@ mod tests {
             (0.4, 0.0),
             (-0.7, 0.0),
         ];
-        let t = ns_curve_tests(kappa, &eigs);
+        let t = ns_curve_tests(kappa, &eigs, f64::NAN);
         let want = [
             kappa - 1.0,
             kappa + 1.0,
@@ -322,13 +368,13 @@ mod tests {
         }
         // On a neutral saddle the pair mu, 1/mu goes.
         let saddle = [(1.0, 0.0), (2.0, 0.0), (0.5, 0.0), (0.3, 0.0)];
-        let s = ns_curve_tests(1.25, &saddle);
+        let s = ns_curve_tests(1.25, &saddle, f64::NAN);
         assert!((s[4] - (0.3 - 1.0)).abs() < 1e-15 && (s[5] - 1.3).abs() < 1e-15);
         // Without other multipliers LPNS and PDNS are undefined; R1 to R4 are not.
-        let bare = ns_curve_tests(kappa, &eigs[..3]);
+        let bare = ns_curve_tests(kappa, &eigs[..3], f64::NAN);
         assert!(bare[..4].iter().all(|v| v.is_finite()));
         assert!(bare[4].is_nan() && bare[5].is_nan());
-        let none = ns_curve_tests(kappa, &[]);
+        let none = ns_curve_tests(kappa, &[], f64::NAN);
         assert!(none[3] == kappa && none[4].is_nan());
     }
 
@@ -336,7 +382,7 @@ mod tests {
     fn ns_curve_resonances_sit_at_their_angles() {
         use std::f64::consts::PI;
         for (i, th) in [(0, 0.0), (1, PI), (2, 2.0 * PI / 3.0), (3, PI / 2.0)] {
-            let t = ns_curve_tests(f64::cos(th), &[]);
+            let t = ns_curve_tests(f64::cos(th), &[], f64::NAN);
             assert!(t[i].abs() < 1e-15, "R{}: {}", i + 1, t[i]);
         }
     }
