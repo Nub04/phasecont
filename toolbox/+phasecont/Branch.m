@@ -47,9 +47,9 @@ classdef Branch < handle
     %   Codim2       codim-2 test values at each point of a curve, N-by-k
     %                (N-by-0 for Type "EP" and "LC")
     %   Codim2Labels the k labels of the columns of Codim2: ["CP" "BT" "ZH"]
-    %                for "LP", ["GH" "BT" "ZH" "HH"] for "H", ["LPPD"
-    %                "LPNS"] for "LPC", ["LPPD" "PDNS"] for "PD", ["R1" "R2"
-    %                "R3" "R4" "LPNS" "PDNS"] for "NS"
+    %                for "LP", ["GH" "BT" "ZH" "HH"] for "H", ["LPPD" "LPNS"
+    %                "CPC" "R1"] for "LPC", ["LPPD" "PDNS" "GPD" "R2"] for
+    %                "PD", ["R1" "R2" "R3" "R4" "LPNS" "PDNS" "CH"] for "NS"
     %   Period       period of the orbit at each point, N-by-1 (cycles only)
     %   Kappa        cos(theta) of the critical multipliers exp(+-i theta)
     %                at each point, N-by-1 ("NS" only)

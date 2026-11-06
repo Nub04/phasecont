@@ -289,11 +289,12 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
 
         function cycleCurveRows(testCase)
             % LPC curve, n = 2, NTST = 2, NCOL = 2: rows of [a2, orbit(10),
-            % T, a1, mesh(3), mult_re(2), mult_im(2), LPPD LPNS, h, it].
+            % T, a1, mesh(3), mult_re(2), mult_im(2), LPPD LPNS CPC R1, h,
+            % it].
             nan = NaN;
             pts = [ ...
-                0.5, 1 2 2 3 3 4 2 1 1 2, 6, -0.1, 0 0.4 1, 1 1, 0 0, 0.1 0.2, 0.01, 2; ...
-                0.6, 1 2 5 6 7 8 6 5 1 2, 7, -0.2, 0 0.5 1, 1 1, 0 0, nan nan, 0.02, 3].';
+                0.5, 1 2 2 3 3 4 2 1 1 2, 6, -0.1, 0 0.4 1, 1 1, 0 0, 0.1 0.2 0.3 0.4, 0.01, 2; ...
+                0.6, 1 2 5 6 7 8 6 5 1 2, 7, -0.2, 0 0.5 1, 1 1, 0 0, nan nan nan nan, 0.02, 3].';
             specials = pts(:, 2);
             st = struct("points", 2, "stop", "Bounds", "warnings", [], ...
                 "specials", struct("label", "LPPD", "index", 1));
@@ -310,8 +311,8 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
             testCase.verifyEqual(br.Eigenvalues, complex(ones(2, 2), 0));
             testCase.verifyEqual(br.Stable, false(2, 1));
             testCase.verifySize(br.Tests, [2 0]);
-            testCase.verifyEqual(br.Codim2, [0.1 0.2; nan nan]);
-            testCase.verifyEqual(br.Codim2Labels, ["LPPD" "LPNS"]);
+            testCase.verifyEqual(br.Codim2, [0.1 0.2 0.3 0.4; nan nan nan nan]);
+            testCase.verifyEqual(br.Codim2Labels, ["LPPD" "LPNS" "CPC" "R1"]);
             testCase.verifySize(br.Kappa, [0 1]);
             testCase.verifyEqual(br.StepSize, [0.01; 0.02]);
             testCase.verifyEqual(br.NewtonIters, [2; 3]);
@@ -332,17 +333,17 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
             pd = phasecont.internal.rows2branch(phasecont.Model.empty, ...
                 [3 1], [10; 20; 30], 2, pts, specials, st, "PD", [2 2]);
             testCase.verifyEqual(pd.Type, "PD");
-            testCase.verifyEqual(pd.Codim2Labels, ["LPPD" "PDNS"]);
+            testCase.verifyEqual(pd.Codim2Labels, ["LPPD" "PDNS" "GPD" "R2"]);
             testCase.verifyEqual(pd.Alpha, [-0.1 0.5; -0.2 0.6]);
         end
 
         function nsCurveRowsHaveKappa(testCase)
             % NS curve, n = 2, NTST = 2, NCOL = 2: rows of [a2, orbit(10),
             % T, a1, kappa, mesh(3), mult_re(2), mult_im(2), R1 R2 R3 R4
-            % LPNS PDNS, h, it].
+            % LPNS PDNS CH, h, it].
             pts = [ ...
-                0.5, 1 2 2 3 3 4 2 1 1 2, 6, -0.1, 0.3, 0 0.4 1, 0.3 0.3, 0.9 -0.9, 1 2 3 4 5 6, 0.01, 2; ...
-                0.6, 1 2 5 6 7 8 6 5 1 2, 7, -0.2, 0.2, 0 0.5 1, 0.2 0.2, 0.9 -0.9, 6 5 4 3 2 1, 0.02, 3].';
+                0.5, 1 2 2 3 3 4 2 1 1 2, 6, -0.1, 0.3, 0 0.4 1, 0.3 0.3, 0.9 -0.9, 1 2 3 4 5 6 7, 0.01, 2; ...
+                0.6, 1 2 5 6 7 8 6 5 1 2, 7, -0.2, 0.2, 0 0.5 1, 0.2 0.2, 0.9 -0.9, 7 6 5 4 3 2 1, 0.02, 3].';
             st = struct("points", 2, "stop", [], "warnings", [], ...
                 "specials", struct("label", "R4", "index", 0));
             br = phasecont.internal.rows2branch(phasecont.Model.empty, ...
@@ -353,8 +354,8 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
             testCase.verifyEqual(br.Kappa, [0.3; 0.2]);
             testCase.verifyEqual(br.Mesh, [0 0.4 1; 0 0.5 1]);
             testCase.verifyEqual(br.Eigenvalues(1, :), [complex(0.3, 0.9) complex(0.3, -0.9)]);
-            testCase.verifyEqual(br.Codim2, [1 2 3 4 5 6; 6 5 4 3 2 1]);
-            testCase.verifyEqual(br.Codim2Labels, ["R1" "R2" "R3" "R4" "LPNS" "PDNS"]);
+            testCase.verifyEqual(br.Codim2, [1 2 3 4 5 6 7; 7 6 5 4 3 2 1]);
+            testCase.verifyEqual(br.Codim2Labels, ["R1" "R2" "R3" "R4" "LPNS" "PDNS" "CH"]);
             sp = br.Specials(1);
             testCase.verifyEqual(sp.Index, 1);
             testCase.verifyEqual(sp.P, [-0.1; 0.5]);
@@ -368,28 +369,28 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
             st = struct("points", 0, "stop", [], "warnings", [], ...
                 "specials", []);
             e = phasecont.Model.empty;
-            % Strides for n = 2, NTST = 2, NCOL = 2: 24 for LPC and PD, 29
+            % Strides for n = 2, NTST = 2, NCOL = 2: 26 for LPC and PD, 30
             % for NS.
             testCase.verifyError(@() phasecont.internal.rows2branch(e, [1 2], ...
-                [0; 0], 2, zeros(24, 0), zeros(24, 0), st, "LPC"), ...
+                [0; 0], 2, zeros(26, 0), zeros(26, 0), st, "LPC"), ...
                 "phasecont:model:badOption");
             testCase.verifyError(@() phasecont.internal.rows2branch(e, [1 2], ...
-                [0; 0], 2, zeros(24, 0), zeros(24, 0), st, "PD", [0 2]), ...
+                [0; 0], 2, zeros(26, 0), zeros(26, 0), st, "PD", [0 2]), ...
                 "phasecont:model:badOption");
             testCase.verifyError(@() phasecont.internal.rows2branch(e, 1, ...
-                [0; 0], 2, zeros(24, 0), zeros(24, 0), st, "PD", [2 2]), ...
+                [0; 0], 2, zeros(26, 0), zeros(26, 0), st, "PD", [2 2]), ...
                 "phasecont:model:badOption");
             testCase.verifyError(@() phasecont.internal.rows2branch(e, [1 2], ...
-                [0; 0], 2, zeros(24, 0), zeros(24, 0), st, "NS", [2 2]), ...
+                [0; 0], 2, zeros(26, 0), zeros(26, 0), st, "NS", [2 2]), ...
                 "phasecont:model:badRows");
             br = phasecont.internal.rows2branch(e, [1 2], [0; 0], 2, ...
-                zeros(29, 0), zeros(29, 0), st, "NS", [2 2]);
+                zeros(30, 0), zeros(30, 0), st, "NS", [2 2]);
             testCase.verifySize(br.Alpha, [0 2]);
             testCase.verifySize(br.U, [0 10]);
             testCase.verifySize(br.Kappa, [0 1]);
-            testCase.verifySize(br.Codim2, [0 6]);
+            testCase.verifySize(br.Codim2, [0 7]);
             br = phasecont.internal.rows2branch(e, [1 2], [0; 0], 2, ...
-                zeros(24, 0), zeros(24, 0), st, "LPC", [2 2]);
+                zeros(26, 0), zeros(26, 0), st, "LPC", [2 2]);
             testCase.verifySize(br.Alpha, [0 2]);
             testCase.verifySize(br.Period, [0 1]);
         end

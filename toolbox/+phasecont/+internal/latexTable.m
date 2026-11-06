@@ -57,6 +57,13 @@ switch label
     case "ZH", name = "Zero-Hopf";
     case "GH", name = "Generalized Hopf";
     case "HH", name = "Hopf-Hopf";
+    case "CPC", name = "Cusp of cycles";
+    case "GPD", name = "Generalized period doubling";
+    case "CH", name = "Chenciner";
+    case "R1", name = "1:1 resonance";
+    case "R2", name = "1:2 resonance";
+    case "R3", name = "1:3 resonance";
+    case "R4", name = "1:4 resonance";
     otherwise, name = label;
 end
 end

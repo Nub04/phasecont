@@ -33,9 +33,10 @@ function br = continuation(m, start, options)
 %   "LPC" does the same for an LPC point and Type = "NS" for an NS point.
 %   C.Alpha holds [a b], C.Period the period and C.cycle(i) the orbit at
 %   point i; an NS curve also has C.Kappa, the cosine of the angle of its
-%   critical multipliers. The codim-2 points (LPPD, LPNS for "LPC"; LPPD,
-%   PDNS for "PD"; R1 to R4, LPNS, PDNS for "NS") are in C.Specials. NTST
-%   and NCOL default to the mesh of PT, and other values regrid its orbit.
+%   critical multipliers. The codim-2 points (LPPD, LPNS, CPC, R1 for
+%   "LPC"; LPPD, PDNS, GPD, R2 for "PD"; R1 to R4, LPNS, PDNS, CH for "NS")
+%   are in C.Specials. NTST and NCOL default to the mesh of PT, and other
+%   values regrid its orbit.
 %   Detect, Switch and Var do not apply.
 %
 %   Name-value options

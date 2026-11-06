@@ -61,11 +61,11 @@ switch kind
         block = n*(ntst*ncol + 1) + 2 + (kind == "NS");
         nmesh = ntst + 1;
         if kind == "LPC"
-            labels = ["LPPD" "LPNS"];
+            labels = ["LPPD" "LPNS" "CPC" "R1"];
         elseif kind == "PD"
-            labels = ["LPPD" "PDNS"];
+            labels = ["LPPD" "PDNS" "GPD" "R2"];
         else
-            labels = ["R1" "R2" "R3" "R4" "LPNS" "PDNS"];
+            labels = ["R1" "R2" "R3" "R4" "LPNS" "PDNS" "CH"];
         end
         extra = numel(labels);
     otherwise

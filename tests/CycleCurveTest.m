@@ -163,8 +163,8 @@ classdef CycleCurveTest < matlab.unittest.TestCase
             testCase.verifySize(c.Period, [npts 1]);
             testCase.verifySize(c.Eigenvalues, [npts 2]);
             testCase.verifySize(c.Tests, [npts 0]);
-            testCase.verifyEqual(c.Codim2Labels, ["LPPD" "LPNS"]);
-            testCase.verifySize(c.Codim2, [npts 2]);
+            testCase.verifyEqual(c.Codim2Labels, ["LPPD" "LPNS" "CPC" "R1"]);
+            testCase.verifySize(c.Codim2, [npts 4]);
             testCase.verifySize(c.Kappa, [0 1]);
             testCase.verifyEqual(c.Alpha(1, 2), 1, AbsTol = 1e-12);
             testCase.verifyTrue(any(abs(c.Alpha(end, 2) - [0.5 1.5]) < 1e-10));
@@ -212,7 +212,7 @@ classdef CycleCurveTest < matlab.unittest.TestCase
                 testCase.verifyEqual(pd.Type, "PD");
                 testCase.verifyEqual(pd.Stop, "Bounds");
                 testCase.verifyEqual([pd.NTST pd.NCOL], [40 4]);
-                testCase.verifyEqual(pd.Codim2Labels, ["LPPD" "PDNS"]);
+                testCase.verifyEqual(pd.Codim2Labels, ["LPPD" "PDNS" "GPD" "R2"]);
                 testCase.verifyEqual(pd.Alpha(1, :), [2.5 flip.P(1)], AbsTol = 1e-10);
                 testCase.verifyEqual(pd.Alpha(end, 2), want(1), AbsTol = 1e-10);
                 testCase.verifyEqual(pd.Alpha(end, 1), want(2), AbsTol = 1e-6);
