@@ -8,8 +8,10 @@ use crate::pe;
 
 /// DLL names a shipped `pckern.dll` may import, compared without regard to
 /// case. This is what Rust std on `x86_64-pc-windows-gnu` imports today, plus
-/// `bcrypt.dll` and `advapi32.dll`, which other std releases use. Names that
-/// start with `api-ms-win-` are allowed too.
+/// `bcrypt.dll` and `advapi32.dll`, which other std releases use, and
+/// `dbghelp.dll`, a Windows system DLL that `dlopen2` (under `opencl3`)
+/// imports for its symbol lookup. Names that start with `api-ms-win-` are
+/// allowed too.
 const ALLOWED: &[&str] = &[
     "kernel32.dll",
     "ntdll.dll",
@@ -19,6 +21,7 @@ const ALLOWED: &[&str] = &[
     "bcrypt.dll",
     "advapi32.dll",
     "msvcrt.dll",
+    "dbghelp.dll",
 ];
 
 /// Prefix of the Windows API set DLL names.
@@ -88,6 +91,7 @@ mod tests {
             "msvcrt.dll",
             "bcrypt.dll",
             "ADVAPI32.dll",
+            "DbgHelp.dll",
             "api-ms-win-core-synch-l1-2-0.dll",
             "API-MS-WIN-core-x.dll",
         ] {
