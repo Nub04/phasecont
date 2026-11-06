@@ -1,0 +1,17 @@
+# The flip model of cyc_pd (gam = 1, flip at beta = 1/4) with a second plane
+# w3' = (nu - 1/2 + i Om/2) w3 + z conj(w3) - |w3|^2 w3. At beta = 1/4 the multipliers of the
+# second plane are -exp(nu T) and -exp((nu - 1) T) with T = pi, so the product of mu + 1 over
+# the multipliers other than the flip pair changes sign at nu = 0 (a further multiplier at
+# -1). Own test model.
+par beta=0.25,nu=0
+Om=2
+r2=x2^2+y2^2
+r3=x3^2+y3^2
+x1'=beta*x1-Om*y1-(x1^2+y1^2)*x1
+y1'=beta*y1+Om*x1-(x1^2+y1^2)*y1
+x2'=-0.5*x2-0.5*Om*y2+(x1*x2+y1*y2)-r2*x2
+y2'=-0.5*y2+0.5*Om*x2+(y1*x2-x1*y2)-r2*y2
+x3'=(nu-0.5)*x3-0.5*Om*y3+(x1*x3+y1*y3)-r3*x3
+y3'=(nu-0.5)*y3+0.5*Om*x3+(y1*x3-x1*y3)-r3*y3
+init x1=0.5,y1=0,x2=0,y2=0,x3=0,y3=0
+done

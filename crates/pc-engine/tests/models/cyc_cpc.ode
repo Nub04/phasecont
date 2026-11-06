@@ -1,0 +1,14 @@
+# A cusp of cycles in polar form r' = r P(q), theta' = Om(q) with s = r^2 and q = s - 1,
+# P = mu + nu q - q^3 and Om = 2 + q. The cycle of squared radius 1 + q has the period
+# 2 pi / (2 + q). The folds of cycles lie on nu = 3 q^2, mu = -2 q^3 and meet in the cusp
+# (mu, nu) = (0, 0), r = 1. On the fold curve g_rr = -24 r^3 q, so the normal form
+# coefficient is b(q) = -6 r^2 q Om / sigma with sigma = dOm/ds = 1. Own test model.
+par mu=0,nu=0
+s=x^2+y^2
+q=s-1
+P=mu+nu*q-q^3
+Om=2+q
+x'=x*P-y*Om
+y'=y*P+x*Om
+init x=1,y=0
+done

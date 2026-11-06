@@ -1,0 +1,14 @@
+# The flip model of cyc_pd with the cubic coefficient gam = nu and a quintic term that keeps
+# the doubled cycle bounded: w' = (lam + i Om/2) w + z conj(w) - (nu + |w|^2) |w|^2 w with
+# lam = -1/2. The cycle z = r exp(i Om t) with Om = 2 and T = pi has its flip at beta = 1/4
+# for every nu, and the normal form coefficient there is c = -nu / T, which changes sign at
+# nu = 0 (a generalized period doubling). Own test model.
+par beta=0.25,nu=1
+Om=2
+r2=x2^2+y2^2
+x1'=beta*x1-Om*y1-(x1^2+y1^2)*x1
+y1'=beta*y1+Om*x1-(x1^2+y1^2)*y1
+x2'=-0.5*x2-0.5*Om*y2+(x1*x2+y1*y2)-(nu+r2)*r2*x2
+y2'=-0.5*y2+0.5*Om*x2+(y1*x2-x1*y2)-(nu+r2)*r2*y2
+init x1=0.5,y1=0,x2=0,y2=0
+done

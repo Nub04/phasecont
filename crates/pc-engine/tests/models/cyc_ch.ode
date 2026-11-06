@@ -1,0 +1,14 @@
+# The torus model of cyc_ns with Re gam = nu, Im gam = 0.5 and a quintic term:
+# w' = (lam + 0.8 i) w - (nu + 0.5 i) |w|^2 w - |w|^4 w with lam = beta - 1/4. The cycle
+# z = r exp(i Om t) with Om = 2 and T = pi has its torus bifurcation at beta = 1/4 for every
+# nu, with Re d = -2 nu / T, which changes sign at nu = 0 (a Chenciner point). Own test model.
+par beta=0.25,nu=1
+Om=2
+lam=beta-0.25
+r2=x2^2+y2^2
+x1'=beta*x1-Om*y1-(x1^2+y1^2)*x1
+y1'=beta*y1+Om*x1-(x1^2+y1^2)*y1
+x2'=lam*x2-0.8*y2-r2*(nu*x2-0.5*y2)-r2*r2*x2
+y2'=lam*y2+0.8*x2-r2*(nu*y2+0.5*x2)-r2*r2*y2
+init x1=0.5,y1=0,x2=0,y2=0
+done

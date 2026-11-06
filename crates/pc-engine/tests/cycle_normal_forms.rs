@@ -7,8 +7,9 @@ mod common;
 
 use common::{attractor_orbit, load};
 use pc_engine::{
-    Branch, CycleBifurcation, CycleSetup, CycleStart, Evaluator, ModelEval, Options, Point,
-    SpecialPoint, build, continue_cycle, lc_point_normal_form,
+    Branch, CycleBifurcation, CycleCurveStart, CycleSetup, CycleStart, EngineError, Evaluator,
+    ModelEval, Options, Point, SpecialPoint, StopReason, build, continue_cycle, continue_lpc_curve,
+    continue_ns_curve, continue_pd_curve, curve_point_normal_form, lc_point_normal_form,
 };
 use std::f64::consts::PI;
 use std::sync::atomic::AtomicBool;
@@ -343,4 +344,289 @@ fn the_error_falls_with_the_mesh() {
         assert!(e[1] < e[0] / 10.0, "{name}: {e:?}");
         assert!(e[2] < e[1] / 10.0 || e[2] < 1e-13, "{name}: {e:?}");
     }
+}
+
+// SPEC §8a test 6: the coefficient along a curve of cycle bifurcations. Each model has a
+// parameter nu that moves the coefficient through zero along the whole curve, with a closed
+// form for it, so the curve runs on exact starts and the coefficient is compared at every
+// curve point. The curve runs use ntst = 20.
+
+const CURVE_NTST: usize = 20;
+
+/// `orbit` with zeros appended to each point, from `from` to `to` coordinates.
+fn pad(orbit: &[f64], from: usize, to: usize) -> Vec<f64> {
+    orbit
+        .chunks(from)
+        .flat_map(|c| {
+            let mut v = c.to_vec();
+            v.resize(to, 0.0);
+            v
+        })
+        .collect()
+}
+
+/// A start on a uniform mesh with the two parameters `params[0]` and `params[1]` free.
+fn curve_start(params: Vec<f64>, (orbit, period): (Vec<f64>, f64)) -> CycleCurveStart {
+    CycleCurveStart {
+        free: [0, 1],
+        params,
+        orbit,
+        period,
+        mesh: (0..=CURVE_NTST)
+            .map(|j| j as f64 / CURVE_NTST as f64)
+            .collect(),
+        ntst: CURVE_NTST,
+        ncol: NCOL,
+    }
+}
+
+type CurveRun = fn(
+    &mut dyn ModelEval,
+    &CycleCurveStart,
+    &Options,
+    &AtomicBool,
+    &mut dyn FnMut(&Point),
+) -> Result<Branch, EngineError>;
+
+/// The curve from `start` in the direction `dir` until the second parameter leaves `bounds`.
+fn curve_run(
+    name: &str,
+    run: CurveRun,
+    start: &CycleCurveStart,
+    dir: f64,
+    bounds: (f64, f64),
+) -> (Box<dyn ModelEval>, Branch) {
+    let mut m = model_of(name);
+    let opts = Options {
+        direction: dir,
+        max_newton: 15,
+        hmax: 0.1,
+        bounds,
+        ..Options::default()
+    };
+    let cancel = AtomicBool::new(false);
+    let b = run(m.as_mut(), start, &opts, &cancel, &mut |_| ()).unwrap();
+    assert_eq!(b.stop, StopReason::Bounds, "{:?}", b.warnings);
+    assert!(b.warnings.is_empty(), "{:?}", b.warnings);
+    (m, b)
+}
+
+fn lpc_curve(
+    m: &mut dyn ModelEval,
+    s: &CycleCurveStart,
+    o: &Options,
+    c: &AtomicBool,
+    f: &mut dyn FnMut(&Point),
+) -> Result<Branch, EngineError> {
+    continue_lpc_curve(m, s, o, c, f)
+}
+
+fn pd_curve(
+    m: &mut dyn ModelEval,
+    s: &CycleCurveStart,
+    o: &Options,
+    c: &AtomicBool,
+    f: &mut dyn FnMut(&Point),
+) -> Result<Branch, EngineError> {
+    continue_pd_curve(m, s, o, c, f)
+}
+
+fn ns_curve(
+    m: &mut dyn ModelEval,
+    s: &CycleCurveStart,
+    o: &Options,
+    c: &AtomicBool,
+    f: &mut dyn FnMut(&Point),
+) -> Result<Branch, EngineError> {
+    continue_ns_curve(m, s, o, c, f)
+}
+
+/// The coefficient at `pt`, with Im d as the second part for NS.
+fn curve_coefficient(
+    m: &mut dyn ModelEval,
+    kind: CycleBifurcation,
+    start: &CycleCurveStart,
+    pt: &Point,
+) -> (f64, Option<f64>) {
+    let nf = curve_point_normal_form(m, kind, start.free, &start.params, pt, NCOL).unwrap();
+    (nf.coefficient, nf.coefficient2)
+}
+
+/// c = -nu / T along the PD curve of `cyc_gpd`, which is the line beta = 1/4. The sign of c
+/// is opposite to the sign of nu on both sides of the generalized period doubling at nu = 0.
+#[test]
+fn the_flip_coefficient_changes_sign_along_a_gpd_curve() {
+    let start = curve_start(vec![0.25, 0.5], ring_orbit(0.25, CURVE_NTST * NCOL));
+    let (mut m, b) = curve_run("cyc_gpd", pd_curve, &start, -1.0, (-0.5, 0.6));
+    let (mut worst, mut sides) = (0.0_f64, (0, 0));
+    for pt in &b.points {
+        let (c, _) = curve_coefficient(m.as_mut(), CycleBifurcation::Pd, &start, pt);
+        assert!((pt.u[pt.u.len() - 1] - 0.25).abs() <= 1e-8, "beta");
+        worst = worst.max((c + pt.alpha / PI).abs());
+        if pt.alpha.abs() > 0.02 {
+            assert!(c * pt.alpha < 0.0, "nu = {}: c = {c}", pt.alpha);
+            sides = (
+                sides.0 + (pt.alpha > 0.0) as usize,
+                sides.1 + (pt.alpha < 0.0) as usize,
+            );
+        }
+    }
+    println!(
+        "cyc_gpd: {} points, worst |c + nu/pi| = {worst:.2e}",
+        b.points.len()
+    );
+    assert!(sides.0 >= 3 && sides.1 >= 3, "{sides:?}");
+    assert!(worst <= 1e-6, "{worst:e}");
+}
+
+/// Re d = -2 nu / T and Im d = -1/pi along the NS curve of `cyc_ch`, the line beta = 1/4,
+/// with the sign change of Re d at the Chenciner point nu = 0.
+#[test]
+fn the_torus_coefficient_changes_sign_along_a_ch_curve() {
+    let start = curve_start(vec![0.25, 0.5], ring_orbit(0.25, CURVE_NTST * NCOL));
+    let (mut m, b) = curve_run("cyc_ch", ns_curve, &start, -1.0, (-0.5, 0.6));
+    let (mut worst, mut sides) = (0.0_f64, (0, 0));
+    for pt in &b.points {
+        let (re, im) = curve_coefficient(m.as_mut(), CycleBifurcation::Ns, &start, pt);
+        let im = im.expect("Im d");
+        worst = worst
+            .max((re + 2.0 * pt.alpha / PI).abs())
+            .max((im + 1.0 / PI).abs());
+        if pt.alpha.abs() > 0.02 {
+            assert!(re * pt.alpha < 0.0, "nu = {}: Re d = {re}", pt.alpha);
+            sides = (
+                sides.0 + (pt.alpha > 0.0) as usize,
+                sides.1 + (pt.alpha < 0.0) as usize,
+            );
+        }
+    }
+    println!(
+        "cyc_ch: {} points, worst error = {worst:.2e}",
+        b.points.len()
+    );
+    assert!(sides.0 >= 3 && sides.1 >= 3, "{sides:?}");
+    assert!(worst <= 1e-6, "{worst:e}");
+}
+
+/// On the fold curve of `cyc_cpc`, mu = -2 q^3 and nu = 3 q^2 with the cycle of squared
+/// radius 1 + q and period 2 pi / (2 + q), the coefficient is b = -6 (1 + q) q (2 + q). The
+/// curve runs through the cusp at q = 0 and b changes sign there.
+#[test]
+fn the_fold_coefficient_changes_sign_at_the_cusp_of_cycles() {
+    let q0 = 0.3_f64;
+    let start = curve_start(
+        vec![-2.0 * q0.powi(3), 3.0 * q0 * q0],
+        polar_orbit(1.0 + q0, CURVE_NTST * NCOL),
+    );
+    let (mut m, b) = curve_run("cyc_cpc", lpc_curve, &start, -1.0, (-0.5, 0.3));
+    let (mut worst, mut sides) = (0.0_f64, (0, 0));
+    for pt in &b.points {
+        let n = pt.u.len();
+        let (period, mu) = (pt.u[n - 2], pt.u[n - 1]);
+        let q = 2.0 * PI / period - 2.0;
+        assert!((mu + 2.0 * q.powi(3)).abs() <= 1e-8, "mu = {mu} at q = {q}");
+        assert!(
+            (pt.alpha - 3.0 * q * q).abs() <= 1e-8,
+            "nu = {} at q = {q}",
+            pt.alpha
+        );
+        let (coef, _) = curve_coefficient(m.as_mut(), CycleBifurcation::Lpc, &start, pt);
+        let exact = -6.0 * (1.0 + q) * q * (2.0 + q);
+        worst = worst.max((coef - exact).abs());
+        if q.abs() > 0.02 {
+            assert!(coef * q < 0.0, "q = {q}: b = {coef}");
+            sides = (sides.0 + (q > 0.0) as usize, sides.1 + (q < 0.0) as usize);
+        }
+    }
+    println!(
+        "cyc_cpc: {} points, worst |b - exact| = {worst:.2e}",
+        b.points.len()
+    );
+    assert!(sides.0 >= 3 && sides.1 >= 3, "{sides:?}");
+    assert!(worst <= 1e-5, "{worst:e}");
+}
+
+/// The multipliers of `pt` left after removing, for each `z` in `drop` in turn, the multiplier
+/// nearest to `z` (the trivial one and the critical ones).
+fn rest_after(pt: &Point, drop: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut mu = pt.eigenvalues.clone();
+    for z in drop {
+        let d = |m: &(f64, f64)| (m.0 - z.0).hypot(m.1 - z.1);
+        let k = (0..mu.len())
+            .min_by(|&a, &b| d(&mu[a]).total_cmp(&d(&mu[b])))
+            .unwrap();
+        mu.remove(k);
+    }
+    mu
+}
+
+/// The real part of the product of (mu + s) over `mu`.
+fn product(mu: &[(f64, f64)], s: f64) -> f64 {
+    mu.iter()
+        .fold((1.0, 0.0), |p, m| {
+            let q = (m.0 + s, m.1);
+            (p.0 * q.0 - p.1 * q.1, p.0 * q.1 + p.1 * q.0)
+        })
+        .0
+}
+
+/// On the fold line mu = -1 of `cyc_r1` the multipliers are 1, 1 and exp(nu T) with T = pi,
+/// so the product of mu - 1 over the multipliers other than the pair at 1 is exp(nu T) - 1,
+/// which changes sign at nu = 0. This is the multiplier test the R1 label uses, checked on
+/// the curve points away from nu = 0, where the third multiplier is not near 1.
+#[test]
+fn the_r1_product_changes_sign_along_a_fold_curve() {
+    let orbit = polar_orbit(1.0, CURVE_NTST * NCOL);
+    let start = curve_start(vec![-1.0, 0.5], (pad(&orbit.0, 2, 3), orbit.1));
+    let (_, b) = curve_run("cyc_r1", lpc_curve, &start, -1.0, (-0.5, 0.6));
+    let mut sides = (0, 0);
+    for pt in &b.points {
+        let nu = pt.alpha;
+        if nu.abs() < 0.1 {
+            continue;
+        }
+        let rest = rest_after(pt, &[(1.0, 0.0), (1.0, 0.0)]);
+        assert_eq!(rest.len(), 1, "{:?}", pt.eigenvalues);
+        let got = product(&rest, -1.0);
+        let exact = (nu * PI).exp() - 1.0;
+        assert!(
+            (got - exact).abs() <= 1e-6,
+            "nu = {nu}: {got} against {exact}"
+        );
+        sides = (sides.0 + (nu > 0.0) as usize, sides.1 + (nu < 0.0) as usize);
+    }
+    assert!(sides.0 >= 2 && sides.1 >= 2, "{sides:?}");
+}
+
+/// On the flip line beta = 1/4 of `cyc_r2` the multipliers are 1, exp(-pi/2), -1, -exp(-pi),
+/// -exp(nu pi) and -exp((nu - 1) pi). The product of mu + 1 over those other than 1 and -1
+/// is (1 + exp(-pi/2)) (1 - exp(-pi)) (1 - exp(nu pi)) (1 - exp((nu - 1) pi)), which changes
+/// sign at nu = 0. This is the multiplier test the R2 label uses, checked away from nu = 0.
+#[test]
+fn the_r2_product_changes_sign_along_a_flip_curve() {
+    // The real multipliers -exp(nu pi) and -exp((nu - 1) pi) have product 1 at nu = 1/2, a
+    // zero of the PDNS test, so the run starts below it.
+    let orbit = ring_orbit(0.25, CURVE_NTST * NCOL);
+    let start = curve_start(vec![0.25, 0.45], (pad(&orbit.0, 4, 6), orbit.1));
+    let (_, b) = curve_run("cyc_r2", pd_curve, &start, -1.0, (-0.5, 0.6));
+    let mut sides = (0, 0);
+    for pt in &b.points {
+        let nu = pt.alpha;
+        if nu.abs() < 0.1 {
+            continue;
+        }
+        let rest = rest_after(pt, &[(1.0, 0.0), (-1.0, 0.0)]);
+        assert_eq!(rest.len(), 4, "{:?}", pt.eigenvalues);
+        let got = product(&rest, 1.0);
+        let exact = (1.0 + (-PI / 2.0).exp())
+            * (1.0 - (-PI).exp())
+            * (1.0 - (nu * PI).exp())
+            * (1.0 - ((nu - 1.0) * PI).exp());
+        assert!(
+            (got - exact).abs() <= 1e-6 * exact.abs().max(1.0),
+            "nu = {nu}: {got} against {exact}"
+        );
+        sides = (sides.0 + (nu > 0.0) as usize, sides.1 + (nu < 0.0) as usize);
+    }
+    assert!(sides.0 >= 2 && sides.1 >= 2, "{sides:?}");
 }

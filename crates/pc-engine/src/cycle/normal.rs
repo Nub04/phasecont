@@ -75,9 +75,9 @@ pub fn lc_point_normal_form(
 
 /// The normal form coefficient at `point` of a curve of cycles in the parameters `free` =
 /// [a1, a2] (as in [`continue_lpc_curve`](super::continue_lpc_curve)), with the other
-/// parameters from `params`. The point holds the orbit, T and a1 in `Point::u` and a2 in
-/// `Point::alpha`. `kind` is the bifurcation the curve follows. `ncol` is the number of
-/// collocation points per interval of the point's mesh.
+/// parameters from `params`. The point holds the orbit, T and a1 in `Point::u`, followed by
+/// kappa on an NS curve, and a2 in `Point::alpha`. `kind` is the bifurcation the curve
+/// follows. `ncol` is the number of collocation points per interval of the point's mesh.
 pub fn curve_point_normal_form(
     model: &mut dyn ModelEval,
     kind: CycleBifurcation,
@@ -91,7 +91,12 @@ pub fn curve_point_normal_form(
     if params.len() != n_p || free[0] >= n_p || free[1] >= n_p || free[0] == free[1] {
         return bad("normal form: parameters or free indices do not fit the model".into());
     }
-    let [orbit @ .., period, a1] = &point.u[..] else {
+    // An NS curve point carries kappa after a1, which the coefficient does not use.
+    let x = match kind {
+        CycleBifurcation::Ns => point.u.split_last().map_or(&[][..], |(_, x)| x),
+        _ => &point.u[..],
+    };
+    let [orbit @ .., period, a1] = x else {
         return bad("normal form: the curve point has no orbit".into());
     };
     let nint = point.mesh.len().saturating_sub(1);

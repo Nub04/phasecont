@@ -1,0 +1,13 @@
+# The fold of cycles of cyc_lpc (mu = -1, r = 1, T = pi) with a decoupled direction
+# w' = nu w. The cycle has the multipliers 1 (twice, the fold) and exp(nu T), so the product
+# over the multipliers other than the pair at 1 is exp(nu T) - 1, which changes sign at
+# nu = 0 (a further multiplier at +1). Own test model.
+par mu=0,nu=0
+s=x^2+y^2
+P=mu+2*s-s^2
+Om=1+s
+x'=x*P-y*Om
+y'=y*P+x*Om
+w'=nu*w
+init x=1,y=0,w=0
+done
