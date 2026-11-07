@@ -95,6 +95,10 @@ fn a_missing_device_is_not_a_pass() {
 #[test]
 fn a_backend_that_is_not_built_has_no_device() {
     for b in [Backend::Cuda, Backend::OpenCl, Backend::Metal] {
+        // The Metal backend is built on macOS, where it finds a device.
+        if cfg!(target_os = "macos") && b == Backend::Metal {
+            continue;
+        }
         let e = run_selftest(Selected {
             backend: b,
             device: 0,

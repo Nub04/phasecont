@@ -262,8 +262,17 @@ fn the_bench_labels_every_row() {
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
     assert!(v["model"].as_str().unwrap().contains("van der Pol"));
-    let rows = v["rows"].as_array().unwrap();
-    // The CPU device, both precisions, two sizes.
+    let all = v["rows"].as_array().unwrap();
+    // Every row names its backend, and a row the device cannot run says why.
+    for r in all {
+        assert!(r["backend"].is_string() && r["device"].is_string(), "{r}");
+        assert!(r["precision"].is_string(), "{r}");
+        if r.get("skipped").is_some() {
+            assert_ne!(r["backend"], "cpu", "{r}");
+        }
+    }
+    // The CPU device, both precisions, two sizes. A macOS build adds Metal rows.
+    let rows: Vec<&Value> = all.iter().filter(|r| r["backend"] == "cpu").collect();
     assert_eq!(rows.len(), 4, "{v}");
     for r in rows {
         assert_eq!(r["backend"], "cpu");

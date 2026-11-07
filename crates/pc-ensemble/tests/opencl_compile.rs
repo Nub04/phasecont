@@ -56,6 +56,14 @@ fn check(src: &str, name: &str) -> Result<Option<()>, String> {
     }
 }
 
+/// Whether this clang accepts `double` in OpenCL C. Apple's clang ignores `cl_khr_fp64`
+/// and rejects every double kernel, so the F64 variants cannot be checked there.
+fn clang_has_fp64() -> bool {
+    let src = "#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n\
+               __kernel void probe(__global double *p) { p[0] = 1.0; }\n";
+    matches!(check(src, "fp64-probe"), Ok(Some(())))
+}
+
 fn kernel(model: &str, i: Integrator, s: Scalar) -> String {
     let tape = Tape::build(&build_model(model)).expect("tape");
     kernel_source(&tape, i, s, Dialect::OpenCl).expect("kernel source")
@@ -63,8 +71,16 @@ fn kernel(model: &str, i: Integrator, s: Scalar) -> String {
 
 #[test]
 fn every_model_and_variant_parses_as_opencl_c() {
+    let fp64 = clang_has_fp64();
     for (n, model) in [DECAY, VDP, OSC, MIXED].into_iter().enumerate() {
         for (i, s) in VARIANTS {
+            if s == Scalar::F64 && !fp64 {
+                skip_gpu(
+                    "clang-opencl",
+                    "this clang has no cl_khr_fp64, so F64 is not checked",
+                );
+                continue;
+            }
             let src = kernel(model, i, s);
             match check(&src, &format!("m{n}-{i:?}-{s:?}")) {
                 Ok(Some(())) => {}
