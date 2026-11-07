@@ -40,13 +40,14 @@
 //!   `2 i omega`), and the locator drops a sign change through a pole (`POLE_TOL`).
 //! * `HH`, only when the run is asked for it (`HopfExtras::hh`, SPEC section 8k): the real
 //!   part of the largest root with a positive imaginary part that is not the critical root.
-//!   It is NaN for `sqrt(kappa) <= OMEGA_MIN`, where the pair at `+-i omega` cannot be told
-//!   from a real double root, and where the roots are not available.
+//!   It is NaN for `sqrt(kappa)` below `hh_omega_floor`, near a Bogdanov-Takens point, where
+//!   the pair at `+-i omega` is lost to rounding or to the root finder, and where the roots
+//!   are not available.
 
 use super::eq::{check_params, check_state, field, linearize};
 use super::lyap::lyapunov;
 use super::lyap2::lyapunov2;
-use super::roots::{CharRoot, LinearDde, RootOptions, RootSet, characteristic_roots};
+use super::roots::{CharRoot, LinearDde, RootOptions, RootSet, SHIFT, characteristic_roots};
 use crate::branch::{Options, Point, StopReason};
 use crate::curve2::start_tangent;
 use crate::error::EngineError;
@@ -76,6 +77,33 @@ const CRIT_TOL: f64 = 1e-6;
 /// Smallest `omega` that a start may have. Below it the split into `a` and `b` is badly
 /// scaled.
 const OMEGA_MIN: f64 = 1e-8;
+
+/// Margin on the sizes below which the pair at `+-i omega` is lost near a Bogdanov-Takens
+/// point. The constant has no source (SPEC section 8k).
+const COLLAPSE_MARGIN: f64 = 10.0;
+
+/// The `omega` below which the HH test is not defined for the linearization `lin` (SPEC section
+/// 8k). Near a Bogdanov-Takens point the matrices have a nilpotent part of size `s`, the
+/// largest entry of `A_0` and of every `A_j` (at least 1). Two things lose the pair there:
+///
+/// - One rounding of a matrix entry shifts `omega^2` by about `eps s^2`, so a pair with `omega`
+///   near `sqrt(eps) s` is read as two real roots.
+/// - The root finder starts its Newton iteration from a vector found by inverse iteration at a
+///   point `SHIFT` from the root. The matrix there has a condition number near `s / omega`, so
+///   the factorization is singular once `SHIFT omega / s^2` is near `eps`, that is for `omega`
+///   below about `eps s^2 / SHIFT`, and the pair is reported as unrefined.
+///
+/// The floor is `COLLAPSE_MARGIN` times the larger of the two sizes.
+fn hh_omega_floor(lin: &LinearDde) -> f64 {
+    let s = lin
+        .a0
+        .iter()
+        .chain(lin.delays.iter().flat_map(|(_, a)| a.iter()))
+        .fold(1.0_f64, |m, v| m.max(v.abs()));
+    let rounding = f64::EPSILON.sqrt() * s;
+    let inverse_iteration = f64::EPSILON * s * s / SHIFT;
+    COLLAPSE_MARGIN * rounding.max(inverse_iteration)
+}
 
 /// Below this size of `kappa tau^2` the series of `cosk` and `sink` replace the closed forms.
 const SERIES: f64 = 1e-8;
@@ -314,22 +342,31 @@ impl HopfProblem<'_> {
     }
 
     /// The Hopf-Hopf test `h` at `x` (SPEC section 8k): the real part of the second pair when
-    /// there is exactly one critical root, NaN for `kappa <= 0`, without the option, and where
-    /// the roots fail or the critical root is not single (both counted).
+    /// there is exactly one critical root, NaN for `kappa <= 0`, without the option, for
+    /// `sqrt(kappa)` below `hh_omega_floor` (near a Bogdanov-Takens point), and where the roots
+    /// fail or the critical root is not single (both counted).
     fn hh_at(&mut self, x: &[f64]) -> f64 {
         let Some(ro) = self.hh else {
             return f64::NAN;
         };
         let kappa = x[3 * self.n + 1];
-        // Below omega_min the pair at +-i omega cannot be told from a real double root, so
-        // the test is not defined there. The locator probes kappa near 1e-17 at a BT point.
+        // The locator probes kappa near 1e-17 at a BT point, where nothing can be linearized.
         if kappa.is_nan() || kappa <= 0.0 || kappa.sqrt() <= OMEGA_MIN {
             return f64::NAN;
         }
-        let set = match self
-            .lin_at(x)
-            .and_then(|(_, lin)| characteristic_roots(&lin, &ro))
-        {
+        let lin = match self.lin_at(x) {
+            Ok((_, lin)) => lin,
+            Err(_) => {
+                self.hh_lost += 1;
+                return f64::NAN;
+            }
+        };
+        // Near BT the pair at +-i omega is lost to rounding or to the root finder, which says
+        // nothing about a second crossing, so the test is not defined there and not counted.
+        if kappa.sqrt() <= hh_omega_floor(&lin) {
+            return f64::NAN;
+        }
+        let set = match characteristic_roots(&lin, &ro) {
             Ok(s) => s,
             Err(_) => {
                 self.hh_lost += 1;
@@ -870,5 +907,55 @@ mod tests {
         p.jacobian(&x, &mut jac).unwrap();
         assert!((jac[3 + 5] - 1.0).abs() < 1e-9);
         assert!((jac[4 + 5 * 2] - 1.0).abs() < 1e-9);
+    }
+
+    /// The pair at `+-i omega` of `x'' = -omega^2 x` with entries of size `s`, where the
+    /// `(2, 1)` entry carries an error of `k` times `eps s`, the size of one rounding of a sum
+    /// of terms of size `s`.
+    fn pair_with_rounding(s: f64, omega: f64, k: f64) -> LinearDde {
+        LinearDde {
+            dim: 2,
+            a0: vec![0.0, s, -(omega * omega) / s + k * f64::EPSILON * s, 0.0],
+            delays: vec![(1.0, vec![0.0; 4])],
+        }
+    }
+
+    #[test]
+    fn the_hh_floor_is_above_the_sizes_where_the_pair_is_lost() {
+        let ro = RootOptions {
+            n: 30,
+            re_min: -3.0,
+        };
+        for s in [1.0, 10.0, 1e3] {
+            let floor = hh_omega_floor(&pair_with_rounding(s, 1.0, 0.0));
+            assert!(floor > OMEGA_MIN, "s = {s}: floor {floor:e}");
+            // Above the floor, up to a factor 10, a rounding error of up to 4 units in one
+            // entry neither merges the pair nor stops the root finder from refining it.
+            for e in 0..20 {
+                let w = floor * 1.000_1 * 10f64.powf(e as f64 * 0.05);
+                for k in [-4.0, -1.0, 1.0, 4.0] {
+                    let set = characteristic_roots(&pair_with_rounding(s, w, k), &ro).unwrap();
+                    assert_eq!(
+                        hopf_pairs(&set, w).critical,
+                        1,
+                        "s = {s}, omega = {w:e}, k = {k}"
+                    );
+                }
+            }
+            // Below it the pair is lost for some omega, so the floor is not vacuous.
+            let lost = (0..120).any(|e| {
+                let w = floor * 10f64.powf(-(e as f64) * 0.1);
+                [1.0, 4.0].iter().any(|&k| {
+                    let set = characteristic_roots(&pair_with_rounding(s, w, k), &ro).unwrap();
+                    hopf_pairs(&set, w).critical != 1
+                })
+            });
+            assert!(lost, "s = {s}: the pair is never lost below {floor:e}");
+        }
+        // The floor follows the largest entry of a0 and of every delayed matrix.
+        let mut lin = pair_with_rounding(1.0, 1.0, 0.0);
+        lin.delays[0].1[3] = 100.0;
+        let expected = hh_omega_floor(&pair_with_rounding(100.0, 1.0, 0.0));
+        assert_eq!(hh_omega_floor(&lin), expected);
     }
 }

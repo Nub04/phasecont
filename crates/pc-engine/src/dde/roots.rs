@@ -22,7 +22,7 @@ const DEDUPE_TOL: f64 = 1e-11;
 /// Starts with real part down to `re_min - START_SLACK (1 + |re_min|)` are refined.
 const START_SLACK: f64 = 1e-6;
 /// Shift of the inverse iteration, relative to `1 + |lambda|`.
-const SHIFT: f64 = 1e-8;
+pub(super) const SHIFT: f64 = 1e-8;
 
 /// A linear delay equation `x' = A_0 x + sum_j A_j x(t - tau_j)` with real `dim`-square
 /// matrices stored row-major.
