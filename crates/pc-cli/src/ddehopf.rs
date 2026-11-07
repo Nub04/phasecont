@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicBool;
 
 use pc_engine::{
     DdeHopfBranch, DdeHopfSetup, EngineError, Evaluator, Options, StopReason, build_dde,
-    dde_continue_hopf,
+    dde_continue_hopf, dde_continue_hopf_with_lyapunov,
 };
 use pckern::json::problem::parse_options;
 use serde_json::{Map, Value, json};
@@ -32,6 +32,8 @@ struct Problem {
     free: [String; 2],
     x0: Vec<f64>,
     omega: f64,
+    /// Compute the first Lyapunov coefficient at every point and label GH (off by default).
+    lyapunov: bool,
     opts: Options,
 }
 
@@ -110,7 +112,12 @@ pub fn dde_hopf(problem_file: &Path) -> ExitCode {
         omega: problem.omega,
     };
     let cancel = AtomicBool::new(false);
-    let branch = match dde_continue_hopf(&mut model, &setup, &problem.opts, &cancel) {
+    let run = if problem.lyapunov {
+        dde_continue_hopf_with_lyapunov
+    } else {
+        dde_continue_hopf
+    };
+    let branch = match run(&mut model, &setup, &problem.opts, &cancel) {
         Ok(b) => b,
         Err(e) => return engine_error(&e, &shown.to_string()),
     };
@@ -121,17 +128,24 @@ pub fn dde_hopf(problem_file: &Path) -> ExitCode {
     {
         to_stderr(&format!("pc-cli: {e}\n"));
     }
-    let mut text = branch_json(&branch).to_string();
+    let mut text = branch_json(&branch, problem.lyapunov).to_string();
     text.push('\n');
     out(&text, 0)
 }
 
-/// The output object of SPEC section 8f.
-fn branch_json(branch: &DdeHopfBranch) -> Value {
+/// The output object of SPEC sections 8f and 8g-2. A point carries `l1` only when the
+/// problem asked for it, so a run without `lyapunov` prints what it printed before.
+fn branch_json(branch: &DdeHopfBranch, lyapunov: bool) -> Value {
     let points: Vec<Value> = branch
         .points
         .iter()
-        .map(|p| json!({"alpha": p.alpha, "x": p.x, "kappa": p.kappa, "omega": p.omega}))
+        .map(|p| {
+            let mut point = json!({"alpha": p.alpha, "x": p.x, "kappa": p.kappa, "omega": p.omega});
+            if lyapunov {
+                point["l1"] = json!(p.l1);
+            }
+            point
+        })
         .collect();
     let specials: Vec<Value> = branch
         .specials
@@ -198,7 +212,9 @@ fn read_problem(value: &Value) -> Result<Problem, String> {
         .ok_or_else(|| "the problem must be a JSON object".to_string())?;
     check_keys(
         obj,
-        &["model", "params", "free", "x0", "omega", "options"],
+        &[
+            "model", "params", "free", "x0", "omega", "lyapunov", "options",
+        ],
         "problem",
     )?;
     let model = required(obj, "model", "problem")?
@@ -218,6 +234,12 @@ fn read_problem(value: &Value) -> Result<Problem, String> {
         .map(|v| number(v, "x0"))
         .collect::<Result<Vec<f64>, String>>()?;
     let omega = number(required(obj, "omega", "problem")?, "omega")?;
+    let lyapunov = match obj.get("lyapunov") {
+        None => false,
+        Some(v) => v
+            .as_bool()
+            .ok_or_else(|| "\"lyapunov\" must be true or false".to_string())?,
+    };
     let opts = match obj.get("options") {
         None => Options::default(),
         Some(v) => {
@@ -231,6 +253,7 @@ fn read_problem(value: &Value) -> Result<Problem, String> {
         free,
         x0,
         omega,
+        lyapunov,
         opts,
     })
 }
@@ -266,6 +289,10 @@ mod tests {
         assert_eq!(p.free, ["r".to_string(), "tau".to_string()]);
         assert_eq!(p.x0, [1.0]);
         assert_eq!(p.omega, 1.5);
+        assert!(
+            !p.lyapunov,
+            "lyapunov is off unless the problem asks for it"
+        );
         assert_eq!(p.opts.hmax, 0.05);
         assert_eq!(p.opts.bounds, (0.5, 3.0));
     }
@@ -314,6 +341,22 @@ mod tests {
             assert!(msg.contains(key), "{text}: {msg}");
         }
         assert!(read("[1]").unwrap_err().contains("JSON object"));
+    }
+
+    #[test]
+    fn lyapunov_is_a_boolean() {
+        let on = GOOD.replace("\"omega\":1.5,", "\"omega\":1.5,\"lyapunov\":true,");
+        assert!(read(&on).unwrap().lyapunov);
+        let off = GOOD.replace("\"omega\":1.5,", "\"omega\":1.5,\"lyapunov\":false,");
+        assert!(!read(&off).unwrap().lyapunov);
+        for bad in ["1", "\"yes\"", "null", "[true]"] {
+            let text = GOOD.replace(
+                "\"omega\":1.5,",
+                &format!("\"omega\":1.5,\"lyapunov\":{bad},"),
+            );
+            let msg = read(&text).unwrap_err();
+            assert!(msg.contains("\"lyapunov\""), "{bad}: {msg}");
+        }
     }
 
     #[test]

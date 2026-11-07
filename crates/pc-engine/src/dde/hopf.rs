@@ -34,8 +34,13 @@
 //! * `BT`: `kappa`. It changes sign where the Hopf pair meets zero.
 //! * `ZH`: `det Delta(0) = det(-(A_0 + sum_j A_j))`, for `kappa > 0` only. A sign change is
 //!   a real root through zero while the Hopf pair is at `+-i omega`.
+//! * `GH`, only when the run is asked for it (`continue_hopf_with_lyapunov`, SPEC section
+//!   8g-2): the first Lyapunov coefficient `l1` of `lyapunov`, for `kappa > 0` only, NaN where
+//!   `lyapunov` refuses the point. It has poles at BT, ZH and at a 1:2 resonance (a root at
+//!   `2 i omega`), and the locator drops a sign change through a pole (`POLE_TOL`).
 
 use super::eq::{check_params, check_state, field, linearize};
+use super::lyap::lyapunov;
 use super::roots::LinearDde;
 use crate::branch::{Options, Point, StopReason};
 use crate::curve2::start_tangent;
@@ -49,6 +54,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Codim-2 labels of the Hopf curve of a delay equilibrium, in the order of the tests.
 const LABELS: [&str; 2] = ["BT", "ZH"];
+
+/// `LABELS` and the generalized Hopf test, for a run that computes `l1`.
+const LABELS_L1: [&str; 3] = ["BT", "ZH", "GH"];
 
 /// Smallest `omega` that a start may have. Below it the split into `a` and `b` is badly
 /// scaled.
@@ -81,12 +89,15 @@ pub struct DdeHopfPoint {
     pub kappa: f64,
     /// `sqrt(kappa)` for `kappa > 0`, else `None`.
     pub omega: Option<f64>,
+    /// The first Lyapunov coefficient, `None` unless the run was asked for it
+    /// (`continue_hopf_with_lyapunov`) and `lyapunov` accepts the point.
+    pub l1: Option<f64>,
 }
 
 /// A codim-2 point of the curve.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DdeHopfSpecial {
-    /// `BT` or `ZH`.
+    /// `BT` or `ZH`, and `GH` in a run that computes `l1`.
     pub label: &'static str,
     pub alpha: [f64; 2],
     pub x: Vec<f64>,
@@ -179,6 +190,8 @@ struct HopfProblem<'a> {
     params: Vec<f64>,
     /// The fixed vector of the normalization.
     c: Vec<f64>,
+    /// Whether the codim-2 tests include `l1`.
+    lyapunov: bool,
 }
 
 impl HopfProblem<'_> {
@@ -197,6 +210,22 @@ impl HopfProblem<'_> {
         check_params(self.m, &p).map_err(step_failure)?;
         let lin = linearize(self.m, &x[..n], &p)?;
         Ok((p, lin))
+    }
+
+    /// `l1` at `x`; NaN for `kappa <= 0` and where `lyapunov` refuses the point: `omega`
+    /// near 0, a null pair that does not normalise, or a singular `Delta(2 i omega)` or
+    /// `Delta(0)`.
+    fn l1_at(&mut self, x: &[f64]) -> f64 {
+        let n = self.n;
+        let kappa = x[3 * n + 1];
+        if kappa.is_nan() || kappa <= 0.0 {
+            return f64::NAN;
+        }
+        let p = self.declared(x[3 * n], x[3 * n + 2]);
+        match lyapunov(self.m, &x[..n], &p, kappa.sqrt()) {
+            Ok(l) => l.l1,
+            Err(_) => f64::NAN,
+        }
     }
 
     /// `det Delta(0)`; 0 when the matrix is numerically singular.
@@ -272,7 +301,7 @@ impl Problem for HopfProblem<'_> {
     }
 
     fn codim2_labels(&self) -> &'static [&'static str] {
-        &LABELS
+        if self.lyapunov { &LABELS_L1 } else { &LABELS }
     }
 
     fn codim2_tests(
@@ -287,7 +316,11 @@ impl Problem for HopfProblem<'_> {
         } else {
             f64::NAN
         };
-        Ok(vec![kappa, zh])
+        let mut tests = vec![kappa, zh];
+        if self.lyapunov {
+            tests.push(self.l1_at(x));
+        }
+        Ok(tests)
     }
 }
 
@@ -383,6 +416,29 @@ pub fn continue_hopf(
     opts: &Options,
     cancel: &AtomicBool,
 ) -> Result<DdeHopfBranch, EngineError> {
+    run_hopf(model, setup, opts, cancel, false)
+}
+
+/// `continue_hopf` that also computes the first Lyapunov coefficient at every point with
+/// `kappa > 0` (`DdeHopfPoint::l1`, `None` elsewhere) and labels a zero of it `GH`, a
+/// generalized Hopf point (SPEC section 8g-2). The curve, `BT` and `ZH` are those of
+/// `continue_hopf`.
+pub fn continue_hopf_with_lyapunov(
+    model: &mut DdeModel,
+    setup: &HopfSetup,
+    opts: &Options,
+    cancel: &AtomicBool,
+) -> Result<DdeHopfBranch, EngineError> {
+    run_hopf(model, setup, opts, cancel, true)
+}
+
+fn run_hopf(
+    model: &mut DdeModel,
+    setup: &HopfSetup,
+    opts: &Options,
+    cancel: &AtomicBool,
+    lyapunov: bool,
+) -> Result<DdeHopfBranch, EngineError> {
     if cancel.load(Ordering::Relaxed) {
         return Err(EngineError::Cancelled);
     }
@@ -395,6 +451,7 @@ pub fn continue_hopf(
         free: setup.free,
         params: setup.params.clone(),
         c,
+        lyapunov,
     };
     // Newton at fixed a2 on the square system: the Jacobian without its last column.
     let ns = 3 * n + 2;
@@ -449,12 +506,14 @@ pub fn continue_hopf(
         x: p.u[..n].to_vec(),
         kappa: p.u[3 * n + 1],
         omega: (p.u[3 * n + 1] > 0.0).then(|| p.u[3 * n + 1].sqrt()),
+        l1: p.codim2.get(2).copied().filter(|v| v.is_finite()),
     };
+    let labels: &[&str] = if lyapunov { &LABELS_L1 } else { &LABELS };
     let specials = branch
         .specials
         .iter()
         .filter_map(|s| {
-            let label = LABELS.iter().copied().find(|l| *l == s.label)?;
+            let label = labels.iter().copied().find(|l| *l == s.label)?;
             let p = point_of(&s.point);
             Some(DdeHopfSpecial {
                 label,
@@ -546,6 +605,7 @@ mod tests {
             free: [0, 1],
             params: vec![r, 1.0],
             c: vec![1.0],
+            lyapunov: false,
         };
         let x = [1.0, 1.0, 0.0, r, r * r, 1.0];
         let mut f = [0.0; 5];

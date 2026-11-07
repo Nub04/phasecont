@@ -44,8 +44,10 @@ pub use dde::{
     CharRoot, DdeBranch, DdeHopfBranch, DdeHopfPoint, DdeHopfSpecial, DdePoint, DdeSpecial,
     HopfSetup as DdeHopfSetup, LinearDde, Lyapunov as DdeLyapunov, RootOptions, RootSet,
     characteristic_roots, continue_equilibrium as dde_continue_equilibrium,
-    continue_hopf as dde_continue_hopf, equilibrium as dde_equilibrium, linearize as dde_linearize,
-    lyapunov as dde_lyapunov, residual as dde_residual, stability as dde_stability,
+    continue_hopf as dde_continue_hopf,
+    continue_hopf_with_lyapunov as dde_continue_hopf_with_lyapunov, equilibrium as dde_equilibrium,
+    linearize as dde_linearize, lyapunov as dde_lyapunov, residual as dde_residual,
+    stability as dde_stability,
 };
 pub use ep::{EpProblem, EpSetup, continue_ep, equilibrium};
 pub use error::EngineError;

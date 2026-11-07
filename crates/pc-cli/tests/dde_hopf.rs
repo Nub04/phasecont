@@ -202,6 +202,76 @@ fn bad_problem_files_exit_two_and_name_the_key() {
     assert!(bad("mesh.json", &mesh).contains("options.mesh_adapt"));
     let bad_option = good.replace(r#""hmax":0.05"#, r#""hmax":-1"#);
     assert!(bad("option.json", &bad_option).contains("options.hmax"));
+    let lyap = good.replace(r#""omega":1.57,"#, r#""omega":1.57,"lyapunov":1,"#);
+    assert!(bad("lyapunov_type.json", &lyap).contains("\"lyapunov\""));
+}
+
+// ---- The opt-in first Lyapunov coefficient (SPEC 8g-2) ----
+//
+// u' = -a u(t - 1) (1 + u) + b u^3 has the Hopf line a = pi/2, omega = pi/2 for every b,
+// and l1(b) = l1(0) + 6 b / (pi (1 + pi^2/4)) with l1(0) = -0.21413092244177392. The
+// generalized Hopf point is at b = 0.38875...
+
+const WRIGHT3: &str = "par a=1.5, b=0\nu'=-a*delay(u,1)*(1+u)+b*u^3\ndone\n";
+const L1_AT_ZERO: f64 = -0.214_130_922_441_773_92;
+
+fn wright3(extra: &str) -> String {
+    write("wright3.ode", WRIGHT3);
+    format!(
+        r#"{{"model":"wright3.ode","params":{{"a":1.57,"b":0.0}},"free":["a","b"],
+            "x0":[0.001],"omega":1.57,{extra}
+            "options":{{"direction":1,"hmax":0.05,"max_steps":400,"bounds":[-1.0,1.0],
+                       "tol_x":1e-12,"tol_f":1e-12,"max_newton":20}}}}"#
+    )
+}
+
+#[test]
+fn lyapunov_adds_l1_to_every_point_and_labels_gh() {
+    let slope = 6.0 / (std::f64::consts::PI * (1.0 + std::f64::consts::PI.powi(2) / 4.0));
+    let file = write("wright3_on.json", &wright3(r#""lyapunov":true,"#));
+    let o = run(&scratch(), &["dde-hopf", &file]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+    assert_eq!(v["stop"], "bounds", "{}", stderr(&o));
+    let points = v["points"].as_array().unwrap();
+    assert!(points.len() > 20, "{} points", points.len());
+    for p in points {
+        let b = num(&p["alpha"][1]);
+        let want = L1_AT_ZERO + slope * b;
+        assert!((num(&p["l1"]) - want).abs() <= 1e-7, "{p}");
+    }
+    let specials = v["specials"].as_array().unwrap();
+    assert_eq!(specials.len(), 1, "{v}");
+    let gh = &specials[0];
+    assert_eq!(gh["label"], "GH");
+    assert!(
+        (num(&gh["alpha"][1]) + L1_AT_ZERO / slope).abs() <= 1e-6,
+        "{gh}"
+    );
+    assert!(
+        (num(&gh["alpha"][0]) - std::f64::consts::FRAC_PI_2).abs() <= 1e-8,
+        "{gh}"
+    );
+}
+
+#[test]
+fn without_lyapunov_the_output_has_no_l1_and_false_equals_absent() {
+    let absent = write("wright3_absent.json", &wright3(""));
+    let off = write("wright3_off.json", &wright3(r#""lyapunov":false,"#));
+    let a = run(&scratch(), &["dde-hopf", &absent]);
+    let b = run(&scratch(), &["dde-hopf", &off]);
+    assert_eq!(code(&a), 0, "{}", stderr(&a));
+    assert_eq!(code(&b), 0, "{}", stderr(&b));
+    assert_eq!(
+        stdout(&a),
+        stdout(&b),
+        "false must print what an absent key prints"
+    );
+    let v: Value = serde_json::from_str(&stdout(&a)).unwrap();
+    assert!(v["specials"].as_array().unwrap().is_empty(), "{v}");
+    for p in v["points"].as_array().unwrap() {
+        assert!(p.get("l1").is_none(), "{p}");
+    }
 }
 
 #[test]

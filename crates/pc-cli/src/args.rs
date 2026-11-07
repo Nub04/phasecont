@@ -529,7 +529,8 @@ omega and the values of both parameters in params. The command polishes it with 
 method and follows the curve of Hopf points in the plane of the two parameters. On the
 way it labels BT, where omega^2 changes sign (Bogdanov-Takens), and ZH, where the
 characteristic function has a zero root as well (zero-Hopf). It does not count the roots
-to the right of the curve. dde-lyap computes the first Lyapunov coefficient at one point.
+to the right of the curve. dde-lyap computes the first Lyapunov coefficient at one point,
+and the key lyapunov below does it at every point of the curve.
 
 The problem file is a JSON object. Every key but options is required:
   model    path of the .ode file, relative to the problem file
@@ -538,14 +539,18 @@ The problem file is a JSON object. Every key but options is required:
   free     array of two different declared parameter names, [first, second]
   x0       start values of Newton's method for the state, one per state
   omega    start value of the angular frequency, above 1e-8
+  lyapunov optional boolean, false if left out. true adds \"l1\" to every point and
+           labels GH (generalized Hopf), where l1 changes sign. l1 is null where kappa
+           is not above 0 or where dde-lyap would refuse the point. Each point then
+           costs one more solve
   options  optional; the keys of the cont problem files: h0, hmin, hmax, max_steps,
            tol_x, tol_f, max_newton, direction, bounds. bounds limits the second name
            in free, and a delay time there needs a lower bound above 0. detect and
            mesh_adapt are refused
 
 The output is {\"stop\", \"points\", \"specials\", \"warnings\"}. A point is {\"alpha\",
-\"x\", \"kappa\", \"omega\"}, where alpha is [first, second], kappa is omega^2 and
-\"omega\" is null where kappa is not above 0. A special is {\"label\", \"alpha\", \"x\",
+\"x\", \"kappa\", \"omega\"} plus \"l1\" when lyapunov is true, where alpha is [first,
+second], kappa is omega^2 and \"omega\" is null where kappa is not above 0. A special is {\"label\", \"alpha\", \"x\",
 \"kappa\", \"index\"}, in order along the curve. \"stop\" is one of end, max_steps, bounds,
 step_too_small, singular, cancelled and error, as for cont.
 
