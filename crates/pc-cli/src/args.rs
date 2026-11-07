@@ -702,7 +702,8 @@ piecewise polynomial of degree ncol on ntst intervals, fixed by Gauss collocatio
 Newton's method solves for the orbit, its period and one declared parameter in free. The
 phase condition is an integral condition against the start profile. The system has
 (ntst*ncol+1)*n + 2 unknowns, at most 3000. The command does not follow the orbit along a
-branch, compute Floquet multipliers or label points.
+branch or label points. With the floquet key it also prints the leading Floquet multipliers
+of the corrected orbit.
 
 The problem file is a JSON object. Every key but options is required:
   model    path of the .ode file, relative to the problem file
@@ -716,6 +717,8 @@ The problem file is a JSON object. Every key but options is required:
   hopf     a start from a Hopf point, given as an object {\"x0\", \"omega\", \"eps\"}.
            Give exactly one of orbit and hopf
   options  optional; only max_newton, tol_x and tol_f are read. Any other key is refused
+  floquet  optional; an object {\"nhist\", \"count\"}, both integers of at least 1, that
+           asks for the multipliers. There is no default and the key is off without it
 
 orbit.profile holds the state at ntst*ncol+1 equally spaced points of one period, point
 after point with n values each. orbit.period is the start period. hopf.x0 is the
@@ -728,6 +731,15 @@ that omega is a root.
 The output is {\"alpha\", \"period\", \"iters\", \"residual\", \"ntst\", \"ncol\", \"profile\"},
 where alpha is the value of the free parameter, iters is the number of Newton steps and
 residual is the largest entry of the final residual vector.
+
+With floquet, the output also has \"multipliers\", an array of [re, im] pairs, and
+\"trivial_error\". The history of the delay equation is stored at nhist+1 Chebyshev points,
+which gives n*(nhist+1) multipliers, and count of them are printed, largest modulus first
+(1 <= count <= n*(nhist+1), and ncol*n*(nhist+1) at most 1000). A cut can fall inside a
+conjugate pair. The multipliers of small modulus come from the discretization and mean
+nothing. trivial_error is the distance of the multiplier nearest to 1 from 1, which is the
+multiplier that every periodic orbit has, so it measures the discretization error.
+The multipliers are taken at the corrected value of the free parameter.
 
 options:
   --          the next argument is the file, even if it starts with `-`

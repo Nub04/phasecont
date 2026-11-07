@@ -1,5 +1,6 @@
 //! The `dde-cycle` command: correct a periodic orbit of a model with `delay(x,tau)` calls
-//! by collocation, from a given orbit or from a Hopf point (SPEC section 8l).
+//! by collocation, from a given orbit or from a Hopf point (SPEC section 8l), and with the
+//! optional `floquet` key print the leading Floquet multipliers of the result (section 8m).
 //!
 //! The problem file is read by hand from a `serde_json::Value`, as for `dde-hopf`, and the
 //! model is loaded through the same `load_dde`. The corrector reads only `max_newton`,
@@ -11,8 +12,9 @@ use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 
 use pc_engine::{
-    DdeCycle, DdeCycleSetup, DdeCycleStart, DdeHopfCycle, Evaluator, Options, build_dde,
-    dde_correct_cycle, dde_hopf_cycle,
+    DdeCycle, DdeCycleSetup, DdeCycleStart, DdeFloquet, DdeFloquetOptions, DdeHopfCycle,
+    EngineError, Evaluator, Options, build_dde, dde_correct_cycle, dde_floquet_multipliers,
+    dde_hopf_cycle,
 };
 use pckern::json::problem::parse_options;
 use serde_json::{Value, json};
@@ -45,6 +47,8 @@ struct Problem {
     ncol: usize,
     start: Start,
     opts: Options,
+    /// The multipliers to print, when the problem asks for them.
+    floquet: Option<DdeFloquetOptions>,
 }
 
 /// `dde-cycle`: reads the problem, runs the corrector and prints the orbit. See
@@ -123,14 +127,45 @@ pub fn dde_cycle(problem_file: &Path) -> ExitCode {
             dde_hopf_cycle(&mut model, &setup, &hopf, &problem.opts, &cancel)
         }
     };
-    match result {
-        Ok(cycle) => {
-            let mut text = cycle_json(&cycle, problem.ntst, problem.ncol).to_string();
-            text.push('\n');
-            out(&text, 0)
+    let cycle = match result {
+        Ok(c) => c,
+        Err(e) => return engine_error(&e, &shown.to_string()),
+    };
+    let mut value = cycle_json(&cycle, problem.ntst, problem.ncol);
+    if let Some(options) = &problem.floquet {
+        // The multipliers belong to the orbit that the corrector returned, at its parameter.
+        let mut at = setup;
+        at.params[free] = cycle.alpha;
+        let orbit = DdeCycleStart {
+            profile: cycle.profile.clone(),
+            period: cycle.period,
+        };
+        match dde_floquet_multipliers(&mut model, &at, &orbit, options, &cancel) {
+            Ok(f) => add_floquet(&mut value, &f),
+            // The orbit passed the checks of the corrector, so what is left is the options.
+            Err(EngineError::BadProblem(msg)) => {
+                return engine_error(
+                    &EngineError::BadProblem(format!("floquet: {msg}")),
+                    &shown.to_string(),
+                );
+            }
+            Err(e) => return engine_error(&e, &shown.to_string()),
         }
-        Err(e) => engine_error(&e, &shown.to_string()),
     }
+    let mut text = value.to_string();
+    text.push('\n');
+    out(&text, 0)
+}
+
+/// Adds `multipliers` (`[re, im]` pairs) and `trivial_error` to the output object.
+fn add_floquet(value: &mut Value, f: &DdeFloquet) {
+    let pairs: Vec<Value> = f
+        .multipliers
+        .iter()
+        .map(|&(re, im)| json!([re, im]))
+        .collect();
+    value["multipliers"] = Value::Array(pairs);
+    value["trivial_error"] = json!(f.trivial_error);
 }
 
 /// The output object of SPEC section 8l.
@@ -199,6 +234,27 @@ fn read_hopf(value: &Value) -> Result<Start, String> {
     Ok(Start::Hopf { x0, omega, eps })
 }
 
+/// Reads the `floquet` object: `nhist` and `count`, both required integers of at least 1.
+/// Their upper limits depend on the model and are checked by the engine.
+fn read_floquet(value: &Value) -> Result<DdeFloquetOptions, String> {
+    let obj = value.as_object().ok_or_else(|| {
+        "\"floquet\" must be an object with the keys \"nhist\" and \"count\"".to_string()
+    })?;
+    check_keys(obj, &["nhist", "count"], "\"floquet\"")?;
+    let named = |e: String| format!("\"floquet\": {e}");
+    let at_least_one = |key: &str| -> Result<usize, String> {
+        let n = count(required(obj, key, "\"floquet\"")?, key).map_err(named)?;
+        if n < 1 {
+            return Err(named(format!("\"{key}\" must be at least 1")));
+        }
+        Ok(n)
+    };
+    Ok(DdeFloquetOptions {
+        nhist: at_least_one("nhist")?,
+        count: at_least_one("count")?,
+    })
+}
+
 /// Reads the problem object. The parameter names, the length of the profile and `x0` and the
 /// ranges of `ntst`, `ncol`, `omega`, `eps` and `period` are checked against the model by the
 /// engine.
@@ -209,7 +265,7 @@ fn read_problem(value: &Value) -> Result<Problem, String> {
     check_keys(
         obj,
         &[
-            "model", "params", "free", "ntst", "ncol", "orbit", "hopf", "options",
+            "model", "params", "free", "ntst", "ncol", "orbit", "hopf", "options", "floquet",
         ],
         "problem",
     )?;
@@ -244,6 +300,7 @@ fn read_problem(value: &Value) -> Result<Problem, String> {
             parse_options(v)?
         }
     };
+    let floquet = obj.get("floquet").map(read_floquet).transpose()?;
     Ok(Problem {
         model,
         params,
@@ -252,6 +309,7 @@ fn read_problem(value: &Value) -> Result<Problem, String> {
         ncol,
         start,
         opts,
+        floquet,
     })
 }
 
@@ -341,6 +399,51 @@ mod tests {
         assert!(read(&extra).unwrap_err().contains("unknown key \"nn\""));
         let inner = ORBIT.replace("\"period\":6.0", "\"period\":6.0,\"eps\":1");
         assert!(read(&inner).unwrap_err().contains("unknown key \"eps\""));
+    }
+
+    #[test]
+    fn the_floquet_key_is_optional_and_reads_both_members() {
+        assert_eq!(read(ORBIT).unwrap().floquet, None);
+        let with = ORBIT.replace(
+            "\"options\"",
+            "\"floquet\":{\"nhist\":16,\"count\":4},\"options\"",
+        );
+        assert_eq!(
+            read(&with).unwrap().floquet,
+            Some(DdeFloquetOptions {
+                nhist: 16,
+                count: 4
+            })
+        );
+        // It also works next to a Hopf start.
+        let hopf = HOPF.replace("\"hopf\"", "\"floquet\":{\"nhist\":8,\"count\":2},\"hopf\"");
+        assert_eq!(read(&hopf).unwrap().floquet.map(|f| f.count), Some(2));
+    }
+
+    #[test]
+    fn a_malformed_floquet_key_names_floquet() {
+        let at =
+            |body: &str| ORBIT.replace("\"options\"", &format!("\"floquet\":{body},\"options\""));
+        let bad = [
+            "true",
+            "null",
+            "[16,4]",
+            "\"nhist\"",
+            "{}",
+            "{\"nhist\":16}",
+            "{\"count\":4}",
+            "{\"nhist\":16,\"count\":4,\"tol\":1}",
+            "{\"nhist\":16.5,\"count\":4}",
+            "{\"nhist\":16,\"count\":2.0e0}",
+            "{\"nhist\":0,\"count\":4}",
+            "{\"nhist\":16,\"count\":0}",
+            "{\"nhist\":-1,\"count\":4}",
+            "{\"nhist\":16,\"count\":\"4\"}",
+        ];
+        for body in bad {
+            let msg = read(&at(body)).unwrap_err();
+            assert!(msg.contains("\"floquet\""), "{body}: {msg}");
+        }
     }
 
     #[test]

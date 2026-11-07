@@ -1,7 +1,8 @@
 //! Runs `pc-cli dde-cycle` on the model `x' = -x(t - tau) + mu x (1 - x^2 - x(t - tau)^2)`,
 //! which has the exact orbit x = sin t, T = 2 pi for tau = pi/2 (SPEC section 8l, test 7).
-//! The orbit and Hopf starts must give the numbers of the engine calls. Also runs the bad
-//! problem files and the run that does not converge.
+//! The orbit and Hopf starts must give the numbers of the engine calls, and so must the
+//! `floquet` key (SPEC section 8m, test 9). Also runs the bad problem files and the run
+//! that does not converge.
 
 mod common;
 
@@ -11,8 +12,8 @@ use std::sync::atomic::AtomicBool;
 
 use common::{code, run, stderr, stdout};
 use pc_engine::{
-    DdeCycleSetup, DdeCycleStart, DdeHopfCycle, Evaluator, Options, build_dde, dde_correct_cycle,
-    dde_hopf_cycle,
+    DdeCycleSetup, DdeCycleStart, DdeFloquetOptions, DdeHopfCycle, Evaluator, Options, build_dde,
+    dde_correct_cycle, dde_floquet_multipliers, dde_hopf_cycle,
 };
 use pc_ode::{MapLoader, Severity, SourceMap, load};
 use serde_json::{Value, json};
@@ -195,6 +196,185 @@ fn the_hopf_start_matches_hopf_cycle() {
     assert!((num(&v["period"]) - 2.0 * PI / OMEGA_H).abs() > 1e-6);
 }
 
+/// The problem of test 3 with the `floquet` key set to `floquet`.
+fn floquet_problem(floquet: Value) -> Value {
+    let mut p = orbit_problem(&perturbed(), 6.0);
+    p["floquet"] = floquet;
+    p
+}
+
+#[test]
+fn the_floquet_key_matches_the_engine_bit_for_bit() {
+    let start = perturbed();
+    let (status, out, err) = dde_cycle(
+        "floquet.json",
+        &floquet_problem(json!({"nhist": 16, "count": 4})),
+    );
+    assert_eq!(status, 0, "{err}");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    let mut model = engine_model();
+    let mut setup = DdeCycleSetup {
+        params: vec![0.3, TAU],
+        free: 1,
+        ntst: NTST,
+        ncol: NCOL,
+    };
+    let cancel = AtomicBool::new(false);
+    let cycle = dde_correct_cycle(
+        &mut model,
+        &setup,
+        &DdeCycleStart {
+            profile: start,
+            period: 6.0,
+        },
+        &newton_options(),
+        &cancel,
+    )
+    .expect("correct_cycle");
+    setup.params[setup.free] = cycle.alpha;
+    let want = dde_floquet_multipliers(
+        &mut model,
+        &setup,
+        &DdeCycleStart {
+            profile: cycle.profile.clone(),
+            period: cycle.period,
+        },
+        &DdeFloquetOptions {
+            nhist: 16,
+            count: 4,
+        },
+        &cancel,
+    )
+    .expect("floquet_multipliers");
+    let got = v["multipliers"].as_array().expect("multipliers");
+    assert_eq!(got.len(), 4, "{out}");
+    for (i, (g, w)) in got.iter().zip(&want.multipliers).enumerate() {
+        let pair = doubles(g);
+        assert_eq!(pair.len(), 2, "multipliers[{i}]");
+        assert_eq!(pair[0].to_bits(), w.0.to_bits(), "re[{i}]");
+        assert_eq!(pair[1].to_bits(), w.1.to_bits(), "im[{i}]");
+    }
+    assert_eq!(
+        num(&v["trivial_error"]).to_bits(),
+        want.trivial_error.to_bits(),
+        "{out}"
+    );
+    // The corrector's own numbers are still there, and the orbit is the exact one.
+    assert_eq!(num(&v["alpha"]).to_bits(), cycle.alpha.to_bits(), "{out}");
+    assert_eq!(num(&v["period"]).to_bits(), cycle.period.to_bits(), "{out}");
+    assert!(want.trivial_error <= 1e-6, "{}", want.trivial_error);
+}
+
+#[test]
+fn the_floquet_key_follows_the_parameter_that_a_hopf_start_moves() {
+    let mut p = hopf_problem(json!(0.04));
+    p["floquet"] = json!({"nhist": 12, "count": 3});
+    let (status, out, err) = dde_cycle("floquet_hopf.json", &p);
+    assert_eq!(status, 0, "{err}");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    let mut model = engine_model();
+    let mut setup = DdeCycleSetup {
+        params: vec![0.3, TAU_H],
+        free: 1,
+        ntst: NTST,
+        ncol: NCOL,
+    };
+    let cancel = AtomicBool::new(false);
+    let cycle = dde_hopf_cycle(
+        &mut model,
+        &setup,
+        &DdeHopfCycle {
+            x: vec![0.0],
+            omega: OMEGA_H,
+            eps: 0.04,
+        },
+        &newton_options(),
+        &cancel,
+    )
+    .expect("hopf_cycle");
+    // The corrector moved alpha, so the multipliers must be taken at the new value.
+    assert!(cycle.alpha != TAU_H);
+    setup.params[setup.free] = cycle.alpha;
+    let want = dde_floquet_multipliers(
+        &mut model,
+        &setup,
+        &DdeCycleStart {
+            profile: cycle.profile.clone(),
+            period: cycle.period,
+        },
+        &DdeFloquetOptions {
+            nhist: 12,
+            count: 3,
+        },
+        &cancel,
+    )
+    .expect("floquet_multipliers");
+    let got = v["multipliers"].as_array().expect("multipliers");
+    assert_eq!(got.len(), 3, "{out}");
+    for (i, (g, w)) in got.iter().zip(&want.multipliers).enumerate() {
+        let pair = doubles(g);
+        assert_eq!(pair[0].to_bits(), w.0.to_bits(), "re[{i}]");
+        assert_eq!(pair[1].to_bits(), w.1.to_bits(), "im[{i}]");
+    }
+}
+
+#[test]
+fn without_the_floquet_key_neither_field_is_printed() {
+    let (status, out, err) = dde_cycle("no_floquet.json", &orbit_problem(&perturbed(), 6.0));
+    assert_eq!(status, 0, "{err}");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+    assert!(!keys.contains(&"multipliers"), "{keys:?}");
+    assert!(!keys.contains(&"trivial_error"), "{keys:?}");
+}
+
+#[test]
+fn a_malformed_floquet_key_is_exit_2_and_names_floquet() {
+    let bad = [
+        json!(true),
+        json!(null),
+        json!([16, 4]),
+        json!("nhist"),
+        json!({}),
+        json!({"nhist": 16}),
+        json!({"count": 4}),
+        json!({"nhist": 16, "count": 4, "tol": 1}),
+        json!({"nhist": 16.5, "count": 4}),
+        json!({"nhist": 16, "count": 2.5}),
+        json!({"nhist": 0, "count": 4}),
+        json!({"nhist": 16, "count": 0}),
+        json!({"nhist": -1, "count": 4}),
+        json!({"nhist": 16, "count": "4"}),
+    ];
+    for (i, floquet) in bad.into_iter().enumerate() {
+        let shown = floquet.to_string();
+        let (status, out, err) =
+            dde_cycle(&format!("floquet_bad{i}.json"), &floquet_problem(floquet));
+        assert_eq!(status, 2, "{shown}: {err}");
+        assert!(out.is_empty(), "{shown}: {out}");
+        assert!(err.contains("floquet"), "{shown}: {err}");
+    }
+}
+
+#[test]
+fn floquet_options_the_model_cannot_take_are_exit_2_and_name_floquet() {
+    // OSC has n = 1, so count may be at most nhist + 1, and ncol * (nhist + 1) at most 1000.
+    for (i, floquet) in [
+        json!({"nhist": 2, "count": 4}),
+        json!({"nhist": 300, "count": 1}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let shown = floquet.to_string();
+        let (status, out, err) =
+            dde_cycle(&format!("floquet_range{i}.json"), &floquet_problem(floquet));
+        assert_eq!(status, 2, "{shown}: {err}");
+        assert!(out.is_empty(), "{shown}: {out}");
+        assert!(err.contains("floquet"), "{shown}: {err}");
+    }
+}
+
 #[test]
 fn both_or_neither_start_is_a_bad_problem() {
     let mut both = orbit_problem(&perturbed(), 6.0);
@@ -328,4 +508,15 @@ fn a_missing_or_invalid_file_is_exit_2() {
     let o = run(&scratch(), &["dde-cycle", &file]);
     assert_eq!(code(&o), 2, "{}", stderr(&o));
     assert!(stderr(&o).contains("invalid JSON"), "{}", stderr(&o));
+}
+
+#[test]
+fn help_lists_the_floquet_key() {
+    let o = run(&scratch(), &["dde-cycle", "--help"]);
+    assert_eq!(code(&o), 0);
+    let text = stdout(&o);
+    assert!(text.starts_with("usage: pc-cli dde-cycle"), "{text}");
+    for word in ["floquet", "nhist", "count", "multipliers", "trivial_error"] {
+        assert!(text.contains(word), "{word} missing from the help text");
+    }
 }
