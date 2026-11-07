@@ -15,7 +15,7 @@ pub enum Status {
     /// Supported, but XPPAUT 8.0 rejects it, so each use gives the
     /// portability warning (`ceil`).
     Portability,
-    /// `delay`: kept and warned about (ODE0054); only `pc-cli dde-eq` reads it.
+    /// `delay`: kept and warned about (ODE0054); only `pc-cli dde-eq`, `dde-branch` and `dde-hopf` read it.
     Delay,
     /// `shift`: kept and warned about (ODE0055).
     Shift,
@@ -96,7 +96,13 @@ pub const BUILTINS: &[Builtin] = &[
     f("poisson", 1, false, true, "manual, measured"),
     Builtin {
         status: Status::Delay,
-        ..f("delay", 2, true, false, "manual; warning, dde-eq only")
+        ..f(
+            "delay",
+            2,
+            true,
+            false,
+            "manual; warning, dde commands only",
+        )
     },
     Builtin {
         arity: None,

@@ -8,7 +8,7 @@
       "file": "unsupported.ode",
       "fix_it": null,
       "line": 3,
-      "message": "`delay` is read only by `pc-cli dde-eq`; simulation and continuation do not support it",
+      "message": "`delay` is read only by `pc-cli dde-eq`, `dde-branch` and `dde-hopf`; simulation and ODE continuation do not support it",
       "notes": [],
       "severity": "warning"
     },
