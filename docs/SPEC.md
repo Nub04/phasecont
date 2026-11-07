@@ -1135,6 +1135,7 @@ The periodicity and phase rows are linear in $u$ and have zero columns for $T$ a
 - `DdeHopfCycle { x: Vec<f64>, omega: f64, eps: f64 }`, the equilibrium, the critical frequency and the amplitude. `eps` has no default.
 - `DdeCycle { profile: Vec<f64>, period: f64, alpha: f64, iters: usize, residual: f64 }` where `residual` is the largest absolute value of the $\dim-1$ rows at the result.
 - `correct_cycle(model, setup, start, opts, cancel)` for a fixed $\alpha$ and `hopf_cycle(model, setup, hopf, opts, cancel)` for the Hopf start.
+- `cycle_residual(model, setup, reference, x)` and `cycle_jacobian(model, setup, reference, x)`, the $\dim - 1$ rows and the $(\dim-1)\times\dim$ column-major Jacobian at the unknown vector `x`, with `reference` the profile of the phase condition. Tests 1 and 2 use them. They run the same checks as the two functions above, except that they do not read `start`.
 Every check below is `BadProblem` and runs before any allocation that depends on the sizes. `check_dims` of the ODE cycles is not used, since the parameter count of a `DdeModel` is its declared one.
 - `params`: length `n_user_params` (as `check_params` of Section 8d), every value finite, and every delay time given by a parameter finite and positive; `free < n_user_params`.
 - `ntst >= 1`, `ncol` in 2 to 7, $n(Nm+1)+2 \le$ `MAX_DIM` (a product that overflows is the same error).
@@ -1156,16 +1157,52 @@ The corrector gets $\alpha$ free: the border is $v = (\varphi(s_0), \dots, \varp
 1. Jacobian against central differences (step $10^{-6}(1+|x_i|)$). `OSC` with $K = 0$, $N = 6$, $m = 3$ and with $K = 1$, $N = 5$, $m = 4$, once with `free = tau` and once with `free = mu`, and `TWO` with $N = 5$, $m = 3$ and `free = tau1` and again with `free = a`. The profile is $u_c(s) = 0.2c + 0.5\sin(2\pi s + 0.3c) + 0.1\cos(4\pi s)$ at the base points and $T = 5.3$ for `TWO` and $T = 6.1$ for `OSC` (neither is a solution). Before the comparison the test checks that every shifted point is at least $10^{-3}$ (in $s$) from a mesh node, and fails if one is not. Every entry satisfies $|J - J_{\rm fd}| \le 10^{-6}(1 + |J|)$.
 2. The residual of the exact orbit. $\tau = \pi/2$ ($K = 0$) and $5\pi/2$ ($K = 1$), $\mu = 0.3$, the profile $\sin 2\pi s_q$ and $T = 2\pi$, for $N = 10, 20, 40$ and $m = 3, 4$. The largest absolute value of the rows is at most the number in the residual table, and doubling $N$ reduces it by at least a factor $2^{m-1}$ (checked for the pairs where both values are above $10^{-13}$).
 3. Newton from a perturbed start. The profile $1.2\sin 2\pi s_q + 0.05\sin 4\pi s_q$, $T_0 = 6$, $\alpha$ fixed at $\tau$, `OSC` with $K = 0$ and $K = 1$ and the meshes of test 2. `correct_cycle` converges, and $|T - 2\pi|$ and $\max_q|u_q - \sin 2\pi s_q|$ are at most the numbers of the Newton table. The phase condition leaves a unique shift for this start (the shift $\delta$ solves $\sin 2\pi\delta = 0$), so the result is compared with $\sin 2\pi s$ with no shift. `alpha` equals the input and `residual` is at most $10^{-9}$.
-4. The Hopf start. `OSC` with $K = 0$ and the value of `tau` set to $\tau_H$ ($\mu = 0.3$), `free = tau`, $N = 20$, $m = 4$, `x = [0]`, $\omega = 0.9539392014169457$ and $\varepsilon = 0.04, 0.02, 0.01$. `hopf_cycle` converges. Let $\Delta\alpha(\varepsilon) = \alpha - \tau_H$. Then $\Delta\alpha \ne 0$, $\Delta\alpha(\varepsilon/2)/\Delta\alpha(\varepsilon)$ is within 10% of $1/4$ for both pairs, and $|T - 2\pi/\omega|$ is at most 1% of $2\pi/\omega$ for $\varepsilon = 0.01$ and falls by a factor of about 4 from $\varepsilon = 0.02$ to $0.01$ (within 25%). (These bounds are wider than the measured values by design, and the measured values are in the Hopf table. A wrong tangent or a wrong $\alpha$ column breaks the first two at once.)
+4. The Hopf start. `OSC` with $K = 0$ and the value of `tau` set to $\tau_H$ ($\mu = 0.3$), `free = tau`, $N = 20$, $m = 4$, `x = [0]`, $\omega = 0.9539392014169457$ and $\varepsilon = 0.04, 0.02, 0.01$. `hopf_cycle` converges. Let $\Delta\alpha(\varepsilon) = \alpha - \tau_H$. Then $\Delta\alpha \ne 0$, $\Delta\alpha(\varepsilon/2)/\Delta\alpha(\varepsilon)$ is within $0.005$ of $1/4$ for both pairs, and $|T - 2\pi/\omega|$ is at most $2\cdot10^{-4}$ for $\varepsilon = 0.01$ and falls by a factor within $0.1$ of 4 from $\varepsilon = 0.02$ to $0.01$. (The measured values are in the Hopf table. A wrong tangent or a wrong $\alpha$ column breaks the first two at once.)
 5. Errors. Each of these is `BadProblem` for `OSC`: `ntst` 0, `ncol` 1 and 8, `free` equal to the number of parameters, `params` of the wrong length, a NaN parameter, a delay time $0$ and $-1$ given by `tau`, a profile of the wrong length, a NaN in the profile, `period` 0, $-1$ and NaN, a problem with $\dim > 3000$ (for example `ntst` 1000, `ncol` 4), a product `ntst * ncol` that overflows, and for `hopf_cycle` an `x` of the wrong length, `omega` $\le 0$ or NaN, `eps` 0, $-0.1$, NaN and $\infty$ (the message names `eps`), and an `omega` for which $\Delta(i\omega)$ is not singular ($\omega = 2$ at $\mu = 0.3$, $\tau = \tau_H$). A set `cancel` flag gives `Cancelled`.
 6. The two evaluators. Tests 1 (the values), 3 and 4 with `Evaluator::Jit` and `Evaluator::Fallback`. The Jacobians agree to $10^{-10}(1 + |J|)$, and the converged $T$, $\alpha$ and the profile agree to $10^{-10}$.
 7. `pc-cli dde-cycle` with `OSC` ($K = 0$), `orbit` from test 3 at $N = 20$, $m = 4$ prints the same `period` and `profile` as `correct_cycle` (bit for bit, JIT), and `hopf` from test 4 prints the same `alpha` and `period` as `hopf_cycle`. The file with both `orbit` and `hopf`, with neither, with an unknown key, with a bad `eps`, and with a profile of the wrong length is exit 2. A run that does not converge (`max_newton` 1 in `options`) is exit 1.
 
-The residual table, the Newton table and the Hopf table are measured with the code (test first, then recorded here).
+The residual table, the Newton table and the Hopf table are measured with the code (test first, then recorded here). The bounds in the tests are 2.1 to 2.9 times the measured values, except the two $N = 40$, $m = 4$ bounds on $\lvert T - 2\pi\rvert$, which are $10^{-12}$ (the measured values are at the rounding level). They are measured from the code and are not derived from the order of the method. The measured values are the first run of `print_tables` (`cargo test -p pc-engine --test dde_cycle print_tables -- --ignored --nocapture`).
 
-| $K$ | $N$ | $m$ | largest residual of the exact orbit |
-|---|---|---|---|
-| (measured) | | | |
+Residual of the exact orbit (test 2). The two values of $K$ agree to $10^{-13}$, since $\tau$ differs by $2\pi$ and the shifted points are the same modulo 1.
+
+| $N$ | $m$ | measured | bound | factor from the previous $N$ |
+|---|---|---|---|---|
+| 10 | 3 | $1.44\times10^{-3}$ | $3\times10^{-3}$ | |
+| 20 | 3 | $1.60\times10^{-4}$ | $4\times10^{-4}$ | 9.0 |
+| 40 | 3 | $1.87\times10^{-5}$ | $5\times10^{-5}$ | 8.6 |
+| 10 | 4 | $1.07\times10^{-4}$ | $3\times10^{-4}$ | |
+| 20 | 4 | $6.97\times10^{-6}$ | $2\times10^{-5}$ | 15.3 |
+| 40 | 4 | $4.36\times10^{-7}$ | $1.2\times10^{-6}$ | 16.0 |
+
+The factors are above $2^{m-1}$ (4 and 8), and close to $2^{m}$ for $m = 4$. At $N = 10$, $m = 3$ the product $N\tau/T = 2.5$ is a half-integer and $m$ is odd, so the central Gauss node of each interval has its delayed point on a mesh node (the one-sided case of the Jacobian).
+
+Newton from the perturbed start (test 3). `iters` is the Newton count, with `max_newton` set to 30 in the test. The final residual is below $7\times10^{-14}$ in every run.
+
+| $K$ | $N$ | $m$ | $\lvert T - 2\pi\rvert$ | $\max_q\lvert u_q - \sin 2\pi s_q\rvert$ | iters |
+|---|---|---|---|---|---|
+| 0 | 10 | 3 | $1.6\times10^{-4}$ | $9.5\times10^{-5}$ | 6 |
+| 0 | 10 | 4 | $1.5\times10^{-9}$ | $1.6\times10^{-6}$ | 6 |
+| 0 | 20 | 3 | $4.8\times10^{-8}$ | $2.1\times10^{-6}$ | 6 |
+| 0 | 20 | 4 | $1.9\times10^{-11}$ | $5.3\times10^{-8}$ | 6 |
+| 0 | 40 | 3 | $7.6\times10^{-10}$ | $1.3\times10^{-7}$ | 6 |
+| 0 | 40 | 4 | $7.3\times10^{-14}$ | $1.7\times10^{-9}$ | 6 |
+| 1 | 10 | 3 | $9.1\times10^{-5}$ | $2.1\times10^{-4}$ | 7 |
+| 1 | 10 | 4 | $8.5\times10^{-10}$ | $1.6\times10^{-6}$ | 7 |
+| 1 | 20 | 3 | $2.7\times10^{-8}$ | $2.2\times10^{-6}$ | 7 |
+| 1 | 20 | 4 | $1.1\times10^{-11}$ | $5.3\times10^{-8}$ | 7 |
+| 1 | 40 | 3 | $4.3\times10^{-10}$ | $1.3\times10^{-7}$ | 7 |
+| 1 | 40 | 4 | $4.2\times10^{-14}$ | $1.7\times10^{-9}$ | 7 |
+
+The Hopf start (test 4), $N = 20$, $m = 4$:
+
+| $\varepsilon$ | $\Delta\alpha$ | $\Delta\alpha/\varepsilon^2$ | $T - 2\pi/\omega$ | $(T - 2\pi/\omega)/\varepsilon^2$ | iters |
+|---|---|---|---|---|---|
+| 0.04 | $2.364\times10^{-4}$ | 0.1477 | $1.561\times10^{-3}$ | 0.976 | 3 |
+| 0.02 | $5.906\times10^{-5}$ | 0.1476 | $3.907\times10^{-4}$ | 0.977 | 3 |
+| 0.01 | $1.476\times10^{-5}$ | 0.1476 | $9.770\times10^{-5}$ | 0.977 | 3 |
+
+Both quantities scale with $\varepsilon^2$, as the normal form says. The value $\Delta\alpha/\varepsilon^2 = 0.1476$ is a number from this code. It is not compared with an independent formula (slice 2 checks that the branch reaches $\tau = \pi/2$, $T = 2\pi$, which needs $\varepsilon \approx 1.3$ at this rate).
 
 ## 9. Acceptance tests
 

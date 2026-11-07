@@ -41,16 +41,19 @@ pub use cycle::{
     periodic_orbit,
 };
 pub use dde::{
-    CharRoot, DdeBranch, DdeHopfBranch, DdeHopfPoint, DdeHopfSpecial, DdePoint, DdeSpecial,
-    HopfExtras as DdeHopfExtras, HopfHopf as DdeHopfHopf, HopfPairs as DdeHopfPairs,
-    HopfSetup as DdeHopfSetup, LinearDde, Lyapunov as DdeLyapunov, Lyapunov2 as DdeLyapunov2,
-    RootOptions, RootSet, ZeroHopf as DdeZeroHopf, characteristic_roots,
+    CharRoot, DdeBranch, DdeCycle, DdeCycleSetup, DdeCycleStart, DdeHopfBranch, DdeHopfCycle,
+    DdeHopfPoint, DdeHopfSpecial, DdePoint, DdeSpecial, HopfExtras as DdeHopfExtras,
+    HopfHopf as DdeHopfHopf, HopfPairs as DdeHopfPairs, HopfSetup as DdeHopfSetup, LinearDde,
+    Lyapunov as DdeLyapunov, Lyapunov2 as DdeLyapunov2, RootOptions, RootSet,
+    ZeroHopf as DdeZeroHopf, characteristic_roots,
     continue_equilibrium as dde_continue_equilibrium, continue_hopf as dde_continue_hopf,
     continue_hopf_with as dde_continue_hopf_with,
-    continue_hopf_with_lyapunov as dde_continue_hopf_with_lyapunov, equilibrium as dde_equilibrium,
-    hopf_hopf as dde_hopf_hopf, hopf_pairs as dde_hopf_pairs, linearize as dde_linearize,
-    lyapunov as dde_lyapunov, lyapunov2 as dde_lyapunov2, residual as dde_residual,
-    stability as dde_stability, zero_hopf as dde_zero_hopf,
+    continue_hopf_with_lyapunov as dde_continue_hopf_with_lyapunov,
+    correct_cycle as dde_correct_cycle, cycle_jacobian as dde_cycle_jacobian,
+    cycle_residual as dde_cycle_residual, equilibrium as dde_equilibrium,
+    hopf_cycle as dde_hopf_cycle, hopf_hopf as dde_hopf_hopf, hopf_pairs as dde_hopf_pairs,
+    linearize as dde_linearize, lyapunov as dde_lyapunov, lyapunov2 as dde_lyapunov2,
+    residual as dde_residual, stability as dde_stability, zero_hopf as dde_zero_hopf,
 };
 pub use ep::{EpProblem, EpSetup, continue_ep, equilibrium};
 pub use error::EngineError;

@@ -2,6 +2,7 @@
 //! linear equation with discrete delays.
 
 mod branch;
+mod cycle;
 mod eq;
 mod hopf;
 mod hopfhopf;
@@ -12,6 +13,10 @@ mod roots;
 mod zerohopf;
 
 pub use branch::{DdeBranch, DdePoint, DdeSpecial, continue_equilibrium};
+pub use cycle::{
+    DdeCycle, DdeCycleSetup, DdeCycleStart, DdeHopfCycle, correct_cycle, cycle_jacobian,
+    cycle_residual, hopf_cycle,
+};
 pub use eq::{equilibrium, linearize, residual, stability};
 pub use hopf::{
     DdeHopfBranch, DdeHopfPoint, DdeHopfSpecial, HopfExtras, HopfPairs, HopfSetup, continue_hopf,
