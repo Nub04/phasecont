@@ -303,6 +303,18 @@ fn a_one_to_two_resonance_is_singular() {
 }
 
 #[test]
+fn a_semisimple_double_root_is_refused_by_the_dimension_test() {
+    let src = "u'=-1.3*v+u^3\nv'=1.3*u\ne0'=-1.3*e1\ne1'=1.3*e0\nz'=-2*z-delay(z,1)\ndone\n";
+    for which in both() {
+        let r = l2_of(src, which, &[0.0; 5], &[], 1.3);
+        assert!(
+            is_singular(&r, "null space of dimension 2 or more"),
+            "{r:?}"
+        );
+    }
+}
+
+#[test]
 fn a_one_to_three_resonance_is_singular() {
     // The delay block has Delta_z(3 i omega) = i (3 pi/2 - 4.71238898038469), which is zero
     // up to rounding. Delta(0), Delta(i omega) and Delta(2 i omega) are regular.

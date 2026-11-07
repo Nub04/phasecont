@@ -282,6 +282,7 @@ pub(super) fn pair(lin: &LinearDde, omega: f64) -> Result<Pair, EngineError> {
              of Delta(i omega) q is {null_residual:e}, above {NULL_RESIDUAL_MAX:e}"
         )));
     }
+    check_simple_kernel(second_ratio(&d, n)?, "Delta(i omega)", "i omega")?;
     let dt = transpose(&d, n);
     let left = null_right(&embed(&dt, n), 2 * n, 2 * n, 1)?.remove(0);
     let pt = unstack(&left, n);
@@ -298,6 +299,31 @@ pub(super) fn pair(lin: &LinearDde, omega: f64) -> Result<Pair, EngineError> {
         p,
         null_residual,
     })
+}
+
+/// The ratio of the second smallest to the largest singular value of the complex `n` by `n`
+/// matrix `d`, or infinity when `n = 1`. The real embedding repeats each complex singular
+/// value, so the second smallest complex one is `s[2n - 3]`.
+pub(super) fn second_ratio(d: &[C], n: usize) -> Result<f64, EngineError> {
+    if n < 2 {
+        return Ok(f64::INFINITY);
+    }
+    let s = singular_values(&embed(d, n), 2 * n, 2 * n)?;
+    Ok(s[2 * n - 3] / s[0])
+}
+
+/// Refuses a root whose `Delta` has a null space of dimension 2 or more, that is, a ratio
+/// from `second_ratio` below `RESONANCE_MIN`. `what` names the matrix and `root` the root, as
+/// in `Delta(i omega)` and `i omega`.
+pub(super) fn check_simple_kernel(ratio: f64, what: &str, root: &str) -> Result<(), EngineError> {
+    if ratio.is_nan() || ratio < RESONANCE_MIN {
+        return Err(EngineError::Singular(format!(
+            "{what} has a null space of dimension 2 or more (second smallest over largest \
+             singular value {ratio:e}); the root {root} is not simple and the coefficients \
+             would depend on the choice of null vector"
+        )));
+    }
+    Ok(())
 }
 
 /// Fails when the extreme singular values of the embedding of `d` have a ratio below
@@ -673,5 +699,34 @@ mod tests {
         let mut m = model("x1'=-y1+x1^3\ny1'=x1\nx2'=-2*y2\ny2'=2*x2\nz'=-2*z-delay(z,1)\ndone\n");
         let r = lyapunov(&mut m, &[0.0; 5], &[], 1.0);
         assert!(is_singular(&r, "Delta(2 i omega)"), "{r:?}");
+    }
+
+    #[test]
+    fn a_semisimple_double_root_is_refused_by_the_dimension_test() {
+        // A second oscillator at the same frequency: Delta' = I, so the pairing of a null
+        // vector with its left partner is not 0 and only the dimension test sees the root.
+        let src = "u'=-1.3*v\nv'=1.3*u\ne0'=-1.3*e1\ne1'=1.3*e0\nz'=-2*z-delay(z,1)\ndone\n";
+        for ev in [Evaluator::Jit, Evaluator::Fallback] {
+            let r = lyapunov(&mut build(src, ev), &[0.0; 5], &[], 1.3);
+            assert!(
+                is_singular(&r, "null space of dimension 2 or more"),
+                "{r:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_jordan_block_is_refused_by_the_pairing_test_alone() {
+        let src = "x'=-1.3*y+u\ny'=1.3*x+v\nu'=-1.3*v\nv'=1.3*u\nz'=-2*z-delay(z,1)\ndone\n";
+        for ev in [Evaluator::Jit, Evaluator::Fallback] {
+            let r = lyapunov(&mut build(src, ev), &[0.0; 5], &[], 1.3);
+            match r {
+                Err(EngineError::Singular(msg)) => {
+                    assert!(msg.contains("not simple"), "{msg}");
+                    assert!(!msg.contains("null space"), "{msg}");
+                }
+                other => panic!("expected Singular, got {other:?}"),
+            }
+        }
     }
 }

@@ -473,6 +473,75 @@ fn a_jordan_block_at_zero_is_singular() {
     }
 }
 
+/// Expects `Singular` whose text has every phrase of `has` and none of `lacks`.
+fn expect_singular(r: Result<DdeZeroHopf, EngineError>, what: &str, has: &[&str], lacks: &[&str]) {
+    match r {
+        Err(EngineError::Singular(msg)) => {
+            for h in has {
+                assert!(msg.contains(h), "{what}: message {msg:?} lacks {h:?}");
+            }
+            for l in lacks {
+                assert!(!msg.contains(l), "{what}: message {msg:?} has {l:?}");
+            }
+        }
+        other => panic!("{what}: expected Singular, got {other:?}"),
+    }
+}
+
+const DIM: &str = "null space of dimension 2 or more";
+
+#[test]
+fn a_semisimple_double_zero_root_is_refused_and_names_delta_zero() {
+    // a' = 0 and b' = 0: Delta(0) has a null space of dimension 2 and Delta' = I, so the
+    // pairing at 0 is not 0.
+    let src = "a'=0\nb'=0\nu'=-v\nv'=u\nw'=-2*w-delay(w,1)\ndone\n";
+    for which in both() {
+        expect_singular(
+            zh(src, which, &[0.0; 5], &[], 1.0),
+            "double zero root",
+            &[DIM, "Delta(0)"],
+            &[],
+        );
+    }
+}
+
+#[test]
+fn a_semisimple_double_hopf_root_is_refused_and_names_delta_i_omega() {
+    let src = "a'=0\nu'=-v\nv'=u\ne0'=-e1\ne1'=e0\nw'=-2*w-delay(w,1)\ndone\n";
+    for which in both() {
+        expect_singular(
+            zh(src, which, &[0.0; 6], &[], 1.0),
+            "double Hopf root",
+            &[DIM, "Delta(i omega)"],
+            &[],
+        );
+    }
+}
+
+#[test]
+fn the_tests_of_the_two_roots_run_in_the_spec_order() {
+    // A Jordan block at zero and a double Hopf root: the pairing at 0 comes before the
+    // dimension test at i omega.
+    let jordan_then_double = "x'=y\ny'=0\nu'=-v\nv'=u\ne0'=-e1\ne1'=e0\nw'=-2*w-delay(w,1)\ndone\n";
+    // A double zero root and a Jordan block at i omega: the dimension test at 0 comes first.
+    let double_then_jordan = "a'=0\nb'=0\nj0'=-j1+j2\nj1'=j0+j3\nj2'=-j3\nj3'=j2\n\
+                              w'=-2*w-delay(w,1)\ndone\n";
+    for which in both() {
+        expect_singular(
+            zh(jordan_then_double, which.clone(), &[0.0; 7], &[], 1.0),
+            "Jordan at 0, double at i omega",
+            &["root 0 ", "not simple"],
+            &["null space"],
+        );
+        expect_singular(
+            zh(double_then_jordan, which, &[0.0; 7], &[], 1.0),
+            "double at 0, Jordan at i omega",
+            &[DIM, "Delta(0)"],
+            &[],
+        );
+    }
+}
+
 #[test]
 fn a_one_to_two_resonance_names_delta_two_i_omega() {
     let src = "par a=0, tau=1, b=1\n\

@@ -22,14 +22,14 @@
 
 use super::eq::{check_params, check_state, linearize, residual};
 use super::lyap::{
-    C, NULL_RESIDUAL_MAX, OMEGA_MIN, PAIRING_MIN, bilinear, check_regular, delta, embed,
-    frobenius_real, matvec, norm2, solve, transpose, unstack,
+    C, NULL_RESIDUAL_MAX, OMEGA_MIN, PAIRING_MIN, bilinear, check_regular, check_simple_kernel,
+    delta, embed, frobenius_real, matvec, norm2, second_ratio, solve, transpose, unstack,
 };
 use super::lyap2::{Ctx, add, conj_all};
 use super::roots::LinearDde;
 use crate::error::EngineError;
 use crate::model::DdeModel;
-use pc_linalg::null_right;
+use pc_linalg::{null_right, singular_values};
 
 /// The coefficients and the classification numbers at one point.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -145,8 +145,8 @@ struct Vectors {
 
 /// `q0`, `p0`, `q1` and `p1` of SPEC section 8i, scaled so that `|q0|_2 = |q1|_2 = 1` and
 /// `p0 Delta'(0) q0 = p1 Delta'(i omega) q1 = 1`. The errors come in the order of the SPEC:
-/// the residual of `Delta(0)`, the residual of `Delta(i omega)`, the root 0 and then the root
-/// `i omega` not being simple.
+/// the residual of `Delta(0)`, the residual of `Delta(i omega)`, then for the root 0 and for the
+/// root `i omega` a null space of dimension 2 or more and a pairing that is too small.
 fn vectors(lin: &LinearDde, omega: f64) -> Result<Vectors, EngineError> {
     let n = lin.dim;
     let norms = frobenius_real(&lin.a0)
@@ -167,6 +167,13 @@ fn vectors(lin: &LinearDde, omega: f64) -> Result<Vectors, EngineError> {
             col_t[j + n * i] = d0[i * n + j].re;
         }
     }
+    // The real matrix repeats nothing, so the second smallest singular value is `s[n - 2]`.
+    let second_zero = if n >= 2 {
+        let s = singular_values(&col, n, n)?;
+        s[n - 2] / s[0]
+    } else {
+        f64::INFINITY
+    };
     let mut q0r = null_right(&col, n, n, 1)?.remove(0);
     let threshold = 1.0 / (2.0 * (n as f64).sqrt());
     if q0r
@@ -188,6 +195,7 @@ fn vectors(lin: &LinearDde, omega: f64) -> Result<Vectors, EngineError> {
     // The complex pair, as in `lyap::pair`.
     let d1 = delta(lin, omega, 0);
     let d1p = delta(lin, omega, 1);
+    let second_hopf = second_ratio(&d1, n)?;
     let q1 = unstack(&null_right(&embed(&d1, n), 2 * n, 2 * n, 1)?.remove(0), n);
     let null_hopf = norm2(&matvec(&d1, n, &q1)) / (omega + norms);
     let pt1 = unstack(
@@ -208,12 +216,14 @@ fn vectors(lin: &LinearDde, omega: f64) -> Result<Vectors, EngineError> {
              of Delta(i omega) q1 is {null_hopf:e}, above {NULL_RESIDUAL_MAX:e}"
         )));
     }
+    check_simple_kernel(second_zero, "Delta(0)", "0")?;
     if s0.is_nan() || s0.abs() < PAIRING_MIN {
         return Err(EngineError::Singular(format!(
             "|p0 Delta'(0) q0| = {:e}; the root 0 is not simple",
             s0.abs()
         )));
     }
+    check_simple_kernel(second_hopf, "Delta(i omega)", "i omega")?;
     if s1.abs().is_nan() || s1.abs() < PAIRING_MIN {
         return Err(EngineError::Singular(format!(
             "|p1 Delta'(i omega) q1| = {:e}; the root i omega is not simple",
