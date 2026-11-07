@@ -61,7 +61,7 @@ pub const AUX_IN_FORMULA: Code = Code(51);
 pub const MIXED_KIND: Code = Code(52);
 /// A derived parameter that uses a state, fixed quantity, `t` or noise.
 pub const DERIVED_NON_PARAMETER: Code = Code(53);
-/// `delay(x,tau)`, planned for v2.
+/// `delay(x,tau)`, which only `pc-cli dde-eq` reads.
 pub const UNSUPPORTED_DELAY: Code = Code(54);
 /// `shift(x,n)`.
 pub const UNSUPPORTED_SHIFT: Code = Code(55);
@@ -971,7 +971,7 @@ impl<'a> Checker<'a> {
                 Status::Delay => Some((
                     UNSUPPORTED_DELAY,
                     format!(
-                        "`{}` is not supported yet; delay equations are planned for v2",
+                        "`{}` is read only by `pc-cli dde-eq`; simulation and continuation do not support it",
                         name.text
                     ),
                 )),

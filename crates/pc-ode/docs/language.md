@@ -300,11 +300,11 @@ Arity `n` means the function takes exactly `n` arguments. "Smooth" means the fun
 | `ran` | 1 | uniform on `[0, a]` | no | yes | manual, measured only at 0 (probe `fn-random`: `ran(0)` = 0; the draws cannot be compared) |
 | `normal` | 2 | normal with mean `m` and variance `v` | no | yes | manual |
 | `poisson` | 1 | Poisson sample | no | yes | manual, measured only at 0 (probe `fn-random`: `poisson(0)` = 0) |
-| `delay` | 2 | `delay(x,tau)` | | | manual; warning, v2 |
+| `delay` | 2 | `delay(x,tau)` | | | manual; warning, dde-eq only |
 | `shift`, `del_shft`, `sum(..)of(..)` | | | | | manual; unsupported, warning |
 | `if(c)then(a)else(b)` | | `a` when `c` is nonzero, else `b` | no | no | manual, measured (`if(-1)` takes `then`) |
 
-`delay(x,tau)` gives warning ODE0054 (planned for v2), and `shift` and `del_shft` give ODE0055 and ODE0056; the calls are kept as written. `ceil` gives the portability warning, since XPPAUT 8.0 rejects it. The `if(c)then(a)else(b)` and `sum(..)of(..)` rows are not calls: `if` is an expression form that makes the model non-smooth, and the parser keeps a `sum(..)of(..)` line as an unsupported statement. A bare call `sum(...)` gives warning ODE0037. `crates/pc-ode/src/builtins.rs` holds the same table, and a test checks that the two agree.
+`delay(x,tau)` gives warning ODE0054 (only `pc-cli dde-eq` reads it), and `shift` and `del_shft` give ODE0055 and ODE0056; the calls are kept as written. `ceil` gives the portability warning, since XPPAUT 8.0 rejects it. The `if(c)then(a)else(b)` and `sum(..)of(..)` rows are not calls: `if` is an expression form that makes the model non-smooth, and the parser keeps a `sum(..)of(..)` line as an unsupported statement. A bare call `sum(...)` gives warning ODE0037. `crates/pc-ode/src/builtins.rs` holds the same table, and a test checks that the two agree.
 
 Operator semantics (measured):
 
@@ -389,7 +389,7 @@ Each pass (include, expand, check) keeps at most 10000 diagnostics (`MAX_DIAGNOS
 | ODE0051 | error | An `aux` quantity used inside a formula ([Names and order](#names-and-order)). |
 | ODE0052 | error | The file has both ODEs and maps ([Names and order](#names-and-order)). |
 | ODE0053 | error | A derived parameter uses something other than parameters, numbers, derived parameters, builtins and functions ([Names and order](#names-and-order)). |
-| ODE0054 | warning | A call of `delay`, which is kept and planned for v2 ([Builtins](#builtins)). |
+| ODE0054 | warning | A call of `delay`, which is kept and read only by `pc-cli dde-eq` ([Builtins](#builtins)). |
 | ODE0055 | warning | A call of `shift`, which is kept and not supported ([Builtins](#builtins)). |
 | ODE0056 | warning | A call of `del_shft`, which is kept and not supported ([Builtins](#builtins)). |
 | ODE0057 | warning | A name that no statement declares, in a file with an unsupported statement that may declare it. It replaces ODE0039 there, and ODE0044 or ODE0058 for an undeclared `init` or `global` name ([Names and order](#names-and-order)). |

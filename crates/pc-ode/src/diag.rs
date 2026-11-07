@@ -270,7 +270,11 @@ pub const CODES: &[(Code, Severity, &str)] = &[
         Severity::Error,
         "derived parameter uses a name that is not a parameter",
     ),
-    (Code(54), Severity::Warning, "`delay` is not supported yet"),
+    (
+        Code(54),
+        Severity::Warning,
+        "`delay` is read only by `pc-cli dde-eq`",
+    ),
     (Code(55), Severity::Warning, "`shift` is not supported"),
     (Code(56), Severity::Warning, "`del_shft` is not supported"),
     (
