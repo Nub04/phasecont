@@ -55,6 +55,8 @@ pub enum Command {
         problem: PathBuf,
         fallback: bool,
     },
+    /// Find the characteristic roots of a linear delay equation described by a problem file.
+    DdeRoots { file: PathBuf },
     /// Rerun the runs of a session file and compare the results.
     SessionReplay {
         file: PathBuf,
@@ -93,6 +95,7 @@ usage: pc-cli parse [--json] [--] <file.ode>
        pc-cli check-derivs [--points N] [--seed S] [--] <file.ode>
        pc-cli emit-c [-o out.c] [--] <file.ode>
        pc-cli cont [--fallback] [--] <file.ode> <problem.json>
+       pc-cli dde-roots [--] <problem.json>
        pc-cli session replay [--tol X] [--fallback] [--] <file.pcsession.json>
        pc-cli gpu list
        pc-cli gpu selftest --backend B [--device N] --precision P
@@ -112,6 +115,7 @@ usage:
   pc-cli check-derivs <file.ode> [--points N] [--seed S]
   pc-cli emit-c <file.ode> [-o out.c]
   pc-cli cont <file.ode> <problem.json> [--fallback]
+  pc-cli dde-roots <problem.json>
   pc-cli session replay <file.pcsession.json> [--tol X] [--fallback]
   pc-cli gpu list
   pc-cli gpu selftest --backend B [--device N] --precision P
@@ -130,6 +134,7 @@ commands:
                 f64 fallback, and with finite differences
   emit-c        write C code for F, JacU and JacP
   cont          follow an equilibrium branch and print its points and special points
+  dde-roots     find the characteristic roots of a linear delay equation
   session       rerun the runs of a session file and compare them with the stored ones
   gpu           list the ensemble devices and test one of them
   ensemble      run many trajectories of one model, or time the engine
@@ -352,6 +357,38 @@ the model cannot be read, has errors or is refused, 2 usage error or bad
 problem file (the message names the key)
 ";
 
+pub const DDE_ROOTS_HELP: &str = "\
+usage: pc-cli dde-roots [--] <problem.json>
+
+Finds the characteristic roots with Re >= re_min of the linear delay equation
+  x'(t) = A0 x(t) + sum_j A_j x(t - tau_j)
+and prints them as JSON on stdout. Each eigenvalue of a pseudospectral matrix of
+order d (n + 1) starts a Newton iteration on det(lambda I - A0 - sum A_j
+exp(-lambda tau_j)) = 0. A root is printed only when its scaled residual is at
+most 1e-12.
+
+The problem file is a JSON object, and every key is required:
+  dim     number of states d, at least 1
+  a0      the matrix A0 as d*d numbers, row by row
+  delays  array of {\"tau\": delay > 0, \"a\": the matrix A_j as d*d numbers}
+  n       number of Chebyshev intervals, at least 1, with d (n + 1) <= 4000
+  re_min  smallest real part to report
+
+The output is {\"n\", \"roots\": [{\"re\", \"im\", \"residual\"}], \"unrefined\":
+[{\"re\", \"im\"}]}, with the roots by real part, largest first. An entry of
+\"unrefined\" is a start value with Re >= re_min whose iteration did not give a
+root. A root that no eigenvalue of the matrix approximates is missing without a
+message. Raise n until the list stops changing; the strip holds roots of large
+imaginary part when re_min is far below zero, and n has to grow with it.
+
+options:
+  --          the next argument is the file, even if it starts with `-`
+  -h, --help  print this help
+
+exit codes: 0 the roots were computed, 1 the computation failed, 2 usage error,
+an unreadable file, invalid JSON or a bad problem (the message names the key)
+";
+
 pub const DLL_IMPORTS_HELP: &str = "\
 usage: pc-cli dll-imports [--] <file.dll>
 
@@ -464,6 +501,7 @@ where
         "check-derivs" => check_command(&args[1..]),
         "emit-c" => emit_command(&args[1..]),
         "cont" => cont_command(&args[1..]),
+        "dde-roots" => dde_roots_command(&args[1..]),
         "session" => session_command(&args[1..]),
         "gpu" => gpu_command(&args[1..]),
         "ensemble" => ensemble_command(&args[1..]),
@@ -651,6 +689,17 @@ fn emit_command(rest: &[OsString]) -> Result<Command, UsageError> {
             out: parts.out,
         }),
         None => Err(UsageError("emit-c needs a file".to_string())),
+    }
+}
+
+fn dde_roots_command(rest: &[OsString]) -> Result<Command, UsageError> {
+    let parts = split(rest, Accepts::default())?;
+    if parts.help {
+        return Ok(Command::ToolHelp(DDE_ROOTS_HELP));
+    }
+    match parts.file {
+        Some(file) => Ok(Command::DdeRoots { file }),
+        None => Err(UsageError("dde-roots needs a problem file".to_string())),
     }
 }
 
@@ -1067,6 +1116,33 @@ mod tests {
             &["dll-imports"][..],
             &["dll-imports", "a.dll", "b.dll"],
             &["dll-imports", "--json", "a.dll"],
+        ] {
+            assert!(p(args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn dde_roots_command_takes_one_file() {
+        assert_eq!(
+            p(&["dde-roots", "p.json"]),
+            Ok(Command::DdeRoots {
+                file: "p.json".into()
+            })
+        );
+        assert_eq!(
+            p(&["dde-roots", "--", "-p.json"]),
+            Ok(Command::DdeRoots {
+                file: "-p.json".into()
+            })
+        );
+        assert_eq!(
+            p(&["dde-roots", "--help"]),
+            Ok(Command::ToolHelp(DDE_ROOTS_HELP))
+        );
+        for args in [
+            &["dde-roots"][..],
+            &["dde-roots", "a.json", "b.json"],
+            &["dde-roots", "--fallback", "a.json"],
         ] {
             assert!(p(args).is_err(), "{args:?}");
         }
