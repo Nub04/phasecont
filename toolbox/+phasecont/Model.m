@@ -263,9 +263,32 @@ classdef Model < handle
             end
             source = phasecont.internal.odeText(text, options.Params, ...
                 options.Init);
-            obj = phasecont.Model.fromSource(source, Name = options.Name, ...
-                Evaluator = options.Evaluator);
             given = string(fieldnames(options.Init));
+            try
+                obj = phasecont.Model.fromSource(source, Name = options.Name, ...
+                    Evaluator = options.Evaluator);
+            catch err
+                % The parser refuses an init line for a name that is not a
+                % state, and its message does not say that Init is the
+                % cause. Parse the equations without Init to read the
+                % states, and name the extra entries when there are any.
+                extra = string.empty;
+                if err.identifier == "phasecont:engine:model" && ~isempty(given)
+                    try
+                        probe = phasecont.Model.fromSource( ...
+                            phasecont.internal.odeText(text, options.Params, struct()), ...
+                            Name = options.Name, Evaluator = options.Evaluator);
+                        extra = setdiff(given, probe.Variables, "stable");
+                    catch
+                    end
+                end
+                if ~isempty(extra)
+                    error("phasecont:model:unknownInit", ...
+                        "Init has names that are not states of the model: %s.", ...
+                        join(extra, ", "));
+                end
+                rethrow(err);
+            end
             missing = setdiff(obj.Variables, given, "stable");
             if ~isempty(missing)
                 error("phasecont:model:missingInit", ...
