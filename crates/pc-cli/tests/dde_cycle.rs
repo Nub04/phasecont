@@ -1,8 +1,8 @@
 //! Runs `pc-cli dde-cycle` on the model `x' = -x(t - tau) + mu x (1 - x^2 - x(t - tau)^2)`,
 //! which has the exact orbit x = sin t, T = 2 pi for tau = pi/2 (SPEC section 8l, test 7).
 //! The orbit and Hopf starts must give the numbers of the engine calls, and so must the
-//! `floquet` key (SPEC section 8m, test 9). Also runs the bad problem files and the run
-//! that does not converge.
+//! `floquet` key (SPEC section 8m, test 9) and the `branch` key (SPEC section 8n, test 8).
+//! Also runs the bad problem files and the run that does not converge.
 
 mod common;
 
@@ -12,8 +12,9 @@ use std::sync::atomic::AtomicBool;
 
 use common::{code, run, stderr, stdout};
 use pc_engine::{
-    DdeCycleSetup, DdeCycleStart, DdeFloquetOptions, DdeHopfCycle, Evaluator, Options, build_dde,
-    dde_correct_cycle, dde_floquet_multipliers, dde_hopf_cycle,
+    DdeCycleBranch, DdeCycleSetup, DdeCycleStart, DdeFloquetOptions, DdeHopfCycle, Evaluator,
+    Options, build_dde, dde_continue_cycle, dde_correct_cycle, dde_floquet_multipliers,
+    dde_hopf_cycle,
 };
 use pc_ode::{MapLoader, Severity, SourceMap, load};
 use serde_json::{Value, json};
@@ -517,6 +518,269 @@ fn help_lists_the_floquet_key() {
     let text = stdout(&o);
     assert!(text.starts_with("usage: pc-cli dde-cycle"), "{text}");
     for word in ["floquet", "nhist", "count", "multipliers", "trivial_error"] {
+        assert!(text.contains(word), "{word} missing from the help text");
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// The `branch` key (SPEC section 8n, test 8).
+
+/// The exact orbit x = sin t at the base points.
+fn sine() -> Vec<f64> {
+    let nq = NTST * NCOL;
+    (0..=nq)
+        .map(|q| (2.0 * PI * q as f64 / nq as f64).sin())
+        .collect()
+}
+
+/// The problem of the mu-line (test 1 with K = 0, direction +1) with `branch` set to true.
+fn mu_line_problem() -> Value {
+    json!({
+        "model": "osc.ode",
+        "params": {"mu": 0.3, "tau": TAU},
+        "free": "mu",
+        "ntst": NTST,
+        "ncol": NCOL,
+        "orbit": {"profile": sine(), "period": 2.0 * PI},
+        "options": {
+            "max_newton": 10, "hmax": 0.2, "max_steps": 200,
+            "bounds": [0.1, 0.9], "direction": 1
+        },
+        "branch": true,
+    })
+}
+
+/// The problem of test 2: the Hopf cycle at eps = 0.05, then up in tau to pi/2. The corrector
+/// of the Hopf start needs `max_newton` 30, and the same options go to the continuation.
+fn hopf_branch_problem() -> Value {
+    json!({
+        "model": "osc.ode",
+        "params": {"mu": 0.3, "tau": TAU_H},
+        "free": "tau",
+        "ntst": NTST,
+        "ncol": NCOL,
+        "hopf": {"x0": [0.0], "omega": OMEGA_H, "eps": 0.05},
+        "options": {
+            "max_newton": 30, "hmax": 0.5, "max_steps": 500,
+            "bounds": [1.0, PI / 2.0], "direction": 1
+        },
+        "branch": true,
+    })
+}
+
+/// Checks that the printed points are those of `want`, bit for bit.
+fn same_points(out: &str, want: &DdeCycleBranch, what: &str) {
+    let v: Value = serde_json::from_str(out).unwrap();
+    assert_eq!(v["ntst"], NTST, "{what}");
+    assert_eq!(v["ncol"], NCOL, "{what}");
+    let got = v["points"].as_array().expect("points");
+    assert_eq!(got.len(), want.points.len(), "{what}: number of points");
+    for (i, (g, w)) in got.iter().zip(&want.points).enumerate() {
+        assert_eq!(num(&g["alpha"]).to_bits(), w.alpha.to_bits(), "{what} {i}");
+        assert_eq!(
+            num(&g["period"]).to_bits(),
+            w.period.to_bits(),
+            "{what} {i}"
+        );
+        assert_eq!(num(&g["h"]).to_bits(), w.h.to_bits(), "{what} {i}");
+        assert_eq!(
+            g["iters"].as_u64(),
+            Some(w.newton_iters as u64),
+            "{what} {i}"
+        );
+        let p = doubles(&g["profile"]);
+        assert_eq!(p.len(), w.profile.len(), "{what} {i}: profile length");
+        for (j, (a, b)) in p.iter().zip(&w.profile).enumerate() {
+            assert_eq!(a.to_bits(), b.to_bits(), "{what} {i} profile[{j}]");
+        }
+    }
+    assert!(v["warnings"].is_array(), "{what}");
+}
+
+#[test]
+fn the_branch_key_matches_continue_cycle_bit_for_bit() {
+    let (status, out, err) = dde_cycle("branch_orbit.json", &mu_line_problem());
+    assert_eq!(status, 0, "{err}");
+    let mut model = engine_model();
+    let setup = DdeCycleSetup {
+        params: vec![0.3, TAU],
+        free: 0,
+        ntst: NTST,
+        ncol: NCOL,
+    };
+    let opts = Options {
+        bounds: (0.1, 0.9),
+        direction: 1.0,
+        hmax: 0.2,
+        max_steps: 200,
+        max_newton: 10,
+        ..Options::default()
+    };
+    let want = dde_continue_cycle(
+        &mut model,
+        &setup,
+        &DdeCycleStart {
+            profile: sine(),
+            period: 2.0 * PI,
+        },
+        &opts,
+        &AtomicBool::new(false),
+    )
+    .expect("continue_cycle");
+    assert!(want.points.len() > 2, "{} points", want.points.len());
+    same_points(&out, &want, "orbit");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["stop"], "bounds", "{out}");
+    let last = v["points"].as_array().unwrap().last().unwrap();
+    assert!((num(&last["alpha"]) - 0.9).abs() <= 1e-9, "{out}");
+}
+
+#[test]
+fn the_branch_key_runs_the_hopf_cycle_first() {
+    let (status, out, err) = dde_cycle("branch_hopf.json", &hopf_branch_problem());
+    assert_eq!(status, 0, "{err}");
+    let mut model = engine_model();
+    let opts = Options {
+        bounds: (1.0, PI / 2.0),
+        direction: 1.0,
+        hmax: 0.5,
+        max_steps: 500,
+        max_newton: 30,
+        ..Options::default()
+    };
+    let cancel = AtomicBool::new(false);
+    let hopf = dde_hopf_cycle(
+        &mut model,
+        &DdeCycleSetup {
+            params: vec![0.3, TAU_H],
+            free: 1,
+            ntst: NTST,
+            ncol: NCOL,
+        },
+        &DdeHopfCycle {
+            x: vec![0.0],
+            omega: OMEGA_H,
+            eps: 0.05,
+        },
+        &opts,
+        &cancel,
+    )
+    .expect("hopf_cycle");
+    // The continuation starts at the parameter value that the Hopf corrector found.
+    let want = dde_continue_cycle(
+        &mut model,
+        &DdeCycleSetup {
+            params: vec![0.3, hopf.alpha],
+            free: 1,
+            ntst: NTST,
+            ncol: NCOL,
+        },
+        &DdeCycleStart {
+            profile: hopf.profile.clone(),
+            period: hopf.period,
+        },
+        &opts,
+        &cancel,
+    )
+    .expect("continue_cycle");
+    same_points(&out, &want, "hopf");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["stop"], "bounds", "{out}");
+    let first = &v["points"][0];
+    assert!((num(&first["alpha"]) - hopf.alpha).abs() <= 1e-9, "{out}");
+    let last = v["points"].as_array().unwrap().last().unwrap();
+    assert!((num(&last["alpha"]) - PI / 2.0).abs() <= 1e-9, "{out}");
+}
+
+#[test]
+fn branch_false_and_no_branch_print_the_corrector_output() {
+    let mut off = orbit_problem(&perturbed(), 6.0);
+    let (status, plain, err) = dde_cycle("no_branch.json", &off);
+    assert_eq!(status, 0, "{err}");
+    off["branch"] = json!(false);
+    let (status, explicit, err) = dde_cycle("branch_false.json", &off);
+    assert_eq!(status, 0, "{err}");
+    assert_eq!(plain, explicit);
+    let v: Value = serde_json::from_str(&plain).unwrap();
+    assert!(
+        v.get("points").is_none() && v.get("stop").is_none(),
+        "{plain}"
+    );
+    assert!(
+        v.get("period").is_some() && v.get("profile").is_some(),
+        "{plain}"
+    );
+    // Without the branch, the options of the corrector still apply.
+    off["options"]["hmax"] = json!(0.1);
+    let (status, _, err) = dde_cycle("branch_false_hmax.json", &off);
+    assert_eq!(status, 2, "{err}");
+    assert!(err.contains("options.hmax"), "{err}");
+}
+
+#[test]
+fn branch_problems_that_cannot_run_are_exit_2() {
+    let cases: [(&str, Edit, &str); 6] = [
+        (
+            "with_floquet",
+            Box::new(|p| p["floquet"] = json!({"nhist": 8, "count": 2})),
+            "floquet",
+        ),
+        (
+            "with_mesh_adapt",
+            Box::new(|p| p["options"]["mesh_adapt"] = json!(3)),
+            "options.mesh_adapt",
+        ),
+        (
+            "with_detect",
+            Box::new(|p| p["options"]["detect"] = json!({"lp": true})),
+            "options.detect",
+        ),
+        (
+            "branch_string",
+            Box::new(|p| p["branch"] = json!("yes")),
+            "branch",
+        ),
+        (
+            "branch_null",
+            Box::new(|p| p["branch"] = json!(null)),
+            "branch",
+        ),
+        (
+            "delay_free_zero_bound",
+            Box::new(|p| {
+                p["free"] = json!("tau");
+                p["options"]["bounds"] = json!([0.0, 2.0]);
+            }),
+            "bounds",
+        ),
+    ];
+    for (name, edit, word) in cases {
+        let mut p = mu_line_problem();
+        edit(&mut p);
+        let (status, out, err) = dde_cycle(&format!("{name}.json"), &p);
+        assert_eq!(status, 2, "{name}: {err}");
+        assert!(out.is_empty(), "{name}: {out}");
+        assert!(err.contains(word), "{name}: {err}");
+    }
+}
+
+#[test]
+fn a_branch_start_that_does_not_converge_is_exit_1() {
+    let mut p = orbit_problem(&perturbed(), 6.0);
+    p["options"] = json!({"max_newton": 1, "bounds": [0.1, 2.0]});
+    p["branch"] = json!(true);
+    let (status, out, err) = dde_cycle("branch_no_converge.json", &p);
+    assert_eq!(status, 1, "{err}");
+    assert!(out.is_empty(), "{out}");
+    assert!(!err.is_empty());
+}
+
+#[test]
+fn help_lists_the_branch_key() {
+    let o = run(&scratch(), &["dde-cycle", "--help"]);
+    assert_eq!(code(&o), 0);
+    let text = stdout(&o);
+    for word in ["branch", "points", "bounds", "mesh_adapt"] {
         assert!(text.contains(word), "{word} missing from the help text");
     }
 }

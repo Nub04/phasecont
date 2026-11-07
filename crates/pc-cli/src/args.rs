@@ -166,7 +166,7 @@ commands:
   dde-eq        find an equilibrium of a model with delay calls and its roots
   dde-branch    continue such an equilibrium in one parameter and find its Hopf points
   dde-hopf      continue a Hopf point of such an equilibrium in two parameters
-  dde-cycle     correct a periodic orbit of such a model, from an orbit or a Hopf point
+  dde-cycle     correct, or continue, a periodic orbit of such a model
   dde-lyap      compute the first Lyapunov coefficient (and the second, if asked) at such a Hopf point
   dde-zh        compute the zero-Hopf normal-form coefficients at such a point
   dde-hh        compute the Hopf-Hopf normal-form coefficients at such a point
@@ -701,9 +701,9 @@ Corrects a periodic orbit of a model whose equations call delay(x,tau). The orbi
 piecewise polynomial of degree ncol on ntst intervals, fixed by Gauss collocation, and
 Newton's method solves for the orbit, its period and one declared parameter in free. The
 phase condition is an integral condition against the start profile. The system has
-(ntst*ncol+1)*n + 2 unknowns, at most 3000. The command does not follow the orbit along a
-branch or label points. With the floquet key it also prints the leading Floquet multipliers
-of the corrected orbit.
+(ntst*ncol+1)*n + 2 unknowns, at most 3000. The command does not label points. With the
+floquet key it also prints the leading Floquet multipliers of the corrected orbit. With
+the branch key it continues the corrected orbit in the free parameter instead.
 
 The problem file is a JSON object. Every key but options is required:
   model    path of the .ode file, relative to the problem file
@@ -716,9 +716,14 @@ The problem file is a JSON object. Every key but options is required:
   orbit    the start, given as an object {\"profile\", \"period\"}, or
   hopf     a start from a Hopf point, given as an object {\"x0\", \"omega\", \"eps\"}.
            Give exactly one of orbit and hopf
-  options  optional; only max_newton, tol_x and tol_f are read. Any other key is refused
+  options  optional; without branch only max_newton, tol_x and tol_f are read and any
+           other key is refused. With branch the keys of the cont command are read,
+           except detect and mesh_adapt, which are refused
   floquet  optional; an object {\"nhist\", \"count\"}, both integers of at least 1, that
-           asks for the multipliers. There is no default and the key is off without it
+           asks for the multipliers. There is no default and the key is off without it.
+           It cannot be combined with branch
+  branch   optional; true continues the orbit in the free parameter, false or no key
+           prints the corrected orbit. There is no default and the key is off without it
 
 orbit.profile holds the state at ntst*ncol+1 equally spaced points of one period, point
 after point with n values each. orbit.period is the start period. hopf.x0 is the
@@ -741,13 +746,26 @@ nothing. trivial_error is the distance of the multiplier nearest to 1 from 1, wh
 multiplier that every periodic orbit has, so it measures the discretization error.
 The multipliers are taken at the corrected value of the free parameter.
 
+With branch set to true, the start is first corrected by Newton's method with free held at
+the value that params gives (for hopf, the Hopf corrector runs first and finds that value),
+and pseudo-arclength continuation then follows the same equations on the same mesh. The
+output is
+{\"ntst\", \"ncol\", \"stop\", \"points\", \"warnings\"}. Each point is {\"alpha\", \"period\",
+\"profile\", \"h\", \"iters\"}: the first has h and iters 0 and is the corrected start. stop is
+one of end, max_steps, bounds, step_too_small, singular, cancelled or error. The run reads
+h0, hmin, hmax, max_steps, tol_x, tol_f, max_newton, direction and bounds from options as
+cont does. The mesh is fixed, so there is no mesh adaptation, and no special points or
+multipliers are computed. When free is a delay time, bounds must have a lower bound
+above 0.
+
 options:
   --          the next argument is the file, even if it starts with `-`
   -h, --help  print this help
 
-exit codes: 0 the orbit converged, 1 the model has errors or no delay call, or Newton's
-        method did not converge, 2 usage error, an unreadable problem file, invalid JSON
-        or a bad problem (the message names the key)
+exit codes: 0 the orbit converged (with branch, the run finished, and a run that stops on
+        an error prints what it found and the message on stderr), 1 the model has errors or
+        no delay call, or Newton's method did not converge at the start, 2 usage error, an
+        unreadable problem file, invalid JSON or a bad problem (the message names the key)
 ";
 
 pub const DLL_IMPORTS_HELP: &str = "\

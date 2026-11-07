@@ -1,24 +1,29 @@
 //! The `dde-cycle` command: correct a periodic orbit of a model with `delay(x,tau)` calls
 //! by collocation, from a given orbit or from a Hopf point (SPEC section 8l), and with the
 //! optional `floquet` key print the leading Floquet multipliers of the result (section 8m).
+//! With `"branch": true` the corrected orbit is instead continued in the free parameter and
+//! the command prints the points of the branch (section 8n).
 //!
 //! The problem file is read by hand from a `serde_json::Value`, as for `dde-hopf`, and the
-//! model is loaded through the same `load_dde`. The corrector reads only `max_newton`,
-//! `tol_x` and `tol_f` from `options`, so the other keys of the `cont` reader are refused
-//! by name instead of being accepted and ignored.
+//! model is loaded through the same `load_dde`. Without `branch` the corrector reads only
+//! `max_newton`, `tol_x` and `tol_f` from `options`, so the other keys of the `cont` reader
+//! are refused by name instead of being accepted and ignored. With `branch` the options go
+//! through the `cont` reader, except `detect` and `mesh_adapt`, which the continuation does
+//! not use.
 
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 
 use pc_engine::{
-    DdeCycle, DdeCycleSetup, DdeCycleStart, DdeFloquet, DdeFloquetOptions, DdeHopfCycle,
-    EngineError, Evaluator, Options, build_dde, dde_correct_cycle, dde_floquet_multipliers,
-    dde_hopf_cycle,
+    DdeCycle, DdeCycleBranch, DdeCycleSetup, DdeCycleStart, DdeFloquet, DdeFloquetOptions,
+    DdeHopfCycle, DdeModel, EngineError, Evaluator, Options, StopReason, build_dde,
+    dde_continue_cycle, dde_correct_cycle, dde_floquet_multipliers, dde_hopf_cycle,
 };
 use pckern::json::problem::parse_options;
 use serde_json::{Value, json};
 
+use crate::cont::stop_name;
 use crate::ddeeq::{
     BAD_PROBLEM, check_keys, count, engine_error, load_dde, number, required, to_stderr,
 };
@@ -49,6 +54,8 @@ struct Problem {
     opts: Options,
     /// The multipliers to print, when the problem asks for them.
     floquet: Option<DdeFloquetOptions>,
+    /// Whether to continue the orbit in the free parameter instead of printing it.
+    branch: bool,
 }
 
 /// `dde-cycle`: reads the problem, runs the corrector and prints the orbit. See
@@ -110,6 +117,9 @@ pub fn dde_cycle(problem_file: &Path) -> ExitCode {
         ncol: problem.ncol,
     };
     let cancel = AtomicBool::new(false);
+    if problem.branch {
+        return run_branch(&mut model, setup, &problem, &cancel, &shown.to_string());
+    }
     let result = match &problem.start {
         Start::Orbit { profile, period } => {
             let start = DdeCycleStart {
@@ -157,6 +167,55 @@ pub fn dde_cycle(problem_file: &Path) -> ExitCode {
     out(&text, 0)
 }
 
+/// `branch`: continues the orbit in the free parameter and prints the points. An orbit start
+/// is corrected by the continuation at the value of `free` that `params` gives. A Hopf start
+/// first goes through the Hopf corrector, which finds that value.
+fn run_branch(
+    model: &mut DdeModel,
+    mut setup: DdeCycleSetup,
+    problem: &Problem,
+    cancel: &AtomicBool,
+    shown: &str,
+) -> ExitCode {
+    let orbit = match &problem.start {
+        Start::Orbit { profile, period } => DdeCycleStart {
+            profile: profile.clone(),
+            period: *period,
+        },
+        Start::Hopf { x0, omega, eps } => {
+            let hopf = DdeHopfCycle {
+                x: x0.clone(),
+                omega: *omega,
+                eps: *eps,
+            };
+            match dde_hopf_cycle(model, &setup, &hopf, &problem.opts, cancel) {
+                Ok(c) => {
+                    setup.params[setup.free] = c.alpha;
+                    DdeCycleStart {
+                        profile: c.profile,
+                        period: c.period,
+                    }
+                }
+                Err(e) => return engine_error(&e, shown),
+            }
+        }
+    };
+    let branch = match dde_continue_cycle(model, &setup, &orbit, &problem.opts, cancel) {
+        Ok(b) => b,
+        Err(e) => return engine_error(&e, shown),
+    };
+    // As `cont` does, a run that stops on an error still prints what it found, and the
+    // message goes to stderr.
+    if let StopReason::Error(e) = &branch.stop
+        && !matches!(e, EngineError::Cancelled)
+    {
+        to_stderr(&format!("pc-cli: {e}\n"));
+    }
+    let mut text = branch_json(&branch, problem.ntst, problem.ncol).to_string();
+    text.push('\n');
+    out(&text, 0)
+}
+
 /// Adds `multipliers` (`[re, im]` pairs) and `trivial_error` to the output object.
 fn add_floquet(value: &mut Value, f: &DdeFloquet) {
     let pairs: Vec<Value> = f
@@ -181,6 +240,30 @@ fn cycle_json(cycle: &DdeCycle, ntst: usize, ncol: usize) -> Value {
     })
 }
 
+/// The output object of SPEC section 8n.
+fn branch_json(branch: &DdeCycleBranch, ntst: usize, ncol: usize) -> Value {
+    let points: Vec<Value> = branch
+        .points
+        .iter()
+        .map(|p| {
+            json!({
+                "alpha": p.alpha,
+                "period": p.period,
+                "profile": p.profile,
+                "h": p.h,
+                "iters": p.newton_iters,
+            })
+        })
+        .collect();
+    json!({
+        "ntst": ntst,
+        "ncol": ncol,
+        "stop": stop_name(&branch.stop),
+        "points": points,
+        "warnings": branch.warnings,
+    })
+}
+
 /// The keys of `options` that the corrector reads.
 const OPTION_KEYS: [&str; 3] = ["max_newton", "tol_x", "tol_f"];
 
@@ -196,6 +279,32 @@ fn check_options(options: &Value) -> Result<(), String> {
             "options.{key}: dde-cycle reads only max_newton, tol_x and tol_f"
         )),
         None => Ok(()),
+    }
+}
+
+/// Refuses the keys of `options` that the continuation of a cycle does not use, so that they
+/// are not accepted and then ignored. The rest goes to the `cont` reader.
+fn check_branch_options(options: &Value) -> Result<(), String> {
+    let Some(map) = options.as_object() else {
+        // `parse_options` names the type error.
+        return Ok(());
+    };
+    for key in ["detect", "mesh_adapt"] {
+        if map.contains_key(key) {
+            return Err(format!(
+                "options.{key}: the continuation of a cycle does not use it"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Reads `branch`: a JSON boolean, false when the key is absent.
+fn read_branch(obj: &serde_json::Map<String, Value>) -> Result<bool, String> {
+    match obj.get("branch") {
+        None => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(_) => Err("\"branch\" must be true or false".to_string()),
     }
 }
 
@@ -266,6 +375,7 @@ fn read_problem(value: &Value) -> Result<Problem, String> {
         obj,
         &[
             "model", "params", "free", "ntst", "ncol", "orbit", "hopf", "options", "floquet",
+            "branch",
         ],
         "problem",
     )?;
@@ -293,10 +403,18 @@ fn read_problem(value: &Value) -> Result<Problem, String> {
             return Err("problem: give one of \"orbit\" and \"hopf\"".to_string());
         }
     };
+    let branch = read_branch(obj)?;
+    if branch && obj.contains_key("floquet") {
+        return Err("\"floquet\": not available with \"branch\" (SPEC section 8n)".to_string());
+    }
     let opts = match obj.get("options") {
         None => Options::default(),
         Some(v) => {
-            check_options(v)?;
+            if branch {
+                check_branch_options(v)?;
+            } else {
+                check_options(v)?;
+            }
             parse_options(v)?
         }
     };
@@ -310,6 +428,7 @@ fn read_problem(value: &Value) -> Result<Problem, String> {
         start,
         opts,
         floquet,
+        branch,
     })
 }
 
@@ -500,5 +619,61 @@ mod tests {
         }
         let unknown = ORBIT.replace("\"max_newton\":30", "\"nope\":1");
         assert!(read(&unknown).unwrap_err().contains("nope"));
+    }
+
+    #[test]
+    fn the_branch_key_is_optional_and_a_boolean() {
+        assert!(!read(ORBIT).unwrap().branch);
+        let on = ORBIT.replace("\"options\"", "\"branch\":true,\"options\"");
+        assert!(read(&on).unwrap().branch);
+        let off = ORBIT.replace("\"options\"", "\"branch\":false,\"options\"");
+        assert!(!read(&off).unwrap().branch);
+        for body in ["null", "\"yes\"", "1", "[true]", "{}"] {
+            let text = ORBIT.replace("\"options\"", &format!("\"branch\":{body},\"options\""));
+            let msg = read(&text).unwrap_err();
+            assert!(msg.contains("\"branch\""), "{body}: {msg}");
+        }
+        // It also works next to a Hopf start.
+        let hopf = HOPF.replace("\"hopf\"", "\"branch\":true,\"hopf\"");
+        assert!(read(&hopf).unwrap().branch);
+    }
+
+    #[test]
+    fn a_branch_run_reads_the_continuation_options() {
+        let text = ORBIT.replace(
+            "\"max_newton\":30",
+            "\"max_newton\":30,\"hmax\":0.2,\"max_steps\":50,\"bounds\":[0.5,2.0],\"direction\":-1",
+        );
+        // Without `branch` the extra keys are refused.
+        assert!(read(&text).unwrap_err().contains("options."));
+        let on = text.replace("\"options\"", "\"branch\":true,\"options\"");
+        let p = read(&on).unwrap();
+        assert_eq!(p.opts.hmax, 0.2);
+        assert_eq!(p.opts.max_steps, 50);
+        assert_eq!(p.opts.bounds, (0.5, 2.0));
+        assert_eq!(p.opts.direction, -1.0);
+        assert_eq!(p.opts.max_newton, 30);
+    }
+
+    #[test]
+    fn a_branch_run_refuses_what_the_continuation_does_not_use() {
+        let on = ORBIT.replace("\"options\"", "\"branch\":true,\"options\"");
+        for (body, key) in [
+            ("\"detect\":{\"lp\":true}", "options.detect"),
+            ("\"detect\":{}", "options.detect"),
+            ("\"mesh_adapt\":3", "options.mesh_adapt"),
+        ] {
+            let text = on.replace("\"max_newton\":30", body);
+            let msg = read(&text).unwrap_err();
+            assert!(msg.contains(key), "{body}: {msg}");
+        }
+        let with_floquet = on.replace(
+            "\"options\"",
+            "\"floquet\":{\"nhist\":8,\"count\":2},\"options\"",
+        );
+        assert!(read(&with_floquet).unwrap_err().contains("\"floquet\""));
+        // The cont reader still checks the values.
+        let bad = on.replace("\"max_newton\":30", "\"hmax\":-1");
+        assert!(read(&bad).unwrap_err().contains("options.hmax"));
     }
 }
