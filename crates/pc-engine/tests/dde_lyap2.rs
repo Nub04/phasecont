@@ -199,6 +199,8 @@ fn a_change_of_coordinates_keeps_re_c2_and_changes_im_c2() {
         (1.0, 2.727_239_502_918_144_4, 1.736_214_591_539_624_8),
     ];
     let wright_im = [-1.975_462_100_474_293_4, -6.505_645_604_977_195];
+    // SPEC test 4, c = 0: Im c2 at al = 0.3 and al = -0.7.
+    let shifted_im = [-1.409_975_422_828_130_3, 4.621_882_472_064_265];
     for which in both() {
         for (k, (c, re_c2, l2)) in want.into_iter().enumerate() {
             let mut ims = Vec::new();
@@ -211,6 +213,10 @@ fn a_change_of_coordinates_keeps_re_c2_and_changes_im_c2() {
                 ims.push(r.c2[1]);
             }
             assert!((ims[0] - ims[1]).abs() > 1.0, "{ims:?}");
+            if k == 0 {
+                near(ims[0], shifted_im[0], 1e-9, "Im c2 at al = 0.3");
+                near(ims[1], shifted_im[1], 1e-9, "Im c2 at al = -0.7");
+            }
             for im in ims {
                 assert!((im - wright_im[k]).abs() > 0.1, "{im}");
             }

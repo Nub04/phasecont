@@ -154,7 +154,7 @@ commands:
   dde-eq        find an equilibrium of a model with delay calls and its roots
   dde-branch    continue such an equilibrium in one parameter and find its Hopf points
   dde-hopf      continue a Hopf point of such an equilibrium in two parameters
-  dde-lyap      compute the first Lyapunov coefficient at such a Hopf point
+  dde-lyap      compute the first Lyapunov coefficient (and the second, if asked) at such a Hopf point
   session      rerun the runs of a session file and compare them with the stored ones
   gpu           list the ensemble devices and test one of them
   ensemble      run many trajectories of one model, or time the engine
@@ -496,7 +496,7 @@ generalized Hopf point. The key l2 below adds the second coefficient, which is m
 generalized Hopf point, where l1 is zero. The x0 you give is used as it is, and its residual
 comes back in the output.
 
-The problem file is a JSON object. Every key is required:
+The problem file is a JSON object. Every key but l2 is required:
   model    path of the .ode file, relative to the problem file
   params   object of numbers by parameter name; a parameter left out keeps the value
            of the model file
@@ -513,16 +513,17 @@ c1 is [real, imaginary] and l1 is the real part of c1 over omega, with the criti
 eigenvector q scaled to a 2-norm of 1. null_residual is the relative size of
 Delta(i omega) q, and a value above 1e-4 means omega is not a Hopf frequency at this x0 and
 params. With l2 true the output also has \"c2\" ([real, imaginary]) and \"l2\", the real
-part of c2 over omega, and the key order stays alphabetical. l2 means something only at a
-point where l1 is zero. A point where Delta(0), Delta(2 i omega) or Delta(3 i omega) is
+part of c2 over omega. The keys of the output are in alphabetical order. l2 means something
+only at a point where l1 is zero. A point where Delta(0), Delta(2 i omega) or Delta(3 i omega) is
 singular is refused.
 
 options:
   --          the next argument is the file, even if it starts with `-`
   -h, --help  print this help
 
-exit codes: 0 l1 was computed, 1 the model has errors or no delay call, or the engine
-        failed for another reason (a singular Delta(0) or Delta(2 i omega) included),
+exit codes: 0 l1 was computed (and l2, if asked), 1 the model has errors or no delay call,
+        or the engine failed for another reason (a singular Delta(0) or Delta(2 i omega)
+        included, and Delta(3 i omega) when l2 is true),
         2 usage error, an unreadable problem file, invalid JSON, a bad problem (the message
         names the key) or an omega that is not a Hopf frequency
 ";

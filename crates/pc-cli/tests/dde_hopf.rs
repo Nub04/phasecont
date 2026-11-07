@@ -331,7 +331,7 @@ fn usage_errors_and_help() {
 // Test 12 of SPEC section 8h: `l2` on a GH special. The Wright equation with a quintic term,
 // u' = -a u(t-1) (1+u) + b u^3 + c u^5, has the curve a = pi/2 and the same l1 as without
 // the quintic term, so the GH point stays at b = 0.38875... and l2 = 1.7362145915396248 for
-// c = 1 (numpy oracle of section 8h, test 11).
+// c = 1 (numpy oracle of section 8h, test 1).
 
 const QUINTIC_MODEL: &str = "par a=1.5, b=0, c=1\nu'=-a*delay(u,1)*(1+u)+b*u^3+c*u^5\ndone\n";
 // The same, with a decoupled block z' = 4.71238898038469 z(t-1). At omega = pi/2 its
