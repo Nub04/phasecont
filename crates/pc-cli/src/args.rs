@@ -701,9 +701,9 @@ Corrects a periodic orbit of a model whose equations call delay(x,tau). The orbi
 piecewise polynomial of degree ncol on ntst intervals, fixed by Gauss collocation, and
 Newton's method solves for the orbit, its period and one declared parameter in free. The
 phase condition is an integral condition against the start profile. The system has
-(ntst*ncol+1)*n + 2 unknowns, at most 3000. The command does not label points. With the
-floquet key it also prints the leading Floquet multipliers of the corrected orbit. With
-the branch key it continues the corrected orbit in the free parameter instead.
+(ntst*ncol+1)*n + 2 unknowns, at most 3000. With the floquet key it also prints the
+leading Floquet multipliers of the corrected orbit. With the branch key it continues the
+corrected orbit in the free parameter instead and labels LPC, PD and NS points.
 
 The problem file is a JSON object. Every key but options is required:
   model    path of the .ode file, relative to the problem file
@@ -721,7 +721,8 @@ The problem file is a JSON object. Every key but options is required:
            except detect and mesh_adapt, which are refused
   floquet  optional; an object {\"nhist\", \"count\"}, both integers of at least 1, that
            asks for the multipliers. There is no default and the key is off without it.
-           It cannot be combined with branch
+           With branch it adds the multipliers to every point and special point, and
+           turns on the PD and NS labels
   branch   optional; true continues the orbit in the free parameter, false or no key
            prints the corrected orbit. There is no default and the key is off without it
 
@@ -750,13 +751,21 @@ With branch set to true, the start is first corrected by Newton's method with fr
 the value that params gives (for hopf, the Hopf corrector runs first and finds that value),
 and pseudo-arclength continuation then follows the same equations on the same mesh. The
 output is
-{\"ntst\", \"ncol\", \"stop\", \"points\", \"warnings\"}. Each point is {\"alpha\", \"period\",
-\"profile\", \"h\", \"iters\"}: the first has h and iters 0 and is the corrected start. stop is
-one of end, max_steps, bounds, step_too_small, singular, cancelled or error. The run reads
-h0, hmin, hmax, max_steps, tol_x, tol_f, max_newton, direction and bounds from options as
-cont does. The mesh is fixed, so there is no mesh adaptation, and no special points or
-multipliers are computed. When free is a delay time, bounds must have a lower bound
-above 0.
+{\"ntst\", \"ncol\", \"stop\", \"points\", \"specials\", \"warnings\"}. Each point is {\"alpha\",
+\"period\", \"profile\", \"h\", \"iters\"}: the first has h and iters 0 and is the corrected
+start. stop is one of end, max_steps, bounds, step_too_small, singular, cancelled or
+error. The run reads h0, hmin, hmax, max_steps, tol_x, tol_f, max_newton, direction and
+bounds from options as cont does. The mesh is fixed, so there is no mesh adaptation.
+When free is a delay time, bounds must have a lower bound above 0.
+
+specials is an array in branch order, empty if there is none. Each element is {\"label\",
+\"index\", \"alpha\", \"period\", \"profile\"}, where index is the index of the first point
+after the special point. An LPC (limit point of cycles) is labeled on every run with
+branch. With floquet the points and the special points also have \"multipliers\" and
+\"trivial_error\" as above, and PD (period doubling) and NS (Neimark-Sacker) are labeled
+too. The tests use all n*(nhist+1) multipliers, not only the count that is printed, and
+the small ones that come from the discretization are assumed to stay small. Each point of
+the run builds the monodromy matrix, so a run with floquet costs more.
 
 options:
   --          the next argument is the file, even if it starts with `-`

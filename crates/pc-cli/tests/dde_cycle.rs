@@ -1,7 +1,8 @@
 //! Runs `pc-cli dde-cycle` on the model `x' = -x(t - tau) + mu x (1 - x^2 - x(t - tau)^2)`,
 //! which has the exact orbit x = sin t, T = 2 pi for tau = pi/2 (SPEC section 8l, test 7).
 //! The orbit and Hopf starts must give the numbers of the engine calls, and so must the
-//! `floquet` key (SPEC section 8m, test 9) and the `branch` key (SPEC section 8n, test 8).
+//! `floquet` key (SPEC section 8m, test 9) and the `branch` key (SPEC section 8n, test 8)
+//! and the labels of a branch (SPEC section 8o, test 8).
 //! Also runs the bad problem files and the run that does not converge.
 
 mod common;
@@ -12,9 +13,9 @@ use std::sync::atomic::AtomicBool;
 
 use common::{code, run, stderr, stdout};
 use pc_engine::{
-    DdeCycleBranch, DdeCycleSetup, DdeCycleStart, DdeFloquetOptions, DdeHopfCycle, Evaluator,
-    Options, build_dde, dde_continue_cycle, dde_correct_cycle, dde_floquet_multipliers,
-    dde_hopf_cycle,
+    DdeCycleBranch, DdeCyclePoint, DdeCycleSetup, DdeCycleStart, DdeFloquetOptions, DdeHopfCycle,
+    Evaluator, Options, build_dde, dde_continue_cycle, dde_continue_cycle_floquet,
+    dde_correct_cycle, dde_floquet_multipliers, dde_hopf_cycle,
 };
 use pc_ode::{MapLoader, Severity, SourceMap, load};
 use serde_json::{Value, json};
@@ -719,12 +720,7 @@ fn branch_false_and_no_branch_print_the_corrector_output() {
 
 #[test]
 fn branch_problems_that_cannot_run_are_exit_2() {
-    let cases: [(&str, Edit, &str); 6] = [
-        (
-            "with_floquet",
-            Box::new(|p| p["floquet"] = json!({"nhist": 8, "count": 2})),
-            "floquet",
-        ),
+    let cases: [(&str, Edit, &str); 5] = [
         (
             "with_mesh_adapt",
             Box::new(|p| p["options"]["mesh_adapt"] = json!(3)),
@@ -780,7 +776,245 @@ fn help_lists_the_branch_key() {
     let o = run(&scratch(), &["dde-cycle", "--help"]);
     assert_eq!(code(&o), 0);
     let text = stdout(&o);
-    for word in ["branch", "points", "bounds", "mesh_adapt"] {
+    for word in ["branch", "points", "specials", "bounds", "mesh_adapt"] {
         assert!(text.contains(word), "{word} missing from the help text");
     }
+}
+
+// ---------------------------------------------------------------------------------------
+// The labels of a branch (SPEC section 8o, test 8).
+
+/// The cubic model of section 8o, test 3: a fold of cycles at `a = 0`.
+fn lpc_source() -> String {
+    format!(
+        "par a=0.25, tau={TAU:?}\n\
+         x'=-delay(x,tau)+x*(a-(x^2+delay(x,tau)^2-1)^2)\n\
+         done\n"
+    )
+}
+
+/// The start of the fold run: the upper cycle `r sin t` at `a = 0.25`, `r^2 = 1.5`.
+fn lpc_profile() -> Vec<f64> {
+    let nq = NTST * NCOL;
+    let r = 1.5_f64.sqrt();
+    (0..=nq)
+        .map(|q| r * (2.0 * PI * q as f64 / nq as f64).sin())
+        .collect()
+}
+
+/// The fold run: down in `a` through the fold at `a = 0`, `branch` set to true.
+fn lpc_problem() -> Value {
+    json!({
+        "model": "lpc.ode",
+        "params": {"a": 0.25, "tau": TAU},
+        "free": "a",
+        "ntst": NTST,
+        "ncol": NCOL,
+        "orbit": {"profile": lpc_profile(), "period": 2.0 * PI},
+        "options": {
+            "max_newton": 10, "hmax": 0.1, "max_steps": 400,
+            "bounds": [-0.5, 0.4], "direction": -1
+        },
+        "branch": true,
+    })
+}
+
+/// Runs the command on the fold problem `problem`, which names the model `lpc.ode`.
+fn lpc_cycle(name: &str, problem: &Value) -> (i32, String, String) {
+    write("lpc.ode", &lpc_source());
+    let file = write(name, &problem.to_string());
+    let o = run(&scratch(), &["dde-cycle", &file]);
+    (code(&o), stdout(&o), stderr(&o))
+}
+
+/// The engine run that the fold problem stands for, with `floquet` as given.
+fn lpc_engine(floquet: Option<&DdeFloquetOptions>) -> DdeCycleBranch {
+    let mut map = SourceMap::new();
+    let top = map.add("lpc.ode", lpc_source());
+    let l = load(top, &mut map, &mut MapLoader::new());
+    assert!(
+        l.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        "{:?}",
+        l.diagnostics
+    );
+    let mut model = build_dde(&l.expanded, &l.info, Evaluator::Jit).expect("build_dde");
+    let setup = DdeCycleSetup {
+        params: vec![0.25, TAU],
+        free: 0,
+        ntst: NTST,
+        ncol: NCOL,
+    };
+    let opts = Options {
+        bounds: (-0.5, 0.4),
+        direction: -1.0,
+        hmax: 0.1,
+        max_steps: 400,
+        max_newton: 10,
+        ..Options::default()
+    };
+    dde_continue_cycle_floquet(
+        &mut model,
+        &setup,
+        &DdeCycleStart {
+            profile: lpc_profile(),
+            period: 2.0 * PI,
+        },
+        &opts,
+        floquet,
+        &AtomicBool::new(false),
+    )
+    .expect("continue_cycle_floquet")
+}
+
+fn same_bits(got: &Value, want: f64, what: &str) {
+    // A NaN prints as null, so it is compared as such.
+    if want.is_nan() {
+        assert!(got.is_null(), "{what}: {got}");
+    } else {
+        assert_eq!(num(got).to_bits(), want.to_bits(), "{what}");
+    }
+}
+
+fn same_multipliers(got: &Value, p: &DdeCyclePoint, what: &str) {
+    let pairs = got["multipliers"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{what}: no multipliers in {got}"));
+    assert_eq!(pairs.len(), p.multipliers.len(), "{what}: count");
+    for (i, (g, w)) in pairs.iter().zip(&p.multipliers).enumerate() {
+        let pair = doubles(g);
+        assert_eq!(pair.len(), 2, "{what} multipliers[{i}]");
+        assert_eq!(pair[0].to_bits(), w.0.to_bits(), "{what} re[{i}]");
+        assert_eq!(pair[1].to_bits(), w.1.to_bits(), "{what} im[{i}]");
+    }
+    same_bits(&got["trivial_error"], p.trivial_error, what);
+}
+
+/// Checks that the printed specials are those of `want`, bit for bit, with the multipliers
+/// of the points and of the specials when `floquet` is true.
+fn same_specials(out: &str, want: &DdeCycleBranch, floquet: bool, what: &str) {
+    let v: Value = serde_json::from_str(out).unwrap();
+    let got = v["specials"].as_array().expect("specials");
+    assert_eq!(got.len(), want.specials.len(), "{what}: number of specials");
+    for (i, (g, w)) in got.iter().zip(&want.specials).enumerate() {
+        assert_eq!(g["label"].as_str(), Some(w.label.as_str()), "{what} {i}");
+        assert_eq!(g["index"].as_u64(), Some(w.index as u64), "{what} {i}");
+        assert_eq!(
+            num(&g["alpha"]).to_bits(),
+            w.point.alpha.to_bits(),
+            "{what} {i}"
+        );
+        assert_eq!(
+            num(&g["period"]).to_bits(),
+            w.point.period.to_bits(),
+            "{what} {i}"
+        );
+        let p = doubles(&g["profile"]);
+        assert_eq!(p.len(), w.point.profile.len(), "{what} {i}: profile length");
+        for (j, (a, b)) in p.iter().zip(&w.point.profile).enumerate() {
+            assert_eq!(a.to_bits(), b.to_bits(), "{what} {i} profile[{j}]");
+        }
+        assert_eq!(g.get("multipliers").is_some(), floquet, "{what} {i}");
+        if floquet {
+            same_multipliers(g, &w.point, &format!("{what} special {i}"));
+        }
+    }
+    let points = v["points"].as_array().expect("points");
+    assert_eq!(points.len(), want.points.len(), "{what}: number of points");
+    for (i, (g, w)) in points.iter().zip(&want.points).enumerate() {
+        assert_eq!(g.get("multipliers").is_some(), floquet, "{what} point {i}");
+        assert_eq!(
+            g.get("trivial_error").is_some(),
+            floquet,
+            "{what} point {i}"
+        );
+        if floquet {
+            same_multipliers(g, w, &format!("{what} point {i}"));
+        }
+    }
+}
+
+#[test]
+fn a_branch_prints_its_specials_bit_for_bit() {
+    let (status, out, err) = lpc_cycle("lpc_branch.json", &lpc_problem());
+    assert_eq!(status, 0, "{err}");
+    let want = lpc_engine(None);
+    let labels: Vec<&str> = want.specials.iter().map(|s| s.label.as_str()).collect();
+    assert_eq!(labels, ["LPC"], "{out}");
+    same_points(&out, &want, "lpc");
+    same_specials(&out, &want, false, "lpc");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    let special = &v["specials"][0];
+    assert!(num(&special["alpha"]).abs() <= 2e-11, "{out}");
+}
+
+#[test]
+fn a_branch_with_floquet_prints_the_multipliers_bit_for_bit() {
+    let mut p = lpc_problem();
+    p["floquet"] = json!({"nhist": 12, "count": 4});
+    let (status, out, err) = lpc_cycle("lpc_branch_floquet.json", &p);
+    assert_eq!(status, 0, "{err}");
+    let want = lpc_engine(Some(&DdeFloquetOptions {
+        nhist: 12,
+        count: 4,
+    }));
+    assert!(want.points.len() > 10, "{} points", want.points.len());
+    same_points(&out, &want, "lpc floquet");
+    same_specials(&out, &want, true, "lpc floquet");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert!(
+        v["specials"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["label"] == "LPC"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_branch_with_a_bad_floquet_is_exit_2_and_names_floquet() {
+    let cases = [
+        ("nhist_zero", json!({"nhist": 0, "count": 1})),
+        ("count_zero", json!({"nhist": 8, "count": 0})),
+        ("count_above_dimension", json!({"nhist": 4, "count": 6})),
+        ("stage_system_too_big", json!({"nhist": 4000, "count": 1})),
+    ];
+    for (name, floquet) in cases {
+        let mut p = lpc_problem();
+        p["floquet"] = floquet;
+        let (status, out, err) = lpc_cycle(&format!("lpc_bad_{name}.json"), &p);
+        assert_eq!(status, 2, "{name}: {err}");
+        assert!(out.is_empty(), "{name}: {out}");
+        assert!(err.contains("floquet"), "{name}: {err}");
+    }
+}
+
+#[test]
+fn a_branch_still_refuses_detect_and_mesh_adapt_with_floquet() {
+    for (name, key, value) in [
+        ("detect", "detect", json!({"lp": true})),
+        ("mesh_adapt", "mesh_adapt", json!(3)),
+    ] {
+        let mut p = lpc_problem();
+        p["floquet"] = json!({"nhist": 12, "count": 4});
+        p["options"][key] = value;
+        let (status, out, err) = lpc_cycle(&format!("lpc_floquet_{name}.json"), &p);
+        assert_eq!(status, 2, "{name}: {err}");
+        assert!(out.is_empty(), "{name}: {out}");
+        assert!(err.contains(&format!("options.{key}")), "{name}: {err}");
+    }
+}
+
+#[test]
+fn a_run_without_branch_prints_no_specials() {
+    let mut p = orbit_problem(&perturbed(), 6.0);
+    p["floquet"] = json!({"nhist": 8, "count": 2});
+    let (status, out, err) = dde_cycle("no_branch_floquet.json", &p);
+    assert_eq!(status, 0, "{err}");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert!(
+        v.get("specials").is_none() && v.get("points").is_none(),
+        "{out}"
+    );
+    assert!(v.get("multipliers").is_some(), "{out}");
 }

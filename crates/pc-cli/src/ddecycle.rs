@@ -2,7 +2,8 @@
 //! by collocation, from a given orbit or from a Hopf point (SPEC section 8l), and with the
 //! optional `floquet` key print the leading Floquet multipliers of the result (section 8m).
 //! With `"branch": true` the corrected orbit is instead continued in the free parameter and
-//! the command prints the points of the branch (section 8n).
+//! the command prints the points of the branch (section 8n) and its special points, with the
+//! multipliers of every point when `floquet` is given (section 8o).
 //!
 //! The problem file is read by hand from a `serde_json::Value`, as for `dde-hopf`, and the
 //! model is loaded through the same `load_dde`. Without `branch` the corrector reads only
@@ -16,9 +17,10 @@ use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 
 use pc_engine::{
-    DdeCycle, DdeCycleBranch, DdeCycleSetup, DdeCycleStart, DdeFloquet, DdeFloquetOptions,
-    DdeHopfCycle, DdeModel, EngineError, Evaluator, Options, StopReason, build_dde,
-    dde_continue_cycle, dde_correct_cycle, dde_floquet_multipliers, dde_hopf_cycle,
+    DdeCycle, DdeCycleBranch, DdeCyclePoint, DdeCycleSetup, DdeCycleStart, DdeFloquet,
+    DdeFloquetOptions, DdeHopfCycle, DdeModel, EngineError, Evaluator, Options, StopReason,
+    build_dde, dde_continue_cycle_floquet, dde_correct_cycle, dde_floquet_multipliers,
+    dde_hopf_cycle,
 };
 use pckern::json::problem::parse_options;
 use serde_json::{Value, json};
@@ -200,10 +202,12 @@ fn run_branch(
             }
         }
     };
-    let branch = match dde_continue_cycle(model, &setup, &orbit, &problem.opts, cancel) {
-        Ok(b) => b,
-        Err(e) => return engine_error(&e, shown),
-    };
+    let floquet = problem.floquet.as_ref();
+    let branch =
+        match dde_continue_cycle_floquet(model, &setup, &orbit, &problem.opts, floquet, cancel) {
+            Ok(b) => b,
+            Err(e) => return engine_error(&e, shown),
+        };
     // As `cont` does, a run that stops on an error still prints what it found, and the
     // message goes to stderr.
     if let StopReason::Error(e) = &branch.stop
@@ -211,7 +215,8 @@ fn run_branch(
     {
         to_stderr(&format!("pc-cli: {e}\n"));
     }
-    let mut text = branch_json(&branch, problem.ntst, problem.ncol).to_string();
+    let with_floquet = problem.floquet.is_some();
+    let mut text = branch_json(&branch, problem.ntst, problem.ncol, with_floquet).to_string();
     text.push('\n');
     out(&text, 0)
 }
@@ -240,19 +245,52 @@ fn cycle_json(cycle: &DdeCycle, ntst: usize, ncol: usize) -> Value {
     })
 }
 
-/// The output object of SPEC section 8n.
-fn branch_json(branch: &DdeCycleBranch, ntst: usize, ncol: usize) -> Value {
+/// Adds the multipliers of a point of a branch to its object.
+fn add_point_multipliers(value: &mut Value, p: &DdeCyclePoint) {
+    let pairs: Vec<Value> = p
+        .multipliers
+        .iter()
+        .map(|&(re, im)| json!([re, im]))
+        .collect();
+    value["multipliers"] = Value::Array(pairs);
+    value["trivial_error"] = json!(p.trivial_error);
+}
+
+/// The output object of SPEC sections 8n and 8o. The multipliers are printed only when the
+/// problem asked for them.
+fn branch_json(branch: &DdeCycleBranch, ntst: usize, ncol: usize, with_floquet: bool) -> Value {
     let points: Vec<Value> = branch
         .points
         .iter()
         .map(|p| {
-            json!({
+            let mut v = json!({
                 "alpha": p.alpha,
                 "period": p.period,
                 "profile": p.profile,
                 "h": p.h,
                 "iters": p.newton_iters,
-            })
+            });
+            if with_floquet {
+                add_point_multipliers(&mut v, p);
+            }
+            v
+        })
+        .collect();
+    let specials: Vec<Value> = branch
+        .specials
+        .iter()
+        .map(|s| {
+            let mut v = json!({
+                "label": s.label,
+                "index": s.index,
+                "alpha": s.point.alpha,
+                "period": s.point.period,
+                "profile": s.point.profile,
+            });
+            if with_floquet {
+                add_point_multipliers(&mut v, &s.point);
+            }
+            v
         })
         .collect();
     json!({
@@ -260,6 +298,7 @@ fn branch_json(branch: &DdeCycleBranch, ntst: usize, ncol: usize) -> Value {
         "ncol": ncol,
         "stop": stop_name(&branch.stop),
         "points": points,
+        "specials": specials,
         "warnings": branch.warnings,
     })
 }
@@ -404,9 +443,6 @@ fn read_problem(value: &Value) -> Result<Problem, String> {
         }
     };
     let branch = read_branch(obj)?;
-    if branch && obj.contains_key("floquet") {
-        return Err("\"floquet\": not available with \"branch\" (SPEC section 8n)".to_string());
-    }
     let opts = match obj.get("options") {
         None => Options::default(),
         Some(v) => {
@@ -667,11 +703,16 @@ mod tests {
             let msg = read(&text).unwrap_err();
             assert!(msg.contains(key), "{body}: {msg}");
         }
+        // `floquet` goes with `branch` (SPEC section 8o) and a bad value still names the key.
         let with_floquet = on.replace(
             "\"options\"",
             "\"floquet\":{\"nhist\":8,\"count\":2},\"options\"",
         );
-        assert!(read(&with_floquet).unwrap_err().contains("\"floquet\""));
+        let p = read(&with_floquet).unwrap();
+        assert!(p.branch);
+        assert_eq!(p.floquet.map(|f| (f.nhist, f.count)), Some((8, 2)));
+        let bad_floquet = on.replace("\"options\"", "\"floquet\":{\"nhist\":8},\"options\"");
+        assert!(read(&bad_floquet).unwrap_err().contains("\"floquet\""));
         // The cont reader still checks the values.
         let bad = on.replace("\"max_newton\":30", "\"hmax\":-1");
         assert!(read(&bad).unwrap_err().contains("options.hmax"));
