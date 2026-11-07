@@ -4,6 +4,7 @@
 mod branch;
 mod eq;
 mod hopf;
+mod hopfhopf;
 mod lyap;
 mod lyap2;
 mod nodes;
@@ -16,6 +17,7 @@ pub use hopf::{
     DdeHopfBranch, DdeHopfPoint, DdeHopfSpecial, HopfSetup, continue_hopf,
     continue_hopf_with_lyapunov,
 };
+pub use hopfhopf::{HopfHopf, hopf_hopf};
 pub use lyap::{Lyapunov, lyapunov};
 pub use lyap2::{Lyapunov2, lyapunov2};
 pub use zerohopf::{ZeroHopf, zero_hopf};
