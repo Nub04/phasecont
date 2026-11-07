@@ -22,7 +22,7 @@ use crate::error::EngineError;
 use crate::model::ModelEval;
 use crate::problem::Problem;
 use pc_ir::EntryKind;
-use pc_linalg::{eigenvalues, eigvec, invariant_bases, rotate_basis};
+use pc_linalg::{BasisOf, BasisPair, BasisTracker, eigenvalues, eigvec};
 use std::sync::atomic::AtomicBool;
 
 /// Names of the HOM curve test functions, in the order of `Point::codim2` (SPEC §8b).
@@ -79,10 +79,9 @@ pub struct HomProblem<'a> {
     ns: usize,
     free: [usize; 2],
     period0: f64,
-    /// The reference bases C_s (n by ns) and C_u (n by n - ns) of the rotation, from the
-    /// last accepted point.
-    cs: Vec<f64>,
-    cu: Vec<f64>,
+    /// The reference bases of the rotation (C_s n by ns, C_u n by n - ns), from the last
+    /// accepted point. The orbit rows use the subspaces of A^T.
+    tracker: BasisTracker,
     /// The left eigenvectors w_S and w_{S+1} of the last accepted point, for their signs.
     w_prev: [Option<Vec<f64>>; 2],
     /// Set by `accept` when the eigenvalue counts change; every later call fails with it.
@@ -103,13 +102,13 @@ fn transpose(a: &[f64], n: usize) -> Vec<f64> {
 
 /// Eigenvalues sorted by real part ascending, a complex pair with its positive imaginary
 /// part first.
-fn ascending(eigs: &[(f64, f64)]) -> Vec<(f64, f64)> {
+pub(super) fn ascending(eigs: &[(f64, f64)]) -> Vec<(f64, f64)> {
     let mut lam = eigs.to_vec();
     lam.sort_by(|p, q| p.0.total_cmp(&q.0).then(q.1.total_cmp(&p.1)));
     lam
 }
 
-fn is_real(l: (f64, f64)) -> bool {
+pub(super) fn is_real(l: (f64, f64)) -> bool {
     l.1.abs() <= REAL_TOL
 }
 
@@ -174,12 +173,17 @@ fn norm1(v: &[f64]) -> f64 {
     v.iter().map(|x| x.abs()).sum()
 }
 
-/// The left eigenvector of the real eigenvalue `lam` of A, from `at` = A^T, with unit
-/// 2-norm. Against `prev` it is flipped when their dot product is negative; without
-/// `prev` its component of largest magnitude is positive. `None` when the eigenvector
-/// solve fails.
-fn left_vector(at: &[f64], n: usize, lam: f64, prev: Option<&[f64]>) -> Option<Vec<f64>> {
-    let (mut w, _) = eigvec(at, n, (lam, 0.0)).ok()?;
+/// The eigenvector of the real eigenvalue `lam` of the n by n `m`, with unit 2-norm. It is
+/// the right eigenvector of A for `m` = A and the left one for `m` = A^T. Against `prev`
+/// it is flipped when their dot product is negative; without `prev` its component of
+/// largest magnitude is positive. `None` when the eigenvector solve fails.
+pub(super) fn signed_eigvec(
+    m: &[f64],
+    n: usize,
+    lam: f64,
+    prev: Option<&[f64]>,
+) -> Option<Vec<f64>> {
+    let (mut w, _) = eigvec(m, n, (lam, 0.0)).ok()?;
     let nrm = w.iter().map(|x| x * x).sum::<f64>().sqrt();
     if !(nrm > 0.0 && nrm.is_finite()) {
         return None;
@@ -352,7 +356,9 @@ impl<'a> HomProblem<'a> {
                 n - ns
             )));
         }
-        let (cs, cu) = invariant_bases(&transpose(&a, n), n, ns)?;
+        let mut tracker = BasisTracker::new();
+        let first = tracker.bases(BasisOf::Transpose, &a, n, ns)?;
+        tracker.set(BasisOf::Transpose, first);
         let mut extras = vec![Extra::Other; n];
         extras.extend([Extra::Param(a1), Extra::Param(a2)]);
         let mut outer = CycleProblem::with_extras(model, &setup, extras)?;
@@ -368,8 +374,7 @@ impl<'a> HomProblem<'a> {
             ns,
             free: start.free,
             period0: setup.period,
-            cs,
-            cu,
+            tracker,
             w_prev: [None, None],
             stop: None,
             f: vec![0.0; n],
@@ -402,14 +407,10 @@ impl<'a> HomProblem<'a> {
     }
 
     /// The bases L_s and L_u at x, rotated against the reference bases.
-    fn bases(&mut self, x: &[f64]) -> Result<(Vec<f64>, Vec<f64>), EngineError> {
+    fn bases(&mut self, x: &[f64]) -> Result<BasisPair, EngineError> {
         let (n, ns) = (self.n, self.ns);
-        let at = transpose(&self.saddle_jacobian(x)?, n);
-        let (vs, vu) = invariant_bases(&at, n, ns)?;
-        Ok((
-            rotate_basis(&vs, &self.cs, n, ns)?,
-            rotate_basis(&vu, &self.cu, n, n - ns)?,
-        ))
+        let a = self.saddle_jacobian(x)?;
+        Ok(self.tracker.bases(BasisOf::Transpose, &a, n, ns)?)
     }
 
     /// The n boundary rows at x and the bases they use.
@@ -456,7 +457,7 @@ impl<'a> HomProblem<'a> {
         let period = x[ext];
         let last = ext - n;
         let mut flip = |w: usize, u: &[f64], l: f64, e: f64| -> Result<f64, EngineError> {
-            let Some(wv) = left_vector(&at, n, l, self.w_prev[w].as_deref()) else {
+            let Some(wv) = signed_eigvec(&at, n, l, self.w_prev[w].as_deref()) else {
                 return Ok(f64::NAN);
             };
             self.outer.eval_at(x, &EntryKind::F, u, &mut self.f)?;
@@ -618,15 +619,14 @@ impl Problem for HomProblem<'_> {
             ));
             return;
         }
-        if let Ok((ls, lu)) = self.bases(x) {
-            self.cs = ls;
-            self.cu = lu;
+        if let Ok(pair) = self.bases(x) {
+            self.tracker.set(BasisOf::Transpose, pair);
         }
         let lam = ascending(&lam);
         let at = transpose(&a, n);
         for (w, l) in [(0, lam[ns - 1]), (1, lam[ns])] {
             self.w_prev[w] = if is_real(l) {
-                left_vector(&at, n, l.0, self.w_prev[w].as_deref())
+                signed_eigvec(&at, n, l.0, self.w_prev[w].as_deref())
             } else {
                 None
             };
@@ -747,13 +747,13 @@ mod tests {
     }
 
     #[test]
-    fn left_vectors_keep_their_sign() {
+    fn eigenvectors_keep_their_sign() {
         // A^T = [[-1, 0], [1, 2]] column-major: left eigenvector of -1 is +-(3, -1)/sqrt 10.
         let at = vec![-1.0, 1.0, 0.0, 2.0];
-        let w = left_vector(&at, 2, -1.0, None).unwrap();
+        let w = signed_eigvec(&at, 2, -1.0, None).unwrap();
         assert!(w[0] > 0.0 && (w[0] * w[0] + w[1] * w[1] - 1.0).abs() < 1e-14);
         let neg: Vec<f64> = w.iter().map(|v| -v).collect();
-        let w2 = left_vector(&at, 2, -1.0, Some(&neg)).unwrap();
+        let w2 = signed_eigvec(&at, 2, -1.0, Some(&neg)).unwrap();
         assert!(w2[0] < 0.0);
         // A^T w = lambda w.
         let aw = [at[0] * w[0] + at[2] * w[1], at[1] * w[0] + at[3] * w[1]];
