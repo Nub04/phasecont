@@ -532,8 +532,9 @@ options:
   -h, --help  print this help
 
 exit codes: 0 l1 was computed (and l2, if asked), 1 the model has errors or no delay call,
-        or the engine failed for another reason (a singular Delta(0) or Delta(2 i omega)
-        included, and Delta(3 i omega) when l2 is true),
+        or the engine failed for another reason (a null space of dimension 2 or more at
+        Delta(i omega), a singular Delta(0) or Delta(2 i omega) included, and Delta(3 i omega)
+        when l2 is true),
         2 usage error, an unreadable problem file, invalid JSON, a bad problem (the message
         names the key) or an omega that is not a Hopf frequency
 ";
@@ -573,8 +574,9 @@ options:
   -h, --help  print this help
 
 exit codes: 0 the coefficients were computed, 1 the model has errors or no delay call, or the
-        engine failed for another reason (a zero or imaginary root that is not simple, or a
-        singular Delta(2 i omega), included),
+        engine failed for another reason (a zero or imaginary root that is not simple, a null
+        space of dimension 2 or more at Delta(0) or Delta(i omega), or a singular
+        Delta(2 i omega), included),
         2 usage error, an unreadable problem file, invalid JSON, a bad problem (the message
         names the key) or a point that is not a zero-Hopf point
 ";
