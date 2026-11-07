@@ -11,6 +11,7 @@ mod branch;
 mod codim2;
 mod curve2;
 mod cycle;
+mod dde;
 mod ep;
 mod error;
 mod hopfcurve;
@@ -38,6 +39,7 @@ pub use cycle::{
     continue_lpc_curve, continue_ns_curve, continue_pd_curve, curve_point_normal_form,
     lc_point_normal_form, periodic_orbit,
 };
+pub use dde::{CharRoot, LinearDde, RootOptions, RootSet, characteristic_roots};
 pub use ep::{EpProblem, EpSetup, continue_ep, equilibrium};
 pub use error::EngineError;
 pub use hopfcurve::{HOPF_CURVE_LABELS, HopfCurveProblem, continue_hopf_curve};
