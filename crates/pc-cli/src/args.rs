@@ -605,10 +605,10 @@ order. Each g is [real, imaginary]. They are the coefficients of z1 |z1|^2 and z
 the equation of z1 (g2100, g1011) and of z2 |z1|^2 and z2 |z2|^2 in the equation of z2
 (g1110, g0021), with the critical eigenvectors scaled to a 2-norm of 1. product is
 Re g2100 Re g0021, sign is its sign (0 if it is exactly 0), theta is Re g1011 / Re g0021 and
-delta is Re g1110 / Re g2100, the numbers of section 5.3 of arXiv 1903.08276. theta and
-delta are null where the denominator is 0. A negative product is the difficult case. Only
-the signs of product, theta and delta do not depend on the scale of the eigenvectors, and
-theta and delta themselves do not either. null_residual_1 and null_residual_2 are the
+delta is Re g1110 / Re g2100, the numbers of section 6.3 of arXiv 1903.08276. theta and
+delta are null where the denominator is 0. A negative product is the difficult case. theta,
+delta and the sign of product do not depend on the scale of the eigenvectors, but the g
+values and product do. null_residual_1 and null_residual_2 are the
 relative sizes of Delta(i omega1) q1 and Delta(i omega2) q2, and a value above 1e-4 means
 the frequency is not a root.
 
