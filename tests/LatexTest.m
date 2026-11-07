@@ -91,6 +91,22 @@ classdef LatexTest < matlab.unittest.TestCase
             testCase.verifyEqual(d.digits, 6);
         end
 
+        function jsonMarkCoordinatesAreNumbersAndSeriesAreArrays(testCase)
+            fig = testCase.figureSpec([1; 2], [3; 4]);
+            fig.Marks = struct("Label", "LP", "X", 1.5, "Y", 3);
+            opts = struct("Digits", 6, "Standalone", false, "Data", "inline", "Basename", "f");
+            json = phasecont.internal.latexJson("pgfplots", fig, opts);
+            d = jsondecode(json);
+            testCase.verifyEqual(d.marks.x, 1.5);
+            testCase.verifyEqual(d.marks.y, 3);
+            testCase.verifySubstring(json, '"x":[1,2]');
+            fig.Marks = struct("Label", {"LP", "H"}, "X", {1.5, 2}, "Y", {3, 4});
+            json = phasecont.internal.latexJson("pgfplots", fig, opts);
+            d = jsondecode(json);
+            testCase.verifyEqual(d.marks(2).x, 2);
+            testCase.verifyEqual(d.marks(2).y, 4);
+        end
+
         function jsonRejectsWrongShapes(testCase)
             opts = struct("Digits", 6, "Standalone", false, "Data", "inline", "Basename", "f");
             fig = testCase.figureSpec([1; 2], [3; 4]);
@@ -438,6 +454,8 @@ classdef LatexTest < matlab.unittest.TestCase
 
         function buildTimesOut(testCase)
             testCase.assumeTrue(testCase.HasLatexmk, "latexmk is not installed");
+            testCase.assumeTrue(fixtures.canBoundLatexmk(), ...
+                "Java cannot start latexmk, so no time limit can be enforced");
             % \def\a{\a}\a calls itself without end and without using memory.
             tex = "\documentclass{article}" + newline + "\begin{document}" + newline + ...
                 "\def\a{\a}\a" + newline + "\end{document}" + newline;

@@ -185,6 +185,8 @@ classdef LatexStudioTest < matlab.unittest.TestCase
 
         function compileShowsATimeout(testCase)
             testCase.assumeLatexmk();
+            testCase.assumeTrue(fixtures.canBoundLatexmk(), ...
+                "Java cannot start latexmk, so no time limit can be enforced");
             app = phasecont.app.LatexStudio(Visible = "off", Timeout = 3);
             testCase.addTeardown(@() delete(app));
             app.setSource(["\documentclass{article}"; "\begin{document}"; ...
