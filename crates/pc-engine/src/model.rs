@@ -2,7 +2,7 @@
 
 use crate::aot::AotEval;
 use crate::error::EngineError;
-use pc_ir::{EntryKind, Fallback, IrModel, lower};
+use pc_ir::{DelaySlot, EntryKind, Fallback, IrError, IrModel, lower, lower_dde};
 use pc_jit::CompiledModel;
 use pc_ode::{Expr, Model, ModelInfo, StmtKind, SymbolKind};
 use std::collections::HashSet;
@@ -149,16 +149,29 @@ pub fn build_allowing_t(
     build_checked(model, info, which, false)
 }
 
+fn model_error(errs: Vec<IrError>) -> EngineError {
+    let msgs: Vec<&str> = errs.iter().map(|e| e.message.as_str()).collect();
+    EngineError::Model(msgs.join("; "))
+}
+
 fn build_checked(
     model: &Model,
     info: &ModelInfo,
     which: Evaluator,
     require_autonomous: bool,
 ) -> Result<Box<dyn ModelEval>, EngineError> {
-    let ir: IrModel = lower(model, info).map_err(|errs| {
-        let msgs: Vec<&str> = errs.iter().map(|e| e.message.as_str()).collect();
-        EngineError::Model(msgs.join("; "))
-    })?;
+    let ir: IrModel = lower(model, info).map_err(model_error)?;
+    finish(model, info, which, ir, require_autonomous)
+}
+
+/// The checks and the evaluator that `build` and `build_dde` share.
+fn finish(
+    model: &Model,
+    info: &ModelInfo,
+    which: Evaluator,
+    ir: IrModel,
+    require_autonomous: bool,
+) -> Result<Box<dyn ModelEval>, EngineError> {
     if require_autonomous && !ir.autonomous {
         return Err(EngineError::NonAutonomous);
     }
@@ -179,6 +192,43 @@ fn build_checked(
                 n_aux: ir.aux.len(),
             })
         }
+    })
+}
+
+/// A model with `delay(x,tau)` calls, lowered with hidden parameters (SPEC section 8d).
+pub struct DdeModel {
+    /// Evaluates the entries of the lowered model. Its parameter vector is the declared
+    /// parameters, then one slot per entry of `delays`, then `t`.
+    pub eval: Box<dyn ModelEval>,
+    /// The hidden slots in order; slot `j` is parameter `n_user_params + j`.
+    pub delays: Vec<DelaySlot>,
+    /// Number of declared parameters.
+    pub n_user_params: usize,
+}
+
+/// Like [`build`] for a model that calls `delay`, which `build` refuses. A model without a
+/// delay call, a delay of the wrong form and a model that reads `t` are errors. The
+/// result evaluates through the JIT or the interpreter; an AOT library is `BadProblem`,
+/// since the code generators refuse delays. Use `dde_equilibrium` and `dde_stability` on
+/// the result.
+pub fn build_dde(
+    model: &Model,
+    info: &ModelInfo,
+    which: Evaluator,
+) -> Result<DdeModel, EngineError> {
+    if matches!(which, Evaluator::Aot { .. }) {
+        return Err(EngineError::BadProblem(
+            "a delay model has no AOT path".into(),
+        ));
+    }
+    let ir = lower_dde(model, info).map_err(model_error)?;
+    let delays = ir.delays.clone();
+    let n_user_params = ir.n_user_params;
+    let eval = finish(model, info, which, ir, true)?;
+    Ok(DdeModel {
+        eval,
+        delays,
+        n_user_params,
     })
 }
 

@@ -40,13 +40,16 @@ pub use cycle::{
     continue_pd_curve, curve_point_normal_form, inclination_flips, lc_point_normal_form,
     periodic_orbit,
 };
-pub use dde::{CharRoot, LinearDde, RootOptions, RootSet, characteristic_roots};
+pub use dde::{
+    CharRoot, LinearDde, RootOptions, RootSet, characteristic_roots,
+    equilibrium as dde_equilibrium, linearize as dde_linearize, stability as dde_stability,
+};
 pub use ep::{EpProblem, EpSetup, continue_ep, equilibrium};
 pub use error::EngineError;
 pub use hopfcurve::{HOPF_CURVE_LABELS, HopfCurveProblem, continue_hopf_curve};
 pub use ivp::{IvpOptions, IvpSetup, integrate};
 pub use lpcurve::{LP_CURVE_LABELS, LpCurveProblem, continue_lp_curve};
-pub use model::{Evaluator, ModelEval, build, build_allowing_t};
+pub use model::{DdeModel, Evaluator, ModelEval, build, build_allowing_t, build_dde};
 pub use normal::{
     GH_NORMALIZATION, H_NORMALIZATION, LP_NORMALIZATION, first_lyapunov, fold_coefficient,
     hopf_eigenvectors, special_coefficient,
