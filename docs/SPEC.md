@@ -50,7 +50,7 @@ Parsing rules:
 | Arrays | `x[1..n]'=...`, `%[1..n]` ... `%` | full (expanded) |
 | Global flags | `global -1 {u-.2} {m=.5*m}` | simulation only |
 | Markov, Wiener | `markov z 2`, `wiener w` | simulation only |
-| Delay | `delay(x,tau)` | warn; v2 |
+| Delay | `delay(x,tau)` | accepted for a state and a delay time that is a number or a `par`, and used by `build_dde` and `pc-cli dde-eq` only (Section 8d); other forms warn (ODE0054) |
 | Volterra, BVP | `volt`, `bdry` | warn; unsupported |
 | DAEs | `0=...`, `solv` | warn; unsupported |
 | Other constructs | `special`, `export`, `only`, `options`, `shift`, `del_shft`, `sum(..)of(..)`, `hom_bcs` | warn; unsupported |
@@ -81,7 +81,7 @@ Parsing rules:
 - Fixed quantities and user functions are inlined. Inline formula tables are tabulated when the model is lowered and read with linear interpolation.
 - Time `t` is a hidden parameter slot `p[n_p]`, so every entry keeps the same signature. The IR records whether the model is autonomous.
 - Every transcendental goes through one table of shims in `pc-ir`, backed by the `libm` crate. The interpreter, the DAG evaluator, the JIT and the AOT code all call the same functions.
-- `pc-ir` refuses simulation-only models, `delay` and unsupported statements with an error that points at the source. A DAG over 1,000,000 nodes is an error.
+- `pc-ir` refuses simulation-only models, unsupported statements and any form of `delay` outside Section 8d with an error that points at the source. `build` refuses a model that uses `delay` at all; only `build_dde` accepts it. A DAG over 1,000,000 nodes is an error.
 
 **Derivatives produced by symbolic forward differentiation on the DAG.** Each one is a new DAG that goes through CSE again:
 - $f(u,\alpha)$
@@ -341,7 +341,7 @@ The engine evaluates the coefficient inside `codim2_tests`, and a point where th
 
 **First-point rule.** The first point of a run is the start the caller chose. A test that is exactly zero there gets its label on point 0, for the equilibrium tests and the codim-2 tests alike, because no earlier step reached that point and nothing else would report it. The label is added only when the test is not zero or undefined at the second point, since a test that stays zero is no crossing: the coefficient of a model that has none is zero along the whole curve. A codim-2 value that is zero at the start only up to rounding is treated the same way when the sign change to the second point defeats the search. The search fails there because the pole guard compares the located value with the smaller end value, and at a rounding-level start that is smaller than any value the search can reach. In that case the value $a$ at the start and $b$ at the second point satisfy $|a| \le \texttt{POLE\_TOL}\,|b|$, so the run labels point 0 and adds no warning. The bound is the guard's own tolerance, applied to the start instead of to the located value. The rule applies only to a failed search, so a zero near the start that the search does place is still a label at its own point, and a pole at the start ($|a|$ large) still gives the warning. Rounding decides the sign of such a start value, so a run in one direction has the sign change and the label, and a run in the other direction has neither. A run that switches onto a branch at a branch point sets `start_is_special`, skips detection on its first step and carries no label at the start, since the parent branch holds it.
 
-**Out of scope.** Codim-2 normal form coefficients, a center manifold of dimension above 3, homoclinic orbits (E8, Section 8b) and delays (E9).
+**Out of scope.** Codim-2 normal form coefficients, a center manifold of dimension above 3, homoclinic orbits (E8, Section 8b) and delays (E9, Sections 8c and 8d).
 
 **Acceptance.** Every model is our own and has a closed form that shares no code with the engine. Models live in `crates/pc-engine/tests/models`, and the tests in `crates/pc-engine/tests/cycle_normal_forms.rs` use `ntst = 40`, `ncol = 4`. Each test asserts to $10^{-5}$ relative unless it says otherwise, and the first run records the measured error in the test comment.
 
@@ -521,6 +521,47 @@ and prints `{"n", "roots": [{"re", "im", "residual"}], "unrefined": [{"re", "im"
 7b. Small $n$: the $d = 2$ system of test 7 at $r = -3$ has 76 roots by the winding number. $n = 40$ returns 50 of them, and $n = 80$ and $n = 120$ return all 76. Every run has residuals below $10^{-12}$ and an empty `unrefined`. At $r = -2$ the count is 18 for every $n$ from 40 to 200.
 8. Errors: a matrix of the wrong length, no delay, $\tau \le 0$, NaN in a matrix, $n = 0$, $d(n+1) > 4000$ and a NaN $r_{\min}$ each give `BadProblem`.
 9. `pc-cli dde-roots` on the data of test 3 prints roots with the same values; a missing `n`, an unknown key and an unreadable file exit with the `cont` codes.
+
+## 8d. `.ode` delays, equilibria and their stability (phase E9a, step 2)
+
+Step 2 lets a `.ode` file call `delay(x,tau)`, finds the equilibria of the resulting delay equation and reports the characteristic roots at an equilibrium with the code of Section 8c. It does not simulate a delay equation, continue one, detect a Hopf point on a branch, or compute normal forms. Those are later steps. A model with a delay is refused by every ODE path (`build`, and so simulation, continuation, ensembles, the C ABI and the MATLAB API) with a message that says so. The only way in is `build_dde` and the `pc-cli dde-eq` command.
+
+**What is not verified.** XPPAUT also reads `@ delay=<max>` and takes the history before $t = 0$ from the initial values. PhaseCont reads neither: an equilibrium and its roots need no history, and the option is not used. I did not check what XPPAUT does with `delay(x,tau)` when `x` is not a state, or when `tau` is an expression, so those forms are refused and not guessed at.
+
+**Accepted form.** `delay(x,tau)` may stand wherever a state may in the right side of a state equation, an `aux` formula, a fixed quantity or a user function body, with
+- `x` a bare state name, not shadowed by a formal argument of the enclosing user function, and
+- `tau` a positive numeric literal, a `number` constant, or a bare name declared with `par`.
+
+Anything else is an error at the call (`IrErrorKind::Delay`, message "the first argument of delay must be a state" or "the delay time must be a number or a parameter"): another first argument, any expression for `tau`, a non-positive literal, a derived parameter or a fixed quantity used as `tau`, a wrong argument count, and a delay in a model with difference equations. `pc-ode` reports ODE0054 (warning) on the forms that fail the checks it can make (first argument, form of `tau`, argument count, a shadowed state name) and no diagnostic on the accepted forms. `pc-ir` repeats every check and also refuses a delay in a model with difference equations. A parameter value that is not finite and positive when the delays are read is `BadProblem`.
+
+**Lowering.** Each distinct pair (state $k$, delay time) found in the model becomes one hidden parameter, appended after the declared parameters, so that `n_p` counts it, `p` has length `n_p + 1` as before and the last slot is still `t`. The pair is keyed by the state and by the literal value or the parameter, so `delay(x,tau)` twice is one slot, `delay(x,1)` and `delay(x,tau)` are two slots even when `tau = 1`, and `delay(x,1)` and `delay(x,1.0)` are one. Slots are numbered in the order of first occurrence in the statements of the expanded model. The hidden parameter is named by the call as written with the literal printed by Rust's `{}`, for example `delay(y,tau)` or `delay(x,1)`; no declaration can have such a name. Its entry in `par_values` is NaN, so an evaluation that forgets to set it gives NaN and not a plausible number. `IrModel` gets `n_user_params` and a `delays: Vec<DelaySlot>` with the state index and the delay time (a literal or a parameter index) of each slot. The JIT, the AOT C code, the entry kinds, the C ABI and the `Interp` walk see an ordinary parameter vector. `Interp` reads the slot of a call from the same table.
+
+**Linearization.** Let $G(x, p) = f(x, \ell(x), p)$, where $\ell$ puts $x_k$ into the slot of every pair $(k, \cdot)$, and let the distinct delay times be $\tau_1 < \dots < \tau_m$ (slots of equal value are merged, whether they came from a literal or a parameter). With $J_u$ and $J_p$ the `JacU` and `JacP` entries of the lowered model at $(x, \ell(x), p)$,
+$$A_0 = J_u,\qquad (A_j)_{\cdot k} = \sum_{s:\ \text{state}(s) = k,\ \tau(s) = \tau_j} (J_p)_{\cdot s},\qquad \frac{\partial G}{\partial x} = A_0 + \sum_j A_j.$$
+At an equilibrium $x(t - \tau) = x^\ast$, so the derivative of $f$ with respect to a delay time vanishes there ($f$ depends on $\tau$ only through $x'(t-\tau) = 0$), and $\tau$ enters the characteristic equation only through $e^{-\lambda\tau_j}$ of Section 8c. This is why a delay time held as a plain parameter is enough, and why the same derivation does not carry over to periodic orbits.
+
+**Equilibria.** $G(x^\ast, p) = 0$ by Newton's method with $\partial G/\partial x$ above, one LU per step, the tolerances and iteration cap of the corrector (`Options`), and `NewtonFailed` otherwise. The routine is `dde::equilibrium(model, setup, opts)`. The caller gives $p$ for the declared parameters only; the routine fills the slots.
+
+**Stability.** `dde::stability(model, x, p, root_options)` linearizes at $x$ and calls `characteristic_roots` with $A_0$ and the $(\tau_j, A_j)$. It needs at least one delay time: a model with delays always has one. It does not check that $x$ is an equilibrium. The roots with $\operatorname{Re}\lambda \ge r_{\min}$ are returned with the limits of Section 8c, and `n` and `r_min` have no default.
+
+**Command line.** `pc-cli dde-eq <problem.json>` reads
+```json
+{"model": "path.ode", "params": {"r": 1.5, "tau": 1.0}, "x0": [0.8], "n": 30, "re_min": -2.0}
+```
+with `params` naming declared parameters (any other name is an error; one that is missing keeps the file's value, as `cont` does), runs Newton from `x0`, then the roots there, and prints `{"x", "residual", "delays": [tau_j], "roots": [{"re", "im", "residual"}], "unrefined": [{"re", "im"}]}`. The reader is strict like that of `dde-roots`. Exit codes follow `cont`.
+
+**Acceptance tests.** Rust tests with closed forms.
+
+1. Delayed logistic `x' = r*x*(1-delay(x,tau))`, $r = 1.5$, $\tau = 1$. The lowered model has one hidden slot and `n_p` is 3. Newton from 0.8 reaches $x^\ast = 1$ within $10^{-14}$ in at most 8 steps. At $x^\ast = 1$, $A_0 = 0$ and $A_1 = (-r)$ exactly; at $x^\ast = 0$, $A_0 = (r)$ and $A_1 = (0)$ and the root $\lambda = r$ is returned within $10^{-12}$. At $x^\ast = 1$ the largest real part is negative for $r\tau = 1.5$, positive for $r\tau = 1.7$, and $0$ within $10^{-12}$ for $r\tau = \pi/2$, where $\pm i\pi/2$ are roots (the characteristic equation is $\lambda = -r e^{-\lambda\tau}$).
+2. `x' = a - x - 0.5*delay(x,tau)^2` with $a = 1.5$: $x^\ast = -1 + \sqrt{1 + 2a} = 1$, $A_0 = (-1)$, $A_1 = (-1)$ and $\partial G/\partial x = -2$. Newton from 0.5 converges within $10^{-14}$ in at most 8 steps, which a Jacobian of $A_0$ alone would not do (its iteration map $x \mapsto a - x^2/2$ has multiplier $-1$ at the root, so it does not reach $10^{-14}$ in 8 steps). The roots satisfy $\lambda = -1 - e^{-\lambda\tau}$ with $\rho \le 10^{-12}$.
+3. Two states, two delays, `x' = -delay(y,tau1)`, `y' = delay(x,tau2) - 2*y` with $\tau_1 = 0.7$ and $\tau_2 = 1.3$ at the origin: $A_0 = \operatorname{diag}(0, -2)$, the delay times come out as $[0.7, 1.3]$ with $A$ equal to $\begin{pmatrix}0&-1\\0&0\end{pmatrix}$ and $\begin{pmatrix}0&0\\1&0\end{pmatrix}$. The same model with the two assignments of the parameter names swapped gives the times in the same ascending order.
+4. Merging: `x' = -delay(x,tau) - 2*delay(y,tau)`, `y' = x - y` with `tau = 1` has two slots and one delay time with $A_1 = \begin{pmatrix}-1&-2\\0&0\end{pmatrix}$. `x' = -delay(x,1) - 0.5*delay(x,2)` has two slots and two delay times, $A_1 = (-1)$ and $A_2 = (-0.5)$. `delay(x,tau)` used twice in one model has one slot. A literal `1` and a parameter equal to 1 give two slots and one delay time.
+5. Slot order: for `x' = delay(y,t2) + delay(x,t1)` the hidden names are `delay(y,t2)` and `delay(x,t1)` in that order, and `n_user_params` is the declared count.
+6. Both evaluators (JIT and `Fallback`) give `F`, `JacU` and `JacP` equal within $10^{-14}$ relative on a model with three slots, for several values of the hidden parameters, including a hidden column of `JacP`.
+7. Refusals, each with the span of the call: `delay(x+1,tau)`, `delay(x,2*tau)`, `delay(x,y)`, `delay(a,tau)` with `a` a parameter, `delay(w,tau)` with `w` an `aux` and with `w` a fixed quantity, `delay(x,0)`, `delay(x,-1)`, a derived parameter as `tau`, `delay(x)`, `delay(x,tau,1)`, a delay in a user function whose formal argument is named `x`, and a delay in a map. A parameter `tau` set to 0, to $-1$, to NaN and to infinity gives `BadProblem` in `dde::equilibrium` and `dde::stability`. A delay in a user function body that names a global state as `x` is accepted.
+8. `build` of a model with a delay is an error that names the delay and `build_dde`; `build_dde` of a model without a delay is an error. A model without delays has the same parameter vector, `n_p`, entries and results as before this step (the existing suites pass unchanged).
+9. `pc-ode`: the accepted forms give no ODE0054; each form of test 7 that `pc-ode` can see (first argument, form of `tau`, argument count, shadowed state name) gives ODE0054 at the call; the corpus test and the language reference are updated to this rule.
+10. `pc-cli dde-eq` on the data of test 1 prints $x = 1$, one delay time and roots with the values of test 1; an unknown parameter name, an unknown key, a missing `model` and an unreadable file exit with the `cont` codes.
 
 ## 9. Acceptance tests
 
@@ -790,7 +831,7 @@ plot(br, Var="x");                                        % stable solid, unstab
   - `LatexStudio` has an editor, a Summary pane, an error Context pane and Errors and Log tabs. The preview is the system PDF viewer. Selecting an error shows its context lines with the error line marked with `>`, because the `uitextarea` cursor API is not confirmed here. Insert figure and Insert table always write inline data, and Compile blocks the window. The app raises `phasecont:app:{badOpener,openFailed,saveFailed,empty,noSuchError,noPdf,noBranch}`. A pdf.js preview in a `uihtml` page was in the plan as an option and is not built, since it cannot be tried without MATLAB. `LatexStudio` has no `Preview` option, and `THIRD_PARTY_NOTICES.md` has no pdf.js entry.
   - Acceptance: `cargo test -p pc-latex` and `cargo test -p pc-cli` pass. `pc-latex` covers a `proptest` that `escape` leaves no raw special character outside a backslash command, a `proptest` that 17 digits round-trip a double, golden `.tex` files (stable and unstable series with marks, a table, external data with its `.dat` files), a standalone wrap, the error cases (null, 1e999, empty series and table, missing and bad digits, length mismatch, basename rules, unknown keys), and a compile of every golden file, as a fragment inside an `article` and as a `standalone` document, with the `latexmk` flags above to a PDF. A machine without `latexmk` prints `SKIPPED: no latexmk`, and `PC_REQUIRE_LATEX=1` turns the skip into a failure. `pc-cli` covers the command line cases above, including that a failed render writes no file. The C ABI gains one function, `latex_render`, with a matching gateway command. The MATLAB tests (`tests/LatexTest.m`) check that the API output equals the Rust output for the same figure and that a missing `Digits` raises.
 - **Optional external backends:** AUTO-07p and XPPAUT, run as subprocesses the user installs separately.
-- **Engine phases E8b and E9:** the parts of E8 that Section 8b leaves out (inclination flips, saddle-node homoclinic orbits, heteroclinic orbits, Lin's method), and delay equations beyond step 1 of E9a. Phase E7, the periodic normal forms, is Section 8a, phase E8a, homoclinic orbits to a saddle, is Section 8b, and step 1 of E9a, the characteristic roots of a linear delay equation, is Section 8c.
+- **Engine phases E8b and E9:** the parts of E8 that Section 8b leaves out (inclination flips, saddle-node homoclinic orbits, heteroclinic orbits, Lin's method), and delay equations beyond step 2 of E9a. Phase E7, the periodic normal forms, is Section 8a, phase E8a, homoclinic orbits to a saddle, is Section 8b, step 1 of E9a, the characteristic roots of a linear delay equation, is Section 8c, and step 2, `.ode` delays with their equilibria and stability, is Section 8d.
 
 ## 14. Phases and acceptance
 
@@ -812,6 +853,7 @@ plot(br, Var="x");                                        % stable solid, unstab
 | P13 | Periodic normal forms (E7): $b$, $c$, $d$ at LPC, PD and NS points | Tests 1 to 8 and the Rust, FFI and CLI part of test 9 of section 8a pass, including the CPC, GPD, CH, R1 and R2 labels on curves (E7b). The MATLAB part of test 9 passes (2026-11-07) |
 | P14 | Homoclinic orbits to a saddle (E8a): HOM curve, `orbit` and `cycle` starts, tests 1 to 12 of HomCont | Tests 1 to 7 of section 8b pass in Rust, the FFI and the CLI, and the MATLAB part of test 6 passes. The full MATLAB suite passes: 503 tests, 0 failed, 7 skipped by assumption (2026-11-07) |
 | P15 | Characteristic roots of linear delay equations (E9a, step 1): `dde` module and `pc-cli dde-roots` | Tests 1 to 9 of section 8c pass in Rust and the CLI. No MATLAB part |
+| P16 | `.ode` delays, DDE equilibria and their stability (E9a, step 2): hidden-parameter lowering, `build_dde`, `dde::equilibrium`, `dde::stability`, `pc-cli dde-eq` | Tests 1 to 10 of section 8d pass in Rust and the CLI. No MATLAB part |
 
 ## 15. References
 
