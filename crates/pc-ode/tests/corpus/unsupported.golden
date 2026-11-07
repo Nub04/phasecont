@@ -1,5 +1,5 @@
 diagnostics
-unsupported.ode:3:9: warning[ODE0054]: `delay` is read only by `pc-cli dde-eq`, `dde-branch`, `dde-hopf` and `dde-lyap`; simulation and ODE continuation do not support it
+unsupported.ode:3:9: warning[ODE0054]: `delay` is read only by `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap` and `dde-zh`; simulation and ODE continuation do not support it
 unsupported.ode:4:7: warning[ODE0055]: `shift` is not supported; the call is kept as written
 unsupported.ode:5:7: warning[ODE0056]: `del_shft` is not supported; the call is kept as written
 unsupported.ode:6:1: warning[ODE0028]: Volterra integral equations are not supported; the line is kept as written

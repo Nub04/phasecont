@@ -902,7 +902,7 @@ fn delay_with_one_argument() {
                 code: UNSUPPORTED_DELAY,
                 severity: Severity::Warning,
                 span: nth(text, "delay", 0),
-                message: "`delay` is read only by `pc-cli dde-eq`, `dde-branch`, `dde-hopf` and `dde-lyap`; simulation and ODE continuation do not support it"
+                message: "`delay` is read only by `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap` and `dde-zh`; simulation and ODE continuation do not support it"
                     .to_string(),
                 fix_it: None,
                 notes: Vec::new(),
