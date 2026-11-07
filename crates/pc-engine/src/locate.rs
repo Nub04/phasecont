@@ -344,7 +344,19 @@ fn detect_inner(
             value_at(&pk.tests, &pk.codim2, t),
             value_at(&pk1.tests, &pk1.codim2, t),
         );
-        // NaN on either side skips the test; a zero at point k was reported before.
+        // The first point is the start of the run, so a zero there was not reported before.
+        // Later, a zero at point k was reported by the step that reached it. A test that is
+        // also zero at the second point, or undefined there, is not a crossing of zero: the
+        // coefficient of a model that has none is zero on the whole curve.
+        if k == 0
+            && a == 0.0
+            && !b.is_nan()
+            && b != 0.0
+            && let Some(l) = label(&*p, t, &pk.eigenvalues)
+        {
+            found.push((0.0, special(l, 0, pk.clone())));
+        }
+        // NaN on either side skips the test.
         if a.is_nan() || b.is_nan() || a == 0.0 {
             continue;
         }
@@ -385,12 +397,16 @@ fn detect_inner(
                     None if t >= 3 => {}
                     None => warn(warnings, &*p, t, &pt.eigenvalues, k),
                 },
-                // The first point is the start the caller chose, and a zero exactly there is
-                // not reported. A codim-2 value at the start of at most `POLE_TOL` times the
-                // value at the second point is a zero at the start by the same measure the
-                // pole guard uses, so the failed search is not a warning either. Rounding
-                // decides which side of zero such a value falls on.
-                None if k == 0 && t >= 3 && a.abs() <= POLE_TOL * b.abs() => {}
+                // A codim-2 value at the start of at most `POLE_TOL` times the value at the
+                // second point is a zero at the start by the same measure the pole guard
+                // uses. The failed search is no warning then, and the start point gets the
+                // label, as it does for an exact zero. Rounding decides which side of zero
+                // such a value falls on, and only a sign change reaches this arm.
+                None if k == 0 && t >= 3 && a.abs() <= POLE_TOL * b.abs() => {
+                    if let Some(l) = label(&*p, t, &pk.eigenvalues) {
+                        found.push((0.0, special(l, 0, pk.clone())));
+                    }
+                }
                 // No point was located, so the end of the step is the nearest guide to
                 // which kind of zero (H or NSA) was being looked for.
                 None => warn(warnings, &*p, t, &pk1.eigenvalues, k),
@@ -484,9 +500,13 @@ mod tests {
         assert_eq!((sp[0].label.as_str(), sp[0].index), ("BP", 1));
         assert_eq!(sp[0].point.alpha, pts[1].alpha);
         assert_eq!(sp[0].point.tests[1], 0.0);
-        // The next step starts from zero and reports nothing.
-        let (_, sp) = run(false, &pts[1..]);
+        // The next step, with the whole run so far, starts from zero and reports nothing.
+        let (_, sp) = run(false, &pts);
         assert!(sp.is_empty());
+        // Where a run starts on that zero, the start point is labeled instead.
+        let (_, sp) = run(false, &pts[1..]);
+        assert_eq!(sp.len(), 1);
+        assert_eq!((sp[0].label.as_str(), sp[0].index), ("BP", 0));
     }
 
     #[test]
@@ -720,17 +740,59 @@ mod codim2_tests {
     }
 
     #[test]
-    fn a_zero_at_the_first_point_is_neither_reported_nor_warned_about() {
-        // Exactly zero at the start: skipped, as for the equilibrium tests.
+    fn a_zero_at_the_first_point_is_labeled_at_point_zero_without_a_warning() {
+        // Exactly zero at the start.
         let (w, sp) = run(zero(), pt_with(0.0, 0.0), pt_with(0.1, 0.1));
-        assert!(w.is_empty() && sp.is_empty(), "{w:?}");
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(sp.len(), 1);
+        assert_eq!((sp[0].label.as_str(), sp[0].index), ("ZZ", 0));
+        assert_eq!(sp[0].point.alpha, 0.0);
         // Zero up to rounding at the start, with a sign change to the second point that no
-        // search can place: the same result.
+        // search can place: the same label, at the start point.
         let at_start = || Curve {
             at_start: true,
             ..zero()
         };
         let (w, sp) = run(at_start(), pt_with(0.0, -3e-14), pt_with(0.1, 0.1));
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(sp.len(), 1);
+        assert_eq!((sp[0].label.as_str(), sp[0].index), ("ZZ", 0));
+        assert_eq!(sp[0].point.alpha, 0.0);
+        // Rounding that leaves the start on the same side as the second point has no sign
+        // change, so nothing is reported in that direction.
+        let (w, sp) = run(at_start(), pt_with(0.0, 3e-14), pt_with(0.1, 0.1));
+        assert!(w.is_empty() && sp.is_empty(), "{w:?}");
+    }
+
+    #[test]
+    fn a_dropped_zero_at_the_first_point_gives_no_label() {
+        let drop = || Curve {
+            drop: true,
+            ..zero()
+        };
+        let (w, sp) = run(drop(), pt_with(0.0, 0.0), pt_with(0.1, 0.1));
+        assert!(w.is_empty() && sp.is_empty(), "{w:?}");
+        let at_start = Curve {
+            at_start: true,
+            ..drop()
+        };
+        let (w, sp) = run(at_start, pt_with(0.0, -3e-14), pt_with(0.1, 0.1));
+        assert!(w.is_empty() && sp.is_empty(), "{w:?}");
+    }
+
+    #[test]
+    fn a_test_that_stays_zero_or_is_undefined_after_the_start_gives_no_start_label() {
+        for next in [0.0, f64::NAN] {
+            let (w, sp) = run(zero(), pt_with(0.0, 0.0), pt_with(0.1, next));
+            assert!(w.is_empty() && sp.is_empty(), "{next}: {w:?}");
+        }
+    }
+
+    #[test]
+    fn a_zero_after_the_first_step_is_not_labeled_twice() {
+        // Point 1 has the zero. The step 1 to 2 starts from it and adds nothing.
+        let pts = [pt_with(-0.1, -0.1), pt_with(0.0, 0.0), pt_with(0.1, 0.1)];
+        let (w, sp) = run_from(zero(), &[0.0, 0.0], &pts);
         assert!(w.is_empty() && sp.is_empty(), "{w:?}");
     }
 

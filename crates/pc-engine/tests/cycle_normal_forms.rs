@@ -605,8 +605,8 @@ fn the_r1_product_changes_sign_along_a_fold_curve() {
 #[test]
 fn the_r2_product_changes_sign_along_a_flip_curve() {
     // The real multipliers -exp(nu pi) and -exp((nu - 1) pi) have product 1 at nu = 1/2, a
-    // zero of the PDNS test at the first point. Like an exact zero there, it is neither
-    // reported nor warned about.
+    // zero of the PDNS test at the first point. No sign change reaches the locator in
+    // either direction, so the runs give no start label and no warning.
     let orbit = ring_orbit(0.25, CURVE_NTST * NCOL);
     let start = curve_start(vec![0.25, 0.5], (pad(&orbit.0, 4, 6), orbit.1));
     let (_, b) = curve_run("cyc_r2", pd_curve, &start, -1.0, (-0.5, 0.6));
@@ -723,7 +723,8 @@ fn the_r1_test_is_nan_on_a_planar_model() {
 
 /// The R2 points on the flip line beta = 1/4 of `cyc_r2` are at nu = 0 (run down from 0.5)
 /// and at nu = 1 (run up from 0.5), the two zeros of the product of mu + 1. The start at
-/// nu = 0.5 is a PDNS zero, which the runs skip without a warning.
+/// nu = 0.5 is a PDNS zero with no sign change in either run, so it gets no label and no
+/// warning.
 #[test]
 fn the_r2_points_are_located_on_the_flip_curve_of_the_r2_model() {
     let orbit = ring_orbit(0.25, CURVE_NTST * NCOL);

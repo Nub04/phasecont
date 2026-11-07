@@ -129,7 +129,10 @@ fn start_at_a_branch_point_works() {
         .unwrap();
         assert_eq!(b.points[0].tests[1], 0.0, "{which:?}");
         assert_eq!(b.stop, StopReason::Bounds);
-        assert!(b.specials.is_empty());
+        // The run starts on the BP, so the start point carries the label. The run that
+        // switches onto a branch there sets `start_is_special` and carries none.
+        assert_eq!(labels(&b), ["BP"], "{which:?}");
+        assert_eq!(b.specials[0].index, 0);
         assert!(b.points.len() > 3);
     }
 }
