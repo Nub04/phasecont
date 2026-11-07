@@ -182,6 +182,22 @@ pub fn equilibrium(
     ep_equilibrium(&mut Collapsed { m }, setup, opts)
 }
 
+/// The largest absolute entry of `G(x) = f(x, x, p)`, which is NaN when an entry is.
+pub fn residual(m: &mut DdeModel, x: &[f64], p: &[f64]) -> Result<f64, EngineError> {
+    check_params(m, p)?;
+    check_state(m, x)?;
+    let full = full_params(m, x, p, 0.0);
+    let mut f = vec![0.0; m.eval.n()];
+    m.eval.eval(&EntryKind::F, x, &full, &[], &mut f)?;
+    Ok(f.iter().fold(0.0, |a: f64, v| {
+        if a.is_nan() || v.is_nan() {
+            f64::NAN
+        } else {
+            a.max(v.abs())
+        }
+    }))
+}
+
 /// The characteristic roots of the linear equation at `x` (see [`linearize`]), with the
 /// limits of `characteristic_roots`. `x` is not checked to be an equilibrium.
 pub fn stability(

@@ -5,6 +5,6 @@ mod eq;
 mod nodes;
 mod roots;
 
-pub use eq::{equilibrium, linearize, stability};
+pub use eq::{equilibrium, linearize, residual, stability};
 
 pub use roots::{CharRoot, LinearDde, RootOptions, RootSet, characteristic_roots};

@@ -42,7 +42,8 @@ pub use cycle::{
 };
 pub use dde::{
     CharRoot, LinearDde, RootOptions, RootSet, characteristic_roots,
-    equilibrium as dde_equilibrium, linearize as dde_linearize, stability as dde_stability,
+    equilibrium as dde_equilibrium, linearize as dde_linearize, residual as dde_residual,
+    stability as dde_stability,
 };
 pub use ep::{EpProblem, EpSetup, continue_ep, equilibrium};
 pub use error::EngineError;

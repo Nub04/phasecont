@@ -4,7 +4,7 @@
 
 use pc_engine::{
     DdeModel, EngineError, EpSetup, Evaluator, Options, RootOptions, build, build_dde,
-    dde_equilibrium, dde_linearize, dde_stability,
+    dde_equilibrium, dde_linearize, dde_residual, dde_stability,
 };
 use pc_ir::EntryKind;
 use pc_ode::{MapLoader, Model, ModelInfo, Severity, SourceMap, load};
@@ -382,4 +382,26 @@ fn a_model_that_reads_time_is_refused() {
         .err()
         .expect("refused");
     assert!(matches!(e, EngineError::NonAutonomous), "{e:?}");
+}
+
+#[test]
+fn the_residual_is_the_largest_entry_of_the_collapsed_field() {
+    let mut m = dde(
+        "par r=1.5, tau=1\nx'=r*x*(1-delay(x,tau))\ny'=-y+x\ndone\n",
+        Evaluator::Jit,
+    );
+    let p = [1.5, 1.0];
+    // x = 1 gives 0 in the first entry, and y = 3 gives -3 + 1 in the second.
+    let got = dde_residual(&mut m, &[1.0, 3.0], &p).unwrap();
+    assert!((got - 2.0).abs() <= 1e-15, "{got}");
+    let at_eq = dde_residual(&mut m, &[1.0, 1.0], &p).unwrap();
+    assert!(at_eq.abs() <= 1e-15, "{at_eq}");
+    assert!(matches!(
+        dde_residual(&mut m, &[1.0], &p),
+        Err(EngineError::BadProblem(_))
+    ));
+    assert!(matches!(
+        dde_residual(&mut m, &[1.0, 1.0], &[1.5, 0.0]),
+        Err(EngineError::BadProblem(_))
+    ));
 }
