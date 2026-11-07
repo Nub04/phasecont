@@ -57,6 +57,8 @@ pub enum Command {
     },
     /// Find the characteristic roots of a linear delay equation described by a problem file.
     DdeRoots { file: PathBuf },
+    /// Find an equilibrium of a model with delay calls and the roots of the linear equation there.
+    DdeEq { file: PathBuf },
     /// Rerun the runs of a session file and compare the results.
     SessionReplay {
         file: PathBuf,
@@ -96,6 +98,7 @@ usage: pc-cli parse [--json] [--] <file.ode>
        pc-cli emit-c [-o out.c] [--] <file.ode>
        pc-cli cont [--fallback] [--] <file.ode> <problem.json>
        pc-cli dde-roots [--] <problem.json>
+       pc-cli dde-eq [--] <problem.json>
        pc-cli session replay [--tol X] [--fallback] [--] <file.pcsession.json>
        pc-cli gpu list
        pc-cli gpu selftest --backend B [--device N] --precision P
@@ -116,6 +119,7 @@ usage:
   pc-cli emit-c <file.ode> [-o out.c]
   pc-cli cont <file.ode> <problem.json> [--fallback]
   pc-cli dde-roots <problem.json>
+  pc-cli dde-eq <problem.json>
   pc-cli session replay <file.pcsession.json> [--tol X] [--fallback]
   pc-cli gpu list
   pc-cli gpu selftest --backend B [--device N] --precision P
@@ -135,7 +139,8 @@ commands:
   emit-c        write C code for F, JacU and JacP
   cont          follow an equilibrium branch and print its points and special points
   dde-roots     find the characteristic roots of a linear delay equation
-  session       rerun the runs of a session file and compare them with the stored ones
+  dde-eq        find an equilibrium of a model with delay calls and its roots
+  session      rerun the runs of a session file and compare them with the stored ones
   gpu           list the ensemble devices and test one of them
   ensemble      run many trajectories of one model, or time the engine
   dll-imports   list the DLLs a 64-bit Windows PE file imports and check the allow-list
@@ -389,6 +394,39 @@ exit codes: 0 the roots were computed, 1 the computation failed, 2 usage error,
 an unreadable file, invalid JSON or a bad problem (the message names the key)
 ";
 
+pub const DDE_EQ_HELP: &str = "\
+usage: pc-cli dde-eq [--] <problem.json>
+
+Reads a model whose equations call delay(x,tau), solves f(x, x, p) = 0 for an
+equilibrium by Newton's method, and prints the equilibrium with the characteristic
+roots of the linear equation there (see dde-roots). A delay call has a state name
+as its first argument and a positive literal, a par name or a number name as its
+second. Every other command refuses a model with a delay call.
+
+The problem file is a JSON object, and every key is required:
+  model   path of the .ode file, relative to the problem file
+  params  object of numbers by parameter name; a parameter left out keeps the value
+          of the model file
+  x0      start values of Newton's method, one per state
+  n       number of Chebyshev intervals for the roots, at least 1, with
+          d (n + 1) <= 4000
+  re_min  smallest real part to report
+
+The output is {\"x\", \"residual\", \"delays\", \"roots\", \"unrefined\"}. \"x\" is the
+equilibrium, \"residual\" the largest entry of f(x, x, p), and \"delays\" the distinct
+delay times, ascending. \"roots\" and \"unrefined\" are as for dde-roots. The Newton
+tolerances are 1e-10 on the step and on the residual, with at most 6 iterations. A
+model that reads t is refused.
+
+options:
+  --          the next argument is the file, even if it starts with `-`
+  -h, --help  print this help
+
+exit codes: 0 the equilibrium and roots were computed, 1 the model has errors or no
+delay call, or Newton's method did not converge, 2 usage error, an unreadable
+problem file, invalid JSON or a bad problem (the message names the key)
+";
+
 pub const DLL_IMPORTS_HELP: &str = "\
 usage: pc-cli dll-imports [--] <file.dll>
 
@@ -502,6 +540,7 @@ where
         "emit-c" => emit_command(&args[1..]),
         "cont" => cont_command(&args[1..]),
         "dde-roots" => dde_roots_command(&args[1..]),
+        "dde-eq" => dde_eq_command(&args[1..]),
         "session" => session_command(&args[1..]),
         "gpu" => gpu_command(&args[1..]),
         "ensemble" => ensemble_command(&args[1..]),
@@ -700,6 +739,17 @@ fn dde_roots_command(rest: &[OsString]) -> Result<Command, UsageError> {
     match parts.file {
         Some(file) => Ok(Command::DdeRoots { file }),
         None => Err(UsageError("dde-roots needs a problem file".to_string())),
+    }
+}
+
+fn dde_eq_command(rest: &[OsString]) -> Result<Command, UsageError> {
+    let parts = split(rest, Accepts::default())?;
+    if parts.help {
+        return Ok(Command::ToolHelp(DDE_EQ_HELP));
+    }
+    match parts.file {
+        Some(file) => Ok(Command::DdeEq { file }),
+        None => Err(UsageError("dde-eq needs a problem file".to_string())),
     }
 }
 
@@ -1143,6 +1193,30 @@ mod tests {
             &["dde-roots"][..],
             &["dde-roots", "a.json", "b.json"],
             &["dde-roots", "--fallback", "a.json"],
+        ] {
+            assert!(p(args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn dde_eq_command_takes_one_file() {
+        assert_eq!(
+            p(&["dde-eq", "p.json"]),
+            Ok(Command::DdeEq {
+                file: "p.json".into()
+            })
+        );
+        assert_eq!(
+            p(&["dde-eq", "--", "-p.json"]),
+            Ok(Command::DdeEq {
+                file: "-p.json".into()
+            })
+        );
+        assert_eq!(p(&["dde-eq", "--help"]), Ok(Command::ToolHelp(DDE_EQ_HELP)));
+        for args in [
+            &["dde-eq"][..],
+            &["dde-eq", "a.json", "b.json"],
+            &["dde-eq", "--fallback", "a.json"],
         ] {
             assert!(p(args).is_err(), "{args:?}");
         }

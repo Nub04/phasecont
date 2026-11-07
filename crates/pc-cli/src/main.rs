@@ -3,6 +3,7 @@
 mod args;
 mod cont;
 mod ddecmd;
+mod ddeeq;
 mod dllimports;
 mod ensemble;
 mod gpu;
@@ -49,6 +50,7 @@ fn main() -> ExitCode {
             fallback,
         }) => cont::cont(&file, &problem, fallback),
         Ok(Command::DdeRoots { file }) => ddecmd::dde_roots(&file),
+        Ok(Command::DdeEq { file }) => ddeeq::dde_eq(&file),
         Ok(Command::GpuList) => gpu::list(),
         Ok(Command::GpuSelftest {
             backend,
