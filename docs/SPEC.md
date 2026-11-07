@@ -1257,7 +1257,38 @@ A set `cancel` flag, checked once per mesh interval, gives `Cancelled`. A non-fi
 8. Errors. Each of these is `BadProblem` for `OSC` at $N = 10$, $m = 3$: `nhist` 0, `count` 0 and $n(M+1) + 1$, a profile of the wrong length, a NaN in the profile, `period` 0, $-1$ and NaN, `ntst` 0, `ncol` 1 and 8, a stage system over the limit (`nhist` 400), and a model without delay (`par a=1`, `x'=-a*x`). A set `cancel` flag gives `Cancelled`.
 9. `pc-cli dde-cycle` with the problem of test 3 of Section 8l (`OSC`, $K = 0$, `orbit`, $N = 20$, $m = 4$) and `"floquet": {"nhist": 16, "count": 4}` prints `multipliers` with 4 entries equal, bit for bit, to those of `floquet_multipliers` on the corrected orbit, and a numeric `trivial_error`. The same file without the key prints neither. Each malformed `floquet` of the list above exits 2 and the message has `floquet`. `--help` lists the key.
 
-The tables are measured with the code (test first, then recorded here). The bounds in the tests are a factor of 2 to 3 above the measured values. They are not derived from the order of the method.
+**Measured tables.** The tables are measured with the code (tests first, then recorded here, release build). The bounds in the tests are not derived from the order of the method. Except for `TRIVIAL_BOUND` they are a factor of 2 to 3 above the largest measured value.
+
+Test 1 and 2, `OSC` at $N = 40$, $m = 4$, with `nhist` $= 16$ for $K = 0$ and `nhist` $= 24$ for $K = 1$. The columns are the error of the first, second and third leading nontrivial multiplier against the oracle, and `trivial_error`.
+
+| $K$ | $\mu$ | 1st | 2nd | 3rd | `trivial_error` |
+|---|---|---|---|---|---|
+| 0 | 0.1 | 3.4e-12 | 2.9e-10 | 4.1e-8 | 1.2e-13 |
+| 0 | 0.2 | 2.4e-11 | 2.6e-10 | 4.1e-8 | 1.1e-13 |
+| 0 | 0.3 | 4.8e-11 | 2.8e-10 | 3.9e-8 | 1.0e-13 |
+| 0 | 0.5 | 1.0e-11 | 5.7e-10 | 5.4e-8 | 9.1e-14 |
+| 1 | 0.1 | 6.3e-10 | 1.5e-10 | 8.6e-8 | 5.1e-13 |
+| 1 | 0.3 | 8.5e-8 | 9.9e-9 | 4.3e-6 | 3.3e-13 |
+| 1 | 0.5 | 7.8e-7 | 7.6e-7 | 4.8e-5 | 2.4e-13 |
+
+The bounds in `ORACLE_BOUND` are 1.5e-10, 1.5e-9 and 1.5e-7 for $K = 0$ and 2e-6, 2e-6 and 1.2e-4 for $K = 1$. The bound for the first multiplier at $K = 0$ is close to the resolution of the oracle (about ten decimals), so a tighter bound would test the oracle. `TRIVIAL_BOUND` is $10^{-11}$ for both $K$, about 20 times the largest measured value, because `trivial_error` is at the level of the rounding error of $\Phi(T)$ and a factor of 2 to 3 would make the test depend on the platform's floating-point library.
+
+Test 3, $\mu = 0.3$, error of the leading nontrivial multiplier. Left, by `nhist` at $N = 40$, $m = 4$. Right, by mesh at `nhist` $= 16$ ($K = 0$) and `nhist` $= 24$ ($K = 1$).
+
+| $K$ | `nhist` | error | | $K$ | $(N, m)$ | error |
+|---|---|---|---|---|---|---|
+| 0 | 4 | 1.4e-3 | | 0 | (10, 3) | 1.1e-4 |
+| 0 | 6 | 6.4e-6 | | 0 | (20, 3) | 3.8e-8 |
+| 0 | 8 | 2.6e-7 | | 0 | (20, 4) | 2.3e-12 |
+| 0 | 12 | 2.3e-11 | | 0 | (40, 4) | 4.8e-11 |
+| 1 | 8 | 1.9e-2 | | 1 | (10, 3) | 5.4e-4 |
+| 1 | 12 | 5.3e-4 | | 1 | (20, 3) | 3.7e-7 |
+| 1 | 16 | 4.4e-5 | | 1 | (20, 4) | 8.5e-8 |
+| 1 | 24 | 8.5e-8 | | 1 | (40, 4) | 8.5e-8 |
+
+In each sequence a step at least halves the error unless the error before the step is at most `ERROR_FLOOR` $= 2\cdot10^{-7}$, and the test requires nothing of the steps after that. For $K = 0$ the step from $(20, 4)$ to $(40, 4)$ goes up from 2.3e-12 to 4.8e-11, which is the orbit's own error and rounding at that level. For $K = 1$ the error stops at 8.5e-8 from $(20, 4)$ on, the level that the history discretization sets at `nhist` $= 24$.
+
+Test 5, `FORCED` at $K = 0$: the multiplier $e^{-0.1T}$ is reproduced to $10^{-15}$ (the bound is $10^{-9}$), and the three leading multipliers of the `OSC` block have the errors of the $K = 0$, $\mu = 0.3$ row above.
 
 ## 9. Acceptance tests
 
@@ -1559,6 +1590,7 @@ plot(br, Var="x");                                        % stable solid, unstab
 | P23 | Semisimple-root refusal for the Hopf-Hopf coefficients (E9a, step 8) | See `docs/STATUS.md` |
 | P24 | HH label on a Hopf curve of delay equilibria (E9a, step 9): `hh` key of `dde-hopf` | Tests of section 8k pass in Rust and the CLI. No MATLAB part |
 | P25 | Periodic solutions of a delay equation, step 1 (E9b): `dde::correct_cycle`, `dde::hopf_cycle`, `pc-cli dde-cycle` | Tests 1 to 7 of section 8l pass in Rust and the CLI. No MATLAB part |
+| P26 | Floquet multipliers of a delay cycle, step 2a (E9b): `dde::floquet_multipliers`, `floquet` key of `pc-cli dde-cycle` | Tests 1 to 9 of section 8m pass in Rust and the CLI. No MATLAB part |
 
 ## 15. References
 
