@@ -4,6 +4,7 @@ mod args;
 mod cont;
 mod ddebranch;
 mod ddecmd;
+mod ddecycle;
 mod ddeeq;
 mod ddehh;
 mod ddehopf;
@@ -58,6 +59,7 @@ fn main() -> ExitCode {
         Ok(Command::DdeEq { file }) => ddeeq::dde_eq(&file),
         Ok(Command::DdeBranch { file }) => ddebranch::dde_branch(&file),
         Ok(Command::DdeHopf { file }) => ddehopf::dde_hopf(&file),
+        Ok(Command::DdeCycle { file }) => ddecycle::dde_cycle(&file),
         Ok(Command::DdeLyap { file }) => ddelyap::dde_lyap(&file),
         Ok(Command::DdeZh { file }) => ddezh::dde_zh(&file),
         Ok(Command::DdeHh { file }) => ddehh::dde_hh(&file),

@@ -63,6 +63,8 @@ pub enum Command {
     DdeBranch { file: PathBuf },
     /// Continue the Hopf point of a model with delay calls in two parameters.
     DdeHopf { file: PathBuf },
+    /// Correct a periodic orbit of a model with delay calls, from an orbit or a Hopf point.
+    DdeCycle { file: PathBuf },
     /// Compute the first Lyapunov coefficient at a Hopf point of a delay equilibrium.
     DdeLyap { file: PathBuf },
     /// Compute the zero-Hopf normal-form coefficients at a point of a delay equilibrium.
@@ -111,6 +113,7 @@ usage: pc-cli parse [--json] [--] <file.ode>
        pc-cli dde-eq [--] <problem.json>
        pc-cli dde-branch [--] <problem.json>
        pc-cli dde-hopf [--] <problem.json>
+       pc-cli dde-cycle [--] <problem.json>
        pc-cli dde-lyap [--] <problem.json>
        pc-cli dde-zh [--] <problem.json>
        pc-cli dde-hh [--] <problem.json>
@@ -137,6 +140,7 @@ usage:
   pc-cli dde-eq <problem.json>
   pc-cli dde-branch <problem.json>
   pc-cli dde-hopf <problem.json>
+  pc-cli dde-cycle <problem.json>
   pc-cli dde-lyap <problem.json>
   pc-cli dde-zh <problem.json>
   pc-cli dde-hh <problem.json>
@@ -162,6 +166,7 @@ commands:
   dde-eq        find an equilibrium of a model with delay calls and its roots
   dde-branch    continue such an equilibrium in one parameter and find its Hopf points
   dde-hopf      continue a Hopf point of such an equilibrium in two parameters
+  dde-cycle     correct a periodic orbit of such a model, from an orbit or a Hopf point
   dde-lyap      compute the first Lyapunov coefficient (and the second, if asked) at such a Hopf point
   dde-zh        compute the zero-Hopf normal-form coefficients at such a point
   dde-hh        compute the Hopf-Hopf normal-form coefficients at such a point
@@ -689,6 +694,50 @@ exit codes: 0 the run finished (a run that stops on an error prints what it foun
         a bad problem (the message names the key)
 ";
 
+pub const DDE_CYCLE_HELP: &str = "\
+usage: pc-cli dde-cycle [--] <problem.json>
+
+Corrects a periodic orbit of a model whose equations call delay(x,tau). The orbit is a
+piecewise polynomial of degree ncol on ntst intervals, fixed by Gauss collocation, and
+Newton's method solves for the orbit, its period and one declared parameter in free. The
+phase condition is an integral condition against the start profile. The system has
+(ntst*ncol+1)*n + 2 unknowns, at most 3000. The command does not follow the orbit along a
+branch, compute Floquet multipliers or label points.
+
+The problem file is a JSON object. Every key but options is required:
+  model    path of the .ode file, relative to the problem file
+  params   object of numbers by parameter name; a parameter left out keeps the value
+           of the model file
+  free     the name of one declared parameter, which Newton's method adjusts. With
+           hopf, params must give its value at the Hopf point
+  ntst     number of mesh intervals, an integer of at least 1
+  ncol     collocation points per interval, an integer from 2 to 7
+  orbit    the start, given as an object {\"profile\", \"period\"}, or
+  hopf     a start from a Hopf point, given as an object {\"x0\", \"omega\", \"eps\"}.
+           Give exactly one of orbit and hopf
+  options  optional; only max_newton, tol_x and tol_f are read. Any other key is refused
+
+orbit.profile holds the state at ntst*ncol+1 equally spaced points of one period, point
+after point with n values each. orbit.period is the start period. hopf.x0 is the
+equilibrium at the Hopf point, hopf.omega the angular frequency there and hopf.eps the
+amplitude of the orbit, measured along the critical vector. It has no default and Newton's
+method keeps it fixed. The first guess is x0 + eps*Re(q exp(2 pi i s)) with the critical
+vector q and the period 2 pi/omega. The command does not check that x0 is an equilibrium or
+that omega is a root.
+
+The output is {\"alpha\", \"period\", \"iters\", \"residual\", \"ntst\", \"ncol\", \"profile\"},
+where alpha is the value of the free parameter, iters is the number of Newton steps and
+residual is the largest entry of the final residual vector.
+
+options:
+  --          the next argument is the file, even if it starts with `-`
+  -h, --help  print this help
+
+exit codes: 0 the orbit converged, 1 the model has errors or no delay call, or Newton's
+        method did not converge, 2 usage error, an unreadable problem file, invalid JSON
+        or a bad problem (the message names the key)
+";
+
 pub const DLL_IMPORTS_HELP: &str = "\
 usage: pc-cli dll-imports [--] <file.dll>
 
@@ -805,6 +854,7 @@ where
         "dde-eq" => dde_eq_command(&args[1..]),
         "dde-branch" => dde_branch_command(&args[1..]),
         "dde-hopf" => dde_hopf_command(&args[1..]),
+        "dde-cycle" => dde_cycle_command(&args[1..]),
         "dde-lyap" => dde_lyap_command(&args[1..]),
         "dde-zh" => dde_zh_command(&args[1..]),
         "dde-hh" => dde_hh_command(&args[1..]),
@@ -1072,6 +1122,17 @@ fn dde_hopf_command(rest: &[OsString]) -> Result<Command, UsageError> {
     match parts.file {
         Some(file) => Ok(Command::DdeHopf { file }),
         None => Err(UsageError("dde-hopf needs a problem file".to_string())),
+    }
+}
+
+fn dde_cycle_command(rest: &[OsString]) -> Result<Command, UsageError> {
+    let parts = split(rest, Accepts::default())?;
+    if parts.help {
+        return Ok(Command::ToolHelp(DDE_CYCLE_HELP));
+    }
+    match parts.file {
+        Some(file) => Ok(Command::DdeCycle { file }),
+        None => Err(UsageError("dde-cycle needs a problem file".to_string())),
     }
 }
 
@@ -1641,6 +1702,33 @@ mod tests {
             &["dde-zh"][..],
             &["dde-zh", "a.json", "b.json"],
             &["dde-zh", "--fallback", "a.json"],
+        ] {
+            assert!(p(args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn dde_cycle_command_takes_one_file() {
+        assert_eq!(
+            p(&["dde-cycle", "p.json"]),
+            Ok(Command::DdeCycle {
+                file: "p.json".into()
+            })
+        );
+        assert_eq!(
+            p(&["dde-cycle", "--", "-p.json"]),
+            Ok(Command::DdeCycle {
+                file: "-p.json".into()
+            })
+        );
+        assert_eq!(
+            p(&["dde-cycle", "--help"]),
+            Ok(Command::ToolHelp(DDE_CYCLE_HELP))
+        );
+        for args in [
+            &["dde-cycle"][..],
+            &["dde-cycle", "a.json", "b.json"],
+            &["dde-cycle", "--fallback", "a.json"],
         ] {
             assert!(p(args).is_err(), "{args:?}");
         }
