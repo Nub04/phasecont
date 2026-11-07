@@ -21,8 +21,8 @@ classdef LatexStudio < handle
     % Compile runs phasecont.latex.build on the editor text, so it needs
     % latexmk from TeX Live or MiKTeX on the system path, or Executable. The
     % window blocks while latexmk runs. By default there is no time limit,
-    % so a document that never ends blocks it for good; Timeout sets a
-    % limit in seconds. The right side shows the result of the last compile. The Errors tab lists each TeX error with its line,
+    % so a document that never ends blocks it until you press Ctrl-C in the
+    % MATLAB window; Timeout sets a limit in seconds. The right side shows the result of the last compile. The Errors tab lists each TeX error with its line,
     % and selecting one shows the lines of the document around it. The Log
     % tab holds the TeX log. Open PDF hands the file to the system viewer;
     % there is no preview inside the window.

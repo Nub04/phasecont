@@ -10,18 +10,24 @@ function r = runBounded(argv, folder, timeout)
 %   together), TimedOut (true when the limit stopped it) and Command (the
 %   command line, for display).
 %
-%   Base MATLAB has no way to put a limit on SYSTEM, so a finite TIMEOUT
-%   starts the program through java.lang.ProcessBuilder in the JVM of
-%   MATLAB. The wait loop pauses between checks, so Ctrl-C still works, and
-%   it stops the program when it unwinds. No text goes through a shell on
-%   that route.
+%   Base MATLAB has no way to put a limit on SYSTEM, and SYSTEM cannot be
+%   interrupted. So the program starts through java.lang.ProcessBuilder in
+%   the JVM of MATLAB, for a finite TIMEOUT and for Inf alike. The wait loop
+%   pauses between checks, so Ctrl-C still works, and it stops the program
+%   and what it started when it unwinds. TIMEOUT of Inf only turns the
+%   clock off. No text goes through a shell on that route.
 %
-%   Two cases use SYSTEM instead, which cannot be stopped from here. TIMEOUT
-%   of Inf asks for no limit and runs silently. When MATLAB has no JVM, or
-%   Java cannot start the program, the call warns with
-%   phasecont:latex:noTimeout and runs it without a limit. That route
-%   needs every argument after the first to hold letters, digits and
-%   _ - . / \ : = + only, else phasecont:internal:badArgument.
+%   On Windows, Java adds ".exe" to a bare program name and nothing else, so
+%   a program that is a .cmd or .bat wrapper is not found. The name is
+%   looked up on the path with PATHEXT first, as cmd does, and Java gets the
+%   full path.
+%
+%   SYSTEM is the fallback when MATLAB has no JVM or Java cannot start the
+%   program. It cannot be stopped from here, and it needs every argument
+%   after the first to hold letters, digits and _ - . / \ : = + only, else
+%   phasecont:internal:badArgument. A finite TIMEOUT cannot be enforced
+%   there, so the call warns with phasecont:latex:noTimeout. TIMEOUT of Inf
+%   asks for no limit, so it falls back without a warning.
 %
 %   When the JVM cannot list child processes (it needs Java 9), only the
 %   main program is stopped and the call warns with
@@ -35,13 +41,11 @@ end
 command = quote(argv(1)) + strjoin(" " + argv(2:end), "");
 r = struct("Status", -1, "Output", "", "TimedOut", false, "Command", command);
 
-if isinf(timeout)
-    r = runUnbounded(r, argv, folder);
-    return
-end
 if ~usejava("jvm")
-    warning("phasecont:latex:noTimeout", ...
-        "MATLAB runs without a JVM, so the time limit cannot be enforced.");
+    if ~isinf(timeout)
+        warning("phasecont:latex:noTimeout", ...
+            "MATLAB runs without a JVM, so the time limit cannot be enforced.");
+    end
     r = runUnbounded(r, argv, folder);
     return
 end
@@ -50,7 +54,8 @@ outFile = string(tempname(tempdir)) + ".txt";
 removeOut = onCleanup(@() deleteFile(outFile));
 try
     list = java.util.ArrayList();
-    for k = 1:numel(argv)
+    list.add(char(resolveProgram(argv(1))));
+    for k = 2:numel(argv)
         list.add(char(argv(k)));
     end
     builder = java.lang.ProcessBuilder(list);
@@ -59,9 +64,11 @@ try
     builder.redirectOutput(java.io.File(char(outFile)));
     proc = builder.start();
 catch err
-    warning("phasecont:latex:noTimeout", ...
-        "Java could not start ""%s"" (%s), so the time limit cannot be enforced.", ...
-        argv(1), firstLine(err.message));
+    if ~isinf(timeout)
+        warning("phasecont:latex:noTimeout", ...
+            "Java could not start ""%s"" (%s), so the time limit cannot be enforced.", ...
+            argv(1), firstLine(err.message));
+    end
     r = runUnbounded(r, argv, folder);
     return
 end
@@ -90,6 +97,46 @@ catch
     % Status stays -1.
 end
 r.Output = readOutput(outFile);
+end
+
+function path = resolveProgram(name)
+% Windows only: the full path of NAME as cmd would find it, or NAME when
+% nothing matches (Java then reports the failure). A name without a folder
+% is searched in every folder of the path, trying each PATHEXT extension.
+path = name;
+if ~ispc
+    return
+end
+exts = split(string(getenv("PATHEXT")), ";");
+exts = exts(exts ~= "");
+if isempty(exts)
+    exts = [".COM"; ".EXE"; ".BAT"; ".CMD"];
+end
+[~, ~, own] = fileparts(name);
+if own == ""
+    names = name + exts;
+else
+    names = [name; name + exts];
+end
+if contains(name, ["/", "\"])
+    folders = "";
+else
+    folders = split(string(getenv("PATH")), ";");
+    folders = erase(folders, """");
+    folders = folders(folders ~= "");
+end
+for f = reshape(folders, 1, [])
+    for n = reshape(names, 1, [])
+        candidate = n;
+        if f ~= ""
+            candidate = fullfile(f, n);
+        end
+        if isfile(candidate)
+            path = string(candidate);
+            return
+        end
+    end
+end
 end
 
 function r = runUnbounded(r, argv, folder)

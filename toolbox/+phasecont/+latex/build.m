@@ -13,7 +13,8 @@ function result = build(tex, options)
 %                 _ - . / \ : ( ) + only, else phasecont:latex:badEngine.
 %     Timeout     seconds that latexmk may run, default Inf, which sets no
 %                 limit. When a finite time is up, latexmk and the TeX
-%                 programs it started are stopped.
+%                 programs it started are stopped. Ctrl-C stops them too,
+%                 with any Timeout.
 %
 %   R has the fields Ok (true when a PDF came out), Pdf (its path, "" when
 %   there is none), Folder (the build folder, which is not deleted), Log
@@ -27,12 +28,13 @@ function result = build(tex, options)
 %   error or a timeout is reported in R and does not raise. A missing
 %   latexmk raises phasecont:latex:engineNotFound.
 %
-%   A finite Timeout starts latexmk through the JVM of MATLAB, since SYSTEM
-%   cannot be interrupted. When that is not possible the call warns with
-%   phasecont:latex:noTimeout and runs latexmk with no limit, as it does
-%   for Timeout = Inf. With the default, a document that never ends keeps
-%   MATLAB waiting, and Ctrl-C does not stop it. Details are in
-%   phasecont.internal.runBounded.
+%   latexmk starts through the JVM of MATLAB, since SYSTEM cannot be
+%   interrupted. On Windows a latexmk.cmd or latexmk.bat wrapper is found
+%   through PATHEXT. When the JVM cannot start latexmk, a finite Timeout
+%   warns with phasecont:latex:noTimeout and latexmk runs with no limit.
+%   Timeout = Inf then falls back to SYSTEM without a warning, and a
+%   document that never ends keeps MATLAB waiting, with no way to stop it
+%   short of closing MATLAB. Details are in phasecont.internal.runBounded.
 arguments
     tex (1,1) string {mustBeNonmissing}
     options.Files (:,1) struct = repmat(struct("Name", "", "Content", ""), 0, 1)
