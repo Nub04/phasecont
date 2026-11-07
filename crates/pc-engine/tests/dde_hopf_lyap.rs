@@ -23,7 +23,10 @@ use std::sync::atomic::AtomicBool;
 
 const WRIGHT3: &str = "par a=1.5, b=0\nu'=-a*delay(u,1)*(1+u)+b*u^3\ndone\n";
 const BT: &str = "par a=-2, tau=1, b=1, c=-0.25\nx'=c-a*x-b*delay(x,tau)-x*x\ndone\n";
-const ZH: &str = "par a=0, tau=1, b=1\nx'=-(a+y)*x-b*delay(x,tau)\ny'=a-y*y\ndone\n";
+// The term `d x^2` in the y equation couples the Hopf direction to y, so l1 is a nonzero
+// function with a pole at ZH (H1100 has the factor 1 / (2 y)). Without it x enters linearly,
+// l1 is zero up to rounding along the whole curve, and a label would depend on the platform.
+const ZH: &str = "par a=0, tau=1, b=1, d=1\nx'=-(a+y)*x-b*delay(x,tau)\ny'=a-y*y+d*x*x\ndone\n";
 
 const L1_AT_ZERO: f64 = -0.214_130_922_441_773_92;
 
@@ -195,7 +198,7 @@ fn bt_and_zh_are_still_found_and_their_poles_give_no_gh() {
             ZH,
             setup(
                 [0, 1],
-                &[0.07, 1.4071360574511174, 1.0],
+                &[0.07, 1.4071360574511174, 1.0, 1.0],
                 &[0.001, -0.249],
                 0.98,
             ),
@@ -216,6 +219,16 @@ fn bt_and_zh_are_still_found_and_their_poles_give_no_gh() {
                 (on.specials[0].alpha[0] - off.specials[0].alpha[0]).abs() <= 1e-10,
                 "{want} moved"
             );
+            if want == "ZH" {
+                // The sign of l1 flips across the pole and no value is near zero, so the
+                // missing GH label is the pole filter's work and not noise at a zero.
+                let (before, after) = (on.points[at - 1].l1.unwrap(), on.points[at].l1.unwrap());
+                assert!(before * after < 0.0, "{before} {after}");
+                assert!(before.abs() > 5.0 && after.abs() > 5.0, "{before} {after}");
+                for p in &on.points {
+                    assert!(p.l1.unwrap().abs() > 0.5, "l1 = {:?}", p.l1);
+                }
+            }
             // Where kappa <= 0 there is no frequency, so no l1.
             for p in &on.points {
                 if p.kappa <= 0.0 {
