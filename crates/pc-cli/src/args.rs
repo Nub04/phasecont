@@ -605,8 +605,9 @@ order. Each g is [real, imaginary]. They are the coefficients of z1 |z1|^2 and z
 the equation of z1 (g2100, g1011) and of z2 |z1|^2 and z2 |z2|^2 in the equation of z2
 (g1110, g0021), with the critical eigenvectors scaled to a 2-norm of 1. product is
 Re g2100 Re g0021, sign is its sign (0 if it is exactly 0), theta is Re g1011 / Re g0021 and
-delta is Re g1110 / Re g2100, the numbers of section 6.3 of arXiv 1903.08276. theta and
-delta are null where the denominator is 0. A negative product is the difficult case. theta,
+delta is Re g1110 / Re g2100, the numbers that section 8.3 of arXiv 1903.08276 (with its
+supplement S3.2) uses to sort a point into a case. theta and delta are null where the
+denominator is 0. A negative product is the difficult case. theta,
 delta and the sign of product do not depend on the scale of the eigenvectors, but the g
 values and product do. null_residual_1 and null_residual_2 are the
 relative sizes of Delta(i omega1) q1 and Delta(i omega2) q2, and a value above 1e-4 means
@@ -617,9 +618,10 @@ options:
   -h, --help  print this help
 
 exit codes: 0 the coefficients were computed, 1 the model has errors or no delay call, or the
-        engine failed for another reason (a root that is not simple, or a singular Delta(0),
-        Delta(2 i omega1), Delta(2 i omega2), Delta(i (omega1 + omega2)) or
-        Delta(i (omega1 - omega2)), included),
+        engine failed for another reason (a root that is not simple, a null space of dimension
+        2 or more at omega1 or omega2, or a singular Delta(0), Delta(2 i omega1),
+        Delta(2 i omega2), Delta(i (omega1 + omega2)) or Delta(i (omega1 - omega2)),
+        included),
         2 usage error, an unreadable problem file, invalid JSON, a bad problem (the message
         names the key), frequencies that are not in the order omega1 > omega2 or a frequency
         that is not a root of the characteristic function

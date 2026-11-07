@@ -488,3 +488,109 @@ fn an_exact_one_to_two_resonance_names_the_first_singular_delta() {
         );
     }
 }
+
+#[test]
+fn a_positive_product_gives_sign_plus_one() {
+    // Same closed form with d = +0.9: g0021 = 1.8, so the product is 1.4 * 1.8 = 2.52 and
+    // theta = -0.8 / 1.8.
+    let src = closed_source(0.7, -0.4, 0.55, 0.9, 2.3, 1.0);
+    for which in both() {
+        let r = ok(&src, which, &[0.0; 5], &[], 2.3, 1.0);
+        near(r.g0021[0], 1.8, 1e-12, "g0021");
+        near(r.theta.unwrap(), -4.0 / 9.0, 1e-12, "theta");
+        near(r.delta.unwrap(), 11.0 / 14.0, 1e-12, "delta");
+        near(r.product, 2.52, 1e-12, "product");
+        assert_eq!(r.sign, 1);
+    }
+}
+
+#[test]
+fn the_equilibrium_residual_reports_a_point_that_is_not_an_equilibrium() {
+    // `w` is decoupled and linear, so moving it off 0 leaves the four coefficients alone and
+    // makes f(w) = -2 w - w = -0.3 at w = 0.1. The point is not polished.
+    let src = closed_source(0.7, -0.4, 0.55, -0.9, 2.3, 1.0);
+    for which in both() {
+        let at_zero = ok(&src, which.clone(), &[0.0; 5], &[], 2.3, 1.0);
+        let off = ok(&src, which, &[0.0, 0.0, 0.0, 0.0, 0.1], &[], 2.3, 1.0);
+        near(off.equilibrium_residual, 0.3, 1e-12, "equilibrium_residual");
+        assert_eq!(at_zero.equilibrium_residual, 0.0);
+        for (a, b, name) in [
+            (off.g2100, at_zero.g2100, "g2100"),
+            (off.g1011, at_zero.g1011, "g1011"),
+            (off.g1110, at_zero.g1110, "g1110"),
+            (off.g0021, at_zero.g0021, "g0021"),
+        ] {
+            for k in 0..2 {
+                assert!((a[k] - b[k]).abs() <= 1e-12, "{name}[{k}]: {a:?} vs {b:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_semisimple_double_root_is_refused_and_names_that_root() {
+    // A second oscillator at the same frequency gives a null space of dimension 2, and the
+    // pairing of a null vector with its left partner is not 0, so only the dimension test
+    // sees it.
+    let at_first = osc_source(&[2.3, 1.0], &extra_osc(2.3));
+    let at_second = osc_source(&[2.3, 1.0], &extra_osc(1.0));
+    for which in both() {
+        expect_singular(
+            hh(&at_first, which.clone(), &[0.0; 7], &[1.0], 2.3, 1.0),
+            "second oscillator at omega1",
+            "null space of dimension 2 or more",
+            "omega2",
+        );
+        expect_singular(
+            hh(&at_second, which, &[0.0; 7], &[1.0], 2.3, 1.0),
+            "second oscillator at omega2",
+            "null space of dimension 2 or more",
+            "omega1",
+        );
+    }
+}
+
+#[test]
+fn the_checks_of_one_root_run_in_the_spec_order() {
+    // Jordan block at omega1 and a double root at omega2: the pairing of omega1 comes first.
+    let jordan_then_double = osc_source(&[1.0], &format!("{}{}", jordan(2.3), extra_osc(1.0)));
+    // Double root at omega1 and a Jordan block at omega2: the dimension test of omega1 comes
+    // first.
+    let double_then_jordan = osc_source(&[2.3], &format!("{}{}", extra_osc(2.3), jordan(1.0)));
+    // A double root at omega1 and an omega2 that is not a Hopf frequency: both residuals are
+    // checked before any multiplicity or pairing test.
+    let double_and_off = osc_source(&[2.3, 1.0], &extra_osc(2.3));
+    for which in both() {
+        expect_singular(
+            hh(
+                &jordan_then_double,
+                which.clone(),
+                &[0.0; 9],
+                &[1.0],
+                2.3,
+                1.0,
+            ),
+            "Jordan at omega1, double at omega2",
+            "omega1",
+            "omega2",
+        );
+        expect_singular(
+            hh(
+                &double_then_jordan,
+                which.clone(),
+                &[0.0; 9],
+                &[1.0],
+                2.3,
+                1.0,
+            ),
+            "double at omega1, Jordan at omega2",
+            "null space of dimension 2 or more",
+            "omega2",
+        );
+        expect_bad(
+            hh(&double_and_off, which, &[0.0; 7], &[1.0], 2.3, 1.5),
+            "double at omega1, omega2 off",
+            Some("omega2"),
+        );
+    }
+}

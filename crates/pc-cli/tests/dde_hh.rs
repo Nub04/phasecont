@@ -166,6 +166,39 @@ fn a_parameter_left_out_of_params_keeps_the_model_value() {
 }
 
 #[test]
+fn a_value_in_params_overrides_the_model_default_whatever_the_case() {
+    // The model file carries other defaults, so only the values in `params` put the problem
+    // at the Hopf-Hopf point. The names match without regard to case.
+    write(
+        "acs_other_defaults.ode",
+        &ACS.replace(
+            "zeta=-0.01622437043055295, tau=5.898023025699427",
+            "zeta=0.3, tau=2.0",
+        ),
+    );
+    let with = |params: &str| {
+        format!(
+            r#"{{"model":"acs_other_defaults.ode","params":{params},"x0":[0.0,0.0],
+                "omega1":7.6449266134492575,"omega2":4.52748691549689}}"#
+        )
+    };
+    let both = with(r#"{"ZETA":-0.01622437043055295,"Tau":5.898023025699427}"#);
+    let a = run(&scratch(), &["dde-hh", &write("acs_override.json", &both)]);
+    assert_eq!(code(&a), 0, "{}", stderr(&a));
+    let b = run(
+        &scratch(),
+        &["dde-hh", &write("acs_point_1.json", &point1())],
+    );
+    assert_eq!(stdout(&a), stdout(&b));
+    // Without the override the frequencies are not Hopf frequencies of the model default.
+    let none = run(
+        &scratch(),
+        &["dde-hh", &write("acs_no_override.json", &with("{}"))],
+    );
+    assert_eq!(code(&none), 2, "{}", stderr(&none));
+}
+
+#[test]
 fn the_model_path_is_relative_to_the_problem_file() {
     // The model sits next to the problem file and nowhere else, and pc-cli runs from the
     // parent directory, so a path read against the working directory would not find it.

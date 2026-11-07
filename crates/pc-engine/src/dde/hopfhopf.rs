@@ -13,23 +13,26 @@
 //! z2' = i omega2 z2 + g1110 z2 |z1|^2 + g0021 z2 |z2|^2
 //! ```
 //!
-//! `theta = Re g1011 / Re g0021` and `delta = Re g1110 / Re g2100` are the numbers of
-//! Section 5.3 of the paper. The function does not compute the predictors and does not say
-//! which of the twelve unfolding cases the point has.
+//! `theta = Re g1011 / Re g0021` and `delta = Re g1110 / Re g2100` are the numbers that
+//! Section 8.3 of the paper and its supplement S3.2 use to sort the example point into a case.
+//! The function does not compute the predictors and does not say which of the twelve
+//! unfolding cases the point has.
 //!
-//! The scale is `|q1|_2 = |q2|_2 = 1`. The paper states no scale, so only the signs of the
-//! product, `theta` and `delta` are independent of it.
+//! The scale is `|q1|_2 = |q2|_2 = 1`. The paper states no scale. Multiplying `q1` by `d1`
+//! multiplies `g2100` and `g1110` by `|d1|^2`, and multiplying `q2` by `d2` multiplies `g1011`
+//! and `g0021` by `|d2|^2`. So `theta` and `delta` do not depend on the scale, while the four
+//! coefficients and the product do.
 
 use super::eq::{check_params, check_state, linearize, residual};
 use super::lyap::{
-    C, NULL_RESIDUAL_MAX, OMEGA_MIN, PAIRING_MIN, bilinear, check_regular, delta, embed,
-    frobenius_real, matvec, norm2, solve, transpose, unstack,
+    C, NULL_RESIDUAL_MAX, OMEGA_MIN, PAIRING_MIN, RESONANCE_MIN, bilinear, check_regular, delta,
+    embed, frobenius_real, matvec, norm2, solve, transpose, unstack,
 };
 use super::lyap2::{Ctx, add, conj_all};
 use super::roots::LinearDde;
 use crate::error::EngineError;
 use crate::model::DdeModel;
-use pc_linalg::null_right;
+use pc_linalg::{null_right, singular_values};
 
 /// The four coefficients and the classification numbers at one point.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -113,16 +116,12 @@ fn hopf_hopf_scaled(
     v.p2.iter_mut().for_each(|c| *c = c.div(d2));
     let mut cx = Ctx::new(m, x, p);
     let g = compute(&mut cx, &lin, &v, omega1, omega2)?;
-    let product = g.g2100.re * g.g0021.re;
-    let sign = if product > 0.0 {
-        1
-    } else if product < 0.0 {
-        -1
-    } else {
-        0
-    };
-    let theta = (g.g0021.re != 0.0).then(|| g.g1011.re / g.g0021.re);
-    let delta = (g.g2100.re != 0.0).then(|| g.g1110.re / g.g2100.re);
+    let Classes {
+        product,
+        sign,
+        theta,
+        delta,
+    } = classify(&g);
     let pair = |c: C| [c.re, c.im];
     Ok(HopfHopf {
         omega1,
@@ -152,18 +151,28 @@ struct Vectors {
 }
 
 /// One unit right null vector of `Delta(i omega)`, the left one before the scaling, the relative
-/// residual and the pairing `p Delta' q`.
+/// residual, the pairing `p Delta' q` and the ratio of the second smallest to the largest
+/// singular value of `Delta(i omega)`, which is infinite when `n = 1`.
 struct Raw {
     q: Vec<C>,
     pt: Vec<C>,
     null: f64,
     pairing: C,
+    second_ratio: f64,
 }
 
 fn raw_pair(lin: &LinearDde, omega: f64, norms: f64) -> Result<Raw, EngineError> {
     let n = lin.dim;
     let d = delta(lin, omega, 0);
     let dp = delta(lin, omega, 1);
+    // The real embedding repeats each complex singular value, so the second smallest complex
+    // one is `s[2n - 3]`.
+    let second_ratio = if n >= 2 {
+        let s = singular_values(&embed(&d, n), 2 * n, 2 * n)?;
+        s[2 * n - 3] / s[0]
+    } else {
+        f64::INFINITY
+    };
     let q = unstack(&null_right(&embed(&d, n), 2 * n, 2 * n, 1)?.remove(0), n);
     let null = norm2(&matvec(&d, n, &q)) / (omega + norms);
     let pt = unstack(
@@ -176,13 +185,14 @@ fn raw_pair(lin: &LinearDde, omega: f64, norms: f64) -> Result<Raw, EngineError>
         pt,
         null,
         pairing,
+        second_ratio,
     })
 }
 
 /// `q1`, `p1`, `q2` and `p2` of SPEC section 8j, scaled so that `|q1|_2 = |q2|_2 = 1` and
 /// `p_k Delta'(i omega_k) q_k = 1`. The errors come in the order of the SPEC: the residual of
-/// `Delta(i omega1)`, the residual of `Delta(i omega2)`, and then the root `i omega1` and the
-/// root `i omega2` not being simple.
+/// `Delta(i omega1)`, the residual of `Delta(i omega2)`, and then, for `omega1` and for
+/// `omega2`, a null space of dimension 2 or more and a pairing that is too small.
 fn vectors(lin: &LinearDde, omega1: f64, omega2: f64) -> Result<Vectors, EngineError> {
     let norms = frobenius_real(&lin.a0)
         + lin
@@ -202,6 +212,14 @@ fn vectors(lin: &LinearDde, omega1: f64, omega2: f64) -> Result<Vectors, EngineE
         }
     }
     for (r, name) in [(&r1, "omega1"), (&r2, "omega2")] {
+        if r.second_ratio.is_nan() || r.second_ratio < RESONANCE_MIN {
+            return Err(EngineError::Singular(format!(
+                "Delta(i {name}) has a null space of dimension 2 or more (second smallest over \
+                 largest singular value {:e}); the root i {name} is not simple and the \
+                 coefficients would depend on the choice of null vector",
+                r.second_ratio
+            )));
+        }
         if r.pairing.abs().is_nan() || r.pairing.abs() < PAIRING_MIN {
             return Err(EngineError::Singular(format!(
                 "|p Delta'(i {name}) q| = {:e}; the root i {name} is not simple",
@@ -226,6 +244,34 @@ struct Coefficients {
     g1011: C,
     g1110: C,
     g0021: C,
+}
+
+/// The numbers derived from the real parts of the four coefficients.
+struct Classes {
+    product: f64,
+    sign: i8,
+    theta: Option<f64>,
+    delta: Option<f64>,
+}
+
+/// `product = Re g2100 Re g0021` and its sign, `theta = Re g1011 / Re g0021` and
+/// `delta = Re g1110 / Re g2100`. Each ratio is `None` exactly when its own denominator is 0,
+/// including `-0.0`.
+fn classify(g: &Coefficients) -> Classes {
+    let product = g.g2100.re * g.g0021.re;
+    let sign = if product > 0.0 {
+        1
+    } else if product < 0.0 {
+        -1
+    } else {
+        0
+    };
+    Classes {
+        product,
+        sign,
+        theta: (g.g0021.re != 0.0).then(|| g.g1011.re / g.g0021.re),
+        delta: (g.g2100.re != 0.0).then(|| g.g1110.re / g.g2100.re),
+    }
 }
 
 /// `exp(i sigma theta) Delta(i sigma)^-1 eta` as a direction of the lowered model.
@@ -399,6 +445,55 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn coefficients(re: [f64; 4]) -> Coefficients {
+        // The imaginary parts are nonzero and never enter the classification.
+        Coefficients {
+            g2100: C::new(re[0], 0.5),
+            g1011: C::new(re[1], -0.25),
+            g1110: C::new(re[2], 2.0),
+            g0021: C::new(re[3], -1.0),
+        }
+    }
+
+    #[test]
+    fn the_sign_is_the_sign_of_the_product_of_the_two_radius_terms() {
+        let c = classify(&coefficients([2.0, 1.0, 1.0, 3.0]));
+        assert_eq!((c.product, c.sign), (6.0, 1));
+        let c = classify(&coefficients([-2.0, 1.0, 1.0, 3.0]));
+        assert_eq!((c.product, c.sign), (-6.0, -1));
+        let c = classify(&coefficients([-2.0, 1.0, 1.0, -3.0]));
+        assert_eq!((c.product, c.sign), (6.0, 1));
+        // Either factor being 0 gives sign 0, and so does a negative zero.
+        for re in [
+            [0.0, 1.0, 1.0, 3.0],
+            [2.0, 1.0, 1.0, 0.0],
+            [2.0, 1.0, 1.0, -0.0],
+        ] {
+            let c = classify(&coefficients(re));
+            assert_eq!(c.sign, 0, "{re:?}");
+            assert_eq!(c.product, 0.0, "{re:?}");
+        }
+    }
+
+    #[test]
+    fn theta_and_delta_each_need_only_their_own_denominator() {
+        // theta = Re g1011 / Re g0021, delta = Re g1110 / Re g2100.
+        let c = classify(&coefficients([2.0, 1.5, 4.0, 3.0]));
+        assert_eq!((c.theta, c.delta), (Some(0.5), Some(2.0)));
+        // Only Re g0021 = 0: theta is None, delta is still defined.
+        let c = classify(&coefficients([2.0, 1.5, 4.0, 0.0]));
+        assert_eq!((c.theta, c.delta), (None, Some(2.0)));
+        // Only Re g2100 = 0: delta is None, theta is still defined.
+        let c = classify(&coefficients([0.0, 1.5, 4.0, 3.0]));
+        assert_eq!((c.theta, c.delta), (Some(0.5), None));
+        // A negative zero is a zero.
+        let c = classify(&coefficients([-0.0, 1.5, 4.0, -0.0]));
+        assert_eq!((c.theta, c.delta), (None, None));
+        // A zero numerator is a value, not a missing one.
+        let c = classify(&coefficients([2.0, 0.0, 0.0, 3.0]));
+        assert_eq!((c.theta, c.delta), (Some(0.0), Some(0.0)));
     }
 
     #[test]
