@@ -435,6 +435,52 @@ $c = -0.4$, $e = 0.5$. The Jacobian at the origin is block triangular, and its $
 6. **Interface.** The row width, `cycle_stride` and the label list agree in the Rust unit tests, the FFI tests and the CLI tests, and in `Rows2BranchTest.m` and `HomCurveTest.m` on the MATLAB side.
 7. **Regression.** The existing `cargo test` suite stays green.
 
+## 8c. Characteristic roots of linear delay equations (phase E9a, step 1)
+
+Step 1 of E9a finds the characteristic roots of
+$$\dot x(t) = A_0 x(t) + \sum_{j=1}^m A_j x(t - \tau_j),\qquad x \in \mathbb{R}^d,$$
+with real $d \times d$ matrices $A_j$ and delays $\tau_j > 0$. Write $\tau_{\max} = \max_j \tau_j$. This step reads no `.ode` file and changes no parser, IR or JIT code. The `.ode` syntax for delays, equilibria and their stability in a nonlinear delay equation, Hopf detection, continuation of a delay equation and the normal forms of Bosschaert et al. are later steps of E9a. Neutral equations, distributed delays and state-dependent delays are out of scope.
+
+**Characteristic equation.** $\lambda \in \mathbb{C}$ is a root exactly when $\det\Delta(\lambda) = 0$, with
+$$\Delta(\lambda) = \lambda I - A_0 - \sum_{j=1}^m A_j e^{-\lambda\tau_j},\qquad \Delta'(\lambda) = I + \sum_{j=1}^m \tau_j A_j e^{-\lambda\tau_j}.$$
+The equation is of retarded type, so only finitely many roots have $\operatorname{Re}\lambda \ge r$ for any $r$. Such a root is an eigenvalue of $A_0 + \sum_j A_j e^{-\lambda\tau_j}$, hence $|\lambda| \le \|A_0\| + \sum_j \|A_j\| e^{-r\tau_j}$ in any induced norm. The tests use this bound to choose a contour that holds every root with $\operatorname{Re}\lambda \ge r$.
+
+**Pseudospectral matrix.** The nodes are $\theta_k = \tfrac{\tau_{\max}}{2}(\cos(k\pi/n) - 1)$ for $k = 0, \dots, n$, the Chebyshev extreme points mapped to $[-\tau_{\max}, 0]$, with $\theta_0 = 0$ and $\theta_n = -\tau_{\max}$ set exactly. $\ell_k$ is the Lagrange polynomial of degree $n$ with $\ell_k(\theta_i) = \delta_{ik}$ and $D_{ik} = \ell_k'(\theta_i)$. The vector $u = (u_0, \dots, u_n) \in \mathbb{R}^{d(n+1)}$ stands for the samples $x(t + \theta_k)$ of the history, and $u_k' = \sum_i D_{ki} u_i$ for $k \ge 1$ replaces the shift. The $d(n+1)$-square matrix $A_n$ has the blocks
+$$(A_n)_{0k} = \delta_{k0} A_0 + \sum_{j=1}^m \ell_k(-\tau_j) A_j,\qquad (A_n)_{ik} = D_{ik} I_d\quad (i \ge 1).$$
+The eigenvalues of $A_n$ approximate the roots with $|\operatorname{Im}\lambda|$ and $|\lambda|$ small against $n/\tau_{\max}$. Breda, Maset and Vermiglio (2005) introduced this construction for several discrete delays; I read only the bibliographic record of that paper. de Wolff, Scarabel, Verduyn Lunel and Diekmann (arXiv:2006.13810, read) write it for the scalar equation with one delay in the form $\Delta_n(\lambda) = \lambda - L(\ell_0 + P(D - \lambda I)^{-1}D\mathbf{1})$ and show that $\Delta_n \to \Delta$ on every compact set with an error of at most $n^{-1/2}(C/n)^n$ (their Lemma 5.1), so by Hurwitz's theorem the roots of $\Delta_n$ converge to those of $\Delta$ there. The block form above for $d > 1$ and $m > 1$ is my own generalization of that scalar form, and the tests below check it with exact residuals and root counts, not with a citation.
+
+The barycentric form gives $D$ and $\ell_k$ without solving for the interpolant. With $w_k = (-1)^k$, halved at $k = 0$ and $k = n$, $D_{ik} = \frac{w_k/w_i}{\theta_i - \theta_k}$ for $i \ne k$ and $D_{ii} = -\sum_{k \ne i} D_{ik}$. For $s$ that is not a node, $\ell_k(s) = \frac{w_k/(s - \theta_k)}{\sum_i w_i/(s - \theta_i)}$, and $\ell_k(s) = \delta_{ki}$ when $s = \theta_i$ (Berrut and Trefethen 2004). A delay $\tau_j = \tau_{\max}$ always lands on the node $\theta_n$, and a delay can also land on an interior node, so the second case is part of the code and of the tests. Tests 1 and 2 check the formulas by polynomial exactness and against the weights of the product formula.
+
+**Refinement.** Every eigenvalue $\lambda_0$ of $A_n$ with $\operatorname{Re}\lambda_0 \ge r_{\min} - 10^{-6}(1 + |r_{\min}|)$ and $\operatorname{Im}\lambda_0 \ge 0$ is the start of a Newton iteration for $(v, \lambda) \in \mathbb{C}^d \times \mathbb{C}$ on
+$$F(v, \lambda) = \begin{pmatrix}\Delta(\lambda)v\\ c^{H}v - 1\end{pmatrix} = 0,\qquad J = \begin{pmatrix}\Delta(\lambda) & \Delta'(\lambda)v\\ c^{H} & 0\end{pmatrix}.$$
+This is my own derivation. $J$ is nonsingular when $\lambda$ is a simple root, meaning $w^{H}\Delta'(\lambda)v \ne 0$ for a left null vector $w$ of $\Delta(\lambda)$, and $c^{H}v \ne 0$. The step is solved as a real system of order $2(d+1)$ with the LU of `pc-linalg`. The start vector comes from two steps of inverse iteration on $\Delta(\lambda_0 + \delta)$ with $\delta = 10^{-8}(1 + |\lambda_0|)$ and the right-hand side $b_i = 1 + i/(d+1)$, and $c = v_0/(v_0^{H}v_0)$ stays fixed. The scaled residual is
+$$\rho = \frac{\|\Delta(\lambda)v\|_2}{\|v\|_2\, s(\lambda)},\qquad s(\lambda) = |\lambda| + \|A_0\|_F + \sum_j \|A_j\|_F\, e^{-\operatorname{Re}\lambda\,\tau_j}.$$
+The iteration stops when $|\delta\lambda| \le 10^{-13}(1 + |\lambda|)$ or after 30 steps, and the root is accepted when $\rho \le 10^{-12}$ and $\operatorname{Re}\lambda \ge r_{\min}$. It is not accepted when the LU reports $J$ singular, when an iterate is not finite, or when $\rho$ stays above the bound. An eigenvalue of $A_n$ with $\operatorname{Re}\lambda_0 \ge r_{\min}$ that does not give an accepted root goes into a second list, `unrefined`, with its $A_n$ value. Nothing in that range is dropped without a record.
+
+The problem is real, so an accepted root with $\operatorname{Im}\lambda > 0$ is returned with its exact conjugate. A start with $\operatorname{Im}\lambda_0 = 0$ stays on the real axis, since $\Delta$ is real there and every operation of the iteration then has a zero imaginary part exactly. Accepted roots that agree within $10^{-11}(1 + |\lambda|)$ are one root, because two eigenvalues of $A_n$ can refine to the same simple root. The result is sorted by real part descending, then imaginary part descending.
+
+**Limits stated up front.** The run does not detect multiplicity. A root of multiplicity $k$ shows up as up to $k$ entries that each have an error near $\varepsilon^{1/k}$, or in `unrefined` when $J$ is singular. `n` fixes which roots can be found. A refined root is a root to the residual bound whatever $n$ is, but a root that no eigenvalue of $A_n$ approximates is missing without a message. Comparing runs at $n$ and $2n$, or the argument-principle count of test 7, is how a user checks completeness. The input has no default for `n` or `r_min`.
+
+**Input rules.** $d \ge 1$, each matrix has $d^2$ finite entries, there is at least one delay, every $\tau_j$ is finite and positive, $n \ge 1$, $d(n+1) \le 4000$, and $r_{\min}$ is finite. Anything else is `BadProblem`.
+
+**Command line.** `pc-cli dde-roots <problem.json>` reads
+```json
+{"dim": 2, "a0": [..d*d row-major..], "delays": [{"tau": 1.0, "a": [..d*d..]}], "n": 30, "re_min": -2.0}
+```
+and prints `{"n", "roots": [{"re", "im", "residual"}], "unrefined": [{"re", "im"}]}`. The reader is strict: a key it does not take is an error. Exit codes follow `cont`.
+
+**Acceptance tests.** All are Rust tests with closed forms or an independent count.
+
+1. Nodes and $D$: $\theta_0 = 0$ and $\theta_n = -\tau_{\max}$ exactly; each row of $D$ sums to 0; $D$ is exact on $\theta^p$ for $p \le n$, $n \le 12$ and $\tau_{\max} = 2$, within $10^{-9}\max|p'|$ (Chebyshev differentiation loses a factor of order $n^2$ in rounding); $D$ built from the product-formula weights equals $D$ from the closed-form weights for $n = 5$ to $10^{-12}$ relative.
+2. $\ell_k$: $\sum_k \ell_k(s) = 1$ and $\sum_k \ell_k(s)\theta_k^p = s^p$ for $p \le n$ at nodes and off nodes.
+3. $\dot x = -\tfrac{\pi}{2}x(t-1)$: $\pm i\pi/2$ are roots within $10^{-12}$, the largest real part over all returned roots is $0$ within $10^{-12}$, and every returned root has $\rho \le 10^{-12}$.
+4. $\dot x = a x(t-1)$ with $a = 1$: the real root is $W_0(1) = 0.5671432904097838\ldots$ (the omega constant) to $10^{-14}$, the largest real part of all roots. With $a = -0.1$ the root nearest zero is a real root of $\lambda = a e^{-\lambda}$ checked by the scalar residual.
+5. Rotation system, $A_1 = \begin{pmatrix}a & -b\\ b & a\end{pmatrix}$, $A_0 = 0$: $A_1$ acts on $\mathbb{R}^2$ as the complex number $\mu = a + ib$, so the roots are those of $\lambda = \mu e^{-\lambda\tau}$ and of its conjugate. Every returned root satisfies one of them to $10^{-12}$, and the count with $\operatorname{Re}\lambda \ge r$ equals the argument-principle count of test 7. The commuting pair $A_0 = \begin{pmatrix}p & -q\\ q & p\end{pmatrix}$, $A_1$ as above gives $\lambda = (p + iq) + (a + ib)e^{-\lambda\tau}$ and its conjugate.
+6. Two delays, scalar: $\dot x = a x(t - \tau_1) + b x(t - \tau_2)$ with $\tau_2 = 2\tau_1$. The larger delay is the node $\theta_n$. The smaller one is the interior node $\theta_{n/2}$ for even $n$ and lies between nodes for odd $n$, and the test runs $n = 20$ and $n = 21$. Every returned root satisfies $\lambda = a e^{-\lambda\tau_1} + b e^{-\lambda\tau_2}$ with $\rho \le 10^{-12}$ measured by the scalar residual, and the two runs return the same roots to $10^{-11}$.
+7. Completeness: for $d = 2$ and $d = 3$ systems with non-commuting matrices, the number of returned roots with $\operatorname{Re}\lambda \ge r$ equals the number of zeros of $\det\Delta$ inside the rectangle $[r, B_r] \times [-B_r, B_r]$ with $B_r = \|A_0\| + \sum_j \|A_j\|e^{-r\tau_j}$, counted as the winding number of $\det\Delta$ along the boundary. The test computes the determinant with its own complex LU, samples the boundary until each phase increment is below $\pi/4$, and fails when $\det\Delta$ is within $10^{-8}$ of zero on the contour. `unrefined` is empty and every residual is at most $10^{-12}$.
+8. Errors: a matrix of the wrong length, no delay, $\tau \le 0$, NaN in a matrix, $n = 0$, $d(n+1) > 4000$ and a NaN $r_{\min}$ each give `BadProblem`.
+9. `pc-cli dde-roots` on the data of test 3 prints roots with the same values; a missing `n`, an unknown key and an unreadable file exit with the `cont` codes.
+
 ## 9. Acceptance tests
 
 Exact tests (no oracle needed):
@@ -703,7 +749,7 @@ plot(br, Var="x");                                        % stable solid, unstab
   - `LatexStudio` has an editor, a Summary pane, an error Context pane and Errors and Log tabs. The preview is the system PDF viewer. Selecting an error shows its context lines with the error line marked with `>`, because the `uitextarea` cursor API is not confirmed here. Insert figure and Insert table always write inline data, and Compile blocks the window. The app raises `phasecont:app:{badOpener,openFailed,saveFailed,empty,noSuchError,noPdf,noBranch}`. A pdf.js preview in a `uihtml` page was in the plan as an option and is not built, since it cannot be tried without MATLAB. `LatexStudio` has no `Preview` option, and `THIRD_PARTY_NOTICES.md` has no pdf.js entry.
   - Acceptance: `cargo test -p pc-latex` and `cargo test -p pc-cli` pass. `pc-latex` covers a `proptest` that `escape` leaves no raw special character outside a backslash command, a `proptest` that 17 digits round-trip a double, golden `.tex` files (stable and unstable series with marks, a table, external data with its `.dat` files), a standalone wrap, the error cases (null, 1e999, empty series and table, missing and bad digits, length mismatch, basename rules, unknown keys), and a compile of every golden file, as a fragment inside an `article` and as a `standalone` document, with the `latexmk` flags above to a PDF. A machine without `latexmk` prints `SKIPPED: no latexmk`, and `PC_REQUIRE_LATEX=1` turns the skip into a failure. `pc-cli` covers the command line cases above, including that a failed render writes no file. The C ABI gains one function, `latex_render`, with a matching gateway command. The MATLAB tests (`tests/LatexTest.m`) check that the API output equals the Rust output for the same figure and that a missing `Digits` raises.
 - **Optional external backends:** AUTO-07p and XPPAUT, run as subprocesses the user installs separately.
-- **Engine phases E8b and E9:** the parts of E8 that Section 8b leaves out (inclination flips, saddle-node homoclinic orbits, heteroclinic orbits, Lin's method), and delay equations. Phase E7, the periodic normal forms, is Section 8a, and phase E8a, homoclinic orbits to a saddle, is Section 8b.
+- **Engine phases E8b and E9:** the parts of E8 that Section 8b leaves out (inclination flips, saddle-node homoclinic orbits, heteroclinic orbits, Lin's method), and delay equations beyond step 1 of E9a. Phase E7, the periodic normal forms, is Section 8a, phase E8a, homoclinic orbits to a saddle, is Section 8b, and step 1 of E9a, the characteristic roots of a linear delay equation, is Section 8c.
 
 ## 14. Phases and acceptance
 
@@ -724,6 +770,7 @@ plot(br, Var="x");                                        % stable solid, unstab
 | P12 | `pc-latex`, `phasecont.latex.*`, `LatexStudio` | The P12 checks in section 13 pass; the MATLAB tests pass (2026-11-07), and the two time-limit tests skip when Java cannot start `latexmk` (STATUS, P14a) |
 | P13 | Periodic normal forms (E7): $b$, $c$, $d$ at LPC, PD and NS points | Tests 1 to 8 and the Rust, FFI and CLI part of test 9 of section 8a pass, including the CPC, GPD, CH, R1 and R2 labels on curves (E7b). The MATLAB part of test 9 passes (2026-11-07) |
 | P14 | Homoclinic orbits to a saddle (E8a): HOM curve, `orbit` and `cycle` starts, tests 1 to 12 of HomCont | Tests 1 to 7 of section 8b pass in Rust, the FFI and the CLI, and the MATLAB part of test 6 passes. The full MATLAB suite passes: 503 tests, 0 failed, 7 skipped by assumption (2026-11-07) |
+| P15 | Characteristic roots of linear delay equations (E9a, step 1): `dde` module and `pc-cli dde-roots` | Tests 1 to 9 of section 8c pass in Rust and the CLI. No MATLAB part |
 
 ## 15. References
 
@@ -746,6 +793,11 @@ Check every citation before quoting it in user-facing docs.
 - Champneys, A. R., Kuznetsov, Yu. A., and Sandstede, B. "A numerical toolbox for homoclinic bifurcation analysis." *Int. J. Bifurcation and Chaos* 6(5), 867–887, 1996. Section 8b cites it as CKS.
 - Sandstede, B. "Constructing dynamical systems having homoclinic bifurcation points of codimension two." *J. Dynam. Differential Equations* 9(2), 269–288, 1997.
 - Higham, N. J. *Functions of Matrices: Theory and Computation.* SIAM, 2008. Chapter 5 for the matrix sign function.
+- Berrut, J.-P., and Trefethen, L. N. "Barycentric Lagrange interpolation." *SIAM Review* 46(3), 501–517, 2004. Section 8c takes the differentiation matrix and the evaluation of the Lagrange basis from it.
+- Breda, D., Maset, S., and Vermiglio, R. "Pseudospectral differencing methods for characteristic roots of delay differential equations." *SIAM J. Sci. Comput.* 27(2), 482–495, 2005. Not read; the title, pages and the claim that it covers several discrete delays come from search records only.
+- de Wolff, B., Scarabel, F., Verduyn Lunel, S. M., and Diekmann, O. "Pseudospectral approximation of Hopf bifurcation for delay differential equations." arXiv:2006.13810, 2020. Read for the scalar single-delay construction and its convergence (Sections 4 and 5).
+- Hale, J. K., and Verduyn Lunel, S. M. *Introduction to Functional Differential Equations.* Springer, 1993. Characteristic equation of a retarded equation.
+- Trefethen, L. N. *Spectral Methods in MATLAB.* SIAM, 2000. Chebyshev points and differentiation matrices.
 - Doedel, E. J., et al. AUTO-07p, `src/homcont.f90` and `src/mesh.f90`, BSD-3. Section 8b follows HomCont's tests 1 to 12 and its non-periodic mesh path.
 - Griewank, A., and Walther, A. *Evaluating Derivatives*, 2nd ed. SIAM, 2008.
 - Ermentrout, B. *Simulating, Analyzing, and Animating Dynamical Systems: A Guide to XPPAUT for Researchers and Students.* SIAM, 2002.
