@@ -304,7 +304,7 @@ mod tests {
     use crate::model::{Evaluator, build_dde};
     use pc_ode::{MapLoader, SourceMap, load};
 
-    fn build(src: &str, ev: Evaluator) -> DdeModel {
+    fn build_dde_model(src: &str, ev: Evaluator) -> DdeModel {
         let mut map = SourceMap::new();
         let top = map.add("t.ode", src);
         let l = load(top, &mut map, &mut MapLoader::new());
@@ -372,7 +372,7 @@ mod tests {
         let from = |g: [f64; 2]| C::new(g[0], g[1]);
         for pt in points() {
             for ev in both() {
-                let mut m = build(pt.src, ev);
+                let mut m = build_dde_model(pt.src, ev);
                 let base = hopf_hopf(&mut m, &pt.x, &pt.p, pt.omega1, pt.omega2).expect("base");
                 for (d1, d2) in cases {
                     let r = hopf_hopf_scaled(&mut m, &pt.x, &pt.p, pt.omega1, pt.omega2, d1, d2)
@@ -406,12 +406,114 @@ mod tests {
         // Re g0021 = 0 and Re g2100 = 0: two oscillators with no radial coupling.
         let src = "x0'=-2.3*x1\nx1'=2.3*x0\nx2'=-1.0*x3\nx3'=1.0*x2\nw'=-2*w-delay(w,1)\ndone\n";
         for ev in both() {
-            let mut m = build(src, ev);
+            let mut m = build_dde_model(src, ev);
             let r = hopf_hopf(&mut m, &[0.0; 5], &[], 2.3, 1.0).expect("coefficients");
             assert_eq!(r.theta, None);
             assert_eq!(r.delta, None);
             assert_eq!(r.sign, 0);
             assert_eq!(r.product, 0.0);
+        }
+    }
+
+    /// The coefficient matrix of the delay-free test system, the same as in
+    /// `tests/dde_hopfhopf.rs`.
+    const ODE_A: [[f64; 4]; 4] = [
+        [
+            0.442_799_678_197_908_3,
+            -1.240_124_698_310_538_7,
+            0.829_666_130_329_847,
+            -0.821_902_654_867_256_7,
+        ],
+        [
+            3.556_234_915_526_951,
+            0.591_029_766_693_483_3,
+            0.243_724_859_211_585_04,
+            -1.111_061_946_902_655,
+        ],
+        [
+            -1.437_731_295_253_419,
+            -0.070_876_910_699_919_53,
+            -0.196_218_825_422_365_24,
+            -0.736_283_185_840_708_1,
+        ],
+        [
+            0.962_107_803_700_724_1,
+            -0.383_226_065_969_428_7,
+            1.286_846_339_501_206_9,
+            -0.837_610_619_469_026_5,
+        ],
+    ];
+
+    /// The system of `ODE_A` with its quadratic and cubic terms. `extra` is appended before
+    /// `done`, so a caller can add the decoupled delay variable that makes it a delay model.
+    fn ode_source(extra: &str) -> String {
+        let lin = |i: usize| {
+            format!(
+                "({:?})*x0+({:?})*x1+({:?})*x2+({:?})*x3",
+                ODE_A[i][0], ODE_A[i][1], ODE_A[i][2], ODE_A[i][3]
+            )
+        };
+        format!(
+            "x0'={}+0.5*x0^2-0.8*x0*x1+0.3*x1*x2+0.4*x2*x3\
+             +0.3*x0^3-0.4*x0*x1*x2+0.2*x2^2*x3\n\
+             x1'={}+0.7*x1^2+0.4*x0*x2-0.6*x2^2+0.25*x0*x3\
+             +0.5*x1^3+0.2*x0^2*x1-0.3*x1*x3^2\n\
+             x2'={}-0.5*x0*x1+0.9*x1*x3+0.2*x0^2-0.3*x3^2\
+             -0.6*x2^3+0.35*x0*x2^2+0.25*x0*x1*x3\n\
+             x3'={}+0.6*x0*x3-0.35*x1*x2+0.45*x2*x3\
+             +0.4*x3^3-0.2*x1^2*x2+0.3*x0*x2*x3\n{extra}done\n",
+            lin(0),
+            lin(1),
+            lin(2),
+            lin(3)
+        )
+    }
+
+    /// With no delay term the coefficients are those of the ODE routine of `normal.rs`, which
+    /// computes them with real eigenvector solves and shifted matrices and shares no code with
+    /// this function. The delay variable `w` only makes the model a delay model. The ODE
+    /// routine returns Kuznetsov's G, which carries the 1/2! of the terms `z1^2 conj(z1)` and
+    /// `z2^2 conj(z2)`, so G2100 and G0021 are halved to the monomial coefficients used here.
+    #[test]
+    fn it_agrees_with_the_ode_routine_at_a_delay_free_point() {
+        use crate::model::build;
+        use crate::normal::{At, DoubleHopf, double_hopf_at};
+        let (omega1, omega2) = (2.3, 1.0);
+        let mut map = SourceMap::new();
+        let top = map.add("ode.ode", ode_source(""));
+        let l = load(top, &mut map, &mut MapLoader::new());
+        let mut ode = build(&l.expanded, &l.info, Evaluator::Jit).expect("ode model builds");
+        let u = [0.0; 4];
+        let big_g = {
+            let mut at = At::new(ode.as_mut(), 4, &u, vec![0.0]);
+            double_hopf_at(&mut at, omega1, omega2).expect("ode coefficients")
+        };
+        let half = |g: (f64, f64)| (g.0 / 2.0, g.1 / 2.0);
+        let want = DoubleHopf {
+            g2100: half(big_g.g2100),
+            g1011: big_g.g1011,
+            g1110: big_g.g1110,
+            g0021: half(big_g.g0021),
+        };
+        let delay_src = ode_source("w'=-2*w-delay(w,1)\n");
+        for ev in both() {
+            let mut m = build_dde_model(&delay_src, ev);
+            let r = hopf_hopf(&mut m, &[0.0; 5], &[], omega1, omega2).expect("coefficients");
+            for (name, got, w) in [
+                ("g2100", r.g2100, want.g2100),
+                ("g1011", r.g1011, want.g1011),
+                ("g1110", r.g1110, want.g1110),
+                ("g0021", r.g0021, want.g0021),
+            ] {
+                let d = ((got[0] - w.0).powi(2) + (got[1] - w.1).powi(2)).sqrt();
+                let size = w.0.hypot(w.1);
+                assert!(d <= 1e-9 * size, "{name}: {got:?} against {w:?}");
+            }
+            let theta = want.g1011.0 / want.g0021.0;
+            let delta = want.g1110.0 / want.g2100.0;
+            let rel = |a: f64, b: f64| (a - b).abs() <= 1e-9 * b.abs();
+            assert!(rel(r.theta.expect("theta"), theta), "theta");
+            assert!(rel(r.delta.expect("delta"), delta), "delta");
         }
     }
 }
