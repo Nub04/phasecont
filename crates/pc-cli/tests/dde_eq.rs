@@ -20,9 +20,13 @@ fn scratch() -> PathBuf {
 }
 
 /// Writes `text` to a file called `name` in the scratch directory and returns its path.
+/// Tests run in parallel and several write the same model file, so the text goes to a file
+/// of its own first and is renamed over `name`; a reader never sees a half-written file.
 fn write(name: &str, text: &str) -> String {
     let path = scratch().join(name);
-    std::fs::write(&path, text).unwrap();
+    let tmp = scratch().join(format!("{name}.{:?}.tmp", std::thread::current().id()));
+    std::fs::write(&tmp, text).unwrap();
+    std::fs::rename(&tmp, &path).unwrap();
     path.to_string_lossy().into_owned()
 }
 
