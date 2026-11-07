@@ -8,6 +8,7 @@ mod lyap;
 mod lyap2;
 mod nodes;
 mod roots;
+mod zerohopf;
 
 pub use branch::{DdeBranch, DdePoint, DdeSpecial, continue_equilibrium};
 pub use eq::{equilibrium, linearize, residual, stability};
@@ -17,5 +18,6 @@ pub use hopf::{
 };
 pub use lyap::{Lyapunov, lyapunov};
 pub use lyap2::{Lyapunov2, lyapunov2};
+pub use zerohopf::{ZeroHopf, zero_hopf};
 
 pub use roots::{CharRoot, LinearDde, RootOptions, RootSet, characteristic_roots};

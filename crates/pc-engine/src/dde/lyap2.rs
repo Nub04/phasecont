@@ -149,43 +149,50 @@ fn lyapunov2_scaled(
 }
 
 /// The model, the point and the delay times, for evaluating the forms.
-struct Ctx<'a> {
-    m: &'a mut DdeModel,
-    x: &'a [f64],
-    full: Vec<f64>,
-    times: Vec<f64>,
+pub(super) struct Ctx<'a> {
+    pub(super) m: &'a mut DdeModel,
+    pub(super) x: &'a [f64],
+    pub(super) full: Vec<f64>,
+    pub(super) times: Vec<f64>,
 }
 
 impl<'a> Ctx<'a> {
-    fn new(m: &'a mut DdeModel, x: &'a [f64], p: &[f64]) -> Ctx<'a> {
+    pub(super) fn new(m: &'a mut DdeModel, x: &'a [f64], p: &[f64]) -> Ctx<'a> {
         let full = full_params(m, x, p, 0.0);
         let times = m.delays.iter().map(|s| time_of(s, p)).collect();
         Ctx { m, x, full, times }
     }
 
     /// The direction of `exp(i sigma theta) h`.
-    fn dir(&self, h: &[C], sigma: f64) -> Vec<C> {
+    pub(super) fn dir(&self, h: &[C], sigma: f64) -> Vec<C> {
         direction(&*self.m, &self.times, h, sigma)
     }
 
     /// The direction of `exp(i sigma theta)(v + c theta w)`.
-    fn poly(&self, v: &[C], sigma: f64, c: C, w: &[C]) -> Vec<C> {
+    pub(super) fn poly(&self, v: &[C], sigma: f64, c: C, w: &[C]) -> Vec<C> {
         direction_poly(&*self.m, &self.times, v, sigma, c, w)
     }
 
-    fn b(&mut self, a: &[C], b: &[C]) -> Result<Vec<C>, EngineError> {
+    pub(super) fn b(&mut self, a: &[C], b: &[C]) -> Result<Vec<C>, EngineError> {
         form(self.m, self.x, &self.full, &[a, b])
     }
 
-    fn c(&mut self, a: &[C], b: &[C], c: &[C]) -> Result<Vec<C>, EngineError> {
+    pub(super) fn c(&mut self, a: &[C], b: &[C], c: &[C]) -> Result<Vec<C>, EngineError> {
         form(self.m, self.x, &self.full, &[a, b, c])
     }
 
-    fn d(&mut self, a: &[C], b: &[C], c: &[C], d: &[C]) -> Result<Vec<C>, EngineError> {
+    pub(super) fn d(&mut self, a: &[C], b: &[C], c: &[C], d: &[C]) -> Result<Vec<C>, EngineError> {
         form(self.m, self.x, &self.full, &[a, b, c, d])
     }
 
-    fn e(&mut self, a: &[C], b: &[C], c: &[C], d: &[C], e: &[C]) -> Result<Vec<C>, EngineError> {
+    pub(super) fn e(
+        &mut self,
+        a: &[C],
+        b: &[C],
+        c: &[C],
+        d: &[C],
+        e: &[C],
+    ) -> Result<Vec<C>, EngineError> {
         form(self.m, self.x, &self.full, &[a, b, c, d, e])
     }
 }
@@ -193,7 +200,14 @@ impl<'a> Ctx<'a> {
 /// The direction of `exp(i sigma theta)(v + c theta w)` in the variables of the lowered
 /// model. The value at `theta = 0` is `v`, and the value at `theta = -tau` is
 /// `exp(-i sigma tau)(v - c tau w)`, which goes into the hidden slot of each delay.
-fn direction_poly(m: &DdeModel, times: &[f64], v: &[C], sigma: f64, c: C, w: &[C]) -> Vec<C> {
+pub(super) fn direction_poly(
+    m: &DdeModel,
+    times: &[f64],
+    v: &[C],
+    sigma: f64,
+    c: C,
+    w: &[C],
+) -> Vec<C> {
     let n = v.len();
     let mut d = vec![C::ZERO; n + m.eval.n_p()];
     d[..n].copy_from_slice(v);
@@ -204,12 +218,12 @@ fn direction_poly(m: &DdeModel, times: &[f64], v: &[C], sigma: f64, c: C, w: &[C
     d
 }
 
-fn conj_all(v: &[C]) -> Vec<C> {
+pub(super) fn conj_all(v: &[C]) -> Vec<C> {
     v.iter().map(|c| c.conj()).collect()
 }
 
 /// `acc += coef * v`.
-fn add(acc: &mut [C], coef: f64, v: &[C]) {
+pub(super) fn add(acc: &mut [C], coef: f64, v: &[C]) {
     for (a, x) in acc.iter_mut().zip(v) {
         *a = *a + x.scale(coef);
     }
