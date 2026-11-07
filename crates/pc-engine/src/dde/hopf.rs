@@ -38,6 +38,10 @@
 //!   8g-2): the first Lyapunov coefficient `l1` of `lyapunov`, for `kappa > 0` only, NaN where
 //!   `lyapunov` refuses the point. It has poles at BT, ZH and at a 1:2 resonance (a root at
 //!   `2 i omega`), and the locator drops a sign change through a pole (`POLE_TOL`).
+//! * `HH`, only when the run is asked for it (`HopfExtras::hh`, SPEC section 8k): the real
+//!   part of the largest root with a positive imaginary part that is not the critical root.
+//!   It is NaN for `sqrt(kappa) <= OMEGA_MIN`, where the pair at `+-i omega` cannot be told
+//!   from a real double root, and where the roots are not available.
 
 use super::eq::{check_params, check_state, field, linearize};
 use super::lyap::lyapunov;
