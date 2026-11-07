@@ -106,7 +106,7 @@ pub struct DdeHopfSpecial {
     /// Index of the first point after it.
     pub index: usize,
     /// The second Lyapunov coefficient at the point (`lyapunov2`, SPEC section 8h): `Some`
-    /// only for `GH`, and `None` there when `lyapunov2` refuses the point.
+    /// only for `GH`, and `None` there when `lyapunov2` returns an error (a refusal is the usual case).
     pub l2: Option<f64>,
 }
 
@@ -232,8 +232,8 @@ impl HopfProblem<'_> {
         }
     }
 
-    /// `l2` at a located `GH` point; `None` for `kappa <= 0` and where `lyapunov2` refuses
-    /// the point (for example a 1:3 resonance).
+    /// `l2` at a located `GH` point; `None` for `kappa <= 0` and where `lyapunov2` returns an
+    /// error (a refusal is the usual case, for example a 1:3 resonance).
     fn l2_at(&mut self, alpha: [f64; 2], x: &[f64], kappa: f64) -> Option<f64> {
         if kappa.is_nan() || kappa <= 0.0 {
             return None;
