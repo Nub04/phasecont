@@ -32,8 +32,8 @@ classdef ModelInputHelperTest < matlab.unittest.TestCase
                 2.6666666666666665 realmin 5e-324 realmax];
             for v = values
                 s = phasecont.internal.num2ode(v);
-                testCase.verifyEqual(str2double(s), v, AbsTol = 0, ...
-                    Message = "value " + sprintf("%.17g", v));
+                testCase.verifyEqual(str2double(s), v, ...
+                    "value " + sprintf("%.17g", v), AbsTol = 0);
             end
         end
 
