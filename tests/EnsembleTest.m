@@ -263,7 +263,7 @@ classdef EnsembleTest < matlab.unittest.TestCase
         function repeatedRunsAreIdentical(testCase)
             m = testCase.model(testCase.Rotation);
             x0 = [linspace(-1, 1, 40); linspace(2, -2, 40)];
-            args = {Backend = "cpu", Precision = "double", Rtol = 1e-8, Atol = 1e-10};
+            args = {"Backend", "cpu", "Precision", "double", "Rtol", 1e-8, "Atol", 1e-10};
             a = phasecont.ensemble(m, x0, [], [0 5], args{:});
             b = phasecont.ensemble(m, x0, [], [0 5], args{:});
             c = phasecont.ensemble(m, x0(:, 7:9), [], [0 5], args{:});
@@ -381,7 +381,7 @@ classdef EnsembleTest < matlab.unittest.TestCase
         function selfTestOnAGpu(testCase, GpuBackend, GpuPrecision)
             testCase.skipUnlessDevice(GpuBackend, GpuPrecision);
             s = phasecont.gpuSelfTest(Backend = GpuBackend, Precision = GpuPrecision);
-            testCase.verifyTrue(s.Pass, evalc("disp(s)") + evalc("disp(s.Checks)"));
+            testCase.verifyTrue(s.Pass, string(evalc("disp(s)")) + string(evalc("disp(s.Checks)")));
             testCase.verifyEqual(s.Backend, GpuBackend);
             testCase.verifyEqual(s.Precision, GpuPrecision);
             testCase.verifyEqual(s.SinglePrecision, GpuPrecision == "single");

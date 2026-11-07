@@ -187,7 +187,7 @@ classdef ModelInputTest < matlab.unittest.TestCase
         end
 
         function theSameEquationsGiveTheSameHash(testCase)
-            args = {Params = struct(w = 2, c = 0.1), Init = struct(x = 1, y = 0)};
+            args = {"Params", struct("w", 2, "c", 0.1), "Init", struct("x", 1, "y", 0)};
             a = testCase.track(phasecont.Model.fromEquations( ...
                 testCase.OscEquations, args{:}));
             b = testCase.track(phasecont.Model.fromEquations( ...
