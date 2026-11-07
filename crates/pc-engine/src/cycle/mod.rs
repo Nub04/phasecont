@@ -17,6 +17,7 @@ mod problem;
 
 pub use basis::{CollocationBasis, NCOL_RANGE};
 pub use codim2::{LPC_CURVE_LABELS, NS_CURVE_LABELS, PD_CURVE_LABELS};
+pub(crate) use codim2::{nearest_pair_is_complex, nontrivial, pair_product, shifted_product};
 pub use continuation::{CycleStart, HopfStart, PdStart, continue_cycle};
 pub use curve::CycleCurveStart;
 pub use hom::{HOM_CURVE_LABELS, HomProblem, HomStart, HomStartKind, continue_hom_curve};

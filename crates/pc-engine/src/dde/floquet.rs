@@ -45,26 +45,16 @@ pub struct DdeFloquet {
     pub trivial_error: f64,
 }
 
-/// The Floquet multipliers of the orbit `cycle` of the model at `setup.params`. The profile
-/// need not solve the collocation system exactly, but the result only means something for a
-/// solution.
-pub fn floquet_multipliers(
-    model: &mut DdeModel,
+/// The checks on `options` that do not need the orbit: the model has a delay, `nhist >= 1`,
+/// the stage system fits in [`MAX_STAGE`] unknowns and `1 <= count <= d`. `n` is the number of
+/// states. Returns `d = n (nhist + 1)`.
+pub(super) fn check_floquet(
+    model: &DdeModel,
     setup: &DdeCycleSetup,
-    cycle: &DdeCycleStart,
+    n: usize,
     options: &DdeFloquetOptions,
-    cancel: &AtomicBool,
-) -> Result<DdeFloquet, EngineError> {
-    let (n, _) = check_setup(model, setup)?;
-    check_profile(&cycle.profile, n, setup)?;
-    if !(cycle.period.is_finite() && cycle.period > 0.0) {
-        return Err(EngineError::BadProblem(format!(
-            "the period is {}; it must be finite and positive",
-            cycle.period
-        )));
-    }
-    let n_s = model.delays.len();
-    if n_s == 0 {
+) -> Result<usize, EngineError> {
+    if model.delays.is_empty() {
         return Err(EngineError::BadProblem(
             "the model has no delay; a periodic orbit of an ODE has no history to follow".into(),
         ));
@@ -90,6 +80,67 @@ pub fn floquet_multipliers(
             options.count
         )));
     }
+    Ok(d)
+}
+
+/// The summary of all `d` multipliers: `trivial_error` over all of them, then the leading
+/// `count` by modulus. Empty input (an eigenvalue computation that failed along a branch) gives
+/// no multipliers and a NaN `trivial_error`.
+pub(super) fn summarize(mut all: Vec<(f64, f64)>, count: usize) -> DdeFloquet {
+    if all.is_empty() {
+        return DdeFloquet {
+            multipliers: all,
+            trivial_error: f64::NAN,
+        };
+    }
+    let trivial_error = all
+        .iter()
+        .map(|&(re, im)| (re - 1.0).hypot(im))
+        .fold(f64::INFINITY, f64::min);
+    all.sort_by(|a, b| b.0.hypot(b.1).total_cmp(&a.0.hypot(a.1)));
+    all.truncate(count);
+    DdeFloquet {
+        multipliers: all,
+        trivial_error,
+    }
+}
+
+/// The Floquet multipliers of the orbit `cycle` of the model at `setup.params`. The profile
+/// need not solve the collocation system exactly, but the result only means something for a
+/// solution.
+pub fn floquet_multipliers(
+    model: &mut DdeModel,
+    setup: &DdeCycleSetup,
+    cycle: &DdeCycleStart,
+    options: &DdeFloquetOptions,
+    cancel: &AtomicBool,
+) -> Result<DdeFloquet, EngineError> {
+    let (phi, d) = monodromy(model, setup, cycle, options, cancel)?;
+    let all = eigenvalues(&phi, d)?;
+    Ok(summarize(all, options.count))
+}
+
+/// The matrix `Phi(T)` of the history ODE, column-major `d` by `d` with `d = n (nhist + 1)`,
+/// after all the checks of [`floquet_multipliers`].
+pub(super) fn monodromy(
+    model: &mut DdeModel,
+    setup: &DdeCycleSetup,
+    cycle: &DdeCycleStart,
+    options: &DdeFloquetOptions,
+    cancel: &AtomicBool,
+) -> Result<(Vec<f64>, usize), EngineError> {
+    let (n, _) = check_setup(model, setup)?;
+    check_profile(&cycle.profile, n, setup)?;
+    if !(cycle.period.is_finite() && cycle.period > 0.0) {
+        return Err(EngineError::BadProblem(format!(
+            "the period is {}; it must be finite and positive",
+            cycle.period
+        )));
+    }
+    let d = check_floquet(model, setup, n, options)?;
+    let n_s = model.delays.len();
+    let nhist = options.nhist;
+    let mm = setup.ncol;
 
     let basis = CollocationBasis::new(mm)?;
     let ntst = setup.ntst;
@@ -218,17 +269,7 @@ pub fn floquet_multipliers(
         }
     }
 
-    let mut all = eigenvalues(&phi, d)?;
-    let trivial_error = all
-        .iter()
-        .map(|&(re, im)| (re - 1.0).hypot(im))
-        .fold(f64::INFINITY, f64::min);
-    all.sort_by(|a, b| b.0.hypot(b.1).total_cmp(&a.0.hypot(a.1)));
-    all.truncate(options.count);
-    Ok(DdeFloquet {
-        multipliers: all,
-        trivial_error,
-    })
+    Ok((phi, d))
 }
 
 /// The Gauss Runge-Kutta matrix `a_il = integral_0^{c_i} ell_l(z) dz` with `ell_l` the

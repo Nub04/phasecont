@@ -1383,7 +1383,7 @@ Step 3 of E9b puts the Floquet multipliers of Section 8m on the branch of Sectio
 - `continue_cycle_floquet(model, setup, start, opts, floquet, cancel) -> Result<DdeCycleBranch, EngineError>`, with `floquet: Option<&DdeFloquetOptions>` of Section 8m. `continue_cycle` of Section 8n is the call with `None`.
 - `DdeCyclePoint` gets `multipliers: Vec<(f64, f64)>`, empty without `floquet`, and `trivial_error: f64`, NaN without `floquet`.
 - `DdeCycleBranch` gets `specials: Vec<DdeCycleSpecial>` in the order of the branch, with `DdeCycleSpecial { label: String, index: usize, point: DdeCyclePoint }`. `index` is the index of the first point after the special point, as for `SpecialPoint` of `cont`. The `h` and `newton_iters` of `point` are those of the step that contained it.
-- The checks are those of Section 8n in the same order. With `floquet` they are followed by the checks of Section 8m on the options: the model has a delay, `nhist` $\ge 1$, the stage system $m\,d$ is at most 1000 and $1 \le$ `count` $\le d$. All of them are `BadProblem` and come before the start is corrected.
+- The checks are those of Section 8n in the same order. With `floquet` they are followed by the checks of Section 8m on the options: the model has a delay, `nhist` $\ge 1$, the stage system $m\,d$ is at most 1000 and $1 \le$ `count` $\le d$. All of them are `BadProblem` and come before the start is corrected. The message of a check on the options starts with `floquet: `, so that a caller can tell it from the other `BadProblem`s.
 
 **Command line.** `pc-cli dde-cycle FILE` with `branch: true` accepts the key `floquet` of Section 8m. The output of Section 8n gets these additions:
 - With `floquet`, each point has `multipliers`, an array of `[re, im]` pairs, and `trivial_error`.
@@ -1400,7 +1400,24 @@ Step 3 of E9b puts the Floquet multipliers of Section 8m on the branch of Sectio
 7. The two evaluators. Tests 1 and 2 with `Evaluator::Jit` and `Evaluator::Fallback` give the same specials (labels and `index`), and their `alpha` agree within the bound of the table of test 7.
 8. `pc-cli dde-cycle` with the problems of tests 1 to 3 and `branch: true` prints the `specials` of the engine (`label`, `index`, `alpha`, `period` and `profile` bit for bit, JIT). With `floquet` it also prints the `multipliers` and `trivial_error` of every point and special, bit for bit. Without `branch` the output of Section 8m is unchanged. `branch: true` with `floquet` is not exit 2 any more. `options.detect` and `options.mesh_adapt` with `branch` are still exit 2. A bad `floquet` value with `branch` is exit 2 naming `floquet`.
 
-**Measured tables.** The tables and bounds follow the first run of the tests. Each bound is about 2 to 3 times the measured value unless the table says otherwise.
+**Measured tables.** The tables and bounds follow the first run of the tests (release build, $N = 20$, $m = 4$). Each bound is about 2 to 3 times the measured value unless the table says otherwise.
+
+| Test | Quantity | Measured | Bound |
+|---|---|---|---|
+| 1 | $\lvert\alpha - \pi/2\rvert$ at the `NS` special | $8.9\cdot10^{-16}$ | $10^{-12}$ |
+| 1 | nearest multiplier to $e^{\pm i\theta}$ | $1.3\cdot10^{-9}$ | $4\cdot10^{-9}$ |
+| 2 | $\lvert\alpha - \sqrt{0.34}\rvert$ at the `PD` special | $3.3\cdot10^{-12}$ | $10^{-11}$ |
+| 2 | nearest multiplier to $-1$ at that point | $1.8\cdot10^{-15}$ | $10^{-12}$ |
+| 2 | leading multiplier at $s = 0.7$ against the closed form | $1.2\cdot10^{-10}$ | $4\cdot10^{-10}$ |
+| 3 | $\lvert\alpha\rvert$ at the `LPC` special | $5.8\cdot10^{-12}$ | $2\cdot10^{-11}$ |
+| 3 | $\lvert\rho^2 - 1\rvert$ at that point | $3.8\cdot10^{-11}$ | $10^{-10}$ |
+| 3 | $\lvert T - 2\pi\rvert$ at that point | $2.3\cdot10^{-11}$ | $8\cdot10^{-11}$ |
+| 3 | worst $\lvert(\rho - 1)^2 - \alpha\rvert$ over the run | $5.4\cdot10^{-10}$ | $2\cdot10^{-9}$ |
+| 7 | $\alpha$ of a special, JIT against fallback | $0$ | $10^{-10}$ |
+
+The first and fourth bounds are wider than 3 times the measured value, since those values are at rounding level and rounding differs between platforms. The last bound is wider since the measured difference is exactly zero. The runs gave `NS` at index 15 of 18 points, `LPC` at index 21 of 47 points, and 11 points for the `PD` run. The tests compare indices between runs (tests 4 and 7) and never against a fixed value.
+
+**Reachability of one check.** `build_dde` refuses a model without a `delay(...)` call, so the check "the model has a delay" of the list under **The API** cannot fail for a model built through it. Test 6 reaches it by clearing the delay list of a built model, as the tests of Section 8m do. The check stays as a guard for a model made some other way.
 
 ## 9. Acceptance tests
 

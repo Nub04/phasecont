@@ -27,20 +27,20 @@ fn remove_nearest(mu: &mut Vec<(f64, f64)>, z: (f64, f64)) {
 }
 
 /// The multipliers without the one closest to 1, the trivial multiplier.
-pub(super) fn nontrivial(eigs: &[(f64, f64)]) -> Vec<(f64, f64)> {
+pub(crate) fn nontrivial(eigs: &[(f64, f64)]) -> Vec<(f64, f64)> {
     let mut mu = eigs.to_vec();
     remove_nearest(&mut mu, (1.0, 0.0));
     mu
 }
 
 /// The real part of the product of mu + s over `mu`, 1 over no multipliers.
-pub(super) fn shifted_product(mu: &[(f64, f64)], s: f64) -> f64 {
+pub(crate) fn shifted_product(mu: &[(f64, f64)], s: f64) -> f64 {
     mu.iter().fold((1.0, 0.0), |p, m| cmul(p, (m.0 + s, m.1))).0
 }
 
 /// The real part of the product of mu_i mu_j - 1 over i < j, NaN for fewer than two
 /// multipliers.
-pub(super) fn pair_product(mu: &[(f64, f64)]) -> f64 {
+pub(crate) fn pair_product(mu: &[(f64, f64)]) -> f64 {
     if mu.len() < 2 {
         return f64::NAN;
     }
@@ -57,7 +57,7 @@ pub(super) fn pair_product(mu: &[(f64, f64)]) -> f64 {
 /// Whether the pair of `mu` whose product is closest to 1 is a complex pair. The pair
 /// product also vanishes when two real multipliers have product 1, a neutral saddle cycle,
 /// and only a complex pair makes its zero an NS point.
-pub(super) fn nearest_pair_is_complex(mu: &[(f64, f64)]) -> bool {
+pub(crate) fn nearest_pair_is_complex(mu: &[(f64, f64)]) -> bool {
     let mut best: Option<(f64, usize, usize)> = None;
     for a in 0..mu.len() {
         for b in a + 1..mu.len() {

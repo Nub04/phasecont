@@ -17,9 +17,13 @@
 //! in all, so the solution set is a curve in `(u, T, alpha)`.
 
 use super::eq::{check_params, time_of};
+use super::floquet::{DdeFloquetOptions, check_floquet, monodromy, summarize};
 use super::lyap::pair;
-use crate::branch::{Options, StopReason};
-use crate::cycle::{CollocationBasis, NCOL_RANGE, phase_row, try_zeros};
+use crate::branch::{Options, Point, StopReason};
+use crate::cycle::{
+    CYCLE_LABELS, CollocationBasis, NCOL_RANGE, nearest_pair_is_complex, nontrivial, pair_product,
+    phase_row, shifted_product, try_zeros,
+};
 use crate::error::EngineError;
 use crate::model::DdeModel;
 use crate::palc::{Corrected, check_step_options, correct, run_branch};
@@ -176,6 +180,12 @@ struct DdeCycleProblem<'a> {
     /// The phase row, scaled to 2-norm 1, and its offset `phase . uref`.
     phase: Vec<f64>,
     phase0: f64,
+    /// The Floquet options of a run that looks for LPC, PD and NS points; `None` leaves the
+    /// multipliers out and only the LPC test is defined.
+    floquet: Option<DdeFloquetOptions>,
+    /// Never set. `state_jacobian` has no cancel argument, so a run is cancelled between
+    /// steps and not inside one monodromy matrix.
+    never: AtomicBool,
 }
 
 impl<'a> DdeCycleProblem<'a> {
@@ -198,6 +208,8 @@ impl<'a> DdeCycleProblem<'a> {
             dim,
             phase,
             phase0,
+            floquet: None,
+            never: AtomicBool::new(false),
         })
     }
 
@@ -219,6 +231,7 @@ impl<'a> DdeCycleProblem<'a> {
             dim,
             phase,
             phase0,
+            ..
         } = self;
         let (n, ntst, dim, free) = (*n, *ntst, *dim, *free);
         let rows = dim - 1;
@@ -375,10 +388,67 @@ impl Problem for DdeCycleProblem<'_> {
         self.fill(x, None, Some(out))
     }
 
-    /// The tests of an equilibrium branch do not apply to the discretized orbit; the labels
-    /// of cycles come in a later slice (SPEC section 8n).
+    /// The tests of an equilibrium branch do not apply to the discretized orbit. The
+    /// codim-2 tests below take their place (SPEC section 8o).
     fn ep_tests(&self) -> bool {
         false
+    }
+
+    /// The monodromy matrix `Phi(T)` of the history ODE at `x`, whose eigenvalues are the
+    /// multipliers (SPEC section 8m). Without Floquet options there is no matrix.
+    fn state_jacobian(&mut self, x: &[f64]) -> Result<Option<Vec<f64>>, EngineError> {
+        let Some(options) = self.floquet.clone() else {
+            return Ok(None);
+        };
+        if x.len() != self.dim {
+            return Err(EngineError::BadProblem("wrong length of x".into()));
+        }
+        let plen = self.dim - 2;
+        let mut params = self.params.clone();
+        params[self.free] = x[self.dim - 1];
+        let setup = DdeCycleSetup {
+            params,
+            free: self.free,
+            ntst: self.ntst,
+            ncol: self.basis.m(),
+        };
+        let start = DdeCycleStart {
+            profile: x[..plen].to_vec(),
+            period: x[plen],
+        };
+        let (phi, _) = monodromy(self.m, &setup, &start, &options, &self.never)?;
+        Ok(Some(phi))
+    }
+
+    fn codim2_labels(&self) -> &'static [&'static str] {
+        &CYCLE_LABELS
+    }
+
+    /// The same tests as the ODE cycles (SPEC section 7): LPC is the alpha component of the
+    /// tangent, PD the product of mu + 1 and NS the product of mu_i mu_j - 1 over i < j, both
+    /// over the multipliers without the one closest to 1. Without multipliers PD and NS are
+    /// NaN.
+    fn codim2_tests(
+        &mut self,
+        x: &[f64],
+        tangent: &[f64],
+        eigs: &[(f64, f64)],
+    ) -> Result<Vec<f64>, EngineError> {
+        let lpc = tangent[x.len() - 1];
+        if eigs.is_empty() {
+            return Ok(vec![lpc, f64::NAN, f64::NAN]);
+        }
+        let mu = nontrivial(eigs);
+        Ok(vec![lpc, shifted_product(&mu, 1.0), pair_product(&mu)])
+    }
+
+    /// The NS product also vanishes when two real multipliers have product 1; the zero is an
+    /// NS point only when the pair closest to product 1 is a complex pair.
+    fn codim2_label(&self, i: usize, eigs: &[(f64, f64)]) -> Option<&'static str> {
+        if i != 2 {
+            return CYCLE_LABELS.get(i).copied();
+        }
+        nearest_pair_is_complex(&nontrivial(eigs)).then_some("NS")
     }
 
     /// Re-references the phase row to the accepted profile, so that it stays a condition
@@ -578,12 +648,32 @@ pub struct DdeCyclePoint {
     pub h: f64,
     /// Corrector iterations at the point; 0 for the first.
     pub newton_iters: usize,
+    /// The largest Floquet multipliers as `(re, im)`, largest modulus first. Empty without
+    /// Floquet options, and when the eigenvalue computation did not converge.
+    pub multipliers: Vec<(f64, f64)>,
+    /// `min |mu - 1|` over all multipliers of the discretized `Phi(T)`; NaN when `multipliers`
+    /// is empty.
+    pub trivial_error: f64,
+}
+
+/// A special point on a branch of periodic orbits of a delay equation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DdeCycleSpecial {
+    /// `"LPC"`, `"PD"` or `"NS"`.
+    pub label: String,
+    /// The index in `points` of the first point after the special point.
+    pub index: usize,
+    /// The orbit at the special point.
+    pub point: DdeCyclePoint,
 }
 
 /// The result of [`continue_cycle`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct DdeCycleBranch {
     pub points: Vec<DdeCyclePoint>,
+    /// The LPC, PD and NS points, in the order of the run. Only an LPC is found without
+    /// Floquet options.
+    pub specials: Vec<DdeCycleSpecial>,
     pub stop: StopReason,
     pub warnings: Vec<String>,
 }
@@ -597,16 +687,45 @@ fn check_period(period: f64) -> Result<(), EngineError> {
     Ok(())
 }
 
-/// Continues the orbit from `start` in the parameter `setup.free` by pseudo-arclength
-/// continuation of the rows of [`correct_cycle`] on a fixed mesh (SPEC section 8n). `start`
-/// is first corrected at the fixed parameter `setup.params[setup.free]`, and the phase
-/// reference moves to each accepted profile. Special points are not looked for: `detect_*`
-/// and `mesh_adapt` have no effect.
+/// [`continue_cycle_floquet`] without Floquet options: only fold points (LPC) are found.
 pub fn continue_cycle(
     model: &mut DdeModel,
     setup: &DdeCycleSetup,
     start: &DdeCycleStart,
     opts: &Options,
+    cancel: &AtomicBool,
+) -> Result<DdeCycleBranch, EngineError> {
+    continue_cycle_floquet(model, setup, start, opts, None, cancel)
+}
+
+fn cycle_point(q: &Point, dim: usize, count: usize) -> DdeCyclePoint {
+    let multipliers = summarize(q.eigenvalues.clone(), count);
+    DdeCyclePoint {
+        profile: q.u[..dim - 2].to_vec(),
+        period: q.u[dim - 2],
+        alpha: q.alpha,
+        h: q.h,
+        newton_iters: q.newton_iters,
+        multipliers: multipliers.multipliers,
+        trivial_error: multipliers.trivial_error,
+    }
+}
+
+/// Continues the orbit from `start` in the parameter `setup.free` by pseudo-arclength
+/// continuation of the rows of [`correct_cycle`] on a fixed mesh (SPEC section 8n). `start`
+/// is first corrected at the fixed parameter `setup.params[setup.free]`, and the phase
+/// reference moves to each accepted profile.
+///
+/// The run reports LPC points, folds of the branch, and with `floquet` also PD and NS
+/// points from the Floquet multipliers at every point and every locator trial (SPEC
+/// section 8o). `detect_*` and `mesh_adapt` have no effect. Without `floquet`, the points
+/// carry no multipliers.
+pub fn continue_cycle_floquet(
+    model: &mut DdeModel,
+    setup: &DdeCycleSetup,
+    start: &DdeCycleStart,
+    opts: &Options,
+    floquet: Option<&DdeFloquetOptions>,
     cancel: &AtomicBool,
 ) -> Result<DdeCycleBranch, EngineError> {
     if cancel.load(Ordering::Relaxed) {
@@ -625,6 +744,13 @@ pub fn continue_cycle(
         ));
     }
     check_step_options(opts)?;
+    if let Some(f) = floquet {
+        // The message names the key, so a caller can tell it from the other `BadProblem`s.
+        check_floquet(model, setup, n, f).map_err(|e| match e {
+            EngineError::BadProblem(m) => EngineError::BadProblem(format!("floquet: {m}")),
+            other => other,
+        })?;
+    }
     let mut opts = opts.clone();
     opts.detect_lp = false;
     opts.detect_bp = false;
@@ -632,23 +758,29 @@ pub fn continue_cycle(
 
     let first = correct_cycle(model, setup, start, &opts, cancel)?;
     let mut p = DdeCycleProblem::new(model, setup, n, dim, &first.profile)?;
+    p.floquet = floquet.cloned();
+    let count = floquet.map_or(0, |f| f.count);
     let mut x0 = first.profile;
     x0.push(first.period);
     x0.push(first.alpha);
     let branch = run_branch(&mut p, &x0, None, &opts, false, cancel, &mut |_| {})?;
     let points = branch
         .points
-        .into_iter()
-        .map(|q| DdeCyclePoint {
-            profile: q.u[..dim - 2].to_vec(),
-            period: q.u[dim - 2],
-            alpha: q.alpha,
-            h: q.h,
-            newton_iters: q.newton_iters,
+        .iter()
+        .map(|q| cycle_point(q, dim, count))
+        .collect();
+    let specials = branch
+        .specials
+        .iter()
+        .map(|sp| DdeCycleSpecial {
+            label: sp.label.clone(),
+            index: sp.index,
+            point: cycle_point(&sp.point, dim, count),
         })
         .collect();
     Ok(DdeCycleBranch {
         points,
+        specials,
         stop: branch.stop,
         warnings: branch.warnings,
     })
