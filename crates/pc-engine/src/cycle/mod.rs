@@ -30,3 +30,4 @@ pub use normal::{
 pub use ns::{NsProblem, continue_ns_curve};
 pub use pd::{PdProblem, continue_pd_curve};
 pub use problem::{CYCLE_LABELS, CycleProblem, CycleSetup, PeriodicOrbit, periodic_orbit};
+pub(crate) use problem::{phase_row, try_zeros};

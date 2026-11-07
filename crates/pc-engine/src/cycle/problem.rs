@@ -144,6 +144,40 @@ pub struct CycleProblem<'a> {
     periodic: bool,
 }
 
+/// The phase row against the reference profile `uref` (n (N m + 1) values) and the offset
+/// `phase . uref`: sum_j sum_i w_i L_l(z_i) h_j uref'(z_ji) for base point jm + l. The h_j
+/// of the quadrature cancels the 1/h_j of the derivative.
+pub(crate) fn phase_row(
+    basis: &CollocationBasis,
+    n: usize,
+    ntst: usize,
+    uref: &[f64],
+) -> (Vec<f64>, f64) {
+    let m = basis.m();
+    let mut phase = vec![0.0; n * (ntst * m + 1)];
+    let mut dref = vec![0.0; n];
+    for j in 0..ntst {
+        let at = j * m * n;
+        for i in 0..m {
+            for (c, d) in dref.iter_mut().enumerate() {
+                *d = (0..=m)
+                    .map(|l| basis.derivative_at_node(i, l) * uref[at + l * n + c])
+                    .sum();
+            }
+            let w = basis.weights()[i];
+            for l in 0..=m {
+                let wl = w * basis.value_at_node(i, l);
+                let row = &mut phase[at + l * n..at + (l + 1) * n];
+                for (r, d) in row.iter_mut().zip(&dref) {
+                    *r += wl * d;
+                }
+            }
+        }
+    }
+    let phase0 = phase.iter().zip(uref).map(|(a, b)| a * b).sum();
+    (phase, phase0)
+}
+
 /// A zeroed vector, or an error instead of an abort when the memory is not there.
 pub(crate) fn try_zeros(len: Option<usize>) -> Result<Vec<f64>, EngineError> {
     let oom = || EngineError::from(LinalgError::OutOfMemory);
@@ -293,29 +327,9 @@ impl<'a> CycleProblem<'a> {
     /// the phase row becomes sum_j sum_i w_i L_l(z_i) h_j u_ref'(z_ji) for base point
     /// jm + l. The h_j of the quadrature cancels the 1/h_j of the derivative.
     pub(crate) fn set_reference(&mut self, uref: &[f64]) {
-        let (n, m) = (self.model.n(), self.basis.m());
-        let b = &self.basis;
-        self.phase.fill(0.0);
-        let mut dref = vec![0.0; n];
-        for j in 0..self.ntst {
-            let at = j * m * n;
-            for i in 0..m {
-                for (c, d) in dref.iter_mut().enumerate() {
-                    *d = (0..=m)
-                        .map(|l| b.derivative_at_node(i, l) * uref[at + l * n + c])
-                        .sum();
-                }
-                let w = b.weights()[i];
-                for l in 0..=m {
-                    let wl = w * b.value_at_node(i, l);
-                    let row = &mut self.phase[at + l * n..at + (l + 1) * n];
-                    for (r, d) in row.iter_mut().zip(&dref) {
-                        *r += wl * d;
-                    }
-                }
-            }
-        }
-        self.phase0 = self.phase.iter().zip(uref).map(|(a, b)| a * b).sum();
+        let (phase, phase0) = phase_row(&self.basis, self.model.n(), self.ntst, uref);
+        self.phase = phase;
+        self.phase0 = phase0;
         let k = self.k();
         for (q, v) in self.phase.iter().enumerate() {
             self.border[k * q] = *v;
