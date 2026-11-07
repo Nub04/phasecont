@@ -656,15 +656,27 @@ The problem file is a JSON object. Every key but options is required:
            costs one more solve. A GH special then also has \"l2\", the second
            coefficient at the located zero, or null where dde-lyap with l2 would
            refuse it
+  hh       optional object {\"n\", \"re_min\"}, both required, off if left out. n is an
+           integer of at least 1 and re_min a negative number, the options of
+           dde-roots. With it, the characteristic roots are computed at every point
+           with kappa above 0, and a sign change of the real part of the second pair
+           of roots (the largest one off the axis) is labeled HH (Hopf-Hopf). Each
+           point costs one root search. The key \"hh\" of a point is that real part,
+           or null where the pair at i omega is not single or there is no second
+           pair. An HH special also has \"omega2\", the frequency of the second pair.
+           Warnings hh_unrefined and hh_lost count the points where the search
+           lost roots, and then n should be raised
   options  optional; the keys of the cont problem files: h0, hmin, hmax, max_steps,
            tol_x, tol_f, max_newton, direction, bounds. bounds limits the second name
            in free, and a delay time there needs a lower bound above 0. detect and
            mesh_adapt are refused
 
 The output is {\"stop\", \"points\", \"specials\", \"warnings\"}. A point is {\"alpha\",
-\"x\", \"kappa\", \"omega\"} plus \"l1\" when lyapunov is true, where alpha is [first,
-second], kappa is omega^2 and \"omega\" is null where kappa is not above 0. A special is {\"label\", \"alpha\", \"x\",
-\"kappa\", \"index\"}, plus \"l2\" on a GH special when lyapunov is true, in order along the curve. \"stop\" is one of end, max_steps, bounds,
+\"x\", \"kappa\", \"omega\"} plus \"l1\" when lyapunov is true and \"hh\" when hh is
+given, where alpha is [first, second], kappa is omega^2 and \"omega\" is null where kappa
+is not above 0. A special is {\"label\", \"alpha\", \"x\", \"kappa\", \"index\"}, plus \"l2\"
+on a GH special when lyapunov is true and \"omega2\" on an HH special when hh is given,
+in order along the curve. \"stop\" is one of end, max_steps, bounds,
 step_too_small, singular, cancelled and error, as for cont.
 
 options:

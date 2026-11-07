@@ -326,6 +326,8 @@ fn usage_errors_and_help() {
     let o = run(&scratch(), &["dde-hopf", "--help"]);
     assert_eq!(code(&o), 0);
     assert!(stdout(&o).starts_with("usage: pc-cli dde-hopf"));
+    assert!(stdout(&o).contains("\n  hh "), "the help lists the key hh");
+    assert!(stdout(&o).contains("omega2"));
 }
 
 // Test 12 of SPEC section 8h: `l2` on a GH special. The Wright equation with a quintic term,
@@ -424,5 +426,102 @@ fn without_lyapunov_no_special_has_l2_and_false_equals_absent() {
     let v: Value = serde_json::from_str(&stdout(&a)).unwrap();
     for s in v["specials"].as_array().unwrap() {
         assert!(s.get("l2").is_none(), "{s}");
+    }
+}
+
+// ---- The opt-in HH label (SPEC 8k, test 11) ----
+//
+// The coupled model x' = c y - a x(t-1), y' = -d x - b y(t-1.5) has the origin as its
+// equilibrium. On its Hopf curve in (a, b) the second pair crosses the axis at
+// b* = 1.1844194631859732 with omega2 = 1.1308210684126256 (numpy oracle of section 8k).
+
+const COUPLED: &str = "par a=1.4, b=1.2, c=1, d=0.1\n\
+                       x'=c*y-a*delay(x,1)\n\
+                       y'=-d*x-b*delay(y,1.5)\ndone\n";
+const B_STAR: f64 = 1.184_419_463_185_973_2;
+const OMEGA2_STAR: f64 = 1.130_821_068_412_625_6;
+
+fn coupled(extra: &str) -> String {
+    write("coupled.ode", COUPLED);
+    format!(
+        r#"{{"model":"coupled.ode","params":{{"a":1.46,"b":0.8,"c":1.0,"d":0.1}},
+            "free":["a","b"],"x0":[0.001,0.001],"omega":1.54,{extra}
+            "options":{{"direction":1,"hmax":0.05,"bounds":[0.5,1.4],
+                       "tol_x":1e-12,"tol_f":1e-12,"max_newton":20}}}}"#
+    )
+}
+
+#[test]
+fn hh_adds_the_label_and_omega2_and_leaves_the_points_alone() {
+    let on = write(
+        "coupled_on.json",
+        &coupled(r#""hh":{"n":30,"re_min":-3.0},"#),
+    );
+    let off = write("coupled_off.json", &coupled(""));
+    let a = run(&scratch(), &["dde-hopf", &on]);
+    let b = run(&scratch(), &["dde-hopf", &off]);
+    assert_eq!(code(&a), 0, "{}", stderr(&a));
+    assert_eq!(code(&b), 0, "{}", stderr(&b));
+    let (a, b): (Value, Value) = (
+        serde_json::from_str(&stdout(&a)).unwrap(),
+        serde_json::from_str(&stdout(&b)).unwrap(),
+    );
+    assert!(
+        a["warnings"].as_array().unwrap().is_empty(),
+        "{}",
+        a["warnings"]
+    );
+    let specials = a["specials"].as_array().unwrap();
+    assert_eq!(specials.len(), 1, "{specials:?}");
+    let sp = &specials[0];
+    assert_eq!(sp["label"], "HH");
+    assert!((num(&sp["alpha"][1]) - B_STAR).abs() < 1e-6, "{sp}");
+    assert!((num(&sp["omega2"]) - OMEGA2_STAR).abs() < 1e-6, "{sp}");
+    let (pa, pb) = (
+        a["points"].as_array().unwrap(),
+        b["points"].as_array().unwrap(),
+    );
+    assert_eq!(pa.len(), pb.len());
+    for (p, q) in pa.iter().zip(pb) {
+        assert!(p["hh"].is_number(), "{p}");
+        for key in ["alpha", "x", "kappa", "omega"] {
+            assert_eq!(p[key], q[key], "{key}");
+        }
+    }
+    // Without the key there is no hh, no special and no omega2.
+    assert!(
+        b["specials"].as_array().unwrap().is_empty(),
+        "{}",
+        b["specials"]
+    );
+    for q in pb {
+        assert!(q.get("hh").is_none(), "{q}");
+    }
+    assert!(!stdout_has(&b, "omega2"));
+}
+
+fn stdout_has(v: &Value, key: &str) -> bool {
+    v.to_string().contains(&format!("\"{key}\""))
+}
+
+#[test]
+fn a_bad_hh_value_exits_two_and_names_the_key() {
+    for hh in [
+        "true",
+        "null",
+        "[30,-3]",
+        r#"{"n":30}"#,
+        r#"{"re_min":-3}"#,
+        r#"{"n":30.5,"re_min":-3}"#,
+        r#"{"n":30,"re_min":"x"}"#,
+        r#"{"n":30,"re_min":-3,"m":1}"#,
+        r#"{"n":30,"re_min":1}"#,
+        r#"{"n":0,"re_min":-3}"#,
+    ] {
+        let file = write("coupled_bad_hh.json", &coupled(&format!("\"hh\":{hh},")));
+        let o = run(&scratch(), &["dde-hopf", &file]);
+        assert_eq!(code(&o), 2, "{hh}: {}", stderr(&o));
+        assert!(stdout(&o).is_empty(), "{hh}: stdout {}", stdout(&o));
+        assert!(stderr(&o).contains("\"hh\""), "{hh}: {}", stderr(&o));
     }
 }

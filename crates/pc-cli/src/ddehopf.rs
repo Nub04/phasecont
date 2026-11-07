@@ -11,14 +11,16 @@ use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 
 use pc_engine::{
-    DdeHopfBranch, DdeHopfSetup, EngineError, Evaluator, Options, StopReason, build_dde,
-    dde_continue_hopf, dde_continue_hopf_with_lyapunov,
+    DdeHopfBranch, DdeHopfExtras, DdeHopfSetup, EngineError, Evaluator, Options, RootOptions,
+    StopReason, build_dde, dde_continue_hopf_with,
 };
 use pckern::json::problem::parse_options;
 use serde_json::{Map, Value, json};
 
 use crate::cont::stop_name;
-use crate::ddeeq::{BAD_PROBLEM, check_keys, engine_error, load_dde, number, required, to_stderr};
+use crate::ddeeq::{
+    BAD_PROBLEM, check_keys, count, engine_error, load_dde, number, required, to_stderr,
+};
 use crate::out;
 
 /// What the problem file says.
@@ -34,6 +36,8 @@ struct Problem {
     omega: f64,
     /// Compute the first Lyapunov coefficient at every point and label GH (off by default).
     lyapunov: bool,
+    /// Label HH from the characteristic roots at every point (off if the key is left out).
+    hh: Option<RootOptions>,
     opts: Options,
 }
 
@@ -112,12 +116,11 @@ pub fn dde_hopf(problem_file: &Path) -> ExitCode {
         omega: problem.omega,
     };
     let cancel = AtomicBool::new(false);
-    let run = if problem.lyapunov {
-        dde_continue_hopf_with_lyapunov
-    } else {
-        dde_continue_hopf
+    let extras = DdeHopfExtras {
+        lyapunov: problem.lyapunov,
+        hh: problem.hh,
     };
-    let branch = match run(&mut model, &setup, &problem.opts, &cancel) {
+    let branch = match dde_continue_hopf_with(&mut model, &setup, &problem.opts, &cancel, &extras) {
         Ok(b) => b,
         Err(e) => return engine_error(&e, &shown.to_string()),
     };
@@ -128,15 +131,16 @@ pub fn dde_hopf(problem_file: &Path) -> ExitCode {
     {
         to_stderr(&format!("pc-cli: {e}\n"));
     }
-    let mut text = branch_json(&branch, problem.lyapunov).to_string();
+    let mut text = branch_json(&branch, problem.lyapunov, problem.hh.is_some()).to_string();
     text.push('\n');
     out(&text, 0)
 }
 
-/// The output object of SPEC sections 8f, 8g-2 and 8h. A point carries `l1` and a `GH`
-/// special carries `l2` only when the problem asked for `lyapunov`, so a run without it
+/// The output object of SPEC sections 8f, 8g-2, 8h and 8k. A point carries `l1` and a `GH`
+/// special carries `l2` only when the problem asked for `lyapunov`, and a point carries `hh`
+/// and an `HH` special carries `omega2` only when it asked for `hh`, so a run without them
 /// prints what it printed before.
-fn branch_json(branch: &DdeHopfBranch, lyapunov: bool) -> Value {
+fn branch_json(branch: &DdeHopfBranch, lyapunov: bool, hh: bool) -> Value {
     let points: Vec<Value> = branch
         .points
         .iter()
@@ -144,6 +148,9 @@ fn branch_json(branch: &DdeHopfBranch, lyapunov: bool) -> Value {
             let mut point = json!({"alpha": p.alpha, "x": p.x, "kappa": p.kappa, "omega": p.omega});
             if lyapunov {
                 point["l1"] = json!(p.l1);
+            }
+            if hh {
+                point["hh"] = json!(p.hh);
             }
             point
         })
@@ -163,6 +170,11 @@ fn branch_json(branch: &DdeHopfBranch, lyapunov: bool) -> Value {
             // the second coefficient cannot be computed.
             if lyapunov && s.label == "GH" {
                 special["l2"] = json!(s.l2);
+            }
+            // An HH special of a run with `hh` has the key, null where the roots at the
+            // located point do not give a second pair.
+            if hh && s.label == "HH" {
+                special["omega2"] = json!(s.omega2);
             }
             special
         })
@@ -220,7 +232,7 @@ fn read_problem(value: &Value) -> Result<Problem, String> {
     check_keys(
         obj,
         &[
-            "model", "params", "free", "x0", "omega", "lyapunov", "options",
+            "model", "params", "free", "x0", "omega", "lyapunov", "hh", "options",
         ],
         "problem",
     )?;
@@ -247,6 +259,7 @@ fn read_problem(value: &Value) -> Result<Problem, String> {
             .as_bool()
             .ok_or_else(|| "\"lyapunov\" must be true or false".to_string())?,
     };
+    let hh = obj.get("hh").map(read_hh).transpose()?;
     let opts = match obj.get("options") {
         None => Options::default(),
         Some(v) => {
@@ -261,8 +274,29 @@ fn read_problem(value: &Value) -> Result<Problem, String> {
         x0,
         omega,
         lyapunov,
+        hh,
         opts,
     })
+}
+
+/// Reads the `hh` object: the two required keys `n` and `re_min` of `characteristic_roots`.
+/// Every message names `"hh"`. `n` at least 1 and `re_min` finite and negative are checked
+/// here as well as by the engine, so that the message names the key.
+fn read_hh(value: &Value) -> Result<RootOptions, String> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "\"hh\" must be an object with the keys \"n\" and \"re_min\"".to_string())?;
+    check_keys(obj, &["n", "re_min"], "\"hh\"")?;
+    let named = |e: String| format!("\"hh\": {e}");
+    let n = count(required(obj, "n", "\"hh\"")?, "n").map_err(named)?;
+    let re_min = number(required(obj, "re_min", "\"hh\"")?, "re_min").map_err(named)?;
+    if n == 0 {
+        return Err("\"hh\": \"n\" must be at least 1".to_string());
+    }
+    if !(re_min.is_finite() && re_min < 0.0) {
+        return Err("\"hh\": \"re_min\" must be a negative number".to_string());
+    }
+    Ok(RootOptions { n, re_min })
 }
 
 pub(crate) fn named_numbers(given: &Map<String, Value>) -> Result<Vec<(String, f64)>, String> {
@@ -363,6 +397,41 @@ mod tests {
             );
             let msg = read(&text).unwrap_err();
             assert!(msg.contains("\"lyapunov\""), "{bad}: {msg}");
+        }
+    }
+
+    #[test]
+    fn hh_is_an_object_with_n_and_re_min() {
+        let with =
+            |hh: &str| GOOD.replace("\"omega\":1.5,", &format!("\"omega\":1.5,\"hh\":{hh},"));
+        let p = read(&with("{\"n\":30,\"re_min\":-3.0}")).unwrap();
+        assert_eq!(
+            p.hh,
+            Some(RootOptions {
+                n: 30,
+                re_min: -3.0
+            })
+        );
+        assert!(
+            read(GOOD).unwrap().hh.is_none(),
+            "hh is off unless the problem asks for it"
+        );
+        for bad in [
+            "true",
+            "null",
+            "[30,-3]",
+            "{\"n\":30}",
+            "{\"re_min\":-3}",
+            "{\"n\":30.5,\"re_min\":-3}",
+            "{\"n\":-1,\"re_min\":-3}",
+            "{\"n\":30,\"re_min\":\"x\"}",
+            "{\"n\":30,\"re_min\":-3,\"m\":1}",
+            "{\"n\":30,\"re_min\":1}",
+            "{\"n\":30,\"re_min\":0}",
+            "{\"n\":0,\"re_min\":-3}",
+        ] {
+            let msg = read(&with(bad)).unwrap_err();
+            assert!(msg.contains("\"hh\""), "{bad}: {msg}");
         }
     }
 
