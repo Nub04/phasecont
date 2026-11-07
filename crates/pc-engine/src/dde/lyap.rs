@@ -40,7 +40,7 @@ pub const NULL_RESIDUAL_MAX: f64 = 1e-4;
 pub const PAIRING_MIN: f64 = 1e-8;
 /// The smallest ratio of the extreme singular values of `Delta(0)` and `Delta(2 i omega)`.
 pub const RESONANCE_MIN: f64 = 1e-8;
-const OMEGA_MIN: f64 = 1e-8;
+pub(super) const OMEGA_MIN: f64 = 1e-8;
 
 /// The coefficient at one Hopf point.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -97,36 +97,36 @@ fn lyapunov_scaled(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct C {
-    re: f64,
-    im: f64,
+pub(super) struct C {
+    pub(super) re: f64,
+    pub(super) im: f64,
 }
 
 impl C {
-    const ZERO: C = C { re: 0.0, im: 0.0 };
+    pub(super) const ZERO: C = C { re: 0.0, im: 0.0 };
 
-    fn new(re: f64, im: f64) -> C {
+    pub(super) fn new(re: f64, im: f64) -> C {
         C { re, im }
     }
 
     /// `exp(i theta)`.
-    fn expi(theta: f64) -> C {
+    pub(super) fn expi(theta: f64) -> C {
         C::new(theta.cos(), theta.sin())
     }
 
-    fn conj(self) -> C {
+    pub(super) fn conj(self) -> C {
         C::new(self.re, -self.im)
     }
 
-    fn scale(self, s: f64) -> C {
+    pub(super) fn scale(self, s: f64) -> C {
         C::new(self.re * s, self.im * s)
     }
 
-    fn abs(self) -> f64 {
+    pub(super) fn abs(self) -> f64 {
         self.re.hypot(self.im)
     }
 
-    fn div(self, d: C) -> C {
+    pub(super) fn div(self, d: C) -> C {
         let den = d.re * d.re + d.im * d.im;
         C::new(
             (self.re * d.re + self.im * d.im) / den,
@@ -159,22 +159,30 @@ impl Mul for C {
     }
 }
 
-/// `Delta(i sigma)`, or `Delta'(i sigma)` when `deriv`, as an n-by-n row-major matrix.
-fn delta(lin: &LinearDde, sigma: f64, deriv: bool) -> Vec<C> {
+/// `Delta(i sigma)` for `order` 0, `Delta'(i sigma)` for 1 and `Delta''(i sigma)` for 2, as an
+/// n-by-n row-major matrix. With `e = exp(-i sigma tau)` the delayed term of a delay `tau`
+/// enters with the weight `-e`, `tau e` and `-tau^2 e`, and the identity part is `i sigma`,
+/// `1` and `0`. The matrix of the undelayed term has `tau = 0`.
+pub(super) fn delta(lin: &LinearDde, sigma: f64, order: usize) -> Vec<C> {
     let n = lin.dim;
     let mut d = vec![C::ZERO; n * n];
+    let diag = match order {
+        0 => C::new(0.0, sigma),
+        1 => C::new(1.0, 0.0),
+        _ => C::ZERO,
+    };
     for i in 0..n {
-        d[i * n + i] = if deriv {
-            C::new(1.0, 0.0)
-        } else {
-            C::new(0.0, sigma)
-        };
+        d[i * n + i] = diag;
     }
     let terms = std::iter::once((0.0, &lin.a0)).chain(lin.delays.iter().map(|(t, a)| (*t, a)));
     for (tau, mat) in terms {
         // exp(-i sigma tau)
         let e = C::expi(-sigma * tau);
-        let w = if deriv { e.scale(tau) } else { e.scale(-1.0) };
+        let w = match order {
+            0 => e.scale(-1.0),
+            1 => e.scale(tau),
+            _ => e.scale(-tau * tau),
+        };
         for (dst, a) in d.iter_mut().zip(mat.iter()) {
             *dst = *dst + w.scale(*a);
         }
@@ -183,7 +191,7 @@ fn delta(lin: &LinearDde, sigma: f64, deriv: bool) -> Vec<C> {
 }
 
 /// The real `2n`-by-`2n` column-major matrix `[[Re, -Im], [Im, Re]]` of a complex matrix.
-fn embed(c: &[C], n: usize) -> Vec<f64> {
+pub(super) fn embed(c: &[C], n: usize) -> Vec<f64> {
     let m = 2 * n;
     let mut e = vec![0.0; m * m];
     for i in 0..n {
@@ -198,7 +206,7 @@ fn embed(c: &[C], n: usize) -> Vec<f64> {
     e
 }
 
-fn transpose(c: &[C], n: usize) -> Vec<C> {
+pub(super) fn transpose(c: &[C], n: usize) -> Vec<C> {
     let mut t = vec![C::ZERO; n * n];
     for i in 0..n {
         for j in 0..n {
@@ -208,34 +216,34 @@ fn transpose(c: &[C], n: usize) -> Vec<C> {
     t
 }
 
-fn matvec(c: &[C], n: usize, v: &[C]) -> Vec<C> {
+pub(super) fn matvec(c: &[C], n: usize, v: &[C]) -> Vec<C> {
     (0..n)
         .map(|i| (0..n).fold(C::ZERO, |s, j| s + c[i * n + j] * v[j]))
         .collect()
 }
 
 /// `sum_i a_i b_i`, with no conjugate.
-fn bilinear(a: &[C], b: &[C]) -> C {
+pub(super) fn bilinear(a: &[C], b: &[C]) -> C {
     a.iter().zip(b).fold(C::ZERO, |s, (x, y)| s + *x * *y)
 }
 
-fn norm2(v: &[C]) -> f64 {
+pub(super) fn norm2(v: &[C]) -> f64 {
     v.iter()
         .map(|c| c.re * c.re + c.im * c.im)
         .sum::<f64>()
         .sqrt()
 }
 
-fn frobenius_real(a: &[f64]) -> f64 {
+pub(super) fn frobenius_real(a: &[f64]) -> f64 {
     a.iter().map(|v| v * v).sum::<f64>().sqrt()
 }
 
-fn unstack(v: &[f64], n: usize) -> Vec<C> {
+pub(super) fn unstack(v: &[f64], n: usize) -> Vec<C> {
     (0..n).map(|i| C::new(v[i], v[n + i])).collect()
 }
 
 /// `c^-1 rhs`, through the real embedding.
-fn solve(c: &[C], n: usize, rhs: &[C]) -> Result<Vec<C>, EngineError> {
+pub(super) fn solve(c: &[C], n: usize, rhs: &[C]) -> Result<Vec<C>, EngineError> {
     let lu = Lu::new(&embed(c, n), 2 * n)?;
     let mut b = vec![0.0; 2 * n];
     for (i, z) in rhs.iter().enumerate() {
@@ -246,18 +254,18 @@ fn solve(c: &[C], n: usize, rhs: &[C]) -> Result<Vec<C>, EngineError> {
     Ok(unstack(&b, n))
 }
 
-struct Pair {
-    q: Vec<C>,
-    p: Vec<C>,
-    null_residual: f64,
+pub(super) struct Pair {
+    pub(super) q: Vec<C>,
+    pub(super) p: Vec<C>,
+    pub(super) null_residual: f64,
 }
 
 /// The unit right null vector `q` of `Delta(i omega)` and the row vector `p` with
 /// `p Delta = 0` and `p Delta' q = 1`.
-fn pair(lin: &LinearDde, omega: f64) -> Result<Pair, EngineError> {
+pub(super) fn pair(lin: &LinearDde, omega: f64) -> Result<Pair, EngineError> {
     let n = lin.dim;
-    let d = delta(lin, omega, false);
-    let dp = delta(lin, omega, true);
+    let d = delta(lin, omega, 0);
+    let dp = delta(lin, omega, 1);
     let right = null_right(&embed(&d, n), 2 * n, 2 * n, 1)?.remove(0);
     let q = unstack(&right, n);
     let scale = omega
@@ -294,7 +302,7 @@ fn pair(lin: &LinearDde, omega: f64) -> Result<Pair, EngineError> {
 
 /// Fails when the extreme singular values of the embedding of `d` have a ratio below
 /// `RESONANCE_MIN`.
-fn check_regular(d: &[C], n: usize, what: &str) -> Result<(), EngineError> {
+pub(super) fn check_regular(d: &[C], n: usize, what: &str) -> Result<(), EngineError> {
     let s = singular_values(&embed(d, n), 2 * n, 2 * n)?;
     let ratio = s[2 * n - 1] / s[0];
     if ratio.is_nan() || ratio < RESONANCE_MIN {
@@ -308,7 +316,7 @@ fn check_regular(d: &[C], n: usize, what: &str) -> Result<(), EngineError> {
 
 /// The direction of `exp(i sigma theta) h` in the variables of the lowered model: `h` in
 /// the state, then the hidden slots, with zeros for the declared parameters.
-fn direction(m: &DdeModel, times: &[f64], h: &[C], sigma: f64) -> Vec<C> {
+pub(super) fn direction(m: &DdeModel, times: &[f64], h: &[C], sigma: f64) -> Vec<C> {
     let n = h.len();
     let mut d = vec![C::ZERO; n + m.eval.n_p()];
     d[..n].copy_from_slice(h);
@@ -320,9 +328,15 @@ fn direction(m: &DdeModel, times: &[f64], h: &[C], sigma: f64) -> Vec<C> {
 }
 
 /// The multilinear form `D^r f[args]` at `(x, full)` for complex directions, where
-/// `r = args.len()` is 2 or 3.
-fn form(m: &mut DdeModel, x: &[f64], full: &[f64], args: &[&[C]]) -> Result<Vec<C>, EngineError> {
+/// `r = args.len()` is 2 to 5.
+pub(super) fn form(
+    m: &mut DdeModel,
+    x: &[f64],
+    full: &[f64],
+    args: &[&[C]],
+) -> Result<Vec<C>, EngineError> {
     let r = args.len();
+    debug_assert!((2..=5).contains(&r), "form order {r}");
     let n = m.eval.n();
     let len = n + m.eval.n_p();
     let kind = EntryKind::Dir(vec![Slot::Full; r]);
@@ -364,8 +378,8 @@ fn coefficient(
     pv: &[C],
 ) -> Result<C, EngineError> {
     let n = lin.dim;
-    let d0 = delta(lin, 0.0, false);
-    let d2 = delta(lin, 2.0 * omega, false);
+    let d0 = delta(lin, 0.0, 0);
+    let d2 = delta(lin, 2.0 * omega, 0);
     check_regular(&d0, n, "Delta(0)")?;
     check_regular(&d2, n, "Delta(2 i omega)")?;
     let full = full_params(m, x, p_decl, 0.0);
@@ -451,8 +465,8 @@ mod tests {
         let mut m = model(WRIGHT);
         let lin = linearize(&mut m, &[0.0], &[FRAC_PI_2]).unwrap();
         let pr = pair(&lin, FRAC_PI_2).unwrap();
-        let d = delta(&lin, FRAC_PI_2, false);
-        let dp = delta(&lin, FRAC_PI_2, true);
+        let d = delta(&lin, FRAC_PI_2, 0);
+        let dp = delta(&lin, FRAC_PI_2, 1);
         let pd: Vec<C> = matvec(&transpose(&d, 1), 1, &pr.p);
         assert!(norm2(&pd) < 1e-12);
         let s = bilinear(&pr.p, &matvec(&dp, 1, &pr.q));
