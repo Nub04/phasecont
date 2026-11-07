@@ -327,3 +327,102 @@ fn usage_errors_and_help() {
     assert_eq!(code(&o), 0);
     assert!(stdout(&o).starts_with("usage: pc-cli dde-hopf"));
 }
+
+// Test 12 of SPEC section 8h: `l2` on a GH special. The Wright equation with a quintic term,
+// u' = -a u(t-1) (1+u) + b u^3 + c u^5, has the curve a = pi/2 and the same l1 as without
+// the quintic term, so the GH point stays at b = 0.38875... and l2 = 1.7362145915396248 for
+// c = 1 (numpy oracle of section 8h, test 11).
+
+const QUINTIC_MODEL: &str = "par a=1.5, b=0, c=1\nu'=-a*delay(u,1)*(1+u)+b*u^3+c*u^5\ndone\n";
+// The same, with a decoupled block z' = 4.71238898038469 z(t-1). At omega = pi/2 its
+// Delta_z(3 i omega) is zero up to rounding, so lyapunov2 refuses every point of the curve.
+const QUINTIC_Z_MODEL: &str = "par a=1.5, b=0, c=1\nu'=-a*delay(u,1)*(1+u)+b*u^3+c*u^5\n\
+                               z'=4.71238898038469*delay(z,1)\ndone\n";
+const L2_AT_GH: f64 = 1.736_214_591_539_624_8;
+
+fn quintic(model: &str, text: &str, x0: &str, extra: &str) -> String {
+    write(model, text);
+    format!(
+        r#"{{"model":"{model}","params":{{"a":1.57,"b":0.0}},"free":["a","b"],
+            "x0":{x0},"omega":1.57,{extra}
+            "options":{{"direction":1,"hmax":0.05,"max_steps":400,"bounds":[-1.0,1.0],
+                       "tol_x":1e-12,"tol_f":1e-12,"max_newton":20}}}}"#
+    )
+}
+
+#[test]
+fn a_gh_special_has_l2_and_no_other_key_changes() {
+    let on = write(
+        "quintic_on.json",
+        &quintic(
+            "quintic.ode",
+            QUINTIC_MODEL,
+            "[0.001]",
+            r#""lyapunov":true,"#,
+        ),
+    );
+    let o = run(&scratch(), &["dde-hopf", &on]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+    let specials = v["specials"].as_array().unwrap();
+    assert_eq!(specials.len(), 1, "{v}");
+    let gh = &specials[0];
+    assert_eq!(gh["label"], "GH");
+    let l2 = num(&gh["l2"]);
+    assert!((l2 - L2_AT_GH).abs() <= 1e-4, "l2 = {l2}, want {L2_AT_GH}");
+    for s in specials.iter().filter(|s| s["label"] != "GH") {
+        assert!(s.get("l2").is_none(), "{s}");
+    }
+    for p in v["points"].as_array().unwrap() {
+        assert!(p.get("l2").is_none(), "{p}");
+    }
+}
+
+#[test]
+fn l2_is_null_where_lyapunov2_refuses_the_gh_point() {
+    let on = write(
+        "quintic_z_on.json",
+        &quintic(
+            "quintic_z.ode",
+            QUINTIC_Z_MODEL,
+            "[0.001, 0.0]",
+            r#""lyapunov":true,"#,
+        ),
+    );
+    let o = run(&scratch(), &["dde-hopf", &on]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+    let specials = v["specials"].as_array().unwrap();
+    assert_eq!(specials.len(), 1, "{v}");
+    assert_eq!(specials[0]["label"], "GH");
+    assert!(
+        specials[0].get("l2").is_some_and(Value::is_null),
+        "the key must be present and null: {}",
+        specials[0]
+    );
+}
+
+#[test]
+fn without_lyapunov_no_special_has_l2_and_false_equals_absent() {
+    let absent = write(
+        "quintic_absent.json",
+        &quintic("quintic.ode", QUINTIC_MODEL, "[0.001]", ""),
+    );
+    let off = write(
+        "quintic_off.json",
+        &quintic(
+            "quintic.ode",
+            QUINTIC_MODEL,
+            "[0.001]",
+            r#""lyapunov":false,"#,
+        ),
+    );
+    let a = run(&scratch(), &["dde-hopf", &absent]);
+    let b = run(&scratch(), &["dde-hopf", &off]);
+    assert_eq!(code(&a), 0, "{}", stderr(&a));
+    assert_eq!(stdout(&a), stdout(&b));
+    let v: Value = serde_json::from_str(&stdout(&a)).unwrap();
+    for s in v["specials"].as_array().unwrap() {
+        assert!(s.get("l2").is_none(), "{s}");
+    }
+}

@@ -491,9 +491,10 @@ Computes the first Lyapunov coefficient l1 at a Hopf point of a model whose equa
 delay(x,tau). The point is an equilibrium x0, the parameter values in params and the angular
 frequency omega, for example an H point of dde-branch or a point of dde-hopf. The sign of l1
 says whether the Hopf bifurcation is supercritical (l1 < 0) or subcritical (l1 > 0). The
-command evaluates l1 at that one point. It does not follow a curve, it does not look for a
-generalized Hopf point and it does not compute the second coefficient. The x0 you give is
-used as it is, and its residual comes back in the output.
+command evaluates l1 at that one point. It does not follow a curve and it does not look for a
+generalized Hopf point. The key l2 below adds the second coefficient, which is meant for a
+generalized Hopf point, where l1 is zero. The x0 you give is used as it is, and its residual
+comes back in the output.
 
 The problem file is a JSON object. Every key is required:
   model    path of the .ode file, relative to the problem file
@@ -503,12 +504,18 @@ The problem file is a JSON object. Every key is required:
   omega    the angular frequency of the Hopf point, above 1e-8; l1 changes by about
            86 per unit of omega for the FitzHugh-Nagumo example of the spec, so give
            it to all its digits
+  l2       optional boolean, false if left out. true computes the second Lyapunov
+           coefficient as well. It does not check that l1 is zero, so read l2 only
+           at a point where it is
 
 The output is {\"omega\", \"l1\", \"c1\", \"null_residual\", \"equilibrium_residual\"}.
 c1 is [real, imaginary] and l1 is the real part of c1 over omega, with the critical
 eigenvector q scaled to a 2-norm of 1. null_residual is the relative size of
 Delta(i omega) q, and a value above 1e-4 means omega is not a Hopf frequency at this x0 and
-params.
+params. With l2 true the output also has \"c2\" ([real, imaginary]) and \"l2\", the real
+part of c2 over omega, and the key order stays alphabetical. l2 means something only at a
+point where l1 is zero. A point where Delta(0), Delta(2 i omega) or Delta(3 i omega) is
+singular is refused.
 
 options:
   --          the next argument is the file, even if it starts with `-`
@@ -530,7 +537,8 @@ method and follows the curve of Hopf points in the plane of the two parameters. 
 way it labels BT, where omega^2 changes sign (Bogdanov-Takens), and ZH, where the
 characteristic function has a zero root as well (zero-Hopf). It does not count the roots
 to the right of the curve. dde-lyap computes the first Lyapunov coefficient at one point,
-and the key lyapunov below does it at every point of the curve.
+and the key lyapunov below does it at every point of the curve. At a GH point it also
+computes the second coefficient l2.
 
 The problem file is a JSON object. Every key but options is required:
   model    path of the .ode file, relative to the problem file
@@ -542,7 +550,9 @@ The problem file is a JSON object. Every key but options is required:
   lyapunov optional boolean, false if left out. true adds \"l1\" to every point and
            labels GH (generalized Hopf), where l1 changes sign. l1 is null where kappa
            is not above 0 or where dde-lyap would refuse the point. Each point then
-           costs one more solve
+           costs one more solve. A GH special then also has \"l2\", the second
+           coefficient at the located zero, or null where dde-lyap with l2 would
+           refuse it
   options  optional; the keys of the cont problem files: h0, hmin, hmax, max_steps,
            tol_x, tol_f, max_newton, direction, bounds. bounds limits the second name
            in free, and a delay time there needs a lower bound above 0. detect and
@@ -551,7 +561,7 @@ The problem file is a JSON object. Every key but options is required:
 The output is {\"stop\", \"points\", \"specials\", \"warnings\"}. A point is {\"alpha\",
 \"x\", \"kappa\", \"omega\"} plus \"l1\" when lyapunov is true, where alpha is [first,
 second], kappa is omega^2 and \"omega\" is null where kappa is not above 0. A special is {\"label\", \"alpha\", \"x\",
-\"kappa\", \"index\"}, in order along the curve. \"stop\" is one of end, max_steps, bounds,
+\"kappa\", \"index\"}, plus \"l2\" on a GH special when lyapunov is true, in order along the curve. \"stop\" is one of end, max_steps, bounds,
 step_too_small, singular, cancelled and error, as for cont.
 
 options:

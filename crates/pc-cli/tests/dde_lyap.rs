@@ -187,3 +187,115 @@ fn usage_errors_and_help() {
     assert_eq!(code(&o), 0);
     assert!(stdout(&o).starts_with("usage: pc-cli dde-lyap"));
 }
+
+// ---- The opt-in second Lyapunov coefficient (SPEC 8h) ----
+//
+// u' = -a u(t - 1)(1 + u) + b u^3 + c u^5 at a = omega = pi/2 has l1 = 0 at
+// b = 0.3887604649348081 and, with c = 1, l2 = 1.7362145915396248 (numpy, SPEC 8h test 1).
+
+const QUINTIC: &str = "par a=1.5707963267948966, b=0.3887604649348081, c=1\n\
+                       u'=-a*delay(u,1)*(1+u)+b*u^3+c*u^5\ndone\n";
+const L2: f64 = 1.736_214_591_539_624_8;
+const C2: [f64; 2] = [2.7272395029181444, -6.505645604977195];
+
+/// The problem of SPEC 8h test 11, with `extra` placed before the closing brace.
+fn quintic(extra: &str) -> String {
+    write("quintic.ode", QUINTIC);
+    format!(
+        r#"{{"model":"quintic.ode","params":{{"a":1.5707963267948966,"b":0.3887604649348081,"c":1.0}},
+            "x0":[0.0],"omega":1.5707963267948966{extra}}}"#
+    )
+}
+
+fn keys(v: &Value) -> Vec<&str> {
+    v.as_object().unwrap().keys().map(String::as_str).collect()
+}
+
+#[test]
+fn l2_true_adds_c2_and_l2_in_alphabetical_order() {
+    let file = write("quintic_on.json", &quintic(r#","l2":true"#));
+    let o = run(&scratch(), &["dde-lyap", &file]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+    assert_eq!(
+        keys(&v),
+        [
+            "c1",
+            "c2",
+            "equilibrium_residual",
+            "l1",
+            "l2",
+            "null_residual",
+            "omega"
+        ]
+    );
+    let got = num(&v["l2"]);
+    assert!((got - L2).abs() <= 1e-9 * L2, "{v}");
+    let c2 = v["c2"].as_array().unwrap();
+    assert_eq!(c2.len(), 2, "{v}");
+    assert!((num(&c2[0]) - C2[0]).abs() <= 1e-9 * C2[0].abs(), "{v}");
+    assert!((num(&c2[1]) - C2[1]).abs() <= 1e-9 * C2[1].abs(), "{v}");
+    assert!(
+        (got - num(&c2[0]) / num(&v["omega"])).abs() <= 1e-15 * got.abs(),
+        "{v}"
+    );
+    // l1 is the zero that the model was built for.
+    assert!(num(&v["l1"]).abs() <= 1e-9, "{v}");
+}
+
+#[test]
+fn without_l2_the_output_has_the_five_keys_and_false_equals_absent() {
+    let absent = write("quintic_absent.json", &quintic(""));
+    let off = write("quintic_off.json", &quintic(r#","l2":false"#));
+    let a = run(&scratch(), &["dde-lyap", &absent]);
+    let b = run(&scratch(), &["dde-lyap", &off]);
+    assert_eq!(code(&a), 0, "{}", stderr(&a));
+    assert_eq!(code(&b), 0, "{}", stderr(&b));
+    assert_eq!(
+        stdout(&a),
+        stdout(&b),
+        "false must print what an absent key prints"
+    );
+    let v: Value = serde_json::from_str(&stdout(&a)).unwrap();
+    assert_eq!(
+        keys(&v),
+        ["c1", "equilibrium_residual", "l1", "null_residual", "omega"]
+    );
+    // The five shared keys hold the same numbers with the key on.
+    let on = run(
+        &scratch(),
+        &[
+            "dde-lyap",
+            &write("quintic_on2.json", &quintic(r#","l2":true"#)),
+        ],
+    );
+    let w: Value = serde_json::from_str(&stdout(&on)).unwrap();
+    assert_eq!(v["omega"], w["omega"]);
+    assert_eq!(v["equilibrium_residual"], w["equilibrium_residual"]);
+    assert!((num(&v["l1"]) - num(&w["l1"])).abs() <= 1e-12, "{v} {w}");
+    for i in 0..2 {
+        assert!(
+            (num(&v["c1"][i]) - num(&w["c1"][i])).abs() <= 1e-12,
+            "{v} {w}"
+        );
+    }
+}
+
+#[test]
+fn l2_must_be_a_boolean() {
+    for (i, bad_value) in ["1", "\"yes\"", "null", "[true]"].iter().enumerate() {
+        let text = quintic(&format!(r#","l2":{bad_value}"#));
+        let msg = bad_quintic(&format!("l2_type_{i}.json"), &text);
+        assert!(msg.contains("\"l2\""), "{bad_value}: {msg}");
+    }
+}
+
+/// Runs a problem text on the quintic model, expecting exit 2, and returns stderr.
+fn bad_quintic(name: &str, text: &str) -> String {
+    write("quintic.ode", QUINTIC);
+    let file = write(name, text);
+    let o = run(&scratch(), &["dde-lyap", &file]);
+    assert_eq!(code(&o), 2, "{name}: {}", stderr(&o));
+    assert!(stdout(&o).is_empty(), "{name}: stdout {}", stdout(&o));
+    stderr(&o)
+}

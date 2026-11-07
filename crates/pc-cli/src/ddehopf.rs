@@ -133,8 +133,9 @@ pub fn dde_hopf(problem_file: &Path) -> ExitCode {
     out(&text, 0)
 }
 
-/// The output object of SPEC sections 8f and 8g-2. A point carries `l1` only when the
-/// problem asked for it, so a run without `lyapunov` prints what it printed before.
+/// The output object of SPEC sections 8f, 8g-2 and 8h. A point carries `l1` and a `GH`
+/// special carries `l2` only when the problem asked for `lyapunov`, so a run without it
+/// prints what it printed before.
 fn branch_json(branch: &DdeHopfBranch, lyapunov: bool) -> Value {
     let points: Vec<Value> = branch
         .points
@@ -151,13 +152,19 @@ fn branch_json(branch: &DdeHopfBranch, lyapunov: bool) -> Value {
         .specials
         .iter()
         .map(|s| {
-            json!({
+            let mut special = json!({
                 "label": s.label,
                 "alpha": s.alpha,
                 "x": s.x,
                 "kappa": s.kappa,
                 "index": s.index,
-            })
+            });
+            // Only a GH special of a run with `lyapunov` has the key, and it is null where
+            // the second coefficient cannot be computed.
+            if lyapunov && s.label == "GH" {
+                special["l2"] = json!(s.l2);
+            }
+            special
         })
         .collect();
     json!({
