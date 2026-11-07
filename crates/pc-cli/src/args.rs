@@ -61,6 +61,8 @@ pub enum Command {
     DdeEq { file: PathBuf },
     /// Continue an equilibrium of a model with delay calls and report its Hopf points.
     DdeBranch { file: PathBuf },
+    /// Continue the Hopf point of a model with delay calls in two parameters.
+    DdeHopf { file: PathBuf },
     /// Rerun the runs of a session file and compare the results.
     SessionReplay {
         file: PathBuf,
@@ -102,6 +104,7 @@ usage: pc-cli parse [--json] [--] <file.ode>
        pc-cli dde-roots [--] <problem.json>
        pc-cli dde-eq [--] <problem.json>
        pc-cli dde-branch [--] <problem.json>
+       pc-cli dde-hopf [--] <problem.json>
        pc-cli session replay [--tol X] [--fallback] [--] <file.pcsession.json>
        pc-cli gpu list
        pc-cli gpu selftest --backend B [--device N] --precision P
@@ -124,6 +127,7 @@ usage:
   pc-cli dde-roots <problem.json>
   pc-cli dde-eq <problem.json>
   pc-cli dde-branch <problem.json>
+  pc-cli dde-hopf <problem.json>
   pc-cli session replay <file.pcsession.json> [--tol X] [--fallback]
   pc-cli gpu list
   pc-cli gpu selftest --backend B [--device N] --precision P
@@ -145,6 +149,7 @@ commands:
   dde-roots     find the characteristic roots of a linear delay equation
   dde-eq        find an equilibrium of a model with delay calls and its roots
   dde-branch    continue such an equilibrium in one parameter and find its Hopf points
+  dde-hopf      continue a Hopf point of such an equilibrium in two parameters
   session      rerun the runs of a session file and compare them with the stored ones
   gpu           list the ensemble devices and test one of them
   ensemble      run many trajectories of one model, or time the engine
@@ -440,8 +445,8 @@ parameter, and reports where characteristic roots cross the imaginary axis. At e
 of the branch it counts the roots with a positive real part (see dde-roots). Where the
 count changes between two points it bisects the step. A pair that crosses at +-i w is a
 Hopf point, labelled H, and a root that crosses zero comes with an LP or a BP of the
-branch. It does not continue the Hopf point in two parameters or compute a Lyapunov
-coefficient.
+branch. It does not compute a Lyapunov coefficient. dde-hopf continues a Hopf point in
+two parameters.
 
 The problem file is a JSON object. Every key but options is required:
   model    path of the .ode file, relative to the problem file
@@ -463,6 +468,45 @@ The output is {\"stop\", \"points\", \"specials\", \"warnings\"}. A point is {\"
 \"unstable_before\", \"unstable_after\"}, in order along the branch; \"omega\" is null for
 LP and BP. \"stop\" is one of end, max_steps, bounds, step_too_small, singular, cancelled
 and error, as for cont.
+
+options:
+  --          the next argument is the file, even if it starts with `-`
+  -h, --help  print this help
+
+exit codes: 0 the run finished (a run that stops on an error prints what it found and
+        the message on stderr), 1 the model has errors or no delay call, or the Newton
+        start did not converge, 2 usage error, an unreadable problem file, invalid JSON or
+        a bad problem (the message names the key)
+";
+
+pub const DDE_HOPF_HELP: &str = "\
+usage: pc-cli dde-hopf [--] <problem.json>
+
+Continues a Hopf point of a model whose equations call delay(x,tau) in two declared
+parameters. The start is a Hopf point that you supply: a state x0, an angular frequency
+omega and the values of both parameters in params. The command polishes it with Newton's
+method and follows the curve of Hopf points in the plane of the two parameters. On the
+way it labels BT, where omega^2 changes sign (Bogdanov-Takens), and ZH, where the
+characteristic function has a zero root as well (zero-Hopf). It does not compute a
+Lyapunov coefficient and it does not count the roots to the right of the curve.
+
+The problem file is a JSON object. Every key but options is required:
+  model    path of the .ode file, relative to the problem file
+  params   object of numbers by parameter name; a parameter left out keeps the value
+           of the model file. The two names in free give the start point
+  free     array of two different declared parameter names, [first, second]
+  x0       start values of Newton's method for the state, one per state
+  omega    start value of the angular frequency, above 1e-8
+  options  optional; the keys of the cont problem files: h0, hmin, hmax, max_steps,
+           tol_x, tol_f, max_newton, direction, bounds. bounds limits the second name
+           in free, and a delay time there needs a lower bound above 0. detect and
+           mesh_adapt are refused
+
+The output is {\"stop\", \"points\", \"specials\", \"warnings\"}. A point is {\"alpha\",
+\"x\", \"kappa\", \"omega\"}, where alpha is [first, second], kappa is omega^2 and
+\"omega\" is null where kappa is not above 0. A special is {\"label\", \"alpha\", \"x\",
+\"kappa\", \"index\"}, in order along the curve. \"stop\" is one of end, max_steps, bounds,
+step_too_small, singular, cancelled and error, as for cont.
 
 options:
   --          the next argument is the file, even if it starts with `-`
@@ -589,6 +633,7 @@ where
         "dde-roots" => dde_roots_command(&args[1..]),
         "dde-eq" => dde_eq_command(&args[1..]),
         "dde-branch" => dde_branch_command(&args[1..]),
+        "dde-hopf" => dde_hopf_command(&args[1..]),
         "session" => session_command(&args[1..]),
         "gpu" => gpu_command(&args[1..]),
         "ensemble" => ensemble_command(&args[1..]),
@@ -809,6 +854,17 @@ fn dde_branch_command(rest: &[OsString]) -> Result<Command, UsageError> {
     match parts.file {
         Some(file) => Ok(Command::DdeBranch { file }),
         None => Err(UsageError("dde-branch needs a problem file".to_string())),
+    }
+}
+
+fn dde_hopf_command(rest: &[OsString]) -> Result<Command, UsageError> {
+    let parts = split(rest, Accepts::default())?;
+    if parts.help {
+        return Ok(Command::ToolHelp(DDE_HOPF_HELP));
+    }
+    match parts.file {
+        Some(file) => Ok(Command::DdeHopf { file }),
+        None => Err(UsageError("dde-hopf needs a problem file".to_string())),
     }
 }
 
@@ -1303,6 +1359,33 @@ mod tests {
             &["dde-branch"][..],
             &["dde-branch", "a.json", "b.json"],
             &["dde-branch", "--fallback", "a.json"],
+        ] {
+            assert!(p(args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn dde_hopf_command_takes_one_file() {
+        assert_eq!(
+            p(&["dde-hopf", "p.json"]),
+            Ok(Command::DdeHopf {
+                file: "p.json".into()
+            })
+        );
+        assert_eq!(
+            p(&["dde-hopf", "--", "-p.json"]),
+            Ok(Command::DdeHopf {
+                file: "-p.json".into()
+            })
+        );
+        assert_eq!(
+            p(&["dde-hopf", "--help"]),
+            Ok(Command::ToolHelp(DDE_HOPF_HELP))
+        );
+        for args in [
+            &["dde-hopf"][..],
+            &["dde-hopf", "a.json", "b.json"],
+            &["dde-hopf", "--fallback", "a.json"],
         ] {
             assert!(p(args).is_err(), "{args:?}");
         }

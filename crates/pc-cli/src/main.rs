@@ -5,6 +5,7 @@ mod cont;
 mod ddebranch;
 mod ddecmd;
 mod ddeeq;
+mod ddehopf;
 mod dllimports;
 mod ensemble;
 mod gpu;
@@ -53,6 +54,7 @@ fn main() -> ExitCode {
         Ok(Command::DdeRoots { file }) => ddecmd::dde_roots(&file),
         Ok(Command::DdeEq { file }) => ddeeq::dde_eq(&file),
         Ok(Command::DdeBranch { file }) => ddebranch::dde_branch(&file),
+        Ok(Command::DdeHopf { file }) => ddehopf::dde_hopf(&file),
         Ok(Command::GpuList) => gpu::list(),
         Ok(Command::GpuSelftest {
             backend,
