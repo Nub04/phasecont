@@ -3,6 +3,9 @@
 //!
 //! The sign function is computed by Newton's method, S <- (S + S^-1)/2 (Higham, Functions of
 //! Matrices, SIAM 2008, ch. 5). The rotation is the one of Beyn (1990, eq. 4.4).
+//!
+//! The two rotation slots of [`BasisTracker`] follow the per-ITRANS state of PRJCTN in AUTO-07p
+//! `src/homcont.f90` (BSD-3, see THIRD_PARTY_NOTICES.md). The bases themselves are our own.
 
 use crate::dense::{LinalgError, Lu, check};
 use faer::MatRef;
@@ -131,6 +134,92 @@ pub fn rotate_basis(v: &[f64], c: &[f64], n: usize, k: usize) -> Result<Vec<f64>
         }
     }
     Ok(l)
+}
+
+/// The matrix whose invariant subspaces a set of boundary rows uses (HomCont's ITRANS).
+///
+/// The rows of the orbit take the subspaces of A^T, the rows of the adjoint those of A.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BasisOf {
+    /// The subspaces of A^T.
+    Transpose,
+    /// The subspaces of A.
+    Matrix,
+}
+
+impl BasisOf {
+    fn slot(self) -> usize {
+        match self {
+            BasisOf::Transpose => 0,
+            BasisOf::Matrix => 1,
+        }
+    }
+}
+
+/// An orthonormal basis of the stable subspace (n by ns) and one of the unstable subspace
+/// (n by n - ns), column-major.
+pub type BasisPair = (Vec<f64>, Vec<f64>);
+
+/// The reference bases of the rotation of Beyn, one pair for each [`BasisOf`].
+///
+/// AUTO keeps this state per (equilibrium, ITRANS). A homoclinic orbit has one equilibrium,
+/// so only the kind separates the slots. A slot with no reference returns the bases as the
+/// sign function gives them.
+#[derive(Clone, Debug, Default)]
+pub struct BasisTracker {
+    refs: [Option<BasisPair>; 2],
+}
+
+fn transposed(a: &[f64], n: usize) -> Vec<f64> {
+    let mut t = vec![0.0; n * n];
+    for r in 0..n {
+        for c in 0..n {
+            t[c + n * r] = a[r + n * c];
+        }
+    }
+    t
+}
+
+impl BasisTracker {
+    /// A tracker with no references.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The reference of `of`, if one was set.
+    pub fn reference(&self, of: BasisOf) -> Option<&BasisPair> {
+        self.refs[of.slot()].as_ref()
+    }
+
+    /// Makes `pair` the reference of `of`.
+    pub fn set(&mut self, of: BasisOf, pair: BasisPair) {
+        self.refs[of.slot()] = Some(pair);
+    }
+
+    /// The bases of the n-by-n column-major `a` (or of its transpose, as `of` says) with `ns`
+    /// stable directions, rotated against the reference of `of` when there is one.
+    ///
+    /// The reference is not changed. `BadShape` when the reference has other sizes.
+    pub fn bases(
+        &self,
+        of: BasisOf,
+        a: &[f64],
+        n: usize,
+        ns: usize,
+    ) -> Result<BasisPair, LinalgError> {
+        check(a, n, n)?;
+        let (vs, vu) = match of {
+            BasisOf::Matrix => invariant_bases(a, n, ns)?,
+            BasisOf::Transpose => invariant_bases(&transposed(a, n), n, ns)?,
+        };
+        match &self.refs[of.slot()] {
+            None => Ok((vs, vu)),
+            Some((cs, cu)) => Ok((
+                rotate_basis(&vs, cs, n, ns)?,
+                rotate_basis(&vu, cu, n, n - ns)?,
+            )),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -329,6 +418,94 @@ mod tests {
         for (x, y) in l1.iter().zip(&l2) {
             assert!((x - y).abs() < 1e-12);
         }
+    }
+
+    /// An orthonormal basis of the span of the n-by-k `v`.
+    fn orthonormal(v: &[f64], n: usize, k: usize) -> Vec<f64> {
+        let q = ColPivQr::new(MatRef::from_column_major_slice(v, n, k)).compute_thin_Q();
+        (0..k)
+            .flat_map(|j| (0..n).map(move |i| (i, j)))
+            .map(|(i, j)| q[(i, j)])
+            .collect()
+    }
+
+    fn saddle4(seed: u64) -> Vec<f64> {
+        let b = [
+            -1.0, 0.0, 0.0, 0.0, 0.3, -2.0, 0.0, 0.0, 0.2, 0.1, 0.5, 0.0, -0.4, 0.2, 0.6, 1.5,
+        ];
+        similar(&b, 4, seed)
+    }
+
+    #[test]
+    fn tracker_without_reference_is_the_sign_function_bases() {
+        let a = saddle4(3);
+        let t = BasisTracker::new();
+        assert!(t.reference(BasisOf::Matrix).is_none());
+        assert!(t.reference(BasisOf::Transpose).is_none());
+        let got = t.bases(BasisOf::Matrix, &a, 4, 2).unwrap();
+        assert_eq!(got, invariant_bases(&a, 4, 2).unwrap());
+        let got = t.bases(BasisOf::Transpose, &a, 4, 2).unwrap();
+        assert_eq!(got, invariant_bases(&transpose(&a, 4, 4), 4, 2).unwrap());
+    }
+
+    #[test]
+    fn tracker_slots_are_independent_and_bases_keeps_the_reference() {
+        let a = saddle4(4);
+        let mut t = BasisTracker::new();
+        let pair = t.bases(BasisOf::Transpose, &a, 4, 2).unwrap();
+        t.set(BasisOf::Transpose, pair.clone());
+        assert_eq!(t.reference(BasisOf::Transpose), Some(&pair));
+        assert!(t.reference(BasisOf::Matrix).is_none());
+        let _ = t.bases(BasisOf::Transpose, &saddle4(5), 4, 2).unwrap();
+        assert_eq!(t.reference(BasisOf::Transpose), Some(&pair));
+    }
+
+    #[test]
+    fn tracker_rotates_each_slot_against_its_own_reference() {
+        let a0 = saddle4(6);
+        let mut a1 = a0.clone();
+        for (k, x) in a1.iter_mut().enumerate() {
+            *x += 1e-3 * (k as f64).sin();
+        }
+        let mut t = BasisTracker::new();
+        for of in [BasisOf::Matrix, BasisOf::Transpose] {
+            let r = t.bases(of, &a0, 4, 2).unwrap();
+            t.set(of, r);
+        }
+        for of in [BasisOf::Matrix, BasisOf::Transpose] {
+            let (cs, cu) = t.reference(of).unwrap().clone();
+            let (ls, lu) = t.bases(of, &a1, 4, 2).unwrap();
+            for (l, c, k) in [(&ls, &cs, 2), (&lu, &cu, 2)] {
+                let ctl = matmul(&transpose(c, 4, k), l, k, 4, k);
+                let ctc = matmul(&transpose(c, 4, k), c, k, 4, k);
+                for (x, y) in ctl.iter().zip(&ctc) {
+                    assert!((x - y).abs() < 1e-12, "{of:?}");
+                }
+            }
+            // The rotated bases still span the invariant subspaces of a1 (or its transpose).
+            let m = if of == BasisOf::Matrix {
+                a1.clone()
+            } else {
+                transpose(&a1, 4, 4)
+            };
+            let q = orthonormal(&ls, 4, 2);
+            let am = matmul(&m, &ls, 4, 4, 2);
+            assert!(out_of_span(&am, &q, 4, 2, 2) < 1e-9, "{of:?}");
+        }
+    }
+
+    #[test]
+    fn tracker_rejects_a_reference_of_another_size() {
+        let mut t = BasisTracker::new();
+        t.set(
+            BasisOf::Matrix,
+            (vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0], vec![0.0, 0.0, 1.0]),
+        );
+        let a = saddle4(7);
+        assert_eq!(
+            t.bases(BasisOf::Matrix, &a, 4, 2),
+            Err(LinalgError::BadShape)
+        );
     }
 
     #[test]
