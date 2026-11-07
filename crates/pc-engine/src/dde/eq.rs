@@ -13,7 +13,7 @@ use crate::model::{DdeModel, ModelEval};
 use pc_ir::{DelaySlot, DelayTime, EntryKind};
 
 /// The delay time of `slot` at the declared parameters `p`.
-fn time_of(slot: &DelaySlot, p: &[f64]) -> f64 {
+pub(super) fn time_of(slot: &DelaySlot, p: &[f64]) -> f64 {
     match slot.time {
         DelayTime::Param(j) => p[j],
         DelayTime::Lit(v) => v,
@@ -50,7 +50,7 @@ fn full_params(m: &DdeModel, x: &[f64], p: &[f64], t: f64) -> Vec<f64> {
     full
 }
 
-fn check_state(m: &DdeModel, x: &[f64]) -> Result<(), EngineError> {
+pub(super) fn check_state(m: &DdeModel, x: &[f64]) -> Result<(), EngineError> {
     if x.len() != m.eval.n() {
         return Err(EngineError::BadProblem(format!(
             "expected {} state values, got {}",
@@ -182,13 +182,19 @@ pub fn equilibrium(
     ep_equilibrium(&mut Collapsed { m }, setup, opts)
 }
 
-/// The largest absolute entry of `G(x) = f(x, x, p)`, which is NaN when an entry is.
-pub fn residual(m: &mut DdeModel, x: &[f64], p: &[f64]) -> Result<f64, EngineError> {
+/// `G(x) = f(x, x, p)` as a vector, with `p` the declared parameters.
+pub(super) fn field(m: &mut DdeModel, x: &[f64], p: &[f64]) -> Result<Vec<f64>, EngineError> {
     check_params(m, p)?;
     check_state(m, x)?;
     let full = full_params(m, x, p, 0.0);
     let mut f = vec![0.0; m.eval.n()];
     m.eval.eval(&EntryKind::F, x, &full, &[], &mut f)?;
+    Ok(f)
+}
+
+/// The largest absolute entry of `G(x) = f(x, x, p)`, which is NaN when an entry is.
+pub fn residual(m: &mut DdeModel, x: &[f64], p: &[f64]) -> Result<f64, EngineError> {
+    let f = field(m, x, p)?;
     Ok(f.iter().fold(0.0, |a: f64, v| {
         if a.is_nan() || v.is_nan() {
             f64::NAN
