@@ -4,6 +4,7 @@
 mod branch;
 mod cycle;
 mod eq;
+mod floquet;
 mod hopf;
 mod hopfhopf;
 mod lyap;
@@ -18,6 +19,7 @@ pub use cycle::{
     cycle_residual, hopf_cycle,
 };
 pub use eq::{equilibrium, linearize, residual, stability};
+pub use floquet::{DdeFloquet, DdeFloquetOptions, floquet_multipliers};
 pub use hopf::{
     DdeHopfBranch, DdeHopfPoint, DdeHopfSpecial, HopfExtras, HopfPairs, HopfSetup, continue_hopf,
     continue_hopf_with, continue_hopf_with_lyapunov, hopf_pairs,

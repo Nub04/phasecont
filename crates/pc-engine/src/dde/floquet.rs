@@ -1,0 +1,283 @@
+//! Floquet multipliers of a periodic orbit of a delay equation (SPEC section 8m).
+//!
+//! The variational equation `v' = A(t) v + sum_k J_k(t) v(t - tau_k)` is written for the
+//! history segment on `[-tau_max, 0]`, which is stored by its values at Chebyshev extreme
+//! points. That turns it into an ODE `W' = G(t) W` of dimension `n (nhist + 1)`. The matrix
+//! `Phi(T)` of that ODE is built with the Gauss collocation Runge-Kutta method on the mesh
+//! intervals of the orbit, and the multipliers are its eigenvalues.
+//!
+//! The formulation is my own derivation; it is checked against a numerical oracle in the
+//! tests, not against a published formula.
+
+use super::cycle::{DdeCycleSetup, DdeCycleStart, check_profile, check_setup};
+use super::eq::time_of;
+use super::nodes::Nodes;
+use crate::cycle::{CollocationBasis, try_zeros};
+use crate::error::EngineError;
+use crate::model::DdeModel;
+use pc_ir::EntryKind;
+use pc_linalg::Lu;
+use pc_linalg::eigenvalues;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Largest order `m n (nhist + 1)` of the stage system of one mesh interval. The system is
+/// dense, so this bounds its memory at 8 MB.
+const MAX_STAGE: usize = 1000;
+
+/// How many history nodes to use and how many multipliers to keep. There is no default for
+/// either.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DdeFloquetOptions {
+    /// The history is stored at `nhist + 1` Chebyshev points, `nhist >= 1`.
+    pub nhist: usize,
+    /// How many multipliers to return, `1 <= count <= n (nhist + 1)`.
+    pub count: usize,
+}
+
+/// The multipliers of one orbit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DdeFloquet {
+    /// `(re, im)` pairs, largest modulus first, `count` of them. A cut can split a
+    /// conjugate pair.
+    pub multipliers: Vec<(f64, f64)>,
+    /// `min |mu - 1|` over all `n (nhist + 1)` multipliers. The multiplier 1 always exists
+    /// for a periodic orbit, so this measures the discretization error.
+    pub trivial_error: f64,
+}
+
+/// The Floquet multipliers of the orbit `cycle` of the model at `setup.params`. The profile
+/// need not solve the collocation system exactly, but the result only means something for a
+/// solution.
+pub fn floquet_multipliers(
+    model: &mut DdeModel,
+    setup: &DdeCycleSetup,
+    cycle: &DdeCycleStart,
+    options: &DdeFloquetOptions,
+    cancel: &AtomicBool,
+) -> Result<DdeFloquet, EngineError> {
+    let (n, _) = check_setup(model, setup)?;
+    check_profile(&cycle.profile, n, setup)?;
+    if !(cycle.period.is_finite() && cycle.period > 0.0) {
+        return Err(EngineError::BadProblem(format!(
+            "the period is {}; it must be finite and positive",
+            cycle.period
+        )));
+    }
+    let n_s = model.delays.len();
+    if n_s == 0 {
+        return Err(EngineError::BadProblem(
+            "the model has no delay; a periodic orbit of an ODE has no history to follow".into(),
+        ));
+    }
+    let nhist = options.nhist;
+    if nhist < 1 {
+        return Err(EngineError::BadProblem("nhist must be at least 1".into()));
+    }
+    let mm = setup.ncol;
+    let d = nhist
+        .checked_add(1)
+        .and_then(|p| p.checked_mul(n))
+        .filter(|&d| d.checked_mul(mm).is_some_and(|s| s <= MAX_STAGE))
+        .ok_or_else(|| {
+            EngineError::BadProblem(format!(
+                "ncol = {mm}, nhist = {nhist} and n = {n} give a stage system of more than \
+                 {MAX_STAGE} unknowns"
+            ))
+        })?;
+    if options.count < 1 || options.count > d {
+        return Err(EngineError::BadProblem(format!(
+            "count = {}; it must be between 1 and {d} = n (nhist + 1)",
+            options.count
+        )));
+    }
+
+    let basis = CollocationBasis::new(mm)?;
+    let ntst = setup.ntst;
+    let t = cycle.period;
+    let params = setup.params.clone();
+    let taus: Vec<f64> = model.delays.iter().map(|s| time_of(s, &params)).collect();
+    let tau_max = taus.iter().fold(0.0_f64, |a, v| a.max(*v));
+    let nodes = Nodes::chebyshev(nhist, tau_max);
+    // The delayed value of the history at -tau_k as a combination of the nodal values.
+    let lag: Vec<Vec<f64>> = taus.iter().map(|&tau| nodes.lagrange_at(-tau)).collect();
+    let a_irk = irk_matrix(&basis);
+    let (c, bw) = (basis.nodes(), basis.weights());
+    let h = t / ntst as f64;
+
+    let n_user = model.n_user_params;
+    let n_p = model.eval.n_p();
+    let mut full = params;
+    full.resize(n_user + n_s + 1, 0.0);
+    let states: Vec<usize> = model.delays.iter().map(|s| s.state).collect();
+    let nn = ntst as f64;
+    let md = mm * d;
+
+    let mut u = vec![0.0; n];
+    let mut ju = vec![0.0; n * n];
+    let mut jp = vec![0.0; n * n_p];
+    let mut lv = vec![0.0; mm + 1];
+    // One G per Gauss point of the interval, column-major d by d, and the stage system.
+    let mut gs: Vec<Vec<f64>> = (0..mm).map(|_| vec![0.0; d * d]).collect();
+    let mut stage = try_zeros(md.checked_mul(md))?;
+    let mut phi = try_zeros(d.checked_mul(d))?;
+    for i in 0..d {
+        phi[i + d * i] = 1.0;
+    }
+    let mut rhs = vec![0.0; md];
+    let mut gy = vec![0.0; d];
+    for j in 0..ntst {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(EngineError::Cancelled);
+        }
+        let at = j * mm * n;
+        for i in 0..mm {
+            for (cc, uc) in u.iter_mut().enumerate() {
+                *uc = (0..=mm)
+                    .map(|l| basis.value_at_node(i, l) * cycle.profile[at + l * n + cc])
+                    .sum();
+            }
+            let s = (j as f64 + c[i]) / nn;
+            for k in 0..n_s {
+                let sp = (s - taus[k] / t).rem_euclid(1.0);
+                let jk = ((nn * sp).floor() as usize).min(ntst - 1);
+                let zeta = nn * sp - jk as f64;
+                basis.values(zeta, &mut lv);
+                let base = jk * mm * n;
+                full[n_user + k] = (0..=mm)
+                    .map(|l| lv[l] * cycle.profile[base + l * n + states[k]])
+                    .sum();
+            }
+            model.eval.eval(&EntryKind::JacU, &u, &full, &[], &mut ju)?;
+            model.eval.eval(&EntryKind::JacP, &u, &full, &[], &mut jp)?;
+            let g = &mut gs[i];
+            g.fill(0.0);
+            // Rows 1..=nhist: the history moves along the segment.
+            for jj in 1..=nhist {
+                for l in 0..=nhist {
+                    let dv = nodes.diff(jj, l);
+                    for cc in 0..n {
+                        g[(jj * n + cc) + d * (l * n + cc)] = dv;
+                    }
+                }
+            }
+            // Row 0: the equation, with the delayed values read from the interpolant.
+            for cc in 0..n {
+                for c2 in 0..n {
+                    g[cc + d * c2] += ju[cc + n * c2];
+                }
+                for k in 0..n_s {
+                    let jk = jp[cc + n * (n_user + k)];
+                    for (l, w) in lag[k].iter().enumerate() {
+                        g[cc + d * (l * n + states[k])] += jk * w;
+                    }
+                }
+            }
+            if g.iter().any(|v| !v.is_finite()) {
+                return Err(EngineError::NotFinite("a model derivative".into()));
+            }
+        }
+        // The stage system: Y_i - h sum_l a_il G_l Y_l = Phi_a.
+        stage.fill(0.0);
+        for i in 0..md {
+            stage[i + md * i] = 1.0;
+        }
+        for i in 0..mm {
+            for l in 0..mm {
+                let f = h * a_irk[i * mm + l];
+                let g = &gs[l];
+                for col in 0..d {
+                    for row in 0..d {
+                        stage[(i * d + row) + md * (l * d + col)] -= f * g[row + d * col];
+                    }
+                }
+            }
+        }
+        let lu = Lu::new(&stage, md)?;
+        for q in 0..d {
+            for i in 0..mm {
+                rhs[i * d..(i + 1) * d].copy_from_slice(&phi[d * q..d * (q + 1)]);
+            }
+            lu.solve(&mut rhs)?;
+            // Phi_b = Phi_a + h sum_i b_i G_i Y_i, one column at a time.
+            for i in 0..mm {
+                let y = &rhs[i * d..(i + 1) * d];
+                let g = &gs[i];
+                gy.fill(0.0);
+                for (col, yc) in y.iter().enumerate() {
+                    for row in 0..d {
+                        gy[row] += g[row + d * col] * yc;
+                    }
+                }
+                for row in 0..d {
+                    phi[row + d * q] += h * bw[i] * gy[row];
+                }
+            }
+        }
+        if phi.iter().any(|v| !v.is_finite()) {
+            return Err(EngineError::NotFinite("the monodromy matrix".into()));
+        }
+    }
+
+    let mut all = eigenvalues(&phi, d)?;
+    let trivial_error = all
+        .iter()
+        .map(|&(re, im)| (re - 1.0).hypot(im))
+        .fold(f64::INFINITY, f64::min);
+    all.sort_by(|a, b| b.0.hypot(b.1).total_cmp(&a.0.hypot(a.1)));
+    all.truncate(options.count);
+    Ok(DdeFloquet {
+        multipliers: all,
+        trivial_error,
+    })
+}
+
+/// The Gauss Runge-Kutta matrix `a_il = integral_0^{c_i} ell_l(z) dz` with `ell_l` the
+/// Lagrange basis on the Gauss nodes, row-major `m` by `m`. Each `ell_l` has degree `m - 1`,
+/// so the Gauss rule with `m` nodes integrates it exactly.
+fn irk_matrix(basis: &CollocationBasis) -> Vec<f64> {
+    let (c, b) = (basis.nodes(), basis.weights());
+    let m = c.len();
+    let ell = |l: usize, z: f64| -> f64 {
+        (0..m)
+            .filter(|&k| k != l)
+            .map(|k| (z - c[k]) / (c[l] - c[k]))
+            .product()
+    };
+    let mut a = vec![0.0; m * m];
+    for i in 0..m {
+        for l in 0..m {
+            a[i * m + l] = c[i] * (0..m).map(|q| b[q] * ell(l, c[i] * c[q])).sum::<f64>();
+        }
+    }
+    a
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn irk_matrix_has_the_gauss_row_sums_and_order_conditions() {
+        for m in 2..=7usize {
+            let basis = CollocationBasis::new(m).unwrap();
+            let a = irk_matrix(&basis);
+            let (c, b) = (basis.nodes(), basis.weights());
+            // sum_l a_il = c_i, and sum_l a_il c_l^(k-1) = c_i^k / k for k <= m.
+            for i in 0..m {
+                for k in 1..=m {
+                    let got: f64 = (0..m).map(|l| a[i * m + l] * c[l].powi(k as i32 - 1)).sum();
+                    let want = c[i].powi(k as i32) / k as f64;
+                    assert!(
+                        (got - want).abs() <= 1e-13,
+                        "m={m} i={i} k={k}: {got} vs {want}"
+                    );
+                }
+            }
+            // sum_i b_i c_i^(k-1) = 1/k for k <= 2m.
+            for k in 1..=2 * m {
+                let got: f64 = (0..m).map(|i| b[i] * c[i].powi(k as i32 - 1)).sum();
+                assert!((got - 1.0 / k as f64).abs() <= 1e-13, "m={m} k={k}");
+            }
+        }
+    }
+}

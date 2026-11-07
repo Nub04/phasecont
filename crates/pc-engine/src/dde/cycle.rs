@@ -80,7 +80,7 @@ pub struct DdeCycle {
 }
 
 /// Checks the setup against the model and returns `n` and `dim`.
-fn check_setup(m: &DdeModel, s: &DdeCycleSetup) -> Result<(usize, usize), EngineError> {
+pub(super) fn check_setup(m: &DdeModel, s: &DdeCycleSetup) -> Result<(usize, usize), EngineError> {
     check_params(m, &s.params)?;
     if s.params.iter().any(|p| !p.is_finite()) {
         return Err(EngineError::BadProblem(
@@ -121,7 +121,11 @@ fn check_setup(m: &DdeModel, s: &DdeCycleSetup) -> Result<(usize, usize), Engine
     Ok((n, dim))
 }
 
-fn check_profile(profile: &[f64], n: usize, s: &DdeCycleSetup) -> Result<(), EngineError> {
+pub(super) fn check_profile(
+    profile: &[f64],
+    n: usize,
+    s: &DdeCycleSetup,
+) -> Result<(), EngineError> {
     let want = n * (s.ntst * s.ncol + 1);
     if profile.len() != want {
         return Err(EngineError::BadProblem(format!(
