@@ -235,7 +235,7 @@ fn read_problem(value: &Value) -> Result<Problem, String> {
     })
 }
 
-fn named_numbers(given: &Map<String, Value>) -> Result<Vec<(String, f64)>, String> {
+pub(crate) fn named_numbers(given: &Map<String, Value>) -> Result<Vec<(String, f64)>, String> {
     let mut params = Vec::with_capacity(given.len());
     for (name, v) in given {
         let x = v

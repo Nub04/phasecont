@@ -63,6 +63,8 @@ pub enum Command {
     DdeBranch { file: PathBuf },
     /// Continue the Hopf point of a model with delay calls in two parameters.
     DdeHopf { file: PathBuf },
+    /// Compute the first Lyapunov coefficient at a Hopf point of a delay equilibrium.
+    DdeLyap { file: PathBuf },
     /// Rerun the runs of a session file and compare the results.
     SessionReplay {
         file: PathBuf,
@@ -105,6 +107,7 @@ usage: pc-cli parse [--json] [--] <file.ode>
        pc-cli dde-eq [--] <problem.json>
        pc-cli dde-branch [--] <problem.json>
        pc-cli dde-hopf [--] <problem.json>
+       pc-cli dde-lyap [--] <problem.json>
        pc-cli session replay [--tol X] [--fallback] [--] <file.pcsession.json>
        pc-cli gpu list
        pc-cli gpu selftest --backend B [--device N] --precision P
@@ -128,6 +131,7 @@ usage:
   pc-cli dde-eq <problem.json>
   pc-cli dde-branch <problem.json>
   pc-cli dde-hopf <problem.json>
+  pc-cli dde-lyap <problem.json>
   pc-cli session replay <file.pcsession.json> [--tol X] [--fallback]
   pc-cli gpu list
   pc-cli gpu selftest --backend B [--device N] --precision P
@@ -150,6 +154,7 @@ commands:
   dde-eq        find an equilibrium of a model with delay calls and its roots
   dde-branch    continue such an equilibrium in one parameter and find its Hopf points
   dde-hopf      continue a Hopf point of such an equilibrium in two parameters
+  dde-lyap      compute the first Lyapunov coefficient at such a Hopf point
   session      rerun the runs of a session file and compare them with the stored ones
   gpu           list the ensemble devices and test one of them
   ensemble      run many trajectories of one model, or time the engine
@@ -445,8 +450,8 @@ parameter, and reports where characteristic roots cross the imaginary axis. At e
 of the branch it counts the roots with a positive real part (see dde-roots). Where the
 count changes between two points it bisects the step. A pair that crosses at +-i w is a
 Hopf point, labelled H, and a root that crosses zero comes with an LP or a BP of the
-branch. It does not compute a Lyapunov coefficient. dde-hopf continues a Hopf point in
-two parameters.
+branch. dde-hopf continues a Hopf point in two parameters, and dde-lyap computes the first
+Lyapunov coefficient at one.
 
 The problem file is a JSON object. Every key but options is required:
   model    path of the .ode file, relative to the problem file
@@ -479,6 +484,42 @@ exit codes: 0 the run finished (a run that stops on an error prints what it foun
         a bad problem (the message names the key)
 ";
 
+pub const DDE_LYAP_HELP: &str = "\
+usage: pc-cli dde-lyap [--] <problem.json>
+
+Computes the first Lyapunov coefficient l1 at a Hopf point of a model whose equations call
+delay(x,tau). The point is an equilibrium x0, the parameter values in params and the angular
+frequency omega, for example an H point of dde-branch or a point of dde-hopf. The sign of l1
+says whether the Hopf bifurcation is supercritical (l1 < 0) or subcritical (l1 > 0). The
+command evaluates l1 at that one point. It does not follow a curve, it does not look for a
+generalized Hopf point and it does not compute the second coefficient. The x0 you give is
+used as it is, and its residual comes back in the output.
+
+The problem file is a JSON object. Every key is required:
+  model    path of the .ode file, relative to the problem file
+  params   object of numbers by parameter name; a parameter left out keeps the value
+           of the model file
+  x0       the equilibrium, one value per state
+  omega    the angular frequency of the Hopf point, above 1e-8; l1 changes by about
+           86 per unit of omega for the FitzHugh-Nagumo example of the spec, so give
+           it to all its digits
+
+The output is {\"omega\", \"l1\", \"c1\", \"null_residual\", \"equilibrium_residual\"}.
+c1 is [real, imaginary] and l1 is the real part of c1 over omega, with the critical
+eigenvector q scaled to a 2-norm of 1. null_residual is the relative size of
+Delta(i omega) q, and a value above 1e-4 means omega is not a Hopf frequency at this x0 and
+params.
+
+options:
+  --          the next argument is the file, even if it starts with `-`
+  -h, --help  print this help
+
+exit codes: 0 l1 was computed, 1 the model has errors or no delay call, or the engine
+        failed for another reason (a singular Delta(0) or Delta(2 i omega) included),
+        2 usage error, an unreadable problem file, invalid JSON, a bad problem (the message
+        names the key) or an omega that is not a Hopf frequency
+";
+
 pub const DDE_HOPF_HELP: &str = "\
 usage: pc-cli dde-hopf [--] <problem.json>
 
@@ -487,8 +528,8 @@ parameters. The start is a Hopf point that you supply: a state x0, an angular fr
 omega and the values of both parameters in params. The command polishes it with Newton's
 method and follows the curve of Hopf points in the plane of the two parameters. On the
 way it labels BT, where omega^2 changes sign (Bogdanov-Takens), and ZH, where the
-characteristic function has a zero root as well (zero-Hopf). It does not compute a
-Lyapunov coefficient and it does not count the roots to the right of the curve.
+characteristic function has a zero root as well (zero-Hopf). It does not count the roots
+to the right of the curve. dde-lyap computes the first Lyapunov coefficient at one point.
 
 The problem file is a JSON object. Every key but options is required:
   model    path of the .ode file, relative to the problem file
@@ -634,6 +675,7 @@ where
         "dde-eq" => dde_eq_command(&args[1..]),
         "dde-branch" => dde_branch_command(&args[1..]),
         "dde-hopf" => dde_hopf_command(&args[1..]),
+        "dde-lyap" => dde_lyap_command(&args[1..]),
         "session" => session_command(&args[1..]),
         "gpu" => gpu_command(&args[1..]),
         "ensemble" => ensemble_command(&args[1..]),
@@ -854,6 +896,17 @@ fn dde_branch_command(rest: &[OsString]) -> Result<Command, UsageError> {
     match parts.file {
         Some(file) => Ok(Command::DdeBranch { file }),
         None => Err(UsageError("dde-branch needs a problem file".to_string())),
+    }
+}
+
+fn dde_lyap_command(rest: &[OsString]) -> Result<Command, UsageError> {
+    let parts = split(rest, Accepts::default())?;
+    if parts.help {
+        return Ok(Command::ToolHelp(DDE_LYAP_HELP));
+    }
+    match parts.file {
+        Some(file) => Ok(Command::DdeLyap { file }),
+        None => Err(UsageError("dde-lyap needs a problem file".to_string())),
     }
 }
 
@@ -1359,6 +1412,33 @@ mod tests {
             &["dde-branch"][..],
             &["dde-branch", "a.json", "b.json"],
             &["dde-branch", "--fallback", "a.json"],
+        ] {
+            assert!(p(args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn dde_lyap_command_takes_one_file() {
+        assert_eq!(
+            p(&["dde-lyap", "p.json"]),
+            Ok(Command::DdeLyap {
+                file: "p.json".into()
+            })
+        );
+        assert_eq!(
+            p(&["dde-lyap", "--", "-p.json"]),
+            Ok(Command::DdeLyap {
+                file: "-p.json".into()
+            })
+        );
+        assert_eq!(
+            p(&["dde-lyap", "--help"]),
+            Ok(Command::ToolHelp(DDE_LYAP_HELP))
+        );
+        for args in [
+            &["dde-lyap"][..],
+            &["dde-lyap", "a.json", "b.json"],
+            &["dde-lyap", "--fallback", "a.json"],
         ] {
             assert!(p(args).is_err(), "{args:?}");
         }

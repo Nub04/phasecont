@@ -273,7 +273,7 @@ pub const CODES: &[(Code, Severity, &str)] = &[
     (
         Code(54),
         Severity::Warning,
-        "`delay` is read only by `pc-cli dde-eq`, `dde-branch` and `dde-hopf`",
+        "`delay` is read only by `pc-cli dde-eq`, `dde-branch`, `dde-hopf` and `dde-lyap`",
     ),
     (Code(55), Severity::Warning, "`shift` is not supported"),
     (Code(56), Severity::Warning, "`del_shft` is not supported"),
