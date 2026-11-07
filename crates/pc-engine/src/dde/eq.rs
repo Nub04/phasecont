@@ -42,7 +42,7 @@ pub(super) fn check_params(m: &DdeModel, p: &[f64]) -> Result<(), EngineError> {
 }
 
 /// Declared parameters, the lagged values taken from `x`, then `t` = `t`.
-fn full_params(m: &DdeModel, x: &[f64], p: &[f64], t: f64) -> Vec<f64> {
+pub(super) fn full_params(m: &DdeModel, x: &[f64], p: &[f64], t: f64) -> Vec<f64> {
     let mut full = Vec::with_capacity(m.n_user_params + m.delays.len() + 1);
     full.extend_from_slice(&p[..m.n_user_params]);
     full.extend(m.delays.iter().map(|s| x[s.state]));

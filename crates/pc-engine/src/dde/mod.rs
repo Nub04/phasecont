@@ -4,11 +4,13 @@
 mod branch;
 mod eq;
 mod hopf;
+mod lyap;
 mod nodes;
 mod roots;
 
 pub use branch::{DdeBranch, DdePoint, DdeSpecial, continue_equilibrium};
 pub use eq::{equilibrium, linearize, residual, stability};
 pub use hopf::{DdeHopfBranch, DdeHopfPoint, DdeHopfSpecial, HopfSetup, continue_hopf};
+pub use lyap::{Lyapunov, lyapunov};
 
 pub use roots::{CharRoot, LinearDde, RootOptions, RootSet, characteristic_roots};
