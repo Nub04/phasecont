@@ -416,8 +416,8 @@ fn bad_inputs_are_refused_as_bad_problems() {
 #[test]
 fn a_point_that_is_not_a_zero_root_names_delta_zero() {
     for which in both() {
-        // Point 1 with sl = 0.5 and r = 0.5. Row 3 of Delta(0) is r (sl, 0, -1), so
-        // det Delta(0) = r (A + B - sl) and changing r alone keeps it singular.
+        // Point 1 with sl = 0.5 and r = 0.5. Row 3 of Delta(0) is r (-sl, 0, 1), so r
+        // factors out of det Delta(0) and changing r alone keeps it singular.
         let h = point1();
         let mut p = h.p;
         p[5] = 0.5;
@@ -442,10 +442,21 @@ fn a_frequency_that_is_not_a_hopf_frequency_names_delta_i_omega() {
     let h = point1();
     for which in both() {
         expect_bad(
-            zh(HR, which, &h.x, &h.p, 0.9),
+            zh(HR, which.clone(), &h.x, &h.p, 0.9),
             "omega 0.9",
             Some("Delta(i omega)"),
         );
+        // Point 1 with r = 0.01 keeps Delta(0) singular and only spoils Delta(i omega),
+        // by a relative residual of about 6e-4. The message must not name Delta(0).
+        let mut p = h.p;
+        p[5] = 0.01;
+        match zh(HR, which, &h.x, &p, h.omega) {
+            Err(EngineError::BadProblem(msg)) => {
+                assert!(msg.contains("Delta(i omega)"), "message {msg:?}");
+                assert!(!msg.contains("Delta(0)"), "message {msg:?}");
+            }
+            other => panic!("r = 0.01: expected BadProblem, got {other:?}"),
+        }
     }
 }
 
