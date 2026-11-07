@@ -565,7 +565,7 @@ mod tests {
     }
 
     /// With no delay term the coefficients are those of the ODE routine of `normal.rs`, which
-    /// computes them with real eigenvector solves and shifted matrices and shares no code with
+    /// computes them with real eigenvector solves and shifted matrices, a separate route from
     /// this function. The delay variable `w` only makes the model a delay model. The ODE
     /// routine returns Kuznetsov's G, which carries the 1/2! of the terms `z1^2 conj(z1)` and
     /// `z2^2 conj(z2)`, so G2100 and G0021 are halved to the monomial coefficients used here.
