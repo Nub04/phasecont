@@ -41,6 +41,7 @@
 
 use super::eq::{check_params, check_state, field, linearize};
 use super::lyap::lyapunov;
+use super::lyap2::lyapunov2;
 use super::roots::LinearDde;
 use crate::branch::{Options, Point, StopReason};
 use crate::curve2::start_tangent;
@@ -104,6 +105,9 @@ pub struct DdeHopfSpecial {
     pub kappa: f64,
     /// Index of the first point after it.
     pub index: usize,
+    /// The second Lyapunov coefficient at the point (`lyapunov2`, SPEC section 8h): `Some`
+    /// only for `GH`, and `None` there when `lyapunov2` refuses the point.
+    pub l2: Option<f64>,
 }
 
 /// A Hopf curve of a delay equilibrium.
@@ -226,6 +230,19 @@ impl HopfProblem<'_> {
             Ok(l) => l.l1,
             Err(_) => f64::NAN,
         }
+    }
+
+    /// `l2` at a located `GH` point; `None` for `kappa <= 0` and where `lyapunov2` refuses
+    /// the point (for example a 1:3 resonance).
+    fn l2_at(&mut self, alpha: [f64; 2], x: &[f64], kappa: f64) -> Option<f64> {
+        if kappa.is_nan() || kappa <= 0.0 {
+            return None;
+        }
+        let p = self.declared(alpha[0], alpha[1]);
+        lyapunov2(self.m, x, &p, kappa.sqrt())
+            .ok()
+            .map(|l| l.l2)
+            .filter(|v| v.is_finite())
     }
 
     /// `det Delta(0)`; 0 when the matrix is numerically singular.
@@ -421,7 +438,8 @@ pub fn continue_hopf(
 
 /// `continue_hopf` that also computes the first Lyapunov coefficient at every point with
 /// `kappa > 0` (`DdeHopfPoint::l1`, `None` elsewhere) and labels a zero of it `GH`, a
-/// generalized Hopf point (SPEC section 8g-2). The curve, `BT` and `ZH` are those of
+/// generalized Hopf point (SPEC section 8g-2). A `GH` special also carries the second
+/// coefficient `l2` (SPEC section 8h). The curve, `BT` and `ZH` are those of
 /// `continue_hopf`.
 pub fn continue_hopf_with_lyapunov(
     model: &mut DdeModel,
@@ -509,7 +527,7 @@ fn run_hopf(
         l1: p.codim2.get(2).copied().filter(|v| v.is_finite()),
     };
     let labels: &[&str] = if lyapunov { &LABELS_L1 } else { &LABELS };
-    let specials = branch
+    let mut specials: Vec<DdeHopfSpecial> = branch
         .specials
         .iter()
         .filter_map(|s| {
@@ -521,9 +539,15 @@ fn run_hopf(
                 x: p.x,
                 kappa: p.kappa,
                 index: s.index,
+                l2: None,
             })
         })
         .collect();
+    // The second coefficient is computed once the run is over, at the point each `GH`
+    // special carries, because the model is borrowed by the run until then.
+    for s in specials.iter_mut().filter(|s| s.label == "GH") {
+        s.l2 = prob.l2_at(s.alpha, &s.x, s.kappa);
+    }
     Ok(DdeHopfBranch {
         points: branch.points.iter().map(point_of).collect(),
         specials,

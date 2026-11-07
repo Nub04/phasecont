@@ -145,6 +145,11 @@ fn a_zero_of_l1_is_one_gh_point_at_the_closed_form_b() {
             gh.kappa
         );
         assert!(gh.x[0].abs() <= 1e-8, "x = {:?}", gh.x);
+        // SPEC 8h: the GH special carries l2 at the located zero. The c = 0 value at the
+        // exact b* is -0.0997996276332862 (numpy), and the locator tolerance moves it by
+        // far less than 1e-4.
+        let l2 = gh.l2.expect("a GH special has l2");
+        assert!((l2 + 0.099_799_627_633_286_2).abs() <= 1e-4, "l2 = {l2}");
         // The index is the first point after the zero, so the points around it have
         // opposite signs of l1.
         let (before, after) = (b.points[gh.index - 1].l1, b.points[gh.index].l1);
@@ -212,6 +217,13 @@ fn bt_and_zh_are_still_found_and_their_poles_give_no_gh() {
             let off = without_l1(src, which, &s, &o);
             assert_eq!(labels(&on), [want], "{:?}", on.specials);
             assert_eq!(labels(&off), [want]);
+            // l2 belongs to GH only.
+            assert!(
+                on.specials.iter().all(|s| s.l2.is_none()),
+                "{:?}",
+                on.specials
+            );
+            assert!(off.specials.iter().all(|s| s.l2.is_none()));
             assert_eq!(on.points.len(), off.points.len());
             let at = on.specials[0].index;
             assert_eq!(at, off.specials[0].index);
