@@ -301,8 +301,14 @@ classdef ModelEditor < handle
                         error("phasecont:app:empty", ...
                             "Nothing to check. Enter .ode text or open a file.");
                     end
-                    m = phasecont.Model.fromSource( ...
-                        join(lines, newline) + newline, Name = app.SourceName);
+                    % A text area keeps the empty line after a final newline,
+                    % so the text already ends in one. Add a newline only when
+                    % it does not, which keeps the hash of the file text.
+                    text = join(lines, newline);
+                    if ~endsWith(text, newline)
+                        text = text + newline;
+                    end
+                    m = phasecont.Model.fromSource(text, Name = app.SourceName);
             end
         end
 

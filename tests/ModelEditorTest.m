@@ -113,7 +113,7 @@ classdef ModelEditorTest < matlab.unittest.TestCase
             testCase.verifyEqual(sort(m.Parameters), sort(["w" "c"]));
             testCase.verifyEmpty(app.Diagnostics);
             testCase.verifyTrue(contains(app.Status, "OK"));
-            testCase.verifyTrue(contains(app.Source, "y'"));
+            testCase.verifyTrue(contains(app.Source, "dy/dt"));
             ref = phasecont.Model.fromSource(testCase.OscFile);
             testCase.addTeardown(@() delete(ref));
             testCase.verifyEqual(m.rhs([0.3; -0.7]), ref.rhs([0.3; -0.7]), ...
@@ -279,6 +279,17 @@ classdef ModelEditorTest < matlab.unittest.TestCase
             testCase.verifyTrue(app.check());
             testCase.verifyEqual(app.Model.Variables, ["x" "y"]);
             ref = phasecont.Model.fromSource(testCase.OscFile);
+            testCase.addTeardown(@() delete(ref));
+            testCase.verifyEqual(app.Model.SourceSha256, ref.SourceSha256);
+        end
+
+        function theSourceTabAddsAFinalNewlineOnlyWhenMissing(testCase)
+            app = testCase.makeApp();
+            app.setSource(["x' = y"; "y' = -x"; "init x=1, y=0"]);
+            app.selectTab("Source");
+            testCase.verifyTrue(app.check());
+            ref = phasecont.Model.fromSource( ...
+                join(["x' = y" "y' = -x" "init x=1, y=0"], newline) + newline);
             testCase.addTeardown(@() delete(ref));
             testCase.verifyEqual(app.Model.SourceSha256, ref.SourceSha256);
         end
