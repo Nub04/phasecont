@@ -584,9 +584,9 @@ method and follows the curve of Hopf points in the plane of the two parameters. 
 way it labels BT, where omega^2 changes sign (Bogdanov-Takens), and ZH, where the
 characteristic function has a zero root as well (zero-Hopf). It does not count the roots
 to the right of the curve. dde-lyap computes the first Lyapunov coefficient at one point,
-and the key lyapunov below does it at every point of the curve. dde-zh computes the
-normal-form coefficients at one ZH point. At a GH point it also
-computes the second coefficient l2.
+and the key lyapunov below does it at every point of the curve. At a GH point it also
+computes the second coefficient l2. dde-zh computes the normal-form coefficients at one
+ZH point.
 
 The problem file is a JSON object. Every key but options is required:
   model    path of the .ode file, relative to the problem file

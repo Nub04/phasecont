@@ -195,14 +195,16 @@ fn a_parameter_left_out_of_params_keeps_the_model_value() {
 
 #[test]
 fn the_model_path_is_relative_to_the_problem_file() {
-    write("hr.ode", HR);
+    // The model sits next to the problem file and nowhere else, and pc-cli runs from the
+    // parent directory, so a path read against the working directory would not find it.
     let sub = scratch().join("elsewhere");
     std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("own_model.ode"), HR).unwrap();
     let file = sub.join("p.json");
-    let text = point1().replace("\"hr.ode\"", "\"../hr.ode\"");
+    let text = point1().replace("\"hr.ode\"", "\"own_model.ode\"");
     std::fs::write(&file, text).unwrap();
-    // Run from another directory than the one that holds the model.
-    let o = run(&sub, &["dde-zh", &file.to_string_lossy()]);
+    assert!(!scratch().join("own_model.ode").exists());
+    let o = run(&scratch(), &["dde-zh", &file.to_string_lossy()]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
     close(num(&v["theta"]), THETA, 1e-8, "theta", &v);
