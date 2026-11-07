@@ -341,7 +341,7 @@ The engine evaluates the coefficient inside `codim2_tests`, and a point where th
 
 **First-point rule.** The first point of a run is the start the caller chose. A test that is exactly zero there gets its label on point 0, for the equilibrium tests and the codim-2 tests alike, because no earlier step reached that point and nothing else would report it. The label is added only when the test is not zero or undefined at the second point, since a test that stays zero is no crossing: the coefficient of a model that has none is zero along the whole curve. A codim-2 value that is zero at the start only up to rounding is treated the same way when the sign change to the second point defeats the search. The search fails there because the pole guard compares the located value with the smaller end value, and at a rounding-level start that is smaller than any value the search can reach. In that case the value $a$ at the start and $b$ at the second point satisfy $|a| \le \texttt{POLE\_TOL}\,|b|$, so the run labels point 0 and adds no warning. The bound is the guard's own tolerance, applied to the start instead of to the located value. The rule applies only to a failed search, so a zero near the start that the search does place is still a label at its own point, and a pole at the start ($|a|$ large) still gives the warning. Rounding decides the sign of such a start value, so a run in one direction has the sign change and the label, and a run in the other direction has neither. A run that switches onto a branch at a branch point sets `start_is_special`, skips detection on its first step and carries no label at the start, since the parent branch holds it.
 
-**Out of scope.** Codim-2 normal form coefficients, a center manifold of dimension above 3, homoclinic orbits (E8, Section 8b) and delays (E9, Sections 8c and 8d).
+**Out of scope.** Codim-2 normal form coefficients, a center manifold of dimension above 3, homoclinic orbits (E8, Section 8b) and delay equations beyond Sections 8c to 8e.
 
 **Acceptance.** Every model is our own and has a closed form that shares no code with the engine. Models live in `crates/pc-engine/tests/models`, and the tests in `crates/pc-engine/tests/cycle_normal_forms.rs` use `ntst = 40`, `ncol = 4`. Each test asserts to $10^{-5}$ relative unless it says otherwise, and the first run records the measured error in the test comment.
 
@@ -562,6 +562,62 @@ with `params` naming declared parameters (any other name is an error; one that i
 8. `lower` and `build` of a model with a delay, valid or not, give the error of kind `Delay` that they give today; `lower_dde` and `build_dde` of a model without a delay are errors. A model without delays has the same parameter vector, `n_p`, entries and results as before this step (the existing suites, including the `delayed.ode` case of `pc-cli`, pass unchanged).
 9. `pc-ode`: every call of `delay` still gives ODE0054 at the call, with the new text, and the checker, corpus, golden and language reference tests say so.
 10. `pc-cli dde-eq` on the data of test 1 prints $x = 1$, one delay time and roots with the values of test 1; `residual` is at most $10^{-10}$ there. A model path is read relative to the problem file. An unknown parameter name, an unknown key, a missing `model`, a wrong type, a wrong length of `x0` and an unreadable problem file exit 2. An unreadable model, a model without a delay, a delay of the wrong form, a model that reads `t` and a Newton run that fails exit 1. A parameter the problem does not give keeps the value of the model file.
+
+## 8e. Hopf points along a branch of delay equilibria (phase E9a, step 3)
+
+Step 3 continues an equilibrium of a delay equation in one declared parameter and reports where characteristic roots cross the imaginary axis. A pair that crosses at $\pm i\omega$ is a Hopf point, and one real root that crosses zero comes with a fold or a branch point, which the engine already finds. It does not continue a Hopf point in two parameters, compute a Lyapunov coefficient, follow a periodic orbit, or compute a normal form. It changes no C function and no MATLAB function, so the only ways in are `dde::continue_equilibrium` and `pc-cli dde-branch`.
+
+**What is not verified.** I did not read how DDE-BIFTOOL or Knut locate a Hopf point along a branch. Counting the roots with positive real part at each point and bisecting where the count changes is my own method, built from the definition of a local bifurcation of an equilibrium (a root on the imaginary axis). The tests below check it against closed forms and against an argument-principle count that shares no code with the engine.
+
+**The branch.** The branch is that of Section 8d: Newton's method and pseudo-arclength continuation on $G(x, p) = f(x, \ell(x), p) = 0$ with the free parameter $\alpha$, through `EpProblem` on the collapsed model. The free parameter is a declared parameter and may be a delay time. $G$ does not depend on a delay time, so a branch in a delay time has constant $x$. `Options` are those of `continue_ep`, except that
+- `detect_h` is off, since the eigenvalues of $\partial G/\partial x$ say nothing about a delay equation, and
+- the refinement pass of `continue_ep` is not run. It needs second derivatives (`Dir` entries) that are not defined for a delay equation, and the fold coefficient of the collapsed model is not that of the delay equation. LP and BP points keep the location the step control gives them, which `locate_one` brackets to $10^{-13}$ in arclength, and they carry no coefficient. The `eigenvalues` stored with each point are those of $\partial G/\partial x$ and have no meaning for a delay equation; `dde-branch` does not print them.
+
+**The count.** $N(\alpha)$ is the number of characteristic roots with $\operatorname{Re}\lambda > 0$, from `dde::stability` at $(x, p)$ with `p[free]` set to $\alpha$, with the options `n` and `re_min` of Section 8c. `re_min` must be negative, so that every root with positive real part is searched for; $r_{\min} \ge 0$ is `BadProblem`. A root with $\operatorname{Re}\lambda = 0$ exactly does not count. A point is counted when the run ends, once per point. An error in `dde::stability` at any point is returned as the error of the run.
+
+**Crossings.** Let step $k$ run from point $k$ to point $k+1$ with $N_k \ne N_{k+1}$. Write $d = \|x_{k+1} - x_k\|$ and $v = (x_{k+1} - x_k)/d$, where $x$ is the full state $(u, \alpha)$ of the branch, and let $X(h)$ be the solution of $G = 0$ on the hyperplane $v^\top(X - x_k) = h$, found by `palc::correct` from $x_k + hv$ with the corrector tolerances. Then:
+1. `lo = 0`, `hi = d`, with the counts $N_k$ and $N_{k+1}$.
+2. At $m = (lo + hi)/2$ compute $X(m)$ and $N(m)$. If $N(m) = N(lo)$ then `lo = m`, otherwise `hi = m`. Stop when $hi - lo \le 10^{-12} d$ or after 60 halvings.
+3. This gives one crossing, between `lo` and `hi`. If $N(hi) \ne N_{k+1}$, repeat from `hi` to $d$ with the counts $N(hi)$ and $N_{k+1}$. At most 16 crossings are taken from one step, and a warning says so when the cap is hit.
+
+If `correct` fails at a trial, the step gets a warning naming it and no crossing, and the run goes on.
+
+**Classification.** At the end of the bracket, look at the roots at the end with the larger count (`hi` when $N$ grows, `lo` when it falls) and take the one with the smallest positive real part.
+- If $|\operatorname{Im}\lambda| > \omega_{\min} = 10^{-8}$, the crossing is a Hopf point, labelled `H`, with $\omega = |\operatorname{Im}\lambda|$ and the point $X(hi)$. $\omega_{\min}$ is a fixed constant of the method, not an option. A real root has $\operatorname{Im}\lambda$ at rounding level, far below it, but a pair that crosses with $\omega < 10^{-8}$ (a Bogdanov-Takens point) is reported as a real crossing.
+- Otherwise a real root crosses zero. It is explained when the engine reported an LP or a BP at the same step (a `SpecialPoint` with `index = k + 1`), and the crossing gets no label of its own. If there is none, the run gets the warning "a real root crosses zero between points k and k+1 and no LP or BP is reported there".
+
+**Limits.**
+- A step on which one pair enters the right half-plane and another leaves it has $N_k = N_{k+1}$ and is not seen. `hmax` bounds this. Two crossings of different kinds in one step are separated by the bisection only when the count differs at the ends of every sub-interval.
+- A subset of the roots is returned when `n` is too small (Section 8c), and the count is then too low without any message. A point whose root set has candidates that did not converge (`unrefined`) is reported once per run, as one warning with the number of such points and the first one.
+- Several roots on the axis at once (a codimension-2 point) are classified by the one with the smallest positive real part and the rest are not looked at.
+- The first Lyapunov coefficient is not computed, so a Hopf point is not called sub- or supercritical.
+
+**Command line.** `pc-cli dde-branch <problem.json>` reads
+```json
+{"model": "path.ode", "params": {"tau": 1.0}, "free": "r", "x0": [1.0], "n": 30, "re_min": -2.0,
+ "options": {"max_steps": 200, "hmax": 0.05, "bounds": [1.2, 2.0]}}
+```
+with `params` as in `dde-eq`. `free` is the name of a declared parameter, and the run starts at its value in `params` or, when `params` does not give it, in the model file. `options` takes the keys of the `cont` problem files (`h0`, `hmin`, `hmax`, `max_steps`, `tol_x`, `tol_f`, `max_newton`, `direction`, `bounds`, `detect.lp`, `detect.bp`) through the same reader; `detect.h` and `mesh_adapt` are `BadProblem`, since Hopf points come from the count and there is no mesh. `n`, `re_min` and `options` have no defaults except those of `Options`. The output is
+```json
+{"stop": "bounds", "points": [{"alpha": 1.2, "x": [1.0], "unstable": 0}],
+ "specials": [{"label": "H", "alpha": 1.5707963267948966, "x": [1.0], "omega": 1.5707963267948966,
+               "between": [20, 21], "unstable_before": 0, "unstable_after": 2}],
+ "warnings": []}
+```
+Specials are sorted along the branch, by step and then by distance from the start of the step. `omega` is `null` for LP and BP, and for those `unstable_before` and `unstable_after` are the counts at the two ends of their step. Exit codes follow `dde-eq`: 2 for a bad problem file or a `BadProblem` error, 1 for a model error or a failed start, and the stop reasons as in `cont`.
+
+**Acceptance tests.** Rust tests with closed forms. The counts in tests 1 to 3, 5 and 8 are those of an argument-principle count of $\Delta(\lambda)$ on the contour $\operatorname{Re}\lambda = 10^{-9}$, $|\operatorname{Im}\lambda| \le R$ with $R \ge 6$ (40 for test 8), written in a script that shares no code with the engine, and the first run records the numbers in the test comment.
+
+1. Hutchinson `x' = r*x*(1-delay(x,tau))`, $\tau = 1$, free $r$ over $[1.2, 2.0]$ from $x = 1$ with $\mathrm{hmax} = 0.05$. One `H` at $r = \pi/2$ and $\omega = \pi/2$, each within $10^{-9}$, $x = 1$ within $10^{-10}$, $N$ going from 0 to 2. $N = 0$ at $r = 1.4$ and $N = 2$ at $r = \pi/2 + 0.1$ and at $r = 2$. No other special and no warning.
+2. Hayes `x' = -x - 2*delay(x,tau)`, free $\tau$ over $[0.9, 1.6]$ from $x = 0$. One `H` at $\tau^\ast = 2\pi/(3\sqrt 3) = 1.209199576156145$ and $\omega = \sqrt 3$, within $10^{-9}$. $N = 0$ at $\tau = 0.909$ and $N = 2$ at $\tau = 1.509$. $x$ stays 0 on every point.
+3. Sigmoid `x' = -x + a/(1+delay(x,2)^2)$, $\tau = 2$, free $a$ over $[6.9, 7.9]$ from $x = 1.7$. One `H` at $a^\ast = 7.409583945668119$ with $x^\ast = 1.779031616618799$ and $\omega = 1.144464864051702$, each within $10^{-9}$. $N = 0$ at $a = 6.91$ and $N = 2$ at $a = 7.91$. The three constants come from solving the Hopf conditions with a bisection in a script of its own.
+4. Fold `x' = mu - x*delay(x,1)`, free $\mu$ from $x = 0.5$ through $x = 0$ to $x = -0.5$. One `LP` at $\mu = 0$ within $10^{-8}$, $N$ going from 0 to 1, no `H` and no warning.
+5. Delayed pitchfork `x' = mu*x - x*x*x - 0.5*delay(x,1)` on $x = 0$, free $\mu$ over $[0.3, 0.8]$. One `BP` at $\mu = 0.5$ within $10^{-8}$ and $N$ going from 0 to 1, no `H` and no warning. $N = 0$ at $\mu = 0.45$ and $N = 1$ at $\mu = 0.55$.
+6. Hutchinson with $r$ over $[0.5, 1.4]$ and $x = 1$: no special, $N = 0$ at every point, no warning.
+7. The fold of test 4 with `detect.lp = false`: no special, and the one warning that a real root crosses zero with no LP or BP reported.
+8. Hutchinson with $r$ over $[1.2, 8.5]$, `h0 = hmax = 8`, `n = 40`, so that a single step spans both crossings: two `H` at $r = \pi/2$ and $r = 5\pi/2$ with $\omega = \pi/2$ and $5\pi/2$, each within $10^{-8}$, with the counts 0 to 2 and 2 to 4, and $N = 4$ at $r = 8.5$. The test records which of the two steps the engine took.
+9. Cap and failure: a model whose count changes more than 16 times in one step is out of reach for a closed form, so the cap is tested on a hand-made sequence of counts (a function `bisect_crossings` taking the count as a closure). It also checks that a `correct` failure gives a warning and no crossing.
+10. `pc-cli dde-branch` on the data of test 1 prints one `H` with the values of test 1, `stop` is `bounds`, and every point has an `unstable` of 0 or 2. A model path is read relative to the problem file. A missing `free`, an unknown `free` name, `options.detect.h`, `options.mesh_adapt`, an unknown key, a positive `re_min`, a missing `model`, a wrong type and an unreadable problem file exit 2. An unreadable model, a model without a delay and a failed Newton start exit 1. `--help` and a missing argument behave as for `dde-eq`.
 
 ## 9. Acceptance tests
 
@@ -831,7 +887,7 @@ plot(br, Var="x");                                        % stable solid, unstab
   - `LatexStudio` has an editor, a Summary pane, an error Context pane and Errors and Log tabs. The preview is the system PDF viewer. Selecting an error shows its context lines with the error line marked with `>`, because the `uitextarea` cursor API is not confirmed here. Insert figure and Insert table always write inline data, and Compile blocks the window. The app raises `phasecont:app:{badOpener,openFailed,saveFailed,empty,noSuchError,noPdf,noBranch}`. A pdf.js preview in a `uihtml` page was in the plan as an option and is not built, since it cannot be tried without MATLAB. `LatexStudio` has no `Preview` option, and `THIRD_PARTY_NOTICES.md` has no pdf.js entry.
   - Acceptance: `cargo test -p pc-latex` and `cargo test -p pc-cli` pass. `pc-latex` covers a `proptest` that `escape` leaves no raw special character outside a backslash command, a `proptest` that 17 digits round-trip a double, golden `.tex` files (stable and unstable series with marks, a table, external data with its `.dat` files), a standalone wrap, the error cases (null, 1e999, empty series and table, missing and bad digits, length mismatch, basename rules, unknown keys), and a compile of every golden file, as a fragment inside an `article` and as a `standalone` document, with the `latexmk` flags above to a PDF. A machine without `latexmk` prints `SKIPPED: no latexmk`, and `PC_REQUIRE_LATEX=1` turns the skip into a failure. `pc-cli` covers the command line cases above, including that a failed render writes no file. The C ABI gains one function, `latex_render`, with a matching gateway command. The MATLAB tests (`tests/LatexTest.m`) check that the API output equals the Rust output for the same figure and that a missing `Digits` raises.
 - **Optional external backends:** AUTO-07p and XPPAUT, run as subprocesses the user installs separately.
-- **Engine phases E8b and E9:** the parts of E8 that Section 8b leaves out (inclination flips, saddle-node homoclinic orbits, heteroclinic orbits, Lin's method), and delay equations beyond step 2 of E9a. Phase E7, the periodic normal forms, is Section 8a, phase E8a, homoclinic orbits to a saddle, is Section 8b, step 1 of E9a, the characteristic roots of a linear delay equation, is Section 8c, and step 2, `.ode` delays with their equilibria and stability, is Section 8d.
+- **Engine phases E8b and E9:** the parts of E8 that Section 8b leaves out (inclination flips, saddle-node homoclinic orbits, heteroclinic orbits, Lin's method), and delay equations beyond step 3 of E9a. Phase E7, the periodic normal forms, is Section 8a, phase E8a, homoclinic orbits to a saddle, is Section 8b, step 1 of E9a, the characteristic roots of a linear delay equation, is Section 8c, step 2, `.ode` delays with their equilibria and stability, is Section 8d, and step 3, Hopf points along a branch of delay equilibria, is Section 8e.
 
 ## 14. Phases and acceptance
 
@@ -854,6 +910,7 @@ plot(br, Var="x");                                        % stable solid, unstab
 | P14 | Homoclinic orbits to a saddle (E8a): HOM curve, `orbit` and `cycle` starts, tests 1 to 12 of HomCont | Tests 1 to 7 of section 8b pass in Rust, the FFI and the CLI, and the MATLAB part of test 6 passes. The full MATLAB suite passes: 503 tests, 0 failed, 7 skipped by assumption (2026-11-07) |
 | P15 | Characteristic roots of linear delay equations (E9a, step 1): `dde` module and `pc-cli dde-roots` | Tests 1 to 9 of section 8c pass in Rust and the CLI. No MATLAB part |
 | P16 | `.ode` delays, DDE equilibria and their stability (E9a, step 2): hidden-parameter lowering, `build_dde`, `dde::equilibrium`, `dde::stability`, `pc-cli dde-eq` | Tests 1 to 10 of section 8d pass in Rust and the CLI. No MATLAB part |
+| P17 | Hopf points along a branch of delay equilibria (E9a, step 3): `dde::continue_equilibrium`, `pc-cli dde-branch` | Tests 1 to 10 of section 8e pass in Rust and the CLI. No MATLAB part |
 
 ## 15. References
 
