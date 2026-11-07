@@ -50,7 +50,7 @@ Parsing rules:
 | Arrays | `x[1..n]'=...`, `%[1..n]` ... `%` | full (expanded) |
 | Global flags | `global -1 {u-.2} {m=.5*m}` | simulation only |
 | Markov, Wiener | `markov z 2`, `wiener w` | simulation only |
-| Delay | `delay(x,tau)` | accepted for a state and a delay time that is a number or a `par`, and used by `build_dde`, `pc-cli dde-eq`, `dde-branch`, `dde-hopf` and `dde-lyap` only (Sections 8d to 8g); other forms warn (ODE0054) |
+| Delay | `delay(x,tau)` | accepted for a state and a delay time that is a number or a `par`, and used by `build_dde`, `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap` and `dde-zh` only (Sections 8d to 8i); other forms warn (ODE0054) |
 | Volterra, BVP | `volt`, `bdry` | warn; unsupported |
 | DAEs | `0=...`, `solv` | warn; unsupported |
 | Other constructs | `special`, `export`, `only`, `options`, `shift`, `del_shft`, `sum(..)of(..)`, `hom_bcs` | warn; unsupported |
@@ -920,8 +920,8 @@ $Q = (0.5x_0^2 - 0.8x_0x_1 + 0.3x_1x_2,\ 0.7x_1^2 + 0.4x_0x_2 - 0.6x_2^2,\ -0.5x
 7. A zero-Hopf point with a closed form, the model of Section 8f test 5, `par a=0, tau=1, b=1`, `x'=-(a+y)*x-b*delay(x,tau)`, `y'=a-y*y`, at $(a, \tau, b) = (0, \pi/2, 1)$, $x = y = 0$, $\omega = 1$. $q_0 = (0, 1)$, $g_{200} = -1$, $g_{110} = -1/(1 + i\pi/2) = -0.288400439142001 + 0.4530183504502902\,i$, $g_{011} = 0$ exactly (the second component of $q_1$ is zero), so $|s_{\rm product}| < 10^{-12}$, $s = 0$, $\theta = 0.288400439142001$ and $e$ is `None`. Each within $10^{-12}$.
 8. Errors. Each of these gives the named error.
    - A wrong length of `x` or `p`, $\omega = 0$, NaN and $10^{-9}$, and a delay time that is not positive: `BadProblem`.
-   - Point 1 of test 1 with $r = 0.01$: `BadProblem` naming $\Delta(0)$ (the point is not a zero root).
-   - Point 1 of test 1 with $\omega = 0.9$: `BadProblem` naming $\Delta(i\omega)$.
+   - Point 1 of test 1 with $s_l = 0.5$ and $r = 0.5$: `BadProblem` naming $\Delta(0)$ (the point is not a zero root). Changing $r$ alone keeps $\Delta(0)$ singular, because $r$ multiplies the whole third row of $\Delta(0)$ and so factors out of its determinant, which is why $s_l$ has to change.
+   - Point 1 of test 1 with $\omega = 0.9$, and with $r = 0.01$ (the relative residual of $\Delta(i\omega)q_1$ is about $6.0\cdot10^{-4}$, above $10^{-4}$): `BadProblem` naming $\Delta(i\omega)$.
    - Wright's equation at $a = \pi/2$, $x = 0$, where $\Delta(0) = a \ne 0$: `BadProblem` naming $\Delta(0)$.
    - A Jordan block at zero: `x' = y`, `y' = 0`, an oscillator `u' = -v`, `v' = u` at $\omega = 1$, and the decoupled `w' = -2*w - delay(w,1)`: `Singular`, from $p_0\Delta'(0)q_0 = 0$.
    - A 1:2 resonance: the model of test 7 with an oscillator `u' = -2*v`, `v' = 2*u` added, at $\omega = 1$: `Singular` naming `Delta(2 i omega)`.
