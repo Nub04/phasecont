@@ -5,6 +5,7 @@ mod cont;
 mod ddebranch;
 mod ddecmd;
 mod ddeeq;
+mod ddehh;
 mod ddehopf;
 mod ddelyap;
 mod ddezh;
@@ -59,6 +60,7 @@ fn main() -> ExitCode {
         Ok(Command::DdeHopf { file }) => ddehopf::dde_hopf(&file),
         Ok(Command::DdeLyap { file }) => ddelyap::dde_lyap(&file),
         Ok(Command::DdeZh { file }) => ddezh::dde_zh(&file),
+        Ok(Command::DdeHh { file }) => ddehh::dde_hh(&file),
         Ok(Command::GpuList) => gpu::list(),
         Ok(Command::GpuSelftest {
             backend,
