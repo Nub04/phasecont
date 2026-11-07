@@ -15,8 +15,8 @@ mod zerohopf;
 
 pub use branch::{DdeBranch, DdePoint, DdeSpecial, continue_equilibrium};
 pub use cycle::{
-    DdeCycle, DdeCycleSetup, DdeCycleStart, DdeHopfCycle, correct_cycle, cycle_jacobian,
-    cycle_residual, hopf_cycle,
+    DdeCycle, DdeCycleBranch, DdeCyclePoint, DdeCycleSetup, DdeCycleStart, DdeHopfCycle,
+    continue_cycle, correct_cycle, cycle_jacobian, cycle_residual, hopf_cycle,
 };
 pub use eq::{equilibrium, linearize, residual, stability};
 pub use floquet::{DdeFloquet, DdeFloquetOptions, floquet_multipliers};

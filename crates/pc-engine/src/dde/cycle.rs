@@ -22,11 +22,11 @@ use crate::branch::{Options, StopReason};
 use crate::cycle::{CollocationBasis, NCOL_RANGE, phase_row, try_zeros};
 use crate::error::EngineError;
 use crate::model::DdeModel;
-use crate::palc::{Corrected, correct};
+use crate::palc::{Corrected, check_step_options, correct, run_branch};
 use crate::problem::Problem;
 use pc_ir::{DelayTime, EntryKind};
 use std::f64::consts::PI;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Largest number of unknowns. The Jacobian is dense, so this bounds its memory at 72 MB.
 const MAX_DIM: usize = 3000;
@@ -143,6 +143,27 @@ pub(super) fn check_profile(
     Ok(())
 }
 
+/// The phase row against `reference` (the profile at the base points), scaled to 2-norm 1,
+/// and its offset.
+fn reference_row(
+    basis: &CollocationBasis,
+    n: usize,
+    ntst: usize,
+    reference: &[f64],
+) -> Result<(Vec<f64>, f64), EngineError> {
+    let (mut phase, mut phase0) = phase_row(basis, n, ntst, reference);
+    let norm = phase.iter().map(|v| v * v).sum::<f64>().sqrt();
+    if !(norm.is_finite() && norm > 0.0) {
+        return Err(EngineError::BadProblem(
+            "the phase condition is zero for this reference profile; it must not be constant"
+                .into(),
+        ));
+    }
+    phase.iter_mut().for_each(|v| *v /= norm);
+    phase0 /= norm;
+    Ok((phase, phase0))
+}
+
 /// The collocation system of one setup, against a phase reference.
 struct DdeCycleProblem<'a> {
     m: &'a mut DdeModel,
@@ -166,17 +187,7 @@ impl<'a> DdeCycleProblem<'a> {
         reference: &[f64],
     ) -> Result<Self, EngineError> {
         let basis = CollocationBasis::new(s.ncol)?;
-        let (mut phase, mut phase0) = phase_row(&basis, n, s.ntst, reference);
-        let norm = phase.iter().map(|v| v * v).sum::<f64>().sqrt();
-        if !(norm.is_finite() && norm > 0.0) {
-            return Err(EngineError::BadProblem(
-                "the phase condition is zero for this reference profile; it must not be \
-                 constant"
-                    .into(),
-            ));
-        }
-        phase.iter_mut().for_each(|v| *v /= norm);
-        phase0 /= norm;
+        let (phase, phase0) = reference_row(&basis, n, s.ntst, reference)?;
         Ok(DdeCycleProblem {
             m,
             basis,
@@ -363,6 +374,26 @@ impl Problem for DdeCycleProblem<'_> {
     fn jacobian(&mut self, x: &[f64], out: &mut [f64]) -> Result<(), EngineError> {
         self.fill(x, None, Some(out))
     }
+
+    /// The tests of an equilibrium branch do not apply to the discretized orbit; the labels
+    /// of cycles come in a later slice (SPEC section 8n).
+    fn ep_tests(&self) -> bool {
+        false
+    }
+
+    /// Re-references the phase row to the accepted profile, so that it stays a condition
+    /// on the shift of the orbit along the branch. A profile whose row is zero or not
+    /// finite keeps the old reference.
+    fn accept(&mut self, x: &[f64]) {
+        let plen = self.dim - 2;
+        if x.len() < plen {
+            return;
+        }
+        if let Ok((phase, phase0)) = reference_row(&self.basis, self.n, self.ntst, &x[..plen]) {
+            self.phase = phase;
+            self.phase0 = phase0;
+        }
+    }
 }
 
 fn norm_inf(v: &[f64]) -> f64 {
@@ -457,12 +488,7 @@ pub fn correct_cycle(
 ) -> Result<DdeCycle, EngineError> {
     let (n, dim) = check_setup(model, setup)?;
     check_profile(&start.profile, n, setup)?;
-    if !(start.period.is_finite() && start.period > 0.0) {
-        return Err(EngineError::BadProblem(format!(
-            "the period is {}; it must be finite and positive",
-            start.period
-        )));
-    }
+    check_period(start.period)?;
     let mut p = DdeCycleProblem::new(model, setup, n, dim, &start.profile)?;
     let mut x0 = start.profile.clone();
     x0.push(start.period);
@@ -538,4 +564,92 @@ pub fn hopf_cycle(
     let mut x0 = guess;
     x0.extend([t0, alpha0]);
     run(&mut p, &xk, &v, hopf.eps * norm, x0, opts, cancel)
+}
+
+/// One point of a branch of periodic orbits of a delay equation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DdeCyclePoint {
+    /// `u` at the base points, `n` values per point, as in [`DdeCycle`].
+    pub profile: Vec<f64>,
+    pub period: f64,
+    /// The value of the free parameter.
+    pub alpha: f64,
+    /// The step that reached the point; 0 for the first.
+    pub h: f64,
+    /// Corrector iterations at the point; 0 for the first.
+    pub newton_iters: usize,
+}
+
+/// The result of [`continue_cycle`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct DdeCycleBranch {
+    pub points: Vec<DdeCyclePoint>,
+    pub stop: StopReason,
+    pub warnings: Vec<String>,
+}
+
+fn check_period(period: f64) -> Result<(), EngineError> {
+    if !(period.is_finite() && period > 0.0) {
+        return Err(EngineError::BadProblem(format!(
+            "the period is {period}; it must be finite and positive"
+        )));
+    }
+    Ok(())
+}
+
+/// Continues the orbit from `start` in the parameter `setup.free` by pseudo-arclength
+/// continuation of the rows of [`correct_cycle`] on a fixed mesh (SPEC section 8n). `start`
+/// is first corrected at the fixed parameter `setup.params[setup.free]`, and the phase
+/// reference moves to each accepted profile. Special points are not looked for: `detect_*`
+/// and `mesh_adapt` have no effect.
+pub fn continue_cycle(
+    model: &mut DdeModel,
+    setup: &DdeCycleSetup,
+    start: &DdeCycleStart,
+    opts: &Options,
+    cancel: &AtomicBool,
+) -> Result<DdeCycleBranch, EngineError> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(EngineError::Cancelled);
+    }
+    let (n, dim) = check_setup(model, setup)?;
+    check_profile(&start.profile, n, setup)?;
+    check_period(start.period)?;
+    let free_is_delay = model
+        .delays
+        .iter()
+        .any(|s| matches!(s.time, DelayTime::Param(j) if j == setup.free));
+    if free_is_delay && (opts.bounds.0 <= 0.0 || opts.bounds.0.is_nan()) {
+        return Err(EngineError::BadProblem(
+            "the free parameter is a delay time, so bounds must have a lower bound above 0".into(),
+        ));
+    }
+    check_step_options(opts)?;
+    let mut opts = opts.clone();
+    opts.detect_lp = false;
+    opts.detect_bp = false;
+    opts.detect_h = false;
+
+    let first = correct_cycle(model, setup, start, &opts, cancel)?;
+    let mut p = DdeCycleProblem::new(model, setup, n, dim, &first.profile)?;
+    let mut x0 = first.profile;
+    x0.push(first.period);
+    x0.push(first.alpha);
+    let branch = run_branch(&mut p, &x0, None, &opts, false, cancel, &mut |_| {})?;
+    let points = branch
+        .points
+        .into_iter()
+        .map(|q| DdeCyclePoint {
+            profile: q.u[..dim - 2].to_vec(),
+            period: q.u[dim - 2],
+            alpha: q.alpha,
+            h: q.h,
+            newton_iters: q.newton_iters,
+        })
+        .collect();
+    Ok(DdeCycleBranch {
+        points,
+        stop: branch.stop,
+        warnings: branch.warnings,
+    })
 }

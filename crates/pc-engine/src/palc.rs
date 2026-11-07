@@ -338,6 +338,21 @@ pub fn continue_branch(
     run_branch(p, x0, None, opts, false, cancel, on_point)
 }
 
+/// The step-control fields of `opts` that `run_branch` needs: finite positive `h0`, `hmin`
+/// and `hmax >= hmin`, and at least one Newton iteration.
+pub(crate) fn check_step_options(opts: &Options) -> Result<(), EngineError> {
+    let finite = opts.h0.is_finite() && opts.hmin.is_finite() && opts.hmax.is_finite();
+    if !(finite
+        && opts.hmin > 0.0
+        && opts.h0 > 0.0
+        && opts.hmax >= opts.hmin
+        && opts.max_newton >= 1)
+    {
+        return Err(EngineError::BadProblem("bad step control options".into()));
+    }
+    Ok(())
+}
+
 /// [`continue_branch`] with the flag of `EpSetup::start_is_special`: when set, no special
 /// point is looked for on the first step. With `tangent0` the first tangent is that vector
 /// (normalized, times the sign of `opts.direction`) instead of the bordered solve; this is
@@ -357,15 +372,7 @@ pub(crate) fn run_branch(
             "the start has the wrong length".into(),
         ));
     }
-    let finite = opts.h0.is_finite() && opts.hmin.is_finite() && opts.hmax.is_finite();
-    if !(finite
-        && opts.hmin > 0.0
-        && opts.h0 > 0.0
-        && opts.hmax >= opts.hmin
-        && opts.max_newton >= 1)
-    {
-        return Err(EngineError::BadProblem("bad step control options".into()));
-    }
+    check_step_options(opts)?;
     let (mut v, det) = match tangent0 {
         Some(t0) => {
             if t0.len() != n {

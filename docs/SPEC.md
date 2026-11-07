@@ -1321,7 +1321,7 @@ The checks are those of Section 8l (`BadProblem`, before any allocation that dep
 
 **Acceptance tests.** Rust tests in `crates/pc-engine/tests/dde_cycle_branch.rs` with `OSC` of Section 8l, $N = 20$, $m = 4$ unless a test says otherwise, and a start corrected at the first point.
 1. The $\mu$-line, an exact family. $K = 0$ and $K = 1$ ($\tau = \pi/2 + 2\pi K$), `free = mu`, start $\mu = 0.3$ with the profile $\sin 2\pi s_q$ and $T = 2\pi$, `bounds` $= (0.1, 0.9)$, `hmax` $= 0.2$, `max_steps` $= 200$, once with `direction` $+1$ and once with $-1$. The exact orbit $x = \sin t$, $T = 2\pi$ exists for every $\mu$, and $\mu = 0$ is a degenerate point (Section 8l) that the bounds avoid. Each run stops with `Bounds`, the last $\alpha$ is the bound that the direction points to within $10^{-9}$, and at every point $\lvert T - 2\pi\rvert$ and $\max_q\lvert u_q - \sin 2\pi s_q\rvert$ are at most the numbers of table 1.
-2. The Hopf branch to the exact orbit. $\mu = 0.3$, `free = tau`, `hopf_cycle` with $\varepsilon = 0.05$ and `tau` set to $\tau_H$ (as test 4 of Section 8l), then `continue_cycle` from that cycle with `direction` $+1$, `bounds` $= (1, \pi/2)$, `hmax` $= 0.5$, `max_steps` $= 500$. The run stops with `Bounds`. At the last point $\alpha = \pi/2$ within $10^{-9}$, and $\lvert T - 2\pi\rvert$, $\lvert\max u - 1\rvert$, $\lvert\min u + 1\rvert$ and the difference of $\int_0^1 u^2\,ds$ from $0.5$ are at most the numbers of table 2 ($\max$ and $\min$ over the base points, the integral by the trapezoid rule on the base points of one period). The amplitude, $\max u - \min u$, increases from point to point along the branch.
+2. The Hopf branch to the exact orbit. $\mu = 0.3$, `free = tau`, `hopf_cycle` with $\varepsilon = 0.05$ and `tau` set to $\tau_H$ (as test 4 of Section 8l), then `continue_cycle` from that cycle with `params[free]` set to the $\alpha$ of that cycle and `direction` $+1$, `bounds` $= (1, \pi/2)$, `hmax` $= 0.5$, `max_steps` $= 500$. The run stops with `Bounds`. At the last point $\alpha = \pi/2$ within $10^{-9}$, and $\lvert T - 2\pi\rvert$, $\lvert\max u - 1\rvert$, $\lvert\min u + 1\rvert$ and the difference of $\int_0^1 u^2\,ds$ from $0.5$ are at most the numbers of table 2 ($\max$ and $\min$ over the base points, the integral by the trapezoid rule on the base points of one period). The amplitude, $\max u - \min u$, increases from point to point along the branch.
 3. The same path backwards. `OSC` with $K = 0$ and $\mu = 0.3$, `free = tau`, the exact start at $\tau = \pi/2$, `direction` $-1$, and `bounds.0` the value of $\alpha$ of the $\varepsilon = 0.05$ cycle of test 2 (computed by `hopf_cycle` in the test), `bounds.1` $= 2$. The run stops with `Bounds` at that value. The period and the amplitude, $(\max u - \min u)/2$, of the last point differ from those of the $\varepsilon = 0.05$ cycle by at most the numbers of table 3, and differ from $6.584130506595359$ and $0.0500015$ (values from my scratch calculation of that cycle) by at most the numbers there.
 4. Every point is a solution. For every point of tests 1 to 3, `cycle_residual` with the profile of the point as the reference is at most $10^{-9}$, and `correct_cycle` from the point at its own $\alpha$ returns the same period to $10^{-9}$ in at most 3 iterations.
 5. Direction and step control. For the $\mu$-line of test 1 ($K = 0$), `direction` $+1$ gives $\alpha_1 > \alpha_0$ and $-1$ gives $\alpha_1 < \alpha_0$. `max_steps` $= 3$ gives 4 points and `MaxSteps`. A start outside `bounds` gives one point and `Bounds`.
@@ -1329,7 +1329,34 @@ The checks are those of Section 8l (`BadProblem`, before any allocation that dep
 7. The two evaluators. The first 6 steps of test 1 ($K = 0$, `direction` $+1$) and of test 2 with `Evaluator::Jit` and `Evaluator::Fallback` give the same number of points, and `alpha`, `period` and `profile` agree to $10^{-10}$ (relative to $1 + \lvert\cdot\rvert$).
 8. `pc-cli dde-cycle` with `OSC` ($K = 0$), `orbit` and `branch: true` with the options of test 1 prints the same points as `continue_cycle` (the `alpha`, `period` and `profile` of every point bit for bit, JIT) and `stop` $=$ `"Bounds"`. The same with `hopf` and the options of test 2. `branch: false` and no `branch` print the output of Section 8l. `branch: true` with `floquet`, with `options.mesh_adapt`, with `options.detect`, and with a delay-time `free` and `bounds.0` $= 0$ is exit 2.
 
-The measured tables follow (test first, then recorded here).
+**Measured tables.** Debug build, JIT, `print_tables` in the test file. The bounds are about 2 to 3 times the measured values, except the ones marked below.
+
+Table 1 ($N = 20$, $m = 4$, `hmax` $= 0.2$; the maximum over every point of the run). The runs with $\mu$ going up have 13 points and the runs going down have 9, for both $K$.
+
+| $K$ | direction | $\max\lvert T - 2\pi\rvert$ | $\max_q\lvert u_q - \sin 2\pi s_q\rvert$ |
+|---|---|---|---|
+| 0 | +1 | $1.9\cdot10^{-11}$ | $5.30\cdot10^{-8}$ |
+| 0 | -1 | $2.2\cdot10^{-11}$ | $5.29\cdot10^{-8}$ |
+| 1 | +1 | $1.1\cdot10^{-11}$ | $5.30\cdot10^{-8}$ |
+| 1 | -1 | $1.7\cdot10^{-11}$ | $5.29\cdot10^{-8}$ |
+
+Bounds of test 1: $5\cdot10^{-11}$ for $T$ and $1.4\cdot10^{-7}$ for the profile. The errors are the discretization error of the fixed mesh, which does not depend on $\mu$ to the digits shown.
+
+Table 2 (25 points, last point at $\alpha = 1.5707963267946774$, started from the $\varepsilon = 0.05$ cycle at $\alpha = 1.3276067784641747$).
+
+| $\lvert T - 2\pi\rvert$ | $\lvert\max u - 1\rvert$ | $\lvert\min u + 1\rvert$ | $\lvert\int_0^1 u^2 - 0.5\rvert$ |
+|---|---|---|---|
+| $1.9\cdot10^{-11}$ | $3.2\cdot10^{-13}$ | $3.2\cdot10^{-13}$ | $2.2\cdot10^{-9}$ |
+
+Bounds of test 2: $5\cdot10^{-11}$, $10^{-12}$, $10^{-12}$ and $6\cdot10^{-9}$. The two extreme values are at the level of rounding and are the most likely to change between platforms, so their bound is about 3 times the measured value and I expect to widen it if a CI platform needs it.
+
+Table 3 (25 points, last point at the $\alpha$ of the $\varepsilon = 0.05$ cycle, period $6.584130506595406$, half amplitude $0.0500015404004258$).
+
+| $\lvert T - T_{\text{hopf}}\rvert$ | $\lvert a - a_{\text{hopf}}\rvert$ | $\lvert T - 6.584130506595359\rvert$ | $\lvert a - 0.0500015\rvert$ |
+|---|---|---|---|
+| $4.7\cdot10^{-14}$ | $5.5\cdot10^{-13}$ | $4.7\cdot10^{-14}$ | $4.0\cdot10^{-8}$ |
+
+Bounds of test 3: $10^{-12}$ and $3\cdot10^{-12}$ for the first two, which are at rounding level (about 20 and 5 times the measured values), $10^{-12}$ for the period against the scratch value, and $10^{-7}$ for the amplitude, since the scratch amplitude has 6 digits. The scratch period agrees with `hopf_cycle` to $4.7\cdot10^{-14}$, so the scratch value does not give a second, independent check of the period at the $10^{-12}$ level.
 
 ## 9. Acceptance tests
 
