@@ -40,9 +40,9 @@
 //!   `2 i omega`), and the locator drops a sign change through a pole (`POLE_TOL`).
 //! * `HH`, only when the run is asked for it (`HopfExtras::hh`, SPEC section 8k): the real
 //!   part of the largest root with a positive imaginary part that is not the critical root.
-//!   It is NaN for `sqrt(kappa)` below `hh_omega_floor`, near a Bogdanov-Takens point, where
-//!   the pair at `+-i omega` is lost to rounding or to the root finder, and where the roots
-//!   are not available.
+//!   It is NaN where the roots are not available and where the critical root is not single.
+//!   Below `hh_omega_floor`, near a Bogdanov-Takens point, the pair at `+-i omega` can be
+//!   lost to rounding or to the root finder, so there a missing pair is not counted as lost.
 
 use super::eq::{check_params, check_state, field, linearize};
 use super::lyap::lyapunov;
@@ -82,8 +82,9 @@ const OMEGA_MIN: f64 = 1e-8;
 /// point. The constant has no source (SPEC section 8k).
 const COLLAPSE_MARGIN: f64 = 10.0;
 
-/// The `omega` below which the HH test is not defined for the linearization `lin` (SPEC section
-/// 8k). Near a Bogdanov-Takens point the matrices have a nilpotent part of size `s`, the
+/// The `omega` below which a missing pair at `+-i omega` is not counted as lost for the
+/// linearization `lin` (SPEC section 8k). The floor never switches the test off: a pair that
+/// the roots do show is used at any `omega`. Near a Bogdanov-Takens point the matrices have a nilpotent part of size `s`, the
 /// largest entry of `A_0` and of every `A_j` (at least 1). Two things lose the pair there:
 ///
 /// - One rounding of a matrix entry shifts `omega^2` by about `eps s^2`, so a pair with `omega`
@@ -342,9 +343,10 @@ impl HopfProblem<'_> {
     }
 
     /// The Hopf-Hopf test `h` at `x` (SPEC section 8k): the real part of the second pair when
-    /// there is exactly one critical root, NaN for `kappa <= 0`, without the option, for
-    /// `sqrt(kappa)` below `hh_omega_floor` (near a Bogdanov-Takens point), and where the roots
-    /// fail or the critical root is not single (both counted).
+    /// there is exactly one critical root, NaN for `kappa <= 0` and without the option, and NaN
+    /// where the roots fail or the critical root is not single (both counted as lost). At
+    /// `sqrt(kappa)` below `hh_omega_floor` (near a Bogdanov-Takens point) those two cases are
+    /// NaN and not counted, because the pair is lost to rounding or to the root finder there.
     fn hh_at(&mut self, x: &[f64]) -> f64 {
         let Some(ro) = self.hh else {
             return f64::NAN;
@@ -361,22 +363,28 @@ impl HopfProblem<'_> {
                 return f64::NAN;
             }
         };
+        let omega = kappa.sqrt();
         // Near BT the pair at +-i omega is lost to rounding or to the root finder, which says
-        // nothing about a second crossing, so the test is not defined there and not counted.
-        if kappa.sqrt() <= hh_omega_floor(&lin) {
-            return f64::NAN;
-        }
+        // nothing about a second crossing. The floor only excuses a missing pair: a pair that
+        // the roots show is used at any omega, because a large entry that is not part of the
+        // pair also raises the floor.
+        let near_bt = omega <= hh_omega_floor(&lin);
         let set = match characteristic_roots(&lin, &ro) {
             Ok(s) => s,
             Err(_) => {
-                self.hh_lost += 1;
+                if !near_bt {
+                    self.hh_lost += 1;
+                }
                 return f64::NAN;
             }
         };
+        let pairs = hopf_pairs(&set, omega);
+        if near_bt && pairs.critical != 1 {
+            return f64::NAN;
+        }
         if !set.unrefined.is_empty() {
             self.hh_unrefined += 1;
         }
-        let pairs = hopf_pairs(&set, kappa.sqrt());
         if pairs.critical != 1 {
             self.hh_lost += 1;
             return f64::NAN;

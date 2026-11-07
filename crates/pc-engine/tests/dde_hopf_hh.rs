@@ -25,6 +25,13 @@ const DECOUPLED: &str = "par a=1.4, b=1.2, c=0, d=0\n\
     x'=c*y-a*delay(x,1)\n\
     y'=-d*x-b*delay(y,1.5)\n\
     done\n";
+// DECOUPLED with a stiff block `w' = -10000 w` that has nothing to do with the Hopf pair, so
+// the largest matrix entry is 1e4 far from any Bogdanov-Takens point.
+const STIFF: &str = "par a=1.4, b=1.2, c=0, d=0\n\
+    x'=c*y-a*delay(x,1)\n\
+    y'=-d*x-b*delay(y,1.5)\n\
+    w'=-10000*w\n\
+    done\n";
 // The same linearization as COUPLED, so the Hopf curve and the HH point are the same, with
 // quadratic terms so that l1 is not zero by construction.
 const COUPLED_NL: &str = "par a=1.4, b=1.2, c=1, d=0.1\n\
@@ -400,6 +407,30 @@ fn the_decoupled_curve_has_its_hh_point_at_b_pi_over_three() {
         assert!((sp.alpha[0] - PI / 2.0).abs() < 1e-8, "a = {}", sp.alpha[0]);
         let w2 = sp.omega2.expect("omega2");
         assert!((w2 - PI / 3.0).abs() < 1e-6, "omega2 = {w2}");
+    }
+}
+
+// A large entry in a block that is not part of the pair must not switch the test off (SPEC
+// section 8k): the floor near a Bogdanov-Takens point only excuses a pair that is not found.
+#[test]
+fn a_stiff_block_elsewhere_does_not_hide_the_hh_point() {
+    for which in both() {
+        let s = setup([0, 1], &[1.57, 0.8, 0.0, 0.0], &[0.0, 0.0, 0.0], 1.55);
+        let b = run_with(
+            STIFF,
+            which,
+            &s,
+            &opts(0.05, (0.5, 1.2), 1.0),
+            &extras(false),
+        );
+        assert!(matches!(b.stop, StopReason::Bounds), "{:?}", b.stop);
+        assert_eq!(labels(&b), ["HH"], "{:?}", b.specials);
+        let sp = &b.specials[0];
+        assert!((sp.alpha[1] - PI / 3.0).abs() < 1e-6, "b = {}", sp.alpha[1]);
+        let w2 = sp.omega2.expect("omega2");
+        assert!((w2 - PI / 3.0).abs() < 1e-6, "omega2 = {w2}");
+        let hh: Vec<_> = b.warnings.iter().filter(|w| w.contains("hh")).collect();
+        assert!(hh.is_empty(), "{hh:?}");
     }
 }
 
