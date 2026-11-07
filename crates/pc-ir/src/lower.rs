@@ -9,6 +9,7 @@
 //! produces an [`IrError`], never a panic.
 
 use crate::dag::{Cmp, Dag, Fn1, Fn2, MAX_NODES, NodeId, Op};
+use crate::delays::{self, DelaySlot, Names, SlotKey};
 use crate::error::{IrError, IrErrorKind};
 use crate::eval::eval;
 use pc_ode::builtins::builtin;
@@ -32,7 +33,13 @@ pub struct IrModel {
     /// The `aux` quantities, in declaration order.
     pub aux: Vec<NodeId>,
     pub init: Vec<f64>,
+    /// One value per parameter, hidden delay slots included (NaN there).
     pub par_values: Vec<f64>,
+    /// Number of parameters the model declares. The hidden delay slots of `lower_dde`
+    /// follow them in `param_names`, before the `t` slot.
+    pub n_user_params: usize,
+    /// The hidden delay slots; slot `j` is parameter `n_user_params + j`.
+    pub delays: Vec<DelaySlot>,
     /// False when a formula reachable from `f` or `aux` reads `t`.
     pub autonomous: bool,
     pub smooth: bool,
@@ -45,19 +52,33 @@ impl IrModel {
         self.state_names.len()
     }
 
+    /// Number of parameters, hidden delay slots included. `p` has one more entry, `t`.
     pub fn n_p(&self) -> usize {
         self.param_names.len()
     }
 }
 
 /// Lowers a checked model. `model` is `Loaded::expanded` and `info` is `Loaded::info`.
+/// A `delay(...)` call is refused; `lower_dde` accepts it.
 pub fn lower(model: &Model, info: &ModelInfo) -> Result<IrModel, Vec<IrError>> {
-    lower_with_cap(model, info, MAX_NODES)
+    lower_impl(model, info, MAX_NODES, false)
+}
+
+/// Lowers a model with `delay(x, tau)` calls. Each distinct pair of a state and a delay
+/// time becomes one hidden parameter slot after the user parameters (see `delays`). A
+/// model without a delay call is an error, so a caller that wants a delay equation does
+/// not get an ODE by accident.
+pub fn lower_dde(model: &Model, info: &ModelInfo) -> Result<IrModel, Vec<IrError>> {
+    lower_impl(model, info, MAX_NODES, true)
 }
 
 /// Everything the lowering reads from the statements.
 struct Env<'a> {
+    /// Index of the `t` slot: the user parameters plus the hidden delay slots.
     n_p: u32,
+    allow_delays: bool,
+    /// Parameter index of each hidden delay slot.
+    delay_slots: HashMap<SlotKey, u32>,
     states: HashMap<&'a str, u32>,
     params: HashMap<&'a str, u32>,
     numbers: HashMap<&'a str, f64>,
@@ -268,6 +289,36 @@ impl<'e, 'a> Lw<'e, 'a> {
         n
     }
 
+    /// A `delay` call under `lower_dde`: a read of its hidden parameter slot. The scan
+    /// classified every call already, so a call that fails here sits where the scan does
+    /// not look, which is a table formula reading a fixed quantity that holds a delay.
+    fn delay(&mut self, args: &'a [Expr], span: Span) -> NodeId {
+        let env = self.env;
+        if self.table_mode {
+            return self.fail(
+                IrErrorKind::Delay,
+                span,
+                "a table cannot read a delayed value",
+            );
+        }
+        let formals: Vec<String> = self
+            .frames
+            .last()
+            .map(|f| f.params.clone())
+            .unwrap_or_default();
+        let slot = delays::classify(args, &formals, env).and_then(|(state, time)| {
+            let key = DelaySlot { state, time }.key();
+            env.delay_slots
+                .get(&key)
+                .copied()
+                .ok_or_else(|| "this delay has no slot".to_string())
+        });
+        match slot {
+            Ok(idx) => self.dag.param(idx),
+            Err(msg) => self.fail(IrErrorKind::Delay, span, msg),
+        }
+    }
+
     fn call(&mut self, name: &'a Ident, args: &'a [Expr], span: Span) -> NodeId {
         let key = name.key.as_str();
         let env = self.env;
@@ -321,8 +372,11 @@ impl<'e, 'a> Lw<'e, 'a> {
             );
         };
         if key == "delay" {
-            // The pre-scan reported every delay call already.
-            return self.dag.konst(f64::NAN);
+            if !env.allow_delays {
+                // The pre-scan reported every delay call already.
+                return self.dag.konst(f64::NAN);
+            }
+            return self.delay(args, span);
         }
         if b.arity != Some(args.len()) {
             return self.fail(
@@ -423,7 +477,7 @@ fn each_stmt<'a>(stmts: &'a [Stmt], f: &mut dyn FnMut(&'a Stmt)) {
     }
 }
 
-fn formulas(kind: &StmtKind) -> Vec<&Expr> {
+pub(crate) fn formulas(kind: &StmtKind) -> Vec<&Expr> {
     match kind {
         StmtKind::Ode { rhs, .. }
         | StmtKind::Map { rhs, .. }
@@ -436,8 +490,23 @@ fn formulas(kind: &StmtKind) -> Vec<&Expr> {
     }
 }
 
-/// Refusals that need no lowering: simulation-only, delay, unsupported statements.
-fn prescan(model: &Model, info: &ModelInfo, errors: &mut Vec<IrError>) {
+impl Names for Env<'_> {
+    fn state(&self, key: &str) -> Option<usize> {
+        self.states.get(key).map(|&i| i as usize)
+    }
+
+    fn param(&self, key: &str) -> Option<usize> {
+        self.params.get(key).map(|&j| j as usize)
+    }
+
+    fn number(&self, key: &str) -> Option<f64> {
+        self.numbers.get(key).copied()
+    }
+}
+
+/// Refusals that need no lowering: simulation-only, delay, unsupported statements. With
+/// `allow_delays` the delay calls are left to `delays::scan`.
+fn prescan(model: &Model, info: &ModelInfo, errors: &mut Vec<IrError>, allow_delays: bool) {
     let mut sim_span = None;
     each_stmt(&model.statements, &mut |s| {
         match &s.kind {
@@ -452,7 +521,7 @@ fn prescan(model: &Model, info: &ModelInfo, errors: &mut Vec<IrError>) {
         }
         for e in formulas(&s.kind) {
             each_call(e, &mut |name, span| match name.key.as_str() {
-                "delay" => {
+                "delay" if !allow_delays => {
                     let msg = "delay(...) is not supported";
                     errors.push(IrError::new(IrErrorKind::Delay, span, msg));
                 }
@@ -493,17 +562,27 @@ fn table_header(
     Ok((*n as usize, *lo, *hi))
 }
 
+#[cfg(test)]
 pub(crate) fn lower_with_cap(
     model: &Model,
     info: &ModelInfo,
     cap: usize,
+) -> Result<IrModel, Vec<IrError>> {
+    lower_impl(model, info, cap, false)
+}
+
+fn lower_impl(
+    model: &Model,
+    info: &ModelInfo,
+    cap: usize,
+    allow_delays: bool,
 ) -> Result<IrModel, Vec<IrError>> {
     let mut errors = Vec::new();
     if info.kind == ModelKind::None {
         let msg = "the model has no ODE and no map";
         errors.push(IrError::new(IrErrorKind::NoEquations, DUMMY_SPAN, msg));
     }
-    prescan(model, info, &mut errors);
+    prescan(model, info, &mut errors, allow_delays);
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -513,6 +592,8 @@ pub(crate) fn lower_with_cap(
     each_stmt(&model.statements, &mut |s| stmts.push(s));
     let mut env = Env {
         n_p: 0,
+        allow_delays,
+        delay_slots: HashMap::new(),
         states: HashMap::new(),
         params: HashMap::new(),
         numbers: HashMap::new(),
@@ -580,6 +661,27 @@ pub(crate) fn lower_with_cap(
             _ => {}
         }
     }
+    let n_user_params = param_names.len();
+    let mut delay_slots = Vec::new();
+    if allow_delays {
+        let found = delays::scan(&stmts, &env, info.kind == ModelKind::Map);
+        if found.calls == 0 {
+            let msg = "the model has no delay(...) call";
+            errors.push(IrError::new(IrErrorKind::Delay, DUMMY_SPAN, msg));
+        }
+        errors.extend(found.errors);
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+        for (j, slot) in found.slots.iter().enumerate() {
+            let name = delays::hidden_name(slot, &state_names, &param_names[..n_user_params]);
+            param_names.push(name);
+            env.par_values.push(f64::NAN);
+            env.delay_slots
+                .insert(slot.key(), (n_user_params + j) as u32);
+        }
+        delay_slots = found.slots;
+    }
     env.n_p = param_names.len() as u32;
     for (e, _) in &number_values {
         let msg = format!("the value of `{}` is not a number", e.name.text);
@@ -643,6 +745,8 @@ pub(crate) fn lower_with_cap(
         aux,
         init: env.init.clone(),
         par_values: env.par_values.clone(),
+        n_user_params,
+        delays: delay_slots,
         autonomous,
         smooth: info.smooth,
         entries: HashMap::new(),

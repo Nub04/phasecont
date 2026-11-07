@@ -8,6 +8,7 @@
 pub mod check;
 pub mod complex;
 pub mod dag;
+pub mod delays;
 pub mod diff;
 pub mod entry;
 pub mod error;
@@ -17,8 +18,9 @@ pub mod lower;
 pub mod math;
 pub mod multi;
 
+pub use delays::{DelaySlot, DelayTime};
 pub use diff::{Wrt, d};
 pub use entry::{Entry, EntryKind, Slot};
 pub use error::{IrError, IrErrorKind};
 pub use interp::{Dual, Fallback, Interp, Scalar};
-pub use lower::{IrModel, lower};
+pub use lower::{IrModel, lower, lower_dde};

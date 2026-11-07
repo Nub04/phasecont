@@ -11,6 +11,7 @@
 //! Where the DAG folds `x + 0`, `x * 0` or `x * 1`, `eval.rs` can differ from this literal
 //! walk on signed zeros and on dead inf or NaN terms. Finite nonzero points agree.
 
+use crate::delays::{self, DelaySlot, Names, SlotKey};
 use crate::entry::{EntryKind, Slot};
 use crate::lower::IrModel;
 use crate::math;
@@ -583,6 +584,23 @@ pub struct Interp {
     tables: Vec<Vec<f64>>,
     f: Vec<Expr>,
     aux: Vec<Expr>,
+    /// Parameter index of the hidden slot of each delayed state and delay time. Empty
+    /// unless the model was lowered with `lower_dde`.
+    delay_slots: HashMap<SlotKey, usize>,
+}
+
+impl Names for Interp {
+    fn state(&self, key: &str) -> Option<usize> {
+        self.states.get(key).copied()
+    }
+
+    fn param(&self, key: &str) -> Option<usize> {
+        self.params.get(key).copied()
+    }
+
+    fn number(&self, key: &str) -> Option<f64> {
+        self.numbers.get(key).copied()
+    }
 }
 
 fn flatten<'a>(stmts: &'a [Stmt], out: &mut Vec<&'a Stmt>) {
@@ -621,6 +639,12 @@ impl Interp {
             tables: ir.dag.tables.clone(),
             f: Vec::new(),
             aux: Vec::new(),
+            delay_slots: ir
+                .delays
+                .iter()
+                .enumerate()
+                .map(|(j, d)| (d.key(), ir.n_user_params + j))
+                .collect(),
         };
         let mut n_tables = 0;
         for s in stmts {
@@ -866,6 +890,19 @@ impl<'a, S: Scalar> Ctx<'a, S> {
         v
     }
 
+    /// A `delay` call is a read of its hidden parameter slot, by the rule `lower_dde` uses.
+    fn delay(&mut self, args: &'a [Expr]) -> V<S> {
+        let it = self.it;
+        let formals = self.frames.last().map_or(&[][..], |f| f.params);
+        let idx = delays::classify(args, formals, it)
+            .ok()
+            .and_then(|(state, time)| it.delay_slots.get(&DelaySlot { state, time }.key()));
+        match idx {
+            Some(&j) => (self.p.get(j).copied().unwrap_or(S::nan()), false),
+            None => Self::nan(),
+        }
+    }
+
     #[inline(never)]
     fn call(&mut self, name: &'a Ident, args: &'a [Expr]) -> V<S> {
         let key = name.key.as_str();
@@ -891,6 +928,9 @@ impl<'a, S: Scalar> Ctx<'a, S> {
             let (x, c) = self.ev(a);
             let data = it.tables.get(id).map(Vec::as_slice).unwrap_or(&[]);
             return (x.table(data), c);
+        }
+        if key == "delay" {
+            return self.delay(args);
         }
         match args {
             [a] => {
