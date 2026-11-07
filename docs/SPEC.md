@@ -50,7 +50,7 @@ Parsing rules:
 | Arrays | `x[1..n]'=...`, `%[1..n]` ... `%` | full (expanded) |
 | Global flags | `global -1 {u-.2} {m=.5*m}` | simulation only |
 | Markov, Wiener | `markov z 2`, `wiener w` | simulation only |
-| Delay | `delay(x,tau)` | accepted for a state and a delay time that is a number or a `par`, and used by `build_dde`, `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap`, `dde-zh` and `dde-hh` only (Sections 8d to 8j); other forms warn (ODE0054) |
+| Delay | `delay(x,tau)` | accepted for a state and a delay time that is a number or a `par`, and used by `build_dde`, `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap`, `dde-zh`, `dde-hh` and `dde-cycle` only (Sections 8d to 8l); other forms warn (ODE0054) |
 | Volterra, BVP | `volt`, `bdry` | warn; unsupported |
 | DAEs | `0=...`, `solv` | warn; unsupported |
 | Other constructs | `special`, `export`, `only`, `options`, `shift`, `del_shft`, `sum(..)of(..)`, `hom_bcs` | warn; unsupported |
