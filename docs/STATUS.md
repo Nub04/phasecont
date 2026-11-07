@@ -119,13 +119,19 @@ P7a (complete on branch `phase7a-matlab-api`, cut from 390bfb1; merged into `mai
 
 ## In progress
 
-P14a (branch `phase14-homoclinic`, commits 50b8e84 to 02d26ed, from `main` at 11cccf9). The HOM curve continues an orbit homoclinic to a hyperbolic saddle in two parameters and labels the codim-2 points NSA, BLS, BLU, NSF, NDS, NDU, TLS, TLU, ZES, ZEU, OFS and OFU (HomCont tests 1 to 12). The C ABI is unchanged and `abi_version` stays 1. No new dependency.
+P14a (branch `phase14-homoclinic`, commits 50b8e84 to f785a78, from `main` at 11cccf9). The HOM curve continues an orbit homoclinic to a hyperbolic saddle in two parameters and labels the codim-2 points NSA, BLS, BLU, NSF, NDS, NDU, TLS, TLU, ZES, ZEU, OFS and OFU (HomCont tests 1 to 12). The C ABI is unchanged and `abi_version` stays 1. No new dependency.
 
 - Engine: SPEC section 8b (50b8e84) has the formulation, sources and acceptance numbers. 0a28f8b adds invariant subspaces from the matrix sign function and the basis rotation in `pc-linalg`, 6093341 the non-periodic end rule of mesh equidistribution, 33dc32a the cycle problem hooks for a non-periodic curve, e5e9f93 `HomProblem` and `continue_hom_curve` with the `"orbit"` and `"cycle"` starts, and 7391546 the orbit flip, Belyakov and cycle start tests. `crates/pc-engine/tests/hom_curves.rs` covers SPEC tests 1 to 4; the measured values are in section 8b.
 - Interface: 65b8642 adds `"type":"HOM"` and `"start"` to the problem JSON and the HOM row to `pc-ffi`, and 4b01985 tests it through the CLI. The row is `[a2, orbit, T, x0, a1, mesh, eig_re, eig_im, codim2(12), h, iters]`.
 - MATLAB (18e2259, 02d26ed): `continuation(m, lc, Type="HOM", Index=i, Free=[a1 a2])` from an LC branch point, or `continuation(m, struct(t, x, p), Type="HOM", Free, NTST, NCOL)` from an orbit. `Index` is a new option. `Branch` gains `X0`, and `cycle(i)` on a HOM branch returns the orbit over T, which does not close. Special-point `Data.x0` is a column. SPEC section 11 has the bullet. `tests/HomCurveTest.m` (Sandstede curve from an orbit, BT curve from a long cycle, option errors, Index checks) and the HOM case of `Rows2BranchTest.m` pass: 19 of 19 with `scripts/matlab-win "addpath('toolbox'); r = runtests({'tests/Rows2BranchTest.m','tests/HomCurveTest.m'}); disp(table(r)); assert(all([r.Passed]))"`.
 - Import check ruling (040914d): `pc-cli dll-imports` now allows `dbghelp.dll`. `dlopen2` 0.9.0, pulled in by `opencl3` for the P9c OpenCL backend, imports `SymFromAddrW`, `SymGetModuleBase64` and `SymInitializeW` from it. It is a Windows system DLL, so it fits the allow-list rule of SPEC section 12. Until this commit `scripts/build-pckern win64` failed the check, so no Windows `pckern` DLL was staged between P9c and now, and the staged DLL dated from 2026-11-04.
 - Checks at 02d26ed: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `CUDA_VISIBLE_DEVICES="" cargo test` (1567 passed, 0 failed, against 1540 at P13) and `cargo deny check` (advisories, bans, licenses, sources ok).
+- MATLAB suite (first full run since P9): `scripts/matlab-win "buildtool test"` with the DLL staged on 2026-11-06 and a rebuilt `pckern.mexw64`. The staged MEX dated from 2026-11-04 and rejected the `latex` command (`unknown pckern command`), so a restage has to copy the MEX as well as the DLL: `build-pckern` does not rebuild the MEX. The run found problems in P9 to P12 MATLAB code that had never run, none in P14 code, and all are fixed:
+  - `latexJson.m` encoded a mark's `x` and `y` as arrays, which `pc-latex` rejects (3354033, with a test).
+  - `ModelEditor` added a second final newline on the Source tab, so the model hash differed from the file's hash (the fix is in the commit after 3354033, with a test); the Equations-tab test looked for a string the equations do not contain.
+  - `ModelInputHelperTest/num2odeRoundTrips` passed `Message =` to `verifyEqual`, which takes the diagnostic as a positional argument.
+  - `LatexTest/buildTimesOut` and `LatexStudioTest/compileShowsATimeout` hung the run. On this machine `latexmk` is `C:\Users\nuken\bin\latexmk.cmd`, Java cannot start a `.cmd` file, `runBounded` warns `phasecont:latex:noTimeout` and falls back to `system`, and the looping TeX document never ends. Both tests now skip through `fixtures.canBoundLatexmk` (2961e99). The product caveat stays open: a finite `Timeout` falls back to no limit when Java cannot start the program, so a `.cmd` wrapper can hang. Resolving the real path or going through `cmd` would fix it, touches the no-shell rule, and belongs with the `Inf` decision under Open questions.
+  - `EnsembleTest.m` and `ModelInputTest.m` had a name=value pair inside a cell array (`{Backend = "cpu"}`), a syntax error, so MATLAB excluded both files with a warning and every earlier run skipped them. Both are fixed; read the "was excluded" warnings in a suite log. Once they ran, two more problems showed up. `Model.fromEquations` documented `phasecont:model:unknownInit` for an `Init` name that is not a state, but the parser rejected the generated `init` line first, so the caller got `phasecont:engine:model`. The wrapper now reparses without `Init` on that failure only and names the extra entries (17b65eb), so valid models still parse once. The other problem was the `evalc` diagnostic in `selfTestOnAGpu` (see P9d).
 - Left for P14b: the adjoint (inclination flips, HomCont tests 13 and 14, and the orientation index), non-central saddle-node homoclinics (IEQUIB=2, tests 15 and 16), heteroclinic orbits and Lin's method.
 
 P13 (branch `phase13-periodic-normal-forms`, commits 9360baf to 55c86fc, Rust and docs only: no MATLAB API change, no C ABI change, no new dependency).
@@ -146,27 +152,27 @@ P13 E7b (branch `phase13b-cycle-codim2`, commits 1b23b6d to the docs commit, fro
 - Checks at 1b23b6d: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (1540 passed, 0 failed, against 1533 at E7a) and `cargo deny check`, with `CUDA_VISIBLE_DEVICES=""`.
 - Cost: the `cycle_curves` test binary took 29.8 s before and 33.9 s after, a factor of 1.14, so the coefficient runs at every `codim2_tests` call.
 - Poles: the coefficients can go singular at a resonance, and `locate_one` already drops a codim-2 zero that ends above `POLE_TOL` (1e-2) times the smaller end value, which covers the new tests. No pole was seen in any E7b model, so that guard has not been exercised on a real pole. A planned `codim2_pole_prone` hook was not added, since the existing guard does the same.
-- MATLAB (1099e49, unrun): `rows2branch.m` reads the new lists, `Branch.m` and `continuation.m` document them, `latexTable.m` names CPC, GPD, CH, R1 and R2, and `Rows2BranchTest.m` and `CycleCurveTest.m` expect the new widths and labels.
+- MATLAB (1099e49, ran on 2026-11-07 and passes): `rows2branch.m` reads the new lists, `Branch.m` and `continuation.m` document them, `latexTable.m` names CPC, GPD, CH, R1 and R2, and `Rows2BranchTest.m` and `CycleCurveTest.m` expect the new widths and labels.
 - Owner decision on the build timeout (fe01d61): the owner vetoed the 300 s default and chose `Inf`, so `phasecont.latex.build` and `LatexStudio` set no limit by default, and README and the help say so. With `Inf` the build runs through `system`, which Ctrl-C cannot interrupt, so a document that never ends blocks MATLAB. The `LatexTest.m` test `buildHasNoLimitByDefault` is new and unrun.
-- Not run: the MATLAB suite (so the label lists in `rows2branch.m`, the LaTeX table names and the `Inf` default), any GPU code, anything on Windows, and CI on GitHub.
+- MATLAB suite: the E7b label lists, row widths, LaTeX table names and the `Inf` default ran with the P14a suite and pass. Not run: any GPU code and CI on GitHub.
 
 P11 (VS Code extension and language server) was merged into `main` locally on 2026-11-05 (9ace6ef). P12 (LaTeX companion) was merged into `main` locally on 2026-11-05 (32f1609, fast-forward from `phase12-latex`). The plan is in SPEC section 13. Nothing is pushed.
 
 P12a (`crates/pc-latex` and `pc-cli latex`): no C ABI change and no MATLAB API change yet. The crate has no new third-party dependency (`serde_json` and `proptest` were already in the tree). The `standalone` JSON key and the CLI flag go beyond the approved option list and are reported to the owner.
 
 - Tests: `pc-latex` has unit and `proptest` tests, 12 error tests, 7 golden tests and 3 compile tests. The compile tests ran against TeX Live 2026 `latexmk` with `PC_REQUIRE_LATEX=1`. `pc-cli` has 9 integration tests for `latex` and a parser test.
-- Not run on MATLAB: see P12b and P12c below.
+- MATLAB side: see P12b and P12c below. Both ran on 2026-11-07.
 
 P12b, Rust side (`latex_render` in `pc-ffi`, gateway command `latex`): the C ABI grows from 23 to 24 members and from 176 to 184 bytes, with `abi_version` still 1. The owner approved this append and the gateway command. `pc-ffi` takes `pc-latex` as an in-workspace path dependency, so there is no new third-party crate.
 
 - Ruling: a document the renderer rejects returns `PC_ERR_BAD_PROBLEM` (6) with the error object in `out_json`, and an unknown kind or a bad pointer returns `PC_ERR_BAD_ARG` (2) and leaves the slot NULL. No new error code. This follows the `import` and ensemble precedents. SPEC section 10 has the details.
 - Tests: `crates/pc-ffi/tests/latex.rs` (7 tests: figure equals the crate's output, table, external data files, every error kind, unknown kind, null and non-UTF-8 arguments) and `tests/header.rs` (the new member, offset 176, table size 184, and `PC_LATEX_*` against the Rust constants).
 - Checks: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (1514 passed, 0 failed, 3 ignored, with `PC_REQUIRE_LATEX=1` and `CUDA_VISIBLE_DEVICES=""`) and `cargo deny check` (advisories, bans, licenses, sources ok) pass.
-- Not run: the gateway command is only syntax-checked (`gcc -fsyntax-only -Wall -Wextra -std=c99` against the R2026b headers, no output). Nothing ran in MATLAB.
+- The gateway command was first only syntax-checked (`gcc -fsyntax-only -Wall -Wextra -std=c99` against the R2026b headers, no output). The MEX gateway was built and ran in MATLAB on 2026-11-07 (the `latex` command works).
 
 P12b, MATLAB side (commits dd5c90b and 6927797, tests in 7d16cc7): `phasecont.latex.{figureFromBranch,pgfplots,specialTable,build}` and the internal helpers `latexJson`, `latexRender`, `latexWrite` and `latexTable`. `tests/LatexTest.m` checks that the API text equals the Rust output for the same figure, that a missing `Digits` raises, and the build and error paths. Nothing here has run in MATLAB, and the `latex` gateway command has not run in `mex`. Tests that need the gateway or `latexmk` are filtered when they are missing.
 
-P12c (commits f52e5d4 and fbe8860): `phasecont.app.LatexStudio` and `tests/LatexStudioTest.m` (20 tests that drive the app through its methods, 22 after P12d). Not run in MATLAB. The Branch menu and the toolbar callbacks are not driven by any test.
+P12c (commits f52e5d4 and fbe8860): `phasecont.app.LatexStudio` and `tests/LatexStudioTest.m` (20 tests that drive the app through its methods, 22 after P12d). They ran in MATLAB on 2026-11-07 and pass, except `compileShowsATimeout`, which skips when Java cannot start `latexmk`. The Branch menu and the toolbar callbacks are not driven by any test.
 
 - Scope cut: the optional pdf.js preview is not built, so `LatexStudio` has no `Preview` option and only opens the PDF in the system viewer. No pdf.js code is bundled, so `THIRD_PARTY_NOTICES.md` has no new entry.
 - Error "jump" is a context pane that shows the lines around the error. The `uitextarea` cursor API is not confirmed, so the editor does not move its cursor.
@@ -176,7 +182,7 @@ P12c (commits f52e5d4 and fbe8860): `phasecont.app.LatexStudio` and `tests/Latex
 
 P12d, time limit for `phasecont.latex.build` (branch `p12-build-timeout`): `build` takes `Timeout` (seconds, default `Inf` for none, set by the owner on 2026-11-06 after vetoing 300) and returns `TimedOut`. `LatexStudio` takes the same option and shows "stopped after N s". The new internal function `phasecont.internal.runBounded` starts `latexmk` through `java.lang.ProcessBuilder`, polls with `pause` (so Ctrl-C works), and on expiry or on Ctrl-C stops `latexmk` and its child processes. No MATLAB API change beyond this option and field, which the owner asked for. Tests: five new ones in `tests/LatexTest.m` (a looping `\def\a{\a}\a` document stops after 3 s with `TimedOut` true and, on Linux, no process left in the build folder; `Timeout = Inf` and `Timeout = 120` still build; bad values raise) and two in `tests/LatexStudioTest.m`.
 
-- Not run: nothing here ran in MATLAB. Open risks, each with a fallback and a warning: the Java route to a non-public `ProcessImpl` class, Windows resolving `latexmk` as `latexmk.exe` (a `.bat` wrapper makes `start` fail, so `build` warns `phasecont:latex:noTimeout` and runs with no limit), and a JVM older than Java 9 (`phasecont:latex:killIncomplete`, only the main program stops).
+- MATLAB: the five new tests in `LatexTest.m` and two in `LatexStudioTest.m` ran on 2026-11-07. The two that need a finite limit on a looping document skip when Java cannot start `latexmk`, as on this machine (see P14a). Open risks, each with a fallback and a warning: the Java route to a non-public `ProcessImpl` class, Windows resolving `latexmk` as `latexmk.exe` (a `.bat` wrapper makes `start` fail, so `build` warns `phasecont:latex:noTimeout` and runs with no limit), and a JVM older than Java 9 (`phasecont:latex:killIncomplete`, only the main program stops).
 - Default is `Inf`: the owner vetoed 300 s on 2026-11-06. With `Inf`, `runBounded` uses `system`, so Ctrl-C does not stop a document that never ends. Routing `Inf` through the JVM wait loop would make it interruptible; that is not done and needs the owner's go-ahead.
 
 P11a (`crates/pc-lsp`, commits 5be3cff and e9c5cc5): no C ABI change, no MATLAB API change. New direct dependencies: `lsp-server` 0.10.0, `lsp-types` 0.97.0 and `serde_json` (already in the tree), all with licences on the allowed list.
@@ -218,7 +224,7 @@ P9a (core types, CPU backend, kernel text, device list, self-test and the CLI) i
   - The self-test JSON has a `commit` field that is the value of `PC_GIT_COMMIT` at build time, or `null`. There is no `build.rs`.
 - Not done in this stage: the CUDA, OpenCL and Metal backends (P9b, P9c, P9e), the C ABI and MATLAB API (P9d) and the hosted CI jobs. The sections below cover each.
 
-P9b (the CUDA backend) is written and tested on the CPU side only. Nothing ran on the GPU, MATLAB or Windows, because the owner asked for no local hardware runs on 2026-11-05.
+P9b (the CUDA backend) is written and tested on the CPU side only. Nothing ran on the GPU, MATLAB or Windows then, because the owner asked for no local hardware runs on 2026-11-05. The CUDA self-test through MATLAB on the RTX 5060 passed on 2026-11-07 (see P9d).
 
 - `crates/pc-ensemble/src/cuda.rs` adds the NVRTC lookup, the PTX or cubin route, the probe, `compile_ptx_text`, `run_cuda` and the chunked launch loop. `list_devices` and `run_on` use it. The error type has `GpuUnavailable`, `GpuCompile`, `GpuLaunch` and `GpuTimeout`.
 - `cudarc` 0.19.10 is a new dependency (MIT or Apache-2.0, `cargo deny check` passes), and `libloading` moved from a dev-dependency to a dependency.
@@ -226,7 +232,7 @@ P9b (the CUDA backend) is written and tested on the CPU side only. Nothing ran o
 - `pc-cli dll-imports` already rejects every DLL that is not on its allow-list, so `nvcuda`, `nvrtc` and `OpenCL` fail it. A unit test now says so. The staged `pckern.dll` was not rechecked.
 - Open risks: `run_cuda` has never run on a device. The macOS build of `cudarc` is unverified. A test that calls `list_devices` starts CUDA when `libcuda` is visible, so a machine with a GPU and a driver runs those tests on the device.
 
-P9c (the OpenCL backend) is written and tested on the CPU side only. Nothing ran on an OpenCL device, MATLAB or Windows, and WSL has no OpenCL runtime.
+P9c (the OpenCL backend) is written and tested on the CPU side only. Nothing ran on an OpenCL device, MATLAB or Windows then, and WSL has no OpenCL runtime. The OpenCL self-test through Windows MATLAB on the RTX 5060 passed on 2026-11-07 (see P9d).
 
 - `crates/pc-ensemble/src/opencl.rs` adds the platform and device probe, `run_opencl` and the OpenCL launch code. `gpu.rs` holds what `cuda.rs` and `opencl.rs` share: `guard`, `kernel_err`, the chunk sizing and the `drive` launch loop. `kernel.rs` has the OpenCL entry point, and the OpenCL prelude in `pc-codegen` has `#pragma OPENCL FP_CONTRACT OFF`.
 - `opencl3` 0.12.4 is a new dependency (`dynamic` feature, default features off). `cargo deny check` passes with its transitive crates (`cl3`, `opencl-sys`, `dlopen2`).
@@ -244,7 +250,7 @@ P9d (the ensemble C ABI and the MATLAB API) is written and tested on the CPU sid
 - Checks at b3d4035, run with `CUDA_VISIBLE_DEVICES=""`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --workspace` (1353 passed, 0 failed, 3 ignored) and `cargo deny check` pass.
 - Rulings: `Backend` defaults to `"auto"` and `Device` to 0, the 0-based index within a backend. `MaxSteps` (100000), `Hmax` (Inf) and `Bounds` (Inf) default to the limits `simulate` uses. The method is inferred from the options (`Dt` gives RK4, `Rtol` with `Atol` gives Dormand-Prince). `refine` returns an `EnsembleResult`, not a `Trajectory`. Ensemble results are not saved in sessions.
 - `gpuSelfTest` runs in MATLAB with no extra ABI call. Its pass thresholds (5e-4 and 1e-3 in single precision, 1e-8 and 1e-7 in double) are my own and unvalidated. `pc-cli gpu selftest` runs the full tiers.
-- Things the first MATLAB run may break on: the step-count ranges in `EnsembleTest` (4000 to 4003 is my assumption about RK4 segment rounding), the self-test thresholds in single precision, `jsondecode` shapes for one-element arrays in `gpuDevices`, and the warning and error IDs the tests expect.
+- First MATLAB run (2026-11-07): `tests/EnsembleTest.m` passes, 37 tests, none filtered. The step-count ranges, the `gpuDevices` shapes and the error IDs held. The suite ran `gpuSelfTest` on this laptop's GPU through the CUDA and OpenCL backends in single and double precision, and all four pass, so the self-test thresholds hold on that one card and driver. Nothing was run on AMD, Intel, Apple or a second NVIDIA card, and the GPU speed numbers are still missing. One test bug had hidden the verdict: the diagnostic argument of `selfTestOnAGpu` added two `evalc` char rows of different length with `+`, which errors before the verdict is read (the fix wraps both in `string`).
 - Not done yet: the GPU speed numbers in `benches/RESULTS.md`, which need a GPU run.
 
 P9e (the Metal backend) is written and type-checked only, on branch `phase9d-ensemble-api`. Nothing was linked or run on a Mac, and Metal has never compiled the kernel text.
@@ -272,7 +278,7 @@ P10b (`pc-import` and the `import` C ABI function) is written and tested on the 
 - Tests: `cargo test -p pc-ffi --test import --test header` gives 14 and 6 passing. The import tests cover both formats, options, every failure kind, bad arguments, NULL pointers, oversize input and deep nesting (20 000 parentheses, 50 000 nested XML tags) without a panic.
 - Not done yet: the CellML reader.
 
-The MATLAB side of P10 is written and has never run, for the same reason (no MATLAB run on 2026-11-05). SPEC section 11 describes it.
+The MATLAB side of P10 first ran on 2026-11-07 and passes (`ModelInputTest`, `ModelInputHelperTest`, `ModelEditorTest`), after the fixes listed under P14a. SPEC section 11 describes it.
 
 - `Model.fromEquations`, `fromTable`, `fromFunction` and `fromFile` are in `toolbox/+phasecont/Model.m`. The helpers are in `toolbox/+phasecont/+internal/`: `odeText`, `num2ode`, `tableToEquations`, `readSbml`, `importRequest` and `importText`.
 - `phasecont.app.ModelEditor` is the editor app, with tabs for equations, a table and `.ode` text, a diagnostics list, file open for `.ode`, SBML and `.m`, and a button that opens the last good model in the phase plane.
@@ -459,10 +465,10 @@ Open risks and questions from P7b:
 
 ## Next
 
-- Run the MATLAB suite once: it covers the E7b label lists and row widths, the LaTeX table names and the `Inf` build default, none of which has run. Rebuild and restage the Windows `pckern` DLL first (`scripts/build-pckern win64 STAGE`, or `buildtool`), since the staged DLL predates the E7b row layout and every LPC, PD and NS curve call would fail the stride check.
+- Restage both Windows binaries (`scripts/build-pckern win64 STAGE` for the DLL, and the MEX build for `pckern.mexw64`) before each MATLAB run that follows an engine change. A stale DLL fails the row stride check, and a stale MEX lacks commands such as `latex`.
 - Build the `win32-x64`, `darwin-arm64` and `darwin-x64` `.vsix` files on those systems (or add CI jobs for them), install one in VS Code and check the server starts. Marketplace publishing needs the owner's publisher account and token.
 - Push `main` after the owner's OK, then watch the first run of the `gpu-pocl`, `gpu-nvrtc` and `gpu-macos` jobs.
-- Run the MATLAB suite and the GPU self-test on the RTX 5060 and the Arc 140T (see README, Test your GPU). Nothing in P9 or P10 has run there.
+- Run the GPU self-test and the speed benches on the Arc 140T (see README, Test your GPU). The MATLAB suite and the GPU self-test passed on the RTX 5060 on 2026-11-07 (CUDA and OpenCL, single and double). The Arc 140T and any AMD or Apple device have not run.
 - Optional P10 leftover: the CellML importer.
 - Link the GitHub repo to a File Exchange entry from the owner's MathWorks account, so each GitHub Release appears there.
 - P4 and later: a continuation that changes a parameter or state read by a table formula needs a new lowering of the model (P2 known difference).

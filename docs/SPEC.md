@@ -361,7 +361,7 @@ E7a:
 E7b:
 
 8. **Codim-2 labels on curves.** The curve runs of test 6 locate CPC, GPD, CH, R1 and R2 at the values above. The tolerances are $|\nu| < 10^{-5}$ for GPD, CH, R1 and R2, with $|\beta - \tfrac14| < 10^{-8}$ on the GPD, CH and R2 lines and $|\mu + 1| < 10^{-8}$ on the R1 line. For CPC they are $|\mu|, |\nu| < 10^{-6}$ and $|r - 1| < 10^{-4}$. The measured values are $|\mu| = 2.4\times10^{-15}$, $|\nu| = 1.7\times10^{-16}$ and $|r - 1| < 10^{-8}$ for CPC, $|\nu| = 0$ for GPD (to the printed precision), $6.5\times10^{-32}$ for CH, $3.6\times10^{-11}$ for R1 and $3.6\times10^{-12}$ for R2 at $\nu = 0$. The R2 point at $\nu = 1$ passes the $10^{-5}$ bound, and the run printed it to three decimals only. R2 has two zeros, so one run goes down from $\nu = 0.45$ and one goes up. R1 is NaN on the planar CPC model, where it reports no point, and the R1 model has no CPC along the way, since $b = -4$ there. The first-point-zero warning of test 6 stays as described.
-9. **Interface.** The row width, `cycle_stride` and the `codim2_labels` lists agree in the Rust unit tests, the FFI tests and the CLI tests, and in `Rows2BranchTest.m` and `CycleCurveTest.m` on the MATLAB side. The MATLAB tests are written and have not run.
+9. **Interface.** The row width, `cycle_stride` and the `codim2_labels` lists agree in the Rust unit tests, the FFI tests and the CLI tests, and in `Rows2BranchTest.m` and `CycleCurveTest.m` on the MATLAB side. The MATLAB tests pass (2026-11-07), except the three oracle cases that skip while `references/` lacks the oracle files.
 
 The run time of the `cycle_curves` test binary went from 29.8 s to 33.9 s with the coefficient in every `codim2_tests` call, which is a factor of 1.14. The coefficient is therefore computed at every call, with no lazy evaluation.
 
@@ -719,9 +719,9 @@ plot(br, Var="x");                                        % stable solid, unstab
 | P7b | Phase-plane app, sessions, replay | Session round trip reproduces a full Morris-Lecar diagram |
 | P8 | Package v1.0 | Release workflow publishes a `.mltbx` for all platforms |
 | P11 | `pc-lsp` and the VS Code client | The P11 checks in section 13 pass; the extension has not run inside VS Code |
-| P12 | `pc-latex`, `phasecont.latex.*`, `LatexStudio` | The P12 checks in section 13 pass; the MATLAB tests are written and not run until a MATLAB session is available |
-| P13 | Periodic normal forms (E7): $b$, $c$, $d$ at LPC, PD and NS points | Tests 1 to 8 and the Rust, FFI and CLI part of test 9 of section 8a pass, including the CPC, GPD, CH, R1 and R2 labels on curves (E7b). The MATLAB part of test 9 is written and has not run |
-| P14 | Homoclinic orbits to a saddle (E8a): HOM curve, `orbit` and `cycle` starts, tests 1 to 12 of HomCont | Tests 1 to 7 of section 8b pass in Rust, the FFI and the CLI, and the MATLAB part of test 6 passes |
+| P12 | `pc-latex`, `phasecont.latex.*`, `LatexStudio` | The P12 checks in section 13 pass; the MATLAB tests pass (2026-11-07), and the two time-limit tests skip when Java cannot start `latexmk` (STATUS, P14a) |
+| P13 | Periodic normal forms (E7): $b$, $c$, $d$ at LPC, PD and NS points | Tests 1 to 8 and the Rust, FFI and CLI part of test 9 of section 8a pass, including the CPC, GPD, CH, R1 and R2 labels on curves (E7b). The MATLAB part of test 9 passes (2026-11-07) |
+| P14 | Homoclinic orbits to a saddle (E8a): HOM curve, `orbit` and `cycle` starts, tests 1 to 12 of HomCont | Tests 1 to 7 of section 8b pass in Rust, the FFI and the CLI, and the MATLAB part of test 6 passes. The full MATLAB suite passes: 503 tests, 0 failed, 7 skipped by assumption (2026-11-07) |
 
 ## 15. References
 
