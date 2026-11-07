@@ -107,10 +107,10 @@ fn wrong_adjoints_are_caught() {
     assert!(b > 1e3 * b0, "shifted phi_x: {b:e} against {b0:e}");
 }
 
-/// The boundary rows follow the bases of A = f_x(x0, p), not of its transpose: here A is
-/// symmetric, so the two agree and the rows are the same under either slot.
+/// A reference basis taken from the same matrix leaves the boundary rows unchanged. A is
+/// symmetric here, so this does not tell A from its transpose; the next test does.
 #[test]
-fn boundary_rows_use_the_matrix_slot() {
+fn a_matching_reference_leaves_the_boundary_rows_unchanged() {
     let mut m = model(Evaluator::Jit);
     let mesh = mesh(20);
     let (u, phi) = closed_form(20.0, 20, 4);
@@ -145,6 +145,66 @@ fn boundary_rows_use_the_matrix_slot() {
             r1.boundary
         );
     }
+}
+
+/// At mu != 0 the matrix A = f_x(0) = [[0,1,0],[1,0,0],[mu,0,-2]] is not symmetric, so its
+/// invariant subspaces differ from those of A^T and the boundary rows show which one is used.
+/// The eigenvalues are -2, -1, 1, so n_s = 2 and n_u = 1, and by hand
+/// E^u(A) = span (1, 1, mu/3), E^s(A) = span {(1, -1, mu), (0, 0, 1)},
+/// E^u(A^T) = span (1, 1, 0), E^s(A^T) = span {(1, -1, 0), (-2 mu/3, mu/3, 1)}.
+/// phi(0) = (0, mu/3, -1) and phi(1) = (1, 1, 0) are orthogonal to the subspaces of A and
+/// not to those of A^T, and phi(0) = (1, -1, 1) is the other way round.
+#[test]
+fn boundary_rows_follow_a_and_not_its_transpose() {
+    let mu = 0.9;
+    let mut params = PARAMS;
+    params[3] = mu;
+    let mut m = model(Evaluator::Jit);
+    let (ntst, ncol) = (4, 4);
+    let mesh = mesh(ntst);
+    let (u, _) = closed_form(20.0, ntst, ncol);
+    let setup = AdjointSetup {
+        ncol,
+        mesh: &mesh,
+        period: 20.0,
+        x0: &[0.0; 3],
+        params: &params,
+        ns: 2,
+    };
+    // Confirm the hand matrix before relying on the hand subspaces.
+    let mut a = vec![0.0; 9];
+    let mut p = params.to_vec();
+    p.push(0.0);
+    m.eval(&pc_ir::EntryKind::JacU, &[0.0; 3], &p, &[], &mut a)
+        .unwrap();
+    let hand = [0.0, 1.0, mu, 1.0, 0.0, 0.0, 0.0, 0.0, -2.0];
+    for (x, y) in a.iter().zip(hand) {
+        assert!((x - y).abs() < 1e-14, "{a:?} against {hand:?}");
+    }
+    let mut boundary = |first: [f64; 3], last: [f64; 3]| {
+        let mut phi = vec![0.0; u.len()];
+        phi[..3].copy_from_slice(&first);
+        let n = phi.len();
+        phi[n - 3..].copy_from_slice(&last);
+        adjoint_residual(m.as_mut(), &setup, &BasisTracker::new(), &u, &phi, 0.0)
+            .unwrap()
+            .boundary
+    };
+    let max = |v: &[f64]| v.iter().fold(0.0_f64, |a, b| a.max(b.abs()));
+    let right = boundary([0.0, mu / 3.0, -1.0], [1.0, 1.0, 0.0]);
+    assert!(max(&right) < 1e-12, "bases of A: {right:?}");
+    // phi(0) = (1, -1, 1) is orthogonal to E^u(A^T) but not to E^u(A): the row is
+    // (mu/3) / |(1, 1, mu/3)|, so a basis of A^T would have given zero here.
+    let wrong = boundary([1.0, -1.0, 1.0], [1.0, 1.0, 0.0]);
+    let expect = (mu / 3.0) / (2.0 + mu * mu / 9.0).sqrt();
+    assert!(
+        (wrong[0].abs() - expect).abs() < 1e-12,
+        "{:?} against {expect}",
+        wrong
+    );
+    // phi(1) = (1, -1, 0) is orthogonal to the first stable vector of A^T, not of A.
+    let stable = boundary([0.0, mu / 3.0, -1.0], [1.0, -1.0, 0.0]);
+    assert!(max(&stable[1..]) > 0.5, "stable rows: {stable:?}");
 }
 
 /// IFS and IFU of the closed-form orbit at the saddle at the origin, where lambda_S = -1 and
