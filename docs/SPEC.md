@@ -50,7 +50,7 @@ Parsing rules:
 | Arrays | `x[1..n]'=...`, `%[1..n]` ... `%` | full (expanded) |
 | Global flags | `global -1 {u-.2} {m=.5*m}` | simulation only |
 | Markov, Wiener | `markov z 2`, `wiener w` | simulation only |
-| Delay | `delay(x,tau)` | accepted for a state and a delay time that is a number or a `par`, and used by `build_dde`, `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap` and `dde-zh` only (Sections 8d to 8i); other forms warn (ODE0054) |
+| Delay | `delay(x,tau)` | accepted for a state and a delay time that is a number or a `par`, and used by `build_dde`, `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap`, `dde-zh` and `dde-hh` only (Sections 8d to 8j); other forms warn (ODE0054) |
 | Volterra, BVP | `volt`, `bdry` | warn; unsupported |
 | DAEs | `0=...`, `solv` | warn; unsupported |
 | Other constructs | `special`, `export`, `only`, `options`, `shift`, `del_shft`, `sum(..)of(..)`, `hom_bcs` | warn; unsupported |
@@ -1307,6 +1307,7 @@ plot(br, Var="x");                                        % stable solid, unstab
 | P19 | First Lyapunov coefficient of a delay Hopf point (E9a, step 5): `dde::lyapunov`, `pc-cli dde-lyap`, `lyapunov` key and `GH` label in `dde-hopf` | Tests 1 to 7 of section 8g and tests 1 to 7 of section 8g-2 pass in Rust and the CLI. No MATLAB part |
 | P20 | Second Lyapunov coefficient at a generalized Hopf point (E9a, step 6): `dde::lyapunov2`, `l2` key of `dde-lyap` and of the `GH` specials of `dde-hopf` | Tests 1 to 12 of section 8h pass in Rust and the CLI. No MATLAB part |
 | P21 | Critical normal-form coefficients at a zero-Hopf point (E9a, step 7): `dde::zero_hopf`, `pc-cli dde-zh` | Tests 1 to 9 of section 8i pass in Rust and the CLI. No MATLAB part |
+| P22 | Critical normal-form coefficients at a Hopf-Hopf point (E9a, step 8): `dde::hopf_hopf`, `pc-cli dde-hh` | Tests 1 to 7 of section 8j pass in Rust and the CLI. No MATLAB part |
 
 ## 15. References
 

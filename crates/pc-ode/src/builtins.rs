@@ -15,7 +15,7 @@ pub enum Status {
     /// Supported, but XPPAUT 8.0 rejects it, so each use gives the
     /// portability warning (`ceil`).
     Portability,
-    /// `delay`: kept and warned about (ODE0054); only `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap` and `dde-zh` read it.
+    /// `delay`: kept and warned about (ODE0054); only `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap`, `dde-zh` and `dde-hh` read it.
     Delay,
     /// `shift`: kept and warned about (ODE0055).
     Shift,

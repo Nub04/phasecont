@@ -636,8 +636,8 @@ way it labels BT, where omega^2 changes sign (Bogdanov-Takens), and ZH, where th
 characteristic function has a zero root as well (zero-Hopf). It does not count the roots
 to the right of the curve. dde-lyap computes the first Lyapunov coefficient at one point,
 and the key lyapunov below does it at every point of the curve. At a GH point it also
-computes the second coefficient l2. dde-zh computes the normal-form coefficients at one
-ZH point.
+computes the second coefficient l2. dde-zh and dde-hh compute the normal-form coefficients
+at one ZH point and one HH point.
 
 The problem file is a JSON object. Every key but options is required:
   model    path of the .ode file, relative to the problem file
