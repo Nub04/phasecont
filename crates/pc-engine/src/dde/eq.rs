@@ -22,7 +22,7 @@ fn time_of(slot: &DelaySlot, p: &[f64]) -> f64 {
 
 /// Checks the length of `p` and that every delay time given by a parameter is finite and
 /// positive.
-fn check_params(m: &DdeModel, p: &[f64]) -> Result<(), EngineError> {
+pub(super) fn check_params(m: &DdeModel, p: &[f64]) -> Result<(), EngineError> {
     if p.len() != m.n_user_params {
         return Err(EngineError::BadProblem(format!(
             "expected {} parameters, got {}",
@@ -103,8 +103,8 @@ pub fn linearize(m: &mut DdeModel, x: &[f64], p: &[f64]) -> Result<LinearDde, En
 /// solver of `ep` runs on it. The Jacobian adds the hidden columns of `JacP` to the
 /// columns of the delayed states. Entries other than `F`, `Aux`, `JacU` and `JacP` are
 /// not defined on it.
-struct Collapsed<'a> {
-    m: &'a mut DdeModel,
+pub(super) struct Collapsed<'a> {
+    pub(super) m: &'a mut DdeModel,
 }
 
 impl ModelEval for Collapsed<'_> {

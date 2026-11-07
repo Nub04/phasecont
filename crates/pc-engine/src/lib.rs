@@ -41,7 +41,8 @@ pub use cycle::{
     periodic_orbit,
 };
 pub use dde::{
-    CharRoot, LinearDde, RootOptions, RootSet, characteristic_roots,
+    CharRoot, DdeBranch, DdePoint, DdeSpecial, LinearDde, RootOptions, RootSet,
+    characteristic_roots, continue_equilibrium as dde_continue_equilibrium,
     equilibrium as dde_equilibrium, linearize as dde_linearize, residual as dde_residual,
     stability as dde_stability,
 };
