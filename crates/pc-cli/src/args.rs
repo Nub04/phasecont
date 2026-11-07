@@ -59,6 +59,8 @@ pub enum Command {
     DdeRoots { file: PathBuf },
     /// Find an equilibrium of a model with delay calls and the roots of the linear equation there.
     DdeEq { file: PathBuf },
+    /// Continue an equilibrium of a model with delay calls and report its Hopf points.
+    DdeBranch { file: PathBuf },
     /// Rerun the runs of a session file and compare the results.
     SessionReplay {
         file: PathBuf,
@@ -99,6 +101,7 @@ usage: pc-cli parse [--json] [--] <file.ode>
        pc-cli cont [--fallback] [--] <file.ode> <problem.json>
        pc-cli dde-roots [--] <problem.json>
        pc-cli dde-eq [--] <problem.json>
+       pc-cli dde-branch [--] <problem.json>
        pc-cli session replay [--tol X] [--fallback] [--] <file.pcsession.json>
        pc-cli gpu list
        pc-cli gpu selftest --backend B [--device N] --precision P
@@ -120,6 +123,7 @@ usage:
   pc-cli cont <file.ode> <problem.json> [--fallback]
   pc-cli dde-roots <problem.json>
   pc-cli dde-eq <problem.json>
+  pc-cli dde-branch <problem.json>
   pc-cli session replay <file.pcsession.json> [--tol X] [--fallback]
   pc-cli gpu list
   pc-cli gpu selftest --backend B [--device N] --precision P
@@ -140,6 +144,7 @@ commands:
   cont          follow an equilibrium branch and print its points and special points
   dde-roots     find the characteristic roots of a linear delay equation
   dde-eq        find an equilibrium of a model with delay calls and its roots
+  dde-branch    continue such an equilibrium in one parameter and find its Hopf points
   session      rerun the runs of a session file and compare them with the stored ones
   gpu           list the ensemble devices and test one of them
   ensemble      run many trajectories of one model, or time the engine
@@ -427,6 +432,48 @@ delay call, or Newton's method did not converge, 2 usage error, an unreadable
 problem file, invalid JSON or a bad problem (the message names the key)
 ";
 
+pub const DDE_BRANCH_HELP: &str = "\
+usage: pc-cli dde-branch [--] <problem.json>
+
+Continues an equilibrium of a model whose equations call delay(x,tau) in one declared
+parameter, and reports where characteristic roots cross the imaginary axis. At each point
+of the branch it counts the roots with a positive real part (see dde-roots). Where the
+count changes between two points it bisects the step. A pair that crosses at +-i w is a
+Hopf point, labelled H, and a root that crosses zero comes with an LP or a BP of the
+branch. It does not continue the Hopf point in two parameters or compute a Lyapunov
+coefficient.
+
+The problem file is a JSON object. Every key but options is required:
+  model    path of the .ode file, relative to the problem file
+  params   object of numbers by parameter name; a parameter left out keeps the value
+           of the model file
+  free     name of the declared parameter to continue in; the run starts at its value
+           in params or, if params leaves it out, in the model file. A delay time is
+           allowed, and then options.bounds must give a lower bound above 0
+  x0       start values of Newton's method at the start value of free, one per state
+  n        number of Chebyshev intervals for the roots, at least 1, with
+           d (n + 1) <= 4000
+  re_min   smallest real part to look for, below 0
+  options  optional; the keys of the cont problem files: h0, hmin, hmax, max_steps,
+           tol_x, tol_f, max_newton, direction, bounds and detect.lp, detect.bp.
+           detect.h and mesh_adapt are refused
+
+The output is {\"stop\", \"points\", \"specials\", \"warnings\"}. A point is {\"alpha\",
+\"x\", \"unstable\"}. A special is {\"label\", \"alpha\", \"x\", \"omega\", \"between\",
+\"unstable_before\", \"unstable_after\"}, in order along the branch; \"omega\" is null for
+LP and BP. \"stop\" is one of end, max_steps, bounds, step_too_small, singular, cancelled
+and error, as for cont.
+
+options:
+  --          the next argument is the file, even if it starts with `-`
+  -h, --help  print this help
+
+exit codes: 0 the run finished (a run that stops on an error prints what it found and
+        the message on stderr), 1 the model has errors or no delay call, or the Newton
+        start did not converge, 2 usage error, an unreadable problem file, invalid JSON or
+        a bad problem (the message names the key)
+";
+
 pub const DLL_IMPORTS_HELP: &str = "\
 usage: pc-cli dll-imports [--] <file.dll>
 
@@ -541,6 +588,7 @@ where
         "cont" => cont_command(&args[1..]),
         "dde-roots" => dde_roots_command(&args[1..]),
         "dde-eq" => dde_eq_command(&args[1..]),
+        "dde-branch" => dde_branch_command(&args[1..]),
         "session" => session_command(&args[1..]),
         "gpu" => gpu_command(&args[1..]),
         "ensemble" => ensemble_command(&args[1..]),
@@ -750,6 +798,17 @@ fn dde_eq_command(rest: &[OsString]) -> Result<Command, UsageError> {
     match parts.file {
         Some(file) => Ok(Command::DdeEq { file }),
         None => Err(UsageError("dde-eq needs a problem file".to_string())),
+    }
+}
+
+fn dde_branch_command(rest: &[OsString]) -> Result<Command, UsageError> {
+    let parts = split(rest, Accepts::default())?;
+    if parts.help {
+        return Ok(Command::ToolHelp(DDE_BRANCH_HELP));
+    }
+    match parts.file {
+        Some(file) => Ok(Command::DdeBranch { file }),
+        None => Err(UsageError("dde-branch needs a problem file".to_string())),
     }
 }
 
@@ -1217,6 +1276,33 @@ mod tests {
             &["dde-eq"][..],
             &["dde-eq", "a.json", "b.json"],
             &["dde-eq", "--fallback", "a.json"],
+        ] {
+            assert!(p(args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn dde_branch_command_takes_one_file() {
+        assert_eq!(
+            p(&["dde-branch", "p.json"]),
+            Ok(Command::DdeBranch {
+                file: "p.json".into()
+            })
+        );
+        assert_eq!(
+            p(&["dde-branch", "--", "-p.json"]),
+            Ok(Command::DdeBranch {
+                file: "-p.json".into()
+            })
+        );
+        assert_eq!(
+            p(&["dde-branch", "--help"]),
+            Ok(Command::ToolHelp(DDE_BRANCH_HELP))
+        );
+        for args in [
+            &["dde-branch"][..],
+            &["dde-branch", "a.json", "b.json"],
+            &["dde-branch", "--fallback", "a.json"],
         ] {
             assert!(p(args).is_err(), "{args:?}");
         }

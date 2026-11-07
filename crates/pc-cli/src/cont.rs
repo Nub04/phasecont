@@ -171,7 +171,7 @@ fn write_point(text: &mut Vec<u8>, p: &Point) {
 }
 
 /// A stable name for each stop reason.
-fn stop_name(s: &StopReason) -> &'static str {
+pub(crate) fn stop_name(s: &StopReason) -> &'static str {
     match s {
         StopReason::End => "end",
         StopReason::MaxSteps => "max_steps",

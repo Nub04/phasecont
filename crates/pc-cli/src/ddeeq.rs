@@ -15,17 +15,17 @@ use pc_engine::{
     EngineError, EpSetup, Evaluator, Options, RootOptions, build_dde, characteristic_roots,
     dde_equilibrium, dde_linearize, dde_residual,
 };
-use pc_ir::lower_dde;
-use pc_ode::Severity;
+use pc_ir::{IrModel, lower_dde};
+use pc_ode::{Loaded, Severity};
 use serde_json::{Map, Value, json};
 
 use crate::{load_file, out, text};
 
 /// Exit code for an unreadable or invalid problem file, and for a problem the engine
 /// refuses as `BadProblem`.
-const BAD_PROBLEM: u8 = 2;
+pub(crate) const BAD_PROBLEM: u8 = 2;
 
-fn to_stderr(text: &str) {
+pub(crate) fn to_stderr(text: &str) {
     let _ = std::io::stderr().write_all(text.as_bytes());
 }
 
@@ -63,33 +63,9 @@ pub fn dde_eq(problem_file: &Path) -> ExitCode {
         Ok(p) => p,
         Err(msg) => return bad(msg),
     };
-    // A relative model path is read from the directory of the problem file.
-    let model_path = match problem_file.parent() {
-        Some(dir) => dir.join(&problem.model),
-        None => Path::new(&problem.model).to_path_buf(),
-    };
-    let (map, loaded) = match load_file(&model_path) {
+    let (loaded, ir) = match load_dde(problem_file, &problem.model) {
         Ok(v) => v,
         Err(code) => return code,
-    };
-    to_stderr(&text::diagnostics(&map, &loaded));
-    if loaded
-        .diagnostics
-        .iter()
-        .any(|d| d.severity == Severity::Error)
-    {
-        return ExitCode::from(1);
-    }
-    let ir = match lower_dde(&loaded.expanded, &loaded.info) {
-        Ok(ir) => ir,
-        Err(errors) => {
-            to_stderr(&text::ir_errors(
-                &map,
-                &model_path.to_string_lossy(),
-                &errors,
-            ));
-            return ExitCode::from(1);
-        }
     };
     // The declared parameters come first in `param_names`; the hidden slots follow.
     let n_user = ir.n_user_params;
@@ -153,9 +129,39 @@ pub fn dde_eq(problem_file: &Path) -> ExitCode {
     out(&text, 0)
 }
 
+/// Loads the model of a delay command and lowers it with `lower_dde`. A relative model path
+/// is read from the directory of the problem file. Diagnostics go to stderr, and a model with
+/// errors or one that does not lower is exit 1.
+pub(crate) fn load_dde(problem_file: &Path, model: &str) -> Result<(Loaded, IrModel), ExitCode> {
+    let model_path = match problem_file.parent() {
+        Some(dir) => dir.join(model),
+        None => Path::new(model).to_path_buf(),
+    };
+    let (map, loaded) = load_file(&model_path)?;
+    to_stderr(&text::diagnostics(&map, &loaded));
+    if loaded
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error)
+    {
+        return Err(ExitCode::from(1));
+    }
+    match lower_dde(&loaded.expanded, &loaded.info) {
+        Ok(ir) => Ok((loaded, ir)),
+        Err(errors) => {
+            to_stderr(&text::ir_errors(
+                &map,
+                &model_path.to_string_lossy(),
+                &errors,
+            ));
+            Err(ExitCode::from(1))
+        }
+    }
+}
+
 /// Prints an engine error: a refused problem is exit 2 and names the file, anything else is
 /// a failed run, exit 1.
-fn engine_error(e: &EngineError, shown: &str) -> ExitCode {
+pub(crate) fn engine_error(e: &EngineError, shown: &str) -> ExitCode {
     match e {
         EngineError::BadProblem(msg) => {
             to_stderr(&format!("pc-cli: problem file {shown}: {msg}\n"));
@@ -169,7 +175,11 @@ fn engine_error(e: &EngineError, shown: &str) -> ExitCode {
 }
 
 /// Reports the first key of `obj` that is not in `allowed`.
-fn check_keys(obj: &Map<String, Value>, allowed: &[&str], what: &str) -> Result<(), String> {
+pub(crate) fn check_keys(
+    obj: &Map<String, Value>,
+    allowed: &[&str],
+    what: &str,
+) -> Result<(), String> {
     for key in obj.keys() {
         if !allowed.contains(&key.as_str()) {
             return Err(format!("{what}: unknown key \"{key}\""));
@@ -178,18 +188,22 @@ fn check_keys(obj: &Map<String, Value>, allowed: &[&str], what: &str) -> Result<
     Ok(())
 }
 
-fn required<'a>(obj: &'a Map<String, Value>, key: &str, what: &str) -> Result<&'a Value, String> {
+pub(crate) fn required<'a>(
+    obj: &'a Map<String, Value>,
+    key: &str,
+    what: &str,
+) -> Result<&'a Value, String> {
     obj.get(key)
         .ok_or_else(|| format!("{what}: missing key \"{key}\""))
 }
 
-fn count(v: &Value, key: &str) -> Result<usize, String> {
+pub(crate) fn count(v: &Value, key: &str) -> Result<usize, String> {
     v.as_u64()
         .and_then(|n| usize::try_from(n).ok())
         .ok_or_else(|| format!("\"{key}\" must be a non-negative integer"))
 }
 
-fn number(v: &Value, key: &str) -> Result<f64, String> {
+pub(crate) fn number(v: &Value, key: &str) -> Result<f64, String> {
     v.as_f64()
         .ok_or_else(|| format!("\"{key}\" must be a number"))
 }
