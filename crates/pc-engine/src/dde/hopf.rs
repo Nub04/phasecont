@@ -42,7 +42,7 @@
 use super::eq::{check_params, check_state, field, linearize};
 use super::lyap::lyapunov;
 use super::lyap2::lyapunov2;
-use super::roots::LinearDde;
+use super::roots::{CharRoot, LinearDde, RootOptions, RootSet, characteristic_roots};
 use crate::branch::{Options, Point, StopReason};
 use crate::curve2::start_tangent;
 use crate::error::EngineError;
@@ -58,6 +58,16 @@ const LABELS: [&str; 2] = ["BT", "ZH"];
 
 /// `LABELS` and the generalized Hopf test, for a run that computes `l1`.
 const LABELS_L1: [&str; 3] = ["BT", "ZH", "GH"];
+
+/// `LABELS` and the Hopf-Hopf test, for a run with the `hh` option (SPEC section 8k).
+const LABELS_HH: [&str; 3] = ["BT", "ZH", "HH"];
+
+/// `LABELS_L1` and the Hopf-Hopf test.
+const LABELS_L1_HH: [&str; 4] = ["BT", "ZH", "GH", "HH"];
+
+/// A root within `CRIT_TOL (1 + omega)` of `i omega` is the critical root of the curve point.
+/// The constant has no source (SPEC section 8k).
+const CRIT_TOL: f64 = 1e-6;
 
 /// Smallest `omega` that a start may have. Below it the split into `a` and `b` is badly
 /// scaled.
@@ -93,6 +103,9 @@ pub struct DdeHopfPoint {
     /// The first Lyapunov coefficient, `None` unless the run was asked for it
     /// (`continue_hopf_with_lyapunov`) and `lyapunov` accepts the point.
     pub l1: Option<f64>,
+    /// The Hopf-Hopf test `h`, the real part of the second pair of roots (SPEC section 8k):
+    /// `None` unless the run has the `hh` option, and where `h` is not defined.
+    pub hh: Option<f64>,
 }
 
 /// A codim-2 point of the curve.
@@ -108,6 +121,50 @@ pub struct DdeHopfSpecial {
     /// The second Lyapunov coefficient at the point (`lyapunov2`, SPEC section 8h): `Some`
     /// only for `GH`, and `None` there when `lyapunov2` returns an error (a refusal is the usual case).
     pub l2: Option<f64>,
+    /// `Im` of the second critical root at an `HH` special (SPEC section 8k), `None` for the
+    /// other labels and where the roots of the special have no single critical root.
+    pub omega2: Option<f64>,
+}
+
+/// What the run computes along the curve besides the curve itself. There are no defaults:
+/// every field says what to add.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HopfExtras {
+    /// The first Lyapunov coefficient and the `GH` label (SPEC section 8g-2).
+    pub lyapunov: bool,
+    /// The characteristic roots at every point with `kappa > 0` and the `HH` label (SPEC
+    /// section 8k), with the window and the degree of the roots.
+    pub hh: Option<RootOptions>,
+}
+
+/// The critical root and the second pair among a set of characteristic roots.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HopfPairs {
+    /// Roots with `Im > 0` within `CRIT_TOL (1 + omega)` of `i omega`.
+    pub critical: usize,
+    /// The other root with `Im > 0` of the largest real part (the larger `Im` on a tie).
+    pub second: Option<CharRoot>,
+}
+
+/// Counts the roots at `i omega` and picks the second pair (SPEC section 8k).
+pub fn hopf_pairs(set: &RootSet, omega: f64) -> HopfPairs {
+    let tol = CRIT_TOL * (1.0 + omega);
+    let mut critical = 0;
+    let mut second: Option<CharRoot> = None;
+    for r in set.roots.iter().filter(|r| r.im > 0.0) {
+        if r.re.hypot(r.im - omega) <= tol {
+            critical += 1;
+            continue;
+        }
+        let better = match &second {
+            None => true,
+            Some(s) => r.re > s.re || (r.re == s.re && r.im > s.im),
+        };
+        if better {
+            second = Some(*r);
+        }
+    }
+    HopfPairs { critical, second }
 }
 
 /// A Hopf curve of a delay equilibrium.
@@ -196,6 +253,13 @@ struct HopfProblem<'a> {
     c: Vec<f64>,
     /// Whether the codim-2 tests include `l1`.
     lyapunov: bool,
+    /// The roots of the Hopf-Hopf test, `None` without the option.
+    hh: Option<RootOptions>,
+    /// Evaluations of the test whose root set has candidates that did not refine.
+    hh_unrefined: usize,
+    /// Evaluations at `kappa > 0` where the roots failed or there was not exactly one
+    /// critical root.
+    hh_lost: usize,
 }
 
 impl HopfProblem<'_> {
@@ -243,6 +307,57 @@ impl HopfProblem<'_> {
             .ok()
             .map(|l| l.l2)
             .filter(|v| v.is_finite())
+    }
+
+    /// The Hopf-Hopf test `h` at `x` (SPEC section 8k): the real part of the second pair when
+    /// there is exactly one critical root, NaN for `kappa <= 0`, without the option, and where
+    /// the roots fail or the critical root is not single (both counted).
+    fn hh_at(&mut self, x: &[f64]) -> f64 {
+        let Some(ro) = self.hh else {
+            return f64::NAN;
+        };
+        let kappa = x[3 * self.n + 1];
+        // Below omega_min the pair at +-i omega cannot be told from a real double root, so
+        // the test is not defined there. The locator probes kappa near 1e-17 at a BT point.
+        if kappa.is_nan() || kappa <= 0.0 || kappa.sqrt() <= OMEGA_MIN {
+            return f64::NAN;
+        }
+        let set = match self
+            .lin_at(x)
+            .and_then(|(_, lin)| characteristic_roots(&lin, &ro))
+        {
+            Ok(s) => s,
+            Err(_) => {
+                self.hh_lost += 1;
+                return f64::NAN;
+            }
+        };
+        if !set.unrefined.is_empty() {
+            self.hh_unrefined += 1;
+        }
+        let pairs = hopf_pairs(&set, kappa.sqrt());
+        if pairs.critical != 1 {
+            self.hh_lost += 1;
+            return f64::NAN;
+        }
+        pairs.second.map_or(f64::NAN, |r| r.re)
+    }
+
+    /// `Im` of the second critical root at a located `HH` point; `None` where the roots fail,
+    /// the critical root is not single or there is no second root.
+    fn omega2_at(&mut self, alpha: [f64; 2], x: &[f64], kappa: f64) -> Option<f64> {
+        let ro = self.hh?;
+        if kappa.is_nan() || kappa <= 0.0 {
+            return None;
+        }
+        let p = self.declared(alpha[0], alpha[1]);
+        let lin = linearize(self.m, x, &p).ok()?;
+        let set = characteristic_roots(&lin, &ro).ok()?;
+        let pairs = hopf_pairs(&set, kappa.sqrt());
+        if pairs.critical != 1 {
+            return None;
+        }
+        pairs.second.map(|r| r.im).filter(|v| v.is_finite())
     }
 
     /// `det Delta(0)`; 0 when the matrix is numerically singular.
@@ -318,7 +433,7 @@ impl Problem for HopfProblem<'_> {
     }
 
     fn codim2_labels(&self) -> &'static [&'static str] {
-        if self.lyapunov { &LABELS_L1 } else { &LABELS }
+        labels_of(self.lyapunov, self.hh.is_some())
     }
 
     fn codim2_tests(
@@ -337,7 +452,20 @@ impl Problem for HopfProblem<'_> {
         if self.lyapunov {
             tests.push(self.l1_at(x));
         }
+        if self.hh.is_some() {
+            tests.push(self.hh_at(x));
+        }
         Ok(tests)
+    }
+}
+
+/// The codim-2 labels of a run, in the order of its tests.
+fn labels_of(lyapunov: bool, hh: bool) -> &'static [&'static str] {
+    match (lyapunov, hh) {
+        (false, false) => &LABELS,
+        (true, false) => &LABELS_L1,
+        (false, true) => &LABELS_HH,
+        (true, true) => &LABELS_L1_HH,
     }
 }
 
@@ -433,7 +561,11 @@ pub fn continue_hopf(
     opts: &Options,
     cancel: &AtomicBool,
 ) -> Result<DdeHopfBranch, EngineError> {
-    run_hopf(model, setup, opts, cancel, false)
+    let extras = HopfExtras {
+        lyapunov: false,
+        hh: None,
+    };
+    continue_hopf_with(model, setup, opts, cancel, &extras)
 }
 
 /// `continue_hopf` that also computes the first Lyapunov coefficient at every point with
@@ -447,7 +579,50 @@ pub fn continue_hopf_with_lyapunov(
     opts: &Options,
     cancel: &AtomicBool,
 ) -> Result<DdeHopfBranch, EngineError> {
-    run_hopf(model, setup, opts, cancel, true)
+    let extras = HopfExtras {
+        lyapunov: true,
+        hh: None,
+    };
+    continue_hopf_with(model, setup, opts, cancel, &extras)
+}
+
+/// `continue_hopf` with the additions of `extras`: `lyapunov` is
+/// `continue_hopf_with_lyapunov`, and `hh` computes the characteristic roots at every point
+/// with `kappa > 0` and labels a sign change of the real part of the second pair `HH`, a
+/// Hopf-Hopf point (SPEC section 8k). An `HH` special carries `omega2`. `hh.re_min` must be
+/// finite and negative, and the roots at the polished start must have exactly one root at
+/// `i omega`, else `BadProblem`.
+pub fn continue_hopf_with(
+    model: &mut DdeModel,
+    setup: &HopfSetup,
+    opts: &Options,
+    cancel: &AtomicBool,
+    extras: &HopfExtras,
+) -> Result<DdeHopfBranch, EngineError> {
+    run_hopf(model, setup, opts, cancel, extras)
+}
+
+/// Checks the roots of the `hh` option at the polished start: one root at `i omega`.
+fn check_hh_start(prob: &mut HopfProblem<'_>, x: &[f64]) -> Result<(), EngineError> {
+    let Some(ro) = prob.hh else {
+        return Ok(());
+    };
+    let kappa = x[3 * prob.n + 1];
+    let (_, lin) = prob.lin_at(x)?;
+    let set = characteristic_roots(&lin, &ro)?;
+    let critical = if kappa > 0.0 {
+        hopf_pairs(&set, kappa.sqrt()).critical
+    } else {
+        0
+    };
+    if critical != 1 {
+        return Err(EngineError::BadProblem(format!(
+            "hh: the roots at the start have {critical} roots at i omega instead of one; \
+             raise n ({}) or check the start",
+            ro.n
+        )));
+    }
+    Ok(())
 }
 
 fn run_hopf(
@@ -455,12 +630,21 @@ fn run_hopf(
     setup: &HopfSetup,
     opts: &Options,
     cancel: &AtomicBool,
-    lyapunov: bool,
+    extras: &HopfExtras,
 ) -> Result<DdeHopfBranch, EngineError> {
     if cancel.load(Ordering::Relaxed) {
         return Err(EngineError::Cancelled);
     }
     validate(model, setup, opts)?;
+    if let Some(ro) = &extras.hh
+        && !(ro.re_min.is_finite() && ro.re_min < 0.0)
+    {
+        return Err(EngineError::BadProblem(format!(
+            "hh: re_min is {}; it must be finite and negative",
+            ro.re_min
+        )));
+    }
+    let lyapunov = extras.lyapunov;
     let n = setup.x0.len();
     let (mut x, c) = start_vector(model, setup)?;
     let mut prob = HopfProblem {
@@ -470,6 +654,9 @@ fn run_hopf(
         params: setup.params.clone(),
         c,
         lyapunov,
+        hh: extras.hh,
+        hh_unrefined: 0,
+        hh_lost: 0,
     };
     // Newton at fixed a2 on the square system: the Jacobian without its last column.
     let ns = 3 * n + 2;
@@ -503,6 +690,7 @@ fn run_hopf(
             residual: res,
         });
     }
+    check_hh_start(&mut prob, &x)?;
     let mut tangent = start_tangent(&mut prob, &x)?;
     let last = tangent[3 * n + 2];
     if last.abs() > 1e-8 && last < 0.0 {
@@ -519,14 +707,27 @@ fn run_hopf(
         cancel,
         &mut |_| {},
     )?;
+    let hh_on = extras.hh.is_some();
     let point_of = |p: &Point| DdeHopfPoint {
         alpha: [p.u[3 * n], p.alpha],
         x: p.u[..n].to_vec(),
         kappa: p.u[3 * n + 1],
         omega: (p.u[3 * n + 1] > 0.0).then(|| p.u[3 * n + 1].sqrt()),
-        l1: p.codim2.get(2).copied().filter(|v| v.is_finite()),
+        l1: if lyapunov {
+            p.codim2.get(2).copied().filter(|v| v.is_finite())
+        } else {
+            None
+        },
+        hh: if hh_on {
+            p.codim2
+                .get(2 + usize::from(lyapunov))
+                .copied()
+                .filter(|v| v.is_finite())
+        } else {
+            None
+        },
     };
-    let labels: &[&str] = if lyapunov { &LABELS_L1 } else { &LABELS };
+    let labels = labels_of(lyapunov, hh_on);
     let mut specials: Vec<DdeHopfSpecial> = branch
         .specials
         .iter()
@@ -540,6 +741,7 @@ fn run_hopf(
                 kappa: p.kappa,
                 index: s.index,
                 l2: None,
+                omega2: None,
             })
         })
         .collect();
@@ -548,11 +750,29 @@ fn run_hopf(
     for s in specials.iter_mut().filter(|s| s.label == "GH") {
         s.l2 = prob.l2_at(s.alpha, &s.x, s.kappa);
     }
+    for s in specials.iter_mut().filter(|s| s.label == "HH") {
+        s.omega2 = prob.omega2_at(s.alpha, &s.x, s.kappa);
+    }
+    let mut warnings = branch.warnings.clone();
+    if prob.hh_unrefined > 0 {
+        warnings.push(format!(
+            "hh_unrefined: {} evaluations of the Hopf-Hopf test had roots that did not \
+             refine; a second pair may have been missed, raise n",
+            prob.hh_unrefined
+        ));
+    }
+    if prob.hh_lost > 0 {
+        warnings.push(format!(
+            "hh_lost: {} evaluations of the Hopf-Hopf test at kappa > 0 had no single root \
+             at i omega or no roots, and the test was NaN there",
+            prob.hh_lost
+        ));
+    }
     Ok(DdeHopfBranch {
         points: branch.points.iter().map(point_of).collect(),
         specials,
         stop: branch.stop.clone(),
-        warnings: branch.warnings.clone(),
+        warnings,
     })
 }
 
@@ -630,6 +850,9 @@ mod tests {
             params: vec![r, 1.0],
             c: vec![1.0],
             lyapunov: false,
+            hh: None,
+            hh_unrefined: 0,
+            hh_lost: 0,
         };
         let x = [1.0, 1.0, 0.0, r, r * r, 1.0];
         let mut f = [0.0; 5];
