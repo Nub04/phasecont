@@ -385,6 +385,12 @@ fn detect_inner(
                     None if t >= 3 => {}
                     None => warn(warnings, &*p, t, &pt.eigenvalues, k),
                 },
+                // The first point is the start the caller chose, and a zero exactly there is
+                // not reported. A codim-2 value at the start of at most `POLE_TOL` times the
+                // value at the second point is a zero at the start by the same measure the
+                // pole guard uses, so the failed search is not a warning either. Rounding
+                // decides which side of zero such a value falls on.
+                None if k == 0 && t >= 3 && a.abs() <= POLE_TOL * b.abs() => {}
                 // No point was located, so the end of the step is the nearest guide to
                 // which kind of zero (H or NSA) was being looked for.
                 None => warn(warnings, &*p, t, &pk1.eigenvalues, k),
@@ -514,10 +520,13 @@ mod codim2_tests {
     /// Two unknowns, the equation x0 = 0, and one codim-2 test named "ZZ": `x1 - 0.05`, or
     /// `1 / (x1 - 0.05)` with `pole`. With `drop` the label hook rejects every zero. With
     /// `nan_from = Some(n)` the test is NaN from its n-th evaluation on (counting from 1).
+    /// With `at_start` the test is `x1 + 3e-14`, which stays above zero on the step and so
+    /// models a test that is zero at the start up to rounding.
     #[derive(Default)]
     struct Curve {
         pole: bool,
         drop: bool,
+        at_start: bool,
         nan_from: Option<usize>,
         calls: usize,
     }
@@ -552,7 +561,11 @@ mod codim2_tests {
             if self.nan_from.is_some_and(|n| self.calls >= n) {
                 return Ok(vec![f64::NAN]);
             }
-            let d = x[1] - 0.05;
+            let d = if self.at_start {
+                x[1] + 3e-14
+            } else {
+                x[1] - 0.05
+            };
             Ok(vec![if self.pole { 1.0 / d } else { d }])
         }
         fn codim2_label(&self, i: usize, _eigs: &[(f64, f64)]) -> Option<&'static str> {
@@ -687,6 +700,70 @@ mod codim2_tests {
             w,
             vec!["could not locate ZZ between points 0 and 1".to_string()]
         );
+    }
+
+    fn run_from(mut p: Curve, xk: &[f64], points: &[Point]) -> (Vec<String>, Vec<SpecialPoint>) {
+        let (mut w, mut sp) = (Vec::new(), Vec::new());
+        detect_step(
+            &mut p,
+            xk,
+            &[0.0, 1.0],
+            0.1,
+            points,
+            &Options::default(),
+            &AtomicBool::new(false),
+            &mut w,
+            &mut sp,
+        )
+        .unwrap();
+        (w, sp)
+    }
+
+    #[test]
+    fn a_zero_at_the_first_point_is_neither_reported_nor_warned_about() {
+        // Exactly zero at the start: skipped, as for the equilibrium tests.
+        let (w, sp) = run(zero(), pt_with(0.0, 0.0), pt_with(0.1, 0.1));
+        assert!(w.is_empty() && sp.is_empty(), "{w:?}");
+        // Zero up to rounding at the start, with a sign change to the second point that no
+        // search can place: the same result.
+        let at_start = || Curve {
+            at_start: true,
+            ..zero()
+        };
+        let (w, sp) = run(at_start(), pt_with(0.0, -3e-14), pt_with(0.1, 0.1));
+        assert!(w.is_empty() && sp.is_empty(), "{w:?}");
+    }
+
+    #[test]
+    fn a_noise_level_value_after_the_first_step_still_warns() {
+        let at_start = Curve {
+            at_start: true,
+            ..zero()
+        };
+        let pts = [
+            pt_with(-0.1, f64::NAN),
+            pt_with(0.0, -3e-14),
+            pt_with(0.1, 0.1),
+        ];
+        let (w, sp) = run_from(at_start, &[0.0, 0.0], &pts);
+        assert!(sp.is_empty());
+        assert_eq!(
+            w,
+            vec!["could not locate ZZ between points 1 and 2".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_zero_near_the_first_point_that_the_search_places_is_reported() {
+        // The zero at alpha = 0.05 lies 1e-3 of a step after the start, which has the value
+        // -1e-4 against 0.05 at the second point, inside the `POLE_TOL` ratio. The search
+        // places it, so it is a label and not a skipped start.
+        let pts = [pt(0.0499), pt(0.1499)];
+        let (w, sp) = run_from(zero(), &[0.0, 0.0499], &pts);
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(sp.len(), 1);
+        assert_eq!((sp[0].label.as_str(), sp[0].index), ("ZZ", 1));
+        assert!((sp[0].point.alpha - 0.05).abs() < 1e-10);
     }
 
     #[test]
