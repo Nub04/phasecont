@@ -150,30 +150,37 @@ function badInput(message)
 error("phasecont:latex:badInput", "%s", message);
 end
 
-function s = enc(v, key)
+function s = enc(v, key, parent)
 % JSON text for v. A field named in the list is always an array, even with
-% one element.
+% one element, except x and y inside a mark, which are single numbers. PARENT
+% is the name of the array that holds the struct being encoded.
+if nargin < 3
+    parent = "";
+end
 alwaysArray = any(key == ["x" "y" "values" "columns" "series" "marks" "rows"]);
+if parent == "marks" && any(key == ["x" "y"])
+    alwaysArray = false;
+end
 if isstruct(v)
     if isscalar(v) && ~alwaysArray
         names = string(fieldnames(v));
         parts = strings(0, 1);
         for k = 1:numel(names)
             parts(end+1, 1) = jsonencode(char(names(k))) + ":" + ...
-                enc(v.(names(k)), names(k)); %#ok<AGROW>
+                enc(v.(names(k)), names(k), parent); %#ok<AGROW>
         end
         s = "{" + join(parts, ",") + "}";
     else
         parts = strings(0, 1);
         for k = 1:numel(v)
-            parts(end+1, 1) = enc(v(k), ""); %#ok<AGROW>
+            parts(end+1, 1) = enc(v(k), "", key); %#ok<AGROW>
         end
         s = list(parts);
     end
 elseif iscell(v)
     parts = strings(0, 1);
     for k = 1:numel(v)
-        parts(end+1, 1) = enc(v{k}, ""); %#ok<AGROW>
+        parts(end+1, 1) = enc(v{k}, "", key); %#ok<AGROW>
     end
     s = list(parts);
 elseif isstring(v) || ischar(v)
