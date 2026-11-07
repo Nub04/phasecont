@@ -395,6 +395,63 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
             testCase.verifySize(br.Period, [0 1]);
         end
 
+        function oldCurveRowsArePaddedWithNaN(testCase)
+            % A v1.0.0 session stored LPC and PD rows with two codim-2 tests
+            % (24 rows for n = 2, NTST = 2, NCOL = 2) and NS rows with six
+            % (29 rows). The new tests read NaN.
+            e = phasecont.Model.empty;
+            st = struct("points", 2, "stop", [], "warnings", [], ...
+                "specials", struct("label", "LPPD", "index", 1));
+            lpc = [ ...
+                0.5, 1 2 2 3 3 4 2 1 1 2, 6, -0.1, 0 0.4 1, 1 1, 0 0, 0.1 0.2, 0.01, 2; ...
+                0.6, 1 2 5 6 7 8 6 5 1 2, 7, -0.2, 0 0.5 1, 1 1, 0 0, 0.3 0.4, 0.02, 3].';
+            testCase.verifySize(lpc, [24 2]);
+            for kind = ["LPC" "PD"]
+                br = phasecont.internal.rows2branch(e, [3 1], [10; 20; 30], 2, ...
+                    lpc, lpc(:, 2), st, kind, [2 2]);
+                testCase.verifyEqual(br.Codim2, [0.1 0.2 NaN NaN; 0.3 0.4 NaN NaN]);
+                testCase.verifyEqual(br.StepSize, [0.01; 0.02]);
+                testCase.verifyEqual(br.NewtonIters, [2; 3]);
+                testCase.verifyEqual(br.Eigenvalues, complex(ones(2, 2), 0));
+                testCase.verifyEqual(br.Period, [6; 7]);
+                testCase.verifyEqual(br.Specials(1).Index, 2);
+                testCase.verifyEqual(br.Specials(1).Label, "LPPD");
+            end
+
+            ns = [ ...
+                0.5, 1 2 2 3 3 4 2 1 1 2, 6, -0.1, 0.3, 0 0.4 1, 0.3 0.3, 0.9 -0.9, 1 2 3 4 5 6, 0.01, 2; ...
+                0.6, 1 2 5 6 7 8 6 5 1 2, 7, -0.2, 0.2, 0 0.5 1, 0.2 0.2, 0.9 -0.9, 6 5 4 3 2 1, 0.02, 3].';
+            testCase.verifySize(ns, [29 2]);
+            br = phasecont.internal.rows2branch(e, [1 2], [0; 0], 2, ...
+                ns, ns(:, 1), st, "NS", [2 2]);
+            testCase.verifyEqual(br.Codim2, [1 2 3 4 5 6 NaN; 6 5 4 3 2 1 NaN]);
+            testCase.verifyEqual(br.Kappa, [0.3; 0.2]);
+            testCase.verifyEqual(br.Eigenvalues(1, :), [complex(0.3, 0.9) complex(0.3, -0.9)]);
+            testCase.verifyEqual(br.StepSize, [0.01; 0.02]);
+            testCase.verifyEqual(br.NewtonIters, [2; 3]);
+            testCase.verifyEqual(br.Specials(1).Data.kappa, 0.3);
+
+            % An old width with no points pads to the new width.
+            br = phasecont.internal.rows2branch(e, [1 2], [0; 0], 2, ...
+                zeros(29, 0), zeros(29, 0), ...
+                struct("points", 0, "stop", [], "warnings", [], "specials", []), ...
+                "NS", [2 2]);
+            testCase.verifySize(br.Codim2, [0 7]);
+            % The points and the specials must both be old, and no other
+            % width is accepted.
+            none = struct("points", 0, "stop", [], "warnings", [], "specials", []);
+            testCase.verifyError(@() phasecont.internal.rows2branch(e, [1 2], ...
+                [0; 0], 2, zeros(29, 0), zeros(30, 0), none, "NS", [2 2]), ...
+                "phasecont:model:badRows");
+            testCase.verifyError(@() phasecont.internal.rows2branch(e, [1 2], ...
+                [0; 0], 2, zeros(28, 0), zeros(28, 0), none, "NS", [2 2]), ...
+                "phasecont:model:badRows");
+            % An LC or HOM row never changed width, so a narrow one is an error.
+            testCase.verifyError(@() phasecont.internal.rows2branch(e, [1 2], ...
+                [0; 0], 2, zeros(24, 0), zeros(24, 0), none, "HOM", [2 2]), ...
+                "phasecont:model:badRows");
+        end
+
         function homCurveRows(testCase)
             % HOM curve, n = 2, NTST = 2, NCOL = 2: rows of [a2, orbit(10),
             % T, x0(2), a1, mesh(3), eig_re(2), eig_im(2), codim2(12), h,

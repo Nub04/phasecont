@@ -32,6 +32,11 @@ function br = rows2branch(m, free, p, n, points, specials, branchStatus, kind, g
 % newton_iters], with the eigenvalues of the Jacobian at the saddle x0.
 % All have NaN for missing values. The function makes no
 % engine calls.
+%
+% Rows of an LPC, PD or NS curve that a v1.0.0 session stored are narrower:
+% they lack the codim-2 tests added later (CPC and R1, GPD and R2, CH). The
+% function pads them with NaN after the old tests and builds the branch as
+% usual, so the new tests read NaN there. No other width is accepted.
 if nargin < 8
     kind = "EP";
 end
@@ -95,6 +100,14 @@ end
 [name, idx] = freeParameters(m, free, 1 + isCurve);
 p = double(p(:));
 stride = 1 + block + nmesh + 2*n + extra + 2;
+oldTests = v1Codim2Count(kind);
+if ~isnan(oldTests) && oldTests < extra ...
+        && size(points, 1) == stride - (extra - oldTests) ...
+        && size(specials, 1) == stride - (extra - oldTests)
+    at = 1 + block + nmesh + 2*n + oldTests;
+    points = padRows(points, at, extra - oldTests);
+    specials = padRows(specials, at, extra - oldTests);
+end
 if size(points, 1) ~= stride || size(specials, 1) ~= stride
     error("phasecont:model:badRows", ...
         "Expected rows of %d values, got %d and %d.", stride, ...
@@ -215,6 +228,26 @@ if kind == "HOM"
     values.X0 = x0;
 end
 br = phasecont.Branch(values);
+end
+
+function k = v1Codim2Count(kind)
+% The number of codim-2 tests a v1.0.0 session stored for a curve of cycles,
+% or NaN for a kind whose rows never changed width.
+switch kind
+    case "LPC"
+        k = 2;      % LPPD LPNS
+    case "PD"
+        k = 2;      % LPPD PDNS
+    case "NS"
+        k = 6;      % R1 R2 R3 R4 LPNS PDNS
+    otherwise
+        k = NaN;
+end
+end
+
+function rows = padRows(rows, at, count)
+% ROWS with COUNT rows of NaN inserted after row AT.
+rows = [rows(1:at, :); NaN(count, size(rows, 2)); rows(at+1:end, :)];
 end
 
 function [ntst, ncol] = cycleGrid(kind, grid)

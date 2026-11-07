@@ -265,6 +265,39 @@ classdef SessionTest < matlab.unittest.TestCase
                 "phasecont:session:badFile");
         end
 
+        function loadPadsTheRowsOfAVersion1CurveOfCycles(testCase)
+            % A v1.0.0 LPC record has no CPC and R1 rows. The load pads them
+            % with NaN and keeps the numbers of the other tests.
+            [m, items] = testCase.diagram("jit");
+            file = fullfile(testCase.Dir, "v1.pcsession.json");
+            save(phasecont.Session(m, items), file);
+            S = phasecont.internal.sessionCodec.readFile(file);
+            k = find(cellfun(@(r) r.Type == "LPC", S.Records));
+            testCase.assertNumElements(k, 1);
+            rec = S.Records{k};
+            % The tail of an LPC row is [LPPD LPNS CPC R1 h iters].
+            keep = setdiff(1:rec.Stride, rec.Stride - [3 2]);
+            narrow = @(c) cellfun(@(x) x(keep, :), c, "UniformOutput", false);
+            json = regexprep(string(rec.Json), '"stride":\d+', ...
+                """stride"":" + (rec.Stride - 2));
+            rec = testCase.withChange(rec, "Points", narrow(rec.Points));
+            rec = testCase.withChange(rec, "Specials", narrow(rec.Specials));
+            rec = testCase.withChange(rec, "Json", json);
+            rec = testCase.withChange(rec, "Stride", rec.Stride - 2);
+            S.Records{k} = rec;
+            changed = testCase.writeChanged(m, S, "v1_changed.pcsession.json");
+            back = phasecont.Session.load(changed);
+            old = items{4};
+            new = back.Items{4};
+            testCase.verifyEqual(new.Type, "LPC");
+            testCase.verifyEqual(new.Alpha, old.Alpha);
+            testCase.verifyEqual(new.U, old.U);
+            testCase.verifyEqual(new.Period, old.Period);
+            testCase.verifyEqual(new.Codim2(:, 1:2), old.Codim2(:, 1:2));
+            testCase.verifyTrue(all(isnan(new.Codim2(:, 3:4)), "all"));
+            testCase.verifyEqual(new.Codim2Labels, old.Codim2Labels);
+        end
+
         function aChangedSourceIsAHashMismatch(testCase)
             m = testCase.model(testCase.Decay);
             eq = phasecont.equilibrium(m, 0.5);
