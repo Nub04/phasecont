@@ -65,6 +65,8 @@ pub enum Command {
     DdeHopf { file: PathBuf },
     /// Compute the first Lyapunov coefficient at a Hopf point of a delay equilibrium.
     DdeLyap { file: PathBuf },
+    /// Compute the zero-Hopf normal-form coefficients at a point of a delay equilibrium.
+    DdeZh { file: PathBuf },
     /// Rerun the runs of a session file and compare the results.
     SessionReplay {
         file: PathBuf,
@@ -108,6 +110,7 @@ usage: pc-cli parse [--json] [--] <file.ode>
        pc-cli dde-branch [--] <problem.json>
        pc-cli dde-hopf [--] <problem.json>
        pc-cli dde-lyap [--] <problem.json>
+       pc-cli dde-zh [--] <problem.json>
        pc-cli session replay [--tol X] [--fallback] [--] <file.pcsession.json>
        pc-cli gpu list
        pc-cli gpu selftest --backend B [--device N] --precision P
@@ -132,6 +135,7 @@ usage:
   pc-cli dde-branch <problem.json>
   pc-cli dde-hopf <problem.json>
   pc-cli dde-lyap <problem.json>
+  pc-cli dde-zh <problem.json>
   pc-cli session replay <file.pcsession.json> [--tol X] [--fallback]
   pc-cli gpu list
   pc-cli gpu selftest --backend B [--device N] --precision P
@@ -155,6 +159,7 @@ commands:
   dde-branch    continue such an equilibrium in one parameter and find its Hopf points
   dde-hopf      continue a Hopf point of such an equilibrium in two parameters
   dde-lyap      compute the first Lyapunov coefficient (and the second, if asked) at such a Hopf point
+  dde-zh        compute the zero-Hopf normal-form coefficients at such a point
   session      rerun the runs of a session file and compare them with the stored ones
   gpu           list the ensemble devices and test one of them
   ensemble      run many trajectories of one model, or time the engine
@@ -528,6 +533,47 @@ exit codes: 0 l1 was computed (and l2, if asked), 1 the model has errors or no d
         names the key) or an omega that is not a Hopf frequency
 ";
 
+pub const DDE_ZH_HELP: &str = "\
+usage: pc-cli dde-zh [--] <problem.json>
+
+Computes the critical normal-form coefficients at a zero-Hopf point of a model whose
+equations call delay(x,tau). The point is an equilibrium x0, the parameter values in
+params and the angular frequency omega, where the characteristic function has a simple zero
+root and a simple pair +-i omega, for example a ZH point of dde-hopf. The command uses the
+point as it is. It does not polish x0 or omega, it does not locate zero-Hopf points, and it
+does not compute the predictors of the unfolding or say which unfolding scenario the point
+has.
+
+The problem file is a JSON object. Every key is required, and an unknown key is an error:
+  model    path of the .ode file, relative to the problem file
+  params   object of numbers by parameter name; a parameter left out keeps the value
+           of the model file
+  x0       the equilibrium, one value per state
+  omega    the angular frequency of the Hopf pair, above 1e-8
+
+The output has the keys e, equilibrium_residual, g011, g021, g110, g111, g200, g210, g300,
+null_residual_hopf, null_residual_zero, omega, s, s_product and theta, in alphabetical
+order. Each g is [real, imaginary]. s_product is g200 g011, s is its sign (0 if it is
+exactly 0), theta is Re g110 / Re g200 and e is the combination of the coefficients of the
+paper, section 6.2.1 of arXiv 1903.08276. theta is null where Re g200 is 0, and e is null
+where it is not a finite number. The critical eigenvectors have a 2-norm of 1 and the sign
+of the real one is fixed by a rule of this program, so g200, g110 and g011 are fixed only up
+to that sign. The coefficients g210, g111 and g021 depend on the coordinates; g200, g110,
+g011, g300, s_product, theta and e do not. null_residual_zero and null_residual_hopf are the
+relative sizes of Delta(0) q0 and Delta(i omega) q1, and a value above 1e-4 means the
+point is not a zero-Hopf point.
+
+options:
+  --          the next argument is the file, even if it starts with `-`
+  -h, --help  print this help
+
+exit codes: 0 the coefficients were computed, 1 the model has errors or no delay call, or the
+        engine failed for another reason (a zero or imaginary root that is not simple, or a
+        singular Delta(2 i omega), included),
+        2 usage error, an unreadable problem file, invalid JSON, a bad problem (the message
+        names the key) or a point that is not a zero-Hopf point
+";
+
 pub const DDE_HOPF_HELP: &str = "\
 usage: pc-cli dde-hopf [--] <problem.json>
 
@@ -538,7 +584,8 @@ method and follows the curve of Hopf points in the plane of the two parameters. 
 way it labels BT, where omega^2 changes sign (Bogdanov-Takens), and ZH, where the
 characteristic function has a zero root as well (zero-Hopf). It does not count the roots
 to the right of the curve. dde-lyap computes the first Lyapunov coefficient at one point,
-and the key lyapunov below does it at every point of the curve. At a GH point it also
+and the key lyapunov below does it at every point of the curve. dde-zh computes the
+normal-form coefficients at one ZH point. At a GH point it also
 computes the second coefficient l2.
 
 The problem file is a JSON object. Every key but options is required:
@@ -692,6 +739,7 @@ where
         "dde-branch" => dde_branch_command(&args[1..]),
         "dde-hopf" => dde_hopf_command(&args[1..]),
         "dde-lyap" => dde_lyap_command(&args[1..]),
+        "dde-zh" => dde_zh_command(&args[1..]),
         "session" => session_command(&args[1..]),
         "gpu" => gpu_command(&args[1..]),
         "ensemble" => ensemble_command(&args[1..]),
@@ -912,6 +960,17 @@ fn dde_branch_command(rest: &[OsString]) -> Result<Command, UsageError> {
     match parts.file {
         Some(file) => Ok(Command::DdeBranch { file }),
         None => Err(UsageError("dde-branch needs a problem file".to_string())),
+    }
+}
+
+fn dde_zh_command(rest: &[OsString]) -> Result<Command, UsageError> {
+    let parts = split(rest, Accepts::default())?;
+    if parts.help {
+        return Ok(Command::ToolHelp(DDE_ZH_HELP));
+    }
+    match parts.file {
+        Some(file) => Ok(Command::DdeZh { file }),
+        None => Err(UsageError("dde-zh needs a problem file".to_string())),
     }
 }
 
@@ -1455,6 +1514,30 @@ mod tests {
             &["dde-lyap"][..],
             &["dde-lyap", "a.json", "b.json"],
             &["dde-lyap", "--fallback", "a.json"],
+        ] {
+            assert!(p(args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn dde_zh_command_takes_one_file() {
+        assert_eq!(
+            p(&["dde-zh", "p.json"]),
+            Ok(Command::DdeZh {
+                file: "p.json".into()
+            })
+        );
+        assert_eq!(
+            p(&["dde-zh", "--", "-p.json"]),
+            Ok(Command::DdeZh {
+                file: "-p.json".into()
+            })
+        );
+        assert_eq!(p(&["dde-zh", "--help"]), Ok(Command::ToolHelp(DDE_ZH_HELP)));
+        for args in [
+            &["dde-zh"][..],
+            &["dde-zh", "a.json", "b.json"],
+            &["dde-zh", "--fallback", "a.json"],
         ] {
             assert!(p(args).is_err(), "{args:?}");
         }

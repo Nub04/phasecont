@@ -7,6 +7,7 @@ mod ddecmd;
 mod ddeeq;
 mod ddehopf;
 mod ddelyap;
+mod ddezh;
 mod dllimports;
 mod ensemble;
 mod gpu;
@@ -57,6 +58,7 @@ fn main() -> ExitCode {
         Ok(Command::DdeBranch { file }) => ddebranch::dde_branch(&file),
         Ok(Command::DdeHopf { file }) => ddehopf::dde_hopf(&file),
         Ok(Command::DdeLyap { file }) => ddelyap::dde_lyap(&file),
+        Ok(Command::DdeZh { file }) => ddezh::dde_zh(&file),
         Ok(Command::GpuList) => gpu::list(),
         Ok(Command::GpuSelftest {
             backend,
