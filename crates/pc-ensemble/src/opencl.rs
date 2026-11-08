@@ -520,6 +520,14 @@ fn launch_all<T: Real>(
 
     let global = [global_size(packed.members, group)];
     let local = [group];
+    // With the test feature, a work group far above the device limit is invalid and the
+    // driver reports it.
+    #[cfg(feature = "fault-injection")]
+    let (global, local) = if crate::fault::take_launch_fault() {
+        ([group << 24], [group << 24])
+    } else {
+        (global, local)
+    };
     let ctl_len = packed.ctl.len();
     drive(&mut packed.ctl, packed.members, cancel, |steps| {
         let started = Instant::now();

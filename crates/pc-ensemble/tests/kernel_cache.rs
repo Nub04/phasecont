@@ -10,7 +10,7 @@ mod common;
 use common::*;
 use pc_ensemble::device::{Backend, BackendState, DeviceInfo, find_device, list_devices};
 use pc_ensemble::run::run_on;
-use pc_ensemble::{EnsembleResult, Method, Precision};
+use pc_ensemble::{EnsembleError, EnsembleResult, Method, Precision};
 
 /// The device to test, or `None` after a skip.
 fn device_of(backend: Backend) -> Option<DeviceInfo> {
@@ -52,13 +52,22 @@ fn kept(backend: Backend, index: usize) -> usize {
     }
 }
 
-fn run_job(device: &DeviceInfo, src: &str, method: Method, precision: Precision) -> EnsembleResult {
+fn try_job(
+    device: &DeviceInfo,
+    src: &str,
+    method: Method,
+    precision: Precision,
+) -> Result<EnsembleResult, EnsembleError> {
     let model = build_model(src);
     let members = 64;
     let x0 = vec![0.5; members * model.n()];
     let params = vec![1.0; model.n_p()];
     let j = job(&model, members, &x0, &params, 1.0, method, precision);
-    run_on(device, &j, &NO_CANCEL()).expect("run")
+    run_on(device, &j, &NO_CANCEL())
+}
+
+fn run_job(device: &DeviceInfo, src: &str, method: Method, precision: Precision) -> EnsembleResult {
+    try_job(device, src, method, precision).expect("run")
 }
 
 fn steps(backend: Backend) {
@@ -128,6 +137,9 @@ fn steps(backend: Backend) {
         }
     }
     assert_eq!(kept(backend, 0), 8, "the cache holds at most 8 kernels");
+
+    #[cfg(feature = "fault-injection")]
+    eviction(&device, backend);
 }
 
 #[test]
@@ -138,4 +150,38 @@ fn the_cuda_backend_compiles_a_kernel_once() {
 #[test]
 fn the_opencl_backend_compiles_a_kernel_once() {
     steps(Backend::OpenCl);
+}
+
+/// A launch the driver rejects ends the run with `gpuLaunch`, the device then keeps nothing,
+/// and the next run builds a new context and compiles again. It runs as the last step of
+/// `steps`, because the tests of one backend share one cache.
+#[cfg(feature = "fault-injection")]
+fn eviction(device: &DeviceInfo, backend: Backend) {
+    let (method, precision) = if device.fp64 {
+        (DP5_STD, Precision::Double)
+    } else {
+        (DP5_SINGLE, Precision::Single)
+    };
+
+    let before = run_job(device, DECAY, method, precision);
+    assert!(kept(backend, 0) >= 1, "the run keeps its entry");
+    let warm = compiles(backend);
+
+    pc_ensemble::fault::arm_launch_fault();
+    let err = try_job(device, DECAY, method, precision).expect_err("the armed launch fails");
+    assert!(
+        matches!(&err, EnsembleError::GpuLaunch(m) if m.contains("launch")),
+        "{err:?}"
+    );
+    assert_eq!(kept(backend, 0), 0, "the failed run removed the entry");
+    assert_eq!(compiles(backend), warm, "the failed run reused the kernel");
+
+    // The flag is one-shot: this run is not armed.
+    let after = run_job(device, DECAY, method, precision);
+    assert_eq!(compiles(backend), warm + 1, "a new context compiles again");
+    assert_eq!(kept(backend, 0), 1, "and keeps its entry");
+    assert_eq!(
+        before.states, after.states,
+        "the new context gives the same states"
+    );
 }

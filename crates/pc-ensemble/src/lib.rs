@@ -4,6 +4,8 @@ pub mod abi;
 pub mod cpu;
 pub mod cuda;
 pub mod device;
+#[cfg(feature = "fault-injection")]
+pub mod fault;
 pub mod gpu;
 pub mod job;
 pub mod kept;

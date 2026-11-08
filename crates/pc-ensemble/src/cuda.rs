@@ -592,6 +592,13 @@ fn launch_all<T: Real + DeviceRepr>(
             packed.members
         ))
     })?;
+    // With the test feature, a launch of 0 blocks is invalid and the driver reports it.
+    #[cfg(feature = "fault-injection")]
+    let blocks = if crate::fault::take_launch_fault() {
+        0
+    } else {
+        blocks
+    };
     let cfg = LaunchConfig {
         grid_dim: (blocks, 1, 1),
         block_dim: (BLOCK, 1, 1),
