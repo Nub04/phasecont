@@ -3,7 +3,8 @@
 //! The orbit and Hopf starts must give the numbers of the engine calls, and so must the
 //! `floquet` key (SPEC section 8m, test 9) and the `branch` key (SPEC section 8n, test 8)
 //! and the labels of a branch (SPEC section 8o, test 8), the `adapt` key (SPEC section 8p,
-//! test 9) and the `bpc` key (SPEC section 8q, test 13).
+//! test 9), the `bpc` key (SPEC section 8q, test 13) and the `switch` key (SPEC section 8r,
+//! test 12).
 //! Also runs the bad problem files and the run that does not converge.
 
 mod common;
@@ -14,10 +15,11 @@ use std::sync::atomic::AtomicBool;
 
 use common::{code, run, stderr, stdout};
 use pc_engine::{
-    DdeCycleBranch, DdeCyclePoint, DdeCycleSetup, DdeCycleStart, DdeFloquetOptions, DdeHopfCycle,
-    DdeMeshAdapt, Evaluator, Options, build_dde, dde_continue_cycle, dde_continue_cycle_adapt,
-    dde_continue_cycle_bpc, dde_continue_cycle_floquet, dde_correct_cycle, dde_floquet_multipliers,
-    dde_hopf_cycle,
+    DdeCycleBranch, DdeCyclePoint, DdeCycleSetup, DdeCycleStart, DdeCycleSwitch, DdeFloquetOptions,
+    DdeHopfCycle, DdeMeshAdapt, DdeModel, Evaluator, Options, build_dde, dde_continue_cycle,
+    dde_continue_cycle_adapt, dde_continue_cycle_bpc, dde_continue_cycle_floquet,
+    dde_continue_cycle_switch, dde_correct_cycle, dde_floquet_multipliers, dde_hopf_cycle,
+    dde_switch_cycle_bpc,
 };
 use pc_ode::{MapLoader, Severity, SourceMap, load};
 use serde_json::{Value, json};
@@ -1655,13 +1657,8 @@ fn zblk_cycle(name: &str, problem: &Value) -> (i32, String, String) {
     (code(&o), stdout(&o), stderr(&o))
 }
 
-/// The engine run that `zblk_problem` stands for, with the engine entry point and the keys
-/// as given.
-fn zblk_engine(
-    floquet: Option<&DdeFloquetOptions>,
-    adapt: Option<&DdeMeshAdapt>,
-    bpc: bool,
-) -> DdeCycleBranch {
+/// The model, setup, options and start that `zblk_problem` stands for.
+fn zblk_parts() -> (DdeModel, DdeCycleSetup, Options, DdeCycleStart) {
     let mut map = SourceMap::new();
     let top = map.add("zblk.ode", zblk_source());
     let l = load(top, &mut map, &mut MapLoader::new());
@@ -1670,7 +1667,7 @@ fn zblk_engine(
         "{:?}",
         l.diagnostics
     );
-    let mut model = build_dde(&l.expanded, &l.info, Evaluator::Jit).expect("build_dde");
+    let model = build_dde(&l.expanded, &l.info, Evaluator::Jit).expect("build_dde");
     let setup = DdeCycleSetup {
         params: vec![0.1, TAU, 0.3],
         free: 0,
@@ -1689,6 +1686,17 @@ fn zblk_engine(
         profile: zblk_profile(),
         period: 2.0 * PI,
     };
+    (model, setup, opts, start)
+}
+
+/// The engine run that `zblk_problem` stands for, with the engine entry point and the keys
+/// as given.
+fn zblk_engine(
+    floquet: Option<&DdeFloquetOptions>,
+    adapt: Option<&DdeMeshAdapt>,
+    bpc: bool,
+) -> DdeCycleBranch {
+    let (mut model, setup, opts, start) = zblk_parts();
     let cancel = AtomicBool::new(false);
     if bpc {
         dde_continue_cycle_bpc(&mut model, &setup, &start, &opts, floquet, adapt, &cancel)
@@ -1893,4 +1901,283 @@ fn help_lists_the_bpc_key() {
     for word in ["bpc", "BPC", "branch point"] {
         assert!(text.contains(word), "{word} missing from the help text");
     }
+}
+
+// SPEC section 8r, test 12: the `switch` key.
+
+/// The `switch` object of the ZBLK run.
+fn switch_key(special: Value, direction: Value) -> Value {
+    json!({"special": special, "direction": direction})
+}
+
+/// The two engine runs that a `switch` problem on ZBLK stands for: the run with `bpc`, the
+/// switch at its special 0, and the run from there in `direction`.
+fn zblk_switch_engine(
+    direction: f64,
+    floquet: Option<&DdeFloquetOptions>,
+    bpc: bool,
+) -> (DdeCycleSwitch, DdeCycleBranch) {
+    let (mut model, setup, mut opts, start) = zblk_parts();
+    let cancel = AtomicBool::new(false);
+    let first = dde_continue_cycle_bpc(&mut model, &setup, &start, &opts, None, None, &cancel)
+        .expect("first run");
+    let sw = dde_switch_cycle_bpc(&mut model, &setup, &first, 0).expect("switch");
+    opts.direction = direction;
+    let second = dde_continue_cycle_switch(&mut model, &setup, &sw, &opts, floquet, bpc, &cancel)
+        .expect("second run");
+    (sw, second)
+}
+
+/// Checks the `switch` object of the output against the engine's switch, and that every point
+/// lies on the pitchfork branch `z^2 = alpha - 0.3` with the sign of `direction` in `z` above
+/// index 0.
+fn check_switched_output(out: &str, sw: &DdeCycleSwitch, direction: f64, what: &str) {
+    let v: Value = serde_json::from_str(out).unwrap();
+    let s = &v["switch"];
+    assert_eq!(s["special"].as_u64(), Some(0), "{what}");
+    assert_eq!(num(&s["alpha"]).to_bits(), sw.alpha.to_bits(), "{what}");
+    assert_eq!(
+        num(&s["period"]).to_bits(),
+        sw.start.period.to_bits(),
+        "{what}"
+    );
+    assert!((num(&s["alpha"]) - 0.3).abs() <= 1e-11, "{what}: {s}");
+    assert!((num(&s["period"]) - 2.0 * PI).abs() <= 1e-10, "{what}: {s}");
+    let points = v["points"].as_array().expect("points");
+    assert!(points.len() > 4, "{what}: {} points", points.len());
+    for (i, p) in points.iter().enumerate() {
+        let alpha = num(&p["alpha"]);
+        let profile = doubles(&p["profile"]);
+        assert_eq!(profile.len(), 2 * (NTST * NCOL + 1), "{what} {i}");
+        for z in profile.iter().skip(1).step_by(2) {
+            assert!(
+                (z * z - (alpha - 0.3)).abs() <= 1e-8,
+                "{what} point {i}: z^2 - (alpha - 0.3) = {:e}",
+                z * z - (alpha - 0.3)
+            );
+            if i > 0 {
+                assert!(z * direction > 0.0, "{what} point {i}: z = {z:e}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_switch_key_prints_the_second_branch_bit_for_bit() {
+    for (direction, name) in [(1.0, "up"), (-1.0, "down")] {
+        let key = switch_key(json!(0), json!(direction));
+        let p = zblk_problem(&[("bpc", json!(true)), ("switch", key)]);
+        let (status, out, err) = zblk_cycle(&format!("switch_{name}.json"), &p);
+        assert_eq!(status, 0, "{name}: {err}");
+        let (sw, want) = zblk_switch_engine(direction, None, true);
+        same_points(&out, &want, name);
+        same_specials(&out, &want, false, name);
+        check_switched_output(&out, &sw, direction, name);
+    }
+}
+
+#[test]
+fn the_switch_key_works_with_floquet_and_without_bpc() {
+    let floquet = DdeFloquetOptions { nhist: 8, count: 2 };
+    let fj = json!({"nhist": 8, "count": 2});
+    let key = switch_key(json!(0), json!(1));
+    let p = zblk_problem(&[
+        ("bpc", json!(true)),
+        ("floquet", fj),
+        ("switch", key.clone()),
+    ]);
+    let (status, out, err) = zblk_cycle("switch_floquet.json", &p);
+    assert_eq!(status, 0, "{err}");
+    let (sw, want) = zblk_switch_engine(1.0, Some(&floquet), true);
+    same_points(&out, &want, "floquet");
+    same_specials(&out, &want, true, "floquet");
+    check_switched_output(&out, &sw, 1.0, "floquet");
+    // `bpc` absent leaves the second run without labels, and the first run is the same.
+    let p = zblk_problem(&[("switch", key)]);
+    let (status, out, err) = zblk_cycle("switch_nobpc.json", &p);
+    assert_eq!(status, 0, "{err}");
+    let (sw, want) = zblk_switch_engine(1.0, None, false);
+    same_points(&out, &want, "no bpc");
+    same_specials(&out, &want, false, "no bpc");
+    check_switched_output(&out, &sw, 1.0, "no bpc");
+}
+
+#[test]
+fn without_the_switch_key_no_switch_object_is_printed() {
+    let (status, out, err) =
+        zblk_cycle("switch_absent.json", &zblk_problem(&[("bpc", json!(true))]));
+    assert_eq!(status, 0, "{err}");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert!(v.get("switch").is_none(), "{out}");
+    same_points(&out, &zblk_engine(None, None, true), "no switch");
+}
+
+#[test]
+fn switch_problems_that_cannot_run_are_exit_2_and_name_switch() {
+    let cases: Vec<(&str, Edit, &str)> = vec![
+        (
+            "special_negative",
+            Box::new(|p| p["switch"] = switch_key(json!(-1), json!(1))),
+            "\"special\" must be a non-negative integer",
+        ),
+        (
+            "special_fraction",
+            Box::new(|p| p["switch"] = switch_key(json!(1.5), json!(1))),
+            "\"special\" must be a non-negative integer",
+        ),
+        (
+            "special_string",
+            Box::new(|p| p["switch"] = switch_key(json!("0"), json!(1))),
+            "\"special\" must be a non-negative integer",
+        ),
+        (
+            "direction_zero",
+            Box::new(|p| p["switch"] = switch_key(json!(0), json!(0))),
+            "\"direction\" must be 1 or -1",
+        ),
+        (
+            "direction_two",
+            Box::new(|p| p["switch"] = switch_key(json!(0), json!(2))),
+            "\"direction\" must be 1 or -1",
+        ),
+        (
+            "direction_string",
+            Box::new(|p| p["switch"] = switch_key(json!(0), json!("up"))),
+            "\"direction\" must be a number",
+        ),
+        (
+            "unknown_key",
+            Box::new(|p| p["switch"] = json!({"special": 0, "direction": 1, "extra": 1})),
+            "unknown key \"extra\"",
+        ),
+        (
+            "no_special",
+            Box::new(|p| p["switch"] = json!({"direction": 1})),
+            "missing key \"special\"",
+        ),
+        (
+            "no_direction",
+            Box::new(|p| p["switch"] = json!({"special": 0})),
+            "missing key \"direction\"",
+        ),
+        (
+            "array",
+            Box::new(|p| p["switch"] = json!([0, 1])),
+            "must be an object",
+        ),
+        (
+            "null",
+            Box::new(|p| p["switch"] = json!(null)),
+            "must be an object",
+        ),
+        (
+            "without_branch",
+            Box::new(|p| {
+                p["switch"] = switch_key(json!(0), json!(1));
+                p["options"] = json!({"max_newton": 10});
+                p.as_object_mut().unwrap().remove("branch");
+            }),
+            "needs \"branch\"",
+        ),
+        (
+            "branch_false",
+            Box::new(|p| {
+                p["switch"] = switch_key(json!(0), json!(1));
+                p["options"] = json!({"max_newton": 10});
+                p["branch"] = json!(false);
+            }),
+            "needs \"branch\"",
+        ),
+        (
+            "with_adapt",
+            Box::new(|p| {
+                p["switch"] = switch_key(json!(0), json!(1));
+                p["adapt"] = json!({"every": 3});
+            }),
+            "adapt",
+        ),
+    ];
+    for (name, edit, word) in cases {
+        let mut p = zblk_problem(&[("bpc", json!(true))]);
+        edit(&mut p);
+        let (status, out, err) = zblk_cycle(&format!("switch_bad_{name}.json"), &p);
+        assert_eq!(status, 2, "{name}: {err}");
+        assert!(out.is_empty(), "{name}: {out}");
+        assert!(err.contains("switch"), "{name}: {err}");
+        assert!(err.contains(word), "{name}: {err}");
+    }
+}
+
+#[test]
+fn a_special_that_does_not_exist_is_the_engine_error() {
+    let key = switch_key(json!(5), json!(1));
+    let p = zblk_problem(&[("bpc", json!(true)), ("switch", key)]);
+    let (status, out, err) = zblk_cycle("switch_range.json", &p);
+    assert_eq!(status, 2, "{err}");
+    assert!(out.is_empty(), "{out}");
+    assert!(err.contains("no special point 5"), "{err}");
+}
+
+#[test]
+fn a_special_that_is_not_a_bpc_is_the_engine_error() {
+    // The cubic model of section 8o has a fold between its two branch points (engine test 8
+    // of section 8r), so special 1 of the first run is an LPC.
+    write(
+        "cubic_z.ode",
+        &format!(
+            "par a=0.25, tau={TAU:?}, m0=0.2\n\
+             x'=-delay(x,tau)+x*(a-(x^2+delay(x,tau)^2-1)^2)\n\
+             z'=(a-m0)*z-z^3\n\
+             done\n"
+        ),
+    );
+    let amp = 1.5_f64.sqrt();
+    let nq = NTST * NCOL;
+    let profile: Vec<f64> = (0..=nq)
+        .flat_map(|q| [amp * (2.0 * PI * q as f64 / nq as f64).sin(), 0.0])
+        .collect();
+    let p = json!({
+        "model": "cubic_z.ode",
+        "params": {"a": 0.25, "tau": TAU},
+        "free": "a",
+        "ntst": NTST,
+        "ncol": NCOL,
+        "orbit": {"profile": profile, "period": 2.0 * PI},
+        "options": {
+            "max_newton": 10, "hmax": 0.1, "max_steps": 400,
+            "bounds": [-0.5, 0.4], "direction": -1
+        },
+        "branch": true,
+        "bpc": true,
+        "switch": {"special": 1, "direction": 1},
+    });
+    let file = write("cubic_switch.json", &p.to_string());
+    let o = run(&scratch(), &["dde-cycle", &file]);
+    assert_eq!(code(&o), 2, "{}", stderr(&o));
+    assert!(stdout(&o).is_empty(), "{}", stdout(&o));
+    assert!(
+        stderr(&o).contains("special point 1 is a LPC, not a BPC"),
+        "{}",
+        stderr(&o)
+    );
+    // The branch points on either side of the fold can be switched at.
+    let mut ok = p.clone();
+    ok["switch"] = switch_key(json!(0), json!(1));
+    let file = write("cubic_switch_ok.json", &ok.to_string());
+    let o = run(&scratch(), &["dde-cycle", &file]);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+}
+
+#[test]
+fn help_lists_the_switch_key() {
+    let o = run(&scratch(), &["dde-cycle", "--help"]);
+    assert_eq!(code(&o), 0);
+    let text = stdout(&o);
+    for word in ["switch", "special", "direction", "adapt"] {
+        assert!(text.contains(word), "{word} missing from the help text");
+    }
+    assert!(
+        !text.contains("does not switch branches"),
+        "the help text still says the command does not switch"
+    );
 }
