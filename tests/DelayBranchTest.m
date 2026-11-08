@@ -14,6 +14,18 @@ classdef DelayBranchTest < matlab.unittest.TestCase
         Decay = "par a=2" + newline + "init x=3" + newline + ...
             "x'=-a*x" + newline + "done" + newline
         Roots = struct(N = 30, ReMin = -0.5)
+        Wright = "par a=1.5, b=0" + newline + ...
+            "u'=-a*delay(u,1)*(1+u)+b*u^3" + newline + "done" + newline
+        Coupled = "par a=1.4, b=1.2, c=1, d=0.1" + newline + ...
+            "x'=c*y-a*delay(x,1)" + newline + ...
+            "y'=-d*x-b*delay(y,1.5)" + newline + "done" + newline
+        % The numbers of the engine tests (SPEC 8g-2, 8k): l1 at b = 0 on
+        % the Wright cubic, the Bautin value of b, and the Hopf-Hopf point.
+        L1AtZero = -0.214130922441773920
+        BStar = 1.1844194631859732
+        AStar = 1.454526952022688
+        Omega1Star = 1.5160279413134377
+        Omega2Star = 1.1308210684126256
     end
 
     properties
@@ -60,6 +72,24 @@ classdef DelayBranchTest < matlab.unittest.TestCase
                 return
             end
             testCase.verifyFail("no error was raised, expected " + id);
+        end
+
+        function br = wrightCurve(testCase, lyapunov)
+            m = testCase.model(testCase.Wright);
+            br = phasecont.continuation(m, 0.001, Type = "H", ...
+                Free = ["a" "b"], Params = struct(a = 1.57, b = 0), ...
+                Omega = 1.57, Lyapunov = lyapunov, Bounds = [-1 1], ...
+                Hmax = 0.05, Direction = 1, TolX = 1e-12, TolF = 1e-12, ...
+                MaxNewton = 20);
+        end
+
+        function br = coupledCurve(testCase, extra)
+            m = testCase.model(testCase.Coupled);
+            br = phasecont.continuation(m, [0.001 0.001], extra{:}, Type = "H", ...
+                Free = ["a" "b"], Params = struct(a = 1.46, b = 0.8, ...
+                    c = 1, d = 0.1), Omega = 1.54, Bounds = [0.5 1.4], ...
+                Hmax = 0.05, Direction = 1, TolX = 1e-12, TolF = 1e-12, ...
+                MaxNewton = 20);
         end
     end
 
@@ -297,6 +327,235 @@ classdef DelayBranchTest < matlab.unittest.TestCase
             testCase.assertNumElements(h, 1);
             testCase.verifyEqual(h.P(1), pi/2, AbsTol = 1e-9);
             testCase.verifyEqual(h.Data.omega, pi/2, AbsTol = 1e-9);
+        end
+
+        % ---- Slice 2: the Hopf curve of a delay equilibrium ----
+
+        function hutchinsonHopfCurveStartsAtTheHopfPoint(testCase)
+            m = testCase.model(testCase.Hutch);
+            eq = testCase.hutchinson(m);
+            h = eq.points("H");
+            testCase.assertNumElements(h, 1);
+            c = phasecont.continuation(m, h, Type = "H", ...
+                Free = ["r" "tau"], Bounds = [0.5 3], Hmax = 0.05, ...
+                Direction = 1);
+            testCase.verifyEqual(c.Type, "H");
+            testCase.verifyEqual(c.Free, ["r" "tau"]);
+            testCase.verifyEqual(c.FreeIndex, [1 2]);
+            testCase.verifyEqual(c.Stop, "Bounds");
+            testCase.verifyEmpty(c.Warnings);
+            n = size(c.Alpha, 1);
+            testCase.assertGreaterThan(n, 5);
+            testCase.verifySize(c.Alpha, [n 2]);
+            testCase.verifyEqual(c.Alpha(:, 1) .* c.Alpha(:, 2), ...
+                (pi/2) * ones(n, 1), AbsTol = 1e-8);
+            testCase.verifyEqual(c.U, ones(n, 1), AbsTol = 1e-8);
+            testCase.verifyEqual(c.Kappa, c.Alpha(:, 1).^2, AbsTol = 1e-8);
+            testCase.verifyEqual(c.Alpha(end, 2), 3, AbsTol = 1e-8);
+        end
+
+        function aDelayHopfBranchHasTheCurveLayout(testCase)
+            m = testCase.model(testCase.Hutch);
+            eq = testCase.hutchinson(m);
+            c = phasecont.continuation(m, eq.points("H"), Type = "H", ...
+                Free = ["r" "tau"], Bounds = [0.5 3], Hmax = 0.05);
+            n = size(c.Alpha, 1);
+            testCase.verifySize(c.Eigenvalues, [n 0]);
+            testCase.verifyEqual(c.Stable, false(n, 1));
+            testCase.verifyEmpty(c.RootCount);
+            testCase.verifySize(c.Tests, [n 0]);
+            testCase.verifySize(c.Codim2, [n 2]);
+            testCase.verifyEqual(c.Codim2Labels, ["GH" "HH"]);
+            testCase.verifyTrue(all(isnan(c.Codim2), "all"));
+            testCase.verifySize(c.Kappa, [n 1]);
+            testCase.verifyTrue(all(isnan(c.StepSize)));
+            testCase.verifyEmpty(c.Specials);
+        end
+
+        function wrightCurveLabelsTheBautinPointWithLyapunov(testCase)
+            c = testCase.wrightCurve(true);
+            testCase.verifyEqual(c.Type, "H");
+            testCase.verifyEqual(c.Codim2Labels, ["GH" "HH"]);
+            gh = c.points("GH");
+            testCase.assertNumElements(gh, 1);
+            slope = 6 / (pi * (1 + pi^2/4));
+            testCase.verifyEqual(gh.P(2), -testCase.L1AtZero / slope, AbsTol = 1e-6);
+            testCase.verifyEqual(gh.P(1), pi/2, AbsTol = 1e-8);
+            testCase.verifyEqual(gh.Data.normalization, ...
+                "|q|=1, p Delta'(i omega) q=1");
+            testCase.verifyTrue(isfinite(gh.Data.coefficient));
+            testCase.verifyEqual(gh.Data.omega, pi/2, AbsTol = 1e-8);
+            testCase.verifySize(gh.Eigenvalues, [0 1]);
+            want = testCase.L1AtZero + slope * c.Alpha(:, 2);
+            have = c.Codim2(:, 1);
+            ok = isfinite(have);
+            testCase.verifyTrue(nnz(ok) > 5);
+            testCase.verifyEqual(have(ok), want(ok), AbsTol = 1e-7);
+            testCase.verifyTrue(all(isnan(c.Codim2(:, 2))));
+        end
+
+        function wrightCurveHasNoLyapunovWithoutTheOption(testCase)
+            c = testCase.wrightCurve(false);
+            testCase.verifyTrue(all(isnan(c.Codim2(:, 1))));
+            testCase.verifyEmpty(c.points("GH"));
+            d = phasecont.continuation(testCase.model(testCase.Wright), ...
+                0.001, Type = "H", Free = ["a" "b"], ...
+                Params = struct(a = 1.57, b = 0), Omega = 1.57, ...
+                Bounds = [-1 1], Hmax = 0.05, Direction = 1, TolX = 1e-12, TolF = 1e-12, ...
+                MaxNewton = 20);
+            testCase.verifyEqual(d.Alpha, c.Alpha);
+            testCase.verifyEqual(d.Codim2, c.Codim2);
+        end
+
+        function coupledCurveLabelsTheHopfHopfPointWithRoots(testCase)
+            c = testCase.coupledCurve({"Roots", struct(N = 30, ReMin = -3)});
+            hh = c.points("HH");
+            testCase.assertNumElements(hh, 1);
+            testCase.verifyEqual(hh.P(1:2), ...
+                [testCase.AStar; testCase.BStar], AbsTol = 1e-6);
+            testCase.verifyEqual(hh.Data.omega, testCase.Omega1Star, ...
+                AbsTol = 1e-6);
+            testCase.verifyEqual(hh.Data.values.omega2, ...
+                testCase.Omega2Star, AbsTol = 1e-6);
+            testCase.verifyTrue(any(isfinite(c.Codim2(:, 2))));
+            testCase.verifyTrue(all(isnan(c.Codim2(:, 1))));
+        end
+
+        function coupledCurveHasNoHopfHopfWithoutRoots(testCase)
+            c = testCase.coupledCurve({});
+            testCase.verifyEmpty(c.points("HH"));
+            testCase.verifyTrue(all(isnan(c.Codim2(:, 2))));
+        end
+
+        function aDelayHopfBranchSurvivesASessionRoundTrip(testCase)
+            m = testCase.model(testCase.Wright);
+            c = phasecont.continuation(m, 0.001, Type = "H", ...
+                Free = ["a" "b"], Params = struct(a = 1.57, b = 0), ...
+                Omega = 1.57, Lyapunov = true, Bounds = [-1 1], ...
+                Hmax = 0.05, Direction = 1, TolX = 1e-12, TolF = 1e-12, ...
+                MaxNewton = 20);
+            file = fullfile(testCase.Dir, "hopf.pcs");
+            save(phasecont.Session(m, {c}), file);
+            back = phasecont.Session.load(file);
+            testCase.addTeardown(@() delete(back.Model));
+            testCase.assertNumElements(back.Items, 1);
+            b = back.Items{1};
+            testCase.verifyEqual(b.Type, "H");
+            testCase.verifyEqual(b.Free, c.Free);
+            testCase.verifyEqual(b.Alpha, c.Alpha);
+            testCase.verifyEqual(b.U, c.U);
+            testCase.verifyEqual(b.Kappa, c.Kappa);
+            testCase.verifyEqual(b.Codim2, c.Codim2);
+            testCase.verifyEqual(b.Codim2Labels, ["GH" "HH"]);
+            testCase.verifySize(b.Eigenvalues, [numel(c.Kappa) 0]);
+            testCase.verifyEqual(b.Stable, c.Stable);
+            testCase.verifyEqual(b.Stop, c.Stop);
+            gh = b.points("GH");
+            testCase.assertNumElements(gh, 1);
+            testCase.verifyEqual(gh.P, c.points("GH").P);
+            testCase.verifyEqual(gh.Data.coefficient, ...
+                c.points("GH").Data.coefficient);
+            testCase.verifyEqual(gh.Data.normalization, ...
+                "|q|=1, p Delta'(i omega) q=1");
+        end
+
+        function aNumericHopfStartNeedsOmega(testCase)
+            m = testCase.model(testCase.Wright);
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(m, 0.001, Type = "H", ...
+                    Free = ["a" "b"], Params = struct(a = 1.57, b = 0), ...
+                    Bounds = [-1 1]), ...
+                "phasecont:model:badOption", "Omega");
+        end
+
+        function omegaWithAPointStartIsRefused(testCase)
+            m = testCase.model(testCase.Hutch);
+            eq = testCase.hutchinson(m);
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(m, eq.points("H"), Type = "H", ...
+                    Free = ["r" "tau"], Omega = pi/2, Bounds = [0.5 3]), ...
+                "phasecont:model:badOption", "Omega");
+        end
+
+        function aHopfRunFromANonHopfPointIsRefused(testCase)
+            m = testCase.model(testCase.Hutch);
+            pt = phasecont.Point(U = 1, P = [1.3; 1], Label = "EP", Model = m);
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(m, pt, Type = "H", ...
+                    Free = ["r" "tau"], Bounds = [0.5 3]), ...
+                "phasecont:model:badStart", "H");
+        end
+
+        function badOmegaAndLyapunovValuesAreRefused(testCase)
+            m = testCase.model(testCase.Wright);
+            base = {"Type", "H", "Free", ["a" "b"], "Params", ...
+                struct(a = 1.57, b = 0), "Bounds", [-1 1]};
+            for omega = {[1 2], "1.57", NaN, Inf, []}
+                try
+                    phasecont.continuation(m, 0.001, base{:}, Omega = omega{1});
+                    testCase.verifyFail("accepted Omega " + string(omega{1}));
+                catch err
+                    testCase.verifySubstring(string(err.identifier), "phasecont:");
+                end
+            end
+            % A frequency below the engine floor is refused by the engine.
+            try
+                phasecont.continuation(m, 0.001, base{:}, Omega = 0);
+                testCase.verifyFail("accepted Omega 0");
+            catch err
+                testCase.verifySubstring(string(err.identifier), "phasecont:");
+                testCase.verifySubstring(string(err.message), "omega");
+            end
+            for flag = {1, "yes", [true false], []}
+                try
+                    phasecont.continuation(m, 0.001, base{:}, Omega = 1.57, ...
+                        Lyapunov = flag{1});
+                    testCase.verifyFail("accepted Lyapunov");
+                catch err
+                    testCase.verifySubstring(string(err.identifier), "phasecont:");
+                end
+            end
+        end
+
+        function theOptionsOfADelayHopfRunThatDoNotExistAreRefused(testCase)
+            m = testCase.model(testCase.Wright);
+            id = "phasecont:model:badOption";
+            base = {"Type", "H", "Free", ["a" "b"], "Params", ...
+                struct(a = 1.57, b = 0), "Omega", 1.57, "Bounds", [-1 1]};
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(m, 0.001, base{:}, MeshAdapt = 2), ...
+                id, "MeshAdapt");
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(m, 0.001, base{:}, Switch = "BP1"), ...
+                id, "Switch");
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(m, 0.001, base{:}, Detect = "H"), ...
+                id, "Detect");
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(m, 0.001, base{:}, ...
+                    Type = "LP"), id, "Type");
+        end
+
+        function omegaLyapunovAndRootsKeepTheirPlace(testCase)
+            % Omega and Lyapunov belong to a delay model with Type "H";
+            % Roots stay refused for an ODE model.
+            ode = testCase.model(testCase.Decay);
+            id = "phasecont:model:badOption";
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(ode, 3, Free = "a", ...
+                    Omega = 1, Bounds = [1 3]), id, "Omega");
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(ode, 3, Free = "a", ...
+                    Lyapunov = true, Bounds = [1 3]), id, "Lyapunov");
+            m = testCase.model(testCase.Hutch);
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(m, 1, Free = "r", ...
+                    Roots = testCase.Roots, Omega = 1, Bounds = [1.2 2]), ...
+                id, "Omega");
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(m, 1, Free = "r", ...
+                    Roots = testCase.Roots, Lyapunov = true, ...
+                    Bounds = [1.2 2]), id, "Lyapunov");
         end
     end
 end

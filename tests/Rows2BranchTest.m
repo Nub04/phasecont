@@ -571,5 +571,81 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
             testCase.verifySize(br.RootCount, [0 1]);
             testCase.verifySize(br.Eigenvalues, [0 0]);
         end
+
+        function delayHopfRowsMakeACurveBranch(testCase)
+            % Kind "DDEH": a delay Hopf curve. A row is
+            % [alpha2, x(1..n), alpha1, kappa, l1, hh]; no binary is needed.
+            n = 2;
+            nan = NaN;
+            pts = [ ...
+                2.0, 1 1.5, 0.5, 2.25, nan nan; ...
+                2.5, 1 1.5, 0.6, 2.50, -0.1 nan; ...
+                3.0, 1 1.5, 0.7, 2.75, 0.05 0.3].';
+            specials = [2.5, 1 1.5, 0.6, 2.50, nan nan].';
+            st = struct("points", 3, "stop", "Bounds", ...
+                "specials", struct("label", "GH", "index", 1, ...
+                    "coefficient", 0.125, "omega", sqrt(2.5), ...
+                    "normalization", "n1", "refined", false));
+            br = phasecont.internal.rows2branch(phasecont.Model.empty, ...
+                [1 2], [10; 20; 30], n, pts, specials, st, "DDEH");
+            testCase.verifyEqual(br.Type, "H");
+            testCase.verifyEqual(br.FreeIndex, [1 2]);
+            testCase.verifyEqual(br.Alpha, [0.5 2.0; 0.6 2.5; 0.7 3.0]);
+            testCase.verifyEqual(br.U, repmat([1 1.5], 3, 1));
+            testCase.verifyEqual(br.Kappa, [2.25; 2.5; 2.75]);
+            testCase.verifySize(br.Eigenvalues, [3 0]);
+            testCase.verifyEqual(br.Stable, false(3, 1));
+            testCase.verifySize(br.RootCount, [0 1]);
+            testCase.verifySize(br.Tests, [3 0]);
+            testCase.verifyEqual(br.Codim2, [nan nan; -0.1 nan; 0.05 0.3]);
+            testCase.verifyEqual(br.Codim2Labels, ["GH" "HH"]);
+            testCase.verifyEqual(br.StepSize, NaN(3, 1));
+            testCase.verifyEqual(br.NewtonIters, NaN(3, 1));
+            testCase.verifyEqual(br.Stop, "Bounds");
+            testCase.verifyEqual(br.P, [10; 20; 30]);
+            testCase.assertSize(br.Specials, [1 1]);
+            sp = br.Specials(1);
+            testCase.verifyEqual(sp.Label, "GH");
+            testCase.verifyEqual(sp.Index, 2);
+            testCase.verifyEqual(sp.P, [0.6; 2.5; 30]);
+            testCase.verifyEqual(sp.U, [1; 1.5]);
+            testCase.verifySize(sp.Eigenvalues, [0 1]);
+            testCase.verifyEqual(sp.Data.coefficient, 0.125);
+            testCase.verifyEqual(sp.Data.omega, sqrt(2.5));
+            testCase.verifyEqual(sp.Data.normalization, "n1");
+            testCase.verifyFalse(sp.Data.refined);
+        end
+
+        function delayHopfRowsWithNoPointsGiveAnEmptyBranch(testCase)
+            n = 1;
+            rows = zeros(n + 5, 0);
+            st = struct("points", 0, "stop", "Cancelled");
+            br = phasecont.internal.rows2branch(phasecont.Model.empty, ...
+                [1 2], [10; 20], n, rows, rows, st, "DDEH");
+            testCase.verifyEqual(br.Type, "H");
+            testCase.verifySize(br.Alpha, [0 2]);
+            testCase.verifySize(br.U, [0 n]);
+            testCase.verifySize(br.Codim2, [0 2]);
+            testCase.verifySize(br.Kappa, [0 1]);
+            testCase.verifyEmpty(br.Specials);
+        end
+
+        function delayHopfRowsOfTheWrongWidthAreRefused(testCase)
+            n = 2;
+            rows = zeros(n + 6, 1);
+            st = struct("points", 1, "stop", "Bounds");
+            testCase.verifyError(@() phasecont.internal.rows2branch( ...
+                phasecont.Model.empty, [1 2], [10; 20], n, rows, rows, st, ...
+                "DDEH"), "phasecont:model:badRows");
+        end
+
+        function delayHopfRowsNeedTwoFreeParameters(testCase)
+            n = 1;
+            rows = zeros(n + 5, 1);
+            st = struct("points", 1, "stop", "Bounds");
+            testCase.verifyError(@() phasecont.internal.rows2branch( ...
+                phasecont.Model.empty, 1, [10; 20], n, rows, rows, st, ...
+                "DDEH"), "phasecont:model:badOption");
+        end
     end
 end

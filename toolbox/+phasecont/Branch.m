@@ -57,7 +57,8 @@ classdef Branch < handle
     %   Codim2       codim-2 test values at each point of a curve, N-by-k
     %                (N-by-0 for Type "EP" and "LC")
     %   Codim2Labels the k labels of the columns of Codim2: ["CP" "BT" "ZH"]
-    %                for "LP", ["GH" "BT" "ZH" "HH"] for "H", ["LPPD" "LPNS"
+    %                for "LP", ["GH" "BT" "ZH" "HH"] for "H" (columns l1 and hh,
+    %                ["GH" "HH"], for "H" of a delay model), ["LPPD" "LPNS"
     %                "CPC" "R1"] for "LPC", ["LPPD" "PDNS" "GPD" "R2"] for
     %                "PD", ["R1" "R2" "R3" "R4" "LPNS" "PDNS" "CH"] for "NS",
     %                ["NSA" "BLS" "BLU" "NSF" "NDS" "NDU" "TLS" "TLU" "ZES"
@@ -67,7 +68,8 @@ classdef Branch < handle
     %                only); for "HOM", the fixed truncation time T
     %   X0           the saddle at each point, N-by-n ("HOM" only)
     %   Kappa        cos(theta) of the critical multipliers exp(+-i theta)
-    %                at each point, N-by-1 ("NS" only)
+    %                at each point, N-by-1 ("NS"); the square of the Hopf
+    %                frequency for "H" of a delay model
     %   Mesh         mesh points from 0 to 1 at each point, N-by-(NTST+1)
     %                (cycles and "HOM"); the mesh moves when the run adapts it
     %   NTST NCOL    mesh intervals and collocation points of a run of cycles

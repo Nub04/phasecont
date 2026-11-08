@@ -60,7 +60,7 @@ function br = continuation(m, start, options)
 %
 %   BR = phasecont.continuation(M, X0, Free = "r", Roots = struct(N = 30,
 %   ReMin = -0.5)) follows the equilibria of a delay model, one whose
-%   equations call delay(x, tau). Only Type = "EP" exists for it. N is the
+%   equations call delay(x, tau). Type is "EP" or "H" for it. N is the
 %   degree of the pseudospectral approximation of the characteristic roots and
 %   ReMin the smallest real part to look for; ReMin must be below 0, and
 %   neither has a default. BR.RootCount holds the number of roots with
@@ -70,9 +70,23 @@ function br = continuation(m, start, options)
 %   point holds omega and the counts before and after in Data.values. The
 %   branch has no Eigenvalues, Tests or Codim2. START must be a state vector
 %   or an EP point. Detect takes "LP" and "BP" only (default both). Switch,
-%   MeshAdapt and every Type other than "EP" are refused. The engine returns
-%   the points when the run ends, so a live Plot draws once and a cancelled
-%   run keeps nothing.
+%   MeshAdapt and every Type other than "EP" and "H" are refused. The engine
+%   returns the points when the run ends, so a live Plot draws once and a
+%   cancelled run keeps nothing.
+%
+%   C = phasecont.continuation(M, START, Type = "H", Free = ["a" "b"], Omega =
+%   w) follows the curve of Hopf points of a delay model. START is an H point
+%   of a delay equilibrium branch, which supplies the frequency, or a state
+%   vector with Params and the Omega of that Hopf point; Omega with a Point
+%   start is an error. C.Alpha holds [a b] at each point, C.U the
+%   equilibrium and C.Kappa the square of the frequency. C.Codim2 holds the
+%   first Lyapunov coefficient l1 and the Hopf-Hopf test hh, named by
+%   C.Codim2Labels = ["GH" "HH"]; C.Eigenvalues, C.Tests and C.RootCount are
+%   empty. C.Specials holds BT and ZH always, GH with Lyapunov = true and HH
+%   with Roots = struct(N = n, ReMin = r), the root search at every point.
+%   Lyapunov is a logical scalar, default false. Detect, Switch, MeshAdapt
+%   and Var are refused. As for equilibria, the curve arrives when the run
+%   ends.
 %
 %   Name-value options
 %     Type       "EP" (default), "LP", "H", "LC", "LPC", "PD", "NS" or "HOM"
@@ -109,8 +123,15 @@ function br = continuation(m, start, options)
 %                a cycle or homoclinic orbit; 0 keeps the start mesh (integer
 %                of at least 0, engine default 3); Type "LC", "LPC", "PD",
 %                "NS" or "HOM" only
-%     Roots      struct(N = n, ReMin = r) for a delay model (required there,
-%                refused for an ODE model); see above
+%     Roots      struct(N = n, ReMin = r) for a delay model (required for
+%                Type "EP", optional for "H", refused for an ODE model); see
+%                above
+%     Omega      frequency of the Hopf point a delay "H" curve starts from,
+%                a finite real scalar above 1e-8 (required for a state vector
+%                start, an error with a Point); Type "H" of a delay model only
+%     Lyapunov   true adds the first Lyapunov coefficient and the GH label to
+%                a delay "H" curve (logical scalar, default false); Type "H"
+%                of a delay model only
 %
 %   Options that are not given keep the engine defaults. If START is a
 %   special point (any label except "EP"), the run does not report that
@@ -140,6 +161,8 @@ arguments
     options.InclinationFlips = []
     options.MeshAdapt = []
     options.Roots = []
+    options.Omega = missing
+    options.Lyapunov = missing
 end
 import phasecont.internal.num2json
 
@@ -149,14 +172,24 @@ if ~isscalar(type) || ~ismember(type, ["EP" "LP" "H" "LC" "LPC" "PD" "NS" "HOM"]
         "Type must be ""EP"", ""LP"", ""H"", ""LC"", ""LPC"", ""PD"", ""NS"" or ""HOM"".");
 end
 isDelay = m.IsDelay;
-roots = delayRoots(options.Roots, isDelay);
-if isDelay
-    % The engine's delay entry follows equilibria only. A Hopf point comes
-    % from the root count, and none of the cycle or curve options exist.
-    if type ~= "EP"
-        error("phasecont:model:badOption", ...
-            "Type must be ""EP"" for a delay model, got ""%s"".", type);
+if isDelay && type ~= "EP" && type ~= "H"
+    error("phasecont:model:badOption", ...
+        "Type must be ""EP"" or ""H"" for a delay model, got ""%s"".", type);
+end
+isDelayHopf = isDelay && type == "H";
+roots = delayRoots(options.Roots, isDelay, isDelayHopf);
+if ~isDelayHopf
+    for name = ["Omega" "Lyapunov"]
+        if ~isa(options.(name), "missing")
+            error("phasecont:model:badOption", ...
+                "%s applies to Type = ""H"" of a delay model only.", name);
+        end
     end
+end
+if isDelay
+    % The engine's delay entry follows equilibria and the Hopf curve through
+    % one of their Hopf points. A Hopf point comes from the root count, and
+    % none of the cycle options exist.
     if ~isempty(options.MeshAdapt)
         error("phasecont:model:badOption", ...
             "MeshAdapt does not apply to a delay model.");
@@ -165,11 +198,30 @@ if isDelay
         error("phasecont:model:badOption", ...
             "Switch does not apply to a delay model.");
     end
-    if ~isa(options.Detect, "missing") ...
+    if type == "EP" && ~isa(options.Detect, "missing") ...
             && ~all(ismember(string(options.Detect), ["LP" "BP"]))
         error("phasecont:model:badOption", ...
             "Detect for a delay model takes ""LP"" and ""BP"" only; a Hopf " + ...
             "point comes from the root count.");
+    end
+end
+lyapunov = false;
+omega = [];
+if isDelayHopf
+    if ~isa(options.Lyapunov, "missing")
+        lyapunov = options.Lyapunov;
+        if ~(islogical(lyapunov) && isscalar(lyapunov))
+            error("phasecont:model:badOption", ...
+                "Lyapunov must be a logical scalar.");
+        end
+    end
+    if ~isa(options.Omega, "missing")
+        omega = options.Omega;
+        if ~(isnumeric(omega) && isreal(omega) && isscalar(omega) && isfinite(omega))
+            error("phasecont:model:badOption", ...
+                "Omega must be a finite real scalar.");
+        end
+        omega = double(omega);
     end
 end
 isCycle = type == "LC";
@@ -253,7 +305,9 @@ elseif isHom
     [u0, p, from, mesh, grid] = homStart(m, start, options);
 else
     [u0, p, special] = startValues(m, start, options.Params);
-    if isDelay && special
+    if isDelayHopf
+        omega = delayHopfOmega(start, omega);
+    elseif isDelay && special
         error("phasecont:model:badStart", ...
             "A delay run starts from an equilibrium (label ""EP""), not from ""%s"".", ...
             start.Label);
@@ -328,6 +382,15 @@ elseif isCycleCurve
         ",""ntst"":" + num2json(grid(1)) + ",""ncol"":" + num2json(grid(2)) + ...
         ",""mesh"":[" + strjoin(arrayfun(@num2json, mesh), ",") + "]" + ...
         ",""options"":{" + strjoin(parts, ",") + "}";
+elseif isDelayHopf
+    problem = "{""type"":""H"",""free"":" + jsonencode(free) + ...
+        ",""omega"":" + num2json(omega) + ...
+        ",""lyapunov"":" + lower(string(lyapunov));
+    if roots.N > 0
+        problem = problem + ",""roots"":{""n"":" + num2json(roots.N) + ...
+            ",""re_min"":" + num2json(roots.ReMin) + "}";
+    end
+    problem = problem + ",""options"":{" + strjoin(parts, ",") + "}";
 elseif isCurve
     problem = "{""type"":""" + type + """,""free"":" + jsonencode(free) + ...
         ",""options"":{" + strjoin(parts, ",") + "}";
@@ -456,15 +519,16 @@ end
     end
 end
 
-function roots = delayRoots(value, isDelay)
-% The Roots option as a struct with N and ReMin. A delay model needs it and an
-% ODE model must not have it. N is the degree of the pseudospectral
+function roots = delayRoots(value, isDelay, optional)
+% The Roots option as a struct with N and ReMin. A delay model needs it, except
+% for a Hopf curve where it only switches the Hopf-Hopf label on (N = 0 then
+% means not given), and an ODE model must not have it. N is the degree of the pseudospectral
 % interpolation that finds the characteristic roots, and the search keeps the
 % roots with real part of at least ReMin, which must be negative so that every
 % root in the right half plane is in range. Neither has a default.
 roots = struct("N", 0, "ReMin", 0);
 if isempty(value) && ~isstruct(value)
-    if isDelay
+    if isDelay && ~optional
         error("phasecont:model:badOption", ...
             "A delay model needs the Roots option, for example Roots = struct(N = 30, ReMin = -0.5).");
     end
@@ -488,6 +552,31 @@ if ~ok
         "Roots must be struct(N = n, ReMin = r) with an integer N of at least 1 and a ReMin below 0.");
 end
 roots = struct("N", double(value.N), "ReMin", double(value.ReMin));
+end
+
+function omega = delayHopfOmega(start, omega)
+% The frequency of a delay Hopf curve. A Point start must carry an H label and
+% supplies it in Data.omega, so Omega is then an error; a state vector needs it.
+if isa(start, "phasecont.Point")
+    if start.Label ~= "H"
+        error("phasecont:model:badStart", ...
+            "A delay ""H"" run starts from an H point, not from ""%s"".", ...
+            start.Label);
+    end
+    if ~isempty(omega)
+        error("phasecont:model:badOption", ...
+            "Omega is taken from the H point; do not give it with a Point start.");
+    end
+    if ~(isstruct(start.Data) && isfield(start.Data, "omega") ...
+            && isnumeric(start.Data.omega) && isscalar(start.Data.omega))
+        error("phasecont:model:badStart", ...
+            "The H point has no frequency in Data.omega.");
+    end
+    omega = double(start.Data.omega);
+elseif isempty(omega)
+    error("phasecont:model:badOption", ...
+        "A state vector start needs the Omega option, the frequency of the Hopf point.");
+end
 end
 
 function [u0, p, special] = startValues(m, start, params)

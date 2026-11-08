@@ -13,8 +13,10 @@ function br = rows2branch(m, free, p, n, points, specials, branchStatus, kind, g
 %   POINTS    stride-by-N matrix from run_copy, one column per point
 %   SPECIALS  stride-by-K matrix of the special points
 %   ST        the status struct of this branch (stop, warnings, specials)
-%   KIND      "EP" (default), "LP", "H", "LC", "LPC", "PD", "NS", "HOM" or
-%             "DDE" (a delay equilibrium; "EP" with a delay model does the same)
+%   KIND      "EP" (default), "LP", "H", "LC", "LPC", "PD", "NS", "HOM",
+%             "DDE" (a delay equilibrium; "EP" with a delay model does the
+%             same) or "DDEH" (the Hopf curve of a delay equilibrium; "H"
+%             with a delay model does the same)
 %   GRID      [NTST NCOL] of a run of cycles or a HOM curve: mesh
 %             intervals and collocation points
 %
@@ -36,6 +38,11 @@ function br = rows2branch(m, free, p, n, points, specials, branchStatus, kind, g
 % characteristic roots in the right half plane stored as a double. It has no
 % eigenvalues, tests, step sizes or Newton counts, and the Branch gets a
 % RootCount instead. A Type "EP" Branch comes back for both.
+% A column of the Hopf curve of a delay equilibrium (kind "DDEH", or "H"
+% with M.IsDelay) is [alpha2, x(1..n), alpha1, kappa, l1, hh]. The Branch is
+% Type "H" with N-by-0 Eigenvalues and Tests, the two codim-2 values in
+% Codim2 (labels "GH" and "HH", NaN where the run did not compute them) and
+% Kappa.
 % All have NaN for missing values. The function makes no
 % engine calls.
 %
@@ -52,6 +59,10 @@ end
 kind = string(kind);
 if kind == "DDE" || (kind == "EP" && ~isempty(m) && m.IsDelay)
     br = delayBranch(m, free, p, n, points, specials, branchStatus);
+    return
+end
+if kind == "DDEH" || (kind == "H" && ~isempty(m) && m.IsDelay)
+    br = delayHopfBranch(m, free, p, n, points, specials, branchStatus);
     return
 end
 nmesh = 0;
@@ -245,11 +256,7 @@ function br = delayBranch(m, free, p, n, points, specials, branchStatus)
 [name, idx] = freeParameters(m, free, 1);
 p = double(p(:));
 stride = n + 2;
-if size(points, 1) ~= stride || size(specials, 1) ~= stride
-    error("phasecont:model:badRows", ...
-        "Expected rows of %d values, got %d and %d.", stride, ...
-        size(points, 1), size(specials, 1));
-end
+checkDelayRows(stride, points, specials);
 alpha = points(1, :).';
 u = points(2:1+n, :).';
 count = points(2+n, :).';
@@ -257,7 +264,57 @@ npts = size(alpha, 1);
 if npts == 0
     u = zeros(0, n);
 end
+[stop, warn] = stopAndWarnings(branchStatus);
+pts = delaySpecials(m, branchStatus, specials, n, p, @(col) col(1), idx);
 
+br = phasecont.Branch(struct( ...
+    "Type", "EP", "Free", name, "FreeIndex", idx, "P", p, "Alpha", alpha, ...
+    "U", u, "Eigenvalues", complex(zeros(npts, 0)), "Stable", count == 0, ...
+    "Tests", zeros(npts, 0), "Codim2", zeros(npts, 0), ...
+    "Codim2Labels", strings(1, 0), "RootCount", count, ...
+    "StepSize", NaN(npts, 1), "NewtonIters", NaN(npts, 1), ...
+    "Specials", pts, "Stop", stop, "Warnings", warn, "Model", m));
+end
+
+function br = delayHopfBranch(m, free, p, n, points, specials, branchStatus)
+% The Hopf curve of a delay equilibrium. A row is [alpha2, x(1..n), alpha1,
+% kappa, l1, hh]. The two codim-2 values go in Codim2, as for every curve.
+[name, idx] = freeParameters(m, free, 2);
+p = double(p(:));
+stride = n + 5;
+checkDelayRows(stride, points, specials);
+alpha = [points(n+2, :).' points(1, :).'];
+u = points(2:1+n, :).';
+kappa = points(n+3, :).';
+codim2 = points(n+4:n+5, :).';
+npts = size(alpha, 1);
+if npts == 0
+    u = zeros(0, n);
+    alpha = zeros(0, 2);
+    codim2 = zeros(0, 2);
+end
+[stop, warn] = stopAndWarnings(branchStatus);
+pts = delaySpecials(m, branchStatus, specials, n, p, ...
+    @(col) [col(n+2), col(1)], idx);
+
+br = phasecont.Branch(struct( ...
+    "Type", "H", "Free", name, "FreeIndex", idx, "P", p, "Alpha", alpha, ...
+    "U", u, "Eigenvalues", complex(zeros(npts, 0)), ...
+    "Stable", false(npts, 1), "Tests", zeros(npts, 0), "Codim2", codim2, ...
+    "Codim2Labels", ["GH" "HH"], "Kappa", kappa, ...
+    "StepSize", NaN(npts, 1), "NewtonIters", NaN(npts, 1), ...
+    "Specials", pts, "Stop", stop, "Warnings", warn, "Model", m));
+end
+
+function checkDelayRows(stride, points, specials)
+if size(points, 1) ~= stride || size(specials, 1) ~= stride
+    error("phasecont:model:badRows", ...
+        "Expected rows of %d values, got %d and %d.", stride, ...
+        size(points, 1), size(specials, 1));
+end
+end
+
+function [stop, warn] = stopAndWarnings(branchStatus)
 stop = "";
 if isfield(branchStatus, "stop") && ~isempty(branchStatus.stop)
     stop = string(branchStatus.stop);
@@ -267,7 +324,11 @@ if isfield(branchStatus, "warnings") && ~isempty(branchStatus.warnings)
     warn = string(branchStatus.warnings);
     warn = warn(:);
 end
+end
 
+function pts = delaySpecials(m, branchStatus, specials, n, p, freeValues, idx)
+% The special points of a delay run. FREEVALUES maps a special's column to
+% the values of the free parameters, in the order of IDX.
 info = specialList(branchStatus);
 if numel(info) ~= size(specials, 2)
     error("phasecont:model:badRows", ...
@@ -277,7 +338,7 @@ end
 pts = phasecont.Point.empty(0, 1);
 for k = 1:numel(info)
     pk = p;
-    pk(idx) = specials(1, k);
+    pk(idx) = freeValues(specials(:, k));
     data = struct( ...
         "coefficient", numberField(info{k}, "coefficient"), ...
         "coefficient2", numberField(info{k}, "coefficient2"), ...
@@ -289,14 +350,6 @@ for k = 1:numel(info)
         Eigenvalues = complex(zeros(0, 1)), Label = string(info{k}.label), ...
         Index = double(info{k}.index) + 1, Data = data, Model = m); %#ok<AGROW>
 end
-
-br = phasecont.Branch(struct( ...
-    "Type", "EP", "Free", name, "FreeIndex", idx, "P", p, "Alpha", alpha, ...
-    "U", u, "Eigenvalues", complex(zeros(npts, 0)), "Stable", count == 0, ...
-    "Tests", zeros(npts, 0), "Codim2", zeros(npts, 0), ...
-    "Codim2Labels", strings(1, 0), "RootCount", count, ...
-    "StepSize", NaN(npts, 1), "NewtonIters", NaN(npts, 1), ...
-    "Specials", pts, "Stop", stop, "Warnings", warn, "Model", m));
 end
 
 function k = v1Codim2Count(kind)
