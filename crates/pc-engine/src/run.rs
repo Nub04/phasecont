@@ -392,7 +392,8 @@ fn body_dde_hopf(
 /// A delay Hopf curve as a [`Branch`]. `u` is `[x, alpha1, kappa]`, `alpha` is the second free
 /// parameter and `codim2` is `[l1, hh]`, NaN where the engine has `None`. A special has the row
 /// of its point with both NaN. There is no tangent, eigenvalue, mesh, step length or iteration
-/// count. `omega2` of an `HH` special goes in `extras.values`.
+/// count. `omega2` of an `HH` special goes in `extras.values`, followed by its coefficients
+/// (SPEC 8s, slice 3) for a `ZH` or `HH` special of a run with that option.
 fn dde_hopf_branch(b: DdeHopfBranch) -> Branch {
     let point = |alpha: [f64; 2], x: &[f64], kappa: f64, l1: f64, hh: f64| {
         let mut u = x.to_vec();
@@ -440,6 +441,9 @@ fn dde_hopf_branch(b: DdeHopfBranch) -> Branch {
                 if let Some(w2) = s.omega2 {
                     extras.values.push(("omega2".to_string(), w2));
                 }
+                extras
+                    .values
+                    .extend(s.coefficients.iter().map(|(n, v)| (n.to_string(), *v)));
                 SpecialPoint {
                     label: s.label.to_string(),
                     index: s.index,
@@ -987,6 +991,7 @@ mod tests {
                 index: 1,
                 l2,
                 omega2,
+                coefficients: Vec::new(),
             }
         };
         let b = dde_hopf_branch(DdeHopfBranch {

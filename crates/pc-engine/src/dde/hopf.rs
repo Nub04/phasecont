@@ -45,9 +45,11 @@
 //!   lost to rounding or to the root finder, so there a missing pair is not counted as lost.
 
 use super::eq::{check_params, check_state, field, linearize};
+use super::hopfhopf::hopf_hopf;
 use super::lyap::lyapunov;
 use super::lyap2::lyapunov2;
 use super::roots::{CharRoot, LinearDde, RootOptions, RootSet, SHIFT, characteristic_roots};
+use super::zerohopf::zero_hopf;
 use crate::branch::{Options, Point, StopReason};
 use crate::curve2::start_tangent;
 use crate::error::EngineError;
@@ -157,6 +159,10 @@ pub struct DdeHopfSpecial {
     /// `Im` of the second critical root at an `HH` special (SPEC section 8k), `None` for the
     /// other labels and where the roots of the special have no single critical root.
     pub omega2: Option<f64>,
+    /// The coefficients at a `ZH` or `HH` special as `(name, value)` pairs, in the order of
+    /// SPEC section 8s (slice 3). Empty unless the run has the `coefficients` option and the
+    /// call succeeded; a refusal is a warning of the branch instead.
+    pub coefficients: Vec<(&'static str, f64)>,
 }
 
 /// What the run computes along the curve besides the curve itself. There are no defaults:
@@ -168,6 +174,9 @@ pub struct HopfExtras {
     /// The characteristic roots at every point with `kappa > 0` and the `HH` label (SPEC
     /// section 8k), with the window and the degree of the roots.
     pub hh: Option<RootOptions>,
+    /// The coefficients of `zero_hopf` at every `ZH` special and of `hopf_hopf` at every `HH`
+    /// special (SPEC section 8s, slice 3). `HH` specials need `hh`.
+    pub coefficients: bool,
 }
 
 /// The critical root and the second pair among a set of characteristic roots.
@@ -613,6 +622,7 @@ pub fn continue_hopf(
     let extras = HopfExtras {
         lyapunov: false,
         hh: None,
+        coefficients: false,
     };
     continue_hopf_with(model, setup, opts, cancel, &extras)
 }
@@ -631,6 +641,7 @@ pub fn continue_hopf_with_lyapunov(
     let extras = HopfExtras {
         lyapunov: true,
         hh: None,
+        coefficients: false,
     };
     continue_hopf_with(model, setup, opts, cancel, &extras)
 }
@@ -791,6 +802,7 @@ fn run_hopf(
                 index: s.index,
                 l2: None,
                 omega2: None,
+                coefficients: Vec::new(),
             })
         })
         .collect();
@@ -803,6 +815,18 @@ fn run_hopf(
         s.omega2 = prob.omega2_at(s.alpha, &s.x, s.kappa);
     }
     let mut warnings = branch.warnings.clone();
+    if extras.coefficients {
+        for s in specials.iter_mut() {
+            if s.label != "ZH" && s.label != "HH" {
+                continue;
+            }
+            let p = prob.declared(s.alpha[0], s.alpha[1]);
+            match special_coefficients(prob.m, s, &p) {
+                Ok(v) => s.coefficients = v,
+                Err(e) => warnings.push(coefficient_warning(s, &e)),
+            }
+        }
+    }
     if prob.hh_unrefined > 0 {
         warnings.push(format!(
             "hh_unrefined: {} evaluations of the Hopf-Hopf test had roots that did not \
@@ -823,6 +847,84 @@ fn run_hopf(
         stop: branch.stop.clone(),
         warnings,
     })
+}
+
+/// The coefficients at a `ZH` or `HH` special, as `(name, value)` pairs (SPEC section 8s).
+///
+/// `p` holds the declared parameters at the special. A `ZH` special goes to `zero_hopf` with
+/// `omega = sqrt(kappa)`. An `HH` special goes to `hopf_hopf` with the larger of `sqrt(kappa)`
+/// and `omega2` first, as `hopf_hopf` needs; it needs `omega2`. Any other label is a
+/// `BadProblem`, and so is any refusal of the two calls, which is passed on unchanged.
+/// A value that is `None` is left out.
+pub fn special_coefficients(
+    m: &mut DdeModel,
+    special: &DdeHopfSpecial,
+    p: &[f64],
+) -> Result<Vec<(&'static str, f64)>, EngineError> {
+    let mut out: Vec<(&'static str, f64)> = Vec::new();
+    match special.label {
+        "ZH" => {
+            let z = zero_hopf(m, &special.x, p, special.kappa.sqrt())?;
+            for (re, im, c) in [
+                ("g200_re", "g200_im", z.g200),
+                ("g110_re", "g110_im", z.g110),
+                ("g011_re", "g011_im", z.g011),
+                ("g300_re", "g300_im", z.g300),
+                ("g111_re", "g111_im", z.g111),
+                ("g210_re", "g210_im", z.g210),
+                ("g021_re", "g021_im", z.g021),
+            ] {
+                out.push((re, c[0]));
+                out.push((im, c[1]));
+            }
+            out.push(("s_product", z.s_product));
+            out.push(("s", f64::from(z.s)));
+            out.extend(z.theta.map(|t| ("theta", t)));
+            out.extend(z.e.map(|e| ("e", e)));
+            out.push(("null_residual_zero", z.null_residual_zero));
+            out.push(("null_residual_hopf", z.null_residual_hopf));
+            out.push(("equilibrium_residual", z.equilibrium_residual));
+        }
+        "HH" => {
+            let w2 = special.omega2.ok_or_else(|| {
+                EngineError::BadProblem("omega2 of the special is not available".to_string())
+            })?;
+            let w1 = special.kappa.sqrt();
+            let h = hopf_hopf(m, &special.x, p, w1.max(w2), w1.min(w2))?;
+            out.push(("omega_large", h.omega1));
+            out.push(("omega_small", h.omega2));
+            for (re, im, c) in [
+                ("g2100_re", "g2100_im", h.g2100),
+                ("g1011_re", "g1011_im", h.g1011),
+                ("g1110_re", "g1110_im", h.g1110),
+                ("g0021_re", "g0021_im", h.g0021),
+            ] {
+                out.push((re, c[0]));
+                out.push((im, c[1]));
+            }
+            out.extend(h.theta.map(|t| ("theta", t)));
+            out.extend(h.delta.map(|d| ("delta", d)));
+            out.push(("product", h.product));
+            out.push(("sign", f64::from(h.sign)));
+            out.push(("null_residual_1", h.null_residual_1));
+            out.push(("null_residual_2", h.null_residual_2));
+            out.push(("equilibrium_residual", h.equilibrium_residual));
+        }
+        other => {
+            return Err(EngineError::BadProblem(format!(
+                "the {other} special has no coefficients; only ZH and HH do"
+            )));
+        }
+    }
+    Ok(out)
+}
+
+/// The warning of a branch for a special that `special_coefficients` refused.
+pub fn coefficient_warning(special: &DdeHopfSpecial, error: &EngineError) -> String {
+    format!(
+        "coefficients: the {} special at index {} has none: {error}",
+        special.label, special.index
+    )
 }
 
 #[cfg(test)]

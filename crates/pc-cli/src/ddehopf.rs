@@ -119,6 +119,7 @@ pub fn dde_hopf(problem_file: &Path) -> ExitCode {
     let extras = DdeHopfExtras {
         lyapunov: problem.lyapunov,
         hh: problem.hh,
+        coefficients: false,
     };
     let branch = match dde_continue_hopf_with(&mut model, &setup, &problem.opts, &cancel, &extras) {
         Ok(b) => b,

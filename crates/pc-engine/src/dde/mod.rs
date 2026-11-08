@@ -24,7 +24,8 @@ pub use eq::{equilibrium, linearize, residual, stability};
 pub use floquet::{DdeFloquet, DdeFloquetOptions, floquet_multipliers};
 pub use hopf::{
     DdeHopfBranch, DdeHopfPoint, DdeHopfSpecial, HopfExtras, HopfPairs, HopfSetup, OMEGA_MIN,
-    continue_hopf, continue_hopf_with, continue_hopf_with_lyapunov, hopf_pairs,
+    coefficient_warning, continue_hopf, continue_hopf_with, continue_hopf_with_lyapunov,
+    hopf_pairs, special_coefficients,
 };
 pub use hopfhopf::{HhCase, HopfHopf, hopf_hopf, unfolding_case};
 pub use lyap::{Lyapunov, lyapunov};

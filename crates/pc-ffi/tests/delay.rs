@@ -633,6 +633,7 @@ fn a_wright_hopf_run_labels_gh_with_the_lyapunov_option() {
     let extras = DdeHopfExtras {
         lyapunov: true,
         hh: None,
+        coefficients: false,
     };
     let want = engine_hopf(
         WRIGHT3,
@@ -719,6 +720,7 @@ fn a_coupled_hopf_run_labels_hh_with_roots() {
     let extras = DdeHopfExtras {
         lyapunov: false,
         hh: Some(ro),
+        coefficients: false,
     };
     let params = [1.46, 0.8, 1.0, 0.1];
     let want = engine_hopf(
@@ -881,6 +883,208 @@ fn the_new_hopf_keys_are_errors_on_an_ode_hopf_run() {
         assert_eq!(run, 0);
         let key = extra.split('"').nth(1).unwrap();
         assert!(last_error().contains(key), "{json}: {}", last_error());
+    }
+}
+
+const ZH: &str = "par a=0, tau=1, b=1\nx'=-(a+y)*x-b*delay(x,tau)\ny'=a-y*y\ndone\n";
+// The coupled model with quadratic and cubic terms (SPEC 8s slice 3 test 2).
+const COUPLED_NL: &str = "par a=1.4, b=1.2, c=1, d=0.1\n\
+    x'=c*y-a*delay(x,1)+x*x+x*y-x*x*x\n\
+    y'=-d*x-b*delay(y,1.5)+y*y*y+x*y*y\n\
+    done\n";
+const ZH_PARAMS: [f64; 3] = [0.07, 1.407_136_057_451_117_4, 1.0];
+const ZH_X0: [f64; 2] = [0.001, -0.249];
+const NL_PARAMS: [f64; 4] = [1.46, 0.8, 1.0, 0.1];
+
+fn coefficient_extras(hh: bool) -> pc_engine::DdeHopfExtras {
+    pc_engine::DdeHopfExtras {
+        lyapunov: false,
+        hh: hh.then_some(pc_engine::RootOptions {
+            n: 30,
+            re_min: -3.0,
+        }),
+        coefficients: true,
+    }
+}
+
+/// The `coefficients` object of a special as (name, value) pairs, sorted by name.
+fn coefficient_pairs(j: &Value) -> Vec<(String, f64)> {
+    let mut v: Vec<(String, f64)> = j["coefficients"]
+        .as_object()
+        .expect("coefficients object")
+        .iter()
+        .map(|(k, x)| (k.clone(), x.as_f64().expect("a number")))
+        .collect();
+    v.sort_by(|a, b| a.0.cmp(&b.0));
+    v
+}
+
+fn engine_pairs(s: &pc_engine::DdeHopfSpecial) -> Vec<(String, f64)> {
+    let mut v: Vec<(String, f64)> = s
+        .coefficients
+        .iter()
+        .map(|(n, x)| (n.to_string(), *x))
+        .collect();
+    if let Some(w) = s.omega2 {
+        v.push(("omega2".to_string(), w));
+    }
+    v.sort_by(|a, b| a.0.cmp(&b.0));
+    v
+}
+
+fn same_pairs(a: &[(String, f64)], b: &[(String, f64)]) {
+    assert_eq!(
+        a.iter().map(|p| &p.0).collect::<Vec<_>>(),
+        b.iter().map(|p| &p.0).collect::<Vec<_>>()
+    );
+    for ((n, x), (_, y)) in a.iter().zip(b) {
+        assert_eq!(x.to_bits(), y.to_bits(), "{n}: {x} against {y}");
+    }
+}
+
+#[test]
+fn a_zh_run_with_coefficients_carries_the_engine_values() {
+    let want = engine_hopf(
+        ZH,
+        &ZH_PARAMS,
+        &ZH_X0,
+        0.98,
+        (1.3, 2.0),
+        Some(coefficient_extras(false)),
+    );
+    assert_eq!(want.specials.len(), 1);
+    assert_eq!(want.specials[0].label, "ZH");
+    let m = compiled(ZH);
+    let json = hopf_problem(
+        r#"["a","tau"]"#,
+        0.98,
+        "[1.3,2.0]",
+        r#","coefficients":true"#,
+    );
+    let (st, _) = check_hopf_run(&m, &json, &ZH_X0, &ZH_PARAMS, &want);
+    let js = st["branches"][0]["specials"].as_array().unwrap();
+    assert_eq!(js.len(), 1, "{st}");
+    assert_eq!(js[0]["label"], "ZH");
+    let got = coefficient_pairs(&js[0]);
+    same_pairs(&got, &engine_pairs(&want.specials[0]));
+    let get = |name: &str| got.iter().find(|p| p.0 == name).map(|p| p.1).unwrap();
+    // The closed form of SPEC 8i test 7.
+    assert!((get("g200_re") + 1.0).abs() <= 1e-6);
+    assert!((get("g110_re") + 0.288_400_439_142_001).abs() <= 1e-6);
+    assert!(get("s_product").abs() <= 1e-6);
+    // No warning for a special that has values.
+    assert_eq!(st["branches"][0]["warnings"], serde_json::json!([]));
+}
+
+#[test]
+fn an_hh_run_with_coefficients_carries_the_engine_values_and_omega2() {
+    let want = engine_hopf(
+        COUPLED_NL,
+        &NL_PARAMS,
+        &[0.001, 0.001],
+        1.54,
+        (0.5, 1.4),
+        Some(coefficient_extras(true)),
+    );
+    assert_eq!(want.specials.len(), 1, "{:?}", want.specials.len());
+    assert_eq!(want.specials[0].label, "HH");
+    let m = compiled(COUPLED_NL);
+    let json = hopf_problem(
+        r#"["a","b"]"#,
+        1.54,
+        "[0.5,1.4]",
+        r#","roots":{"n":30,"re_min":-3.0},"coefficients":true"#,
+    );
+    let (st, _) = check_hopf_run(&m, &json, &[0.001, 0.001], &NL_PARAMS, &want);
+    let js = st["branches"][0]["specials"].as_array().unwrap();
+    assert_eq!(js.len(), 1, "{st}");
+    assert_eq!(js[0]["label"], "HH");
+    let got = coefficient_pairs(&js[0]);
+    same_pairs(&got, &engine_pairs(&want.specials[0]));
+    let get = |name: &str| got.iter().find(|p| p.0 == name).map(|p| p.1).unwrap();
+    assert!((get("omega_large") - OMEGA1_STAR).abs() <= 1e-6);
+    assert!((get("omega_small") - OMEGA2_STAR).abs() <= 1e-6);
+    // omega2 is still there next to the new values.
+    assert!((get("omega2") - OMEGA2_STAR).abs() <= 1e-6);
+}
+
+#[test]
+fn rows_do_not_change_when_coefficients_is_false_or_absent() {
+    let off = engine_hopf(ZH, &ZH_PARAMS, &ZH_X0, 0.98, (1.3, 2.0), None);
+    let m = compiled(ZH);
+    for extra in [r#","coefficients":false"#, ""] {
+        let json = hopf_problem(r#"["a","tau"]"#, 0.98, "[1.3,2.0]", extra);
+        let (st, _) = check_hopf_run(&m, &json, &ZH_X0, &ZH_PARAMS, &off);
+        let js = st["branches"][0]["specials"].as_array().unwrap();
+        assert_eq!(js.len(), 1, "{st}");
+        assert_eq!(js[0]["label"], "ZH");
+        assert!(
+            js[0]["coefficients"].as_object().unwrap().is_empty(),
+            "{extra}: {st}"
+        );
+    }
+    // The same curve with the option on has the same rows.
+    let on = engine_hopf(
+        ZH,
+        &ZH_PARAMS,
+        &ZH_X0,
+        0.98,
+        (1.3, 2.0),
+        Some(coefficient_extras(false)),
+    );
+    assert_eq!(on.points.len(), off.points.len());
+    for (p, q) in on.points.iter().zip(&off.points) {
+        assert!(same_bits(&hopf_row(p), &hopf_row(q)));
+    }
+}
+
+#[test]
+fn bad_coefficients_keys_are_errors_that_name_the_key() {
+    let m = compiled(HUTCH);
+    let free = r#"["r","tau"]"#;
+    let opts = hopf_options("[0.5,3.0]", 1);
+    for bad in ["1", r#""yes""#, "null", "[true]", r#"{"a":1}"#, "0.5"] {
+        let json =
+            format!(r#"{{"type":"H","free":{free},"omega":1.57,"coefficients":{bad},{opts}}}"#);
+        let (rc, run) = start_with(&m, &json, &[1.001], &[1.57, 1.0]);
+        assert_eq!(rc, BAD_PROBLEM, "{bad}: {}", last_error());
+        assert_eq!(run, 0, "{bad}");
+        assert!(
+            last_error().contains("coefficients"),
+            "{bad}: {}",
+            last_error()
+        );
+    }
+}
+
+#[test]
+fn the_coefficients_key_is_an_error_on_every_other_run_type() {
+    // A delay model with an equilibrium run.
+    let dm = compiled(HUTCH);
+    let json = problem(r#","coefficients":true"#);
+    let (rc, run) = start_with(&dm, &json, &[1.0], &[1.3, 1.0]);
+    assert_eq!(rc, BAD_PROBLEM, "{}", last_error());
+    assert_eq!(run, 0);
+    assert!(last_error().contains("coefficients"), "{}", last_error());
+    // ODE models: H, EP, LP and the cycle types.
+    let om = compiled("par a=1, b=2\nx'=-a*x+b*y\ny'=-b*x-a*y\ndone\n");
+    let cases = [
+        r#"{"type":"H","free":["a","b"],"coefficients":true}"#,
+        r#"{"type":"EP","free":"a","coefficients":true}"#,
+        r#"{"type":"LP","free":["a","b"],"coefficients":true}"#,
+        r#"{"type":"LC","free":"a","ntst":10,"ncol":4,"coefficients":true}"#,
+        r#"{"type":"LPC","free":["a","b"],"ntst":10,"ncol":4,"coefficients":true}"#,
+        r#"{"type":"HOM","free":["a","b"],"ntst":10,"ncol":4,"coefficients":true}"#,
+    ];
+    for json in cases {
+        let (rc, run) = start_with(&om, json, &[0.0, 0.0], &[1.0, 2.0]);
+        assert_ne!(rc, 0, "{json}");
+        assert_eq!(run, 0, "{json}");
+        assert!(
+            last_error().contains("coefficients"),
+            "{json}: {}",
+            last_error()
+        );
     }
 }
 

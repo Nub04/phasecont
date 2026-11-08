@@ -183,6 +183,9 @@ pub struct Problem {
     pub omega: Option<f64>,
     /// Whether a delay Hopf run computes `l1` and labels `GH`. Off when the key is missing.
     pub lyapunov: bool,
+    /// Whether a delay Hopf run computes the coefficients at its `ZH` and `HH` specials
+    /// (SPEC 8s, slice 3). Off when the key is missing.
+    pub coefficients: bool,
 }
 
 impl Problem {
@@ -249,6 +252,7 @@ impl Problem {
                 extras: DdeHopfExtras {
                     lyapunov: self.lyapunov,
                     hh: self.roots,
+                    coefficients: self.coefficients,
                 },
             },
             _ => RunKind::Ep,
@@ -447,6 +451,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
             "roots",
             "omega",
             "lyapunov",
+            "coefficients",
         ],
         "",
     )?;
@@ -490,7 +495,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         return Err("type: a delay equation takes only \"EP\" or \"H\"".into());
     }
     let roots = parse_roots(top, kind)?;
-    let (omega, lyapunov) = parse_hopf_keys(top, kind)?;
+    let (omega, lyapunov, coefficients) = parse_hopf_keys(top, kind)?;
     let curve_of_cycles = matches!(kind, Kind::Lpc { .. } | Kind::Pd { .. } | Kind::Ns { .. });
     let one_free = matches!(kind, Kind::Ep | Kind::DdeEp | Kind::Lc { .. });
     let (free, curve_free) = match (one_free, top.get("free")) {
@@ -674,6 +679,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         roots,
         omega,
         lyapunov,
+        coefficients,
     };
     if mode == Mode::Cli {
         problem.check_u0_len(ir.n(), problem.setup.u0.len())?;
@@ -708,19 +714,23 @@ fn parse_roots(top: &Map<String, Value>, kind: Kind) -> Result<Option<RootOption
     Ok(Some(RootOptions { n, re_min }))
 }
 
-/// The `omega` and `lyapunov` keys of a delay Hopf run (SPEC 8s, slice 2). `omega` is required
-/// there and has no default, and it must be above the engine's floor, so a bad value is refused
-/// at the start. `lyapunov` is false when the key is left out. Any other kind refuses both.
-fn parse_hopf_keys(top: &Map<String, Value>, kind: Kind) -> Result<(Option<f64>, bool), String> {
+/// The `omega`, `lyapunov` and `coefficients` keys of a delay Hopf run (SPEC 8s, slices 2 and
+/// 3). `omega` is required there and has no default, and it must be above the engine's floor,
+/// so a bad value is refused at the start. `lyapunov` and `coefficients` are false when the
+/// key is left out and must be booleans otherwise. Any other kind refuses all three.
+fn parse_hopf_keys(
+    top: &Map<String, Value>,
+    kind: Kind,
+) -> Result<(Option<f64>, bool, bool), String> {
     if kind != Kind::DdeHopf {
-        for key in ["omega", "lyapunov"] {
+        for key in ["omega", "lyapunov", "coefficients"] {
             if top.contains_key(key) {
                 return Err(format!(
                     "{key}: only a delay-equation Hopf run takes this key"
                 ));
             }
         }
-        return Ok((None, false));
+        return Ok((None, false, false));
     }
     let omega = number(
         top.get("omega")
@@ -730,12 +740,12 @@ fn parse_hopf_keys(top: &Map<String, Value>, kind: Kind) -> Result<(Option<f64>,
     if omega <= DDE_HOPF_OMEGA_MIN {
         return Err(format!("omega: must be above {DDE_HOPF_OMEGA_MIN:e}"));
     }
-    let lyapunov = match top.get("lyapunov") {
-        None => false,
-        Some(Value::Bool(b)) => *b,
-        Some(_) => return Err("lyapunov: expected true or false".into()),
+    let flag = |key: &str| match top.get(key) {
+        None => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(_) => Err(format!("{key}: expected true or false")),
     };
-    Ok((Some(omega), lyapunov))
+    Ok((Some(omega), flag("lyapunov")?, flag("coefficients")?))
 }
 
 /// The model's parameter values with the ones that `params` sets.
@@ -793,7 +803,7 @@ fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Probl
     if top.contains_key("roots") {
         return Err("roots: only a delay-equation run takes this key".into());
     }
-    for key in ["omega", "lyapunov"] {
+    for key in ["omega", "lyapunov", "coefficients"] {
         if top.contains_key(key) {
             return Err(format!(
                 "{key}: only a delay-equation Hopf run takes this key"
@@ -839,6 +849,7 @@ fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Probl
         roots: None,
         omega: None,
         lyapunov: false,
+        coefficients: false,
     };
     if mode == Mode::Cli {
         problem.check_u0_len(ir.n(), problem.setup.u0.len())?;

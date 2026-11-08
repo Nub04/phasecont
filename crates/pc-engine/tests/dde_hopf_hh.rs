@@ -151,6 +151,7 @@ fn extras(lyapunov: bool) -> DdeHopfExtras {
     DdeHopfExtras {
         lyapunov,
         hh: Some(ro()),
+        coefficients: false,
     }
 }
 
@@ -516,6 +517,7 @@ fn off_equals_absent() {
     let off = DdeHopfExtras {
         lyapunov: false,
         hh: None,
+        coefficients: false,
     };
     let none = run_with(COUPLED, Evaluator::Jit, &s, &o, &off);
     let on = run_with(COUPLED, Evaluator::Jit, &s, &o, &extras(false));
@@ -566,6 +568,7 @@ fn option_errors_are_bad_problems() {
     let with = |n: usize, re_min: f64| DdeHopfExtras {
         lyapunov: false,
         hh: Some(RootOptions { n, re_min }),
+        coefficients: false,
     };
     for re_min in [0.0, 0.5, f64::NAN, f64::NEG_INFINITY, f64::INFINITY] {
         let e = err_with(COUPLED, &s, &o, &with(30, re_min));
