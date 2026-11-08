@@ -60,6 +60,50 @@ pub fn null_left(
         .collect())
 }
 
+/// Singular values and null vectors from one SVD. See [`svd_null`].
+#[derive(Debug, Clone)]
+pub struct SvdNull {
+    /// The min(rows, cols) singular values, descending.
+    pub values: Vec<f64>,
+    /// The right vectors of the smallest singular values, smallest first, as `null_right`.
+    pub right: Vec<Vec<f64>>,
+    /// The left vectors of the smallest singular values, smallest first, as `null_left`.
+    pub left: Vec<Vec<f64>>,
+}
+
+/// The singular values, the `k_right` right null vectors and the `k_left` left null vectors
+/// of `a` from a single SVD. `BadShape` when `k_right > cols` or `k_left > rows`.
+///
+/// A caller that needs the values and a kernel pays for the decomposition once instead of
+/// two or three times. The vectors are those of `null_right` and `null_left`.
+pub fn svd_null(
+    a: &[f64],
+    rows: usize,
+    cols: usize,
+    k_right: usize,
+    k_left: usize,
+) -> Result<SvdNull, LinalgError> {
+    if k_right > cols || k_left > rows {
+        return Err(LinalgError::BadShape);
+    }
+    let s = svd(a, rows, cols)?;
+    let d = s.S().column_vector();
+    let values = (0..rows.min(cols)).map(|i| d[i]).collect();
+    let v = s.V();
+    let right = (0..k_right)
+        .map(|t| (0..cols).map(|i| v[(i, cols - 1 - t)]).collect())
+        .collect();
+    let u = s.U();
+    let left = (0..k_left)
+        .map(|t| (0..rows).map(|i| u[(i, rows - 1 - t)]).collect())
+        .collect();
+    Ok(SvdNull {
+        values,
+        right,
+        left,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +213,82 @@ mod tests {
             assert!((proj - 1.0).abs() <= 1e-12, "{proj}");
         }
         assert!(dot(&v[0], &v[1]).abs() <= 1e-12);
+    }
+
+    /// A deterministic rank-4 5 by 6 matrix (column-major): a 5 by 4 factor times a 4 by 6
+    /// factor, both from a fixed linear congruential sequence.
+    fn rank4_5x6() -> Vec<f64> {
+        let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((state >> 11) as f64 / (1u64 << 53) as f64) - 0.5
+        };
+        let l: Vec<f64> = (0..5 * 4).map(|_| next()).collect();
+        let r: Vec<f64> = (0..4 * 6).map(|_| next()).collect();
+        let mut a = vec![0.0; 5 * 6];
+        for i in 0..5 {
+            for j in 0..6 {
+                a[i + 5 * j] = (0..4).map(|k| l[i + 5 * k] * r[k + 4 * j]).sum();
+            }
+        }
+        a
+    }
+
+    /// The projector `sum v v^T` of the vectors, as a dense `len` by `len` array.
+    fn projector(vs: &[Vec<f64>]) -> Vec<f64> {
+        let len = vs[0].len();
+        let mut p = vec![0.0; len * len];
+        for v in vs {
+            for i in 0..len {
+                for j in 0..len {
+                    p[i + len * j] += v[i] * v[j];
+                }
+            }
+        }
+        p
+    }
+
+    #[test]
+    fn one_svd_gives_the_values_and_both_kernels() {
+        let a = rank4_5x6();
+        let one = svd_null(&a, 5, 6, 2, 1).unwrap();
+        let sv = singular_values(&a, 5, 6).unwrap();
+        assert_eq!(one.values.len(), 5);
+        for (x, y) in one.values.iter().zip(&sv) {
+            assert!((x - y).abs() <= 1e-14, "{x} {y}");
+        }
+        // Rank 4: the fifth value is rounding level, the fourth is not.
+        assert!(one.values[4] <= 1e-14 * one.values[0], "{:?}", one.values);
+        assert!(one.values[3] > 1e-3 * one.values[0], "{:?}", one.values);
+        assert_eq!(one.right.len(), 2);
+        assert_eq!(one.left.len(), 1);
+        let right = null_right(&a, 5, 6, 2).unwrap();
+        let left = null_left(&a, 5, 6, 1).unwrap();
+        // The kernels agree through their projectors, which do not depend on the basis.
+        for (p, q) in projector(&one.right)
+            .iter()
+            .zip(&projector(&right))
+            .chain(projector(&one.left).iter().zip(&projector(&left)))
+        {
+            assert!((p - q).abs() <= 1e-12, "{p} {q}");
+        }
+        for x in &one.right {
+            assert!((norm(x) - 1.0).abs() <= 1e-13);
+            assert!(residual(&a, 5, 6, x, false) <= 1e-13);
+        }
+        assert!(residual(&a, 5, 6, &one.left[0], true) <= 1e-13);
+    }
+
+    #[test]
+    fn svd_null_asks_for_no_more_than_the_matrix_has() {
+        let a = [1.0, 1.0, 1.0, 1.0];
+        assert_eq!(svd_null(&a, 2, 2, 3, 0).err(), Some(LinalgError::BadShape));
+        assert_eq!(svd_null(&a, 2, 2, 0, 3).err(), Some(LinalgError::BadShape));
+        let none = svd_null(&a, 2, 2, 0, 0).unwrap();
+        assert!(none.right.is_empty() && none.left.is_empty());
+        assert_eq!(none.values.len(), 2);
     }
 
     #[test]

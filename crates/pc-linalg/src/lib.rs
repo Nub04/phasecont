@@ -18,4 +18,4 @@ pub use invariant::{
     BasisOf, BasisPair, BasisTracker, SIGN_MAX_STEPS, SIGN_TOL, invariant_bases, rotate_basis,
     sign_function,
 };
-pub use null::{null_left, null_right, singular_values};
+pub use null::{SvdNull, null_left, null_right, singular_values, svd_null};
