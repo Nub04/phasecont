@@ -1434,6 +1434,8 @@ Step 4 of E9b lets the continuation of Sections 8n and 8o move the collocation m
 - The code does not estimate the discretization error along the branch. An orbit that grows a steep part faster than the mesh follows it is resolved only as well as the last adaptation allowed, and there is no warning.
 - The locator and the labels compare test values across a mesh change, as the cycle branches of Section 7 do. Where the mesh moves between two points, a test value has a jump that is the difference of the two discretizations, and a label can move by that much.
 - The orbit of the oracle model (below) is my own construction. A calculation of my own, not kept in the repository, gave the error of the uniform mesh at $G = 20$, $N = 20$, $m = 4$ (the baseline of table 1). The closed form of the Floquet multipliers of that model is also mine.
+- On a smooth orbit the adapted mesh is less accurate than the uniform one. In table 3 the largest error is $2.2\times10^{-7}$ against $5.3\times10^{-8}$, about 4 times, and the mesh moves by up to 0.03 of the period. I have not found the cause. The tests bound this loss and do not remove it.
+- A failed corrector adapts the mesh once per point even when `every` is `usize::MAX`, as `CycleProblem` of Section 7 does. Test 4 does not cover a run with a corrector failure, so the claim that a huge `every` gives the fixed-mesh run holds only for runs without one.
 - The tolerance tables are measured from the code, not derived from the order of the method.
 - The cost of the monitor is $O(N m n)$ per adaptation, which is small beside the dense Jacobian of Section 8l. The monodromy matrix is built on the current mesh as before. I have not timed a long run.
 
@@ -1467,7 +1469,7 @@ with the number 20 written out in the source. For every $c$ and $\tau$ it has th
 
 1. The mesh follows the steep parts. STEEP, `free = c`, the start is the exact orbit on the uniform mesh at $c = 0.5$ and is corrected by the code of Section 8n, `direction` $+1$, `bounds` $= (0.3, 0.7)$, `hmax` $= 0.1$, `max_steps` as in table 1, `adapt` with `every` $= 1$, no `floquet`. The first point has the uniform mesh and the error $e_0$ of the uniform mesh (the baseline of table 1). At every point the mesh has $N + 1$ values, starts at 0, ends at 1 and increases strictly. The error of the last point is at most the bound of table 1, which is a fraction of $e_0$, and $\lvert T - 2\pi\rvert$ is at most the bound there. The largest $\lvert s_j - j/N\rvert$ of the last mesh is at least the bound there, so the mesh has moved, and its smallest interval lies in a steep part ($t$ within 0.3 of $\pi/2$ or $3\pi/2$).
 2. The multipliers on an adapted mesh. The run of test 1 with `floquet` ($\mathrm{nhist} = 16$, $\mathrm{count} = 2$). At every point the leading multiplier is within the bound of table 2 of $1$ (`trivial_error` is at most the bound there) and the second one is within the bound there of $e^{2\pi\lambda_0}$. The `alpha`, `period` and `profile` of every point equal those of test 1 bit for bit, and so does every `mesh`.
-3. No harm on a smooth orbit. The $\mu$-line of Section 8n, test 1 ($K = 0$, `direction` $+1$, same options), with `adapt` and `every` $= 1$. At every point $\lvert T - 2\pi\rvert$ and the error against $\sin 2\pi s_q$ are at most the numbers of table 3, and the largest $\lvert s_j - j/N\rvert$ over the run is at most the bound there.
+3. A smooth orbit stays accurate. The $\mu$-line of Section 8n, test 1 ($K = 0$, `direction` $+1$, same options), with `adapt` and `every` $= 1$. At every point the mesh is valid, $\lvert T - 2\pi\rvert$ and the error against $\sin 2\pi s_q$ are at most the numbers of table 3, and the largest $\lvert s_j - j/N\rvert$ over the run is at most the bound there. The adapted mesh is not better here: its largest error is about 4 times that of the uniform mesh (table 3), and the test only bounds the loss.
 4. The uniform path. For the runs of Section 8n, test 1 ($K = 0$, both directions), Section 8o, test 2 and test 3, `continue_cycle_adapt` with `every` $=$ `usize::MAX` (so that no adaptation is due) gives the points and specials of `continue_cycle_floquet`, bit for bit, and every `mesh` is the uniform mesh. `continue_cycle` and `continue_cycle_floquet` give an empty `mesh` on every point and special.
 5. The rows on a mesh. A unit test in `dde/cycle.rs` with a hand-made non-uniform mesh (the intervals alternate between $0.5/N$ and $1.5/N$, and $N = 20$): the Jacobian of the rows agrees with central differences to a relative $10^{-6}$ for the STEEP model at a perturbed exact orbit, for the columns of the profile, $T$ and $\alpha$, with `free = tau` and with `free = c`. On the uniform mesh given explicitly as $j/N$, the residual and the Jacobian agree with those of the uniform path to $10^{-12}$ relative to $1 + \lvert\cdot\rvert$. For the OSC model of Section 8l ($K = 0$), the exact orbit sampled on the hand-made mesh has a residual at most the bound of table 4. A shifted point that falls exactly on a mesh node is assigned to the interval that starts there.
 6. The monodromy on a mesh. A unit test in `dde/floquet.rs`: with the uniform mesh given explicitly, `monodromy` and the version with a mesh agree to $10^{-10}$ in the eigenvalues. On the hand-made mesh of test 5, the OSC exact orbit and `nhist` $= 16$, the leading eigenvalues agree with those of `floquet_multipliers` to the bound of table 4.
@@ -1475,7 +1477,44 @@ with the number 20 written out in the source. For every $c$ and $\tau$ it has th
 8. The two evaluators. Test 1 with `Evaluator::Jit` and `Evaluator::Fallback` gives the same number of points, and `alpha`, `period`, `profile` and `mesh` agree to $10^{-9}$ relative to $1 + \lvert\cdot\rvert$.
 9. `pc-cli dde-cycle` with the problem of test 1 and `branch: true`, `adapt: {"every": 1}` prints the points of `continue_cycle_adapt` (the `alpha`, `period`, `profile` and `mesh` of every point and special bit for bit, JIT). With `floquet` it also prints the multipliers. Without `adapt` the output has no `mesh` key and equals the output of Sections 8n and 8o. The exit-2 cases of the command line paragraph each give exit 2 with the right name in the message, with a Hopf start as well, and the message of `options.mesh_adapt` names `adapt`.
 
-**Measured tables.** The tables and bounds follow the first run of the tests (release build). They are filled in after that run.
+**Measured tables.** The values are from `cargo test --release -p pc-engine --test dde_cycle_adapt -- --ignored --nocapture` (the ignored test `print_tables`), run on the development machine. Each bound is about 4 times the measured value, in the safe direction, except where the row says otherwise.
+
+Table 1, STEEP, `every` $= 1$, `max_steps` $= 60$ (10 points, the run stops on the bounds of $c$):
+
+| Quantity | Measured | Bound |
+|---|---|---|
+| error $e_0$ of point 0 (uniform mesh) | $7.833\times10^{-2}$ | none, it is the baseline |
+| error of the last point | $8.547\times10^{-3}$ ($0.109\,e_0$) | at most $0.4\,e_0$ |
+| largest $\lvert T - 2\pi\rvert$ over the run | $2.450\times10^{-8}$ | at most $10^{-7}$ |
+| largest $\lvert s_j - j/N\rvert$ of the last mesh | $1.184\times10^{-1}$ | at least $0.03$ |
+| position of the smallest interval of the last mesh | $t = 1.530$ | within 0.3 of $\pi/2$ or $3\pi/2$ |
+
+The error of the points, in order, is $7.8\times10^{-2}$ for points 0 and 1 (point 1 still lives on the uniform mesh, since the mesh moves after a point is accepted), then $1.2\times10^{-2}$, $1.3\times10^{-2}$, $9.7\times10^{-3}$, $9.7\times10^{-3}$, $8.6\times10^{-3}$ and $8.5\times10^{-3}$ for the rest. The adapted mesh lowers the error by a factor of about 9 on this orbit. I have not looked into why it stops there.
+
+Table 2, the same run with `floquet` ($\mathrm{nhist} = 16$, $\mathrm{count} = 2$):
+
+| Quantity | Measured | Bound |
+|---|---|---|
+| `trivial_error`, every point | $5.3\times10^{-15}$ to $1.5\times10^{-14}$ | at most $10^{-11}$, the bound of Section 8o, not 4 times the value |
+| distance of the second multiplier from $e^{2\pi\lambda_0}$ | $1.0\times10^{-12}$ at point 0, rising to $1.43\times10^{-9}$ at point 9 | at most $6\times10^{-9}$ |
+
+Table 3, the $\mu$-line (OSC, $K = 0$), `every` $= 1$ (13 points):
+
+| Quantity | Measured | Bound |
+|---|---|---|
+| largest $\lvert T - 2\pi\rvert$ | $1.698\times10^{-8}$ | at most $7\times10^{-8}$ |
+| largest error against $\sin 2\pi s_q$, adapted mesh | $2.239\times10^{-7}$ | at most $9\times10^{-7}$ |
+| largest error, uniform mesh (for comparison, no bound) | $5.297\times10^{-8}$ | none |
+| largest $\lvert s_j - j/N\rvert$ over the run | $2.897\times10^{-2}$ | at most $0.12$ |
+
+Table 4, the hand-made mesh of test 5 (intervals alternate between $0.5/N$ and $1.5/N$), OSC, release build:
+
+| Quantity | Measured | Bound |
+|---|---|---|
+| largest collocation residual of the exact orbit | $3.44\times10^{-5}$ | at most $1.5\times10^{-4}$ |
+| largest distance of the two leading multipliers from those of the uniform mesh (`nhist` $= 16$) | $2.74\times10^{-8}$ | at most $1.2\times10^{-7}$ |
+
+The unit tests run in the debug build, and the values there agree with these to the digits shown.
 
 **One-time check of the uniform path.** Before the code of this step was written, the output of `pc-cli dde-cycle` for three problems (the $\mu$-line with `branch`, the same with `floquet`, and the STEEP model with `branch` and `floquet`, all without `adapt`) was saved. After the step the same three problems give the same output byte for byte. This was run once on the development machine, with the debug build, and is not a test, because the last bits of `sin` and `tanh` differ between platforms.
 
