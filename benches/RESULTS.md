@@ -38,11 +38,16 @@ The Morris-Lecar end point agrees: pc-cli gives v = -35.950125, w = 0.13281562 a
 
 # GPU ensemble
 
-Measured on 2026-11-08 with commit 7d09cc2, using a Windows `pc-cli.exe` (cross-built for `x86_64-pc-windows-gnu`) started from WSL:
+Two measurements on 2026-11-08, both through a Windows `pc-cli.exe` (cross-built for `x86_64-pc-windows-gnu`) started from WSL:
 
 ```sh
 pc-cli ensemble --bench
 ```
+
+- Before: commit 7d09cc2, where every run creates and drops its own GPU context.
+- After: commit 5cf1e4c, where the CUDA and OpenCL backends keep one context per device between runs in a process. The bench rows also report `first_seconds`, the first repeat.
+
+Setup, the same for both:
 
 - Machine: Intel Core Ultra 7 255H laptop, CPU backend on 16 rayon threads.
 - NVIDIA: RTX 5060 Laptop GPU, CUDA driver 13.5, NVRTC 13.5, OpenCL driver 621.14.
@@ -50,6 +55,38 @@ pc-cli ensemble --bench
 - Model: van der Pol, mu = 1.5, RK4 with dt 0.01 from t = 0 to t = 10, so each member takes 1000 steps.
 - Time: the fastest of 3 repeats, including the host work around the launches. Each cell is wall time in milliseconds for one run.
 - The Metal backend is not built on this machine, and no AMD or Apple device has run.
+
+## After: the context is kept
+
+Single precision:
+
+| Backend and device | N = 1000 | N = 10000 | N = 100000 |
+|---|---|---|---|
+| CPU (rayon) | 6.2 | 55.0 | 559.7 |
+| CUDA, RTX 5060 | 12.5 | 19.9 | 88.5 |
+| OpenCL, RTX 5060 | 8.3 | 14.0 | 78.7 |
+| OpenCL, Arc 140T | 2.4 | 18.8 | 191.2 |
+
+Double precision:
+
+| Backend and device | N = 1000 | N = 10000 | N = 100000 |
+|---|---|---|---|
+| CPU (rayon) | 5.6 | 51.9 | 525.5 |
+| CUDA, RTX 5060 | 13.9 | 20.5 | 99.3 |
+| OpenCL, RTX 5060 | 7.5 | 14.3 | 86.7 |
+| OpenCL, Arc 140T | 4.5 | 22.8 | 232.8 |
+
+The first run of a device in the process, which is the first single-precision row at N = 1000 and also creates the context: 126 ms on CUDA for the RTX 5060, 160 ms on OpenCL for the RTX 5060 and 9 ms on the Arc 140T. Every later row on that device and backend reuses the context, and its first repeat is within 0 to 7 ms of its fastest one.
+
+What the numbers say:
+
+- The RTX 5060 now beats the CPU from N = 10000 on. It is 2.5 to 3.9 times faster at N = 10000 and 5.3 to 7.1 times faster at N = 100000, at roughly 1000 to 1270 million member-steps per second at N = 100000 against 180 to 190 million for the CPU. At N = 1000 it is still slower: OpenCL takes 1.3 times as long as the CPU and CUDA 2.0 to 2.5 times as long.
+- The Arc 140T is faster than the CPU at all three sizes, by 1.2 to 2.6 times at N = 1000, 2.3 to 2.9 times at N = 10000 and 2.3 to 2.9 times at N = 100000. Keeping the context changed it little, since it creates one in under 1 ms.
+- Double precision on the RTX 5060 is within 12 percent of single (OpenCL at N = 1000 was 9 percent faster in double, which is noise). On the Arc 140T it takes 21 to 87 percent longer, depending on N.
+- What is left of the fixed cost on the RTX 5060 is the kernel compile that every run still does: 11 ms in NVRTC for CUDA, about 6 ms in the OpenCL program build. That is most of the 12.5 and 8.3 ms at N = 1000. Where the break-even sits between 1000 and 10000 members was not searched.
+- These are single runs on one laptop. Treat them as a rough comparison.
+
+## Before: every run creates its own context
 
 Single precision:
 
@@ -69,11 +106,4 @@ Double precision:
 | OpenCL, RTX 5060 | 87 | 93 | 158 |
 | OpenCL, Arc 140T | 5.5 | 25.5 | 227 |
 
-What the numbers say:
-
-- The RTX 5060 is slower than the CPU at N = 1000 and N = 10000, in both precisions and on both backends. Its time barely changes from 1000 to 10000 members (about 90 to 100 ms to about 100 to 110 ms), so a fixed cost of about 90 ms per run dominates. At N = 100000 it is 3.1 to 3.6 times faster than the CPU, at roughly 580 to 650 million member-steps per second against about 180 million for the CPU.
-- The Arc 140T has almost no fixed cost. It is faster than the CPU at all three sizes, by 1.1 to 1.5 times at N = 1000, 2.1 to 2.7 times at N = 10000 and 2.4 to 3.0 times at N = 100000.
-- Double precision on the RTX 5060 costs about the same as single. On the Arc 140T it is 20 to 40 percent slower, depending on N.
-- Where the break-even sits for the RTX 5060 is between 10000 and 100000 members. This run did not search for it.
-- The fixed cost on the RTX 5060 is context creation. Timings printed from a throwaway build (not committed) for N = 1000 gave, per run: 65 to 76 ms to create the context (CUDA and OpenCL on the RTX 5060), 11 ms to compile the kernel (36 to 47 ms on some runs), under 1 ms to load it and 2 to 3 ms to launch and copy. On the Arc 140T, creating the context took 0.2 to 0.7 ms and building the program 0.3 to 0.7 ms. Every run creates and drops its own context and compiles its own kernel, so a second run in the same process pays the same cost.
-- These are single runs on one laptop. Treat them as a rough comparison.
+The RTX 5060 was slower than the CPU at N = 1000 and N = 10000 and its time barely changed from 1000 to 10000 members, which pointed at a fixed cost per run. Timings printed from a throwaway build (not committed) for N = 1000 gave, per run: 65 to 76 ms to create the context (CUDA and OpenCL on the RTX 5060), 11 ms to compile the kernel (36 to 47 ms on some runs), under 1 ms to load it and 2 to 3 ms to launch and copy. On the Arc 140T, creating the context took 0.2 to 0.7 ms and building the program 0.3 to 0.7 ms.
