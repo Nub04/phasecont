@@ -2,7 +2,8 @@
 //! which has the exact orbit x = sin t, T = 2 pi for tau = pi/2 (SPEC section 8l, test 7).
 //! The orbit and Hopf starts must give the numbers of the engine calls, and so must the
 //! `floquet` key (SPEC section 8m, test 9) and the `branch` key (SPEC section 8n, test 8)
-//! and the labels of a branch (SPEC section 8o, test 8).
+//! and the labels of a branch (SPEC section 8o, test 8) and the `adapt` key (SPEC section 8p,
+//! test 9).
 //! Also runs the bad problem files and the run that does not converge.
 
 mod common;
@@ -14,8 +15,8 @@ use std::sync::atomic::AtomicBool;
 use common::{code, run, stderr, stdout};
 use pc_engine::{
     DdeCycleBranch, DdeCyclePoint, DdeCycleSetup, DdeCycleStart, DdeFloquetOptions, DdeHopfCycle,
-    Evaluator, Options, build_dde, dde_continue_cycle, dde_continue_cycle_floquet,
-    dde_correct_cycle, dde_floquet_multipliers, dde_hopf_cycle,
+    DdeMeshAdapt, Evaluator, Options, build_dde, dde_continue_cycle, dde_continue_cycle_adapt,
+    dde_continue_cycle_floquet, dde_correct_cycle, dde_floquet_multipliers, dde_hopf_cycle,
 };
 use pc_ode::{MapLoader, Severity, SourceMap, load};
 use serde_json::{Value, json};
@@ -1218,4 +1219,255 @@ fn a_bad_floquet_with_a_hopf_start_is_exit_2_before_the_run() {
     p["options"] = json!({"max_newton": 1});
     let (status, _, err) = dde_cycle("hopf_no_converge.json", &p);
     assert_eq!(status, 1, "{err}");
+}
+
+// ---------------------------------------------------------------------------------------
+// The `adapt` key (SPEC section 8p, test 9).
+
+fn uniform_mesh() -> Vec<f64> {
+    (0..=NTST).map(|j| j as f64 / NTST as f64).collect()
+}
+
+/// Checks the printed meshes of the points and the specials against `want`, bit for bit.
+fn same_meshes(out: &str, want: &DdeCycleBranch, what: &str) {
+    let v: Value = serde_json::from_str(out).unwrap();
+    let check = |got: &Value, w: &DdeCyclePoint, at: String| {
+        let mesh = doubles(&got["mesh"]);
+        assert_eq!(mesh.len(), NTST + 1, "{at}: mesh length");
+        assert_eq!(mesh.len(), w.mesh.len(), "{at}: mesh length");
+        for (j, (a, b)) in mesh.iter().zip(&w.mesh).enumerate() {
+            assert_eq!(a.to_bits(), b.to_bits(), "{at} mesh[{j}]");
+        }
+    };
+    for (i, (g, w)) in v["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(&want.points)
+        .enumerate()
+    {
+        check(g, w, format!("{what} point {i}"));
+    }
+    for (i, (g, w)) in v["specials"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(&want.specials)
+        .enumerate()
+    {
+        check(g, &w.point, format!("{what} special {i}"));
+    }
+}
+
+/// The mu-line problem with `adapt` and, if given, `floquet`.
+fn mu_line_adapt(every: u64, floquet: Option<Value>) -> Value {
+    let mut p = mu_line_problem();
+    p["adapt"] = json!({"every": every});
+    if let Some(f) = floquet {
+        p["floquet"] = f;
+    }
+    p
+}
+
+/// The engine run that `mu_line_adapt(every, floquet)` stands for.
+fn mu_line_engine(every: usize, floquet: Option<&DdeFloquetOptions>) -> DdeCycleBranch {
+    let mut model = engine_model();
+    let setup = DdeCycleSetup {
+        params: vec![0.3, TAU],
+        free: 0,
+        ntst: NTST,
+        ncol: NCOL,
+    };
+    let opts = Options {
+        bounds: (0.1, 0.9),
+        direction: 1.0,
+        hmax: 0.2,
+        max_steps: 200,
+        max_newton: 10,
+        ..Options::default()
+    };
+    dde_continue_cycle_adapt(
+        &mut model,
+        &setup,
+        &DdeCycleStart {
+            profile: sine(),
+            period: 2.0 * PI,
+        },
+        &opts,
+        floquet,
+        &DdeMeshAdapt { every },
+        &AtomicBool::new(false),
+    )
+    .expect("continue_cycle_adapt")
+}
+
+#[test]
+fn the_adapt_key_matches_the_engine_bit_for_bit() {
+    let (status, out, err) = dde_cycle("adapt_orbit.json", &mu_line_adapt(3, None));
+    assert_eq!(status, 0, "{err}");
+    let want = mu_line_engine(3, None);
+    assert!(want.points.len() > 4, "{} points", want.points.len());
+    same_points(&out, &want, "adapt");
+    same_meshes(&out, &want, "adapt");
+    // The first mesh is uniform and a later one is not, so the run did adapt.
+    assert_eq!(want.points[0].mesh, uniform_mesh());
+    assert!(
+        want.points.iter().any(|p| p.mesh != uniform_mesh()),
+        "no point has a moved mesh"
+    );
+}
+
+#[test]
+fn the_adapt_key_with_floquet_also_prints_the_multipliers() {
+    let floquet = json!({"nhist": 8, "count": 2});
+    let (status, out, err) =
+        dde_cycle("adapt_orbit_floquet.json", &mu_line_adapt(2, Some(floquet)));
+    assert_eq!(status, 0, "{err}");
+    let want = mu_line_engine(2, Some(&DdeFloquetOptions { nhist: 8, count: 2 }));
+    same_points(&out, &want, "adapt floquet");
+    same_specials(&out, &want, true, "adapt floquet");
+    same_meshes(&out, &want, "adapt floquet");
+}
+
+#[test]
+fn the_adapt_key_prints_the_mesh_of_a_special_point() {
+    let mut p = lpc_problem();
+    p["adapt"] = json!({"every": 4});
+    let (status, out, err) = lpc_cycle("adapt_lpc.json", &p);
+    assert_eq!(status, 0, "{err}");
+    let mut model = {
+        let mut map = SourceMap::new();
+        let top = map.add("lpc.ode", lpc_source());
+        let l = load(top, &mut map, &mut MapLoader::new());
+        build_dde(&l.expanded, &l.info, Evaluator::Jit).expect("build_dde")
+    };
+    let want = dde_continue_cycle_adapt(
+        &mut model,
+        &DdeCycleSetup {
+            params: vec![0.25, TAU],
+            free: 0,
+            ntst: NTST,
+            ncol: NCOL,
+        },
+        &DdeCycleStart {
+            profile: lpc_profile(),
+            period: 2.0 * PI,
+        },
+        &Options {
+            bounds: (-0.5, 0.4),
+            direction: -1.0,
+            hmax: 0.1,
+            max_steps: 400,
+            max_newton: 10,
+            ..Options::default()
+        },
+        None,
+        &DdeMeshAdapt { every: 4 },
+        &AtomicBool::new(false),
+    )
+    .expect("continue_cycle_adapt");
+    let labels: Vec<&str> = want.specials.iter().map(|s| s.label.as_str()).collect();
+    assert_eq!(labels, ["LPC"], "{out}");
+    same_points(&out, &want, "adapt lpc");
+    same_specials(&out, &want, false, "adapt lpc");
+    same_meshes(&out, &want, "adapt lpc");
+}
+
+#[test]
+fn without_adapt_no_mesh_is_printed_and_a_late_adapt_changes_nothing_else() {
+    let (status, plain, err) = dde_cycle("adapt_off.json", &mu_line_problem());
+    assert_eq!(status, 0, "{err}");
+    let v: Value = serde_json::from_str(&plain).unwrap();
+    for p in v["points"].as_array().unwrap() {
+        assert!(p.get("mesh").is_none(), "{p}");
+    }
+    // `every` so large that no point is ever due: the points are those of the plain run, and
+    // only the mesh key is new (SPEC section 8p, test 4).
+    let (status, late, err) = dde_cycle("adapt_late.json", &mu_line_adapt(u64::MAX, None));
+    assert_eq!(status, 0, "{err}");
+    let mut w: Value = serde_json::from_str(&late).unwrap();
+    for p in w["points"].as_array_mut().unwrap() {
+        assert_eq!(doubles(&p["mesh"]), uniform_mesh());
+        p.as_object_mut().unwrap().remove("mesh");
+    }
+    assert_eq!(w, v);
+}
+
+#[test]
+fn adapt_problems_that_cannot_run_are_exit_2_and_name_adapt() {
+    let cases: [(&str, Edit); 8] = [
+        ("every_zero", Box::new(|p| p["adapt"] = json!({"every": 0}))),
+        ("every_missing", Box::new(|p| p["adapt"] = json!({}))),
+        (
+            "every_fraction",
+            Box::new(|p| p["adapt"] = json!({"every": 2.5})),
+        ),
+        (
+            "extra_key",
+            Box::new(|p| p["adapt"] = json!({"every": 2, "tol": 1})),
+        ),
+        ("not_an_object", Box::new(|p| p["adapt"] = json!(3))),
+        (
+            "without_branch",
+            Box::new(|p| {
+                p.as_object_mut().unwrap().remove("branch");
+            }),
+        ),
+        ("branch_false", Box::new(|p| p["branch"] = json!(false))),
+        ("one_interval", Box::new(|p| p["ntst"] = json!(1))),
+    ];
+    for (name, edit) in cases {
+        let mut p = mu_line_adapt(2, None);
+        edit(&mut p);
+        let (status, out, err) = dde_cycle(&format!("adapt_bad_{name}.json"), &p);
+        assert_eq!(status, 2, "{name}: {err}");
+        assert!(out.is_empty(), "{name}: {out}");
+        assert!(err.contains("adapt"), "{name}: {err}");
+    }
+}
+
+#[test]
+fn a_bad_adapt_with_a_hopf_start_is_exit_2_before_the_run() {
+    // `max_newton` 1 keeps the Hopf correction from converging, so a check that came after
+    // it would give exit 1.
+    for (name, adapt) in [
+        ("zero", json!({"every": 0})),
+        ("missing", json!({})),
+        ("fraction", json!({"every": 1.5})),
+    ] {
+        let mut p = hopf_branch_problem();
+        p["adapt"] = adapt;
+        p["options"] = json!({"max_newton": 1});
+        let (status, out, err) = dde_cycle(&format!("hopf_bad_adapt_{name}.json"), &p);
+        assert_eq!(status, 2, "{name}: {err}");
+        assert!(out.is_empty(), "{name}: {out}");
+        assert!(err.contains("adapt"), "{name}: {err}");
+    }
+    // The same start with a good adapt does not converge, which is exit 1.
+    let mut p = hopf_branch_problem();
+    p["adapt"] = json!({"every": 2});
+    p["options"] = json!({"max_newton": 1});
+    let (status, _, err) = dde_cycle("hopf_adapt_no_converge.json", &p);
+    assert_eq!(status, 1, "{err}");
+}
+
+#[test]
+fn the_mesh_adapt_option_is_still_refused_and_points_to_adapt() {
+    let mut p = mu_line_problem();
+    p["options"]["mesh_adapt"] = json!(3);
+    let (status, out, err) = dde_cycle("adapt_mesh_adapt.json", &p);
+    assert_eq!(status, 2, "{err}");
+    assert!(out.is_empty(), "{out}");
+    assert!(err.contains("options.mesh_adapt"), "{err}");
+    assert!(err.contains("\"adapt\""), "{err}");
+}
+
+#[test]
+fn help_lists_the_adapt_key() {
+    let o = run(&scratch(), &["dde-cycle", "--help"]);
+    assert_eq!(code(&o), 0);
+    let text = stdout(&o);
+    for word in ["adapt", "every", "mesh"] {
+        assert!(text.contains(word), "{word} missing from the help text");
+    }
 }

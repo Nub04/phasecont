@@ -3,14 +3,16 @@
 //! optional `floquet` key print the leading Floquet multipliers of the result (section 8m).
 //! With `"branch": true` the corrected orbit is instead continued in the free parameter and
 //! the command prints the points of the branch (section 8n) and its special points, with the
-//! multipliers of every point when `floquet` is given (section 8o).
+//! multipliers of every point when `floquet` is given (section 8o). With `branch` the key
+//! `adapt` also moves the collocation mesh along the branch and prints the mesh of every point
+//! (section 8p).
 //!
 //! The problem file is read by hand from a `serde_json::Value`, as for `dde-hopf`, and the
 //! model is loaded through the same `load_dde`. Without `branch` the corrector reads only
 //! `max_newton`, `tol_x` and `tol_f` from `options`, so the other keys of the `cont` reader
 //! are refused by name instead of being accepted and ignored. With `branch` the options go
 //! through the `cont` reader, except `detect` and `mesh_adapt`, which the continuation does
-//! not use.
+//! not use. The mesh moves only through `adapt`.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -18,9 +20,9 @@ use std::sync::atomic::AtomicBool;
 
 use pc_engine::{
     DdeCycle, DdeCycleBranch, DdeCyclePoint, DdeCycleSetup, DdeCycleStart, DdeFloquet,
-    DdeFloquetOptions, DdeHopfCycle, DdeModel, EngineError, Evaluator, Options, StopReason,
-    build_dde, dde_check_cycle_floquet, dde_continue_cycle_floquet, dde_correct_cycle,
-    dde_floquet_multipliers, dde_hopf_cycle,
+    DdeFloquetOptions, DdeHopfCycle, DdeMeshAdapt, DdeModel, EngineError, Evaluator, Options,
+    StopReason, build_dde, dde_check_cycle_floquet, dde_continue_cycle_adapt,
+    dde_continue_cycle_floquet, dde_correct_cycle, dde_floquet_multipliers, dde_hopf_cycle,
 };
 use pckern::json::problem::parse_options;
 use serde_json::{Value, json};
@@ -58,6 +60,8 @@ struct Problem {
     floquet: Option<DdeFloquetOptions>,
     /// Whether to continue the orbit in the free parameter instead of printing it.
     branch: bool,
+    /// Whether the mesh moves along the branch, and how often (only with `branch`).
+    adapt: Option<DdeMeshAdapt>,
 }
 
 /// `dde-cycle`: reads the problem, runs the corrector and prints the orbit. See
@@ -215,11 +219,16 @@ fn run_branch(
         }
     };
     let floquet = problem.floquet.as_ref();
-    let branch =
-        match dde_continue_cycle_floquet(model, &setup, &orbit, &problem.opts, floquet, cancel) {
-            Ok(b) => b,
-            Err(e) => return engine_error(&e, shown),
-        };
+    let run = match &problem.adapt {
+        Some(adapt) => {
+            dde_continue_cycle_adapt(model, &setup, &orbit, &problem.opts, floquet, adapt, cancel)
+        }
+        None => dde_continue_cycle_floquet(model, &setup, &orbit, &problem.opts, floquet, cancel),
+    };
+    let branch = match run {
+        Ok(b) => b,
+        Err(e) => return engine_error(&e, shown),
+    };
     // As `cont` does, a run that stops on an error still prints what it found, and the
     // message goes to stderr.
     if let StopReason::Error(e) = &branch.stop
@@ -228,7 +237,9 @@ fn run_branch(
         to_stderr(&format!("pc-cli: {e}\n"));
     }
     let with_floquet = problem.floquet.is_some();
-    let mut text = branch_json(&branch, problem.ntst, problem.ncol, with_floquet).to_string();
+    let with_mesh = problem.adapt.is_some();
+    let mut text =
+        branch_json(&branch, problem.ntst, problem.ncol, with_floquet, with_mesh).to_string();
     text.push('\n');
     out(&text, 0)
 }
@@ -268,9 +279,15 @@ fn add_point_multipliers(value: &mut Value, p: &DdeCyclePoint) {
     value["trivial_error"] = json!(p.trivial_error);
 }
 
-/// The output object of SPEC sections 8n and 8o. The multipliers are printed only when the
-/// problem asked for them.
-fn branch_json(branch: &DdeCycleBranch, ntst: usize, ncol: usize, with_floquet: bool) -> Value {
+/// The output object of SPEC sections 8n, 8o and 8p. The multipliers are printed only when the
+/// problem asked for them, and the meshes only when it asked for `adapt`.
+fn branch_json(
+    branch: &DdeCycleBranch,
+    ntst: usize,
+    ncol: usize,
+    with_floquet: bool,
+    with_mesh: bool,
+) -> Value {
     let points: Vec<Value> = branch
         .points
         .iter()
@@ -284,6 +301,9 @@ fn branch_json(branch: &DdeCycleBranch, ntst: usize, ncol: usize, with_floquet: 
             });
             if with_floquet {
                 add_point_multipliers(&mut v, p);
+            }
+            if with_mesh {
+                v["mesh"] = json!(p.mesh);
             }
             v
         })
@@ -301,6 +321,9 @@ fn branch_json(branch: &DdeCycleBranch, ntst: usize, ncol: usize, with_floquet: 
             });
             if with_floquet {
                 add_point_multipliers(&mut v, &s.point);
+            }
+            if with_mesh {
+                v["mesh"] = json!(s.point.mesh);
             }
             v
         })
@@ -340,12 +363,15 @@ fn check_branch_options(options: &Value) -> Result<(), String> {
         // `parse_options` names the type error.
         return Ok(());
     };
-    for key in ["detect", "mesh_adapt"] {
-        if map.contains_key(key) {
-            return Err(format!(
-                "options.{key}: the continuation of a cycle does not use it"
-            ));
-        }
+    if map.contains_key("detect") {
+        return Err("options.detect: the continuation of a cycle does not use it".to_string());
+    }
+    if map.contains_key("mesh_adapt") {
+        return Err(
+            "options.mesh_adapt: the continuation of a cycle does not use it; \
+             the key \"adapt\" moves the mesh"
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -415,6 +441,20 @@ fn read_floquet(value: &Value) -> Result<DdeFloquetOptions, String> {
     })
 }
 
+/// Reads the `adapt` object: `every`, a required integer of at least 1 with no default.
+fn read_adapt(value: &Value) -> Result<DdeMeshAdapt, String> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "\"adapt\" must be an object with the key \"every\"".to_string())?;
+    check_keys(obj, &["every"], "\"adapt\"")?;
+    let named = |e: String| format!("\"adapt\": {e}");
+    let every = count(required(obj, "every", "\"adapt\"")?, "every").map_err(named)?;
+    if every < 1 {
+        return Err(named("\"every\" must be at least 1".to_string()));
+    }
+    Ok(DdeMeshAdapt { every })
+}
+
 /// Reads the problem object. The parameter names, the length of the profile and `x0` and the
 /// ranges of `ntst`, `ncol`, `omega`, `eps` and `period` are checked against the model by the
 /// engine.
@@ -426,7 +466,7 @@ fn read_problem(value: &Value) -> Result<Problem, String> {
         obj,
         &[
             "model", "params", "free", "ntst", "ncol", "orbit", "hopf", "options", "floquet",
-            "branch",
+            "branch", "adapt",
         ],
         "problem",
     )?;
@@ -467,6 +507,15 @@ fn read_problem(value: &Value) -> Result<Problem, String> {
         }
     };
     let floquet = obj.get("floquet").map(read_floquet).transpose()?;
+    let adapt = obj.get("adapt").map(read_adapt).transpose()?;
+    if adapt.is_some() && !branch {
+        return Err(
+            "\"adapt\" moves the mesh along a branch and needs \"branch\": true".to_string(),
+        );
+    }
+    if adapt.is_some() && ntst < 2 {
+        return Err("\"adapt\": the mesh needs \"ntst\" of at least 2".to_string());
+    }
     Ok(Problem {
         model,
         params,
@@ -477,6 +526,7 @@ fn read_problem(value: &Value) -> Result<Problem, String> {
         opts,
         floquet,
         branch,
+        adapt,
     })
 }
 
@@ -614,6 +664,64 @@ mod tests {
     }
 
     #[test]
+    fn the_adapt_key_is_optional_and_needs_branch() {
+        assert_eq!(read(ORBIT).unwrap().adapt, None);
+        let on = ORBIT.replace("\"options\"", "\"branch\":true,\"options\"");
+        assert_eq!(read(&on).unwrap().adapt, None);
+        let with = on.replace("\"options\"", "\"adapt\":{\"every\":3},\"options\"");
+        assert_eq!(read(&with).unwrap().adapt, Some(DdeMeshAdapt { every: 3 }));
+        // It also works next to a Hopf start and next to `floquet`.
+        let hopf = HOPF.replace(
+            "\"hopf\"",
+            "\"branch\":true,\"adapt\":{\"every\":1},\"hopf\"",
+        );
+        assert_eq!(read(&hopf).unwrap().adapt, Some(DdeMeshAdapt { every: 1 }));
+        let both = with.replace(
+            "\"options\"",
+            "\"floquet\":{\"nhist\":8,\"count\":2},\"options\"",
+        );
+        let p = read(&both).unwrap();
+        assert!(p.adapt.is_some() && p.floquet.is_some());
+        // Without `branch`, with `branch` false and with `ntst` 1 it is refused by name.
+        let no_branch = ORBIT.replace("\"options\"", "\"adapt\":{\"every\":3},\"options\"");
+        let off = ORBIT.replace(
+            "\"options\"",
+            "\"branch\":false,\"adapt\":{\"every\":3},\"options\"",
+        );
+        let one = with.replace("\"ntst\":4", "\"ntst\":1");
+        let hopf_no_branch = HOPF.replace("\"hopf\"", "\"adapt\":{\"every\":3},\"hopf\"");
+        for text in [no_branch, off, one, hopf_no_branch] {
+            let msg = read(&text).unwrap_err();
+            assert!(msg.contains("\"adapt\""), "{text}: {msg}");
+        }
+    }
+
+    #[test]
+    fn a_malformed_adapt_key_names_adapt() {
+        let on = ORBIT.replace("\"options\"", "\"branch\":true,\"options\"");
+        let at = |body: &str| on.replace("\"options\"", &format!("\"adapt\":{body},\"options\""));
+        let bad = [
+            "true",
+            "null",
+            "3",
+            "[3]",
+            "\"every\"",
+            "{}",
+            "{\"every\":3,\"tol\":1}",
+            "{\"every\":3.5}",
+            "{\"every\":2.0e0}",
+            "{\"every\":0}",
+            "{\"every\":-1}",
+            "{\"every\":\"3\"}",
+            "{\"every\":null}",
+        ];
+        for body in bad {
+            let msg = read(&at(body)).unwrap_err();
+            assert!(msg.contains("\"adapt\""), "{body}: {msg}");
+        }
+    }
+
+    #[test]
     fn wrong_types_name_the_key() {
         let cases = [
             (
@@ -715,6 +823,9 @@ mod tests {
             let msg = read(&text).unwrap_err();
             assert!(msg.contains(key), "{body}: {msg}");
         }
+        // The refusal of `mesh_adapt` points to the key that moves the mesh.
+        let text = on.replace("\"max_newton\":30", "\"mesh_adapt\":3");
+        assert!(read(&text).unwrap_err().contains("\"adapt\""));
         // `floquet` goes with `branch` (SPEC section 8o) and a bad value still names the key.
         let with_floquet = on.replace(
             "\"options\"",

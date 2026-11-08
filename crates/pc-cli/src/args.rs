@@ -704,7 +704,7 @@ phase condition is an integral condition against the start profile. The system h
 (ntst*ncol+1)*n + 2 unknowns, at most 3000. With the floquet key it also prints the
 leading Floquet multipliers of the corrected orbit. With the branch key it continues the
 corrected orbit in the free parameter instead and labels LPC points, and with the floquet
-key also PD and NS points.
+key also PD and NS points. With the adapt key the mesh moves along the branch.
 
 The problem file is a JSON object. Every key but options is required:
   model    path of the .ode file, relative to the problem file
@@ -719,13 +719,17 @@ The problem file is a JSON object. Every key but options is required:
            Give exactly one of orbit and hopf
   options  optional; without branch only max_newton, tol_x and tol_f are read and any
            other key is refused. With branch the keys of the cont command are read,
-           except detect and mesh_adapt, which are refused
+           except detect and mesh_adapt, which are refused (the adapt key moves the
+           mesh)
   floquet  optional; an object {\"nhist\", \"count\"}, both integers of at least 1, that
            asks for the multipliers. There is no default and the key is off without it.
            With branch it adds the multipliers to every point and special point, and
            turns on the PD and NS labels
   branch   optional; true continues the orbit in the free parameter, false or no key
            prints the corrected orbit. There is no default and the key is off without it
+  adapt    optional, and only with branch; an object {\"every\"} with an integer of at
+           least 1 that moves the mesh after every that many accepted points. There is no
+           default for every and the key is off without it. It needs ntst of at least 2
 
 orbit.profile holds the state at ntst*ncol+1 equally spaced points of one period, point
 after point with n values each. orbit.period is the start period. hopf.x0 is the
@@ -756,8 +760,16 @@ then follows the same equations on the same mesh. The output is
 \"period\", \"profile\", \"h\", \"iters\"}: the first has h and iters 0 and is the corrected
 start. stop is one of end, max_steps, bounds, step_too_small, singular, cancelled or
 error. The run reads h0, hmin, hmax, max_steps, tol_x, tol_f, max_newton, direction and
-bounds from options as cont does. The mesh is fixed, so there is no mesh adaptation.
+bounds from options as cont does. The mesh stays uniform and fixed unless adapt is given.
 When free is a delay time, bounds must have a lower bound above 0.
+
+With adapt, the start is corrected on the uniform mesh, and after every `every` accepted
+points (and once after a failed corrector) the mesh points move so that they equidistribute
+the same monitor function as the ODE cycle continuation, which puts more of them where the
+orbit is steep. The profile is interpolated onto the new mesh. Each point and each special point also has \"mesh\", the
+ntst+1 mesh points of that point in [0, 1], and \"profile\" holds the values at that mesh.
+The Floquet multipliers of an adapted point use its own mesh. The first point's mesh is
+uniform. Without adapt there is no \"mesh\" key and the output is the one described above.
 
 specials is an array in branch order, empty if there is none. Each element is {\"label\",
 \"index\", \"alpha\", \"period\", \"profile\"}, where index is the index of the first point
