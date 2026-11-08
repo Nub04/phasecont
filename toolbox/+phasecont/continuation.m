@@ -88,6 +88,10 @@ function br = continuation(m, start, options)
 %     InclinationFlips  true adds the inclination flips IFS and IFU to the
 %                codim-2 tests of a HOM curve, at the cost of one linear solve
 %                per point (logical scalar, default false); Type "HOM" only
+%     MeshAdapt  number of continuation steps between two mesh adaptations of
+%                a cycle or homoclinic orbit; 0 keeps the start mesh (integer
+%                of at least 0, engine default 3); Type "LC", "LPC", "PD",
+%                "NS" or "HOM" only
 %
 %   Options that are not given keep the engine defaults. If START is a
 %   special point (any label except "EP"), the run does not report that
@@ -115,6 +119,7 @@ arguments
     options.Var = []
     options.Params = []
     options.InclinationFlips = []
+    options.MeshAdapt = []
 end
 import phasecont.internal.num2json
 
@@ -138,6 +143,18 @@ if ~isempty(options.InclinationFlips)
     if ~(islogical(flips) && isscalar(flips))
         error("phasecont:model:badOption", ...
             "InclinationFlips must be a logical scalar.");
+    end
+end
+meshAdapt = options.MeshAdapt;
+if ~isempty(meshAdapt)
+    if ~(isCycle || isCycleCurve || isHom)
+        error("phasecont:model:badOption", ...
+            "MeshAdapt applies to Type = ""LC"", ""LPC"", ""PD"", ""NS"" or ""HOM"" only.");
+    end
+    if ~(isnumeric(meshAdapt) && isreal(meshAdapt) && isscalar(meshAdapt) ...
+            && isfinite(meshAdapt) && meshAdapt >= 0 && meshAdapt == round(meshAdapt))
+        error("phasecont:model:badOption", ...
+            "MeshAdapt must be an integer of at least 0.");
     end
 end
 grid = [];
@@ -202,6 +219,9 @@ parts(end+1) = numberOption("max_steps", options.MaxSteps, "MaxSteps", true);
 parts(end+1) = numberOption("tol_x", options.TolX, "TolX");
 parts(end+1) = numberOption("tol_f", options.TolF, "TolF");
 parts(end+1) = numberOption("max_newton", options.MaxNewton, "MaxNewton", true);
+if ~isempty(meshAdapt)
+    parts(end+1) = """mesh_adapt"":" + num2json(double(meshAdapt));
+end
 if ~isempty(options.Direction)
     d = options.Direction;
     if ~(isnumeric(d) && isscalar(d) && (d == 1 || d == -1))
