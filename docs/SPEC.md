@@ -1215,7 +1215,7 @@ The decoupled model is the same text with $c = d = 0$. The Hopf curve is $a = \p
 
 ## 8l. Periodic solutions of a delay equation: the boundary value problem (phase E9b, step 1)
 
-Step 1 of E9b computes one periodic orbit of $x'(t) = f(x(t), x(t-\tau_1), \dots, x(t-\tau_S); p)$, a model lowered by Section 8d, as the solution of a periodic boundary value problem by collocation. It corrects an explicit start by Newton's method at a fixed parameter, and it starts from a Hopf point (Section 8e) with the parameter free. It does not continue a branch of cycles or label LPC, PD and NS points. Floquet multipliers are Section 8m, and the continuation of a branch of cycles is Section 8n. The labels are a later step of E9b and get their own section. There is no MATLAB front end for any `dde-*` command.
+Step 1 of E9b computes one periodic orbit of $x'(t) = f(x(t), x(t-\tau_1), \dots, x(t-\tau_S); p)$, a model lowered by Section 8d, as the solution of a periodic boundary value problem by collocation. It corrects an explicit start by Newton's method at a fixed parameter, and it starts from a Hopf point (Section 8e) with the parameter free. It does not continue a branch of cycles or label LPC, PD and NS points. Floquet multipliers are Section 8m, and the continuation of a branch of cycles is Section 8n. The labels are a later step of E9b and get their own section. Section 8s puts a MATLAB front end in front of the delay engine in slices, and a command that its slices do not name has none.
 
 **What is not verified.**
 - The formulation is that of the DDE-BIFTOOL manual (Sieber et al., arXiv 1406.7144, Section 3.1.1, equations (15) and (16), BSD-2-Clause): time rescaled to $s = t/T$, a piecewise polynomial on a mesh, Gauss collocation, the delayed argument evaluated by the polynomial at a shifted point, periodicity and an integral phase condition. I read the manual. I did not read the papers it cites for the method, Engelborghs, Luzyanina, in 't Hout and Roose, *SIAM J. Sci. Comput.* 22(5), 2000, and Engelborghs, Luzyanina and Roose, *ACM Trans. Math. Softw.* 28(1), 2002. I wrote the rows and every Jacobian column below from the definition and checked them against central differences (test 1). I ported no code.
@@ -1328,7 +1328,7 @@ Both quantities scale with $\varepsilon^2$, as the normal form says. The value $
 
 ## 8m. Floquet multipliers of a delay cycle (phase E9b, step 2a)
 
-Step 2a of E9b computes the leading Floquet multipliers of a periodic orbit found by Section 8l. It does not continue a branch of cycles and does not label LPC, PD and NS points. The continuation is step 2b (Section 8n) and the labels are step 3, which gets its own section. There is no MATLAB front end.
+Step 2a of E9b computes the leading Floquet multipliers of a periodic orbit found by Section 8l. It does not continue a branch of cycles and does not label LPC, PD and NS points. The continuation is step 2b (Section 8n) and the labels are step 3, which gets its own section. Section 8s names the slices of the MATLAB front end, and none covers this step yet.
 
 **What is not verified.**
 - The formulation below is my own derivation. I did not read how DDE-BIFTOOL or the papers cited in Section 8l compute multipliers, and I did not look for a paper on a pseudospectral monodromy operator (Section 8c cites Breda, Maset and Vermiglio 2005 for roots; I did not read it). Nothing here is cited from a source. I checked the result against a numerical oracle (below), not against a published formula.
@@ -1414,7 +1414,7 @@ Test 5, `FORCED` at $K = 0$: the multiplier $e^{-0.1T}$ is reproduced to $10^{-1
 
 ## 8n. Continuation of periodic solutions of a delay equation (phase E9b, step 2b)
 
-Step 2b of E9b continues the periodic orbit of Section 8l in one parameter by pseudo-arclength continuation (Section 5) and reports each point as a profile, a period and a parameter value. It does not compute the Floquet multipliers of the points and does not label LPC, PD and NS points. Step 3, which is Section 8o, adds both. There is no MATLAB front end.
+Step 2b of E9b continues the periodic orbit of Section 8l in one parameter by pseudo-arclength continuation (Section 5) and reports each point as a profile, a period and a parameter value. It does not compute the Floquet multipliers of the points and does not label LPC, PD and NS points. Step 3, which is Section 8o, adds both. Section 8s names the slices of the MATLAB front end, and none covers this step yet.
 
 **What is not verified.**
 - The formulation below is my own. It runs the pseudo-arclength continuation of Section 5 (`run_branch`) on the rows of Section 8l, and it moves the phase reference to each accepted profile as the cycle branches of Section 7 do. Nothing is cited from a source. I did not read how DDE-BIFTOOL continues periodic orbits, only the part of its manual that Section 8l cites.
@@ -1482,7 +1482,7 @@ Bounds of test 3: $10^{-12}$ and $3\cdot10^{-12}$ for the first two, which are a
 
 ## 8o. Labels of cycles of a delay equation: LPC, PD and NS (phase E9b, step 3)
 
-Step 3 of E9b puts the Floquet multipliers of Section 8m on the branch of Section 8n and reports the points where the branch has a limit point of cycles (LPC), a period-doubling (PD) or a Neimark-Sacker point (NS). There is no MATLAB front end.
+Step 3 of E9b puts the Floquet multipliers of Section 8m on the branch of Section 8n and reports the points where the branch has a limit point of cycles (LPC), a period-doubling (PD) or a Neimark-Sacker point (NS). Section 8s names the slices of the MATLAB front end, and none covers this step yet.
 
 **What is not verified.**
 - The tests and labels copy the conventions of the cycle branches of Section 7 (the product of $\mu + 1$ for PD, the product of $\mu_i \mu_j - 1$ for NS, the nontrivial multipliers being all but the one nearest 1). I applied them to the multipliers of Section 8m without a source that does so for delay equations. I read no source on how DDE-BIFTOOL labels these points.
@@ -1546,7 +1546,7 @@ The first and fourth bounds are wider than 4 times the measured value, since tho
 
 ## 8p. Mesh adaptation for cycles of a delay equation (phase E9b, step 4)
 
-Step 4 of E9b lets the continuation of Sections 8n and 8o move the collocation mesh along the branch, so that an orbit that grows a steep part stays resolved. It is opt-in and off by default, and a run without it is the run of Sections 8n and 8o to the last bit. There is no MATLAB front end.
+Step 4 of E9b lets the continuation of Sections 8n and 8o move the collocation mesh along the branch, so that an orbit that grows a steep part stays resolved. It is opt-in and off by default, and a run without it is the run of Sections 8n and 8o to the last bit. Section 8s names the slices of the MATLAB front end, and none covers this step yet.
 
 **What is not verified.**
 - The monitor is the one of the cycle branches of Section 7, the equidistribution of the jumps of the $m$-th derivative of the orbit (the AUTO-07p port in `cycle/mesh.rs`), applied to the profile alone. I read no source on how mesh points are chosen for a delay problem. The monitor does not look at the delayed arguments, so it measures the error of the profile and not the error that the delayed terms add.
@@ -1639,7 +1639,7 @@ Table 4, the hand-made mesh of test 5 (intervals alternate between $0.5/N$ and $
 
 ## 8q. Branch points of cycles of a delay equation (phase E9b, step 5)
 
-Step 5 of E9b labels the branch points of the discretized cycle problem, with the label `BPC`, along the continuation of Sections 8n to 8p. It is opt-in and off by default, and a run without it is the run of those sections to the last bit. It does not switch branches (Section 8r does). There is no MATLAB front end.
+Step 5 of E9b labels the branch points of the discretized cycle problem, with the label `BPC`, along the continuation of Sections 8n to 8p. It is opt-in and off by default, and a run without it is the run of those sections to the last bit. It does not switch branches (Section 8r does). Section 8s names the slices of the MATLAB front end, and none covers this step yet.
 
 **What is not verified.**
 - The test function is my own choice and has no source. It follows the pattern of $\psi_H$ in Section 5, a sign times a bounded magnitude, and the reason for it is below. I did not read how DDE-BIFTOOL or AUTO-07p detect branch points of cycles.
@@ -1781,6 +1781,48 @@ The check code of `continue_cycle_on` moves into one helper that `continue_cycle
 - Test 6, $N = 100$: $\lVert J t\rVert / \lVert J\rVert = 1.5 \cdot 10^{-16}$. The fallback evaluator gives a tangent that equals the Jit tangent exactly and 57 points against 57.
 - Test 8: $\alpha - 0.2 = -1.3 \cdot 10^{-15}$ at special 0 and $2.1 \cdot 10^{-15}$ at special 2, with at most $2.6 \cdot 10^{-15}$ in the $z$ relation.
 - The form of the double-root model (test 9) has $\max\lvert c_{ij}\rvert = 1.1 \cdot 10^{-15}$ against $\sigma_1 = 297$, which is $4 \cdot 10^{-18}\sigma_1$. The smallest genuine form among the tests, that of $N = 100$, is $0.31$ against $\sigma_1 = 1485$, which is $2 \cdot 10^{-4}\sigma_1$. The floor lies between them.
+
+## 8s. MATLAB front end for delay equations (phase P34)
+
+Phase P34 puts the delay-equation engine of Sections 8c to 8r behind the same front door as the ODE engine: `phasecont.Model`, `phasecont.continuation`, `Branch` and `Session`. It is built in slices. Slice 1 is the one stated here: load a model with `delay(...)` calls and continue an equilibrium of it in one parameter, with the labels `H`, `LP` and `BP` of Section 8e. Each later slice (the Hopf curve of Section 8f, the coefficients of Sections 8g to 8k, and the cycles of Sections 8l to 8r) amends this section when it starts, and until it does the pages named above say "no MATLAB front end" for it.
+
+Owner approval: the owner approved public API changes for this work on 2026-11-08 and delegated the choices below on the same date. The C ABI keeps its function signatures and `abi_version` stays 1, so route A (below) needs no further sign-off. A change to a signature would.
+
+**Route A.** A delay model goes through the existing entries `model_from_ode`, `model_compile`, `run_start`, `run_poll` and `run_copy`. The ABI carries the model as an opaque id and the problem as JSON, so the new behavior is a new `Kind`, new JSON keys and a flag in `model_info`. Route B, new entries such as `dde_run_start`, would change the C ABI and is not used.
+
+**Loading.** `model_from_ode` calls `pc_ir::lower` on the parsed text. When that fails, it calls `pc_ir::lower_dde`. `lower_dde` refuses a model with no `delay(...)` call, so one text cannot lower both ways. If `lower_dde` succeeds, the handle is a delay model. If both fail, the error is the one from `lower_dde` when the text has a `delay` call and the one from `lower` otherwise. A model that `lower` accepts is loaded as before, to the last bit.
+- The handle has a flag `delay`, and `model_info` reports it as the new key `"delay"` (`true` or `false`).
+- `states`, `parameters`, `init` and `par_values` of a delay model hold the user parameters only. The hidden delay slots of Section 8d are not listed and not counted by any buffer length. A `free` name is looked up among the user parameters only.
+
+**Entries that refuse a delay model.** A delay handle is an error, with the text "the model has delay terms, and this entry is for ODE models", in `model_rhs`, `model_rhs_t`, `model_equilibrium`, `ens_start`, the `emit_c` option of `model_compile` and every run `type` except `"EP"`. `model_compile` with the JIT builds the model with `build_dde`, which checks that it lowers and compiles, and records the evaluator. `model_compile` with AOT is an error, since the code generators refuse delays (Section 8d), and the message is that of `build_dde`. `run_start` on a delay handle that was not compiled is the same error as for an ODE handle.
+
+**The run.** The problem JSON is
+```json
+{"type": "EP", "free": "r", "roots": {"n": 30, "re_min": -0.5},
+ "options": {"h0": 0.01, "hmax": 0.05, "max_steps": 200, "bounds": [1.2, 2.0]}}
+```
+- `roots` is required for a delay model, with `n` an integer of at least 1 and `re_min` a number below 0, the `RootOptions` of Section 8c. There is no default for either, so a run never counts roots with a setting the caller did not choose. An ODE model with a `roots` key is an error.
+- `options` takes the keys that `dde-branch` takes (Section 8e). `options.detect.h` and `options.mesh_adapt` are errors, as there. `switch` and `start_is_special` are errors.
+- `u0` has `n` values and `params` has the user parameters, one per name in `model_info`. A buffer of any other length is an error.
+- The engine runs `dde::continue_equilibrium` once, on the worker thread, with the cancel flag of the run. The call returns the whole branch, so `run_poll` reports the state `running` with no points until the call ends, and then all points and specials at once. A run that is cancelled ends in the state `cancelled` and keeps no points, since `continue_equilibrium` returns `Cancelled` and no partial branch. The help text of `continuation` says this.
+- `Kind::DdeEp` has its own row layout and no test values. A row is `[alpha, u(1..n), count]`, `n + 2` values, with `count` the number of roots with $\operatorname{Re}\lambda > 0$ (the $N$ of Section 8e) stored as a double. A row has no `h` and no step count, since the delay code does not report them. A special has the same row, `index` is `between[1]` of Section 8e, the label is `H`, `LP` or `BP`, `Extras.omega` is the $\omega$ of an `H` point, and `Extras.values` holds the pairs `unstable_before` and `unstable_after`. `Extras.refined` is false, since no special of this slice is refined by Newton.
+- The first branch of a run is the placeholder that the ODE kinds also push, so that branch numbers match.
+
+**MATLAB.**
+- `phasecont.Model` reads `delay` from `model_info` and has the property `IsDelay`. `Model.Parameters` and the parameter vectors hold user parameters only.
+- `phasecont.continuation(m, "EP", Free=name, Roots=struct(N=30, ReMin=-0.5), ...)` runs a delay model. `Roots` is required for a delay model and an error for an ODE model, with no default. `Type` other than `"EP"` is an error for a delay model. The options `MeshAdapt`, `Detect` with `H`, `Switch` and `StartIsSpecial` are errors for a delay model.
+- A delay branch is a `Branch` of type `"EP"` with `Eigenvalues` empty (0 columns), the new property `RootCount` (one value per point, empty for an ODE branch) and `Stable` equal to `RootCount == 0`. Its special points carry the label, the parameter value, the state, and for `H` the frequency in `Omega`.
+- `Session` saves and loads a delay branch. The record carries the kind so that `rows2branch` reads the row layout above, and an ODE session that an earlier release wrote loads as before.
+
+**What this slice does not do.** It does not continue a Hopf point in two parameters, compute a Lyapunov coefficient, follow cycles, or run an initial value problem of the delay equation. Points arrive when the run ends and not one by one.
+
+**Acceptance tests (slice 1).** Every model is our own.
+1. Rust, `pc-ffi`: `model_from_ode` and `model_compile` accept the Hutchinson model `x' = r*x*(1-delay(x,tau))` with `par r=1.3, tau=1`. `model_info` reports `"delay": true`, `states` `["x"]` and `parameters` `["r", "tau"]` with `par_values` `[1.3, 1]`. An ODE model reports `"delay": false` and its info is unchanged. A model whose `delay` call has the wrong form fails with a `Model` error that names the call. A model with a delay call and a syntax error reports the syntax error.
+2. Rust, `pc-ffi`: on the delay handle, `model_rhs`, `model_rhs_t`, `model_equilibrium`, `model_compile` with AOT or with `emit_c`, `ens_start`, and `run_start` with each of `"LP"`, `"H"`, `"LC"`, `"LPC"`, `"PD"`, `"NS"`, `"HOM"` and `"IVP"` are errors with the text above and do not panic. A run of `"EP"` on an ODE handle with a `roots` key is an error.
+3. Rust, `pc-ffi`: the Hutchinson run of Section 8e test 1, started through `run_start`, `run_poll` and `run_copy` with the same `n`, `re_min` and options, returns the same points and the same single special as `dde::continue_equilibrium` called directly: equal `alpha`, `x` and `count` at every point, an `H` at $r = \pi/2$ with $\omega = \pi/2$ within $10^{-9}$, `unstable_before` 0 and `unstable_after` 2, and the state `done` with the stop `bounds`.
+4. Rust, `pc-ffi`: a delay run with no `roots`, with `roots.n` of 0, with `roots.re_min` of 0 or above, with an unknown key in `roots`, with `detect.h`, with `mesh_adapt`, with `switch`, with `start_is_special`, with `params` of the wrong length, and with a hidden slot name as `free` is an error, and the message names the key. A run cancelled right after the start ends in the state `cancelled` with no points.
+5. MATLAB, `tests/DelayBranchTest.m`: Hutchinson (Section 8e test 1), the delayed fold (test 4) and the delayed pitchfork (test 5) through `phasecont.continuation`, with the numbers of those tests within the tolerances given there. `Stable` and `RootCount` agree, `Eigenvalues` has no columns, `Roots` is required and refused on an ODE model, and a delay branch survives `Session` save and load.
+6. `cargo test` and the ODE MATLAB tests stay green, and a session saved by the current release before P34 loads as before.
 
 ## 9. Acceptance tests
 
@@ -2100,6 +2142,7 @@ plot(br, Var="x");                                        % stable solid, unstab
 | P32 | Inclination flips in a HOM run (E8b wiring): IFS and IFU labels, `inclination_flips` key, `InclinationFlips` option, bracket floor `crossing_ok` | Tests 1 to 7 of section 8b-3 pass in Rust, the FFI and the CLI, and the MATLAB part of test 5. See `docs/STATUS.md` |
 | P33 | `MeshAdapt` option of `phasecont.continuation` (engine key `mesh_adapt`, MATLAB side only) | Tests 1 to 4 under Mesh adaptation in section 11 pass in MATLAB |
 | P35 | The unfolding case at a Hopf-Hopf point (E9a, step 8 part 2): `dde::unfolding_case`, `HhCase`, `case` field of `HopfHopf`, `case` key of `pc-cli dde-hh` | Tests 1 to 6 of section 8j-2 pass in Rust and the CLI. No MATLAB part |
+| P34 | MATLAB front end for delay equations (route A, no C ABI change), slice 1: delay models in `model_from_ode`, an `EP` run with `roots`, `H`, `LP` and `BP` labels, `Roots` option, `RootCount` property | Tests 1 to 6 of section 8s pass in Rust and in MATLAB. Later slices amend section 8s |
 
 ## 15. References
 
