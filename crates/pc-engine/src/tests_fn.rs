@@ -221,12 +221,12 @@ pub(crate) fn evaluate(
         if opts.detect_lp {
             tests[LP] = tangent[tangent.len() - 1];
         }
-        if opts.detect_bp {
-            tests[BP] = det;
-        }
         if opts.detect_h && !eig_failed && !eigs.is_empty() {
             tests[H] = psi_h(&eigs);
         }
+    }
+    if opts.detect_bp && p.bp_label().is_some() {
+        tests[BP] = det;
     }
     let codim2 = p.codim2_tests(x, tangent, &eigs)?;
     Ok(PointTests {

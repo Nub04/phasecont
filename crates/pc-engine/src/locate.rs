@@ -93,7 +93,7 @@ fn trial(
 fn label(p: &dyn Problem, t: usize, eigs: &[(f64, f64)]) -> Option<&'static str> {
     match t {
         LP => Some("LP"),
-        BP => Some("BP"),
+        BP => Some(p.bp_label().unwrap_or("BP")),
         H => match classify_h_zero(eigs) {
             HopfZero::Hopf => Some("H"),
             HopfZero::NeutralSaddle => Some("NSA"),
@@ -433,7 +433,7 @@ fn detect_inner(
 fn slot_name(p: &dyn Problem, t: usize) -> &'static str {
     match t {
         LP => "LP",
-        BP => "BP",
+        BP => p.bp_label().unwrap_or("BP"),
         H => "H",
         _ => p.codim2_labels().get(t - 3).copied().unwrap_or("codim-2"),
     }
