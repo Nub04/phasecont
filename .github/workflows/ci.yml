@@ -216,12 +216,13 @@ jobs:
       - name: Compile the CUDA kernel to PTX
         run: cargo test --locked --no-fail-fast -p pc-ensemble --test cuda_compile
 
-  # The Metal and Apple OpenCL host code on a hosted Mac, which may show a
-  # partial paravirtual GPU or none. Nothing here has run on a Mac yet, so the
-  # job does not block a merge. It compiles the Metal text with Apple's `metal`
-  # tool, then runs the self-test on every device it finds. PC_REQUIRE_GPU is
-  # left unset here: a runner without a device reports SKIPPED and the job stays
-  # green, and the log says which it was.
+  # The Metal host code on a hosted Mac. Both images (macos-15 and macos-26)
+  # show one Metal device, "Apple Paravirtual device", and the self-test passed
+  # on it on 2026-11-08 (single precision, bit-exact). Apple's OpenCL lists no
+  # device on these runners, so the OpenCL case prints SKIPPED. The job compiles
+  # the Metal text with Apple's `metal` tool, then runs the self-test.
+  # PC_REQUIRE_GPU=metal turns a missing Metal device into a failure. The job
+  # stays non-blocking because GitHub picks the runner hardware.
   gpu-macos:
     if: github.event_name != 'schedule'
     continue-on-error: true
@@ -254,6 +255,8 @@ jobs:
             xcrun -sdk macosx metal -c "$f" -o /dev/null
           done
       - name: Run the self-test on the Metal and OpenCL devices
+        env:
+          PC_REQUIRE_GPU: metal
         run: cargo test --locked --no-fail-fast -p pc-ensemble --test device_selftest -- --include-ignored --nocapture
       - name: Run the command-line self-test on Metal
         run: cargo run --locked -q -p pc-cli -- gpu selftest --backend metal --precision single
