@@ -163,7 +163,7 @@ $$G(x) = \begin{pmatrix} F(x) \\ v_k^\top (x - x_k) - h \end{pmatrix} = 0.$$
 
 **Branch storage.** Columns are $u$, $\alpha$, tangent, eigenvalues (or multipliers), test function values, step size and Newton iteration count. Special points carry a label, an index and a struct of extras.
 
-**Background runs.** A continuation runs on a Rust background thread. MATLAB polls for new points with `pc_run_poll` from a `timer`, so plots update live, and `pc_run_cancel` stops the run. Cancel is checked between Newton iterations and between steps. A panic on the background thread is caught on that thread, with its message and source location, and the next `pc_run_poll` reports it as an error.
+**Background runs.** A continuation runs on a Rust background thread. MATLAB polls for new points with `pc_run_poll` in a loop that calls `drawnow` between polls (section 11, Poll schedule), so plots update live, and `pc_run_cancel` stops the run. Cancel is checked between Newton iterations and between steps. A panic on the background thread is caught on that thread, with its message and source location, and the next `pc_run_poll` reports it as an error.
 - A compiled model is not `Send` (it holds code pointers), and the lowered `IrModel` is not `Clone`. A run therefore takes copies of the checked model and its `ModelInfo`, and the worker lowers and compiles them on its own thread.
 - `pc-engine` owns the panic hook. It is installed once, stores the message and `file:line:col` of a panic on an engine worker in a thread local, and prints nothing, since stderr is lost inside MATLAB. `pc-ffi` reuses it in Phase 7a.
 
