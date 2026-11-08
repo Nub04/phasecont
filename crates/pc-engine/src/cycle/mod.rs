@@ -22,7 +22,8 @@ pub use continuation::{CycleStart, HopfStart, PdStart, continue_cycle};
 pub use curve::CycleCurveStart;
 pub use hom::{HOM_CURVE_LABELS, HomProblem, HomStart, HomStartKind, continue_hom_curve};
 pub use hom_adjoint::{
-    AdjointResidual, AdjointSetup, InclinationFlips, adjoint_residual, inclination_flips,
+    AdjointResidual, AdjointSetup, AdjointSolution, InclinationFlips, adjoint_residual,
+    inclination_flips, orient_adjoint, solve_adjoint,
 };
 pub use lpc::{LpcProblem, continue_lpc_curve};
 pub(crate) use mesh::{interpolate, new_mesh};

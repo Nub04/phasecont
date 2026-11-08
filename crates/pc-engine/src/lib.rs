@@ -32,13 +32,13 @@ pub use aot::{AotEval, engine_kinds, entry_symbol};
 pub use branch::{Branch, Extras, Options, Point, SpecialPoint, StopReason};
 pub use curve2::CurveSetup;
 pub use cycle::{
-    AdjointResidual, AdjointSetup, CYCLE_LABELS, CollocationBasis, CycleBifurcation,
-    CycleCurveStart, CycleNormalForm, CycleProblem, CycleSetup, CycleStart, HOM_CURVE_LABELS,
-    HomProblem, HomStart, HomStartKind, HopfStart, InclinationFlips, LPC_CURVE_LABELS, LpcProblem,
-    NCOL_RANGE, NS_CURVE_LABELS, NsProblem, PD_CURVE_LABELS, PdProblem, PdStart, PeriodicOrbit,
-    adjoint_residual, continue_cycle, continue_hom_curve, continue_lpc_curve, continue_ns_curve,
-    continue_pd_curve, curve_point_normal_form, inclination_flips, lc_point_normal_form,
-    periodic_orbit,
+    AdjointResidual, AdjointSetup, AdjointSolution, CYCLE_LABELS, CollocationBasis,
+    CycleBifurcation, CycleCurveStart, CycleNormalForm, CycleProblem, CycleSetup, CycleStart,
+    HOM_CURVE_LABELS, HomProblem, HomStart, HomStartKind, HopfStart, InclinationFlips,
+    LPC_CURVE_LABELS, LpcProblem, NCOL_RANGE, NS_CURVE_LABELS, NsProblem, PD_CURVE_LABELS,
+    PdProblem, PdStart, PeriodicOrbit, adjoint_residual, continue_cycle, continue_hom_curve,
+    continue_lpc_curve, continue_ns_curve, continue_pd_curve, curve_point_normal_form,
+    inclination_flips, lc_point_normal_form, orient_adjoint, periodic_orbit, solve_adjoint,
 };
 pub use dde::{
     CharRoot, DdeBranch, DdeCycle, DdeCycleBranch, DdeCyclePoint, DdeCycleSetup, DdeCycleSpecial,

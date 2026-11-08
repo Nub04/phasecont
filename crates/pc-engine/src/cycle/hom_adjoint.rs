@@ -12,15 +12,17 @@
 //! PSIHO, and the sign rule of the right eigenvectors in EIGHO. The bases come from the
 //! matrix sign function in `pc-linalg`, not from HomCont's Schur form.
 //!
-//! This module only evaluates the adjoint equations at a given phi and tests it on a
-//! given phi. It does not solve for phi and no HOM run calls it yet.
+//! [`adjoint_residual`] evaluates the adjoint equations at a given phi. [`solve_adjoint`]
+//! solves them for phi and gamma on a given orbit with the condensation of `pc-linalg`
+//! (SPEC §8b-3), and [`orient_adjoint`] fixes the sign of the solution. No HOM run calls
+//! these yet.
 
 use super::basis::CollocationBasis;
 use super::hom::{ascending, is_real, signed_eigvec};
 use crate::error::EngineError;
 use crate::model::ModelEval;
 use pc_ir::EntryKind;
-use pc_linalg::{BasisOf, BasisTracker, eigenvalues};
+use pc_linalg::{BasisOf, BasisTracker, BlockSystem, CondenseShape, Condenser, eigenvalues};
 
 /// The orbit mesh, the saddle and the parameters an adjoint residual refers to.
 pub struct AdjointSetup<'a> {
@@ -52,32 +54,18 @@ fn bad(msg: String) -> EngineError {
     EngineError::BadProblem(msg)
 }
 
-/// The residual of the adjoint equations for the orbit `u` and the adjoint `phi`, both given
-/// at the base points (n (ntst ncol + 1) values). The bases of A for the boundary rows come
-/// from `tracker` (slot [`BasisOf::Matrix`]) and are rotated against its reference there.
-pub fn adjoint_residual(
-    model: &mut dyn ModelEval,
+/// Checks the setup against the model and returns the number of intervals and the
+/// collocation basis.
+fn check_setup(
+    model: &dyn ModelEval,
     s: &AdjointSetup,
-    tracker: &BasisTracker,
-    u: &[f64],
-    phi: &[f64],
-    gamma: f64,
-) -> Result<AdjointResidual, EngineError> {
+) -> Result<(usize, CollocationBasis), EngineError> {
     let n = model.n();
     let ntst = s.mesh.len().saturating_sub(1);
     if ntst == 0 {
         return Err(bad("the mesh needs at least one interval".into()));
     }
     let basis = CollocationBasis::new(s.ncol)?;
-    let m = basis.m();
-    let len = n * (ntst * m + 1);
-    if u.len() != len || phi.len() != len {
-        return Err(bad(format!(
-            "expected {len} orbit and adjoint values, got {} and {}",
-            u.len(),
-            phi.len()
-        )));
-    }
     if s.x0.len() != n || s.params.len() != model.n_p() {
         return Err(bad(format!(
             "expected {n} saddle values and {} parameters, got {} and {}",
@@ -91,6 +79,31 @@ pub fn adjoint_residual(
             "the saddle needs 1 to {} stable eigenvalues, got {}",
             n - 1,
             s.ns
+        )));
+    }
+    Ok((ntst, basis))
+}
+
+/// The residual of the adjoint equations for the orbit `u` and the adjoint `phi`, both given
+/// at the base points (n (ntst ncol + 1) values). The bases of A for the boundary rows come
+/// from `tracker` (slot [`BasisOf::Matrix`]) and are rotated against its reference there.
+pub fn adjoint_residual(
+    model: &mut dyn ModelEval,
+    s: &AdjointSetup,
+    tracker: &BasisTracker,
+    u: &[f64],
+    phi: &[f64],
+    gamma: f64,
+) -> Result<AdjointResidual, EngineError> {
+    let n = model.n();
+    let (ntst, basis) = check_setup(model, s)?;
+    let m = basis.m();
+    let len = n * (ntst * m + 1);
+    if u.len() != len || phi.len() != len {
+        return Err(bad(format!(
+            "expected {len} orbit and adjoint values, got {} and {}",
+            u.len(),
+            phi.len()
         )));
     }
     let mut p = s.params.to_vec();
@@ -143,6 +156,181 @@ pub fn adjoint_residual(
         collocation,
         boundary,
     })
+}
+
+/// The bounded adjoint of an orbit and its multiplier.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdjointSolution {
+    /// phi at the base points, n (ntst ncol + 1) values, with 2-norm 1. The sign is free;
+    /// see [`orient_adjoint`].
+    pub phi: Vec<f64>,
+    /// gamma, the multiplier of f in the adjoint equation.
+    pub gamma: f64,
+}
+
+/// The seed of the first normalization row of [`solve_adjoint`].
+const NORMAL_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// n values in [-1, 1) from an xorshift64 generator started at `seed`.
+fn pseudo_random(seed: u64, len: usize) -> Vec<f64> {
+    let mut x = seed.max(1);
+    (0..len)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 11) as f64 / (1u64 << 52) as f64 - 1.0
+        })
+        .collect()
+}
+
+/// Solves the adjoint equations of the orbit `u` (n (ntst ncol + 1) base-point values) for
+/// phi and gamma and scales phi to 2-norm 1 (SPEC §8b-3).
+///
+/// The rows are the collocation rows of [`adjoint_residual`] with gamma in a column of its
+/// own, and its n boundary rows. That is one unknown more than rows, so the system has a
+/// null vector. A normalization row `<r, phi> = 1` makes the system square, and the
+/// condensation of `pc-linalg` solves it. The first r is pseudo-random with a fixed seed.
+/// It is then replaced by the first solution and the system is solved again, so that the
+/// row is not nearly orthogonal to the null vector.
+pub fn solve_adjoint(
+    model: &mut dyn ModelEval,
+    s: &AdjointSetup,
+    tracker: &BasisTracker,
+    u: &[f64],
+) -> Result<AdjointSolution, EngineError> {
+    solve_adjoint_seeded(model, s, tracker, u, NORMAL_SEED)
+}
+
+fn solve_adjoint_seeded(
+    model: &mut dyn ModelEval,
+    s: &AdjointSetup,
+    tracker: &BasisTracker,
+    u: &[f64],
+    seed: u64,
+) -> Result<AdjointSolution, EngineError> {
+    let n = model.n();
+    let (ntst, basis) = check_setup(model, s)?;
+    let m = basis.m();
+    let nodes = ntst * m + 1;
+    if u.len() != n * nodes {
+        return Err(bad(format!(
+            "expected {} orbit values, got {}",
+            n * nodes,
+            u.len()
+        )));
+    }
+    let shape = CondenseShape::new(n, m, ntst, 1)?;
+    let (nm, tcol) = (n * m, n * (m + 1));
+    let bcols = tcol + 1;
+    let mut p = s.params.to_vec();
+    p.push(0.0);
+
+    // Interval blocks, column-major: row i n + c, column l n + c2 for phi_{jm+l}[c2], and
+    // the column tcol for gamma. The row is d + h T (f_x^T phi - gamma f).
+    let mut blocks = vec![0.0; ntst * nm * bcols];
+    let (mut uz, mut f) = (vec![0.0; n], vec![0.0; n]);
+    let mut jac = vec![0.0; n * n];
+    for j in 0..ntst {
+        let h = s.mesh[j + 1] - s.mesh[j];
+        let ht = h * s.period;
+        let blk = &mut blocks[j * nm * bcols..(j + 1) * nm * bcols];
+        let ub = &u[j * m * n..j * m * n + tcol];
+        for i in 0..m {
+            for (c, z) in uz.iter_mut().enumerate() {
+                *z = (0..=m)
+                    .map(|l| basis.value_at_node(i, l) * ub[l * n + c])
+                    .sum();
+            }
+            model.eval(&EntryKind::F, &uz, &p, &[], &mut f)?;
+            model.eval(&EntryKind::JacU, &uz, &p, &[], &mut jac)?;
+            for c in 0..n {
+                let row = i * n + c;
+                for l in 0..=m {
+                    let (d, v) = (basis.derivative_at_node(i, l), basis.value_at_node(i, l));
+                    for c2 in 0..n {
+                        let diag = if c == c2 { d } else { 0.0 };
+                        // The entry of phi_l[c2] in (f_x^T phi)_c is f_x[c2, c].
+                        blk[row + nm * (l * n + c2)] = diag + ht * v * jac[c2 + n * c];
+                    }
+                }
+                blk[row + nm * tcol] = -ht * f[c];
+            }
+        }
+    }
+
+    // Boundary rows, n by (2n + 1): B_u^T on phi(0), then B_s^T on phi(1).
+    model.eval(&EntryKind::JacU, s.x0, &p, &[], &mut jac)?;
+    let (bs, bu) = tracker.bases(BasisOf::Matrix, &jac, n, s.ns)?;
+    let nu = n - s.ns;
+    let mut bc = vec![0.0; n * (2 * n + 1)];
+    for r in 0..nu {
+        for c in 0..n {
+            bc[r + n * c] = bu[c + n * r];
+        }
+    }
+    for r in 0..s.ns {
+        for c in 0..n {
+            bc[(nu + r) + n * (n + c)] = bs[c + n * r];
+        }
+    }
+
+    let dim = shape.dim();
+    let parallel = shape.parallel_pays();
+    let mut condenser = Condenser::new(shape)?;
+    let mut rhs = vec![0.0; dim];
+    rhs[dim - 1] = 1.0;
+    let mut border = pseudo_random(seed, dim);
+    border[dim - 1] = 0.0;
+    let mut sol = vec![0.0; dim];
+    for _ in 0..2 {
+        let sys = BlockSystem {
+            blocks: &blocks,
+            bc: &bc,
+            border: &border,
+        };
+        condenser.solve(&sys, &rhs, &mut sol, parallel)?;
+        let norm = sol[..dim - 1].iter().map(|v| v * v).sum::<f64>().sqrt();
+        if !norm.is_finite() || norm == 0.0 {
+            return Err(EngineError::Singular(
+                "the adjoint solve returned a zero vector".into(),
+            ));
+        }
+        border[..dim - 1]
+            .iter_mut()
+            .zip(&sol)
+            .for_each(|(r, z)| *r = z / norm);
+    }
+    let norm = sol[..dim - 1].iter().map(|v| v * v).sum::<f64>().sqrt();
+    let gamma = sol[dim - 1] / norm;
+    sol.truncate(dim - 1);
+    sol.iter_mut().for_each(|v| *v /= norm);
+    Ok(AdjointSolution { phi: sol, gamma })
+}
+
+/// Fixes the sign of `phi` (n values per base point, ntst ncol + 1 points) and returns its
+/// end values `[phi(0), phi(1)]`, 2n numbers (SPEC §8b-3).
+///
+/// With `prev` None, the component of largest magnitude of the ends is made positive. With
+/// the ends of the previous accepted point as `prev`, `phi` is flipped when the dot product
+/// of the two end vectors is negative.
+pub fn orient_adjoint(phi: &mut [f64], n: usize, prev: Option<&[f64]>) -> Vec<f64> {
+    let mut ends = phi[..n].to_vec();
+    ends.extend_from_slice(&phi[phi.len() - n..]);
+    let flip = match prev {
+        Some(q) => ends.iter().zip(q).map(|(a, b)| a * b).sum::<f64>() < 0.0,
+        None => {
+            let big = ends
+                .iter()
+                .fold(0.0_f64, |m, v| if v.abs() > m.abs() { *v } else { m });
+            big < 0.0
+        }
+    };
+    if flip {
+        phi.iter_mut().for_each(|v| *v = -*v);
+        ends.iter_mut().for_each(|v| *v = -*v);
+    }
+    ends
 }
 
 /// IFS and IFU with the eigenvectors they used.
@@ -228,6 +416,136 @@ mod tests {
     }
 
     const NONE: [Option<Vec<f64>>; 2] = [None, None];
+
+    /// f(x) = A x with a quadratic term in the first row, so f_x depends on x.
+    struct Quad {
+        a: Vec<f64>,
+    }
+
+    impl ModelEval for Quad {
+        fn n(&self) -> usize {
+            3
+        }
+        fn n_p(&self) -> usize {
+            0
+        }
+        fn eval(
+            &mut self,
+            kind: &EntryKind,
+            x: &[f64],
+            _p: &[f64],
+            _v: &[f64],
+            out: &mut [f64],
+        ) -> Result<(), EngineError> {
+            match kind {
+                EntryKind::F => {
+                    for (r, o) in out.iter_mut().enumerate() {
+                        *o = (0..3).map(|c| self.a[r + 3 * c] * x[c]).sum();
+                    }
+                    out[0] += x[1] * x[1];
+                }
+                EntryKind::JacU => {
+                    out.copy_from_slice(&self.a);
+                    out[3] += 2.0 * x[1];
+                }
+                _ => unreachable!(),
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_solution_does_not_depend_on_the_normalization_seed() {
+        let a = cm(&[&[-2.0, 1.0, 0.5], &[0.3, -1.0, 2.0], &[0.0, 0.2, 0.5]]);
+        let (ntst, ncol) = (6, 3);
+        let mesh: Vec<f64> = (0..=ntst).map(|j| j as f64 / ntst as f64).collect();
+        let u: Vec<f64> = (0..3 * (ntst * ncol + 1))
+            .map(|i| ((i as f64) * 0.37).sin())
+            .collect();
+        let setup = AdjointSetup {
+            ncol,
+            mesh: &mesh,
+            period: 3.0,
+            x0: &[0.0; 3],
+            params: &[],
+            ns: 2,
+        };
+        let mut model = Quad { a };
+        let tracker = BasisTracker::new();
+        let base = solve_adjoint_seeded(&mut model, &setup, &tracker, &u, 1).unwrap();
+        for seed in [2, 12345, 0xDEAD_BEEF] {
+            let other = solve_adjoint_seeded(&mut model, &setup, &tracker, &u, seed).unwrap();
+            let dot: f64 = base.phi.iter().zip(&other.phi).map(|(x, y)| x * y).sum();
+            let sgn = dot.signum();
+            let err = base
+                .phi
+                .iter()
+                .zip(&other.phi)
+                .fold(0.0_f64, |m, (x, y)| m.max((x - sgn * y).abs()));
+            assert!(err < 1e-9, "seed {seed}: {err:e}");
+            assert!((base.gamma - sgn * other.gamma).abs() < 1e-9, "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn bad_solve_input() {
+        let a = cm(&[&[-2.0, 0.0, 0.0], &[0.0, -1.0, 0.0], &[0.0, 0.0, 0.5]]);
+        let mesh = [0.0, 1.0];
+        let u: Vec<f64> = (0..12).map(|i| 0.1 + ((i as f64) * 0.7).sin()).collect();
+        let mut setup = AdjointSetup {
+            ncol: 3,
+            mesh: &mesh,
+            period: 1.0,
+            x0: &[0.0; 3],
+            params: &[],
+            ns: 2,
+        };
+        let mut model = Quad { a };
+        let t = BasisTracker::new();
+        assert!(solve_adjoint(&mut model, &setup, &t, &u).is_ok());
+        assert!(solve_adjoint(&mut model, &setup, &t, &u[..9]).is_err());
+        setup.ns = 3;
+        assert!(solve_adjoint(&mut model, &setup, &t, &u).is_err());
+        setup.ns = 2;
+        setup.mesh = &[0.0];
+        assert!(solve_adjoint(&mut model, &setup, &t, &u).is_err());
+    }
+
+    /// phi with n = 2 and three base points.
+    fn phi2(first: [f64; 2], mid: [f64; 2], last: [f64; 2]) -> Vec<f64> {
+        [first, mid, last].concat()
+    }
+
+    #[test]
+    fn the_first_point_gets_its_largest_end_component_positive() {
+        let mut phi = phi2([0.2, -0.3], [9.0, 9.0], [0.1, -0.7]);
+        let ends = orient_adjoint(&mut phi, 2, None);
+        assert_eq!(ends, vec![-0.2, 0.3, -0.1, 0.7]);
+        assert_eq!(phi, phi2([-0.2, 0.3], [-9.0, -9.0], [-0.1, 0.7]));
+        // Already positive: unchanged, and the middle values play no role in the choice.
+        let mut phi = phi2([0.2, -0.3], [-99.0, 0.0], [0.1, 0.7]);
+        let before = phi.clone();
+        orient_adjoint(&mut phi, 2, None);
+        assert_eq!(phi, before);
+    }
+
+    #[test]
+    fn later_points_follow_the_previous_ends() {
+        let prev = [1.0, 0.0, 0.0, 1.0];
+        let mut same = phi2([0.9, 0.1], [5.0, 5.0], [-0.1, 1.1]);
+        let before = same.clone();
+        orient_adjoint(&mut same, 2, Some(&prev));
+        assert_eq!(same, before);
+        let mut opposite = phi2([-0.9, -0.1], [5.0, 5.0], [0.1, -1.1]);
+        let ends = orient_adjoint(&mut opposite, 2, Some(&prev));
+        assert_eq!(opposite, phi2([0.9, 0.1], [-5.0, -5.0], [-0.1, 1.1]));
+        assert_eq!(ends, vec![0.9, 0.1, -0.1, 1.1]);
+        // A tie (zero dot product) keeps the sign.
+        let mut tie = phi2([0.0, 1.0], [0.0, 0.0], [1.0, 0.0]);
+        let before = tie.clone();
+        orient_adjoint(&mut tie, 2, Some(&prev));
+        assert_eq!(tie, before);
+    }
 
     #[test]
     fn flips_match_hand_values_on_a_triangular_matrix() {

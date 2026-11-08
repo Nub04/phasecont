@@ -237,3 +237,105 @@ fn closed_form_flips_tend_to_four_root_two() {
     }
     assert!(previous < 1e-4 * limit, "{previous:e}");
 }
+
+/// Unit-norm closed form (phi_x, phi_y, 0) on the same mesh as `closed_form`, with sign of
+/// (y', -x') as in the module comment.
+fn unit_closed_form(period: f64, ntst: usize, ncol: usize) -> Vec<f64> {
+    let (_, mut phi) = closed_form(period, ntst, ncol);
+    let norm = phi.iter().map(|v| v * v).sum::<f64>().sqrt();
+    phi.iter_mut().for_each(|v| *v /= norm);
+    phi
+}
+
+fn solve(period: f64, ntst: usize, ncol: usize, params: &[f64; 8]) -> pc_engine::AdjointSolution {
+    let mut m = model(Evaluator::Jit);
+    let mesh = mesh(ntst);
+    let (u, _) = closed_form(period, ntst, ncol);
+    let setup = AdjointSetup {
+        ncol,
+        mesh: &mesh,
+        period,
+        x0: &[0.0; 3],
+        params,
+        ns: 2,
+    };
+    pc_engine::solve_adjoint(m.as_mut(), &setup, &BasisTracker::new(), &u).unwrap()
+}
+
+/// The solved adjoint of the closed-form orbit is the closed form (SPEC §8b-3, acceptance
+/// 1): the difference falls with the mesh, and gamma is zero because the field is divergence
+/// free in the plane and phi is bounded.
+#[test]
+fn solved_adjoint_matches_the_closed_form() {
+    let mut last = f64::INFINITY;
+    let mut gammas = Vec::new();
+    for ntst in [20, 40, 80] {
+        let sol = solve(20.0, ntst, 4, &PARAMS);
+        let want = unit_closed_form(20.0, ntst, 4);
+        // The sign of the null vector is free: align it with the closed form.
+        let dot: f64 = sol.phi.iter().zip(&want).map(|(a, b)| a * b).sum();
+        let s = dot.signum();
+        let err = sol
+            .phi
+            .iter()
+            .zip(&want)
+            .fold(0.0_f64, |m, (a, b)| m.max((s * a - b).abs()));
+        let norm = sol.phi.iter().map(|v| v * v).sum::<f64>().sqrt();
+        println!(
+            "N = {ntst}: error {err:.3e}, gamma {:.3e}, norm {norm}",
+            sol.gamma
+        );
+        assert!((norm - 1.0).abs() < 1e-12, "norm {norm}");
+        gammas.push(sol.gamma.abs());
+        assert!(err < last, "N = {ntst}: {err:e} after {last:e}");
+        last = err;
+    }
+    assert!(last < 1e-6, "{last:e}");
+    println!("gamma by N: {gammas:?}");
+    assert!(gammas[2] < gammas[1] && gammas[1] < gammas[0], "{gammas:?}");
+    assert!(gammas[1] < 1e-6 && gammas[2] < 1e-8, "{gammas:?}");
+}
+
+/// For any orbit data, the solved (phi, gamma) satisfies the residual of `adjoint_residual`
+/// to rounding, also where A is not symmetric (mu = 0.9), so the solve and the residual use
+/// the same rows and the same A.
+#[test]
+fn solved_adjoint_satisfies_the_residual() {
+    let mut params = PARAMS;
+    params[3] = 0.9;
+    let (ntst, ncol) = (8, 4);
+    let sol = solve(20.0, ntst, ncol, &params);
+    let mut m = model(Evaluator::Jit);
+    let mesh = mesh(ntst);
+    let (u, _) = closed_form(20.0, ntst, ncol);
+    let setup = AdjointSetup {
+        ncol,
+        mesh: &mesh,
+        period: 20.0,
+        x0: &[0.0; 3],
+        params: &params,
+        ns: 2,
+    };
+    let r = adjoint_residual(
+        m.as_mut(),
+        &setup,
+        &BasisTracker::new(),
+        &u,
+        &sol.phi,
+        sol.gamma,
+    )
+    .unwrap();
+    let max = |v: &[f64]| v.iter().fold(0.0_f64, |a, b| a.max(b.abs()));
+    assert!(max(&r.collocation) < 1e-10, "{:e}", max(&r.collocation));
+    assert!(max(&r.boundary) < 1e-10, "{:e}", max(&r.boundary));
+    assert!(max(&sol.phi) > 1e-3, "phi is not the zero vector");
+}
+
+/// The solve is deterministic: two calls give the same bits.
+#[test]
+fn solved_adjoint_is_deterministic() {
+    let a = solve(20.0, 20, 4, &PARAMS);
+    let b = solve(20.0, 20, 4, &PARAMS);
+    assert_eq!(a.phi, b.phi);
+    assert_eq!(a.gamma, b.gamma);
+}
