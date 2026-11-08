@@ -22,8 +22,8 @@ use pc_engine::{
     DdeCycle, DdeCycleBranch, DdeCyclePoint, DdeCycleSetup, DdeCycleStart, DdeFloquet,
     DdeFloquetOptions, DdeHopfCycle, DdeMeshAdapt, DdeModel, EngineError, Evaluator, Options,
     StopReason, build_dde, dde_check_cycle_floquet, dde_continue_cycle_adapt,
-    dde_continue_cycle_bpc, dde_continue_cycle_floquet, dde_correct_cycle, dde_floquet_multipliers,
-    dde_hopf_cycle,
+    dde_continue_cycle_bpc, dde_continue_cycle_floquet, dde_continue_cycle_switch,
+    dde_correct_cycle, dde_floquet_multipliers, dde_hopf_cycle, dde_switch_cycle_bpc,
 };
 use pckern::json::problem::parse_options;
 use serde_json::{Value, json};
@@ -42,6 +42,15 @@ enum Start {
     Orbit { profile: Vec<f64>, period: f64 },
     /// A Hopf point of an equilibrium.
     Hopf { x0: Vec<f64>, omega: f64, eps: f64 },
+}
+
+/// The `switch` key: leave the branch at one of its `BPC` points and follow the other branch.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Switch {
+    /// Index into the specials of the first run, which must be a `BPC`.
+    special: usize,
+    /// 1 or -1: the orientation of the run along the other branch.
+    direction: f64,
 }
 
 /// What the problem file says.
@@ -65,6 +74,8 @@ struct Problem {
     adapt: Option<DdeMeshAdapt>,
     /// Whether the branch labels branch points of cycles, `BPC` (only with `branch`).
     bpc: bool,
+    /// Whether to switch branches at a `BPC` of the first run (only with `branch`).
+    switch: Option<Switch>,
 }
 
 /// `dde-cycle`: reads the problem, runs the corrector and prints the orbit. See
@@ -222,6 +233,9 @@ fn run_branch(
         }
     };
     let floquet = problem.floquet.as_ref();
+    if let Some(switch) = &problem.switch {
+        return run_switch(model, &setup, &orbit, problem, switch, cancel, shown);
+    }
     let run = if problem.bpc {
         let adapt = problem.adapt.as_ref();
         dde_continue_cycle_bpc(model, &setup, &orbit, &problem.opts, floquet, adapt, cancel)
@@ -245,17 +259,69 @@ fn run_branch(
         Ok(b) => b,
         Err(e) => return engine_error(&e, shown),
     };
-    // As `cont` does, a run that stops on an error still prints what it found, and the
-    // message goes to stderr.
+    report_stop(&branch);
+    let with_floquet = problem.floquet.is_some();
+    let with_mesh = problem.adapt.is_some();
+    let mut text =
+        branch_json(&branch, problem.ntst, problem.ncol, with_floquet, with_mesh).to_string();
+    text.push('\n');
+    out(&text, 0)
+}
+
+/// As `cont` does, a run that stops on an error still prints what it found, and the message
+/// goes to stderr.
+fn report_stop(branch: &DdeCycleBranch) {
     if let StopReason::Error(e) = &branch.stop
         && !matches!(e, EngineError::Cancelled)
     {
         to_stderr(&format!("pc-cli: {e}\n"));
     }
-    let with_floquet = problem.floquet.is_some();
-    let with_mesh = problem.adapt.is_some();
-    let mut text =
-        branch_json(&branch, problem.ntst, problem.ncol, with_floquet, with_mesh).to_string();
+}
+
+/// `switch` (SPEC section 8r): continues the orbit as `branch` does, with `BPC` labels and
+/// without `floquet` and `adapt`, finds the other branch at the special point `switch.special`
+/// and continues along it. The output is the second run with the key `switch`.
+fn run_switch(
+    model: &mut DdeModel,
+    setup: &DdeCycleSetup,
+    orbit: &DdeCycleStart,
+    problem: &Problem,
+    switch: &Switch,
+    cancel: &AtomicBool,
+    shown: &str,
+) -> ExitCode {
+    let first = match dde_continue_cycle_bpc(model, setup, orbit, &problem.opts, None, None, cancel)
+    {
+        Ok(b) => b,
+        Err(e) => return engine_error(&e, shown),
+    };
+    report_stop(&first);
+    let sw = match dde_switch_cycle_bpc(model, setup, &first, switch.special) {
+        Ok(sw) => sw,
+        Err(e) => return engine_error(&e, shown),
+    };
+    let mut opts = problem.opts.clone();
+    opts.direction = switch.direction;
+    let floquet = problem.floquet.as_ref();
+    let second =
+        match dde_continue_cycle_switch(model, setup, &sw, &opts, floquet, problem.bpc, cancel) {
+            Ok(b) => b,
+            Err(e) => return engine_error(&e, shown),
+        };
+    report_stop(&second);
+    let mut value = branch_json(
+        &second,
+        problem.ntst,
+        problem.ncol,
+        problem.floquet.is_some(),
+        false,
+    );
+    value["switch"] = json!({
+        "special": switch.special,
+        "alpha": sw.alpha,
+        "period": sw.start.period,
+    });
+    let mut text = value.to_string();
     text.push('\n');
     out(&text, 0)
 }
@@ -480,6 +546,23 @@ fn read_adapt(value: &Value) -> Result<DdeMeshAdapt, String> {
     Ok(DdeMeshAdapt { every })
 }
 
+/// Reads the `switch` object: `special`, a non-negative integer, and `direction`, 1 or -1, both
+/// required. Whether `special` is the index of a `BPC` is checked by the engine.
+fn read_switch(value: &Value) -> Result<Switch, String> {
+    let obj = value.as_object().ok_or_else(|| {
+        "\"switch\" must be an object with the keys \"special\" and \"direction\"".to_string()
+    })?;
+    check_keys(obj, &["special", "direction"], "\"switch\"")?;
+    let named = |e: String| format!("\"switch\": {e}");
+    let special = count(required(obj, "special", "\"switch\"")?, "special").map_err(named)?;
+    let direction =
+        number(required(obj, "direction", "\"switch\"")?, "direction").map_err(named)?;
+    if direction != 1.0 && direction != -1.0 {
+        return Err(named("\"direction\" must be 1 or -1".to_string()));
+    }
+    Ok(Switch { special, direction })
+}
+
 /// Reads the problem object. The parameter names, the length of the profile and `x0` and the
 /// ranges of `ntst`, `ncol`, `omega`, `eps` and `period` are checked against the model by the
 /// engine.
@@ -491,7 +574,7 @@ fn read_problem(value: &Value) -> Result<Problem, String> {
         obj,
         &[
             "model", "params", "free", "ntst", "ncol", "orbit", "hopf", "options", "floquet",
-            "branch", "adapt", "bpc",
+            "branch", "adapt", "bpc", "switch",
         ],
         "problem",
     )?;
@@ -547,6 +630,19 @@ fn read_problem(value: &Value) -> Result<Problem, String> {
     if adapt.is_some() && ntst < 2 {
         return Err("\"adapt\": the mesh needs \"ntst\" of at least 2".to_string());
     }
+    let switch = obj.get("switch").map(read_switch).transpose()?;
+    if switch.is_some() && !branch {
+        return Err(
+            "\"switch\" follows the other branch at a BPC of a branch and needs \"branch\": true"
+                .to_string(),
+        );
+    }
+    if switch.is_some() && adapt.is_some() {
+        return Err(
+            "\"switch\" cannot be combined with \"adapt\": the switch needs the uniform mesh"
+                .to_string(),
+        );
+    }
     Ok(Problem {
         model,
         params,
@@ -559,6 +655,7 @@ fn read_problem(value: &Value) -> Result<Problem, String> {
         branch,
         adapt,
         bpc,
+        switch,
     })
 }
 
@@ -851,6 +948,116 @@ mod tests {
         // It also works next to a Hopf start.
         let hopf = HOPF.replace("\"hopf\"", "\"branch\":true,\"bpc\":true,\"hopf\"");
         assert!(read(&hopf).unwrap().bpc);
+    }
+
+    /// `ORBIT` with `branch` and the given text of the `switch` key.
+    fn with_switch(body: &str) -> String {
+        ORBIT.replace(
+            "\"options\"",
+            &format!("\"branch\":true,\"switch\":{body},\"options\""),
+        )
+    }
+
+    #[test]
+    fn the_switch_key_is_optional_and_reads_both_members() {
+        let branch = ORBIT.replace("\"options\"", "\"branch\":true,\"options\"");
+        assert!(read(&branch).unwrap().switch.is_none());
+        let p = read(&with_switch("{\"special\":2,\"direction\":-1}")).unwrap();
+        assert_eq!(
+            p.switch,
+            Some(Switch {
+                special: 2,
+                direction: -1.0
+            })
+        );
+        let p = read(&with_switch("{\"special\":0,\"direction\":1}")).unwrap();
+        assert_eq!(
+            p.switch,
+            Some(Switch {
+                special: 0,
+                direction: 1.0
+            })
+        );
+        // `1.0` and `-1.0` are the same numbers as `1` and `-1`.
+        let p = read(&with_switch("{\"special\":0,\"direction\":-1.0}")).unwrap();
+        assert_eq!(p.switch.map(|s| s.direction), Some(-1.0));
+        // It goes with `bpc`, `floquet` and a Hopf start.
+        let both = ORBIT.replace(
+            "\"options\"",
+            "\"branch\":true,\"bpc\":true,\"floquet\":{\"nhist\":8,\"count\":2},\
+             \"switch\":{\"special\":0,\"direction\":1},\"options\"",
+        );
+        let p = read(&both).unwrap();
+        assert!(p.bpc && p.floquet.is_some() && p.switch.is_some());
+        let hopf = HOPF.replace(
+            "\"hopf\"",
+            "\"branch\":true,\"switch\":{\"special\":0,\"direction\":1},\"hopf\"",
+        );
+        assert!(read(&hopf).unwrap().switch.is_some());
+    }
+
+    #[test]
+    fn a_malformed_switch_key_names_switch() {
+        for (what, body) in [
+            ("null", "null"),
+            ("a string", "\"BPC1\""),
+            ("an array", "[0,1]"),
+            ("a number", "1"),
+            ("empty", "{}"),
+            ("no direction", "{\"special\":0}"),
+            ("no special", "{\"direction\":1}"),
+            ("unknown key", "{\"special\":0,\"direction\":1,\"tol\":1}"),
+            ("special negative", "{\"special\":-1,\"direction\":1}"),
+            ("special fraction", "{\"special\":0.5,\"direction\":1}"),
+            ("special string", "{\"special\":\"0\",\"direction\":1}"),
+            ("special null", "{\"special\":null,\"direction\":1}"),
+            ("direction zero", "{\"special\":0,\"direction\":0}"),
+            ("direction two", "{\"special\":0,\"direction\":2}"),
+            (
+                "direction near one",
+                "{\"special\":0,\"direction\":0.99999}",
+            ),
+            ("direction string", "{\"special\":0,\"direction\":\"1\"}"),
+            ("direction null", "{\"special\":0,\"direction\":null}"),
+            ("direction bool", "{\"special\":0,\"direction\":true}"),
+        ] {
+            let msg = read(&with_switch(body)).unwrap_err();
+            assert!(msg.contains("\"switch\""), "{what}: {msg}");
+        }
+        // The member that is wrong is named too.
+        let msg = read(&with_switch("{\"special\":0}")).unwrap_err();
+        assert!(msg.contains("\"direction\""), "{msg}");
+        let msg = read(&with_switch("{\"special\":0,\"direction\":2}")).unwrap_err();
+        assert!(msg.contains("1 or -1"), "{msg}");
+    }
+
+    #[test]
+    fn the_switch_key_needs_branch_and_refuses_adapt() {
+        let good = "\"switch\":{\"special\":0,\"direction\":1}";
+        let alone = ORBIT.replace("\"options\"", &format!("{good},\"options\""));
+        let msg = read(&alone).unwrap_err();
+        assert!(
+            msg.contains("\"switch\"") && msg.contains("\"branch\""),
+            "{msg}"
+        );
+        let off = ORBIT.replace(
+            "\"options\"",
+            &format!("\"branch\":false,{good},\"options\""),
+        );
+        let msg = read(&off).unwrap_err();
+        assert!(
+            msg.contains("\"switch\"") && msg.contains("\"branch\""),
+            "{msg}"
+        );
+        let adapt = ORBIT.replace(
+            "\"options\"",
+            &format!("\"branch\":true,{good},\"adapt\":{{\"every\":2}},\"options\""),
+        );
+        let msg = read(&adapt).unwrap_err();
+        assert!(
+            msg.contains("\"switch\"") && msg.contains("\"adapt\""),
+            "{msg}"
+        );
     }
 
     #[test]

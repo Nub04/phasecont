@@ -787,7 +787,19 @@ the run builds the monodromy matrix, so a run with floquet costs more.
 With bpc, a BPC (branch point of cycles) is labeled where the sign of the determinant of
 the bordered Jacobian changes. That happens at a branch point where an odd number of
 branches cross, and not at a fold, a PD or an NS. A branch point where an even number
-cross is missed. The command does not switch branches at a BPC.
+cross is missed.
+
+With switch, an object with the keys special and direction (both required) that needs
+branch and cannot be combined with adapt, the command goes on along the second branch at a
+BPC. special is the index of the BPC in the specials of a first run, a non-negative integer,
+and direction is 1 or -1. The first run is the run with bpc and the problem's options, with
+no floquet and no adapt. The second run starts at that BPC, goes along the other branch in
+the given direction (options.direction applies to the first run only) and uses floquet and
+bpc as the problem gives them, off if absent. The output is the one of the second run, with
+one more key, \"switch\": {\"special\", \"alpha\", \"period\"}, the index, the parameter value
+and the period of the BPC. A special that is out of range or is not a BPC, and a BPC that is
+not simple, are errors (exit 2). The start of the second run is not corrected, and the
+points that follow are not stopped at a second label on it.
 
 options:
   --          the next argument is the file, even if it starts with `-`
