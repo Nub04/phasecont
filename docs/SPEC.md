@@ -1489,7 +1489,7 @@ Table 1, STEEP, `every` $= 1$, `max_steps` $= 60$ (10 points, the run stops on t
 | largest $\lvert s_j - j/N\rvert$ of the last mesh | $1.184\times10^{-1}$ | at least $0.03$ |
 | position of the smallest interval of the last mesh | $t = 1.530$ | within 0.3 of $\pi/2$ or $3\pi/2$ |
 
-The error of the points, in order, is $7.8\times10^{-2}$ for points 0 and 1 (point 1 still lives on the uniform mesh, since the mesh moves after a point is accepted), then $1.2\times10^{-2}$, $1.3\times10^{-2}$, $9.7\times10^{-3}$, $9.7\times10^{-3}$, $8.6\times10^{-3}$ and $8.5\times10^{-3}$ for the rest. The adapted mesh lowers the error by a factor of about 9 on this orbit. I have not looked into why it stops there.
+The error of the points, in order, is $7.8\times10^{-2}$ for points 0 and 1 (point 0 is the start, and the corrector builds and stores point 1 before the first adaptation, so both are on the uniform mesh), then $1.2\times10^{-2}$, $1.3\times10^{-2}$, $9.7\times10^{-3}$, $9.7\times10^{-3}$, $8.6\times10^{-3}$ and $8.5\times10^{-3}$ for the rest. The adapted mesh lowers the error by a factor of about 9 on this orbit. I have not looked into why it stops there.
 
 Table 2, the same run with `floquet` ($\mathrm{nhist} = 16$, $\mathrm{count} = 2$):
 
@@ -1513,8 +1513,6 @@ Table 4, the hand-made mesh of test 5 (intervals alternate between $0.5/N$ and $
 |---|---|---|
 | largest collocation residual of the exact orbit | $3.44\times10^{-5}$ | at most $1.5\times10^{-4}$ |
 | largest distance of the two leading multipliers from those of the uniform mesh (`nhist` $= 16$) | $2.74\times10^{-8}$ | at most $1.2\times10^{-7}$ |
-
-The unit tests run in the debug build, and the values there agree with these to the digits shown.
 
 **One-time check of the uniform path.** Before the code of this step was written, the output of `pc-cli dde-cycle` for three problems (the $\mu$-line with `branch`, the same with `floquet`, and the STEEP model with `branch` and `floquet`, all without `adapt`) was saved. After the step the same three problems give the same output byte for byte. This was run once on the development machine, with the debug build, and is not a test, because the last bits of `sin` and `tanh` differ between platforms.
 

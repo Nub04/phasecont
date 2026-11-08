@@ -1381,6 +1381,15 @@ fn without_adapt_no_mesh_is_printed_and_a_late_adapt_changes_nothing_else() {
     for p in v["points"].as_array().unwrap() {
         assert!(p.get("mesh").is_none(), "{p}");
     }
+    // A run with a special point prints no mesh on the special either.
+    let (status, with_lpc, err) = lpc_cycle("adapt_off_lpc.json", &lpc_problem());
+    assert_eq!(status, 0, "{err}");
+    let l: Value = serde_json::from_str(&with_lpc).unwrap();
+    let specials = l["specials"].as_array().unwrap();
+    assert!(!specials.is_empty(), "{with_lpc}");
+    for s in specials {
+        assert!(s.get("mesh").is_none(), "{s}");
+    }
     // `every` so large that no point is ever due: the points are those of the plain run, and
     // only the mesh key is new (SPEC section 8p, test 4).
     let (status, late, err) = dde_cycle("adapt_late.json", &mu_line_adapt(u64::MAX, None));
@@ -1391,6 +1400,128 @@ fn without_adapt_no_mesh_is_printed_and_a_late_adapt_changes_nothing_else() {
         p.as_object_mut().unwrap().remove("mesh");
     }
     assert_eq!(w, v);
+}
+
+/// The manufactured model STEEP of SPEC section 8p, with the steepness 20 written as a number.
+/// Its exact orbit is `y1 = cos t`, `y2 = sin t`, `x = tanh(20 cos t)`, `T = 2 pi`.
+fn steep_source() -> String {
+    "par c=0.5, tau=1\n\
+     x'=-x+c*(delay(x,tau)-tanh(20*delay(y1,tau)))+tanh(20*y1)+20*(1-tanh(20*y1)^2)*(-y2)\n\
+     y1'=y1-y2-y1*(y1^2+y2^2)\n\
+     y2'=y1+y2-y2*(y1^2+y2^2)\n\
+     done\n"
+        .to_string()
+}
+
+/// The exact STEEP orbit on the uniform mesh, `x`, `y1`, `y2` for each base point.
+fn steep_profile() -> Vec<f64> {
+    let nq = NTST * NCOL;
+    (0..=nq)
+        .flat_map(|q| {
+            let t = 2.0 * PI * q as f64 / nq as f64;
+            [(20.0 * t.cos()).tanh(), t.cos(), t.sin()]
+        })
+        .collect()
+}
+
+/// The problem of test 1 of section 8p: `c` up from 0.5 to 0.7, with `adapt` every point.
+fn steep_problem(floquet: Option<Value>) -> Value {
+    let mut p = json!({
+        "model": "steep.ode",
+        "params": {"c": 0.5, "tau": 1.0},
+        "free": "c",
+        "ntst": NTST,
+        "ncol": NCOL,
+        "orbit": {"profile": steep_profile(), "period": 2.0 * PI},
+        "options": {
+            "max_newton": 10, "hmax": 0.1, "max_steps": 60,
+            "bounds": [0.3, 0.7], "direction": 1
+        },
+        "branch": true,
+        "adapt": {"every": 1},
+    });
+    if let Some(f) = floquet {
+        p["floquet"] = f;
+    }
+    p
+}
+
+/// The engine run that `steep_problem(floquet)` stands for.
+fn steep_engine(floquet: Option<&DdeFloquetOptions>) -> DdeCycleBranch {
+    let mut map = SourceMap::new();
+    let top = map.add("steep.ode", steep_source());
+    let l = load(top, &mut map, &mut MapLoader::new());
+    assert!(
+        l.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        "{:?}",
+        l.diagnostics
+    );
+    let mut model = build_dde(&l.expanded, &l.info, Evaluator::Jit).expect("build_dde");
+    dde_continue_cycle_adapt(
+        &mut model,
+        &DdeCycleSetup {
+            params: vec![0.5, 1.0],
+            free: 0,
+            ntst: NTST,
+            ncol: NCOL,
+        },
+        &DdeCycleStart {
+            profile: steep_profile(),
+            period: 2.0 * PI,
+        },
+        &Options {
+            bounds: (0.3, 0.7),
+            direction: 1.0,
+            hmax: 0.1,
+            max_steps: 60,
+            max_newton: 10,
+            ..Options::default()
+        },
+        floquet,
+        &DdeMeshAdapt { every: 1 },
+        &AtomicBool::new(false),
+    )
+    .expect("continue_cycle_adapt")
+}
+
+/// SPEC section 8p, test 9: the problem of test 1 prints the points of `continue_cycle_adapt`
+/// bit for bit, without and with `floquet`, and the meshes of the later points have moved.
+#[test]
+fn the_adapt_key_matches_the_engine_on_the_steep_problem() {
+    write("steep.ode", &steep_source());
+    for (name, floquet, engine_floquet) in [
+        ("adapt_steep.json", None, None),
+        (
+            "adapt_steep_floquet.json",
+            Some(json!({"nhist": 16, "count": 2})),
+            Some(DdeFloquetOptions {
+                nhist: 16,
+                count: 2,
+            }),
+        ),
+    ] {
+        let file = write(name, &steep_problem(floquet.clone()).to_string());
+        let o = run(&scratch(), &["dde-cycle", &file]);
+        let (status, out, err) = (code(&o), stdout(&o), stderr(&o));
+        assert_eq!(status, 0, "{name}: {err}");
+        let want = steep_engine(engine_floquet.as_ref());
+        assert!(
+            want.points.len() > 6,
+            "{name}: {} points",
+            want.points.len()
+        );
+        same_points(&out, &want, name);
+        same_specials(&out, &want, floquet.is_some(), name);
+        same_meshes(&out, &want, name);
+        assert_eq!(want.points[0].mesh, uniform_mesh(), "{name}");
+        let last = want.points.last().unwrap();
+        let moved = last
+            .mesh
+            .iter()
+            .zip(uniform_mesh())
+            .fold(0.0_f64, |a, (s, u)| a.max((s - u).abs()));
+        assert!(moved > 0.03, "{name}: the last mesh moved only {moved}");
+    }
 }
 
 #[test]
