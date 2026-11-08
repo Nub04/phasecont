@@ -37,6 +37,7 @@ use crate::abi::{Packed, integrator_of, pack};
 use crate::device::{Backend, BackendState, DeviceInfo};
 use crate::gpu::{drive, guard, kernel_err};
 use crate::job::{EnsembleError, EnsembleResult, Job, Label, Precision, validate};
+use crate::kept::Kept;
 use crate::kernel::{Integrator, kernel_source};
 use crate::real::Real;
 use crate::tape::Tape;
@@ -449,11 +450,34 @@ pub fn run_cuda(
     };
     let src = kernel_source(&tape, integrator_of(job.method), scalar, Dialect::Cuda)
         .map_err(kernel_err)?;
-    guard(|| session(device, p, job, &checked, &tape, &src, cancel))
-        .unwrap_or_else(|msg| Err(EnsembleError::GpuLaunch(format!("panic in cudarc: {msg}"))))
+    let ran = guard(|| {
+        // The context comes from the table inside the guard, because `CudaContext::new`
+        // panics when a library is missing and the last drop of a context can too.
+        let ctx = CONTEXTS.get_or_make(device.index, || {
+            CudaContext::new(device.index).map_err(drv("create context"))
+        })?;
+        session(&ctx, device, p, job, &checked, &tape, &src, cancel)
+    })
+    .unwrap_or_else(|msg| Err(EnsembleError::GpuLaunch(format!("panic in cudarc: {msg}"))));
+    if matches!(
+        ran,
+        Err(EnsembleError::GpuLaunch(_) | EnsembleError::GpuTimeout(_))
+    ) {
+        // A driver error can stay in the context and fail every later call, so the next run
+        // on this device starts from a new one.
+        let gone = CONTEXTS.forget(device.index);
+        let _ = guard(|| drop(gone));
+    }
+    ran
 }
 
+/// The context of each device, kept between runs because creating one takes tens of
+/// milliseconds on a laptop GPU.
+static CONTEXTS: Kept<CudaContext> = Kept::new();
+
+#[allow(clippy::too_many_arguments)]
 fn session(
+    ctx: &std::sync::Arc<CudaContext>,
     device: &DeviceInfo,
     p: &Probe,
     job: &Job,
@@ -462,7 +486,6 @@ fn session(
     src: &str,
     cancel: &AtomicBool,
 ) -> Result<EnsembleResult, EnsembleError> {
-    let ctx = CudaContext::new(device.index).map_err(drv("create context"))?;
     let cc = ctx
         .compute_capability()
         .map_err(drv("compute capability"))?;
@@ -478,9 +501,9 @@ fn session(
         precision: job.precision,
     };
     let ran = match job.precision {
-        Precision::Single => launch_all(&ctx, &function, pack::<f32>(job, checked, tape), cancel)
+        Precision::Single => launch_all(ctx, &function, pack::<f32>(job, checked, tape), cancel)
             .and_then(|packed| packed.finish(label)),
-        Precision::Double => launch_all(&ctx, &function, pack::<f64>(job, checked, tape), cancel)
+        Precision::Double => launch_all(ctx, &function, pack::<f64>(job, checked, tape), cancel)
             .and_then(|packed| packed.finish(label)),
     };
     // cudarc's Drop code stores its errors in the context. Take them here and charge them to

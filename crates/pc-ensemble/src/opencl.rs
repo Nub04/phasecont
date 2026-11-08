@@ -18,8 +18,8 @@
 //! wait is reported as a timeout. That guess is unverified on real drivers.
 
 use std::ptr;
-use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use opencl3::command_queue::CommandQueue;
@@ -40,6 +40,7 @@ use crate::abi::{Packed, integrator_of, pack};
 use crate::device::{Backend, BackendState, DeviceInfo};
 use crate::gpu::{check_alloc, drive, global_size, guard, kernel_err};
 use crate::job::{Checked, EnsembleError, EnsembleResult, Job, Label, Precision, validate};
+use crate::kept::Kept;
 use crate::kernel::kernel_source;
 use crate::real::Real;
 use crate::tape::Tape;
@@ -296,12 +297,49 @@ pub fn run_opencl(
         driver: info.driver.clone(),
         precision: job.precision,
     };
-    guard(|| session(handle, info, label, job, &checked, &tape, &src, cancel))
-        .unwrap_or_else(|msg| Err(EnsembleError::GpuLaunch(format!("panic in opencl3: {msg}"))))
+    let ran = guard(|| {
+        let shared = SHARED.get_or_make(device.index, || make_shared(handle))?;
+        session(
+            &shared, handle, info, label, job, &checked, &tape, &src, cancel,
+        )
+    })
+    .unwrap_or_else(|msg| Err(EnsembleError::GpuLaunch(format!("panic in opencl3: {msg}"))));
+    if matches!(
+        ran,
+        Err(EnsembleError::GpuLaunch(_) | EnsembleError::GpuTimeout(_))
+    ) {
+        // A lost device or a stuck queue would fail every later run, so the next run on this
+        // device starts from a new context. The drops of opencl3 panic on a failed release,
+        // so the removed value is dropped inside the guard.
+        let gone = SHARED.forget(device.index);
+        let _ = guard(|| drop(gone));
+    }
+    ran
+}
+
+/// What the runs on one device share: the context and an in-order queue on it.
+struct Shared {
+    // The queue is declared first so that it drops before the context.
+    queue: CommandQueue,
+    ctx: Context,
+}
+
+/// The context and queue of each device, kept between runs because creating a context takes
+/// tens of milliseconds on a laptop GPU.
+static SHARED: Kept<Shared> = Kept::new();
+
+fn make_shared(handle: Handle) -> Result<Arc<Shared>, EnsembleError> {
+    let dev = Device::new(handle.id as cl_device_id);
+    let ctx = Context::from_device(&dev).map_err(cl("create context"))?;
+    // `clCreateCommandQueue` exists in every OpenCL version. The 2.0 entry point is missing
+    // from a 1.2-only driver, and the kernel text is OpenCL C 1.2 anyway.
+    let queue = CommandQueue::create_default(&ctx, 0).map_err(cl("create command queue"))?;
+    Ok(Arc::new(Shared { queue, ctx }))
 }
 
 #[allow(clippy::too_many_arguments)]
 fn session(
+    shared: &Shared,
     handle: Handle,
     info: &DeviceInfo,
     label: Label,
@@ -312,14 +350,10 @@ fn session(
     cancel: &AtomicBool,
 ) -> Result<EnsembleResult, EnsembleError> {
     let id = handle.id as cl_device_id;
-    let dev = Device::new(id);
-    // The locals drop in reverse order: kernel, program, queue, context.
-    let ctx = Context::from_device(&dev).map_err(cl("create context"))?;
-    // `clCreateCommandQueue` exists in every OpenCL version. The 2.0 entry point is missing
-    // from a 1.2-only driver, and the kernel text is OpenCL C 1.2 anyway.
-    let queue = CommandQueue::create_default(&ctx, 0).map_err(cl("create command queue"))?;
+    let (ctx, queue) = (&shared.ctx, &shared.queue);
+    // The locals drop in reverse order: kernel, then program.
     let program =
-        Program::create_and_build_from_source(&ctx, src, &build_options(handle.correct_div))
+        Program::create_and_build_from_source(ctx, src, &build_options(handle.correct_div))
             .map_err(|log| EnsembleError::GpuCompile(log.trim().to_owned()))?;
     let kernel = Kernel::create(&program, ENTRY)
         .map_err(|e| EnsembleError::GpuCompile(cl_text("create kernel", &e)))?;
@@ -330,8 +364,8 @@ fn session(
     let memory = info.memory_bytes;
     match job.precision {
         Precision::Single => launch_all(
-            &ctx,
-            &queue,
+            ctx,
+            queue,
             &kernel,
             (group, handle.max_alloc, memory),
             pack::<f32>(job, checked, tape),
@@ -339,8 +373,8 @@ fn session(
         )
         .and_then(|packed| packed.finish(label)),
         Precision::Double => launch_all(
-            &ctx,
-            &queue,
+            ctx,
+            queue,
             &kernel,
             (group, handle.max_alloc, memory),
             pack::<f64>(job, checked, tape),

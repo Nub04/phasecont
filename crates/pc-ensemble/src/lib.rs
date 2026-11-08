@@ -6,6 +6,7 @@ pub mod cuda;
 pub mod device;
 pub mod gpu;
 pub mod job;
+pub mod kept;
 pub mod kernel;
 pub mod metal;
 pub mod opencl;
