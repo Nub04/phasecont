@@ -1600,7 +1600,7 @@ The final tests print what they measure with `cargo test -p pc-engine --test dde
 
 Test 5 gives `BPC` at point 7 ($a - 0.2 = -1.3\times10^{-15}$), `LPC` at point 21 ($a = 5.8\times10^{-12}$) and `BPC` at point 37 ($a - 0.2 = 2.1\times10^{-15}$).
 
-The bounds of tests 1 to 5 and 12 without `adapt` are $10^{-13}$, 15 to 50 times the largest value above, so that another platform's libm does not trip them. The bounds of test 7 are about 4 times the table. The `LPC` bound of test 5 is the one of Section 8o, test 3, about 3.4 times the value above. The agreement bound of test 12 ($10^{-9}$) and the CLI bounds of test 13 ($10^{-11}$, and $3\times10^{-10}$ with `adapt`) are looser than the values and were not set from a measurement. The table comes from one machine and one build, and a run on another platform is not recorded.
+The bounds of tests 1 to 5 and 12 without `adapt` are $10^{-13}$, 15 to 50 times the largest value above, so that another platform's libm does not trip them. The bounds of test 7 are about 4 times the table. The `LPC` bound of test 5 is the one of Section 8o, test 3, about 3.4 times the value above. The agreement bound of test 12 ($10^{-9}$) and the CLI bounds of test 13 ($10^{-11}$, and $3\times10^{-10}$ with `adapt`) are looser than the values and were not set from a measurement. The table comes from one machine and one build. The tests with the $10^{-13}$ bounds also pass in the `macos-jit` CI job on the commit that holds the table, but the values measured there are not recorded.
 
 ## 9. Acceptance tests
 
