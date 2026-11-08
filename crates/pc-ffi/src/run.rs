@@ -30,12 +30,15 @@ impl Handle for RunHandle {
 /// of a HOM curve is `[a2, u(n (N m + 1)), T, x0(n), a1, mesh(N + 1), eig_re(n),
 /// eig_im(n), codim2(14), h, newton_iters]`, with x0 the saddle and the eigenvalues those
 /// of the Jacobian at x0. A row of a delay equilibrium branch is `[alpha, u(n), roots]`, with
-/// `roots` the number of characteristic roots with a positive real part.
+/// `roots` the number of characteristic roots with a positive real part. A row of a delay Hopf
+/// curve is `[a2, x(n), a1, kappa, l1, hh]`, with NaN where `l1` or `hh` is off or undefined.
 pub(crate) fn stride(kind: Kind, n: usize) -> usize {
     match kind {
         Kind::Ep => 3 * n + 6,
         // [alpha, u(n), root count]
         Kind::DdeEp => n + 2,
+        // [alpha2, x(n), alpha1, kappa, l1, hh]
+        Kind::DdeHopf => n + 5,
         // [t, x(n)]
         Kind::Ivp => n + 1,
         Kind::Lp => 1 + (n + 1) + 2 * n + kind.labels().len() + 2,
@@ -55,6 +58,15 @@ pub(crate) fn pack_row(kind: Kind, p: &Point, n: usize, out: &mut [f64]) {
     debug_assert_eq!(out.len(), stride(kind, n));
     let nan = f64::NAN;
     out[0] = p.alpha;
+    if kind == Kind::DdeHopf {
+        // `u` is [x(n), alpha1, kappa] and `codim2` is [l1, hh] (SPEC 8s, slice 2).
+        for i in 0..n + 2 {
+            out[1 + i] = p.u.get(i).copied().unwrap_or(nan);
+        }
+        out[n + 3] = p.codim2.first().copied().unwrap_or(nan);
+        out[n + 4] = p.codim2.get(1).copied().unwrap_or(nan);
+        return;
+    }
     if matches!(kind, Kind::Ivp | Kind::DdeEp) {
         for i in 0..n {
             out[1 + i] = p.u.get(i).copied().unwrap_or(nan);
@@ -69,7 +81,7 @@ pub(crate) fn pack_row(kind: Kind, p: &Point, n: usize, out: &mut [f64]) {
     // The state block: `n` values, plus a1 (and kappa) on a curve, or the orbit, T and
     // what follows T on a curve of cycles or a HOM curve.
     let (block, mesh) = match kind {
-        Kind::Ep | Kind::DdeEp | Kind::Ivp => (n, 0),
+        Kind::Ep | Kind::DdeEp | Kind::DdeHopf | Kind::Ivp => (n, 0),
         Kind::Lp => (n + 1, 0),
         Kind::Hopf => (n + 2, 0),
         Kind::Lc { ntst, ncol }
@@ -256,6 +268,27 @@ mod tests {
         assert_eq!(row[3], 3.0);
         assert_eq!(Kind::DdeEp.name(), "EP");
         assert!(Kind::DdeEp.labels().is_empty());
+    }
+
+    #[test]
+    fn a_delay_hopf_row_is_x_alpha1_kappa_l1_hh() {
+        let mut p = point();
+        // The engine's delay Hopf point: u = [x(2), alpha1, kappa], alpha = alpha2.
+        p.u = vec![1.0, 2.0, 3.0, 4.0];
+        p.alpha = 0.5;
+        p.codim2 = vec![-0.25, f64::NAN];
+        assert_eq!(stride(Kind::DdeHopf, 2), 7);
+        assert_eq!(stride(Kind::DdeHopf, 1), 6);
+        let mut row = vec![0.0; 7];
+        pack_row(Kind::DdeHopf, &p, 2, &mut row);
+        assert_eq!(&row[..6], [0.5, 1.0, 2.0, 3.0, 4.0, -0.25]);
+        assert!(row[6].is_nan());
+        // A point without codim-2 values (a defensive case) leaves both NaN.
+        p.codim2.clear();
+        pack_row(Kind::DdeHopf, &p, 2, &mut row);
+        assert!(row[5].is_nan() && row[6].is_nan());
+        assert_eq!(Kind::DdeHopf.name(), "H");
+        assert_eq!(Kind::DdeHopf.labels(), ["GH", "HH"]);
     }
 
     #[test]

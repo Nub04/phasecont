@@ -278,7 +278,7 @@ fn emit_c_on_a_delay_handle_is_an_error() {
 #[test]
 fn every_run_type_except_ep_is_refused_on_a_delay_handle() {
     let m = compiled(HUTCH);
-    for ty in ["LP", "H", "LC", "LPC", "PD", "NS", "HOM", "IVP"] {
+    for ty in ["LP", "LC", "LPC", "PD", "NS", "HOM", "IVP"] {
         let json = format!(r#"{{"type":"{ty}","free":"r"}}"#);
         let (rc, run) = start_with(&m, &json, &[1.0], &[1.3, 1.0]);
         assert_eq!(rc, BAD_ARG, "{ty}");
@@ -446,6 +446,451 @@ fn a_run_cancelled_right_after_the_start_keeps_no_points() {
         r#"{{"type":"EP","free":"r",{ROOTS},"options":{{"h0":0.0001,"hmax":0.0001,"max_steps":100000,"bounds":[0.5,1000]}}}}"#
     );
     let run = start(&m, &json);
+    assert_eq!((api().run_cancel)(run.0), 0, "{}", last_error());
+    let st = wait(&run);
+    assert_eq!(st["state"], "cancelled", "{st}");
+    let total: u64 = st["branches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["points"].as_u64().unwrap())
+        .sum();
+    assert_eq!(total, 0, "{st}");
+}
+
+// ---- Slice 2: the Hopf curve of a delay equilibrium (SPEC section 8s, slice 2) ----
+
+const WRIGHT3: &str = "par a=1.5, b=0\nu'=-a*delay(u,1)*(1+u)+b*u^3\ndone\n";
+const COUPLED: &str = "par a=1.4, b=1.2, c=1, d=0.1\n\
+    x'=c*y-a*delay(x,1)\n\
+    y'=-d*x-b*delay(y,1.5)\n\
+    done\n";
+/// The numbers of `dde_hopf_lyap.rs`: l1 at b = 0 and the slope in b of the Wright cubic.
+const L1_AT_ZERO: f64 = -0.214_130_922_441_773_92;
+const B_STAR: f64 = 1.184_419_463_185_973_2;
+const A_STAR: f64 = 1.454_526_952_022_688;
+const OMEGA1_STAR: f64 = 1.516_027_941_313_437_7;
+const OMEGA2_STAR: f64 = 1.130_821_068_412_625_6;
+const GH_NORMALIZATION: &str = "|q|=1, p Delta'(i omega) q=1";
+
+fn wright_slope() -> f64 {
+    6.0 / (std::f64::consts::PI * (1.0 + std::f64::consts::PI * std::f64::consts::PI / 4.0))
+}
+
+/// The options of the engine Hopf tests, as JSON.
+fn hopf_options(bounds: &str, direction: i32) -> String {
+    format!(
+        r#""options":{{"hmax":0.05,"bounds":{bounds},"direction":{direction},"tol_x":1e-12,"tol_f":1e-12,"max_newton":20}}"#
+    )
+}
+
+/// A delay "H" problem. `extra` is spliced in after the options.
+fn hopf_problem(free: &str, omega: f64, bounds: &str, extra: &str) -> String {
+    format!(
+        r#"{{"type":"H","free":{free},"omega":{omega:?},{}{extra}}}"#,
+        hopf_options(bounds, 1)
+    )
+}
+
+fn engine_options(bounds: (f64, f64)) -> pc_engine::Options {
+    pc_engine::Options {
+        hmax: 0.05,
+        bounds,
+        direction: 1.0,
+        tol_x: 1e-12,
+        tol_f: 1e-12,
+        max_newton: 20,
+        ..pc_engine::Options::default()
+    }
+}
+
+fn engine_model(text: &str) -> pc_engine::DdeModel {
+    use pc_ode::{MapLoader, SourceMap, load};
+    let mut map = SourceMap::new();
+    let top = map.add("t.ode", text);
+    let l = load(top, &mut map, &mut MapLoader::new());
+    pc_engine::build_dde(&l.expanded, &l.info, pc_engine::Evaluator::Jit).unwrap()
+}
+
+/// The engine run the run entries must reproduce. `extras` None calls `continue_hopf`.
+fn engine_hopf(
+    text: &str,
+    params: &[f64],
+    x0: &[f64],
+    omega: f64,
+    bounds: (f64, f64),
+    extras: Option<pc_engine::DdeHopfExtras>,
+) -> pc_engine::DdeHopfBranch {
+    use std::sync::atomic::AtomicBool;
+    let mut dm = engine_model(text);
+    let setup = pc_engine::DdeHopfSetup {
+        free: [0, 1],
+        params: params.to_vec(),
+        x0: x0.to_vec(),
+        omega,
+    };
+    let o = engine_options(bounds);
+    let cancel = AtomicBool::new(false);
+    match extras {
+        None => pc_engine::dde_continue_hopf(&mut dm, &setup, &o, &cancel),
+        Some(e) => pc_engine::dde_continue_hopf_with(&mut dm, &setup, &o, &cancel, &e),
+    }
+    .expect("the engine run")
+}
+
+/// The row of a point: `[alpha2, x, alpha1, kappa, l1, hh]`.
+fn hopf_row(p: &pc_engine::DdeHopfPoint) -> Vec<f64> {
+    let mut r = vec![p.alpha[1]];
+    r.extend_from_slice(&p.x);
+    r.extend([
+        p.alpha[0],
+        p.kappa,
+        p.l1.unwrap_or(f64::NAN),
+        p.hh.unwrap_or(f64::NAN),
+    ]);
+    r
+}
+
+fn hopf_special_row(s: &pc_engine::DdeHopfSpecial) -> Vec<f64> {
+    let mut r = vec![s.alpha[1]];
+    r.extend_from_slice(&s.x);
+    r.extend([s.alpha[0], s.kappa, f64::NAN, f64::NAN]);
+    r
+}
+
+/// Starts the run, waits for it, and checks it against the engine branch. Returns the poll
+/// state, the rows and the special rows.
+fn check_hopf_run(
+    m: &Id,
+    json: &str,
+    u0: &[f64],
+    p: &[f64],
+    want: &pc_engine::DdeHopfBranch,
+) -> (Value, Vec<Vec<f64>>) {
+    let n = u0.len();
+    let stride = n + 5;
+    let (rc, run) = start_with(m, json, u0, p);
+    assert_eq!(rc, 0, "{json}: {}", last_error());
+    let run = Id(run);
+    let st = wait(&run);
+    assert_eq!(st["state"], "done", "{st}");
+    assert_eq!(st["kind"], "H");
+    assert_eq!(st["n"], n);
+    assert_eq!(st["stride"], stride);
+    assert_eq!(st["codim2_labels"], serde_json::json!(["GH", "HH"]));
+    let jb = &st["branches"].as_array().unwrap()[0];
+    assert_eq!(jb["points"], want.points.len(), "{st}");
+    assert_eq!(jb["stop"], "Bounds");
+    assert!(matches!(want.stop, pc_engine::StopReason::Bounds));
+    assert_eq!(jb["warnings"], serde_json::json!(want.warnings));
+    let (rc, rows, vals) = copy(run.0, 0, 0, want.points.len(), stride);
+    assert_eq!(rc, 0, "{}", last_error());
+    assert_eq!(rows, want.points.len());
+    for (r, p) in want.points.iter().enumerate() {
+        assert!(
+            same_bits(&vals[r * stride..(r + 1) * stride], &hopf_row(p)),
+            "row {r}: {:?} vs {:?}",
+            &vals[r * stride..(r + 1) * stride],
+            hopf_row(p)
+        );
+    }
+    // The specials agree with the engine's in label, index and parameters, and their rows
+    // carry NaN in the two test columns.
+    let js = jb["specials"].as_array().unwrap();
+    assert_eq!(js.len(), want.specials.len(), "{jb}");
+    let mut special_rows = Vec::new();
+    for (k, s) in want.specials.iter().enumerate() {
+        assert_eq!(js[k]["label"], s.label, "{jb}");
+        assert_eq!(js[k]["index"], s.index, "{jb}");
+        assert_eq!(js[k]["refined"], false);
+        let (rc, rows, v) = copy(run.0, 0, 1 + k as u32, 1, stride);
+        assert_eq!(rc, 0, "{}", last_error());
+        assert_eq!(rows, 1);
+        assert!(same_bits(&v, &hopf_special_row(s)), "special {k}");
+        special_rows.push(v);
+    }
+    (st, special_rows)
+}
+
+#[test]
+fn a_hutchinson_hopf_run_equals_the_engine_through_the_run_entries() {
+    let want = engine_hopf(HUTCH, &[1.57, 1.0], &[1.001], 1.57, (0.5, 3.0), None);
+    assert!(want.specials.is_empty(), "{:?}", want.specials);
+    let m = compiled(HUTCH);
+    let json = hopf_problem(r#"["r","tau"]"#, 1.57, "[0.5,3.0]", "");
+    let (_, _) = check_hopf_run(&m, &json, &[1.001], &[1.57, 1.0], &want);
+    // l1 and hh are NaN in every row, and r tau = pi/2 on the whole curve.
+    for p in &want.points {
+        assert!(p.l1.is_none() && p.hh.is_none());
+        let rtau = p.alpha[0] * p.alpha[1];
+        assert!((rtau - std::f64::consts::FRAC_PI_2).abs() <= 1e-8, "{rtau}");
+    }
+}
+
+#[test]
+fn a_wright_hopf_run_labels_gh_with_the_lyapunov_option() {
+    use pc_engine::DdeHopfExtras;
+    let extras = DdeHopfExtras {
+        lyapunov: true,
+        hh: None,
+    };
+    let want = engine_hopf(
+        WRIGHT3,
+        &[1.57, 0.0],
+        &[0.001],
+        1.57,
+        (-1.0, 1.0),
+        Some(extras),
+    );
+    let m = compiled(WRIGHT3);
+    let json = hopf_problem(r#"["a","b"]"#, 1.57, "[-1.0,1.0]", r#","lyapunov":true"#);
+    let (st, special_rows) = check_hopf_run(&m, &json, &[0.001], &[1.57, 0.0], &want);
+    // l1 follows the closed form in every row.
+    let (_, rows, vals) = copy_all(&st, &m, &json, &[0.001], &[1.57, 0.0], 6);
+    assert_eq!(rows, want.points.len());
+    for r in 0..rows {
+        let (b, l1) = (vals[r * 6], vals[r * 6 + 4]);
+        let target = L1_AT_ZERO + wright_slope() * b;
+        assert!((l1 - target).abs() <= 1e-7, "b = {b}: l1 {l1} vs {target}");
+    }
+    // Exactly one special, GH, at the closed form b*.
+    let b_star = -L1_AT_ZERO / wright_slope();
+    let js = st["branches"][0]["specials"].as_array().unwrap();
+    assert_eq!(js.len(), 1, "{st}");
+    assert_eq!(js[0]["label"], "GH");
+    assert!(
+        (special_rows[0][0] - b_star).abs() <= 1e-6,
+        "{:?}",
+        special_rows[0]
+    );
+    let l2 = want.specials[0].l2.expect("l2 of the engine GH");
+    assert_eq!(
+        js[0]["coefficient"].as_f64().unwrap().to_bits(),
+        l2.to_bits()
+    );
+    assert_eq!(js[0]["normalization"], GH_NORMALIZATION);
+    // The Hopf locus of this equation is a = pi/2 at every b, with omega = pi/2 (the start omega
+    // 1.57 is only a guess that the corrector moves).
+    let omega = js[0]["omega"].as_f64().unwrap();
+    assert!(
+        (omega - std::f64::consts::FRAC_PI_2).abs() <= 1e-6,
+        "{omega}"
+    );
+}
+
+/// Runs the problem again and returns all rows of branch 0 (a second run of the same JSON).
+fn copy_all(
+    _st: &Value,
+    m: &Id,
+    json: &str,
+    u0: &[f64],
+    p: &[f64],
+    stride: usize,
+) -> (i32, usize, Vec<f64>) {
+    let (rc, run) = start_with(m, json, u0, p);
+    assert_eq!(rc, 0, "{}", last_error());
+    let run = Id(run);
+    let st = wait(&run);
+    let count = st["branches"][0]["points"].as_u64().unwrap() as usize;
+    copy(run.0, 0, 0, count, stride)
+}
+
+#[test]
+fn a_wright_hopf_run_without_the_option_has_no_gh_and_nan_l1() {
+    let want = engine_hopf(WRIGHT3, &[1.57, 0.0], &[0.001], 1.57, (-1.0, 1.0), None);
+    assert!(want.specials.iter().all(|s| s.label != "GH"));
+    let m = compiled(WRIGHT3);
+    let off = hopf_problem(r#"["a","b"]"#, 1.57, "[-1.0,1.0]", r#","lyapunov":false"#);
+    let left_out = hopf_problem(r#"["a","b"]"#, 1.57, "[-1.0,1.0]", "");
+    for json in [&off, &left_out] {
+        let (st, _) = check_hopf_run(&m, json, &[0.001], &[1.57, 0.0], &want);
+        let js = st["branches"][0]["specials"].as_array().unwrap();
+        assert!(js.iter().all(|j| j["label"] != "GH"), "{st}");
+    }
+}
+
+#[test]
+fn a_coupled_hopf_run_labels_hh_with_roots() {
+    use pc_engine::{DdeHopfExtras, RootOptions};
+    let ro = RootOptions {
+        n: 30,
+        re_min: -3.0,
+    };
+    let extras = DdeHopfExtras {
+        lyapunov: false,
+        hh: Some(ro),
+    };
+    let params = [1.46, 0.8, 1.0, 0.1];
+    let want = engine_hopf(
+        COUPLED,
+        &params,
+        &[0.001, 0.001],
+        1.54,
+        (0.5, 1.4),
+        Some(extras),
+    );
+    let m = compiled(COUPLED);
+    let roots = r#","roots":{"n":30,"re_min":-3.0}"#;
+    let json = hopf_problem(r#"["a","b"]"#, 1.54, "[0.5,1.4]", roots);
+    let (st, special_rows) = check_hopf_run(&m, &json, &[0.001, 0.001], &params, &want);
+    let js = st["branches"][0]["specials"].as_array().unwrap();
+    assert_eq!(js.len(), 1, "{st}");
+    let j = &js[0];
+    assert_eq!(j["label"], "HH");
+    // Row: [b, x1, x2, a, kappa, l1, hh].
+    let row = &special_rows[0];
+    assert!((row[0] - B_STAR).abs() <= 1e-6, "b = {}", row[0]);
+    assert!((row[3] - A_STAR).abs() <= 1e-6, "a = {}", row[3]);
+    let omega2 = j["coefficients"]["omega2"].as_f64().expect("omega2");
+    assert!((omega2 - OMEGA2_STAR).abs() <= 1e-6, "{omega2}");
+    let omega = j["omega"].as_f64().unwrap();
+    assert!((omega - OMEGA1_STAR).abs() <= 1e-6, "{omega}");
+    assert_eq!(j["normalization"], Value::Null);
+    // Without roots there is no HH.
+    let plain = engine_hopf(COUPLED, &params, &[0.001, 0.001], 1.54, (0.5, 1.4), None);
+    let no_roots = hopf_problem(r#"["a","b"]"#, 1.54, "[0.5,1.4]", "");
+    let (st, _) = check_hopf_run(&m, &no_roots, &[0.001, 0.001], &params, &plain);
+    assert!(
+        st["branches"][0]["specials"].as_array().unwrap().is_empty(),
+        "{st}"
+    );
+}
+
+#[test]
+fn bad_delay_hopf_runs_name_the_key() {
+    let m = compiled(HUTCH);
+    let ok_u = [1.001];
+    let ok_p = [1.57, 1.0];
+    let free = r#"["r","tau"]"#;
+    let bounds = "[0.5,3.0]";
+    let opts = hopf_options(bounds, 1);
+    let with = |frag: &str| format!(r#"{{"type":"H",{frag},{opts}}}"#);
+    let cases: Vec<(String, &str)> = vec![
+        // omega
+        (with(&format!(r#""free":{free}"#)), "omega"),
+        (with(&format!(r#""free":{free},"omega":"x""#)), "omega"),
+        (with(&format!(r#""free":{free},"omega":0"#)), "omega"),
+        (with(&format!(r#""free":{free},"omega":null"#)), "omega"),
+        // lyapunov
+        (
+            with(&format!(r#""free":{free},"omega":1.57,"lyapunov":1"#)),
+            "lyapunov",
+        ),
+        (
+            with(&format!(r#""free":{free},"omega":1.57,"lyapunov":"yes""#)),
+            "lyapunov",
+        ),
+        (
+            with(&format!(r#""free":{free},"omega":1.57,"lyapunov":null"#)),
+            "lyapunov",
+        ),
+        (
+            with(&format!(r#""free":{free},"omega":1.57,"lyapunov":[true]"#)),
+            "lyapunov",
+        ),
+        // free
+        (with(r#""free":"r","omega":1.57"#), "free"),
+        (with(r#""free":["r"],"omega":1.57"#), "free"),
+        (with(r#""free":["r","r"],"omega":1.57"#), "free"),
+        (with(r#""free":["r","nope"],"omega":1.57"#), "free"),
+        (with(r#""free":["r","delay(x,tau)"],"omega":1.57"#), "free"),
+        // roots
+        (
+            with(&format!(
+                r#""free":{free},"omega":1.57,"roots":{{"n":0,"re_min":-1}}"#
+            )),
+            "roots.n",
+        ),
+        (
+            with(&format!(
+                r#""free":{free},"omega":1.57,"roots":{{"n":30,"re_min":0}}"#
+            )),
+            "roots.re_min",
+        ),
+        (
+            with(&format!(r#""free":{free},"omega":1.57,"roots":{{"n":30}}"#)),
+            "roots",
+        ),
+        (
+            with(&format!(
+                r#""free":{free},"omega":1.57,"roots":{{"n":30,"re_min":-1,"m":3}}"#
+            )),
+            "roots",
+        ),
+        // keys a delay Hopf curve refuses
+        (
+            with(&format!(r#""free":{free},"omega":1.57,"switch":"BP1""#)),
+            "switch",
+        ),
+        (
+            with(&format!(
+                r#""free":{free},"omega":1.57,"start_is_special":true"#
+            )),
+            "start_is_special",
+        ),
+        (
+            format!(
+                r#"{{"type":"H","free":{free},"omega":1.57,"options":{{"hmax":0.05,"bounds":{bounds},"detect":{{"h":true}}}}}}"#
+            ),
+            "detect",
+        ),
+        (
+            format!(
+                r#"{{"type":"H","free":{free},"omega":1.57,"options":{{"hmax":0.05,"bounds":{bounds},"mesh_adapt":2}}}}"#
+            ),
+            "mesh_adapt",
+        ),
+    ];
+    for (json, key) in &cases {
+        let (rc, run) = start_with(&m, json, &ok_u, &ok_p);
+        assert_eq!(rc, BAD_PROBLEM, "{json}: {}", last_error());
+        assert_eq!(run, 0, "{json}");
+        let msg = last_error();
+        assert!(msg.contains(key), "{json}: {msg}");
+    }
+    // Buffers of the wrong length.
+    let good = hopf_problem(free, 1.57, bounds, "");
+    for (u, p, key) in [
+        (&[1.001, 2.0][..], &[1.57, 1.0][..], "u0"),
+        (&[1.001][..], &[1.57][..], "params"),
+        (&[1.001][..], &[1.57, 1.0, 0.0][..], "params"),
+    ] {
+        let (rc, run) = start_with(&m, &good, u, p);
+        assert_eq!(rc, BAD_ARG, "{key}: {}", last_error());
+        assert_eq!(run, 0);
+        assert!(last_error().contains(key), "{}", last_error());
+    }
+    // A type of another run is still refused on a delay model.
+    let (rc, run) = start_with(&m, r#"{"type":"LP","free":"r"}"#, &ok_u, &ok_p);
+    assert_eq!(rc, BAD_ARG);
+    assert_eq!(run, 0);
+    assert_eq!(last_error(), DELAY_MODEL);
+}
+
+#[test]
+fn the_new_hopf_keys_are_errors_on_an_ode_hopf_run() {
+    let m = compiled("par a=1, b=2\nx'=-a*x+b*y\ny'=-b*x-a*y\ndone\n");
+    for extra in [
+        r#","omega":1.0"#,
+        r#","lyapunov":true"#,
+        r#","roots":{"n":30,"re_min":-1}"#,
+    ] {
+        let json = format!(r#"{{"type":"H","free":["a","b"]{extra}}}"#);
+        let (rc, run) = start_with(&m, &json, &[0.0, 0.0], &[1.0, 2.0]);
+        assert_eq!(rc, BAD_PROBLEM, "{json}: {}", last_error());
+        assert_eq!(run, 0);
+        let key = extra.split('"').nth(1).unwrap();
+        assert!(last_error().contains(key), "{json}: {}", last_error());
+    }
+}
+
+#[test]
+fn a_hopf_run_cancelled_right_after_the_start_keeps_no_points() {
+    let m = compiled(HUTCH);
+    let json = r#"{"type":"H","free":["r","tau"],"omega":1.57,"options":{"h0":0.0001,"hmax":0.0001,"max_steps":100000,"bounds":[0.5,1000]}}"#;
+    let (rc, run) = start_with(&m, json, &[1.001], &[1.57, 1.0]);
+    assert_eq!(rc, 0, "{}", last_error());
+    let run = Id(run);
     assert_eq!((api().run_cancel)(run.0), 0, "{}", last_error());
     let st = wait(&run);
     assert_eq!(st["state"], "cancelled", "{st}");

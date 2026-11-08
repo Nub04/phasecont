@@ -11,6 +11,7 @@ use pc_engine::{
     LP_CURVE_LABELS, LPC_CURVE_LABELS, NCOL_RANGE, NS_CURVE_LABELS, Options, PD_CURVE_LABELS,
     PdStart, RootOptions, RunKind, RunSpec,
 };
+use pc_engine::{DDE_HOPF_OMEGA_MIN, DdeHopfExtras};
 use pc_ir::IrModel;
 use pc_ode::{Model, ModelInfo};
 use serde_json::{Map, Value};
@@ -25,6 +26,8 @@ pub enum Kind {
     Ep,
     /// The equilibrium branch of a delay equation (SPEC 8s). It reads as `"EP"` in the JSON.
     DdeEp,
+    /// The Hopf curve of a delay equilibrium (SPEC 8s, slice 2). It reads as `"H"` in the JSON.
+    DdeHopf,
     Lp,
     Hopf,
     Lc {
@@ -50,13 +53,17 @@ pub enum Kind {
     Ivp,
 }
 
+/// The two test columns of a delay Hopf run: the first Lyapunov coefficient and the Hopf-Hopf
+/// test (SPEC 8s, slice 2). They are also the labels that the run can add to `BT` and `ZH`.
+const DDE_HOPF_LABELS: [&str; 2] = ["GH", "HH"];
+
 impl Kind {
     /// The `type` string of the problem JSON.
     pub fn name(self) -> &'static str {
         match self {
             Kind::Ep | Kind::DdeEp => "EP",
             Kind::Lp => "LP",
-            Kind::Hopf => "H",
+            Kind::Hopf | Kind::DdeHopf => "H",
             Kind::Lc { .. } => "LC",
             Kind::Lpc { .. } => "LPC",
             Kind::Pd { .. } => "PD",
@@ -74,6 +81,7 @@ impl Kind {
             Kind::Ep | Kind::DdeEp | Kind::Ivp => &[],
             Kind::Lp => &LP_CURVE_LABELS,
             Kind::Hopf => &HOPF_CURVE_LABELS,
+            Kind::DdeHopf => &DDE_HOPF_LABELS,
             Kind::Lc { .. } => &CYCLE_LABELS,
             Kind::Lpc { .. } => &LPC_CURVE_LABELS,
             Kind::Pd { .. } => &PD_CURVE_LABELS,
@@ -171,6 +179,10 @@ pub struct Problem {
     /// The characteristic-root count of a delay-equation run (SPEC 8s), `Some` exactly when
     /// `kind` is `DdeEp`. It sits here and not in `Kind`, which stays `Copy + Eq`.
     pub roots: Option<RootOptions>,
+    /// The frequency of the start of a delay Hopf run, `Some` exactly when `kind` is `DdeHopf`.
+    pub omega: Option<f64>,
+    /// Whether a delay Hopf run computes `l1` and labels `GH`. Off when the key is missing.
+    pub lyapunov: bool,
 }
 
 impl Problem {
@@ -231,6 +243,14 @@ impl Problem {
                 })
             }
             (Kind::DdeEp, ..) if let Some(roots) = self.roots => RunKind::DdeEq(roots),
+            (Kind::DdeHopf, Some(free), _) if let Some(omega) = self.omega => RunKind::DdeHopf {
+                free,
+                omega,
+                extras: DdeHopfExtras {
+                    lyapunov: self.lyapunov,
+                    hh: self.roots,
+                },
+            },
             _ => RunKind::Ep,
         }
     }
@@ -317,7 +337,7 @@ impl Problem {
                 spec.switch_at = self.switch;
                 spec
             }
-            RunKind::Ivp { .. } | RunKind::DdeEq(_) => {
+            RunKind::Ivp { .. } | RunKind::DdeEq(_) | RunKind::DdeHopf { .. } => {
                 let mut spec = RunSpec::new(model, info, evaluator, self.setup, self.opts);
                 spec.kind = kind;
                 spec
@@ -425,6 +445,8 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
             "tspan",
             "inclination_flips",
             "roots",
+            "omega",
+            "lyapunov",
         ],
         "",
     )?;
@@ -435,6 +457,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         Some(Value::String(s)) if s == "EP" && delay => Kind::DdeEp,
         Some(Value::String(s)) if s == "EP" => Kind::Ep,
         Some(Value::String(s)) if s == "LP" => Kind::Lp,
+        Some(Value::String(s)) if s == "H" && delay => Kind::DdeHopf,
         Some(Value::String(s)) if s == "H" => Kind::Hopf,
         Some(Value::String(s)) if s == "IVP" => return parse_ivp(top, ir, mode),
         Some(Value::String(s)) if s == "LC" => {
@@ -463,10 +486,11 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
     if top.contains_key("tspan") {
         return Err("tspan: only an IVP run takes this key".into());
     }
-    if delay && kind != Kind::DdeEp {
-        return Err("type: a delay equation takes only \"EP\"".into());
+    if delay && !matches!(kind, Kind::DdeEp | Kind::DdeHopf) {
+        return Err("type: a delay equation takes only \"EP\" or \"H\"".into());
     }
     let roots = parse_roots(top, kind)?;
+    let (omega, lyapunov) = parse_hopf_keys(top, kind)?;
     let curve_of_cycles = matches!(kind, Kind::Lpc { .. } | Kind::Pd { .. } | Kind::Ns { .. });
     let one_free = matches!(kind, Kind::Ep | Kind::DdeEp | Kind::Lc { .. });
     let (free, curve_free) = match (one_free, top.get("free")) {
@@ -576,6 +600,13 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
             return Err("options.detect: a HOM curve always runs its codim-2 tests".into());
         }
         Kind::Hom { .. } => {}
+        Kind::DdeHopf if has_option("detect") => {
+            return Err(
+                "options.detect: a delay Hopf run always looks for its codim-2 points \
+                        and takes no detect"
+                    .into(),
+            );
+        }
         _ if has_option("mesh_adapt") => {
             return Err(
                 "options.mesh_adapt: only an LC, LPC, PD, NS or HOM run adapts its mesh".into(),
@@ -620,7 +651,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         }
     }
 
-    if kind == Kind::DdeEp {
+    if matches!(kind, Kind::DdeEp | Kind::DdeHopf) {
         if switch.is_some() {
             return Err("switch: a delay-equation run cannot switch branches".into());
         }
@@ -641,6 +672,8 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         ivp: None,
         inclination_flips,
         roots,
+        omega,
+        lyapunov,
     };
     if mode == Mode::Cli {
         problem.check_u0_len(ir.n(), problem.setup.u0.len())?;
@@ -648,8 +681,9 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
     Ok(problem)
 }
 
-/// The `roots` key of a delay-equation run (SPEC 8s): required, with `n` and `re_min` both
-/// given. It is an error for any other kind. `Some` exactly when `kind` is `DdeEp`.
+/// The `roots` key of a delay-equation run (SPEC 8s), with `n` and `re_min` both given. It is
+/// required for a delay `"EP"` run, optional for a delay `"H"` run (it turns the `HH` label on)
+/// and an error for any other kind. `Some` exactly when the key is there.
 fn parse_roots(top: &Map<String, Value>, kind: Kind) -> Result<Option<RootOptions>, String> {
     let Some(v) = top.get("roots") else {
         return if kind == Kind::DdeEp {
@@ -658,7 +692,7 @@ fn parse_roots(top: &Map<String, Value>, kind: Kind) -> Result<Option<RootOption
             Ok(None)
         };
     };
-    if kind != Kind::DdeEp {
+    if !matches!(kind, Kind::DdeEp | Kind::DdeHopf) {
         return Err("roots: only a delay-equation run takes this key".into());
     }
     let map = object(v, "roots")?;
@@ -672,6 +706,36 @@ fn parse_roots(top: &Map<String, Value>, kind: Kind) -> Result<Option<RootOption
         return Err("roots.re_min: must be less than 0".into());
     }
     Ok(Some(RootOptions { n, re_min }))
+}
+
+/// The `omega` and `lyapunov` keys of a delay Hopf run (SPEC 8s, slice 2). `omega` is required
+/// there and has no default, and it must be above the engine's floor, so a bad value is refused
+/// at the start. `lyapunov` is false when the key is left out. Any other kind refuses both.
+fn parse_hopf_keys(top: &Map<String, Value>, kind: Kind) -> Result<(Option<f64>, bool), String> {
+    if kind != Kind::DdeHopf {
+        for key in ["omega", "lyapunov"] {
+            if top.contains_key(key) {
+                return Err(format!(
+                    "{key}: only a delay-equation Hopf run takes this key"
+                ));
+            }
+        }
+        return Ok((None, false));
+    }
+    let omega = number(
+        top.get("omega")
+            .ok_or("omega: missing; a delay Hopf run needs the frequency of its start")?,
+        "omega",
+    )?;
+    if omega <= DDE_HOPF_OMEGA_MIN {
+        return Err(format!("omega: must be above {DDE_HOPF_OMEGA_MIN:e}"));
+    }
+    let lyapunov = match top.get("lyapunov") {
+        None => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err("lyapunov: expected true or false".into()),
+    };
+    Ok((Some(omega), lyapunov))
 }
 
 /// The model's parameter values with the ones that `params` sets.
@@ -704,7 +768,7 @@ fn u0_values(v: &Value) -> Result<Vec<f64>, String> {
 /// An `IVP` problem: `tspan`, the solver options, and the start state and parameters.
 fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Problem, String> {
     if !ir.delays.is_empty() {
-        return Err("type: a delay equation takes only \"EP\"".into());
+        return Err("type: a delay equation takes only \"EP\" or \"H\"".into());
     }
     if top.contains_key("free") {
         return Err("free: an IVP run has no free parameter".into());
@@ -728,6 +792,13 @@ fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Probl
     }
     if top.contains_key("roots") {
         return Err("roots: only a delay-equation run takes this key".into());
+    }
+    for key in ["omega", "lyapunov"] {
+        if top.contains_key(key) {
+            return Err(format!(
+                "{key}: only a delay-equation Hopf run takes this key"
+            ));
+        }
     }
     let tspan = match top.get("tspan") {
         None => return Err("tspan: missing".into()),
@@ -766,6 +837,8 @@ fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Probl
         ivp: Some((tspan, opts)),
         inclination_flips: false,
         roots: None,
+        omega: None,
+        lyapunov: false,
     };
     if mode == Mode::Cli {
         problem.check_u0_len(ir.n(), problem.setup.u0.len())?;
