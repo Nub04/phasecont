@@ -47,8 +47,10 @@ const DOWN: f64 = f64::from_bits((1023 - 500) << 52);
 ///
 /// A delay problem has d = n (nhist + 1) multipliers and so d (d - 1) / 2 factors, and the
 /// product can leave the range of `f64`. The running product is kept as `prod * 2^(500 k)`.
-/// Scaling by a power of two is exact, so a product that stays in range has the same bits as
-/// the plain loop. One that does not saturates to a signed infinity, not NaN.
+/// Scaling by a power of two is exact, so the result has the same bits as the plain loop
+/// whenever no value in the plain loop overflows or falls into the subnormal range. A product
+/// that overflows saturates to a signed infinity, not NaN. One that underflows keeps the
+/// digits the plain loop would have lost.
 pub(crate) fn pair_product(mu: &[(f64, f64)]) -> f64 {
     if mu.len() < 2 {
         return f64::NAN;

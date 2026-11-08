@@ -347,7 +347,7 @@ fn detect_inner(
         // A test whose value overflowed has no sign change to locate. NaN is the quiet
         // "not defined here", so an infinite value gets a warning instead.
         if a.is_infinite() || b.is_infinite() {
-            let name = test_name(&*p, t, &pk1.eigenvalues);
+            let name = slot_name(&*p, t);
             warnings.push(format!(
                 "{name} is not finite between points {k} and {}; the test was skipped there",
                 k + 1
@@ -428,11 +428,22 @@ fn detect_inner(
     Ok(())
 }
 
+/// Name of test slot `t` in a warning: `LP`, `BP`, `H`, or the problem's own codim-2 name.
+/// It does not look at eigenvalues, so it is safe at a point whose values overflowed.
+fn slot_name(p: &dyn Problem, t: usize) -> &'static str {
+    match t {
+        LP => "LP",
+        BP => "BP",
+        H => "H",
+        _ => p.codim2_labels().get(t - 3).copied().unwrap_or("codim-2"),
+    }
+}
+
 fn test_name(p: &dyn Problem, t: usize, eigs: &[(f64, f64)]) -> &'static str {
     if t >= 3 {
-        p.codim2_labels().get(t - 3).copied().unwrap_or("codim-2")
+        slot_name(p, t)
     } else {
-        label(p, t, eigs).unwrap_or("H")
+        label(p, t, eigs).unwrap_or_else(|| slot_name(p, t))
     }
 }
 
@@ -755,6 +766,25 @@ mod codim2_tests {
                 "{a} {b}"
             );
         }
+    }
+
+    #[test]
+    fn an_infinite_test_value_is_named_by_slot_when_the_label_hook_rejects() {
+        // `drop` makes `codim2_label` return None, as the NS slot does for a real pair that
+        // is not complex. The warning still names the slot.
+        let (w, sp) = run(
+            Curve {
+                drop: true,
+                ..zero()
+            },
+            pt_with(0.0, f64::INFINITY),
+            pt_with(0.1, -1.0),
+        );
+        assert!(sp.is_empty(), "{sp:?}");
+        assert_eq!(
+            w,
+            vec!["ZZ is not finite between points 0 and 1; the test was skipped there".to_string()]
+        );
     }
 
     fn run_from(mut p: Curve, xk: &[f64], points: &[Point]) -> (Vec<String>, Vec<SpecialPoint>) {
