@@ -5,7 +5,7 @@
 //! the command prints the points of the branch (section 8n) and its special points, with the
 //! multipliers of every point when `floquet` is given (section 8o). With `branch` the key
 //! `adapt` also moves the collocation mesh along the branch and prints the mesh of every point
-//! (section 8p).
+//! (section 8p). The key `bpc` adds the `BPC` label for branch points of cycles (section 8q).
 //!
 //! The problem file is read by hand from a `serde_json::Value`, as for `dde-hopf`, and the
 //! model is loaded through the same `load_dde`. Without `branch` the corrector reads only
@@ -22,7 +22,8 @@ use pc_engine::{
     DdeCycle, DdeCycleBranch, DdeCyclePoint, DdeCycleSetup, DdeCycleStart, DdeFloquet,
     DdeFloquetOptions, DdeHopfCycle, DdeMeshAdapt, DdeModel, EngineError, Evaluator, Options,
     StopReason, build_dde, dde_check_cycle_floquet, dde_continue_cycle_adapt,
-    dde_continue_cycle_floquet, dde_correct_cycle, dde_floquet_multipliers, dde_hopf_cycle,
+    dde_continue_cycle_bpc, dde_continue_cycle_floquet, dde_correct_cycle, dde_floquet_multipliers,
+    dde_hopf_cycle,
 };
 use pckern::json::problem::parse_options;
 use serde_json::{Value, json};
@@ -62,6 +63,8 @@ struct Problem {
     branch: bool,
     /// Whether the mesh moves along the branch, and how often (only with `branch`).
     adapt: Option<DdeMeshAdapt>,
+    /// Whether the branch labels branch points of cycles, `BPC` (only with `branch`).
+    bpc: bool,
 }
 
 /// `dde-cycle`: reads the problem, runs the corrector and prints the orbit. See
@@ -219,11 +222,24 @@ fn run_branch(
         }
     };
     let floquet = problem.floquet.as_ref();
-    let run = match &problem.adapt {
-        Some(adapt) => {
-            dde_continue_cycle_adapt(model, &setup, &orbit, &problem.opts, floquet, adapt, cancel)
+    let run = if problem.bpc {
+        let adapt = problem.adapt.as_ref();
+        dde_continue_cycle_bpc(model, &setup, &orbit, &problem.opts, floquet, adapt, cancel)
+    } else {
+        match &problem.adapt {
+            Some(adapt) => dde_continue_cycle_adapt(
+                model,
+                &setup,
+                &orbit,
+                &problem.opts,
+                floquet,
+                adapt,
+                cancel,
+            ),
+            None => {
+                dde_continue_cycle_floquet(model, &setup, &orbit, &problem.opts, floquet, cancel)
+            }
         }
-        None => dde_continue_cycle_floquet(model, &setup, &orbit, &problem.opts, floquet, cancel),
     };
     let branch = match run {
         Ok(b) => b,
@@ -385,6 +401,15 @@ fn read_branch(obj: &serde_json::Map<String, Value>) -> Result<bool, String> {
     }
 }
 
+/// Reads `bpc`: a JSON boolean, false when the key is absent.
+fn read_bpc(obj: &serde_json::Map<String, Value>) -> Result<bool, String> {
+    match obj.get("bpc") {
+        None => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(_) => Err("\"bpc\" must be true or false".to_string()),
+    }
+}
+
 /// Reads an array of numbers.
 fn numbers(value: &Value, key: &str) -> Result<Vec<f64>, String> {
     value
@@ -466,7 +491,7 @@ fn read_problem(value: &Value) -> Result<Problem, String> {
         obj,
         &[
             "model", "params", "free", "ntst", "ncol", "orbit", "hopf", "options", "floquet",
-            "branch", "adapt",
+            "branch", "adapt", "bpc",
         ],
         "problem",
     )?;
@@ -495,6 +520,12 @@ fn read_problem(value: &Value) -> Result<Problem, String> {
         }
     };
     let branch = read_branch(obj)?;
+    let bpc = read_bpc(obj)?;
+    if bpc && !branch {
+        return Err(
+            "\"bpc\" labels branch points along a branch and needs \"branch\": true".to_string(),
+        );
+    }
     let opts = match obj.get("options") {
         None => Options::default(),
         Some(v) => {
@@ -527,6 +558,7 @@ fn read_problem(value: &Value) -> Result<Problem, String> {
         floquet,
         branch,
         adapt,
+        bpc,
     })
 }
 
@@ -792,6 +824,33 @@ mod tests {
         // It also works next to a Hopf start.
         let hopf = HOPF.replace("\"hopf\"", "\"branch\":true,\"hopf\"");
         assert!(read(&hopf).unwrap().branch);
+    }
+
+    #[test]
+    fn the_bpc_key_is_optional_a_boolean_and_needs_branch() {
+        let branch = ORBIT.replace("\"options\"", "\"branch\":true,\"options\"");
+        assert!(!read(&branch).unwrap().bpc);
+        let on = branch.replace("\"options\"", "\"bpc\":true,\"options\"");
+        assert!(read(&on).unwrap().bpc);
+        let off = branch.replace("\"options\"", "\"bpc\":false,\"options\"");
+        assert!(!read(&off).unwrap().bpc);
+        for body in ["null", "\"yes\"", "1", "[true]", "{}"] {
+            let text = branch.replace("\"options\"", &format!("\"bpc\":{body},\"options\""));
+            let msg = read(&text).unwrap_err();
+            assert!(msg.contains("\"bpc\""), "{body}: {msg}");
+        }
+        // `bpc` labels points along a branch, so it needs `branch`; `false` is a no-op.
+        let alone = ORBIT.replace("\"options\"", "\"bpc\":true,\"options\"");
+        let msg = read(&alone).unwrap_err();
+        assert!(
+            msg.contains("\"bpc\"") && msg.contains("\"branch\""),
+            "{msg}"
+        );
+        let alone_off = ORBIT.replace("\"options\"", "\"bpc\":false,\"options\"");
+        assert!(!read(&alone_off).unwrap().bpc);
+        // It also works next to a Hopf start.
+        let hopf = HOPF.replace("\"hopf\"", "\"branch\":true,\"bpc\":true,\"hopf\"");
+        assert!(read(&hopf).unwrap().bpc);
     }
 
     #[test]

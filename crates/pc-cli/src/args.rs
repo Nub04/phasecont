@@ -704,7 +704,8 @@ phase condition is an integral condition against the start profile. The system h
 (ntst*ncol+1)*n + 2 unknowns, at most 3000. With the floquet key it also prints the
 leading Floquet multipliers of the corrected orbit. With the branch key it continues the
 corrected orbit in the free parameter instead and labels LPC points, and with the floquet
-key also PD and NS points. With the adapt key the mesh moves along the branch.
+key also PD and NS points. With the adapt key the mesh moves along the branch, and with
+the bpc key it also labels branch points of cycles.
 
 The problem file is a JSON object. Every key but options is required:
   model    path of the .ode file, relative to the problem file
@@ -730,6 +731,9 @@ The problem file is a JSON object. Every key but options is required:
   adapt    optional, and only with branch; an object {\"every\"} with an integer of at
            least 1 that moves the mesh after every that many accepted points. There is no
            default for every and the key is off without it. It needs ntst of at least 2
+  bpc      optional, and only with branch; true labels branch points of cycles as BPC,
+           false or no key does not. There is no default and the key is off without it.
+           The points of the run are the same with and without it
 
 orbit.profile holds the state at ntst*ncol+1 equally spaced points of one period, point
 after point with n values each. orbit.period is the start period. hopf.x0 is the
@@ -779,6 +783,11 @@ branch. With floquet the points and the special points also have \"multipliers\"
 too. The tests use all n*(nhist+1) multipliers, not only the count that is printed, and
 the small ones that come from the discretization are assumed to stay small. Each point of
 the run builds the monodromy matrix, so a run with floquet costs more.
+
+With bpc, a BPC (branch point of cycles) is labeled where the sign of the determinant of
+the bordered Jacobian changes. That happens at a branch point where an odd number of
+branches cross, and not at a fold, a PD or an NS. A branch point where an even number
+cross is missed. The command does not switch branches at a BPC.
 
 options:
   --          the next argument is the file, even if it starts with `-`

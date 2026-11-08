@@ -2,8 +2,8 @@
 //! which has the exact orbit x = sin t, T = 2 pi for tau = pi/2 (SPEC section 8l, test 7).
 //! The orbit and Hopf starts must give the numbers of the engine calls, and so must the
 //! `floquet` key (SPEC section 8m, test 9) and the `branch` key (SPEC section 8n, test 8)
-//! and the labels of a branch (SPEC section 8o, test 8) and the `adapt` key (SPEC section 8p,
-//! test 9).
+//! and the labels of a branch (SPEC section 8o, test 8), the `adapt` key (SPEC section 8p,
+//! test 9) and the `bpc` key (SPEC section 8q, test 13).
 //! Also runs the bad problem files and the run that does not converge.
 
 mod common;
@@ -16,7 +16,8 @@ use common::{code, run, stderr, stdout};
 use pc_engine::{
     DdeCycleBranch, DdeCyclePoint, DdeCycleSetup, DdeCycleStart, DdeFloquetOptions, DdeHopfCycle,
     DdeMeshAdapt, Evaluator, Options, build_dde, dde_continue_cycle, dde_continue_cycle_adapt,
-    dde_continue_cycle_floquet, dde_correct_cycle, dde_floquet_multipliers, dde_hopf_cycle,
+    dde_continue_cycle_bpc, dde_continue_cycle_floquet, dde_correct_cycle, dde_floquet_multipliers,
+    dde_hopf_cycle,
 };
 use pc_ode::{MapLoader, Severity, SourceMap, load};
 use serde_json::{Value, json};
@@ -1599,6 +1600,297 @@ fn help_lists_the_adapt_key() {
     assert_eq!(code(&o), 0);
     let text = stdout(&o);
     for word in ["adapt", "every", "mesh"] {
+        assert!(text.contains(word), "{word} missing from the help text");
+    }
+}
+
+// SPEC section 8q, test 13: the `bpc` key.
+
+/// The model with a decoupled block, `z' = (mu - m0) z - z^3`: the cycle x = sin t, z = 0 has
+/// an exact branch point at `mu = m0 = 0.3`.
+fn zblk_source() -> String {
+    format!(
+        "par mu=0.1, tau={TAU:?}, m0=0.3\n\
+         x'=-delay(x,tau)+mu*x*(1-x^2-delay(x,tau)^2)\n\
+         z'=(mu-m0)*z-z^3\n\
+         done\n"
+    )
+}
+
+/// The start of the branch-point run: `sin t` in x and 0 in z, point after point.
+fn zblk_profile() -> Vec<f64> {
+    let nq = NTST * NCOL;
+    (0..=nq)
+        .flat_map(|q| [(2.0 * PI * q as f64 / nq as f64).sin(), 0.0])
+        .collect()
+}
+
+/// The branch-point run: up in `mu` from 0.1 through the branch point at 0.3, with `branch`
+/// set to true and the keys of `extra` added.
+fn zblk_problem(extra: &[(&str, Value)]) -> Value {
+    let mut p = json!({
+        "model": "zblk.ode",
+        "params": {"mu": 0.1, "tau": TAU},
+        "free": "mu",
+        "ntst": NTST,
+        "ncol": NCOL,
+        "orbit": {"profile": zblk_profile(), "period": 2.0 * PI},
+        "options": {
+            "max_newton": 10, "hmax": 0.1, "max_steps": 400,
+            "bounds": [0.1, 0.6], "direction": 1
+        },
+        "branch": true,
+    });
+    for (k, v) in extra {
+        p[*k] = v.clone();
+    }
+    p
+}
+
+/// Runs the command on a problem that names the model `zblk.ode`.
+fn zblk_cycle(name: &str, problem: &Value) -> (i32, String, String) {
+    write("zblk.ode", &zblk_source());
+    let file = write(name, &problem.to_string());
+    let o = run(&scratch(), &["dde-cycle", &file]);
+    (code(&o), stdout(&o), stderr(&o))
+}
+
+/// The engine run that `zblk_problem` stands for, with the engine entry point and the keys
+/// as given.
+fn zblk_engine(
+    floquet: Option<&DdeFloquetOptions>,
+    adapt: Option<&DdeMeshAdapt>,
+    bpc: bool,
+) -> DdeCycleBranch {
+    let mut map = SourceMap::new();
+    let top = map.add("zblk.ode", zblk_source());
+    let l = load(top, &mut map, &mut MapLoader::new());
+    assert!(
+        l.diagnostics.iter().all(|d| d.severity != Severity::Error),
+        "{:?}",
+        l.diagnostics
+    );
+    let mut model = build_dde(&l.expanded, &l.info, Evaluator::Jit).expect("build_dde");
+    let setup = DdeCycleSetup {
+        params: vec![0.1, TAU, 0.3],
+        free: 0,
+        ntst: NTST,
+        ncol: NCOL,
+    };
+    let opts = Options {
+        bounds: (0.1, 0.6),
+        direction: 1.0,
+        hmax: 0.1,
+        max_steps: 400,
+        max_newton: 10,
+        ..Options::default()
+    };
+    let start = DdeCycleStart {
+        profile: zblk_profile(),
+        period: 2.0 * PI,
+    };
+    let cancel = AtomicBool::new(false);
+    if bpc {
+        dde_continue_cycle_bpc(&mut model, &setup, &start, &opts, floquet, adapt, &cancel)
+            .expect("continue_cycle_bpc")
+    } else if let Some(a) = adapt {
+        dde_continue_cycle_adapt(&mut model, &setup, &start, &opts, floquet, a, &cancel)
+            .expect("continue_cycle_adapt")
+    } else {
+        dde_continue_cycle_floquet(&mut model, &setup, &start, &opts, floquet, &cancel)
+            .expect("continue_cycle_floquet")
+    }
+}
+
+/// The labels of the printed specials.
+fn printed_labels(out: &str) -> Vec<String> {
+    let v: Value = serde_json::from_str(out).unwrap();
+    v["specials"]
+        .as_array()
+        .expect("specials")
+        .iter()
+        .map(|s| s["label"].as_str().expect("label").to_string())
+        .collect()
+}
+
+/// Checks that the output has exactly one special, a BPC at `mu = 0.3` within `tol`.
+fn one_bpc(out: &str, tol: f64, what: &str) {
+    assert_eq!(printed_labels(out), ["BPC"], "{what}");
+    let v: Value = serde_json::from_str(out).unwrap();
+    let alpha = num(&v["specials"][0]["alpha"]);
+    assert!(
+        (alpha - 0.3).abs() <= tol,
+        "{what}: alpha - 0.3 = {:e}",
+        alpha - 0.3
+    );
+}
+
+#[test]
+fn the_bpc_key_prints_the_branch_point_bit_for_bit() {
+    let (status, out, err) = zblk_cycle("bpc.json", &zblk_problem(&[("bpc", json!(true))]));
+    assert_eq!(status, 0, "{err}");
+    let want = zblk_engine(None, None, true);
+    assert!(want.points.len() > 4, "{} points", want.points.len());
+    same_points(&out, &want, "bpc");
+    same_specials(&out, &want, false, "bpc");
+    one_bpc(&out, 1e-11, "bpc");
+    // Every point is the one that the run without the key gives.
+    let plain = zblk_engine(None, None, false);
+    same_points(&out, &plain, "bpc against no bpc");
+    // The first point is the corrected start, and a mesh is printed only with adapt.
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert!(v["points"][0].get("mesh").is_none());
+}
+
+#[test]
+fn without_the_bpc_key_nothing_is_labeled() {
+    let (s0, absent, e0) = zblk_cycle("bpc_absent.json", &zblk_problem(&[]));
+    let (s1, off, e1) = zblk_cycle("bpc_false.json", &zblk_problem(&[("bpc", json!(false))]));
+    assert_eq!((s0, s1), (0, 0), "{e0}{e1}");
+    assert_eq!(absent, off, "bpc false must print what no key prints");
+    assert!(printed_labels(&absent).is_empty(), "{absent}");
+    same_specials(&absent, &zblk_engine(None, None, false), false, "no bpc");
+}
+
+#[test]
+fn the_bpc_key_works_with_floquet_adapt_and_both() {
+    let floquet = DdeFloquetOptions { nhist: 8, count: 2 };
+    let adapt = DdeMeshAdapt { every: 3 };
+    let fj = json!({"nhist": 8, "count": 2});
+    let aj = json!({"every": 3});
+    // (name, extra keys, floquet on, adapt on)
+    type Case = (&'static str, Vec<(&'static str, Value)>, bool, bool);
+    let cases: [Case; 3] = [
+        ("floquet", vec![("floquet", fj.clone())], true, false),
+        ("adapt", vec![("adapt", aj.clone())], false, true),
+        (
+            "floquet and adapt",
+            vec![("floquet", fj), ("adapt", aj)],
+            true,
+            true,
+        ),
+    ];
+    for (what, keys, with_floquet, with_adapt) in cases {
+        let mut extra = keys;
+        extra.push(("bpc", json!(true)));
+        let name = format!("bpc_{}.json", what.replace(' ', "_"));
+        let (status, out, err) = zblk_cycle(&name, &zblk_problem(&extra));
+        assert_eq!(status, 0, "{what}: {err}");
+        let fl = with_floquet.then_some(&floquet);
+        let ad = with_adapt.then_some(&adapt);
+        let want = zblk_engine(fl, ad, true);
+        same_points(&out, &want, what);
+        same_specials(&out, &want, with_floquet, what);
+        if with_adapt {
+            same_meshes(&out, &want, what);
+        }
+        // The adapted mesh moves the located point a little, so the bound is the loose one.
+        let tol = if with_adapt { 3e-10 } else { 1e-11 };
+        one_bpc(&out, tol, what);
+    }
+}
+
+#[test]
+fn a_run_without_a_branch_point_prints_the_same_text_with_bpc() {
+    // The OSC model has no branch point, so the key must change nothing at all.
+    let (s0, plain, e0) = dde_cycle("bpc_osc_plain.json", &mu_line_problem());
+    let mut p = mu_line_problem();
+    p["bpc"] = json!(true);
+    let (s1, with, e1) = dde_cycle("bpc_osc_on.json", &p);
+    assert_eq!((s0, s1), (0, 0), "{e0}{e1}");
+    assert_eq!(plain, with);
+    // A Hopf start goes through the Hopf corrector first and then the same continuation.
+    let (s2, plain, e2) = dde_cycle("bpc_hopf_plain.json", &hopf_branch_problem());
+    let mut p = hopf_branch_problem();
+    p["bpc"] = json!(true);
+    let (s3, with, e3) = dde_cycle("bpc_hopf_on.json", &p);
+    assert_eq!((s2, s3), (0, 0), "{e2}{e3}");
+    assert_eq!(plain, with);
+}
+
+#[test]
+fn bpc_problems_that_cannot_run_are_exit_2_and_name_bpc() {
+    let cases: [(&str, Edit, &str); 6] = [
+        (
+            "number",
+            Box::new(|p| p["bpc"] = json!(1)),
+            "\"bpc\" must be",
+        ),
+        (
+            "string",
+            Box::new(|p| p["bpc"] = json!("yes")),
+            "\"bpc\" must be",
+        ),
+        (
+            "null",
+            Box::new(|p| p["bpc"] = json!(null)),
+            "\"bpc\" must be",
+        ),
+        (
+            "without_branch",
+            Box::new(|p| {
+                p["bpc"] = json!(true);
+                p["options"] = json!({"max_newton": 10});
+                p.as_object_mut().unwrap().remove("branch");
+            }),
+            "needs \"branch\"",
+        ),
+        (
+            "branch_false",
+            Box::new(|p| {
+                p["bpc"] = json!(true);
+                p["branch"] = json!(false);
+                p["options"] = json!({"max_newton": 10});
+            }),
+            "needs \"branch\"",
+        ),
+        (
+            "hopf_without_branch",
+            Box::new(|p| {
+                *p = hopf_branch_problem();
+                p["bpc"] = json!(true);
+                p["options"] = json!({"max_newton": 30});
+                p.as_object_mut().unwrap().remove("branch");
+            }),
+            "needs \"branch\"",
+        ),
+    ];
+    for (name, edit, word) in cases {
+        let mut p = mu_line_problem();
+        edit(&mut p);
+        let (status, out, err) = dde_cycle(&format!("bpc_bad_{name}.json"), &p);
+        assert_eq!(status, 2, "{name}: {err}");
+        assert!(out.is_empty(), "{name}: {out}");
+        assert!(err.contains(word), "{name}: {err}");
+    }
+    // A malformed value next to a Hopf start is also refused before the corrector runs.
+    let mut p = hopf_branch_problem();
+    p["bpc"] = json!("yes");
+    let (status, out, err) = dde_cycle("bpc_bad_hopf_string.json", &p);
+    assert_eq!(status, 2, "{err}");
+    assert!(out.is_empty(), "{out}");
+    assert!(err.contains("\"bpc\" must be"), "{err}");
+}
+
+#[test]
+fn bpc_false_without_branch_prints_the_corrector_output() {
+    // Without `branch` the command reads only the corrector options.
+    let mut p = mu_line_problem();
+    p.as_object_mut().unwrap().remove("branch");
+    p["options"] = json!({"max_newton": 10});
+    let (s0, plain, e0) = dde_cycle("bpc_nobranch_plain.json", &p);
+    p["bpc"] = json!(false);
+    let (s1, off, e1) = dde_cycle("bpc_nobranch_false.json", &p);
+    assert_eq!((s0, s1), (0, 0), "{e0}{e1}");
+    assert_eq!(plain, off);
+}
+
+#[test]
+fn help_lists_the_bpc_key() {
+    let o = run(&scratch(), &["dde-cycle", "--help"]);
+    assert_eq!(code(&o), 0);
+    let text = stdout(&o);
+    for word in ["bpc", "BPC", "branch point"] {
         assert!(text.contains(word), "{word} missing from the help text");
     }
 }
