@@ -1,5 +1,3 @@
-- A kept kernel saves 12 to 13 ms per run on CUDA at N = 1000 and N = 10000, and 5 to 7 ms on OpenCL on the RTX 5060. That matches the 11 ms NVRTC compile and the 6 ms estimate. At N = 100000 the saving is 19 ms on CUDA and 11 ms on OpenCL. I did not isolate why the CUDA saving is larger there than the compile alone.
-- On the Arc 140T the saving is 0.4 ms at N = 1000 and 0.4 to 8.6 ms at the larger sizes. I did not measure the spread between runs, so the larger numbers may be noise. The Arc driver builds a program in 0.3 to 0.7 ms, so there was little to save.
 # Speed against XPPAUT
 
 These numbers compare `pc-cli cont` on an IVP problem with XPPAUT 8.0 run headless on the same model. They measure integration only. XPPAUT's AUTO cannot run headless, so continuation is not compared.
@@ -137,3 +135,24 @@ Double precision:
 - On the Arc 140T the saving is 0.4 to 0.5 ms at N = 1000 and 0.4 to 8 ms at the larger sizes, which is within the repeat noise at the large sizes. The Arc driver builds a program in 0.3 to 0.7 ms, so there was little to save.
 - The RTX 5060 now beats the 16-thread CPU at N = 1000 as well: 0.9 ms against 5.9 ms on CUDA in single precision, 1.8 ms against 6.0 ms in double.
 - A new model or precision still pays for one compile on its first run. For the double-precision rows at N = 1000, the first repeat took 15.4 ms on CUDA and 7.4 ms on OpenCL for the RTX 5060, against 1.8 ms and 2.2 ms for the fastest. The very first single-precision run in the process also creates the context: 163 ms on CUDA and 112 ms on OpenCL for the RTX 5060.
+
+# MATLAB call latency
+
+Measured on 2026-11-08 in Windows MATLAB R2026b with the staged binaries, on the same laptop. Each call is timed from MATLAB with `tic` and `toc`, and the figures leave out the first 5 runs of each loop, which include model and context start-up.
+
+Before this change, the wait loop in `phasecont.ensemble`, `continuation`, `simulate` and the session replay paused 50 ms after the first poll, so no call took less than about 50 ms, whatever the engine needed. A two-member ensemble took 51 to 57 ms on every backend (CPU, OpenCL device 1, CUDA device 0), against about 2 ms in the CLI bench.
+
+After this change, the wait is 1, 2, 4, 8, 16 and 19 ms after the first six polls and 50 ms after that (SPEC section 11, Poll schedule). The polls fall at 0, 1, 3, 7, 15, 31 and 50 ms and then every 50 ms, so they include every time the old loop polled:
+
+| Call | Old median (ms) | New min (ms) | New median (ms) | New max (ms) |
+|---|---|---|---|---|
+| `ensemble`, 2 members, CPU | 51.5 | 3.3 | 4.1 | 5.0 |
+| `ensemble`, 2 members, OpenCL, Arc 140T | 51.5 | 4.3 | 6.3 | 10.0 |
+| `ensemble`, 2 members, CUDA, RTX 5060 | 51.5 | 3.8 | 4.0 | 5.2 |
+| `continuation`, fold, 20 steps | 52.3 | 4.4 | 5.1 | 6.4 |
+
+The old figures come from running the same script against the previous `runLoop.m` and `ensemble.m` (old minimum 51.3 ms for the three ensembles and 52.0 ms for `continuation`). The two latency tests in `EnsembleTest` and `ContinuationTest` fail on that code.
+
+- `pause(0.001)` took 1.01 ms at the median and 15 ms at its worst in 20 tries, so a call can still lose one Windows timer tick now and then.
+- The first `phasecont.gpuDevices()` call in a process takes about 790 ms and later calls 8 to 17 ms. `ensemble` calls it only for `Backend = "auto"`.
+- Long runs are polled every 50 ms. The new poll times include all the old ones, so a run is never seen later than before, apart from the cost of each extra poll.

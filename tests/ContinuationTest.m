@@ -219,6 +219,22 @@ classdef ContinuationTest < matlab.unittest.TestCase
             end
         end
 
+        function aShortRunDoesNotWaitForTheFullPollInterval(testCase)
+            % The poll loop used to pause 50 ms after the first poll. The
+            % fastest of several warm runs has a loose bound that the old
+            % loop could never meet.
+            m = testCase.model(testCase.Fold, "jit");
+            eq = phasecont.equilibrium(m, -1);
+            t = zeros(1, 8);
+            for k = 1:numel(t)
+                t0 = tic;
+                phasecont.continuation(m, eq, Free = "a", MaxSteps = 20, ...
+                    Bounds = [-5 5]);
+                t(k) = toc(t0);
+            end
+            testCase.verifyLessThan(min(t), 0.045);
+        end
+
         function startErrors(testCase)
             m = testCase.model(testCase.Fold, "jit");
             other = testCase.model(testCase.Fold, "jit");

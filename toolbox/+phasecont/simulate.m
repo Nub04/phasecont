@@ -3,8 +3,9 @@ function tr = simulate(m, x0, tspan, options)
 %   TR = phasecont.simulate(M, X0, [T0 T1]) integrates the model M from the
 %   state X0 at time T0 to time T1 and returns a phasecont.Trajectory. X0 is
 %   a state vector or a phasecont.Point. T1 < T0 integrates backward. The
-%   call blocks while the engine runs and polls it about every 50 ms. Ctrl+C
-%   cancels the run and returns nothing.
+%   call blocks while the engine runs and polls it (first after 1 ms, then at
+%   growing intervals up to 50 ms). Ctrl+C cancels the run and returns
+%   nothing.
 %
 %   The solver is the Dormand-Prince 5(4) pair with step size control. It
 %   returns one row per accepted step, so a plot of TR.X is as smooth as the

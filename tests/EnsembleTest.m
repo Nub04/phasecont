@@ -378,6 +378,21 @@ classdef EnsembleTest < matlab.unittest.TestCase
                 "phasecont:ensemble:missingPrecision");
         end
 
+        function aShortCpuRunDoesNotWaitForTheFullPollInterval(testCase)
+            % The poll loop used to pause 50 ms after the first poll, so no
+            % call took less than that. The fastest of several warm runs
+            % has a loose bound that the old loop could never meet.
+            m = testCase.model(testCase.Rotation);
+            t = zeros(1, 8);
+            for k = 1:numel(t)
+                t0 = tic;
+                phasecont.ensemble(m, [1 0.5; 0 0], [], [0 3], Backend = "cpu", ...
+                    Precision = "double", Rtol = 1e-9, Atol = 1e-12);
+                t(k) = toc(t0);
+            end
+            testCase.verifyLessThan(min(t), 0.045);
+        end
+
         function selfTestOnAGpu(testCase, GpuBackend, GpuPrecision)
             testCase.skipUnlessDevice(GpuBackend, GpuPrecision);
             s = phasecont.gpuSelfTest(Backend = GpuBackend, Precision = GpuPrecision);

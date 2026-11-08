@@ -2,8 +2,9 @@ function br = continuation(m, start, options)
 %CONTINUATION Follow a branch of equilibria or cycles, or a curve of special points.
 %   BR = phasecont.continuation(M, START, Free = "r") continues START along
 %   the free parameter. START is a phasecont.Point or a state vector. The
-%   call blocks while the engine runs, polls it about every 50 ms and
-%   returns a phasecont.Branch. Ctrl+C cancels the run and returns nothing.
+%   call blocks while the engine runs, polls it (first after 1 ms, then at
+%   growing intervals up to 50 ms) and returns a phasecont.Branch. Ctrl+C
+%   cancels the run and returns nothing.
 %
 %   BRS = phasecont.continuation(M, START, Free = "r", Switch = "BP1")
 %   follows the branch and then the branch that starts at its first branch

@@ -46,8 +46,9 @@ function r = ensemble(m, x0, p, tspan, options)
 %
 %   A trajectory that stops with "stepTooSmall", "maxSteps" or "notFinite"
 %   is reported with the warning ID phasecont:ensemble:memberStopped. The
-%   call blocks while the engine runs and polls it about every 50 ms. Ctrl+C
-%   cancels the run.
+%   call blocks while the engine runs and polls it, first after 1 ms and then
+%   at growing intervals up to 50 ms, so a short run returns within a few
+%   milliseconds. Ctrl+C cancels the run.
 %
 %   See also phasecont.gpuDevices, phasecont.EnsembleResult, phasecont.simulate.
 arguments
@@ -150,12 +151,14 @@ catch err
     throw(mapError(err));
 end
 cleanup = onCleanup(@() delete(ens)); %#ok<NASGU>
+polls = 0;
 while true
     st = ens.poll();
     if st.state ~= "running"
         break
     end
-    pause(0.05);
+    polls = polls + 1;
+    pause(phasecont.internal.pollDelay(polls));
 end
 if st.state ~= "done"
     error("phasecont:ensemble:cancelled", "The ensemble run was cancelled.");

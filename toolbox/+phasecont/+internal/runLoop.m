@@ -1,8 +1,9 @@
 function out = runLoop(m, problem, u0, p, onPoll)
 %RUNLOOP Start an engine run, poll it to the end and copy its rows. Internal.
 %   OUT = phasecont.internal.runLoop(M, PROBLEM, U0, P) starts the run that
-%   the problem JSON PROBLEM describes, polls it about every 50 ms until the
-%   worker stops and returns the rows of every branch.
+%   the problem JSON PROBLEM describes, polls it until the worker stops
+%   (see phasecont.internal.pollDelay for the wait between polls) and returns
+%   the rows of every branch.
 %   OUT = runLoop(M, PROBLEM, U0, P, ONPOLL) also calls ONPOLL(POINTS, ST)
 %   after each poll, where POINTS is the cell of rows copied so far and ST
 %   the decoded status. Use it to draw the run while it goes.
@@ -23,7 +24,7 @@ end
 run = phasecont.internal.Run(m, problem, u0, p);
 cleanup = onCleanup(@() delete(run));
 pts = cell(1, 0);
-pause_s = 0.05;
+polls = 0;
 while true
     st = run.poll();
     nb = numel(st.branches);
@@ -47,7 +48,8 @@ while true
     if st.state ~= "running"
         break
     end
-    pause(pause_s);
+    polls = polls + 1;
+    pause(phasecont.internal.pollDelay(polls));
 end
 nb = numel(st.branches);
 sp = cell(1, nb);

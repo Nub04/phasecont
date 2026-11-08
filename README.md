@@ -69,7 +69,7 @@ lp = br.points("LP");                              % the fold at a = 0, x = 0
 lp.Data.coefficient                                % the normal form coefficient, 1
 ```
 
-`continuation` blocks while it runs and polls the engine about every 50 ms. Ctrl+C cancels the run and frees it. It returns a `phasecont.Branch` that holds copies of the data, so it stays valid after the model is deleted. `Type` selects the problem: `"EP"` (the default), `"LC"` from a Hopf point, and `"LP"`, `"H"`, `"LPC"`, `"PD"` or `"NS"` with two free parameters. `help phasecont.continuation` lists the options.
+`continuation` blocks while it runs and polls the engine, first after 1 ms and then at growing intervals up to 50 ms. Ctrl+C cancels the run and frees it. It returns a `phasecont.Branch` that holds copies of the data, so it stays valid after the model is deleted. `Type` selects the problem: `"EP"` (the default), `"LC"` from a Hopf point, and `"LP"`, `"H"`, `"LPC"`, `"PD"` or `"NS"` with two free parameters. `help phasecont.continuation` lists the options.
 
 ## Models without an `.ode` file
 
