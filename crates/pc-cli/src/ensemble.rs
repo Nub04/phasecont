@@ -282,13 +282,17 @@ fn bench_row(ir: &IrModel, device: &DeviceInfo, precision: Precision, members: u
     };
     let cancel = AtomicBool::new(false);
     let mut best = f64::INFINITY;
+    let mut first = f64::NAN;
     let mut steps = 0u64;
-    for _ in 0..REPEATS {
+    for repeat in 0..REPEATS {
         let start = Instant::now();
         let result = run_on(device, &job, &cancel);
         let seconds = start.elapsed().as_secs_f64();
         match result {
             Ok(r) => {
+                if repeat == 0 {
+                    first = seconds;
+                }
                 best = best.min(seconds);
                 steps = r.accepted.iter().map(|&a| u64::from(a)).sum();
             }
@@ -297,6 +301,7 @@ fn bench_row(ir: &IrModel, device: &DeviceInfo, precision: Precision, members: u
     }
     head(json!({
         "seconds": best,
+        "first_seconds": first,
         "member_steps": steps,
         "member_steps_per_second": steps as f64 / best,
     }))
@@ -327,6 +332,7 @@ pub fn bench(sizes: &[usize]) -> ExitCode {
         "model": BENCH_TITLE,
         "repeats": REPEATS,
         "seconds": "the fastest of the repeats, including the host work around the launches",
+        "first_seconds": "the first repeat, which also pays for a GPU context that no earlier run in this process created",
         "rows": rows,
     });
     out(&to_text(&report), 0)
