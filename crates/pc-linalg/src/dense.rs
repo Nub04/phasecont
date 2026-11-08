@@ -78,6 +78,7 @@ pub struct Lu {
     n: usize,
     lu: PartialPivLu<f64>,
     det: f64,
+    min_pivot: f64,
 }
 
 impl Lu {
@@ -100,6 +101,7 @@ impl Lu {
                 n,
                 lu: PartialPivLu::new(MatRef::from_column_major_slice(a, 0, 0)),
                 det: 1.0,
+                min_pivot: f64::INFINITY,
             });
         }
         let lu = PartialPivLu::new(MatRef::from_column_major_slice(a, n, n));
@@ -146,7 +148,12 @@ impl Lu {
         if (n - cycles) % 2 == 1 {
             det = -det;
         }
-        Ok(Lu { n, lu, det })
+        Ok(Lu {
+            n,
+            lu,
+            det,
+            min_pivot: umin,
+        })
     }
 
     /// Overwrites `b` with A^-1 b. `BadShape` when `b.len() != n`.
@@ -174,6 +181,12 @@ impl Lu {
     /// 0, infinite or NaN.
     pub fn det(&self) -> f64 {
         self.det
+    }
+
+    /// Smallest |u_ii| of the factorization: a bounded measure of the distance to a singular
+    /// matrix, with the same zero as the determinant. `INFINITY` for n = 0.
+    pub fn min_pivot(&self) -> f64 {
+        self.min_pivot
     }
 
     fn check_rhs(&self, b: &[f64]) -> Result<(), LinalgError> {
@@ -299,6 +312,27 @@ mod tests {
         assert_eq!(Lu::new(&diag(&d), 60).unwrap().det(), f64::MIN_POSITIVE);
         d[0] = -1.0 / big;
         assert_eq!(Lu::new(&diag(&d), 60).unwrap().det(), -f64::MIN_POSITIVE);
+    }
+
+    #[test]
+    fn min_pivot_is_the_smallest_pivot_magnitude() {
+        let lu = Lu::new(&diag(&[1.0, 1.0, 1.0, 1.0]), 4).unwrap();
+        assert_eq!(lu.min_pivot(), 1.0);
+        let lu = Lu::new(&diag(&[2.0, 0.5, 3.0]), 3).unwrap();
+        assert_eq!(lu.min_pivot(), 0.5);
+        // A negative entry counts by its magnitude.
+        let lu = Lu::new(&diag(&[2.0, -0.25, 3.0]), 3).unwrap();
+        assert_eq!(lu.min_pivot(), 0.25);
+        // No pivots, no smallest one.
+        assert_eq!(Lu::new(&[], 0).unwrap().min_pivot(), f64::INFINITY);
+        // The scaled diagonals keep their exact value where the determinant saturates.
+        let big = Lu::new(&diag(&[1e200; 5]), 5).unwrap();
+        assert_eq!(big.min_pivot(), 1e200);
+        let small = Lu::new(&diag(&[1e-200; 5]), 5).unwrap();
+        assert_eq!(small.min_pivot(), 1e-200);
+        // A row swap does not change the magnitudes: [0 2; 3 0] has pivots 3 and 2.
+        let lu = Lu::new(&[0.0, 2.0, 3.0, 0.0], 2).unwrap();
+        assert_eq!(lu.min_pivot(), 2.0);
     }
 
     #[test]
