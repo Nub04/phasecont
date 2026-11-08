@@ -991,19 +991,16 @@ struct RunKeys<'a> {
     bpc: bool,
 }
 
-fn continue_cycle_on(
-    model: &mut DdeModel,
+/// The checks that precede every run, in their order: the cancel flag, the setup, the
+/// profile, the period, the bounds of a free delay time and the step controls. Returns `n`
+/// and `dim`. `start` is the start of a corrected run or the point of a switch.
+fn check_run_head(
+    model: &DdeModel,
     setup: &DdeCycleSetup,
     start: &DdeCycleStart,
     opts: &Options,
-    keys: &RunKeys,
     cancel: &AtomicBool,
-) -> Result<DdeCycleBranch, EngineError> {
-    let RunKeys {
-        floquet,
-        adapt,
-        bpc,
-    } = *keys;
+) -> Result<(usize, usize), EngineError> {
     if cancel.load(Ordering::Relaxed) {
         return Err(EngineError::Cancelled);
     }
@@ -1020,6 +1017,17 @@ fn continue_cycle_on(
         ));
     }
     check_step_options(opts)?;
+    Ok((n, dim))
+}
+
+/// The checks of the Floquet and mesh adaptation keys, which follow [`check_run_head`].
+fn check_run_tail(
+    model: &DdeModel,
+    setup: &DdeCycleSetup,
+    n: usize,
+    floquet: Option<&DdeFloquetOptions>,
+    adapt: Option<&DdeMeshAdapt>,
+) -> Result<(), EngineError> {
     if let Some(f) = floquet {
         check_floquet_keyed(model, setup, n, f)?;
     }
@@ -1035,21 +1043,20 @@ fn continue_cycle_on(
             ));
         }
     }
+    Ok(())
+}
+
+/// The options of a run: no point tests of equilibria, and the branch-point test as asked.
+fn run_options(opts: &Options, bpc: bool) -> Options {
     let mut opts = opts.clone();
     opts.detect_lp = false;
     opts.detect_bp = bpc;
     opts.detect_h = false;
+    opts
+}
 
-    let first = correct_cycle(model, setup, start, &opts, cancel)?;
-    let mut p = DdeCycleProblem::new(model, setup, n, dim, &first.profile)?;
-    p.floquet = floquet.cloned();
-    p.adapt_every = adapt.map(|a| a.every);
-    p.bpc = bpc;
-    let count = floquet.map_or(0, |f| f.count);
-    let mut x0 = first.profile;
-    x0.push(first.period);
-    x0.push(first.alpha);
-    let branch = run_branch(&mut p, &x0, None, &opts, false, cancel, &mut |_| {})?;
+/// Turns the points and specials of a finished run into a [`DdeCycleBranch`].
+fn cycle_branch(branch: crate::branch::Branch, dim: usize, count: usize) -> DdeCycleBranch {
     let points = branch
         .points
         .iter()
@@ -1064,12 +1071,240 @@ fn continue_cycle_on(
             point: cycle_point(&sp.point, dim, count),
         })
         .collect();
-    Ok(DdeCycleBranch {
+    DdeCycleBranch {
         points,
         specials,
         stop: branch.stop,
         warnings: branch.warnings,
+    }
+}
+
+fn continue_cycle_on(
+    model: &mut DdeModel,
+    setup: &DdeCycleSetup,
+    start: &DdeCycleStart,
+    opts: &Options,
+    keys: &RunKeys,
+    cancel: &AtomicBool,
+) -> Result<DdeCycleBranch, EngineError> {
+    let RunKeys {
+        floquet,
+        adapt,
+        bpc,
+    } = *keys;
+    let (n, dim) = check_run_head(model, setup, start, opts, cancel)?;
+    check_run_tail(model, setup, n, floquet, adapt)?;
+    let opts = run_options(opts, bpc);
+
+    let first = correct_cycle(model, setup, start, &opts, cancel)?;
+    let mut p = DdeCycleProblem::new(model, setup, n, dim, &first.profile)?;
+    p.floquet = floquet.cloned();
+    p.adapt_every = adapt.map(|a| a.every);
+    p.bpc = bpc;
+    let count = floquet.map_or(0, |f| f.count);
+    let mut x0 = first.profile;
+    x0.push(first.period);
+    x0.push(first.alpha);
+    let branch = run_branch(&mut p, &x0, None, &opts, false, cancel, &mut |_| {})?;
+    Ok(cycle_branch(branch, dim, count))
+}
+
+/// The other branch at a `BPC`, ready for [`continue_cycle_switch`] (SPEC section 8r).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DdeCycleSwitch {
+    /// The profile and period of the `BPC`.
+    pub start: DdeCycleStart,
+    /// The value of the free parameter at the `BPC`.
+    pub alpha: f64,
+    /// The unit tangent of the other branch in the unknowns `(profile, T, alpha)`, so
+    /// `n * (ntst * ncol + 1) + 2` values.
+    pub tangent: Vec<f64>,
+}
+
+/// Step of the central difference of the Jacobian in `switch_cycle_bpc`.
+const SWITCH_FD_STEP: f64 = 1e-5;
+/// A tangent component below this counts as zero when the sign of the tangent is fixed.
+const SWITCH_SIGN_TOL: f64 = 1e-6;
+/// The quadratic form counts as zero when its largest coefficient is at most this multiple of
+/// the largest singular value of the Jacobian. The central difference of the Jacobian
+/// carries noise of about 2e-11 times that value, so the floor is 500 times the noise.
+const SWITCH_FORM_FLOOR: f64 = 1e-8;
+
+/// `a x` for the column-major `rows` by `cols` matrix `a`.
+fn mat_vec(a: &[f64], rows: usize, x: &[f64]) -> Vec<f64> {
+    let mut out = vec![0.0; rows];
+    for (col, xc) in a.chunks_exact(rows).zip(x) {
+        for (o, v) in out.iter_mut().zip(col) {
+            *o += v * xc;
+        }
+    }
+    out
+}
+
+/// The tangent of the branch that crosses the followed branch at the `BPC`
+/// `branch.specials[special]` (SPEC section 8r). The method is that of `switch_bp`: the
+/// tangents through a simple branch point of `F(x) = 0`, with `F` the equations of
+/// [`cycle_residual`], lie in the two-dimensional kernel of the Jacobian and solve a
+/// quadratic form with the coefficients `psi^T F''[phi_i, phi_j]`. Of its two roots the one
+/// least parallel to the chord from the point before the `BPC` is taken.
+///
+/// Every error is `BadProblem`. The checks run in this order: the special exists, it is a
+/// `BPC`, it has a point before it, the mesh is uniform, the setup, the profiles fit the
+/// model, the chord is not zero, the `BPC` is simple.
+pub fn switch_cycle_bpc(
+    model: &mut DdeModel,
+    setup: &DdeCycleSetup,
+    branch: &DdeCycleBranch,
+    special: usize,
+) -> Result<DdeCycleSwitch, EngineError> {
+    let bad = |m: String| EngineError::BadProblem(m);
+    let sp = branch
+        .specials
+        .get(special)
+        .ok_or_else(|| bad(format!("no special point {special}")))?;
+    if sp.label != "BPC" {
+        return Err(bad(format!(
+            "special point {special} is a {}, not a BPC",
+            sp.label
+        )));
+    }
+    if sp.index == 0 || sp.index > branch.points.len() {
+        return Err(bad(
+            "the BPC is the first point of the branch; switching needs the point before it".into(),
+        ));
+    }
+    let prev = &branch.points[sp.index - 1];
+    if !sp.point.mesh.is_empty() || !prev.mesh.is_empty() {
+        return Err(bad("the branch has an adapted mesh".into()));
+    }
+    let (n, dim) = check_setup(model, setup)?;
+    let fits = |q: &DdeCyclePoint| {
+        q.profile.len() == n * (setup.ntst * setup.ncol + 1)
+            && q.profile.iter().all(|v| v.is_finite())
+            && q.period.is_finite()
+            && q.alpha.is_finite()
+    };
+    if !fits(&sp.point) || !fits(prev) {
+        return Err(bad("the BPC does not fit the model".into()));
+    }
+    let unknowns = |q: &DdeCyclePoint| {
+        let mut x = q.profile.clone();
+        x.push(q.period);
+        x.push(q.alpha);
+        x
+    };
+    let xb = unknowns(&sp.point);
+    let mut chord: Vec<f64> = xb.iter().zip(unknowns(prev)).map(|(a, b)| a - b).collect();
+    let len = chord.iter().map(|v| v * v).sum::<f64>().sqrt();
+    let xb_norm = xb.iter().map(|v| v * v).sum::<f64>().sqrt();
+    if len <= 1e-12 * (1.0 + xb_norm) {
+        return Err(bad("the BPC coincides with the point before it".into()));
+    }
+    chord.iter_mut().for_each(|v| *v /= len);
+
+    let rows = dim - 1;
+    let mut p = DdeCycleProblem::new(model, setup, n, dim, &sp.point.profile)?;
+    let mut jac = try_zeros(rows.checked_mul(dim))?;
+    p.fill(&xb, None, Some(&mut jac))?;
+    let svd = pc_linalg::svd_null(&jac, rows, dim, 2, 1)?;
+    drop(jac);
+    let sv = &svd.values;
+    let not_simple = sv[rows - 1] > 1e-6 * sv[0] || (rows >= 2 && sv[rows - 2] <= 1e-8 * sv[0]);
+    if not_simple {
+        return Err(bad("BPC is not simple".into()));
+    }
+    let (phi, psi) = (&svd.right, &svd.left[0]);
+    // d[i][j] = (J(xb + h phi_j) - J(xb - h phi_j)) phi_i / 2h, one matrix alive at a time.
+    let h = SWITCH_FD_STEP;
+    let mut c = [[0.0; 2]; 2];
+    for j in 0..2 {
+        let mut dir = [vec![0.0; rows], vec![0.0; rows]];
+        for (sign, factor) in [(1.0, 1.0), (-1.0, -1.0)] {
+            let x: Vec<f64> = xb
+                .iter()
+                .zip(&phi[j])
+                .map(|(a, d)| a + sign * h * d)
+                .collect();
+            let mut jac = try_zeros(rows.checked_mul(dim))?;
+            p.fill(&x, None, Some(&mut jac))?;
+            for i in 0..2 {
+                let w = mat_vec(&jac, rows, &phi[i]);
+                for (d, v) in dir[i].iter_mut().zip(w) {
+                    *d += factor * v / (2.0 * h);
+                }
+            }
+        }
+        for i in 0..2 {
+            c[i][j] = psi.iter().zip(&dir[i]).map(|(a, b)| a * b).sum();
+        }
+    }
+    let off = 0.5 * (c[0][1] + c[1][0]);
+    c[0][1] = off;
+    c[1][0] = off;
+    // A form that is zero up to the noise of the difference quotients has no pair of root
+    // directions, and branching_root only refuses an exactly zero form.
+    let form_max = c.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs()));
+    if form_max.is_nan() || !sv[0].is_finite() || form_max <= SWITCH_FORM_FLOOR * sv[0] {
+        return Err(EngineError::BadProblem("BPC is not simple".into()));
+    }
+    let tangent =
+        crate::switch::branching_root(&c, phi, &chord, SWITCH_SIGN_TOL).map_err(|e| match e {
+            EngineError::BadProblem(m) if m == "BP is not simple" => {
+                EngineError::BadProblem("BPC is not simple".into())
+            }
+            other => other,
+        })?;
+    Ok(DdeCycleSwitch {
+        start: DdeCycleStart {
+            profile: sp.point.profile.clone(),
+            period: sp.point.period,
+        },
+        alpha: sp.point.alpha,
+        tangent,
     })
+}
+
+/// Continues the branch that [`switch_cycle_bpc`] found, from the point of `sw` (SPEC
+/// section 8r). The start is not corrected. `opts.direction` is `+1` to follow
+/// `sw.tangent` and `-1` to follow its negative. The checks are those of
+/// [`continue_cycle_bpc`] without `adapt`, in the same order; a tangent of the wrong length
+/// or with a value that is not finite, and an `alpha` that is not finite, give `BadProblem`
+/// with `the switch does not fit the setup` after the step controls.
+pub fn continue_cycle_switch(
+    model: &mut DdeModel,
+    setup: &DdeCycleSetup,
+    sw: &DdeCycleSwitch,
+    opts: &Options,
+    floquet: Option<&DdeFloquetOptions>,
+    bpc: bool,
+    cancel: &AtomicBool,
+) -> Result<DdeCycleBranch, EngineError> {
+    let (n, dim) = check_run_head(model, setup, &sw.start, opts, cancel)?;
+    if sw.tangent.len() != dim || sw.tangent.iter().any(|v| !v.is_finite()) || !sw.alpha.is_finite()
+    {
+        return Err(EngineError::BadProblem(
+            "the switch does not fit the setup".into(),
+        ));
+    }
+    check_run_tail(model, setup, n, floquet, None)?;
+    let opts = run_options(opts, bpc);
+    let mut p = DdeCycleProblem::new(model, setup, n, dim, &sw.start.profile)?;
+    p.floquet = floquet.cloned();
+    p.bpc = bpc;
+    let count = floquet.map_or(0, |f| f.count);
+    let mut x0 = sw.start.profile.clone();
+    x0.push(sw.start.period);
+    x0.push(sw.alpha);
+    let branch = run_branch(
+        &mut p,
+        &x0,
+        Some(&sw.tangent),
+        &opts,
+        true,
+        cancel,
+        &mut |_| {},
+    )?;
+    Ok(cycle_branch(branch, dim, count))
 }
 
 #[cfg(test)]
