@@ -75,6 +75,15 @@ pub trait Problem {
         self.codim2_labels().get(i).copied()
     }
 
+    /// Whether a zero of codim-2 test `i` between the values `a` and `b` at two consecutive
+    /// accepted points may get a label. Called for a bracket with a sign change or with
+    /// exactly one end at zero, and never for the LP, BP and H slots. Returning false
+    /// drops the bracket without a warning, so a problem can keep rounding noise around
+    /// zero from becoming a label. The default accepts every bracket.
+    fn crossing_ok(&self, _i: usize, _a: f64, _b: f64) -> bool {
+        true
+    }
+
     /// Called with each accepted point that the next step starts from: the first point,
     /// and each later point once the specials of the step that reached it are located.
     /// The default does nothing.

@@ -358,6 +358,13 @@ fn detect_inner(
         // Later, a zero at point k was reported by the step that reached it. A test that is
         // also zero at the second point, or undefined there, is not a crossing of zero: the
         // coefficient of a model that has none is zero on the whole curve.
+        // A problem can refuse a codim-2 bracket by its values (`Problem::crossing_ok`), which
+        // keeps rounding noise around zero from becoming a label. The hook sees the codim-2
+        // index and is not asked about the LP, BP and H slots.
+        let bracket = a * b < 0.0 || ((a == 0.0) != (b == 0.0) && !(a.is_nan() || b.is_nan()));
+        if t >= 3 && bracket && !p.crossing_ok(t - 3, a, b) {
+            continue;
+        }
         if k == 0
             && a == 0.0
             && !b.is_nan()
@@ -566,7 +573,9 @@ mod codim2_tests {
     /// `1 / (x1 - 0.05)` with `pole`. With `drop` the label hook rejects every zero. With
     /// `nan_from = Some(n)` the test is NaN from its n-th evaluation on (counting from 1).
     /// With `at_start` the test is `x1 + 3e-14`, which stays above zero on the step and so
-    /// models a test that is zero at the start up to rounding.
+    /// models a test that is zero at the start up to rounding. The `crossing_ok` hook
+    /// accepts a bracket whose larger end value is at least `floor`, and records its calls
+    /// in `seen`.
     #[derive(Default)]
     struct Curve {
         pole: bool,
@@ -574,6 +583,8 @@ mod codim2_tests {
         at_start: bool,
         nan_from: Option<usize>,
         calls: usize,
+        floor: f64,
+        seen: std::cell::RefCell<Vec<(usize, f64, f64)>>,
     }
     fn zero() -> Curve {
         Curve::default()
@@ -620,10 +631,97 @@ mod codim2_tests {
                 self.codim2_labels().get(i).copied()
             }
         }
+        fn crossing_ok(&self, i: usize, a: f64, b: f64) -> bool {
+            self.seen.borrow_mut().push((i, a, b));
+            a.abs().max(b.abs()) >= self.floor
+        }
     }
 
     fn pt(alpha: f64) -> Point {
         pt_with(alpha, alpha - 0.05)
+    }
+
+    fn one_step(p: &mut Curve, a: Point, b: Point) -> (Vec<String>, Vec<SpecialPoint>) {
+        let (mut w, mut sp) = (Vec::new(), Vec::new());
+        detect_step(
+            p,
+            &[0.0, 0.0],
+            &[0.0, 1.0],
+            0.1,
+            &[a, b],
+            &Options::default(),
+            &AtomicBool::new(false),
+            &mut w,
+            &mut sp,
+        )
+        .unwrap();
+        (w, sp)
+    }
+
+    #[test]
+    fn a_crossing_below_the_floor_gets_no_label_and_no_warning() {
+        let mut p = Curve {
+            floor: 0.06,
+            ..Curve::default()
+        };
+        let (w, sp) = one_step(&mut p, pt(0.0), pt(0.1));
+        assert!(w.is_empty(), "{w:?}");
+        assert!(
+            sp.is_empty(),
+            "{:?}",
+            sp.iter().map(|s| &s.label).collect::<Vec<_>>()
+        );
+        assert_eq!(p.seen.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_crossing_at_the_floor_is_located_as_before() {
+        let mut p = Curve {
+            floor: 0.05,
+            ..Curve::default()
+        };
+        let (w, sp) = one_step(&mut p, pt(0.0), pt(0.1));
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(sp.len(), 1);
+        assert_eq!(sp[0].label, "ZZ");
+        assert!((sp[0].point.alpha - 0.05).abs() < 1e-10);
+    }
+
+    #[test]
+    fn the_hook_gets_the_codim2_index_and_both_end_values() {
+        let mut p = zero();
+        one_step(&mut p, pt(0.0), pt(0.1));
+        let seen = p.seen.borrow();
+        assert_eq!(seen.len(), 1);
+        let (i, a, b) = seen[0];
+        assert_eq!(i, 0);
+        assert!(
+            (a + 0.05).abs() < 1e-15 && (b - 0.05).abs() < 1e-15,
+            "{a} {b}"
+        );
+    }
+
+    #[test]
+    fn an_end_at_exactly_zero_goes_through_the_hook_too() {
+        // The values are the same at both starts, so only the floor decides.
+        for (floor, count) in [(10.0, 0), (0.0, 1)] {
+            let mut p = Curve {
+                floor,
+                ..Curve::default()
+            };
+            let (w, sp) = one_step(&mut p, pt_with(0.0, 0.2), pt_with(0.1, 0.0));
+            assert!(w.is_empty(), "{w:?}");
+            assert_eq!(sp.len(), count, "floor {floor}");
+            assert_eq!(p.seen.borrow().len(), 1);
+        }
+    }
+
+    #[test]
+    fn the_hook_is_not_called_without_a_sign_change() {
+        let mut p = zero();
+        let (w, sp) = one_step(&mut p, pt_with(0.0, 0.1), pt_with(0.1, 0.3));
+        assert!(w.is_empty() && sp.is_empty());
+        assert!(p.seen.borrow().is_empty());
     }
 
     fn pt_with(alpha: f64, value: f64) -> Point {
