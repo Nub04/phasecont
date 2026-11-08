@@ -155,4 +155,5 @@ The old figures come from running the same script against the previous `runLoop.
 
 - `pause(0.001)` took 1.01 ms at the median and 15 ms at its worst in 20 tries, so a call can still lose one Windows timer tick now and then.
 - The first `phasecont.gpuDevices()` call in a process takes about 790 ms and later calls 8 to 17 ms. `ensemble` calls it only for `Backend = "auto"`.
+- Where the first call goes (2026-11-08, `pckern("ens_devices")`, first call in MATLAB 647 ms). In a bare Windows process, `list_devices()` takes about 305 ms: the CUDA probe about 203 ms and the OpenCL probe about 103 ms. Each backend caches its probe, so repeat calls take about 2 ms. Probing the backends in parallel threads saves only about 25 ms. The other 340 ms or so inside MATLAB was not split further. The bare-process share is mostly driver start-up, so no code change was made.
 - Long runs are polled every 50 ms. The new poll times include all the old ones, so a run is never seen later than before, apart from the cost of each extra poll.
