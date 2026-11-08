@@ -18,7 +18,7 @@
 //! wait is reported as a timeout. That guess is unverified on real drivers.
 
 use std::ptr;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -40,7 +40,7 @@ use crate::abi::{Packed, integrator_of, pack};
 use crate::device::{Backend, BackendState, DeviceInfo};
 use crate::gpu::{check_alloc, drive, global_size, guard, kernel_err};
 use crate::job::{Checked, EnsembleError, EnsembleResult, Job, Label, Precision, validate};
-use crate::kept::Kept;
+use crate::kept::{Kept, Lru};
 use crate::kernel::kernel_source;
 use crate::real::Real;
 use crate::tape::Tape;
@@ -317,16 +317,40 @@ pub fn run_opencl(
     ran
 }
 
-/// What the runs on one device share: the context and an in-order queue on it.
+/// What the runs on one device share: the context, an in-order queue on it and the programs
+/// built for it.
 struct Shared {
-    // The queue is declared first so that it drops before the context.
+    // The programs drop first, then the queue, then the context.
+    programs: Lru<ProgramKey, Arc<Program>>,
     queue: CommandQueue,
     ctx: Context,
 }
 
-/// The context and queue of each device, kept between runs because creating a context takes
-/// tens of milliseconds on a laptop GPU.
+/// The kernel text, the build options and the precision of a built program.
+type ProgramKey = (String, String, Precision);
+
+/// How many built programs a device keeps.
+const PROGRAMS_KEPT: usize = 8;
+
+/// The context, queue and programs of each device, kept between runs because creating a
+/// context takes tens of milliseconds on a laptop GPU and building a program a few
+/// milliseconds on some drivers.
 static SHARED: Kept<Shared> = Kept::new();
+
+/// How many programs have been built in this process, for the cache test.
+static BUILDS: AtomicUsize = AtomicUsize::new(0);
+
+/// How many programs the kept entry of device `index` holds, for the cache test.
+#[doc(hidden)]
+pub fn kept_kernels(index: usize) -> usize {
+    SHARED.get(index).map_or(0, |s| s.programs.len())
+}
+
+/// How many programs this process has built, for the cache test.
+#[doc(hidden)]
+pub fn kernel_compiles() -> usize {
+    BUILDS.load(Ordering::SeqCst)
+}
 
 fn make_shared(handle: Handle) -> Result<Arc<Shared>, EnsembleError> {
     let dev = Device::new(handle.id as cl_device_id);
@@ -334,7 +358,11 @@ fn make_shared(handle: Handle) -> Result<Arc<Shared>, EnsembleError> {
     // `clCreateCommandQueue` exists in every OpenCL version. The 2.0 entry point is missing
     // from a 1.2-only driver, and the kernel text is OpenCL C 1.2 anyway.
     let queue = CommandQueue::create_default(&ctx, 0).map_err(cl("create command queue"))?;
-    Ok(Arc::new(Shared { queue, ctx }))
+    Ok(Arc::new(Shared {
+        programs: Lru::new(PROGRAMS_KEPT),
+        queue,
+        ctx,
+    }))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -351,10 +379,16 @@ fn session(
 ) -> Result<EnsembleResult, EnsembleError> {
     let id = handle.id as cl_device_id;
     let (ctx, queue) = (&shared.ctx, &shared.queue);
-    // The locals drop in reverse order: kernel, then program.
+    let options = build_options(handle.correct_div);
     let program =
-        Program::create_and_build_from_source(ctx, src, &build_options(handle.correct_div))
-            .map_err(|log| EnsembleError::GpuCompile(log.trim().to_owned()))?;
+        shared
+            .programs
+            .get_or_make((src.to_owned(), options.clone(), job.precision), || {
+                BUILDS.fetch_add(1, Ordering::SeqCst);
+                Program::create_and_build_from_source(ctx, src, &options)
+                    .map(Arc::new)
+                    .map_err(|log| EnsembleError::GpuCompile(log.trim().to_owned()))
+            })?;
     let kernel = Kernel::create(&program, ENTRY)
         .map_err(|e| EnsembleError::GpuCompile(cl_text("create kernel", &e)))?;
     let group = kernel

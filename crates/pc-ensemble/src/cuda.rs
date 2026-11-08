@@ -22,8 +22,8 @@
 
 use std::ffi::{CString, c_char};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use cudarc::driver::{
@@ -37,7 +37,7 @@ use crate::abi::{Packed, integrator_of, pack};
 use crate::device::{Backend, BackendState, DeviceInfo};
 use crate::gpu::{drive, guard, kernel_err};
 use crate::job::{EnsembleError, EnsembleResult, Job, Label, Precision, validate};
-use crate::kept::Kept;
+use crate::kept::{Kept, Lru};
 use crate::kernel::{Integrator, kernel_source};
 use crate::real::Real;
 use crate::tape::Tape;
@@ -453,10 +453,14 @@ pub fn run_cuda(
     let ran = guard(|| {
         // The context comes from the table inside the guard, because `CudaContext::new`
         // panics when a library is missing and the last drop of a context can too.
-        let ctx = CONTEXTS.get_or_make(device.index, || {
-            CudaContext::new(device.index).map_err(drv("create context"))
+        let entry = CONTEXTS.get_or_make(device.index, || {
+            let ctx = CudaContext::new(device.index).map_err(drv("create context"))?;
+            Ok(Arc::new(Entry {
+                kernels: Lru::new(KERNELS_KEPT),
+                ctx,
+            }))
         })?;
-        session(&ctx, device, p, job, &checked, &tape, &src, cancel)
+        session(&entry, device, p, job, &checked, &tape, &src, cancel)
     })
     .unwrap_or_else(|msg| Err(EnsembleError::GpuLaunch(format!("panic in cudarc: {msg}"))));
     if matches!(
@@ -471,13 +475,42 @@ pub fn run_cuda(
     ran
 }
 
-/// The context of each device, kept between runs because creating one takes tens of
-/// milliseconds on a laptop GPU.
-static CONTEXTS: Kept<CudaContext> = Kept::new();
+/// What the runs on one device share: its context and the kernels compiled for it.
+struct Entry {
+    // The kernels drop before the context. Each loaded function holds its module, and a module
+    // holds the context.
+    kernels: Lru<KernelKey, CudaFunction>,
+    ctx: Arc<CudaContext>,
+}
+
+/// The kernel text, the compute capability and the precision of a compiled kernel.
+type KernelKey = (String, (i32, i32), Precision);
+
+/// How many compiled kernels a device keeps.
+const KERNELS_KEPT: usize = 8;
+
+/// The entry of each device, kept between runs because creating a context takes tens of
+/// milliseconds on a laptop GPU and compiling a kernel about 11 ms.
+static CONTEXTS: Kept<Entry> = Kept::new();
+
+/// How many kernels have been compiled in this process, for the cache test.
+static COMPILES: AtomicUsize = AtomicUsize::new(0);
+
+/// How many kernels the kept entry of device `index` holds, for the cache test.
+#[doc(hidden)]
+pub fn kept_kernels(index: usize) -> usize {
+    CONTEXTS.get(index).map_or(0, |e| e.kernels.len())
+}
+
+/// How many kernels this process has compiled, for the cache test.
+#[doc(hidden)]
+pub fn kernel_compiles() -> usize {
+    COMPILES.load(Ordering::SeqCst)
+}
 
 #[allow(clippy::too_many_arguments)]
 fn session(
-    ctx: &std::sync::Arc<CudaContext>,
+    entry: &Entry,
     device: &DeviceInfo,
     p: &Probe,
     job: &Job,
@@ -486,14 +519,21 @@ fn session(
     src: &str,
     cancel: &AtomicBool,
 ) -> Result<EnsembleResult, EnsembleError> {
+    let ctx = &entry.ctx;
     let cc = ctx
         .compute_capability()
         .map_err(drv("compute capability"))?;
-    let image = compile_image(src, p, cc)?;
-    let load =
-        |step: &'static str| move |e: DriverError| EnsembleError::GpuCompile(drv_text(step, &e));
-    let module = ctx.load_module(image).map_err(load("load_module"))?;
-    let function = module.load_function(ENTRY).map_err(load("load_function"))?;
+    let function = entry
+        .kernels
+        .get_or_make((src.to_owned(), cc, job.precision), || {
+            COMPILES.fetch_add(1, Ordering::SeqCst);
+            let image = compile_image(src, p, cc)?;
+            let load = |step: &'static str| {
+                move |e: DriverError| EnsembleError::GpuCompile(drv_text(step, &e))
+            };
+            let module = ctx.load_module(image).map_err(load("load_module"))?;
+            module.load_function(ENTRY).map_err(load("load_function"))
+        })?;
     let label = Label {
         backend: Backend::Cuda.name().into(),
         device: device.name.clone(),
@@ -518,7 +558,7 @@ fn session(
 
 /// Uploads the buffers, launches until no member is running and downloads the result.
 fn launch_all<T: Real + DeviceRepr>(
-    ctx: &std::sync::Arc<CudaContext>,
+    ctx: &Arc<CudaContext>,
     function: &CudaFunction,
     mut packed: Packed<T>,
     cancel: &AtomicBool,
