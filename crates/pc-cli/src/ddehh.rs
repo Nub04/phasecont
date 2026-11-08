@@ -97,6 +97,7 @@ pub fn dde_hh(problem_file: &Path) -> ExitCode {
 /// The output object of SPEC section 8j. A `None` prints as `null`.
 fn result_json(r: &DdeHopfHopf) -> Value {
     json!({
+        "case": r.case.map(|c| c.name()),
         "omega1": r.omega1,
         "omega2": r.omega2,
         "g2100": r.g2100,

@@ -15,8 +15,9 @@
 //!
 //! `theta = Re g1011 / Re g0021` and `delta = Re g1110 / Re g2100` are the numbers that
 //! Section 8.3 of the paper and its supplement S3.2 use to sort the example point into a case.
-//! The function does not compute the predictors and does not say which of the twelve
-//! unfolding cases the point has.
+//! `unfolding_case` names the case of the cubic amplitude system, one of the twelve of Guckenheimer
+//! and Holmes, from the signs of the four real parts (SPEC section 8j-2). The function does not
+//! compute the predictors.
 //!
 //! The scale is `|q1|_2 = |q2|_2 = 1`. The paper states no scale. Multiplying `q1` by `d1`
 //! multiplies `g2100` and `g1110` by `|d1|^2`, and multiplying `q2` by `d2` multiplies `g1011`
@@ -52,6 +53,9 @@ pub struct HopfHopf {
     pub product: f64,
     /// The sign of `product`, with 0 for exactly 0.
     pub sign: i8,
+    /// The unfolding case of the cubic amplitude system, or `None` when one of the four real
+    /// parts is 0 or NaN or `AD = BC`. SPEC section 8j-2.
+    pub case: Option<HhCase>,
     /// `|Delta(i omega1) q1| / (omega1 + sum_j |M_j|_F)`.
     pub null_residual_1: f64,
     /// `|Delta(i omega2) q2| / (omega2 + sum_j |M_j|_F)`.
@@ -121,6 +125,7 @@ fn hopf_hopf_scaled(
         sign,
         theta,
         delta,
+        case,
     } = classify(&g);
     let pair = |c: C| [c.re, c.im];
     Ok(HopfHopf {
@@ -134,6 +139,7 @@ fn hopf_hopf_scaled(
         delta,
         product,
         sign,
+        case,
         null_residual_1: v.null_1,
         null_residual_2: v.null_2,
         equilibrium_residual: residual(m, x, p)?,
@@ -252,11 +258,12 @@ struct Classes {
     sign: i8,
     theta: Option<f64>,
     delta: Option<f64>,
+    case: Option<HhCase>,
 }
 
 /// `product = Re g2100 Re g0021` and its sign, `theta = Re g1011 / Re g0021` and
 /// `delta = Re g1110 / Re g2100`. Each ratio is `None` exactly when its own denominator is 0,
-/// including `-0.0`.
+/// including `-0.0`. The case comes from `unfolding_case`.
 fn classify(g: &Coefficients) -> Classes {
     let product = g.g2100.re * g.g0021.re;
     let sign = if product > 0.0 {
@@ -271,6 +278,97 @@ fn classify(g: &Coefficients) -> Classes {
         sign,
         theta: (g.g0021.re != 0.0).then(|| g.g1011.re / g.g0021.re),
         delta: (g.g2100.re != 0.0).then(|| g.g1110.re / g.g2100.re),
+        case: unfolding_case(g.g2100.re, g.g1011.re, g.g1110.re, g.g0021.re),
+    }
+}
+
+/// The twelve unfolding cases of the Hopf-Hopf bifurcation in the lettering of Guckenheimer and
+/// Holmes, Section 7.5, as tabulated by Du, Niu, Guo and Wei, arXiv 1804.03775, Table I. SPEC
+/// section 8j-2 gives the table and the open points that go with it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HhCase {
+    Ia,
+    Ib,
+    II,
+    III,
+    IVa,
+    IVb,
+    V,
+    VIa,
+    VIb,
+    VIIa,
+    VIIb,
+    VIII,
+}
+
+impl HhCase {
+    /// The label of the case, such as `"Ia"` or `"VIII"`.
+    pub fn name(self) -> &'static str {
+        match self {
+            HhCase::Ia => "Ia",
+            HhCase::Ib => "Ib",
+            HhCase::II => "II",
+            HhCase::III => "III",
+            HhCase::IVa => "IVa",
+            HhCase::IVb => "IVb",
+            HhCase::V => "V",
+            HhCase::VIa => "VIa",
+            HhCase::VIb => "VIb",
+            HhCase::VIIa => "VIIa",
+            HhCase::VIIb => "VIIb",
+            HhCase::VIII => "VIII",
+        }
+    }
+
+    /// True for the simple cases Ia to IVb, where `d0 = sgn(AD)` is positive. The cases V to
+    /// VIII are the difficult ones.
+    pub fn simple(self) -> bool {
+        matches!(
+            self,
+            HhCase::Ia | HhCase::Ib | HhCase::II | HhCase::III | HhCase::IVa | HhCase::IVb
+        )
+    }
+}
+
+/// The case of the amplitude system `r1' = r1 (nu1 + A r1^2 + B r2^2)`,
+/// `r2' = r2 (nu2 + C r1^2 + D r2^2)` with `A = Re g2100`, `B = Re g1011`, `C = Re g1110` and
+/// `D = Re g0021`. After the rescaling of SPEC section 8j-2 the signs of
+/// `d0 = sgn(AD)`, `b0 = sgn(AB)`, `c0 = sgn(AC)` and `e0 = sgn(AD - BC)` pick the case.
+/// The result is `None` when one of the four values is 0, `-0.0` or NaN, or when `AD = BC` as
+/// `f64` products.
+pub fn unfolding_case(
+    re_g2100: f64,
+    re_g1011: f64,
+    re_g1110: f64,
+    re_g0021: f64,
+) -> Option<HhCase> {
+    let (a, b, c, d) = (re_g2100, re_g1011, re_g1110, re_g0021);
+    if [a, b, c, d].iter().any(|x| x.is_nan() || *x == 0.0) {
+        return None;
+    }
+    let (ad, bc) = (a * d, b * c);
+    if ad == bc {
+        return None;
+    }
+    let (d_pos, b_pos, c_pos) = (ad > 0.0, a * b > 0.0, a * c > 0.0);
+    let e_pos = ad > bc;
+    use HhCase::*;
+    // The four combinations the table leaves out cannot occur: for d0 = + and b0 c0 = - the
+    // number AD - BC is positive, and for d0 = - and b0 c0 = + it is negative.
+    match (d_pos, b_pos, c_pos, e_pos) {
+        (true, true, true, true) => Some(Ia),
+        (true, true, true, false) => Some(Ib),
+        (true, true, false, true) => Some(II),
+        (true, false, true, true) => Some(III),
+        (true, false, false, true) => Some(IVa),
+        (true, false, false, false) => Some(IVb),
+        (false, true, true, false) => Some(V),
+        (false, true, false, true) => Some(VIa),
+        (false, true, false, false) => Some(VIb),
+        (false, false, true, true) => Some(VIIa),
+        (false, false, true, false) => Some(VIIb),
+        (false, false, false, false) => Some(VIII),
+        _ => None,
     }
 }
 
@@ -609,6 +707,217 @@ mod tests {
             let rel = |a: f64, b: f64| (a - b).abs() <= 1e-9 * b.abs();
             assert!(rel(r.theta.expect("theta"), theta), "theta");
             assert!(rel(r.delta.expect("delta"), delta), "delta");
+        }
+    }
+
+    // The unfolding case, SPEC section 8j-2.
+
+    /// The twelve quadruples `(A, B, C, D)` of SPEC 8j-2 test 1, in the order of the table.
+    fn twelve() -> [(HhCase, [f64; 4]); 12] {
+        use HhCase::*;
+        [
+            (Ia, [1.0, 0.5, 0.5, 1.0]),
+            (Ib, [1.0, 2.0, 2.0, 1.0]),
+            (II, [1.0, 1.0, -1.0, 1.0]),
+            (III, [1.0, -1.0, 1.0, 1.0]),
+            (IVa, [1.0, -0.5, -0.5, 1.0]),
+            (IVb, [1.0, -2.0, -2.0, 1.0]),
+            (V, [1.0, 1.0, 1.0, -1.0]),
+            (VIa, [1.0, 2.0, -2.0, -1.0]),
+            (VIb, [1.0, 0.5, -0.5, -1.0]),
+            (VIIa, [1.0, -2.0, 2.0, -1.0]),
+            (VIIb, [1.0, -0.5, 0.5, -1.0]),
+            (VIII, [1.0, -1.0, -1.0, -1.0]),
+        ]
+    }
+
+    #[test]
+    fn each_of_the_twelve_cases_has_a_quadruple_a_name_and_a_type() {
+        let names = [
+            "Ia", "Ib", "II", "III", "IVa", "IVb", "V", "VIa", "VIb", "VIIa", "VIIb", "VIII",
+        ];
+        let all = twelve();
+        for (k, (case, q)) in all.iter().enumerate() {
+            assert_eq!(unfolding_case(q[0], q[1], q[2], q[3]), Some(*case), "{q:?}");
+            assert_eq!(case.name(), names[k]);
+            assert_eq!(case.simple(), k < 6, "{case:?}");
+            for (other, _) in &all[k + 1..] {
+                assert_ne!(case, other);
+            }
+        }
+    }
+
+    #[test]
+    fn a_boundary_or_a_nan_has_no_case() {
+        let good = [1.0, 2.0, -3.0, 5.0];
+        assert!(unfolding_case(good[0], good[1], good[2], good[3]).is_some());
+        for k in 0..4 {
+            for bad in [0.0, -0.0, f64::NAN] {
+                let mut q = good;
+                q[k] = bad;
+                assert_eq!(unfolding_case(q[0], q[1], q[2], q[3]), None, "{q:?}");
+            }
+        }
+        // AD = BC.
+        assert_eq!(unfolding_case(1.0, 2.0, 0.5, 1.0), None);
+        assert_eq!(unfolding_case(-1.0, 3.0, 3.0, -9.0), None);
+        // inf - inf in AD - BC is NaN.
+        assert_eq!(
+            unfolding_case(f64::INFINITY, 1.0, 1.0, f64::INFINITY),
+            Some(HhCase::Ia)
+        );
+        assert_eq!(
+            unfolding_case(f64::INFINITY, f64::INFINITY, f64::INFINITY, f64::INFINITY),
+            None
+        );
+    }
+
+    fn sign(x: f64) -> i8 {
+        if x > 0.0 { 1 } else { -1 }
+    }
+
+    /// 6^4 = 1296 quadruples with entries that are exact in `f64`.
+    fn grid() -> Vec<[f64; 4]> {
+        let vals = [-4.0, -1.0, -0.25, 0.25, 1.0, 4.0];
+        let mut out = Vec::new();
+        for a in vals {
+            for b in vals {
+                for c in vals {
+                    for d in vals {
+                        out.push([a, b, c, d]);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_grid_agrees_with_the_rescaled_system_and_a_second_copy_of_the_table() {
+        // (d0, b0, c0, e0) -> name, typed again here and not taken from the code.
+        let table: [(&str, [i8; 4]); 12] = [
+            ("Ia", [1, 1, 1, 1]),
+            ("Ib", [1, 1, 1, -1]),
+            ("II", [1, 1, -1, 1]),
+            ("III", [1, -1, 1, 1]),
+            ("IVa", [1, -1, -1, 1]),
+            ("IVb", [1, -1, -1, -1]),
+            ("V", [-1, 1, 1, -1]),
+            ("VIa", [-1, 1, -1, 1]),
+            ("VIb", [-1, 1, -1, -1]),
+            ("VIIa", [-1, -1, 1, 1]),
+            ("VIIb", [-1, -1, 1, -1]),
+            ("VIII", [-1, -1, -1, -1]),
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for [a, b, c, d] in grid() {
+            let (e1, e2) = (a.signum(), d.signum());
+            let d0 = e1 * e2;
+            let b0 = e1 * b / d.abs();
+            let c0 = c / a;
+            let e0 = d0 - b0 * c0;
+            let got = unfolding_case(a, b, c, d).map(HhCase::name);
+            if e0 == 0.0 {
+                assert_eq!(got, None, "{a} {b} {c} {d}");
+                continue;
+            }
+            let signs = [sign(d0), sign(b0), sign(c0), sign(e0)];
+            let want = table.iter().find(|(_, t)| *t == signs).map(|(n, _)| *n);
+            assert!(want.is_some(), "{signs:?} is not a column of the table");
+            assert_eq!(got, want, "{a} {b} {c} {d}");
+            seen.insert(want.unwrap());
+        }
+        assert_eq!(seen.len(), 12, "{seen:?}");
+    }
+
+    #[test]
+    fn swapping_the_oscillators_and_positive_scalings_act_as_the_spec_says() {
+        use HhCase::*;
+        for [a, b, c, d] in grid() {
+            let here = unfolding_case(a, b, c, d);
+            let want = here.map(|k| match k {
+                II => III,
+                III => II,
+                V => VIII,
+                VIII => V,
+                other => other,
+            });
+            assert_eq!(unfolding_case(d, c, b, a), want, "{a} {b} {c} {d}");
+            for (s1, s2) in [(0.5, 3.0), (7.0, 0.125)] {
+                assert_eq!(
+                    unfolding_case(s1 * a, s2 * b, s1 * c, s2 * d),
+                    here,
+                    "{a} {b} {c} {d} scaled by {s1}, {s2}"
+                );
+            }
+        }
+    }
+
+    /// The closed-form oscillators of SPEC 8j test 4 with the given `(a, b, c, d)`.
+    fn closed_form([a, b, c, d]: [f64; 4]) -> String {
+        format!(
+            "x0'=-2.3*x1+x0*(({a:?})*(x0^2+x1^2)+({b:?})*(x2^2+x3^2))\n\
+             x1'=2.3*x0+x1*(({a:?})*(x0^2+x1^2)+({b:?})*(x2^2+x3^2))\n\
+             x2'=-1.0*x3+x2*(({c:?})*(x0^2+x1^2)+({d:?})*(x2^2+x3^2))\n\
+             x3'=1.0*x2+x3*(({c:?})*(x0^2+x1^2)+({d:?})*(x2^2+x3^2))\n\
+             w'=-2*w-delay(w,1)\ndone\n"
+        )
+    }
+
+    #[test]
+    fn the_engine_reports_the_case_of_each_closed_form_model() {
+        for (case, q) in twelve() {
+            for ev in both() {
+                let mut m = build_dde_model(&closed_form(q), ev.clone());
+                let r = hopf_hopf(&mut m, &[0.0; 5], &[], 2.3, 1.0).expect("coefficients");
+                assert_eq!(r.case, Some(case), "{q:?} {ev:?}");
+                for (name, g, want) in [
+                    ("g2100", r.g2100, 2.0 * q[0]),
+                    ("g1011", r.g1011, 2.0 * q[1]),
+                    ("g1110", r.g1110, 2.0 * q[2]),
+                    ("g0021", r.g0021, 2.0 * q[3]),
+                ] {
+                    assert!((g[0] - want).abs() <= 1e-10 * want.abs(), "{name}: {g:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_named_points_have_the_cases_of_the_spec() {
+        for ev in both() {
+            // The published point of test 1 of SPEC 8j.
+            let [acs, closed] = points();
+            let mut m = build_dde_model(acs.src, ev.clone());
+            let r = hopf_hopf(&mut m, &acs.x, &acs.p, acs.omega1, acs.omega2).unwrap();
+            assert_eq!(r.case, Some(HhCase::VIa), "published point");
+            // The case does not depend on the scale of the vectors.
+            for (d1, d2) in [
+                (C::new(0.5, 0.0), C::new(2.0, 0.0)),
+                (C::expi(1.1), C::new(0.0, 3.0)),
+            ] {
+                let s = hopf_hopf_scaled(&mut m, &acs.x, &acs.p, acs.omega1, acs.omega2, d1, d2)
+                    .unwrap();
+                assert_eq!(s.case, Some(HhCase::VIa), "scaled {d1:?} {d2:?}");
+            }
+            // Test 4: (a, b, c, d) = (0.7, -0.4, 0.55, -0.9).
+            let mut m = build_dde_model(closed.src, ev.clone());
+            let r = hopf_hopf(&mut m, &closed.x, &closed.p, 2.3, 1.0).unwrap();
+            assert_eq!(r.case, Some(HhCase::VIIb), "closed form");
+            // The same with d = +0.9.
+            let mut m = build_dde_model(&closed_form([0.7, -0.4, 0.55, 0.9]), ev.clone());
+            let r = hopf_hopf(&mut m, &[0.0; 5], &[], 2.3, 1.0).unwrap();
+            assert_eq!(r.case, Some(HhCase::III), "closed form, d > 0");
+            // Test 3: the ODE limit.
+            let mut m = build_dde_model(&ode_source("w'=-2*w-delay(w,1)\n"), ev.clone());
+            let r = hopf_hopf(&mut m, &[0.0; 5], &[], 2.3, 1.0).unwrap();
+            assert_eq!(r.case, Some(HhCase::V), "ODE limit");
+            // No coupling at all: B and C are exactly 0.
+            let linear =
+                "x0'=-2.3*x1\nx1'=2.3*x0\nx2'=-1.0*x3\nx3'=1.0*x2\nw'=-2*w-delay(w,1)\ndone\n";
+            let mut m = build_dde_model(linear, ev.clone());
+            let r = hopf_hopf(&mut m, &[0.0; 5], &[], 2.3, 1.0).unwrap();
+            assert_eq!(r.case, None, "linear model");
         }
     }
 }

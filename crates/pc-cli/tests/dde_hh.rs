@@ -24,7 +24,8 @@ const DELTA: f64 = -2.351_720_273_599_037;
 const PRODUCT: f64 = -0.016_584_567_690_847_526;
 
 /// The keys of the output, in the order the spec fixes.
-const KEYS: [&str; 13] = [
+const KEYS: [&str; 14] = [
+    "case",
     "delta",
     "equilibrium_residual",
     "g0021",
@@ -105,6 +106,8 @@ fn the_published_point_matches_the_numpy_values() {
     close(num(&v["delta"]), DELTA, 1e-8, "delta", &v);
     close(num(&v["product"]), PRODUCT, 1e-8, "product", &v);
     assert_eq!(num(&v["sign"]), -1.0, "{v}");
+    // SPEC 8j-2 test 6: the published point is case VIa.
+    assert_eq!(v["case"], "VIa", "{v}");
     close(
         num(&v["omega1"]),
         7.644_926_613_449_257_5,
@@ -116,7 +119,7 @@ fn the_published_point_matches_the_numpy_values() {
     assert!(num(&v["null_residual_1"]) <= 1e-10, "{v}");
     assert!(num(&v["null_residual_2"]) <= 1e-10, "{v}");
     assert_eq!(num(&v["equilibrium_residual"]), 0.0, "{v}");
-    // The thirteen keys, in alphabetical order, in the text itself and not only in the
+    // The fourteen keys, in alphabetical order, in the text itself and not only in the
     // parsed object.
     let mut at = 0;
     for key in KEYS {
@@ -143,6 +146,8 @@ fn a_zero_denominator_prints_null() {
     let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
     assert!(v["theta"].is_null(), "{v}");
     assert!(v["delta"].is_null(), "{v}");
+    assert!(v.as_object().unwrap().contains_key("case"), "{v}");
+    assert!(v["case"].is_null(), "{v}");
     assert_eq!(num(&v["sign"]), 0.0, "{v}");
     assert_eq!(num(&v["product"]), 0.0, "{v}");
 }

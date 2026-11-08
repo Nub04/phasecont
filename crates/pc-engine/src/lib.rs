@@ -43,12 +43,12 @@ pub use cycle::{
 pub use dde::{
     CharRoot, DdeBranch, DdeCycle, DdeCycleBranch, DdeCyclePoint, DdeCycleSetup, DdeCycleSpecial,
     DdeCycleStart, DdeCycleSwitch, DdeFloquet, DdeFloquetOptions, DdeHopfBranch, DdeHopfCycle,
-    DdeHopfPoint, DdeHopfSpecial, DdeMeshAdapt, DdePoint, DdeSpecial, HopfExtras as DdeHopfExtras,
-    HopfHopf as DdeHopfHopf, HopfPairs as DdeHopfPairs, HopfSetup as DdeHopfSetup, LinearDde,
-    Lyapunov as DdeLyapunov, Lyapunov2 as DdeLyapunov2, RootOptions, RootSet,
-    ZeroHopf as DdeZeroHopf, characteristic_roots, check_cycle_floquet as dde_check_cycle_floquet,
-    continue_cycle as dde_continue_cycle, continue_cycle_adapt as dde_continue_cycle_adapt,
-    continue_cycle_bpc as dde_continue_cycle_bpc,
+    DdeHopfPoint, DdeHopfSpecial, DdeMeshAdapt, DdePoint, DdeSpecial, HhCase as DdeHhCase,
+    HopfExtras as DdeHopfExtras, HopfHopf as DdeHopfHopf, HopfPairs as DdeHopfPairs,
+    HopfSetup as DdeHopfSetup, LinearDde, Lyapunov as DdeLyapunov, Lyapunov2 as DdeLyapunov2,
+    RootOptions, RootSet, ZeroHopf as DdeZeroHopf, characteristic_roots,
+    check_cycle_floquet as dde_check_cycle_floquet, continue_cycle as dde_continue_cycle,
+    continue_cycle_adapt as dde_continue_cycle_adapt, continue_cycle_bpc as dde_continue_cycle_bpc,
     continue_cycle_floquet as dde_continue_cycle_floquet,
     continue_cycle_switch as dde_continue_cycle_switch,
     continue_equilibrium as dde_continue_equilibrium, continue_hopf as dde_continue_hopf,
@@ -60,7 +60,7 @@ pub use dde::{
     hopf_hopf as dde_hopf_hopf, hopf_pairs as dde_hopf_pairs, linearize as dde_linearize,
     lyapunov as dde_lyapunov, lyapunov2 as dde_lyapunov2, residual as dde_residual,
     stability as dde_stability, switch_cycle_bpc as dde_switch_cycle_bpc,
-    zero_hopf as dde_zero_hopf,
+    unfolding_case as dde_unfolding_case, zero_hopf as dde_zero_hopf,
 };
 pub use ep::{EpProblem, EpSetup, continue_ep, equilibrium};
 pub use error::EngineError;

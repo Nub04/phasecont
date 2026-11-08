@@ -598,8 +598,7 @@ and two angular frequencies omega1 > omega2, where the characteristic function h
 pair +-i omega1 and a simple pair +-i omega2 and no root at 0, for example the crossing of
 two Hopf curves of dde-hopf. The command uses the point as it is. It does not polish x0 or
 the frequencies, it does not locate Hopf-Hopf points, it does not compute the predictors of
-the unfolding or say which of the twelve unfolding cases the point has, and it does not
-sort the frequencies for you.
+the unfolding, and it does not sort the frequencies for you.
 
 The problem file is a JSON object. Every key is required, and an unknown key is an error:
   model    path of the .ode file, relative to the problem file
@@ -609,7 +608,7 @@ The problem file is a JSON object. Every key is required, and an unknown key is 
   omega1   the larger angular frequency, above 1e-8
   omega2   the smaller angular frequency, above 1e-8 and below omega1
 
-The output has the keys delta, equilibrium_residual, g0021, g1011, g1110, g2100,
+The output has the keys case, delta, equilibrium_residual, g0021, g1011, g1110, g2100,
 null_residual_1, null_residual_2, omega1, omega2, product, sign and theta, in alphabetical
 order. Each g is [real, imaginary]. They are the coefficients of z1 |z1|^2 and z1 |z2|^2 in
 the equation of z1 (g2100, g1011) and of z2 |z1|^2 and z2 |z2|^2 in the equation of z2
@@ -622,6 +621,13 @@ delta and the sign of product do not depend on the scale of the eigenvectors, bu
 values and product do. null_residual_1 and null_residual_2 are the
 relative sizes of Delta(i omega1) q1 and Delta(i omega2) q2, and a value above 1e-4 means
 the frequency is not a root.
+
+case names the unfolding case of the cubic amplitude system in the lettering of Guckenheimer
+and Holmes (Ia, Ib, II, III, IVa, IVb, V, VIa, VIb, VIIa, VIIb or VIII), from the signs of
+Re g2100, Re g1011, Re g1110 and Re g0021. It is null when one of them is 0 or when
+Re g2100 Re g0021 = Re g1011 Re g1110. omega1 is the first oscillator, and swapping the
+oscillators exchanges II with III and V with VIII. The label does not say how close the
+point is to a boundary between cases. SPEC section 8j-2 lists what is not verified.
 
 options:
   --          the next argument is the file, even if it starts with `-`

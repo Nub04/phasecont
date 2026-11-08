@@ -26,7 +26,7 @@ pub use hopf::{
     DdeHopfBranch, DdeHopfPoint, DdeHopfSpecial, HopfExtras, HopfPairs, HopfSetup, continue_hopf,
     continue_hopf_with, continue_hopf_with_lyapunov, hopf_pairs,
 };
-pub use hopfhopf::{HopfHopf, hopf_hopf};
+pub use hopfhopf::{HhCase, HopfHopf, hopf_hopf, unfolding_case};
 pub use lyap::{Lyapunov, lyapunov};
 pub use lyap2::{Lyapunov2, lyapunov2};
 pub use zerohopf::{ZeroHopf, zero_hopf};
