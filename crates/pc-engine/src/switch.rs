@@ -111,7 +111,7 @@ pub fn switch_bp(
             c[j][i] = v;
         }
     }
-    let t = branching_root(&c, &phi, &sp.point.tangent)?;
+    let t = branching_root(&c, &phi, &sp.point.tangent, SIGN_TOL)?;
     let mut next = setup.clone();
     next.u0 = u.clone();
     next.params[setup.free] = alpha;
@@ -121,9 +121,15 @@ pub fn switch_bp(
 }
 
 /// Solves `c11 b1² + 2 c12 b1 b2 + c22 b2² = 0` on the unit circle and returns the root
-/// direction `t = b1 phi1 + b2 phi2` that is least parallel to `v`, signed as documented
-/// on [`switch_bp`].
-fn branching_root(c: &[[f64; 2]; 2], phi: &[Vec<f64>], v: &[f64]) -> Result<Vec<f64>, EngineError> {
+/// direction `t = b1 phi1 + b2 phi2` that is least parallel to `v`. The sign is positive in
+/// the last component when that is at least `sign_tol` in size, else positive in the first
+/// component of at least that size ([`switch_bp`] passes 1e-12).
+pub(crate) fn branching_root(
+    c: &[[f64; 2]; 2],
+    phi: &[Vec<f64>],
+    v: &[f64],
+    sign_tol: f64,
+) -> Result<Vec<f64>, EngineError> {
     let not_simple = || EngineError::BadProblem("BP is not simple".into());
     // q(th) = a + r cos(2 th - d) with b = (cos th, sin th).
     let a = 0.5 * (c[0][0] + c[1][1]);
@@ -166,12 +172,12 @@ fn branching_root(c: &[[f64; 2]; 2], phi: &[Vec<f64>], v: &[f64]) -> Result<Vec<
         dirs[1].clone()
     };
     let m = t.len() - 1;
-    let lead = if t[m].abs() >= SIGN_TOL {
+    let lead = if t[m].abs() >= sign_tol {
         t[m]
     } else {
         t.iter()
             .copied()
-            .find(|x| x.abs() >= SIGN_TOL)
+            .find(|x| x.abs() >= sign_tol)
             .unwrap_or(1.0)
     };
     if lead < 0.0 {
@@ -194,10 +200,32 @@ mod tests {
     fn two_separate_roots_give_a_unit_tangent() {
         // b1^2 - b2^2 = 0 has the roots b = (1, 1) and (1, -1).
         let c = [[1.0, 0.0], [0.0, -1.0]];
-        let t = branching_root(&c, &basis(), &[1.0, 0.0, 0.0]).unwrap();
+        let t = branching_root(&c, &basis(), &[1.0, 0.0, 0.0], SIGN_TOL).unwrap();
         let nrm: f64 = t.iter().map(|x| x * x).sum::<f64>().sqrt();
         assert!((nrm - 1.0).abs() < 1e-14);
         assert!((t[0].abs() - t[1].abs()).abs() < 1e-14 && t[2] == 0.0);
+    }
+
+    #[test]
+    fn the_sign_tolerance_decides_which_component_fixes_the_sign() {
+        // c = diag(1, -1) has the roots b = (1, 1) and (1, -1). With v = (1, -1, 0) / sqrt 2
+        // the root b = (1, -1) is taken: t = (-1, -1, 1e-8) / sqrt 2. Its last component
+        // is 7e-9. A tolerance of 1e-12 counts that as nonzero and keeps t as it is; a
+        // tolerance of 1e-6 counts it as zero and makes the first component positive.
+        let c = [[1.0, 0.0], [0.0, -1.0]];
+        let phi = vec![vec![-1.0, 0.0, 1e-8], vec![0.0, 1.0, 0.0]];
+        let s = 0.5_f64.sqrt();
+        let v = [s, -s, 0.0];
+        let fine = branching_root(&c, &phi, &v, 1e-12).unwrap();
+        assert!(fine[0] < 0.0 && fine[1] < 0.0 && fine[2] > 0.0, "{fine:?}");
+        let coarse = branching_root(&c, &phi, &v, 1e-6).unwrap();
+        assert!(
+            coarse[0] > 0.0 && coarse[1] > 0.0 && coarse[2] < 0.0,
+            "{coarse:?}"
+        );
+        for (p, q) in fine.iter().zip(&coarse) {
+            assert!((p + q).abs() < 1e-14);
+        }
     }
 
     #[test]
@@ -205,10 +233,10 @@ mod tests {
         // c11 = 1, c22 = -1e-13: the discriminant is positive but the two root directions
         // are about 6e-7 apart, below ROOT_TOL, so the coincident-root branch is taken.
         let c = [[1.0, 0.0], [0.0, -1e-13]];
-        let r = branching_root(&c, &basis(), &[1.0, 0.0, 0.0]);
+        let r = branching_root(&c, &basis(), &[1.0, 0.0, 0.0], SIGN_TOL);
         assert_eq!(r, Err(EngineError::BadProblem("BP is not simple".into())));
         // Just outside the tolerance the roots are accepted.
         let c = [[1.0, 0.0], [0.0, -1e-9]];
-        assert!(branching_root(&c, &basis(), &[1.0, 0.0, 0.0]).is_ok());
+        assert!(branching_root(&c, &basis(), &[1.0, 0.0, 0.0], SIGN_TOL).is_ok());
     }
 }
