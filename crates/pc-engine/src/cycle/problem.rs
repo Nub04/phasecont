@@ -393,6 +393,18 @@ impl<'a> CycleProblem<'a> {
         x[k]
     }
 
+    /// Runs `f` with the model and the parameters of x, without t. The HOM adjoint solve
+    /// needs both and the problem owns the model.
+    pub(super) fn with_model<R>(
+        &mut self,
+        x: &[f64],
+        f: impl FnOnce(&mut dyn ModelEval, &[f64]) -> R,
+    ) -> R {
+        self.read_extras(x);
+        let n_p = self.model.n_p();
+        f(&mut *self.model, &self.p[..n_p])
+    }
+
     /// The orbit at node i of the interval whose base points are `base` into `uz`.
     fn interpolate(&mut self, base: &[f64], i: usize) {
         let n = self.uz.len();

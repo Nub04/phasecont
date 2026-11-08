@@ -15,6 +15,7 @@
 
 use super::continuation::Scaled;
 use super::curve::{CycleCurveStart, run_curve};
+use super::hom_adjoint::{AdjointSetup, inclination_flips, orient_adjoint, solve_adjoint};
 use super::problem::{CycleProblem, CycleSetup, Extra, check_dims};
 use crate::branch::{Branch, Options, Point};
 use crate::ep::{EpSetup, equilibrium};
@@ -25,10 +26,20 @@ use pc_ir::EntryKind;
 use pc_linalg::{BasisOf, BasisPair, BasisTracker, eigenvalues, eigvec};
 use std::sync::atomic::AtomicBool;
 
-/// Names of the HOM curve test functions, in the order of `Point::codim2` (SPEC §8b).
-pub const HOM_CURVE_LABELS: [&str; 12] = [
-    "NSA", "BLS", "BLU", "NSF", "NDS", "NDU", "TLS", "TLU", "ZES", "ZEU", "OFS", "OFU",
+/// Names of the HOM curve test functions, in the order of `Point::codim2` (SPEC §8b). IFS and
+/// IFU are NaN unless `HomStart::inclination_flips` is set.
+pub const HOM_CURVE_LABELS: [&str; 14] = [
+    "NSA", "BLS", "BLU", "NSF", "NDS", "NDU", "TLS", "TLU", "ZES", "ZEU", "OFS", "OFU", "IFS",
+    "IFU",
 ];
+
+/// Indices of IFS and IFU in `Point::codim2`.
+const IFS: usize = 12;
+const IFU: usize = 13;
+/// A bracket of IFS or IFU gets a label only when its larger end is at least this, for
+/// the unit-norm adjoint including the factor exp(-+ T lambda / 2). Rounding noise stays
+/// under 3e-12 and the signal of the oracle models over 2e-4 (SPEC §8b-3).
+const IF_BRACKET_FLOOR: f64 = 1e-8;
 
 /// An eigenvalue counts as real when its imaginary part is at most this (HomCont's
 /// COMPZERO).
@@ -67,6 +78,9 @@ pub struct HomStart {
     pub ntst: usize,
     /// Number of collocation points per interval m (NCOL) of the curve.
     pub ncol: usize,
+    /// Solve the adjoint at every point and report IFS and IFU (SPEC §8b-3). With `false`
+    /// both columns are NaN and no linear solve is added.
+    pub inclination_flips: bool,
 }
 
 /// The defining system of the HOM curve over the cycle problem with the extras
@@ -87,6 +101,26 @@ pub struct HomProblem<'a> {
     /// Set by `accept` when the eigenvalue counts change; every later call fails with it.
     stop: Option<String>,
     f: Vec<f64>,
+    /// Whether IFS and IFU are computed (`HomStart::inclination_flips`).
+    inclination_flips: bool,
+    /// The end values [phi(0), phi(1)] of the adjoint at the last accepted point, which
+    /// fix the sign of the adjoint at the points after it. They do not depend on the mesh.
+    phi_prev: Option<Vec<f64>>,
+    /// The right eigenvectors v_S and v_{S+1} of A at the last accepted point, for their signs.
+    v_prev: [Option<Vec<f64>>; 2],
+    /// The adjoint result at the last x it was solved for, so that `accept` reuses what
+    /// the tests at the same x computed.
+    flips: Option<FlipCache>,
+}
+
+/// An adjoint solve at `x` with its sign fixed against the last accepted point.
+struct FlipCache {
+    x: Vec<f64>,
+    /// [phi(0), phi(1)].
+    ends: Vec<f64>,
+    vectors: [Option<Vec<f64>>; 2],
+    ifs: f64,
+    ifu: f64,
 }
 
 /// The n by n transpose of the column-major `a`.
@@ -112,18 +146,18 @@ pub(super) fn is_real(l: (f64, f64)) -> bool {
     l.1.abs() <= REAL_TOL
 }
 
-/// The 12 HOM tests (SPEC §8b) from the eigenvalues `lam` in ascending order with `ns`
-/// stable ones. `tls_sign` and `tlu_sign` are the signs of TLS and TLU, and `ofs` and
-/// `ofu` the orbit flip tests, each NaN where it is not defined. All tests are NaN when
-/// `ns` is 0 or n.
+/// The 14 HOM tests (SPEC §8b) from the eigenvalues `lam` in ascending order with `ns`
+/// stable ones. `tls_sign` and `tlu_sign` are the signs of TLS and TLU, `ofs` and `ofu`
+/// the orbit flip tests and `ifs` and `ifu` the inclination flip tests, each NaN where it
+/// is not defined. All tests are NaN when `ns` is 0 or n.
 pub(super) fn hom_curve_tests(
     lam: &[(f64, f64)],
     ns: usize,
     tls_sign: f64,
     tlu_sign: f64,
-    ofs: f64,
-    ofu: f64,
+    flips: [f64; 4],
 ) -> Vec<f64> {
+    let [ofs, ofu, ifs, ifu] = flips;
     let n = lam.len();
     let mut t = vec![f64::NAN; HOM_CURVE_LABELS.len()];
     if ns == 0 || ns >= n {
@@ -165,6 +199,8 @@ pub(super) fn hom_curve_tests(
     t[9] = re(u);
     t[10] = ofs;
     t[11] = ofu;
+    t[IFS] = ifs;
+    t[IFU] = ifu;
     t
 }
 
@@ -378,6 +414,10 @@ impl<'a> HomProblem<'a> {
             w_prev: [None, None],
             stop: None,
             f: vec![0.0; n],
+            inclination_flips: start.inclination_flips,
+            phi_prev: None,
+            v_prev: [None, None],
+            flips: None,
         })
     }
 
@@ -428,6 +468,58 @@ impl<'a> HomProblem<'a> {
         Ok((ls, lu))
     }
 
+    /// Solves the adjoint along the orbit of x and evaluates IFS and IFU, with the sign of
+    /// the adjoint and of the eigenvectors fixed against the last accepted point. `a` is
+    /// A = f_x(x0, p) at x.
+    ///
+    /// The tracker has no reference in its `Matrix` slot, so the bases of A for the adjoint
+    /// boundary rows come unrotated. That is enough: the solve is linear and uses only the
+    /// two invariant subspaces, so a change of basis changes neither phi nor gamma.
+    fn solve_flips(&mut self, x: &[f64], a: &[f64]) -> Result<FlipCache, EngineError> {
+        let (n, ns, ext) = (self.n, self.ns, self.ext());
+        let period = x[ext];
+        let x0 = &x[ext + 1..ext + 1 + n];
+        let ncol = self.outer.basis().m();
+        let mesh = self.outer.mesh_points().to_vec();
+        let tracker = &self.tracker;
+        let sol = self.outer.with_model(x, |model, params| {
+            let setup = AdjointSetup {
+                ncol,
+                mesh: &mesh,
+                period,
+                x0,
+                params,
+                ns,
+            };
+            solve_adjoint(model, &setup, tracker, &x[..ext])
+        })?;
+        let mut phi = sol.phi;
+        let ends = orient_adjoint(&mut phi, n, self.phi_prev.as_deref());
+        let r = inclination_flips(a, n, ns, period, &ends[..n], &ends[n..], &self.v_prev)?;
+        Ok(FlipCache {
+            x: x.to_vec(),
+            ends,
+            vectors: r.vectors,
+            ifs: r.ifs,
+            ifu: r.ifu,
+        })
+    }
+
+    /// IFS and IFU at x, NaN with the key off or when the solve fails (SPEC §8b-3). The
+    /// result stays in `self.flips` for `accept`.
+    fn flip_tests(&mut self, x: &[f64], a: &[f64]) -> (f64, f64) {
+        if !self.inclination_flips {
+            return (f64::NAN, f64::NAN);
+        }
+        if let Some(c) = self.flips.as_ref().filter(|c| c.x == x) {
+            return (c.ifs, c.ifu);
+        }
+        self.flips = self.solve_flips(x, a).ok();
+        self.flips
+            .as_ref()
+            .map_or((f64::NAN, f64::NAN), |c| (c.ifs, c.ifu))
+    }
+
     /// The HOM tests at x from the eigenvalues `eigs` of A.
     fn tests_at(&mut self, x: &[f64], eigs: &[(f64, f64)]) -> Result<Vec<f64>, EngineError> {
         let (n, ns, ext) = (self.n, self.ns, self.ext());
@@ -475,7 +567,12 @@ impl<'a> HomProblem<'a> {
         } else {
             f64::NAN
         };
-        Ok(hom_curve_tests(&lam, ns, tls, tlu, ofs, ofu))
+        let (ifs, ifu) = if ns >= 1 && ns < n {
+            self.flip_tests(x, &a)
+        } else {
+            (f64::NAN, f64::NAN)
+        };
+        Ok(hom_curve_tests(&lam, ns, tls, tlu, [ofs, ofu, ifs, ifu]))
     }
 }
 
@@ -594,6 +691,12 @@ impl Problem for HomProblem<'_> {
         self.tests_at(x, eigs)
     }
 
+    /// A zero of IFS or IFU needs a larger end of at least `IF_BRACKET_FLOOR`; below it the
+    /// sign change is rounding noise (SPEC §8b-3). The other tests have no floor.
+    fn crossing_ok(&self, i: usize, a: f64, b: f64) -> bool {
+        !(i == IFS || i == IFU) || a.abs().max(b.abs()) >= IF_BRACKET_FLOOR
+    }
+
     /// Makes x the reference of the phase row, checks the eigenvalue counts, and keeps the
     /// bases and the left eigenvectors of x for the next step.
     fn accept(&mut self, x: &[f64]) {
@@ -630,6 +733,13 @@ impl Problem for HomProblem<'_> {
             } else {
                 None
             };
+        }
+        if self.inclination_flips {
+            self.flip_tests(x, &a);
+            if let Some(c) = self.flips.as_ref().filter(|c| c.x == x) {
+                self.phi_prev = Some(c.ends.clone());
+                self.v_prev = c.vectors.clone();
+            }
         }
     }
 
@@ -691,12 +801,12 @@ mod tests {
     fn a_real_saddle_has_nsa_and_no_nsf() {
         // -2, a - 1, a + 1 at a = 0.1, as on Sandstede's curve.
         let lam = ascending(&[(1.1, 0.0), (-2.0, 0.0), (-0.9, 0.0)]);
-        let t = hom_curve_tests(&lam, 2, f64::NAN, f64::NAN, 0.5, 0.25);
+        let t = hom_curve_tests(&lam, 2, f64::NAN, f64::NAN, [0.5, 0.25, f64::NAN, f64::NAN]);
         assert!((t[0] - 0.2).abs() < 1e-15);
         assert!((t[1] - 1.1_f64.powi(2)).abs() < 1e-14);
         assert!((t[4] - (-2.0 - 0.9 + 1.1)).abs() < 1e-15);
         assert_eq!((t[8], t[9], t[10], t[11]), (-0.9, 1.1, 0.5, 0.25));
-        assert_eq!(nan_at(&t), vec![2, 3, 5, 6, 7]);
+        assert_eq!(nan_at(&t), vec![2, 3, 5, 6, 7, 12, 13]);
     }
 
     #[test]
@@ -711,7 +821,7 @@ mod tests {
             let mut e = pair.clone();
             e.extend([(-1.0, 0.0), (1.0, 0.0)]);
             let lam = ascending(&e);
-            let t = hom_curve_tests(&lam, 3, 1.0, f64::NAN, f64::NAN, f64::NAN);
+            let t = hom_curve_tests(&lam, 3, 1.0, f64::NAN, [f64::NAN; 4]);
             assert!(
                 (t[1] + 4.0 * delta).abs() < 1e-15,
                 "delta {delta}: {}",
@@ -727,7 +837,7 @@ mod tests {
     #[test]
     fn unstable_side_tests_use_the_leading_unstable_pair() {
         let lam = ascending(&[(-1.0, 0.0), (0.5, 2.0), (0.5, -2.0), (3.0, 0.0)]);
-        let t = hom_curve_tests(&lam, 1, f64::NAN, -1.0, f64::NAN, f64::NAN);
+        let t = hom_curve_tests(&lam, 1, f64::NAN, -1.0, [f64::NAN; 4]);
         assert!(t[0].is_nan() && t[1].is_nan() && t[4].is_nan());
         assert!((t[2] + 16.0).abs() < 1e-14);
         assert!((t[3] + 0.5).abs() < 1e-15);
@@ -740,7 +850,7 @@ mod tests {
     fn no_saddle_gives_only_nan() {
         let lam = ascending(&[(-1.0, 0.0), (-2.0, 0.0)]);
         assert!(
-            hom_curve_tests(&lam, 2, 1.0, 1.0, 0.0, 0.0)
+            hom_curve_tests(&lam, 2, 1.0, 1.0, [0.0; 4])
                 .iter()
                 .all(|v| v.is_nan())
         );

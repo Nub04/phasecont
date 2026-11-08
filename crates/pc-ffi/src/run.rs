@@ -28,7 +28,7 @@ impl Handle for RunHandle {
 /// row of an LPC or PD curve is `[a2, u(n (N m + 1)), T, a1, mesh(N + 1), mult_re(n),
 /// mult_im(n), codim2(k), h, newton_iters]`, and an NS curve adds kappa after a1. A row
 /// of a HOM curve is `[a2, u(n (N m + 1)), T, x0(n), a1, mesh(N + 1), eig_re(n),
-/// eig_im(n), codim2(12), h, newton_iters]`, with x0 the saddle and the eigenvalues those
+/// eig_im(n), codim2(14), h, newton_iters]`, with x0 the saddle and the eigenvalues those
 /// of the Jacobian at x0.
 pub(crate) fn stride(kind: Kind, n: usize) -> usize {
     match kind {
@@ -347,11 +347,11 @@ mod tests {
         p.alpha = 0.75;
         p.mesh = vec![0.0, 1.0];
         p.eigenvalues = vec![(-1.0, 0.0), (2.0, 0.0)];
-        p.codim2 = (0..12).map(f64::from).collect();
+        p.codim2 = (0..14).map(f64::from).collect();
         let hom = Kind::Hom { ntst: 1, ncol: 2 };
         let mut row = vec![0.0; stride(hom, 2)];
-        // [a2, u(6), T, x0(2), a1, mesh(2), eig_re(2), eig_im(2), codim2(12), h, iters]
-        assert_eq!(row.len(), 1 + 6 + 1 + 2 + 1 + 2 + 4 + 12 + 2);
+        // [a2, u(6), T, x0(2), a1, mesh(2), eig_re(2), eig_im(2), codim2(14), h, iters]
+        assert_eq!(row.len(), 1 + 6 + 1 + 2 + 1 + 2 + 4 + 14 + 2);
         pack_row(hom, &p, 2, &mut row);
         assert_eq!(
             &row[..17],
@@ -360,8 +360,8 @@ mod tests {
                 0.0, 0.0
             ]
         );
-        assert_eq!(&row[17..29], p.codim2.as_slice());
-        assert_eq!(&row[29..], [0.125, 3.0]);
+        assert_eq!(&row[17..31], p.codim2.as_slice());
+        assert_eq!(&row[31..], [0.125, 3.0]);
         assert_eq!(hom.name(), "HOM");
         assert_eq!(hom.labels(), pc_engine::HOM_CURVE_LABELS);
         assert_eq!(hom.mesh_size(), Some((1, 2)));

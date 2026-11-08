@@ -381,6 +381,9 @@ HOM only:
             ending in T; \"cycle\" from a long-period point of an LC run, with
             u0 ending in its period (required)
   mesh      for \"cycle\": the mesh of the orbit in u0, from 0 to 1, rising
+  inclination_flips  true to add the inclination flip tests IFS and IFU and
+            their labels; false when missing (a solve of the adjoint equation
+            at every point, so a run takes longer)
 
 options:
   --fallback  evaluate the model with the f64 interpreter instead of the JIT

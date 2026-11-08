@@ -462,7 +462,7 @@ fn sandstede_orbit(a: f64, period: f64, pts: usize) -> Vec<f64> {
 }
 
 #[test]
-fn a_hom_curve_run_prints_the_orbit_the_saddle_and_twelve_tests() {
+fn a_hom_curve_run_prints_the_orbit_the_saddle_and_fourteen_tests() {
     let (n, ntst, ncol, period) = (3, 60, 4, 20.0);
     let pts = ntst * ncol + 1;
     let mut u0 = sandstede_orbit(-0.25, period, pts);
@@ -489,7 +489,10 @@ fn a_hom_curve_run_prints_the_orbit_the_saddle_and_twelve_tests() {
         assert_eq!(u.len(), n * pts + 1 + n + 1);
         assert_eq!(p["mesh"].as_array().unwrap().len(), ntst + 1);
         assert_eq!(p["eigenvalues"].as_array().unwrap().len(), n);
-        assert_eq!(p["codim2"].as_array().unwrap().len(), 12);
+        let c2 = p["codim2"].as_array().unwrap();
+        assert_eq!(c2.len(), 14);
+        // The key is off, so the two inclination flip tests are null.
+        assert!(c2[12].is_null() && c2[13].is_null(), "{c2:?}");
         near(num(&u[n * pts]), period, "T");
         for k in 0..n {
             let x0 = num(&u[n * pts + 1 + k]);
@@ -498,4 +501,59 @@ fn a_hom_curve_run_prints_the_orbit_the_saddle_and_twelve_tests() {
         let mut_ = num(&u[n * pts + 1 + n]);
         assert!(mut_.abs() < 1e-6, "mut = {mut_:e}");
     }
+}
+
+/// SPEC 8b-3: with `inclination_flips` true the run adds the IFS and IFU columns and finds the
+/// IFS zero of the oracle curve (a, b, c, beta) = (-0.25, 1, -3, 1) at alpha = 1.8961.
+#[test]
+fn a_hom_curve_run_with_inclination_flips_labels_the_ifs_zero() {
+    let (ntst, ncol, period) = (160, 4, 20.0);
+    let pts = ntst * ncol + 1;
+    let mut u0 = sandstede_orbit(-0.25, period, pts);
+    u0.push(period);
+    let problem = serde_json::json!({
+        "type": "HOM", "free": ["mut", "alpha"], "start": "orbit",
+        "params": {"a": -0.25, "b": 1, "c": -3, "beta": 1},
+        "u0": u0, "ntst": ntst, "ncol": ncol, "inclination_flips": true,
+        "options": {"hmax": 0.05, "max_newton": 15, "bounds": [-0.1, 2.1]}
+    });
+    let path = scratch().join("hom_if.json");
+    std::fs::write(&path, problem.to_string()).unwrap();
+    let o = run(
+        &scratch(),
+        &["cont", &model("sandstede"), path.to_str().unwrap()],
+    );
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+    for p in v["branches"][0]["points"].as_array().unwrap() {
+        let c2 = p["codim2"].as_array().unwrap();
+        assert!(c2[12].is_number() && c2[13].is_number(), "{c2:?}");
+    }
+    let ifs = specials(&v, 0, "IFS");
+    assert_eq!(ifs.len(), 1, "{}", v["branches"][0]["specials"]);
+    let at = num(&ifs[0]["alpha"]);
+    assert!((at - 1.8961).abs() < 5e-3, "IFS at alpha = {at}");
+    assert_eq!(v["branches"][0]["specials"].as_array().unwrap().len(), 1);
+}
+
+/// A non-HOM run with the key is refused with the parser message.
+#[test]
+fn inclination_flips_on_a_non_hom_run_is_an_error() {
+    let problem = serde_json::json!({
+        "type": "EP", "free": "a", "params": {"a": 0.0}, "u0": [0.0, 0.0, 0.0],
+        "inclination_flips": true,
+        "options": {"max_steps": 2}
+    });
+    let path = scratch().join("ep_if.json");
+    std::fs::write(&path, problem.to_string()).unwrap();
+    let o = run(
+        &scratch(),
+        &["cont", &model("sandstede"), path.to_str().unwrap()],
+    );
+    assert_ne!(code(&o), 0);
+    assert!(
+        stderr(&o).contains("inclination_flips: only a HOM run takes this key"),
+        "{}",
+        stderr(&o)
+    );
 }

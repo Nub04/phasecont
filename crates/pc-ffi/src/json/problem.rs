@@ -148,6 +148,9 @@ pub struct Problem {
     /// The time span and the solver options of an IVP run. The start state is `setup.u0` and
     /// the parameters are `setup.params`.
     pub ivp: Option<([f64; 2], IvpOptions)>,
+    /// Whether a HOM run computes the inclination flip tests IFS and IFU (SPEC §8b-3). The key
+    /// `inclination_flips` sets it and it is off when the key is missing.
+    pub inclination_flips: bool,
 }
 
 impl Problem {
@@ -204,6 +207,7 @@ impl Problem {
                     mesh,
                     ntst,
                     ncol,
+                    inclination_flips: self.inclination_flips,
                 })
             }
             _ => RunKind::Ep,
@@ -395,6 +399,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
             "start",
             "mesh",
             "tspan",
+            "inclination_flips",
         ],
         "",
     )?;
@@ -553,6 +558,16 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         Some(_) => return Err("start_is_special: expected true or false".into()),
     };
 
+    let inclination_flips = match top.get("inclination_flips") {
+        None => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err("inclination_flips: expected true or false".into()),
+    };
+
+    if top.contains_key("inclination_flips") && !matches!(kind, Kind::Hom { .. }) {
+        return Err("inclination_flips: only a HOM run takes this key".into());
+    }
+
     if kind != Kind::Ep {
         if switch.is_some() {
             return Err("switch: only an EP run can switch branches".into());
@@ -572,6 +587,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         curve_free,
         cycle,
         ivp: None,
+        inclination_flips,
     };
     if mode == Mode::Cli {
         problem.check_u0_len(ir.n(), problem.setup.u0.len())?;
@@ -624,6 +640,9 @@ fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Probl
     if top.contains_key("start_is_special") {
         return Err("start_is_special: only an EP run starts at a special point".into());
     }
+    if top.contains_key("inclination_flips") {
+        return Err("inclination_flips: only a HOM run takes this key".into());
+    }
     let tspan = match top.get("tspan") {
         None => return Err("tspan: missing".into()),
         Some(Value::Array(a)) if a.len() == 2 => {
@@ -659,6 +678,7 @@ fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Probl
         curve_free: None,
         cycle: None,
         ivp: Some((tspan, opts)),
+        inclination_flips: false,
     };
     if mode == Mode::Cli {
         problem.check_u0_len(ir.n(), problem.setup.u0.len())?;
@@ -1301,9 +1321,9 @@ mod tests {
             None
         );
         assert_eq!(cycle_stride(Kind::Ep, 2), None);
-        // [a2, u(2 * 7), T, x0(2), a1, mesh(3), eig(4), codim2(12), h, iters]
+        // [a2, u(2 * 7), T, x0(2), a1, mesh(3), eig(4), codim2(14), h, iters]
         let hom = Kind::Hom { ntst: 2, ncol: 3 };
-        assert_eq!(cycle_stride(hom, 2), Some(1 + 14 + 4 + 3 + 4 + 12 + 2));
+        assert_eq!(cycle_stride(hom, 2), Some(1 + 14 + 4 + 3 + 4 + 14 + 2));
     }
 
     /// A HOM problem on N = 2, m = 3, from an orbit on that mesh.
@@ -1337,12 +1357,50 @@ mod tests {
         assert_eq!(h.period, 20.0);
         assert_eq!(h.mesh, None);
         assert_eq!((h.ntst, h.ncol), (2, 3));
+        assert!(!h.inclination_flips);
         // The orbit sits on the uniform mesh of the run, so u0 has n (N m + 1) + 1 values.
         let mut short = hom_orbit();
         short["u0"] = json!([1.0, 2.0]);
         assert_eq!(
             parse_problem(&short, &ir, Mode::Cli).unwrap_err(),
             "u0: expected 15 values, got 2"
+        );
+    }
+
+    /// SPEC §8b-3: the key is a bool, off when missing, and only a HOM run takes it.
+    #[test]
+    fn inclination_flips_is_a_bool_that_only_a_hom_run_takes() {
+        let ir = model2();
+        let flips = |v: Value| {
+            let p = parse_problem(&v, &ir, Mode::Cli).unwrap();
+            let RunKind::HomCurve(h) = p.run_kind() else {
+                panic!("expected a HOM run");
+            };
+            h.inclination_flips
+        };
+        let mut v = hom_orbit();
+        assert!(!flips(v.clone()));
+        v["inclination_flips"] = json!(true);
+        assert!(flips(v.clone()));
+        v["inclination_flips"] = json!(false);
+        assert!(!flips(v.clone()));
+        v["inclination_flips"] = json!(1);
+        assert_eq!(
+            parse_problem(&v, &ir, Mode::Cli).unwrap_err(),
+            "inclination_flips: expected true or false"
+        );
+        for other in [json!({"type": "EP", "free": "a"}), curve_of_cycles("LPC")] {
+            let mut w = other;
+            w["inclination_flips"] = json!(true);
+            assert_eq!(
+                parse_problem(&w, &ir, Mode::Cli).unwrap_err(),
+                "inclination_flips: only a HOM run takes this key"
+            );
+        }
+        let ivp = json!({"type": "IVP", "tspan": [0, 1], "inclination_flips": true});
+        assert_eq!(
+            parse_problem(&ivp, &ir, Mode::Cli).unwrap_err(),
+            "inclination_flips: only a HOM run takes this key"
         );
     }
 

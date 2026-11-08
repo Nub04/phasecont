@@ -14,8 +14,8 @@
 //!
 //! [`adjoint_residual`] evaluates the adjoint equations at a given phi. [`solve_adjoint`]
 //! solves them for phi and gamma on a given orbit with the condensation of `pc-linalg`
-//! (SPEC §8b-3), and [`orient_adjoint`] fixes the sign of the solution. No HOM run calls
-//! these yet.
+//! (SPEC §8b-3), and [`orient_adjoint`] fixes the sign of the solution. `HomProblem` calls
+//! them when `inclination_flips` is on.
 
 use super::basis::CollocationBasis;
 use super::hom::{ascending, is_real, signed_eigvec};

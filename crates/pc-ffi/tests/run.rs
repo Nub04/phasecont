@@ -1035,7 +1035,7 @@ fn a_hom_curve_run_has_rows_with_the_saddle_and_a1_after_the_period() {
     let stride = st["stride"].as_u64().unwrap() as usize;
     assert_eq!(
         stride,
-        1 + profile + 1 + n + 1 + (ntst + 1) + 2 * n + 12 + 2
+        1 + profile + 1 + n + 1 + (ntst + 1) + 2 * n + 14 + 2
     );
 
     let start = HomStart {
@@ -1047,6 +1047,7 @@ fn a_hom_curve_run_has_rows_with_the_saddle_and_a1_after_the_period() {
         mesh: None,
         ntst,
         ncol,
+        inclination_flips: false,
     };
     let opts = Options {
         hmax: 0.05,
@@ -1077,7 +1078,7 @@ fn a_hom_curve_run_has_rows_with_the_saddle_and_a1_after_the_period() {
     let (rc, rows, got) = copy(run.0, 0, 0, 0, count, stride);
     assert_eq!((rc, rows), (0, count), "{}", last_error());
     for (i, point) in want.iter().enumerate() {
-        let w = cycle_row(point, n, (ntst, ncol), n + 2, 12);
+        let w = cycle_row(point, n, (ntst, ncol), n + 2, 14);
         assert!(same_bits(&got[i * stride..(i + 1) * stride], &w), "row {i}");
     }
     // Each row has a2 = a first, then T, the saddle x0 = 0 and a1 = mut = 0 after the

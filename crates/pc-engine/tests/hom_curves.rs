@@ -9,7 +9,7 @@
 
 mod common;
 
-use common::load;
+use common::{load, plane_orbit};
 use pc_engine::{
     Evaluator, HOM_CURVE_LABELS, HomProblem, HomStart, HomStartKind, ModelEval, Options, Problem,
     StopReason, build, continue_hom_curve,
@@ -37,44 +37,6 @@ fn opts(bounds: (f64, f64)) -> Options {
     }
 }
 
-/// w(t) of w' = (1 - w^2)(b - a w) / 2 with w(0) = 0, by RK4 with about `per_unit` steps
-/// per time unit, at the times `ts` (sorted ascending, any sign).
-fn w_at(a: f64, b: f64, ts: &[f64], per_unit: usize) -> Vec<f64> {
-    let f = |w: f64| (1.0 - w * w) * (b - a * w) / 2.0;
-    let step = |w: f64, h: f64| {
-        let k1 = f(w);
-        let k2 = f(w + h / 2.0 * k1);
-        let k3 = f(w + h / 2.0 * k2);
-        let k4 = f(w + h * k3);
-        w + h / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
-    };
-    ts.iter()
-        .map(|&t| {
-            let steps = ((t.abs() * per_unit as f64).ceil() as usize).max(1);
-            let h = t / steps as f64;
-            (0..steps).fold(0.0, |w, _| step(w, h))
-        })
-        .collect()
-}
-
-/// The plane orbit of Sandstede's model, u(tau) = x(-T/2 + T tau) with `zeros` z
-/// components at zero, at the base points of a uniform mesh of `ntst` intervals of `ncol`
-/// points.
-fn plane_orbit(a: f64, b: f64, period: f64, ntst: usize, ncol: usize, zeros: usize) -> Vec<f64> {
-    let pts = ntst * ncol + 1;
-    let ts: Vec<f64> = (0..pts)
-        .map(|k| period * (k as f64 / (pts - 1) as f64 - 0.5))
-        .collect();
-    w_at(a, b, &ts, 1000)
-        .into_iter()
-        .flat_map(|w| {
-            let mut v = vec![1.0 - w * w, -w * (1.0 - w * w)];
-            v.resize(2 + zeros, 0.0);
-            v
-        })
-        .collect()
-}
-
 /// The `"orbit"` start of test 1 at (a, b, c) and T, free (mut, a).
 fn m1_start(a: f64, period: f64, ntst: usize, ncol: usize) -> HomStart {
     HomStart {
@@ -86,6 +48,7 @@ fn m1_start(a: f64, period: f64, ntst: usize, ncol: usize) -> HomStart {
         mesh: None,
         ntst,
         ncol,
+        inclination_flips: false,
     }
 }
 
@@ -241,6 +204,7 @@ fn sandstede_orbit_flip_at_mu_zero() {
             mesh: None,
             ntst: nt,
             ncol,
+            inclination_flips: false,
         };
         let cancel = AtomicBool::new(false);
         let b = continue_hom_curve(
@@ -288,6 +252,7 @@ fn belyakov_point_at_delta_zero() {
             mesh: None,
             ntst: nt,
             ncol,
+            inclination_flips: false,
         };
         let cancel = AtomicBool::new(false);
         let b = continue_hom_curve(
@@ -425,6 +390,7 @@ fn bt_homoclinic_from_a_long_cycle() {
             mesh: Some(last.mesh.clone()),
             ntst,
             ncol,
+            inclination_flips: false,
         };
         let cancel = AtomicBool::new(false);
         let b = continue_hom_curve(

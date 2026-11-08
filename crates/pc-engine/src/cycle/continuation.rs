@@ -652,6 +652,10 @@ impl<P: Problem> Problem for Scaled<P> {
         self.inner.codim2_label(i, eigs)
     }
 
+    fn crossing_ok(&self, i: usize, a: f64, b: f64) -> bool {
+        self.inner.crossing_ok(i, a, b)
+    }
+
     fn accept(&mut self, x: &[f64]) {
         self.load(x);
         self.inner.accept(&self.xp);
