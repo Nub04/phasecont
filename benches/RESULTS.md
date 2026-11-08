@@ -75,5 +75,5 @@ What the numbers say:
 - The Arc 140T has almost no fixed cost. It is faster than the CPU at all three sizes, by 1.1 to 1.5 times at N = 1000, 2.1 to 2.7 times at N = 10000 and 2.4 to 3.0 times at N = 100000.
 - Double precision on the RTX 5060 costs about the same as single. On the Arc 140T it is 20 to 40 percent slower, depending on N.
 - Where the break-even sits for the RTX 5060 is between 10000 and 100000 members. This run did not search for it.
-- The cause of the fixed cost on the RTX 5060 is not investigated. Kernel compilation on every run, context setup or something else would all fit these numbers.
+- The fixed cost on the RTX 5060 is context creation. Timings printed from a throwaway build (not committed) for N = 1000 gave, per run: 65 to 76 ms to create the context (CUDA and OpenCL on the RTX 5060), 11 ms to compile the kernel (36 to 47 ms on some runs), under 1 ms to load it and 2 to 3 ms to launch and copy. On the Arc 140T, creating the context took 0.2 to 0.7 ms and building the program 0.3 to 0.7 ms. Every run creates and drops its own context and compiles its own kernel, so a second run in the same process pays the same cost.
 - These are single runs on one laptop. Treat them as a rough comparison.
