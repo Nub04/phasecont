@@ -19,8 +19,8 @@ use std::sync::atomic::AtomicBool;
 use pc_engine::{
     DdeCycle, DdeCycleBranch, DdeCyclePoint, DdeCycleSetup, DdeCycleStart, DdeFloquet,
     DdeFloquetOptions, DdeHopfCycle, DdeModel, EngineError, Evaluator, Options, StopReason,
-    build_dde, dde_continue_cycle_floquet, dde_correct_cycle, dde_floquet_multipliers,
-    dde_hopf_cycle,
+    build_dde, dde_check_cycle_floquet, dde_continue_cycle_floquet, dde_correct_cycle,
+    dde_floquet_multipliers, dde_hopf_cycle,
 };
 use pckern::json::problem::parse_options;
 use serde_json::{Value, json};
@@ -122,6 +122,11 @@ pub fn dde_cycle(problem_file: &Path) -> ExitCode {
     if problem.branch {
         return run_branch(&mut model, setup, &problem, &cancel, &shown.to_string());
     }
+    if let Some(f) = problem.floquet.as_ref()
+        && let Err(e) = dde_check_cycle_floquet(&model, &setup, f)
+    {
+        return engine_error(&e, &shown.to_string());
+    }
     let result = match &problem.start {
         Start::Orbit { profile, period } => {
             let start = DdeCycleStart {
@@ -179,6 +184,13 @@ fn run_branch(
     cancel: &AtomicBool,
     shown: &str,
 ) -> ExitCode {
+    // A bad `floquet` is refused before the Hopf corrector runs, as the engine refuses it
+    // before it corrects an orbit start.
+    if let Some(f) = problem.floquet.as_ref()
+        && let Err(e) = dde_check_cycle_floquet(model, &setup, f)
+    {
+        return engine_error(&e, shown);
+    }
     let orbit = match &problem.start {
         Start::Orbit { profile, period } => DdeCycleStart {
             profile: profile.clone(),

@@ -38,20 +38,40 @@ pub(crate) fn shifted_product(mu: &[(f64, f64)], s: f64) -> f64 {
     mu.iter().fold((1.0, 0.0), |p, m| cmul(p, (m.0 + s, m.1))).0
 }
 
+/// 2^500 and 2^-500, the units by which [`pair_product`] rescales its running product.
+const UP: f64 = f64::from_bits((1023 + 500) << 52);
+const DOWN: f64 = f64::from_bits((1023 - 500) << 52);
+
 /// The real part of the product of mu_i mu_j - 1 over i < j, NaN for fewer than two
 /// multipliers.
+///
+/// A delay problem has d = n (nhist + 1) multipliers and so d (d - 1) / 2 factors, and the
+/// product can leave the range of `f64`. The running product is kept as `prod * 2^(500 k)`.
+/// Scaling by a power of two is exact, so a product that stays in range has the same bits as
+/// the plain loop. One that does not saturates to a signed infinity, not NaN.
 pub(crate) fn pair_product(mu: &[(f64, f64)]) -> f64 {
     if mu.len() < 2 {
         return f64::NAN;
     }
     let mut prod = (1.0, 0.0);
+    let mut k: i32 = 0;
     for i in 0..mu.len() {
         for j in i + 1..mu.len() {
             let q = cmul(mu[i], mu[j]);
             prod = cmul(prod, (q.0 - 1.0, q.1));
+            let m = prod.0.abs().max(prod.1.abs());
+            if m > UP {
+                prod = (prod.0 * DOWN, prod.1 * DOWN);
+                k += 1;
+            } else if m < DOWN && m > 0.0 {
+                prod = (prod.0 * UP, prod.1 * UP);
+                k -= 1;
+            }
         }
     }
-    prod.0
+    // Three factors of 2^500 are enough to reach infinity or zero.
+    let unit = if k > 0 { UP } else { DOWN };
+    (0..k.unsigned_abs().min(3)).fold(prod.0, |r, _| r * unit)
 }
 
 /// Whether the pair of `mu` whose product is closest to 1 is a complex pair. The pair
@@ -222,6 +242,56 @@ mod tests {
 
     fn polar(r: f64, th: f64) -> (f64, f64) {
         (r * th.cos(), r * th.sin())
+    }
+
+    /// The plain loop that `pair_product` replaced.
+    fn pair_product_plain(mu: &[(f64, f64)]) -> f64 {
+        let mut prod = (1.0, 0.0);
+        for i in 0..mu.len() {
+            for j in i + 1..mu.len() {
+                let q = cmul(mu[i], mu[j]);
+                prod = cmul(prod, (q.0 - 1.0, q.1));
+            }
+        }
+        prod.0
+    }
+
+    #[test]
+    fn pair_product_keeps_the_bits_of_the_plain_loop_in_range() {
+        // 28 factors of about 1e10, so the product is about 1e280: it passes 2^500 on the
+        // way, so the rescaling runs, and it is still finite.
+        let mu: Vec<(f64, f64)> = (0..8).map(|i| polar(1e5, 0.3 + 0.7 * i as f64)).collect();
+        let plain = pair_product_plain(&mu);
+        assert!(plain.is_finite() && plain.abs() > 1e200, "{plain}");
+        assert_eq!(pair_product(&mu).to_bits(), plain.to_bits());
+        let small: Vec<(f64, f64)> = vec![polar(0.9, 0.4), polar(0.9, -0.4), (-0.5, 0.0)];
+        assert_eq!(
+            pair_product(&small).to_bits(),
+            pair_product_plain(&small).to_bits()
+        );
+    }
+
+    #[test]
+    fn pair_product_saturates_instead_of_giving_nan() {
+        // 40 multipliers of modulus 2 with spread arguments: 780 factors of modulus up to 5,
+        // far past 1e308, and complex, so the plain loop reaches inf - inf.
+        let mu: Vec<(f64, f64)> = (0..40).map(|i| polar(2.0, 0.37 * i as f64 + 0.1)).collect();
+        assert!(pair_product_plain(&mu).is_nan());
+        let v = pair_product(&mu);
+        assert!(v.is_infinite(), "{v}");
+        // The sign is that of the real part of the true product: the sum of the arguments
+        // of the factors, computed in logs.
+        let mut arg = 0.0;
+        for i in 0..mu.len() {
+            for j in i + 1..mu.len() {
+                let q = cmul(mu[i], mu[j]);
+                arg += (q.1).atan2(q.0 - 1.0);
+            }
+        }
+        assert!(arg.cos().abs() > 0.05, "pick another spread: {}", arg.cos());
+        assert_eq!(v.is_sign_positive(), arg.cos() > 0.0);
+        // Too few multipliers is still NaN.
+        assert!(pair_product(&mu[..1]).is_nan());
     }
 
     #[test]

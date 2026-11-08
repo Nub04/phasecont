@@ -344,6 +344,16 @@ fn detect_inner(
             value_at(&pk.tests, &pk.codim2, t),
             value_at(&pk1.tests, &pk1.codim2, t),
         );
+        // A test whose value overflowed has no sign change to locate. NaN is the quiet
+        // "not defined here", so an infinite value gets a warning instead.
+        if a.is_infinite() || b.is_infinite() {
+            let name = test_name(&*p, t, &pk1.eigenvalues);
+            warnings.push(format!(
+                "{name} is not finite between points {k} and {}; the test was skipped there",
+                k + 1
+            ));
+            continue;
+        }
         // The first point is the start of the run, so a zero there was not reported before.
         // Later, a zero at point k was reported by the step that reached it. A test that is
         // also zero at the second point, or undefined there, is not a crossing of zero: the
@@ -418,12 +428,16 @@ fn detect_inner(
     Ok(())
 }
 
-fn warn(warnings: &mut Vec<String>, p: &dyn Problem, t: usize, eigs: &[(f64, f64)], k: usize) {
-    let name = if t >= 3 {
+fn test_name(p: &dyn Problem, t: usize, eigs: &[(f64, f64)]) -> &'static str {
+    if t >= 3 {
         p.codim2_labels().get(t - 3).copied().unwrap_or("codim-2")
     } else {
         label(p, t, eigs).unwrap_or("H")
-    };
+    }
+}
+
+fn warn(warnings: &mut Vec<String>, p: &dyn Problem, t: usize, eigs: &[(f64, f64)], k: usize) {
+    let name = test_name(p, t, eigs);
     warnings.push(format!(
         "could not locate {name} between points {k} and {}",
         k + 1
@@ -720,6 +734,27 @@ mod codim2_tests {
             w,
             vec!["could not locate ZZ between points 0 and 1".to_string()]
         );
+    }
+
+    #[test]
+    fn an_infinite_test_value_is_skipped_with_a_warning() {
+        // An overflowed test has no sign change to locate. NaN stays the quiet case.
+        for (a, b) in [
+            (f64::INFINITY, -1.0),
+            (-1.0, f64::NEG_INFINITY),
+            (f64::INFINITY, f64::NEG_INFINITY),
+        ] {
+            let (w, sp) = run(zero(), pt_with(0.0, a), pt_with(0.1, b));
+            assert!(sp.is_empty(), "{a} {b}: {sp:?}");
+            assert_eq!(
+                w,
+                vec![
+                    "ZZ is not finite between points 0 and 1; the test was skipped there"
+                        .to_string()
+                ],
+                "{a} {b}"
+            );
+        }
     }
 
     fn run_from(mut p: Curve, xk: &[f64], points: &[Point]) -> (Vec<String>, Vec<SpecialPoint>) {

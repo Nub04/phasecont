@@ -661,7 +661,7 @@ pub struct DdeCyclePoint {
 pub struct DdeCycleSpecial {
     /// `"LPC"`, `"PD"` or `"NS"`.
     pub label: String,
-    /// The index in `points` of the first point after the special point.
+    /// The index in `points` of the first point at or after the special point.
     pub index: usize,
     /// The orbit at the special point.
     pub point: DdeCyclePoint,
@@ -711,6 +711,35 @@ fn cycle_point(q: &Point, dim: usize, count: usize) -> DdeCyclePoint {
     }
 }
 
+/// The checks of `floquet` against the model and the mesh of `setup`, as
+/// [`continue_cycle_floquet`] makes them (SPEC section 8o). A caller that corrects the start
+/// itself calls this first, so that a bad `floquet` is refused before any work. The message
+/// starts with `floquet: `.
+pub fn check_cycle_floquet(
+    model: &DdeModel,
+    setup: &DdeCycleSetup,
+    floquet: &DdeFloquetOptions,
+) -> Result<(), EngineError> {
+    let (n, _) = check_setup(model, setup)?;
+    check_floquet_keyed(model, setup, n, floquet)
+}
+
+/// `check_floquet` with the key in the message, so a caller can tell the error from the other
+/// `BadProblem`s.
+fn check_floquet_keyed(
+    model: &DdeModel,
+    setup: &DdeCycleSetup,
+    n: usize,
+    floquet: &DdeFloquetOptions,
+) -> Result<(), EngineError> {
+    check_floquet(model, setup, n, floquet)
+        .map(|_| ())
+        .map_err(|e| match e {
+            EngineError::BadProblem(m) => EngineError::BadProblem(format!("floquet: {m}")),
+            other => other,
+        })
+}
+
 /// Continues the orbit from `start` in the parameter `setup.free` by pseudo-arclength
 /// continuation of the rows of [`correct_cycle`] on a fixed mesh (SPEC section 8n). `start`
 /// is first corrected at the fixed parameter `setup.params[setup.free]`, and the phase
@@ -745,11 +774,7 @@ pub fn continue_cycle_floquet(
     }
     check_step_options(opts)?;
     if let Some(f) = floquet {
-        // The message names the key, so a caller can tell it from the other `BadProblem`s.
-        check_floquet(model, setup, n, f).map_err(|e| match e {
-            EngineError::BadProblem(m) => EngineError::BadProblem(format!("floquet: {m}")),
-            other => other,
-        })?;
+        check_floquet_keyed(model, setup, n, f)?;
     }
     let mut opts = opts.clone();
     opts.detect_lp = false;

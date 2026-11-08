@@ -1018,3 +1018,204 @@ fn a_run_without_branch_prints_no_specials() {
     );
     assert!(v.get("multipliers").is_some(), "{out}");
 }
+
+// ---------------------------------------------------------------------------------------
+// The NS and PD labels of a branch (SPEC section 8o, test 8), and a bad `floquet` with a
+// Hopf start.
+
+/// A model of section 8o other than the fold: its source, its parameters and the run.
+struct Case {
+    file: &'static str,
+    source: String,
+    names: &'static [&'static str],
+    params: Vec<f64>,
+    free: usize,
+    components: usize,
+    bounds: (f64, f64),
+    hmax: f64,
+}
+
+impl Case {
+    /// Test 1: the oscillator plus `y' = -s y(t - 1)`, `s` from 0.3 up through `pi/2`.
+    fn ns() -> Case {
+        Case {
+            file: "ns.ode",
+            source: format!(
+                "par mu=0.3, tau={TAU:?}, s=0.3\n\
+                 x'=-delay(x,tau)+mu*x*(1-x^2-delay(x,tau)^2)\n\
+                 y'=-s*delay(y,1)\n\
+                 done\n"
+            ),
+            names: &["mu", "tau", "s"],
+            params: vec![0.3, TAU, 0.3],
+            free: 2,
+            components: 2,
+            bounds: (0.1, 2.0),
+            hmax: 0.2,
+        }
+    }
+
+    /// Test 2: the oscillator plus the rotating block, `s` from 0.4 up through `sqrt(0.34)`.
+    fn pd() -> Case {
+        Case {
+            file: "pd.ode",
+            source: format!(
+                "par mu=0.3, tau={TAU:?}, s=0.4, g=0.3\n\
+                 x'=-delay(x,tau)+mu*x*(1-x^2-delay(x,tau)^2)\n\
+                 y'=s*(-delay(x,tau)*y+x*z)-g*y\n\
+                 z'=s*(x*y+delay(x,tau)*z)-g*z\n\
+                 done\n"
+            ),
+            names: &["mu", "tau", "s", "g"],
+            params: vec![0.3, TAU, 0.4, 0.3],
+            free: 2,
+            components: 3,
+            bounds: (0.3, 0.8),
+            hmax: 0.1,
+        }
+    }
+
+    /// The exact cycle `x = sin t`, `T = 2 pi`, with the other components zero.
+    fn profile(&self) -> Vec<f64> {
+        let nq = NTST * NCOL;
+        (0..=nq)
+            .flat_map(|q| {
+                let s = (2.0 * PI * q as f64 / nq as f64).sin();
+                (0..self.components).map(move |c| if c == 0 { s } else { 0.0 })
+            })
+            .collect()
+    }
+
+    fn problem(&self, floquet: Option<Value>) -> Value {
+        let params: serde_json::Map<String, Value> = self
+            .names
+            .iter()
+            .zip(&self.params)
+            .map(|(k, v)| (k.to_string(), json!(v)))
+            .collect();
+        let mut p = json!({
+            "model": self.file,
+            "params": params,
+            "free": self.names[self.free],
+            "ntst": NTST,
+            "ncol": NCOL,
+            "orbit": {"profile": self.profile(), "period": 2.0 * PI},
+            "options": {
+                "max_newton": 10, "hmax": self.hmax, "max_steps": 400,
+                "bounds": [self.bounds.0, self.bounds.1], "direction": 1
+            },
+            "branch": true,
+        });
+        if let Some(f) = floquet {
+            p["floquet"] = f;
+        }
+        p
+    }
+
+    fn cli(&self, name: &str, problem: &Value) -> (i32, String, String) {
+        write(self.file, &self.source);
+        let file = write(name, &problem.to_string());
+        let o = run(&scratch(), &["dde-cycle", &file]);
+        (code(&o), stdout(&o), stderr(&o))
+    }
+
+    fn engine(&self, floquet: &DdeFloquetOptions) -> DdeCycleBranch {
+        let mut map = SourceMap::new();
+        let top = map.add(self.file, self.source.clone());
+        let l = load(top, &mut map, &mut MapLoader::new());
+        assert!(
+            l.diagnostics.iter().all(|d| d.severity != Severity::Error),
+            "{:?}",
+            l.diagnostics
+        );
+        let mut model = build_dde(&l.expanded, &l.info, Evaluator::Jit).expect("build_dde");
+        let setup = DdeCycleSetup {
+            params: self.params.clone(),
+            free: self.free,
+            ntst: NTST,
+            ncol: NCOL,
+        };
+        let opts = Options {
+            bounds: self.bounds,
+            direction: 1.0,
+            hmax: self.hmax,
+            max_steps: 400,
+            max_newton: 10,
+            ..Options::default()
+        };
+        dde_continue_cycle_floquet(
+            &mut model,
+            &setup,
+            &DdeCycleStart {
+                profile: self.profile(),
+                period: 2.0 * PI,
+            },
+            &opts,
+            Some(floquet),
+            &AtomicBool::new(false),
+        )
+        .expect("continue_cycle_floquet")
+    }
+}
+
+/// Runs the case with `floquet`, compares every printed number with the engine call and
+/// returns the printed output.
+fn labelled_branch(case: &Case, name: &str, label: &str, alpha: f64, tol: f64) {
+    let (status, out, err) = case.cli(
+        &format!("{name}.json"),
+        &case.problem(Some(json!({"nhist": 16, "count": 6}))),
+    );
+    assert_eq!(status, 0, "{name}: {err}");
+    let want = case.engine(&DdeFloquetOptions {
+        nhist: 16,
+        count: 6,
+    });
+    let labels: Vec<&str> = want.specials.iter().map(|s| s.label.as_str()).collect();
+    assert_eq!(labels, [label], "{name}: {out}");
+    same_points(&out, &want, name);
+    same_specials(&out, &want, true, name);
+    let v: Value = serde_json::from_str(&out).unwrap();
+    let got = num(&v["specials"][0]["alpha"]);
+    assert!((got - alpha).abs() <= tol, "{name}: {label} at {got}");
+}
+
+#[test]
+fn a_branch_prints_the_ns_point_bit_for_bit() {
+    labelled_branch(&Case::ns(), "ns_branch", "NS", PI / 2.0, 1e-12);
+}
+
+#[test]
+fn a_branch_prints_the_pd_point_bit_for_bit() {
+    labelled_branch(&Case::pd(), "pd_branch", "PD", 0.34_f64.sqrt(), 1e-11);
+}
+
+#[test]
+fn a_bad_floquet_with_a_hopf_start_is_exit_2_before_the_run() {
+    // `max_newton` 1 keeps the Hopf correction from converging, so a check that came after
+    // it would give exit 1 with a convergence message.
+    for (name, branch) in [("branch", true), ("single", false)] {
+        for (i, floquet) in [
+            json!({"nhist": 4, "count": 6}),
+            json!({"nhist": 4000, "count": 1}),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut p = hopf_branch_problem();
+            p["floquet"] = floquet.clone();
+            p["options"] = json!({"max_newton": 1});
+            if !branch {
+                p.as_object_mut().unwrap().remove("branch");
+            }
+            let (status, out, err) = dde_cycle(&format!("hopf_bad_floquet_{name}{i}.json"), &p);
+            assert_eq!(status, 2, "{name} {floquet}: {err}");
+            assert!(out.is_empty(), "{name} {floquet}: {out}");
+            assert!(err.contains("floquet"), "{name} {floquet}: {err}");
+        }
+    }
+    // The same start without the bad floquet does not converge, which is exit 1.
+    let mut p = hopf_branch_problem();
+    p["options"] = json!({"max_newton": 1});
+    let (status, _, err) = dde_cycle("hopf_no_converge.json", &p);
+    assert_eq!(status, 1, "{err}");
+}

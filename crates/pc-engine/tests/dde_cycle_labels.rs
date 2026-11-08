@@ -25,7 +25,7 @@ const NS_THETA: f64 = 4.0 * PI - PI * PI;
 /// The PD parameter `sqrt(1/4 + g^2)` with `g = 0.3`.
 const G: f64 = 0.3;
 
-// Bounds, about 2 to 3 times the values printed by `print_tables` (SPEC section 8o).
+// Bounds, at most about 4 times the values printed by `print_tables` (SPEC section 8o).
 // Three of them are wider than that because the measured value is at rounding level
 // (NS_ALPHA_TOL, PD_MULT_TOL) or zero (JIT_ALPHA_TOL), and rounding differs by platform.
 const NS_ALPHA_TOL: f64 = 1e-12;
@@ -280,14 +280,22 @@ fn rho_squared(profile: &[f64]) -> f64 {
     sum / nodes as f64
 }
 
+fn bits(v: &[f64]) -> Vec<u64> {
+    v.iter().map(|x| x.to_bits()).collect()
+}
+
+fn pair_bits(v: &[(f64, f64)]) -> Vec<(u64, u64)> {
+    v.iter().map(|z| (z.0.to_bits(), z.1.to_bits())).collect()
+}
+
 /// Whether the two branches agree bit for bit in their points.
 fn same_points(a: &DdeCycleBranch, b: &DdeCycleBranch) -> bool {
     a.points.len() == b.points.len()
         && a.points.iter().zip(&b.points).all(|(p, q)| {
-            p.alpha == q.alpha
-                && p.period == q.period
-                && p.profile == q.profile
-                && p.h == q.h
+            p.alpha.to_bits() == q.alpha.to_bits()
+                && p.period.to_bits() == q.period.to_bits()
+                && bits(&p.profile) == bits(&q.profile)
+                && p.h.to_bits() == q.h.to_bits()
                 && p.newton_iters == q.newton_iters
         })
 }
@@ -295,9 +303,15 @@ fn same_points(a: &DdeCycleBranch, b: &DdeCycleBranch) -> bool {
 fn same_special(a: &DdeCycleSpecial, b: &DdeCycleSpecial) -> bool {
     a.label == b.label
         && a.index == b.index
-        && a.point.alpha == b.point.alpha
-        && a.point.period == b.point.period
-        && a.point.profile == b.point.profile
+        && a.point.alpha.to_bits() == b.point.alpha.to_bits()
+        && a.point.period.to_bits() == b.point.period.to_bits()
+        && bits(&a.point.profile) == bits(&b.point.profile)
+}
+
+/// Whether the LPC specials of the two branches are the same, bit for bit.
+fn same_lpc(a: &DdeCycleBranch, b: &DdeCycleBranch) -> bool {
+    let (x, y) = (specials(a, "LPC"), specials(b, "LPC"));
+    x.len() == y.len() && x.iter().zip(&y).all(|(p, q)| same_special(p, q))
 }
 
 // Test 1: the NS point of the extra block, closed form.
@@ -307,7 +321,7 @@ fn ns_point_at_pi_over_two() {
     let b = run_ok(&mut c.m, &c.st, &c.start, &c.o, Some(&fl(16, 6)), "ns run");
     assert_eq!(b.stop, StopReason::Bounds, "stop");
     let ns = specials(&b, "NS");
-    assert_eq!(ns.len(), 1, "specials: {:?}", labels(&b));
+    assert_eq!(labels(&b), vec!["NS".to_string()], "specials");
     assert!(
         (ns[0].point.alpha - NS_S).abs() < NS_ALPHA_TOL,
         "NS at {} instead of {NS_S}",
@@ -435,21 +449,20 @@ fn points_do_not_depend_on_the_multipliers() {
     let off = run_ok(&mut c.m, &c.st, &c.start, &c.o, None, "ns off");
     let on = run_ok(&mut c.m, &c.st, &c.start, &c.o, Some(&fl(16, 6)), "ns on");
     assert!(same_points(&off, &on), "test 1 points differ");
+    assert!(same_lpc(&off, &on), "test 1 LPC specials differ");
 
     let mut c = pd_case(Evaluator::Jit, 0.8, false);
     let off = run_ok(&mut c.m, &c.st, &c.start, &c.o, None, "pd off");
     let on = run_ok(&mut c.m, &c.st, &c.start, &c.o, Some(&fl(16, 6)), "pd on");
     assert!(same_points(&off, &on), "test 2 points differ");
+    assert!(same_lpc(&off, &on), "test 2 LPC specials differ");
 
     let mut c = lpc_case(Evaluator::Jit);
     let off = run_ok(&mut c.m, &c.st, &c.start, &c.o, None, "lpc off");
     let on = run_ok(&mut c.m, &c.st, &c.start, &c.o, Some(&fl(12, 4)), "lpc on");
     assert!(same_points(&off, &on), "test 3 points differ");
-    let a = specials(&off, "LPC");
-    let b = specials(&on, "LPC");
-    assert_eq!(a.len(), 1);
-    assert_eq!(b.len(), 1);
-    assert!(same_special(a[0], b[0]), "the LPC specials differ");
+    assert_eq!(specials(&off, "LPC").len(), 1);
+    assert!(same_lpc(&off, &on), "the LPC specials differ");
 }
 
 // Test 5: the multipliers of a point are those of `floquet_multipliers`.
@@ -480,8 +493,16 @@ fn point_multipliers_are_floquet_multipliers() {
             period: p.period,
         };
         let f = dde_floquet_multipliers(&mut c.m, &st, &cycle, &opts, &cancel).unwrap();
-        assert_eq!(p.multipliers, f.multipliers, "point {i}");
-        assert_eq!(p.trivial_error, f.trivial_error, "point {i}");
+        assert_eq!(
+            pair_bits(&p.multipliers),
+            pair_bits(&f.multipliers),
+            "point {i}"
+        );
+        assert_eq!(
+            p.trivial_error.to_bits(),
+            f.trivial_error.to_bits(),
+            "point {i}"
+        );
     }
     let mut c = pd_case(Evaluator::Jit, 0.8, false);
     let off = run_ok(&mut c.m, &c.st, &c.start, &c.o, None, "pd off");

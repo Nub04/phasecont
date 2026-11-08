@@ -703,7 +703,8 @@ Newton's method solves for the orbit, its period and one declared parameter in f
 phase condition is an integral condition against the start profile. The system has
 (ntst*ncol+1)*n + 2 unknowns, at most 3000. With the floquet key it also prints the
 leading Floquet multipliers of the corrected orbit. With the branch key it continues the
-corrected orbit in the free parameter instead and labels LPC, PD and NS points.
+corrected orbit in the free parameter instead and labels LPC points, and with the floquet
+key also PD and NS points.
 
 The problem file is a JSON object. Every key but options is required:
   model    path of the .ode file, relative to the problem file
@@ -748,9 +749,9 @@ multiplier that every periodic orbit has, so it measures the discretization erro
 The multipliers are taken at the corrected value of the free parameter.
 
 With branch set to true, the start is first corrected by Newton's method with free held at
-the value that params gives (for hopf, the Hopf corrector runs first and finds that value),
-and pseudo-arclength continuation then follows the same equations on the same mesh. The
-output is
+the value that params gives (for hopf, the Hopf corrector runs first and finds that value;
+a bad floquet value is refused before either runs), and pseudo-arclength continuation
+then follows the same equations on the same mesh. The output is
 {\"ntst\", \"ncol\", \"stop\", \"points\", \"specials\", \"warnings\"}. Each point is {\"alpha\",
 \"period\", \"profile\", \"h\", \"iters\"}: the first has h and iters 0 and is the corrected
 start. stop is one of end, max_steps, bounds, step_too_small, singular, cancelled or
@@ -760,7 +761,7 @@ When free is a delay time, bounds must have a lower bound above 0.
 
 specials is an array in branch order, empty if there is none. Each element is {\"label\",
 \"index\", \"alpha\", \"period\", \"profile\"}, where index is the index of the first point
-after the special point. An LPC (limit point of cycles) is labeled on every run with
+at or after the special point. An LPC (limit point of cycles) is labeled on every run with
 branch. With floquet the points and the special points also have \"multipliers\" and
 \"trivial_error\" as above, and PD (period doubling) and NS (Neimark-Sacker) are labeled
 too. The tests use all n*(nhist+1) multipliers, not only the count that is printed, and
