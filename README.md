@@ -114,7 +114,7 @@ app = phasecont.app.ModelEditor;
 
 An ensemble runs many trajectories of one model at once, for a grid of start states or parameter sets. It does not speed up a single run or a continuation. Those stay on the CPU in double precision.
 
-The ensemble engine has backends for the CPU, for CUDA (NVIDIA, through NVRTC), for OpenCL (NVIDIA, AMD and Intel) and for Metal (Apple GPUs, single precision only). No GPU backend has run on a GPU so far. The code is tested on the CPU only, and the Metal host code has been type-checked for macOS but never run, so a GPU run is the first real check. Run these in order:
+The ensemble engine has backends for the CPU, for CUDA (NVIDIA, through NVRTC), for OpenCL (NVIDIA, AMD and Intel) and for Metal (Apple GPUs, single precision only). The CUDA and OpenCL backends have run on one GPU, an NVIDIA RTX 5060, where the self-test below passed in single and double precision (2026-11-07). No Intel Arc, AMD or Apple device has run, and the Metal host code has been type-checked for macOS but never run, so a run on one of those is the first real check. Run these in order:
 
 1. List what the engine finds:
 
