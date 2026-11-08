@@ -219,6 +219,39 @@ classdef ContinuationTest < matlab.unittest.TestCase
             end
         end
 
+        function everyExitPathFreesTheRun(testCase)
+            % A run that ends on its own, on MaxSteps and on Bounds, leaves
+            % no handle behind, and the rows that the chunked loop joins are
+            % the same as the engine's point count.
+            m = testCase.model(testCase.Lorenz, "fallback");
+            eq = phasecont.equilibrium(m, [0 0 0]);
+            id = uint64(0);
+            testCase.addTeardown(@() phasecont.internal.pollHook([]));
+            ids = uint64(zeros(1, 2));
+            for k = 1:2
+                phasecont.internal.pollHook(@(run, ~) setId(run.Id));
+                if k == 1
+                    br = phasecont.continuation(m, eq, Free = "r", ...
+                        Bounds = [-1 30], MaxSteps = 7);
+                    testCase.verifyEqual(br.Stop, "MaxSteps");
+                else
+                    br = phasecont.continuation(m, eq, Free = "r", ...
+                        Bounds = [-1 2]);
+                    testCase.verifyEqual(br.Stop, "Bounds");
+                end
+                testCase.verifyEqual(size(br.U, 1), numel(br.Alpha));
+                testCase.verifyNotEqual(id, uint64(0));
+                testCase.verifyError(@() pckern("run_poll", id), ...
+                    "phasecont:engine:badHandle");
+                ids(k) = id;
+            end
+            testCase.verifyNotEqual(ids(1), ids(2));
+
+            function setId(v)
+                id = v;
+            end
+        end
+
         function aShortRunDoesNotWaitForTheFullPollInterval(testCase)
             % The poll loop used to pause 50 ms after the first poll. The
             % fastest of several warm runs has a loose bound that the old

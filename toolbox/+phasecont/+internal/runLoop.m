@@ -23,19 +23,31 @@ if nargin < 5
 end
 run = phasecont.internal.Run(m, problem, u0, p);
 cleanup = onCleanup(@() delete(run));
+% Rows arrive in chunks. Without ONPOLL the chunks are joined once at the end,
+% so a long run does not copy its whole matrix on every poll. With ONPOLL the
+% joined matrices are kept up to date, because ONPOLL reads them.
+chunks = cell(1, 0);
+have = zeros(1, 0);
 pts = cell(1, 0);
 polls = 0;
 while true
     st = run.poll();
     nb = numel(st.branches);
     for b = 1:nb
-        if b > numel(pts)
+        if b > numel(chunks)
+            chunks{b} = {};
+            have(b) = 0;
             pts{b} = zeros(st.stride, 0);
         end
-        have = size(pts{b}, 2);
         avail = st.branches(b).points;
-        if avail > have
-            pts{b} = [pts{b}, run.copy(b, 0, have + 1, avail - have, st.stride)];
+        if avail > have(b)
+            block = run.copy(b, 0, have(b) + 1, avail - have(b), st.stride);
+            have(b) = avail;
+            if isempty(onPoll)
+                chunks{b}{end+1} = block;
+            else
+                pts{b} = [pts{b}, block];
+            end
         end
     end
     if ~isempty(onPoll)
@@ -52,6 +64,11 @@ while true
     pause(phasecont.internal.pollDelay(polls));
 end
 nb = numel(st.branches);
+if isempty(onPoll)
+    for b = 1:nb
+        pts{b} = [zeros(st.stride, 0), chunks{b}{:}];
+    end
+end
 sp = cell(1, nb);
 for b = 1:nb
     nsp = numel(st.branches(b).specials);
