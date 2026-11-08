@@ -180,3 +180,137 @@ fn the_belyakov_model_gets_no_if_label() {
         assert_eq!(labels.iter().filter(|l| l.0 == "BLS").count(), 1);
     }
 }
+
+/// The brackets of a sign change of the IF column `col` between consecutive accepted points
+/// of `b`, each as (alpha at the left point, larger end value in absolute value).
+fn brackets(b: &Branch, col: usize) -> Vec<(f64, f64)> {
+    b.points
+        .windows(2)
+        .filter_map(|w| {
+            let (x, y) = (w[0].codim2[col], w[1].codim2[col]);
+            (x * y < 0.0 || x == 0.0 || y == 0.0).then(|| (w[0].alpha, x.abs().max(y.abs())))
+        })
+        .collect()
+}
+
+/// The start of a run of `sandstede.ode` or one of its variants at the given (a, b, c, beta)
+/// with the free pair (mut, alpha), from alpha = 0.
+fn sandstede_start(par: (f64, f64, f64, f64), period: f64) -> HomStart {
+    let (ntst, ncol) = ((8.0 * period) as usize, 4);
+    HomStart {
+        kind: HomStartKind::Orbit,
+        free: [MUT, ALPHA],
+        params: vec![par.0, par.1, par.2, 0.0, 0.0, 0.0, par.3, 0.0],
+        orbit: plane_orbit(par.0, par.1, period, ntst, ncol, 1),
+        period,
+        mesh: None,
+        ntst,
+        ncol,
+        inclination_flips: true,
+    }
+}
+
+/// SPEC §8b-3, acceptance 6, signal side. Every sign change of IFS on three families of
+/// runs gets a label at the floor of 1e-8. The bound asserted is the fallback bound of the
+/// SPEC, 1e-6 on the larger end value. The target of 1e-4 is missed by one bracket (the
+/// last zero of `sandstede_lin` at T = 30), which the SPEC records.
+/// The families differ in lambda_S (-1.25 and -2), in T (10 to 40) and in the model (the
+/// coupling of `sandstede_lin.ode`). The numpy sweeps of SPEC §8b-3 at T = 20 give the
+/// number of zeros each family has in its range of alpha: 3, 4 and 7.
+#[test]
+fn every_ifs_bracket_of_the_signal_models_clears_the_floor() {
+    // (model, (a, b, c, beta), alpha range, zeros of the numpy sweep at T = 20)
+    let families = [
+        ("sandstede", (-0.25, 1.0, -3.0, 1.0), (-0.1, 3.0), 3),
+        ("sandstede", (-0.5, 1.5, -3.0, 1.0), (-0.1, 4.0), 4),
+        ("sandstede_lin", (-0.25, 1.0, -3.0, 1.0), (-0.1, 4.0), 7),
+    ];
+    let mut smallest = f64::INFINITY;
+    for (model, par, bounds, zeros) in families {
+        for period in [10.0, 20.0, 30.0, 40.0] {
+            let mut m = model_of(model, &Evaluator::Jit);
+            let b = run(m.as_mut(), &sandstede_start(par, period), bounds);
+            let br = brackets(&b, IFS);
+            let labels = labels_of(&b);
+            let larger: Vec<f64> = br.iter().map(|x| x.1).collect();
+            println!(
+                "{model} {par:?} T = {period}: {} points, {} brackets, larger ends {larger:?}, {} labels",
+                b.points.len(),
+                br.len(),
+                labels.len()
+            );
+            assert_eq!(br.len(), zeros, "{model} {par:?} T = {period}: {br:?}");
+            assert_eq!(
+                labels.len(),
+                zeros,
+                "{model} {par:?} T = {period}: {labels:?}"
+            );
+            assert!(labels.iter().all(|l| l.0 == "IFS"), "{labels:?}");
+            for (alpha, big) in &br {
+                assert!(
+                    *big > 1e-6,
+                    "{model} {par:?} T = {period}: bracket at alpha {alpha} has larger end {big:e}"
+                );
+                smallest = smallest.min(*big);
+            }
+        }
+    }
+    println!("smallest larger end over all signal brackets: {smallest:e}");
+}
+
+/// SPEC §8b-3, acceptance 6, noise side. In the models of SPEC §8b, tests 2 and 3, no
+/// bracket of IFS or IFU has a larger end value above 1e-10, at T = 10 to 40.
+#[test]
+fn the_noise_models_have_no_bracket_above_1e_10() {
+    const DELTA: usize = 4;
+    const MUT4: usize = 5;
+    let mut worst = 0.0_f64;
+    for period in [10.0, 20.0, 30.0, 40.0] {
+        let (ntst, ncol) = ((8.0 * period) as usize, 4);
+        let flip = HomStart {
+            kind: HomStartKind::Orbit,
+            free: [MUT, MU],
+            params: vec![-0.5, 2.5, -1.0, -0.1, 0.0, 0.0, 0.0, 0.0],
+            orbit: plane_orbit(-0.5, 2.5, period, ntst, ncol, 1),
+            period,
+            mesh: None,
+            ntst,
+            ncol,
+            inclination_flips: true,
+        };
+        let bely = HomStart {
+            kind: HomStartKind::Orbit,
+            free: [MUT4, DELTA],
+            params: vec![0.0, 1.0, -0.4, 0.5, -0.1, 0.0],
+            orbit: plane_orbit(0.0, 1.0, period, ntst, ncol, 2),
+            period,
+            mesh: None,
+            ntst,
+            ncol,
+            inclination_flips: true,
+        };
+        for (name, model, start) in [
+            ("orbit flip", "sandstede", flip),
+            ("belyakov", "belyakov4", bely),
+        ] {
+            let mut m = model_of(model, &Evaluator::Jit);
+            let b = run(m.as_mut(), &start, (-0.11, 0.1));
+            for (col, tag) in [(IFS, "IFS"), (IFU, "IFU")] {
+                let big = brackets(&b, col).iter().fold(0.0_f64, |w, x| w.max(x.1));
+                let all = b
+                    .points
+                    .iter()
+                    .fold(0.0_f64, |w, p| w.max(p.codim2[col].abs()));
+                println!(
+                    "{name} T = {period} {tag}: largest bracket end {big:e}, max |value| {all:e}"
+                );
+                assert!(
+                    big <= 1e-10,
+                    "{name} T = {period} {tag}: bracket end {big:e}"
+                );
+                worst = worst.max(big);
+            }
+        }
+    }
+    println!("largest bracket end over the noise models: {worst:e}");
+}

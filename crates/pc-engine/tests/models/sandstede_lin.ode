@@ -1,0 +1,10 @@
+# Our own variant of sandstede.ode for SPEC section 8b-3, acceptance 6. The coupling term
+# x^2(1-x)-y^2 of the z equation is multiplied by (1+x). The plane z=0 still holds the
+# homoclinic orbit to the origin for |a| < b (the factor is finite and the bracket is zero
+# on the orbit), and A=f_x(0) is the one of sandstede.ode, so only the adjoint differs.
+par a=0,b=1,c=-2,mu=0,mut=0,alpha=0,beta=0,gamma=0
+x'=a*x+b*y-a*x^2+(mut-alpha*z)*x*(2-3*x)
+y'=b*x+a*y-1.5*b*x^2-1.5*a*x*y-2*y*(mut-alpha*z)
+z'=c*z+mu*x+gamma*x*z+alpha*beta*(1+x)*(x^2*(1-x)-y^2)
+init x=0,y=0,z=0
+done
