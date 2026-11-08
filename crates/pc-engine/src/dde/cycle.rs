@@ -27,7 +27,7 @@ use crate::cycle::{
 use crate::error::EngineError;
 use crate::model::DdeModel;
 use crate::palc::{Corrected, check_step_options, correct, run_branch};
-use crate::problem::Problem;
+use crate::problem::{Problem, dense_bordered_lu};
 use pc_ir::{DelayTime, EntryKind};
 use std::f64::consts::PI;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -211,6 +211,8 @@ struct DdeCycleProblem<'a> {
     uniform: bool,
     /// Accepted points between mesh adaptations; `None` keeps the mesh fixed.
     adapt_every: Option<usize>,
+    /// Whether the bordered solve returns the scaled branch-point test (SPEC section 8q).
+    bpc: bool,
     /// Accepted points since the last adaptation, and whether the current point adapted.
     since: usize,
     adapted_here: bool,
@@ -253,6 +255,7 @@ impl<'a> DdeCycleProblem<'a> {
             mesh: (0..=s.ntst).map(|j| j as f64 / s.ntst as f64).collect(),
             uniform: true,
             adapt_every: None,
+            bpc: false,
             since: 0,
             adapted_here: false,
         })
@@ -460,7 +463,8 @@ impl Problem for DdeCycleProblem<'_> {
     }
 
     /// The tests of an equilibrium branch do not apply to the discretized orbit. The
-    /// codim-2 tests below take their place (SPEC section 8o).
+    /// codim-2 tests below take their place (SPEC section 8o). The branch-point test is the
+    /// exception, and only when the run asks for it, through `bp_label` (SPEC section 8q).
     fn ep_tests(&self) -> bool {
         false
     }
@@ -494,6 +498,33 @@ impl Problem for DdeCycleProblem<'_> {
 
     fn codim2_labels(&self) -> &'static [&'static str] {
         &CYCLE_LABELS
+    }
+
+    fn bp_label(&self) -> Option<&'static str> {
+        self.bpc.then_some("BPC")
+    }
+
+    fn bordered_solve(
+        &mut self,
+        jac: &[f64],
+        border: &[f64],
+        rhs: &[f64],
+        sol: &mut [f64],
+    ) -> Result<f64, EngineError> {
+        let n = self.dim;
+        if sol.len() != n || rhs.len() != n {
+            return Err(EngineError::BadProblem(
+                "bordered_solve: wrong lengths".into(),
+            ));
+        }
+        let lu = dense_bordered_lu(n, jac, border)?;
+        sol.copy_from_slice(rhs);
+        lu.solve(sol)?;
+        Ok(if self.bpc {
+            lu.det().signum() * lu.min_pivot()
+        } else {
+            lu.det()
+        })
     }
 
     /// The same tests as the ODE cycles (SPEC section 7): LPC is the alpha component of the
@@ -795,7 +826,7 @@ pub struct DdeMeshAdapt {
 /// A special point on a branch of periodic orbits of a delay equation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DdeCycleSpecial {
-    /// `"LPC"`, `"PD"` or `"NS"`.
+    /// `"LPC"`, `"PD"` or `"NS"`, and `"BPC"` from [`continue_cycle_bpc`].
     pub label: String,
     /// The index in `points` of the first point at or after the special point.
     pub index: usize,
@@ -808,7 +839,7 @@ pub struct DdeCycleSpecial {
 pub struct DdeCycleBranch {
     pub points: Vec<DdeCyclePoint>,
     /// The LPC, PD and NS points, in the order of the run. Only an LPC is found without
-    /// Floquet options.
+    /// Floquet options. [`continue_cycle_bpc`] adds the BPC points.
     pub specials: Vec<DdeCycleSpecial>,
     pub stop: StopReason,
     pub warnings: Vec<String>,
@@ -885,7 +916,8 @@ fn check_floquet_keyed(
 /// The run reports LPC points, folds of the branch, and with `floquet` also PD and NS
 /// points from the Floquet multipliers at every point and every locator trial (SPEC
 /// section 8o). `detect_*` and `mesh_adapt` have no effect. Without `floquet`, the points
-/// carry no multipliers. The mesh stays uniform and the points carry no mesh.
+/// carry no multipliers. The mesh stays uniform and the points carry no mesh. No point gets
+/// the `BPC` label here; [`continue_cycle_bpc`] adds it.
 pub fn continue_cycle_floquet(
     model: &mut DdeModel,
     setup: &DdeCycleSetup,
@@ -894,7 +926,12 @@ pub fn continue_cycle_floquet(
     floquet: Option<&DdeFloquetOptions>,
     cancel: &AtomicBool,
 ) -> Result<DdeCycleBranch, EngineError> {
-    continue_cycle_on(model, setup, start, opts, floquet, None, cancel)
+    let keys = RunKeys {
+        floquet,
+        adapt: None,
+        bpc: false,
+    };
+    continue_cycle_on(model, setup, start, opts, &keys, cancel)
 }
 
 /// [`continue_cycle_floquet`] with the mesh moving along the branch (SPEC section 8p). The
@@ -913,10 +950,23 @@ pub fn continue_cycle_adapt(
     adapt: &DdeMeshAdapt,
     cancel: &AtomicBool,
 ) -> Result<DdeCycleBranch, EngineError> {
-    continue_cycle_on(model, setup, start, opts, floquet, Some(adapt), cancel)
+    let keys = RunKeys {
+        floquet,
+        adapt: Some(adapt),
+        bpc: false,
+    };
+    continue_cycle_on(model, setup, start, opts, &keys, cancel)
 }
 
-fn continue_cycle_on(
+/// [`continue_cycle_floquet`] and [`continue_cycle_adapt`] with the branch-point test of SPEC
+/// section 8q on. A sign change of the test is labeled `BPC` in the specials. `adapt` is
+/// `None` for a fixed mesh. The test is the sign of the determinant of the bordered
+/// matrix times its smallest LU pivot. It does not change the points of a run. A branch point
+/// with an even number of crossing branches is not detected.
+///
+/// The checks and their order are those of [`continue_cycle_adapt`] when `adapt` is given and
+/// those of [`continue_cycle_floquet`] otherwise.
+pub fn continue_cycle_bpc(
     model: &mut DdeModel,
     setup: &DdeCycleSetup,
     start: &DdeCycleStart,
@@ -925,6 +975,35 @@ fn continue_cycle_on(
     adapt: Option<&DdeMeshAdapt>,
     cancel: &AtomicBool,
 ) -> Result<DdeCycleBranch, EngineError> {
+    let keys = RunKeys {
+        floquet,
+        adapt,
+        bpc: true,
+    };
+    continue_cycle_on(model, setup, start, opts, &keys, cancel)
+}
+
+/// What distinguishes the public continuation entry points from each other.
+struct RunKeys<'a> {
+    floquet: Option<&'a DdeFloquetOptions>,
+    adapt: Option<&'a DdeMeshAdapt>,
+    /// Whether the run labels branch points of cycles (SPEC section 8q).
+    bpc: bool,
+}
+
+fn continue_cycle_on(
+    model: &mut DdeModel,
+    setup: &DdeCycleSetup,
+    start: &DdeCycleStart,
+    opts: &Options,
+    keys: &RunKeys,
+    cancel: &AtomicBool,
+) -> Result<DdeCycleBranch, EngineError> {
+    let RunKeys {
+        floquet,
+        adapt,
+        bpc,
+    } = *keys;
     if cancel.load(Ordering::Relaxed) {
         return Err(EngineError::Cancelled);
     }
@@ -958,13 +1037,14 @@ fn continue_cycle_on(
     }
     let mut opts = opts.clone();
     opts.detect_lp = false;
-    opts.detect_bp = false;
+    opts.detect_bp = bpc;
     opts.detect_h = false;
 
     let first = correct_cycle(model, setup, start, &opts, cancel)?;
     let mut p = DdeCycleProblem::new(model, setup, n, dim, &first.profile)?;
     p.floquet = floquet.cloned();
     p.adapt_every = adapt.map(|a| a.every);
+    p.bpc = bpc;
     let count = floquet.map_or(0, |f| f.count);
     let mut x0 = first.profile;
     x0.push(first.period);
@@ -1184,6 +1264,54 @@ mod tests {
         assert!(worst < 1.5e-4, "largest residual {worst:e}");
         // The periodicity row is zero for the exact profile: its ends agree.
         assert!(r[pr].abs() < 1e-15, "periodicity row {}", r[pr]);
+    }
+
+    #[test]
+    fn branch_point_labels_are_off_until_the_run_asks_for_them() {
+        let mut m = osc();
+        let reference = sine_profile(&uniform_mesh());
+        let mut p = problem(&mut m, &[0.3, FRAC_PI_2], 0, &reference);
+        assert!(!p.ep_tests());
+        assert_eq!(p.bp_label(), None);
+        p.bpc = true;
+        assert_eq!(p.bp_label(), Some("BPC"));
+    }
+
+    #[test]
+    fn the_bordered_solve_returns_the_determinant_unless_bpc_asks_for_the_scaled_test() {
+        let mut m = osc();
+        let reference = sine_profile(&uniform_mesh());
+        let mut p = problem(&mut m, &[0.3, FRAC_PI_2], 0, &reference);
+        let x = perturbed(&reference, 0.3);
+        let jac = jacobian_of(&mut p, &x);
+        let n = p.dim;
+        let border: Vec<f64> = (0..n).map(|j| (0.7 * j as f64 + 0.2).cos()).collect();
+        let rhs: Vec<f64> = (0..n).map(|j| (0.3 * j as f64).sin()).collect();
+        // What the default trait method computes.
+        let lu = dense_bordered_lu(n, &jac, &border).expect("lu");
+        let mut want = rhs.clone();
+        lu.solve(&mut want).expect("solve");
+        let det = lu.det();
+        assert!(det != 0.0 && det.is_finite());
+        let mut sol = vec![0.0; n];
+        let got = p.bordered_solve(&jac, &border, &rhs, &mut sol).unwrap();
+        assert_eq!(got.to_bits(), det.to_bits());
+        assert_eq!(sol, want);
+        // With `bpc` the solution is the same and the value has the sign of the determinant
+        // and the size of the smallest pivot.
+        p.bpc = true;
+        let mut sol2 = vec![0.0; n];
+        let scaled = p.bordered_solve(&jac, &border, &rhs, &mut sol2).unwrap();
+        assert_eq!(sol2, want);
+        assert_eq!(scaled.signum(), det.signum());
+        assert_eq!(scaled.abs().to_bits(), lu.min_pivot().to_bits());
+        assert!(scaled.abs() <= det.abs().max(1.0));
+        // A wrong length is refused whatever the flag.
+        let mut short = vec![0.0; n - 1];
+        assert!(matches!(
+            p.bordered_solve(&jac, &border, &rhs, &mut short),
+            Err(EngineError::BadProblem(_))
+        ));
     }
 
     #[test]

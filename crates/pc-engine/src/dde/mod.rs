@@ -17,7 +17,8 @@ pub use branch::{DdeBranch, DdePoint, DdeSpecial, continue_equilibrium};
 pub use cycle::{
     DdeCycle, DdeCycleBranch, DdeCyclePoint, DdeCycleSetup, DdeCycleSpecial, DdeCycleStart,
     DdeHopfCycle, DdeMeshAdapt, check_cycle_floquet, continue_cycle, continue_cycle_adapt,
-    continue_cycle_floquet, correct_cycle, cycle_jacobian, cycle_residual, hopf_cycle,
+    continue_cycle_bpc, continue_cycle_floquet, correct_cycle, cycle_jacobian, cycle_residual,
+    hopf_cycle,
 };
 pub use eq::{equilibrium, linearize, residual, stability};
 pub use floquet::{DdeFloquet, DdeFloquetOptions, floquet_multipliers};

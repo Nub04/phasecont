@@ -48,6 +48,7 @@ pub use dde::{
     Lyapunov as DdeLyapunov, Lyapunov2 as DdeLyapunov2, RootOptions, RootSet,
     ZeroHopf as DdeZeroHopf, characteristic_roots, check_cycle_floquet as dde_check_cycle_floquet,
     continue_cycle as dde_continue_cycle, continue_cycle_adapt as dde_continue_cycle_adapt,
+    continue_cycle_bpc as dde_continue_cycle_bpc,
     continue_cycle_floquet as dde_continue_cycle_floquet,
     continue_equilibrium as dde_continue_equilibrium, continue_hopf as dde_continue_hopf,
     continue_hopf_with as dde_continue_hopf_with,
