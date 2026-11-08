@@ -674,6 +674,11 @@ fn print_tables() {
             s.point.alpha - 0.2
         );
     }
+    let mut c = zblk_case(&zblk(), 0.1, NTST, Evaluator::Fallback);
+    row(
+        "test 12 fallback",
+        &bpc(&mut c.m, &c.st, &c.start, &o, None, None).unwrap(),
+    );
     let mut c = zblk_case(&zblk(), 0.1, NTST, Evaluator::Jit);
     row(
         "test 7 adapt",
