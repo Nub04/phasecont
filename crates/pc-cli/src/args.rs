@@ -798,8 +798,9 @@ the given direction (options.direction applies to the first run only) and uses f
 bpc as the problem gives them, off if absent. The output is the one of the second run, with
 one more key, \"switch\": {\"special\", \"alpha\", \"period\"}, the index, the parameter value
 and the period of the BPC. A special that is out of range or is not a BPC, and a BPC that is
-not simple, are errors (exit 2). The start of the second run is not corrected, and the
-points that follow are not stopped at a second label on it.
+not simple, are errors (exit 2). The start of the second run is not corrected, the BPC at
+its start is not labeled again, and bpc still labels the later branch points on the new
+branch.
 
 options:
   --          the next argument is the file, even if it starts with `-`

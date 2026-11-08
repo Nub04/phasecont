@@ -2077,7 +2077,7 @@ fn switch_problems_that_cannot_run_are_exit_2_and_name_switch() {
                 p["options"] = json!({"max_newton": 10});
                 p.as_object_mut().unwrap().remove("branch");
             }),
-            "needs \"branch\"",
+            "\"switch\" follows the other branch at a BPC of a branch and needs \"branch\": true",
         ),
         (
             "branch_false",
@@ -2086,7 +2086,7 @@ fn switch_problems_that_cannot_run_are_exit_2_and_name_switch() {
                 p["options"] = json!({"max_newton": 10});
                 p["branch"] = json!(false);
             }),
-            "needs \"branch\"",
+            "\"switch\" follows the other branch at a BPC of a branch and needs \"branch\": true",
         ),
         (
             "with_adapt",
@@ -2094,16 +2094,18 @@ fn switch_problems_that_cannot_run_are_exit_2_and_name_switch() {
                 p["switch"] = switch_key(json!(0), json!(1));
                 p["adapt"] = json!({"every": 3});
             }),
-            "adapt",
+            "\"switch\" cannot be combined with \"adapt\"",
         ),
     ];
     for (name, edit, word) in cases {
-        let mut p = zblk_problem(&[("bpc", json!(true))]);
+        // No `bpc` key, so a refusal that names `bpc` cannot stand in for one of `switch`.
+        let mut p = zblk_problem(&[]);
         edit(&mut p);
-        let (status, out, err) = zblk_cycle(&format!("switch_bad_{name}.json"), &p);
+        // The file name has no quote marks, so the checks below read the message only.
+        let (status, out, err) = zblk_cycle(&format!("swbad_{name}.json"), &p);
         assert_eq!(status, 2, "{name}: {err}");
         assert!(out.is_empty(), "{name}: {out}");
-        assert!(err.contains("switch"), "{name}: {err}");
+        assert!(err.contains("\"switch\""), "{name}: {err}");
         assert!(err.contains(word), "{name}: {err}");
     }
 }
