@@ -83,7 +83,7 @@ What the numbers say:
 - The RTX 5060 now beats the CPU from N = 10000 on. It is 2.5 to 3.9 times faster at N = 10000 and 5.3 to 7.1 times faster at N = 100000, at roughly 1000 to 1270 million member-steps per second at N = 100000 against 180 to 190 million for the CPU. At N = 1000 it is still slower: OpenCL takes 1.3 times as long as the CPU and CUDA 2.0 to 2.5 times as long.
 - The Arc 140T is faster than the CPU at all three sizes, by 1.2 to 2.6 times at N = 1000, 2.3 to 2.9 times at N = 10000 and 2.3 to 2.9 times at N = 100000. Keeping the context changed it little, since it creates one in under 1 ms.
 - Double precision on the RTX 5060 is within 12 percent of single (OpenCL at N = 1000 was 9 percent faster in double, which is noise). On the Arc 140T it takes 21 to 87 percent longer, depending on N.
-- What is left of the fixed cost on the RTX 5060 is the kernel compile that every run still does: 11 ms in NVRTC for CUDA, about 6 ms in the OpenCL program build. That is most of the 12.5 and 8.3 ms at N = 1000. Where the break-even sits between 1000 and 10000 members was not searched.
+- What is left of the fixed cost on the RTX 5060 is the kernel compile that every run still does: 11 ms in NVRTC for CUDA, and for OpenCL on the RTX 5060 about 6 ms in the program build, which is an estimate (8.3 ms at N = 1000 less 2 to 3 ms to launch and copy) and was not timed separately. That is most of the 12.5 and 8.3 ms at N = 1000. Where the break-even sits between 1000 and 10000 members was not searched.
 - These are single runs on one laptop. Treat them as a rough comparison.
 
 ## Before: every run creates its own context
