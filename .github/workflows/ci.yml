@@ -175,7 +175,7 @@ jobs:
       - name: List the OpenCL devices
         run: clinfo -l
       - name: Run the OpenCL host path and the kernel text checks
-        run: cargo test --locked --no-fail-fast -p pc-ensemble --test device_selftest --test dispatch --test opencl_compile --test msl_syntax
+        run: cargo test --locked --no-fail-fast -p pc-ensemble --test device_selftest --test dispatch --test opencl_compile --test msl_syntax --test kernel_cache
       - name: Run the command-line self-test on the PoCL device
         run: |
           set -eu
