@@ -38,10 +38,42 @@ The Morris-Lecar end point agrees: pc-cli gives v = -35.950125, w = 0.13281562 a
 
 # GPU ensemble
 
-Not measured yet. No GPU backend has run on a GPU. The numbers go here once someone runs the benchmark on hardware:
+Measured on 2026-11-08 with commit 7d09cc2, using a Windows `pc-cli.exe` (cross-built for `x86_64-pc-windows-gnu`) started from WSL:
 
 ```sh
 pc-cli ensemble --bench
 ```
 
-Record the machine, the driver, the commit, the backend, the precision and N for each row, and include the sizes where the GPU is slower than the rayon CPU backend.
+- Machine: Intel Core Ultra 7 255H laptop, CPU backend on 16 rayon threads.
+- NVIDIA: RTX 5060 Laptop GPU, CUDA driver 13.5, NVRTC 13.5, OpenCL driver 621.14.
+- Intel: Arc 140T, OpenCL 3.0 NEO, driver 32.0.101.9150.
+- Model: van der Pol, mu = 1.5, RK4 with dt 0.01 from t = 0 to t = 10, so each member takes 1000 steps.
+- Time: the fastest of 3 repeats, including the host work around the launches. Each cell is wall time in milliseconds for one run.
+- The Metal backend is not built on this machine, and no AMD or Apple device has run.
+
+Single precision:
+
+| Backend and device | N = 1000 | N = 10000 | N = 100000 |
+|---|---|---|---|
+| CPU (rayon) | 5.7 | 54.5 | 556 |
+| CUDA, RTX 5060 | 104 | 112 | 162 |
+| OpenCL, RTX 5060 | 91 | 101 | 154 |
+| OpenCL, Arc 140T | 3.9 | 20.1 | 188 |
+
+Double precision:
+
+| Backend and device | N = 1000 | N = 10000 | N = 100000 |
+|---|---|---|---|
+| CPU (rayon) | 6.1 | 52.4 | 538 |
+| CUDA, RTX 5060 | 94 | 106 | 172 |
+| OpenCL, RTX 5060 | 87 | 93 | 158 |
+| OpenCL, Arc 140T | 5.5 | 25.5 | 227 |
+
+What the numbers say:
+
+- The RTX 5060 is slower than the CPU at N = 1000 and N = 10000, in both precisions and on both backends. Its time barely changes from 1000 to 10000 members (about 90 to 100 ms to about 100 to 110 ms), so a fixed cost of about 90 ms per run dominates. At N = 100000 it is 3.1 to 3.6 times faster than the CPU, at roughly 580 to 650 million member-steps per second against about 180 million for the CPU.
+- The Arc 140T has almost no fixed cost. It is faster than the CPU at all three sizes, by 1.1 to 1.5 times at N = 1000, 2.1 to 2.7 times at N = 10000 and 2.4 to 3.0 times at N = 100000.
+- Double precision on the RTX 5060 costs about the same as single. On the Arc 140T it is 20 to 40 percent slower, depending on N.
+- Where the break-even sits for the RTX 5060 is between 10000 and 100000 members. This run did not search for it.
+- The cause of the fixed cost on the RTX 5060 is not investigated. Kernel compilation on every run, context setup or something else would all fit these numbers.
+- These are single runs on one laptop. Treat them as a rough comparison.
