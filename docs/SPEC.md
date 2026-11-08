@@ -1558,7 +1558,8 @@ For every $\mu$ it has the orbit $x = \sin t$, $z = 0$ with $T = 2\pi$, since $x
 
 1. The exact branch point. ZBLK, start $\mu = 0.1$, no `floquet`, no `adapt`. The run has exactly one special and its label is `BPC`, with $\lvert\alpha - 0.3\rvert \le 10^{-11}$. The same run from $\mu = 0.6$ with `direction` $-1$ has the same. `continue_cycle_floquet` on the same inputs has no special with the label `BPC`, and neither has `continue_cycle_adapt`.
 2. Step size and start. ZBLK from the off-grid start $\mu = 0.137$ with $h_{\max} = 0.083$ and with $h_{\max} = 0.31$: exactly one special, `BPC`, with $\lvert\alpha - 0.3\rvert \le 10^{-11}$.
-3. Floquet and size. ZBLK with `floquet` ($\mathrm{nhist} = 20$, $\mathrm{count} = 4$), and ZBLK with $N = 100$, $m = 4$ and no `floquet`: in each, exactly one special, `BPC`, with $\lvert\alpha - 0.3\rvert \le 10^{-11}$.4. A model with a nonlinear coefficient. The `z` equation replaced by `z'=(exp(8*mu)-exp(8*m0))*z-z^3`, start $\mu = 0.137$, $h_{\max} = 0.31$: exactly one `BPC` with $\lvert\alpha - 0.3\rvert \le 10^{-11}$.
+3. Floquet and size. ZBLK with `floquet` ($\mathrm{nhist} = 20$, $\mathrm{count} = 4$), and ZBLK with $N = 100$, $m = 4$ and no `floquet`: in each, exactly one special, `BPC`, with $\lvert\alpha - 0.3\rvert \le 10^{-11}$.
+4. A model with a nonlinear coefficient. The `z` equation replaced by `z'=(exp(8*mu)-exp(8*m0))*z-z^3`, start $\mu = 0.137$, $h_{\max} = 0.31$: exactly one `BPC` with $\lvert\alpha - 0.3\rvert \le 10^{-11}$.
 5. Branch point, fold, branch point. The model
 
         par a=0.25, tau=1.5707963267948966, m0=0.2
