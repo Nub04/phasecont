@@ -516,5 +516,60 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
             testCase.verifySize(br.Codim2, [0 14]);
             testCase.verifySize(br.Period, [0 1]);
         end
+
+        function delayRows(testCase)
+            % A delay row is [alpha, u(1..n), count], n + 2 values, with
+            % the count of roots in the right half plane stored as a double.
+            n = 2;
+            pts = [ ...
+                1.0, 0.5 0.25, 0; ...
+                1.5, 0.6 0.30, 0; ...
+                2.0, 0.7 0.35, 2].';
+            specials = [1.5708, 0.6 0.30, 2].';
+            st = struct("points", 3, "stop", "Bounds", "warnings", {{}}, ...
+                "specials", struct("label", "H", "index", 1, ...
+                    "coefficient", [], "omega", 1.5708, ...
+                    "normalization", [], "refined", false, ...
+                    "coefficients", struct("unstable_before", 0, ...
+                        "unstable_after", 2)));
+            br = phasecont.internal.rows2branch(phasecont.Model.empty, 1, ...
+                [1.3; 1], n, pts, specials, st, "DDE");
+            testCase.verifyEqual(br.Type, "EP");
+            testCase.verifyEqual(br.Alpha, [1.0; 1.5; 2.0]);
+            testCase.verifyEqual(br.U, [0.5 0.25; 0.6 0.30; 0.7 0.35]);
+            testCase.verifyEqual(br.RootCount, [0; 0; 2]);
+            testCase.verifyEqual(br.Stable, [true; true; false]);
+            testCase.verifySize(br.Eigenvalues, [3 0]);
+            testCase.verifySize(br.Tests, [3 0]);
+            testCase.verifySize(br.Codim2, [3 0]);
+            testCase.verifyEqual(br.StepSize, NaN(3, 1));
+            testCase.verifyEqual(br.NewtonIters, NaN(3, 1));
+            testCase.verifyEqual(br.Stop, "Bounds");
+            testCase.assertNumElements(br.Specials, 1);
+            sp = br.Specials;
+            testCase.verifyEqual(sp.Label, "H");
+            testCase.verifyEqual(sp.Index, 2);
+            testCase.verifyEqual(sp.P, [1.5708; 1]);
+            testCase.verifyEqual(sp.U, [0.6; 0.30]);
+            testCase.verifyEmpty(sp.Eigenvalues);
+            testCase.verifyEqual(sp.Data.omega, 1.5708);
+            testCase.verifyEqual(sp.Data.values.unstable_before, 0);
+            testCase.verifyEqual(sp.Data.values.unstable_after, 2);
+        end
+
+        function delayRowErrors(testCase)
+            st = struct("points", 0, "stop", [], "warnings", [], ...
+                "specials", []);
+            e = phasecont.Model.empty;
+            % The stride for n = 2 is 4. An equilibrium row of an ODE has 11.
+            testCase.verifyError(@() phasecont.internal.rows2branch(e, 1, ...
+                [0; 0], 2, zeros(11, 0), zeros(11, 0), st, "DDE"), ...
+                "phasecont:model:badRows");
+            br = phasecont.internal.rows2branch(e, 1, [0; 0], 2, ...
+                zeros(4, 0), zeros(4, 0), st, "DDE");
+            testCase.verifySize(br.Alpha, [0 1]);
+            testCase.verifySize(br.RootCount, [0 1]);
+            testCase.verifySize(br.Eigenvalues, [0 0]);
+        end
     end
 end

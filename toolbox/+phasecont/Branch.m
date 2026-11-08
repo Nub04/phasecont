@@ -43,11 +43,15 @@ classdef Branch < handle
     %                N-by-n(NTST*NCOL+1) (see cycle)
     %   Eigenvalues  N-by-n complex; the Floquet multipliers for "LC",
     %                "LPC", "PD" and "NS"; for "HOM", the eigenvalues of the
-    %                Jacobian at the saddle X0
+    %                Jacobian at the saddle X0; N-by-0 for a delay model
     %   Stable       true where all eigenvalues have negative real part; for
     %                "LC", where all multipliers except the one closest to 1
     %                have modulus below 1; false everywhere on a curve, whose
-    %                points are never hyperbolic
+    %                points are never hyperbolic; for a delay model, true
+    %                where RootCount is 0
+    %   RootCount    for a delay model, the number of characteristic roots
+    %                with positive real part at each point, N-by-1; empty
+    %                for an ODE model
     %   Tests        [psi_LP psi_BP psi_H] at each point, N-by-3; [psi_LPC
     %                psi_PD psi_NS] for "LC"; N-by-0 on a curve
     %   Codim2       codim-2 test values at each point of a curve, N-by-k
@@ -87,6 +91,7 @@ classdef Branch < handle
         U (:,:) double = zeros(0,0)
         Eigenvalues (:,:) double = zeros(0,0)
         Stable (:,1) logical = false(0,1)
+        RootCount (:,1) double = zeros(0,1)
         Tests (:,:) double = zeros(0,3)
         Codim2 (:,:) double = zeros(0,0)
         Codim2Labels (1,:) string = strings(1,0)

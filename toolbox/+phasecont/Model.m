@@ -34,6 +34,9 @@ classdef Model < handle
             "Flags", "", "Library", "")
         % Autonomous is false when the equations use t.
         Autonomous (1,1) logical = true
+        % IsDelay is true when the equations use delay(...). The engine runs
+        % such a model with the JIT only, and only through the delay entries.
+        IsDelay (1,1) logical = false
         % SourceSha256 is the SHA-256 of the exact source text, as 64 lower-case
         % hex digits. A saved session stores it to check that a replay runs
         % the same model.
@@ -447,6 +450,15 @@ classdef Model < handle
             end
             aot = phasecont.Model.emptyAotInfo();
             try
+                % A delay model has no AOT route; use the JIT without a warning.
+                isDelay = false;
+                first = jsondecode(pckern("model_info", id));
+                if isfield(first, "delay")
+                    isDelay = logical(first.delay);
+                end
+                if isDelay && obj.Evaluator == "aot"
+                    obj.Evaluator = "jit";
+                end
                 if obj.Evaluator == "aot"
                     [ok, aot] = phasecont.Model.compileAot(id);
                     if ~ok
@@ -470,6 +482,11 @@ classdef Model < handle
             for k = 1:numel(entries)
                 if string(entries(k).severity) == "warning"
                     e = entries(k);
+                    % ODE0054 says a delay model needs the dde-* commands of the
+                    % CLI. This front end runs it, so only Diagnostics keeps it.
+                    if isDelay && string(e.code) == "ODE0054"
+                        continue
+                    end
                     warning("phasecont:model:parseWarning", "%s", ...
                         sprintf("%s:%d:%d: %s", file, e.line, e.col, e.message));
                 end
@@ -481,6 +498,7 @@ classdef Model < handle
             obj.Evaluator = string(info.evaluator);
             obj.AotInfo = aot;
             obj.Autonomous = logical(info.autonomous);
+            obj.IsDelay = isDelay;
             obj.SourceSha256 = string(info.source_sha256);
             obj.Options = phasecont.Model.toOptions(info.options);
             obj.Diagnostics = entries;

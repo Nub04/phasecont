@@ -58,6 +58,22 @@ function br = continuation(m, start, options)
 %   IFU. Their columns of C.Codim2 are NaN otherwise.
 %   Detect, Switch and Var do not apply.
 %
+%   BR = phasecont.continuation(M, X0, Free = "r", Roots = struct(N = 30,
+%   ReMin = -0.5)) follows the equilibria of a delay model, one whose
+%   equations call delay(x, tau). Only Type = "EP" exists for it. N is the
+%   degree of the pseudospectral approximation of the characteristic roots and
+%   ReMin the smallest real part to look for; ReMin must be below 0, and
+%   neither has a default. BR.RootCount holds the number of roots with
+%   positive real part at each point and BR.Stable is true where it is 0. A
+%   Hopf point (H) is reported where the count changes by a complex pair, a
+%   fold (LP) or a branch point (BP) where it changes by one; the Data of the
+%   point holds omega and the counts before and after in Data.values. The
+%   branch has no Eigenvalues, Tests or Codim2. START must be a state vector
+%   or an EP point. Detect takes "LP" and "BP" only (default both). Switch,
+%   MeshAdapt and every Type other than "EP" are refused. The engine returns
+%   the points when the run ends, so a live Plot draws once and a cancelled
+%   run keeps nothing.
+%
 %   Name-value options
 %     Type       "EP" (default), "LP", "H", "LC", "LPC", "PD", "NS" or "HOM"
 %     Free       free parameter, one of M.Parameters (required); two names
@@ -76,7 +92,8 @@ function br = continuation(m, start, options)
 %     TolX TolF  Newton tolerances on the step and the residual
 %     MaxNewton  most Newton iterations per step
 %     Detect     labels to detect, a subset of ["LP" "BP" "H"] (default all);
-%                Type "EP" only
+%                Type "EP" only; ["LP" "BP"] only, and the default, for a
+%                delay model
 %     Switch     special point to switch at, like "BP1"; Type "EP" only
 %     Plot       true draws the branch while the run goes and ends with the
 %                styled plot of Branch.plot (default false)
@@ -92,6 +109,8 @@ function br = continuation(m, start, options)
 %                a cycle or homoclinic orbit; 0 keeps the start mesh (integer
 %                of at least 0, engine default 3); Type "LC", "LPC", "PD",
 %                "NS" or "HOM" only
+%     Roots      struct(N = n, ReMin = r) for a delay model (required there,
+%                refused for an ODE model); see above
 %
 %   Options that are not given keep the engine defaults. If START is a
 %   special point (any label except "EP"), the run does not report that
@@ -120,6 +139,7 @@ arguments
     options.Params = []
     options.InclinationFlips = []
     options.MeshAdapt = []
+    options.Roots = []
 end
 import phasecont.internal.num2json
 
@@ -127,6 +147,30 @@ type = string(options.Type);
 if ~isscalar(type) || ~ismember(type, ["EP" "LP" "H" "LC" "LPC" "PD" "NS" "HOM"])
     error("phasecont:model:badOption", ...
         "Type must be ""EP"", ""LP"", ""H"", ""LC"", ""LPC"", ""PD"", ""NS"" or ""HOM"".");
+end
+isDelay = m.IsDelay;
+roots = delayRoots(options.Roots, isDelay);
+if isDelay
+    % The engine's delay entry follows equilibria only. A Hopf point comes
+    % from the root count, and none of the cycle or curve options exist.
+    if type ~= "EP"
+        error("phasecont:model:badOption", ...
+            "Type must be ""EP"" for a delay model, got ""%s"".", type);
+    end
+    if ~isempty(options.MeshAdapt)
+        error("phasecont:model:badOption", ...
+            "MeshAdapt does not apply to a delay model.");
+    end
+    if ~isempty(options.Switch)
+        error("phasecont:model:badOption", ...
+            "Switch does not apply to a delay model.");
+    end
+    if ~isa(options.Detect, "missing") ...
+            && ~all(ismember(string(options.Detect), ["LP" "BP"]))
+        error("phasecont:model:badOption", ...
+            "Detect for a delay model takes ""LP"" and ""BP"" only; a Hopf " + ...
+            "point comes from the root count.");
+    end
 end
 isCycle = type == "LC";
 % A curve of cycles has two free parameters like an LP or H curve.
@@ -209,6 +253,11 @@ elseif isHom
     [u0, p, from, mesh, grid] = homStart(m, start, options);
 else
     [u0, p, special] = startValues(m, start, options.Params);
+    if isDelay && special
+        error("phasecont:model:badStart", ...
+            "A delay run starts from an equilibrium (label ""EP""), not from ""%s"".", ...
+            start.Label);
+    end
 end
 
 parts = strings(1, 0);
@@ -238,7 +287,15 @@ if ~isempty(options.Bounds)
     end
     parts(end+1) = """bounds"":[" + num2json(b(1)) + "," + num2json(b(2)) + "]";
 end
-if type == "EP"
+if type == "EP" && isDelay
+    if isa(options.Detect, "missing")
+        detect = ["LP" "BP"];
+    else
+        detect = string(options.Detect);
+    end
+    parts(end+1) = """detect"":{""lp"":" + lower(string(any(detect == "LP"))) + ...
+        ",""bp"":" + lower(string(any(detect == "BP"))) + "}";
+elseif type == "EP"
     if isa(options.Detect, "missing")
         detect = ["LP" "BP" "H"];
     else
@@ -283,6 +340,10 @@ elseif isCycle
             strjoin(arrayfun(@num2json, mesh), ",") + "]";
     end
     problem = problem + ",""options"":{" + strjoin(parts, ",") + "}";
+elseif isDelay
+    problem = "{""type"":""EP"",""free"":" + jsonencode(free) + ...
+        ",""roots"":{""n"":" + num2json(roots.N) + ",""re_min"":" + ...
+        num2json(roots.ReMin) + "},""options"":{" + strjoin(parts, ",") + "}";
 else
     problem = "{""type"":""EP"",""free"":" + jsonencode(free) + ...
         ",""start_is_special"":" + lower(string(special)) + ...
@@ -393,6 +454,40 @@ end
         end
         drawnow limitrate
     end
+end
+
+function roots = delayRoots(value, isDelay)
+% The Roots option as a struct with N and ReMin. A delay model needs it and an
+% ODE model must not have it. N is the degree of the pseudospectral
+% interpolation that finds the characteristic roots, and the search keeps the
+% roots with real part of at least ReMin, which must be negative so that every
+% root in the right half plane is in range. Neither has a default.
+roots = struct("N", 0, "ReMin", 0);
+if isempty(value) && ~isstruct(value)
+    if isDelay
+        error("phasecont:model:badOption", ...
+            "A delay model needs the Roots option, for example Roots = struct(N = 30, ReMin = -0.5).");
+    end
+    return
+end
+if ~isDelay
+    error("phasecont:model:badOption", ...
+        "Roots applies to a delay model only.");
+end
+ok = isstruct(value) && isscalar(value) ...
+    && isequal(sort(string(fieldnames(value))), ["N"; "ReMin"]);
+if ok
+    n = value.N;
+    r = value.ReMin;
+    ok = isnumeric(n) && isreal(n) && isscalar(n) && isfinite(n) ...
+        && n >= 1 && n == round(n) ...
+        && isnumeric(r) && isreal(r) && isscalar(r) && isfinite(r) && r < 0;
+end
+if ~ok
+    error("phasecont:model:badOption", ...
+        "Roots must be struct(N = n, ReMin = r) with an integer N of at least 1 and a ReMin below 0.");
+end
+roots = struct("N", double(value.N), "ReMin", double(value.ReMin));
 end
 
 function [u0, p, special] = startValues(m, start, params)
