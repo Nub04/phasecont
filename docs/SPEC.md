@@ -1556,17 +1556,17 @@ The oracle model ZBLK is, with $\pi/2$ written out as `tau`,
 
 For every $\mu$ it has the orbit $x = \sin t$, $z = 0$ with $T = 2\pi$, since $x(t - \tau) = \sin(t - \pi/2) = -\cos t$ and then $\dot x = -x(t-\tau) + 0 = \cos t$. The $z$ equation is decoupled and has the equilibrium $z = 0$, so the variational equation is block diagonal. Its $z$ block is $\zeta' = (\mu - m_0)\zeta$, a scalar linear periodic problem, and its discretization is singular exactly at $\mu = m_0$. So the discretized problem has a branch point on the line at $\mu = m_0$, where the nontrivial branch $z^2 = \mu - m_0$ crosses, and the Jacobian is block diagonal for the same reason. The start is the exact orbit, `free = mu`, `bounds` $= (0.1, 0.6)$, `direction` $+1$ unless a test says otherwise.
 
-1. The exact branch point. ZBLK, start $\mu = 0.1$, no `floquet`, no `adapt`. The run has exactly one special and its label is `BPC`, with $\lvert\alpha - 0.3\rvert \le 10^{-11}$. The same run from $\mu = 0.6$ with `direction` $-1$ has the same. `continue_cycle_floquet` on the same inputs has no special with the label `BPC`, and neither has `continue_cycle_adapt`.
-2. Step size and start. ZBLK from the off-grid start $\mu = 0.137$ with $h_{\max} = 0.083$ and with $h_{\max} = 0.31$: exactly one special, `BPC`, with $\lvert\alpha - 0.3\rvert \le 10^{-11}$.
-3. Floquet and size. ZBLK with `floquet` ($\mathrm{nhist} = 20$, $\mathrm{count} = 4$), and ZBLK with $N = 100$, $m = 4$ and no `floquet`: in each, exactly one special, `BPC`, with $\lvert\alpha - 0.3\rvert \le 10^{-11}$.
-4. A model with a nonlinear coefficient. The `z` equation replaced by `z'=(exp(8*mu)-exp(8*m0))*z-z^3`, start $\mu = 0.137$, $h_{\max} = 0.31$: exactly one `BPC` with $\lvert\alpha - 0.3\rvert \le 10^{-11}$.
+1. The exact branch point. ZBLK, start $\mu = 0.1$, no `floquet`, no `adapt`. The run has exactly one special and its label is `BPC`, with $\lvert\alpha - 0.3\rvert \le 10^{-13}$. The same run from $\mu = 0.6$ with `direction` $-1$ has the same. `continue_cycle_floquet` on the same inputs has no special with the label `BPC`, and neither has `continue_cycle_adapt`.
+2. Step size and start. ZBLK from the off-grid start $\mu = 0.137$ with $h_{\max} = 0.083$ and with $h_{\max} = 0.31$: exactly one special, `BPC`, with $\lvert\alpha - 0.3\rvert \le 10^{-13}$.
+3. Floquet and size. ZBLK with `floquet` ($\mathrm{nhist} = 20$, $\mathrm{count} = 4$), and ZBLK with $N = 100$, $m = 4$ and no `floquet`: in each, exactly one special, `BPC`, with $\lvert\alpha - 0.3\rvert \le 10^{-13}$.
+4. A model with a nonlinear coefficient. The `z` equation replaced by `z'=(exp(8*mu)-exp(8*m0))*z-z^3`, start $\mu = 0.137$, $h_{\max} = 0.31$: exactly one `BPC` with $\lvert\alpha - 0.3\rvert \le 10^{-13}$.
 5. Branch point, fold, branch point. The model
 
         par a=0.25, tau=1.5707963267948966, m0=0.2
         x'=-delay(x,tau)+x*(a-(x^2+delay(x,tau)^2-1)^2)
         z'=(a-m0)*z-z^3
 
-   with `free = a`, the start $x = \sqrt{1.5}\,\sin 2\pi s_q$, $z = 0$, $T = 2\pi$, `bounds` $= (-0.5, 0.4)$, `direction` $-1$, `floquet` as in test 3. The specials in order of $\alpha$ along the run are `BPC`, `LPC`, `BPC`. Both `BPC` have $\lvert a - 0.2\rvert \le 10^{-10}$. The `LPC` is at the fold of the cubic branch, which is $a = 0$ (Section 8o, test 3), with $\lvert a\rvert \le 2\times10^{-11}$, the bound of that test.
+   with `free = a`, the start $x = \sqrt{1.5}\,\sin 2\pi s_q$, $z = 0$, $T = 2\pi$, `bounds` $= (-0.5, 0.4)$, `direction` $-1$, `floquet` as in test 3. The specials in order of $\alpha$ along the run are `BPC`, `LPC`, `BPC`. Both `BPC` have $\lvert a - 0.2\rvert \le 10^{-13}$. The `LPC` is at the fold of the cubic branch, which is $a = 0$ (Section 8o, test 3), with $\lvert a\rvert \le 2\times10^{-11}$, the bound of that test.
 6. No false label. Each of these runs, with `floquet` where the model has the labels of Section 8o, has no `BPC`: ZBLK with $m_0 = 1.0$ (no branch point in the range); the OSC model of Section 8l alone on the $\mu$-line of Section 8n, test 1 ($K = 0$); the cubic model of test 5 without the $z$ equation (it has the `LPC`, and the test checks that the fold gives no `BPC`); and the model
 
         par mu=0.3, tau=1.5707963267948966, s=0.3
@@ -1582,7 +1582,24 @@ For every $\mu$ it has the orbit $x = \sin t$, $z = 0$ with $T = 2\pi$, since $x
 12. The two evaluators. Test 1 with `Evaluator::Jit` and `Evaluator::Fallback` gives the same number of points and specials, and the `alpha` of the `BPC` agrees to $10^{-9}$.
 13. `pc-cli dde-cycle` with ZBLK as the problem, `branch: true` and `bpc: true` prints one special with the label `BPC` and $\lvert\alpha - 0.3\rvert \le 10^{-11}$ in the JSON, and the points are those of the same run without `bpc` (the `alpha`, `period` and `profile` of every point bit for bit). It also works with `floquet`, with `adapt`, and with both. Without `bpc`, and with `bpc: false`, the output has no `BPC` and equals the output of Sections 8n to 8p. `bpc: 1`, `bpc: "yes"`, and `bpc: true` without `branch` are exit 2 naming `bpc`, with a Hopf start as well.
 
-**Measured values.** The bounds above come from a feasibility run before the code of this step was written, on the development machine, with a prototype of the hook in a scratch copy of the engine (not committed). On the exact oracles with a uniform mesh the error of $\alpha$ was at the rounding level, about $10^{-15}$, with and without `floquet`, at $N = 100$, with a nonlinear block, with the off-grid start and with the step $h_{\max} = 0.31$. With `adapt` the error was $7.4\times10^{-11}$ in $\alpha$ and $1.2\times10^{-8}$ in $T - 2\pi$. The sequence `BPC`, `LPC`, `BPC` was found. No false label appeared at the `NS` point or at the fold, and the double branch point was missed. The bounds of tests 1 to 4 and 7 are about 4 times these values, and $10^4$ times for the rounding-level ones. The bound of test 5 does not come from that run, which printed the locations without a bound in mind, so it is set loosely and is tightened to the measured value after the code runs. A table of the values that the final tests measure is added then.
+**Measured values.** The first bounds came from a feasibility run before the code of this step was written, on the development machine, with a prototype of the hook in a scratch copy of the engine (not committed). On the exact oracles with a uniform mesh the error of $\alpha$ was at the rounding level, about $10^{-15}$, with and without `floquet`, at $N = 100$, with a nonlinear block, with the off-grid start and with the step $h_{\max} = 0.31$. With `adapt` the error was $7.4\times10^{-11}$ in $\alpha$ and $1.2\times10^{-8}$ in $T - 2\pi$. The sequence `BPC`, `LPC`, `BPC` was found. No false label appeared at the `NS` point or at the fold, and the double branch point was missed.
+
+The final tests print what they measure with `cargo test -p pc-engine --test dde_cycle_bpc -- --ignored --nocapture` (the test `print_tables`). On the development machine, in the `dev` profile:
+
+| Run | Point | $\alpha - m_0$ | $T - 2\pi$ |
+|---|---|---|---|
+| Test 1, direction $+1$ | 8 | $-1.6\times10^{-15}$ | $1.9\times10^{-11}$ |
+| Test 1, direction $-1$ | 9 | $-1.6\times10^{-15}$ | $1.9\times10^{-11}$ |
+| Test 2, $h_{\max} = 0.083$ | 7 | $-5.6\times10^{-17}$ | $1.9\times10^{-11}$ |
+| Test 2, $h_{\max} = 0.31$ | 7 | $-5.6\times10^{-17}$ | $1.9\times10^{-11}$ |
+| Test 3, `floquet` | 8 | $-1.6\times10^{-15}$ | $1.9\times10^{-11}$ |
+| Test 3, $N = 100$ | 8 | $-6.6\times10^{-15}$ | $0$ |
+| Test 4, nonlinear block | 7 | $5.6\times10^{-17}$ | $1.9\times10^{-11}$ |
+| Test 7, `adapt` | 8 | $-7.4\times10^{-11}$ | $-1.2\times10^{-8}$ |
+
+Test 5 gives `BPC` at point 7 ($a - 0.2 = -1.3\times10^{-15}$), `LPC` at point 21 ($a = 5.8\times10^{-12}$) and `BPC` at point 37 ($a - 0.2 = 2.1\times10^{-15}$).
+
+The bounds of tests 1 to 5 without `adapt` are $10^{-13}$, 15 to 50 times the largest value above, so that another platform's libm does not trip them. The bounds of test 7 are about 4 times the table. The `LPC` bound of test 5 is the one of Section 8o, test 3, about 3.4 times the value above. The bound of test 12 ($10^{-9}$) and the CLI bounds of test 13 ($10^{-11}$, and $3\times10^{-10}$ with `adapt`) are looser than the values and were not set from a measurement. The table comes from one machine and one build, and a run on another platform is not recorded.
 
 ## 9. Acceptance tests
 
