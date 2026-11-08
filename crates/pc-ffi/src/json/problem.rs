@@ -9,7 +9,7 @@ use pc_engine::{
     CYCLE_LABELS, CurveSetup, CycleCurveStart, CycleSetup, CycleStart, EpSetup, Evaluator,
     HOM_CURVE_LABELS, HOPF_CURVE_LABELS, HomStart, HomStartKind, HopfStart, IvpOptions,
     LP_CURVE_LABELS, LPC_CURVE_LABELS, NCOL_RANGE, NS_CURVE_LABELS, Options, PD_CURVE_LABELS,
-    PdStart, RunKind, RunSpec,
+    PdStart, RootOptions, RunKind, RunSpec,
 };
 use pc_ir::IrModel;
 use pc_ode::{Model, ModelInfo};
@@ -23,13 +23,30 @@ use serde_json::{Map, Value};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Ep,
+    /// The equilibrium branch of a delay equation (SPEC 8s). It reads as `"EP"` in the JSON.
+    DdeEp,
     Lp,
     Hopf,
-    Lc { ntst: usize, ncol: usize },
-    Lpc { ntst: usize, ncol: usize },
-    Pd { ntst: usize, ncol: usize },
-    Ns { ntst: usize, ncol: usize },
-    Hom { ntst: usize, ncol: usize },
+    Lc {
+        ntst: usize,
+        ncol: usize,
+    },
+    Lpc {
+        ntst: usize,
+        ncol: usize,
+    },
+    Pd {
+        ntst: usize,
+        ncol: usize,
+    },
+    Ns {
+        ntst: usize,
+        ncol: usize,
+    },
+    Hom {
+        ntst: usize,
+        ncol: usize,
+    },
     Ivp,
 }
 
@@ -37,7 +54,7 @@ impl Kind {
     /// The `type` string of the problem JSON.
     pub fn name(self) -> &'static str {
         match self {
-            Kind::Ep => "EP",
+            Kind::Ep | Kind::DdeEp => "EP",
             Kind::Lp => "LP",
             Kind::Hopf => "H",
             Kind::Lc { .. } => "LC",
@@ -54,7 +71,7 @@ impl Kind {
     /// curve. Empty for an equilibrium branch.
     pub fn labels(self) -> &'static [&'static str] {
         match self {
-            Kind::Ep | Kind::Ivp => &[],
+            Kind::Ep | Kind::DdeEp | Kind::Ivp => &[],
             Kind::Lp => &LP_CURVE_LABELS,
             Kind::Hopf => &HOPF_CURVE_LABELS,
             Kind::Lc { .. } => &CYCLE_LABELS,
@@ -151,6 +168,9 @@ pub struct Problem {
     /// Whether a HOM run computes the inclination flip tests IFS and IFU (SPEC §8b-3). The key
     /// `inclination_flips` sets it and it is off when the key is missing.
     pub inclination_flips: bool,
+    /// The characteristic-root count of a delay-equation run (SPEC 8s), `Some` exactly when
+    /// `kind` is `DdeEp`. It sits here and not in `Kind`, which stays `Copy + Eq`.
+    pub roots: Option<RootOptions>,
 }
 
 impl Problem {
@@ -210,6 +230,7 @@ impl Problem {
                     inclination_flips: self.inclination_flips,
                 })
             }
+            (Kind::DdeEp, ..) if let Some(roots) = self.roots => RunKind::DdeEq(roots),
             _ => RunKind::Ep,
         }
     }
@@ -296,7 +317,7 @@ impl Problem {
                 spec.switch_at = self.switch;
                 spec
             }
-            RunKind::Ivp { .. } => {
+            RunKind::Ivp { .. } | RunKind::DdeEq(_) => {
                 let mut spec = RunSpec::new(model, info, evaluator, self.setup, self.opts);
                 spec.kind = kind;
                 spec
@@ -403,11 +424,15 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
             "mesh",
             "tspan",
             "inclination_flips",
+            "roots",
         ],
         "",
     )?;
+    // A delay model has hidden delay slots after its user parameters (SPEC 8s).
+    let delay = !ir.delays.is_empty();
     let kind = match top.get("type") {
         None => return Err("type: missing".into()),
+        Some(Value::String(s)) if s == "EP" && delay => Kind::DdeEp,
         Some(Value::String(s)) if s == "EP" => Kind::Ep,
         Some(Value::String(s)) if s == "LP" => Kind::Lp,
         Some(Value::String(s)) if s == "H" => Kind::Hopf,
@@ -438,8 +463,12 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
     if top.contains_key("tspan") {
         return Err("tspan: only an IVP run takes this key".into());
     }
+    if delay && kind != Kind::DdeEp {
+        return Err("type: a delay equation takes only \"EP\"".into());
+    }
+    let roots = parse_roots(top, kind)?;
     let curve_of_cycles = matches!(kind, Kind::Lpc { .. } | Kind::Pd { .. } | Kind::Ns { .. });
-    let one_free = matches!(kind, Kind::Ep | Kind::Lc { .. });
+    let one_free = matches!(kind, Kind::Ep | Kind::DdeEp | Kind::Lc { .. });
     let (free, curve_free) = match (one_free, top.get("free")) {
         (_, None) => return Err("free: missing".into()),
         (true, Some(Value::String(name))) => (
@@ -523,6 +552,17 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         Some(o) => parse_options(o)?,
     };
     let has_option = |key: &str| top.get("options").is_some_and(|o| o.get(key).is_some());
+    if kind == Kind::DdeEp
+        && top
+            .get("options")
+            .and_then(|o| o.get("detect"))
+            .and_then(Value::as_object)
+            .is_some_and(|d| d.contains_key("h"))
+    {
+        return Err(
+            "options.detect.h: Hopf points come from the root count, not from detect".into(),
+        );
+    }
     match kind {
         Kind::Lc { .. } if has_option("detect") => {
             return Err("options.detect: an LC run always detects LPC, PD and NS".into());
@@ -571,12 +611,21 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         return Err("inclination_flips: only a HOM run takes this key".into());
     }
 
-    if kind != Kind::Ep {
+    if !matches!(kind, Kind::Ep | Kind::DdeEp) {
         if switch.is_some() {
             return Err("switch: only an EP run can switch branches".into());
         }
         if top.contains_key("start_is_special") {
             return Err("start_is_special: only an EP run starts at a special point".into());
+        }
+    }
+
+    if kind == Kind::DdeEp {
+        if switch.is_some() {
+            return Err("switch: a delay-equation run cannot switch branches".into());
+        }
+        if top.contains_key("start_is_special") {
+            return Err("start_is_special: a delay-equation run starts by Newton from u0".into());
         }
     }
 
@@ -591,6 +640,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         cycle,
         ivp: None,
         inclination_flips,
+        roots,
     };
     if mode == Mode::Cli {
         problem.check_u0_len(ir.n(), problem.setup.u0.len())?;
@@ -598,9 +648,36 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
     Ok(problem)
 }
 
+/// The `roots` key of a delay-equation run (SPEC 8s): required, with `n` and `re_min` both
+/// given. It is an error for any other kind. `Some` exactly when `kind` is `DdeEp`.
+fn parse_roots(top: &Map<String, Value>, kind: Kind) -> Result<Option<RootOptions>, String> {
+    let Some(v) = top.get("roots") else {
+        return if kind == Kind::DdeEp {
+            Err("roots: missing; a delay-equation run needs n and re_min".into())
+        } else {
+            Ok(None)
+        };
+    };
+    if kind != Kind::DdeEp {
+        return Err("roots: only a delay-equation run takes this key".into());
+    }
+    let map = object(v, "roots")?;
+    only_keys(map, &["n", "re_min"], "roots")?;
+    let n = count(map.get("n").ok_or("roots.n: missing")?, "roots.n")?;
+    let re_min = number(
+        map.get("re_min").ok_or("roots.re_min: missing")?,
+        "roots.re_min",
+    )?;
+    if re_min >= 0.0 {
+        return Err("roots.re_min: must be less than 0".into());
+    }
+    Ok(Some(RootOptions { n, re_min }))
+}
+
 /// The model's parameter values with the ones that `params` sets.
 fn parse_params(top: &Map<String, Value>, ir: &IrModel) -> Result<Vec<f64>, String> {
-    let mut params = ir.par_values.clone();
+    // A delay model lists its user parameters only; the hidden slots are set by the engine.
+    let mut params = ir.par_values[..ir.n_user_params].to_vec();
     if let Some(p) = top.get("params") {
         for (name, val) in object(p, "params")? {
             let path = format!("params.{name}");
@@ -626,6 +703,9 @@ fn u0_values(v: &Value) -> Result<Vec<f64>, String> {
 
 /// An `IVP` problem: `tspan`, the solver options, and the start state and parameters.
 fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Problem, String> {
+    if !ir.delays.is_empty() {
+        return Err("type: a delay equation takes only \"EP\"".into());
+    }
     if top.contains_key("free") {
         return Err("free: an IVP run has no free parameter".into());
     }
@@ -645,6 +725,9 @@ fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Probl
     }
     if top.contains_key("inclination_flips") {
         return Err("inclination_flips: only a HOM run takes this key".into());
+    }
+    if top.contains_key("roots") {
+        return Err("roots: only a delay-equation run takes this key".into());
     }
     let tspan = match top.get("tspan") {
         None => return Err("tspan: missing".into()),
@@ -682,6 +765,7 @@ fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Probl
         cycle: None,
         ivp: Some((tspan, opts)),
         inclination_flips: false,
+        roots: None,
     };
     if mode == Mode::Cli {
         problem.check_u0_len(ir.n(), problem.setup.u0.len())?;

@@ -29,10 +29,13 @@ impl Handle for RunHandle {
 /// mult_im(n), codim2(k), h, newton_iters]`, and an NS curve adds kappa after a1. A row
 /// of a HOM curve is `[a2, u(n (N m + 1)), T, x0(n), a1, mesh(N + 1), eig_re(n),
 /// eig_im(n), codim2(14), h, newton_iters]`, with x0 the saddle and the eigenvalues those
-/// of the Jacobian at x0.
+/// of the Jacobian at x0. A row of a delay equilibrium branch is `[alpha, u(n), roots]`, with
+/// `roots` the number of characteristic roots with a positive real part.
 pub(crate) fn stride(kind: Kind, n: usize) -> usize {
     match kind {
         Kind::Ep => 3 * n + 6,
+        // [alpha, u(n), root count]
+        Kind::DdeEp => n + 2,
         // [t, x(n)]
         Kind::Ivp => n + 1,
         Kind::Lp => 1 + (n + 1) + 2 * n + kind.labels().len() + 2,
@@ -52,16 +55,21 @@ pub(crate) fn pack_row(kind: Kind, p: &Point, n: usize, out: &mut [f64]) {
     debug_assert_eq!(out.len(), stride(kind, n));
     let nan = f64::NAN;
     out[0] = p.alpha;
-    if kind == Kind::Ivp {
+    if matches!(kind, Kind::Ivp | Kind::DdeEp) {
         for i in 0..n {
             out[1 + i] = p.u.get(i).copied().unwrap_or(nan);
+        }
+        // The IVP row ends with the state. A delay equilibrium row adds the root count that the
+        // engine keeps in `tests[0]` (SPEC 8s).
+        if kind == Kind::DdeEp {
+            out[n + 1] = p.tests[0];
         }
         return;
     }
     // The state block: `n` values, plus a1 (and kappa) on a curve, or the orbit, T and
     // what follows T on a curve of cycles or a HOM curve.
     let (block, mesh) = match kind {
-        Kind::Ep | Kind::Ivp => (n, 0),
+        Kind::Ep | Kind::DdeEp | Kind::Ivp => (n, 0),
         Kind::Lp => (n + 1, 0),
         Kind::Hopf => (n + 2, 0),
         Kind::Lc { ntst, ncol }
@@ -231,6 +239,23 @@ mod tests {
         assert_eq!(row[0], 0.5);
         assert!(row[1..7].iter().all(|x| x.is_nan()));
         assert_eq!(&row[7..], [10.0, 11.0, 12.0, 0.125, 3.0]);
+    }
+
+    #[test]
+    fn a_delay_row_ends_with_the_root_count() {
+        let mut p = point();
+        p.tests = [3.0, f64::NAN, f64::NAN];
+        assert_eq!(stride(Kind::DdeEp, 2), 4);
+        let mut row = vec![0.0; 4];
+        pack_row(Kind::DdeEp, &p, 2, &mut row);
+        assert_eq!(row, [0.5, 1.0, 2.0, 3.0]);
+        p.u.clear();
+        pack_row(Kind::DdeEp, &p, 2, &mut row);
+        assert_eq!(row[0], 0.5);
+        assert!(row[1].is_nan() && row[2].is_nan());
+        assert_eq!(row[3], 3.0);
+        assert_eq!(Kind::DdeEp.name(), "EP");
+        assert!(Kind::DdeEp.labels().is_empty());
     }
 
     #[test]

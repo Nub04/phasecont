@@ -20,7 +20,7 @@ use crate::error::{Error, Result, bad_arg};
 use crate::import;
 use crate::json::problem::{Kind, Mode, parse_options, parse_problem};
 use crate::latex;
-use crate::model::{ModelHandle, NOT_COMPILED};
+use crate::model::{DELAY_MODEL, ModelHandle, NOT_COMPILED};
 use crate::parse::{MAX_MODEL_TEXT, parse_model};
 use crate::registry::{self, Handle};
 use crate::run::{RunHandle, pack_row, poll_json, stride};
@@ -234,6 +234,11 @@ pub unsafe extern "C" fn run_start(
         let text = unsafe { str_arg(problem_json, "problem_json") }?;
         let v: Value = serde_json::from_str(text)
             .map_err(|e| Error::BadProblem(format!("problem_json: {e}")))?;
+        // A delay model takes the type "EP" only. A type that names another run is refused with
+        // the same text as the ODE-only entries; anything else is left to the parser (SPEC 8s).
+        if h.delay && v["type"].as_str().is_some_and(is_other_run_type) {
+            return Err(bad_arg(DELAY_MODEL));
+        }
         let mut problem = parse_problem(&v, &h.ir, Mode::Abi).map_err(Error::BadProblem)?;
         problem.check_u0_len(h.n(), nu).map_err(bad_arg)?;
         expect_len("params", h.n_p(), np)?;
@@ -253,6 +258,11 @@ pub unsafe extern "C" fn run_start(
         });
         Ok(())
     })
+}
+
+/// The run types that a delay model does not take: every `type` of the problem JSON but `"EP"`.
+fn is_other_run_type(t: &str) -> bool {
+    matches!(t, "LP" | "H" | "LC" | "LPC" | "PD" | "NS" | "HOM" | "IVP")
 }
 
 fn run_handle(id: u64) -> Result<Arc<RunHandle>> {

@@ -11,18 +11,19 @@
 //! streamed one, so specials are visible only after that. While a branch is running its
 //! stored `stop` is a placeholder and is not meaningful.
 
-use crate::branch::{Branch, Options, Point, SpecialPoint, StopReason};
+use crate::branch::{Branch, Extras, Options, Point, SpecialPoint, StopReason};
 use crate::curve2::CurveSetup;
 use crate::cycle::{
     CycleCurveStart, CycleStart, HomStart, continue_cycle, continue_hom_curve, continue_lpc_curve,
     continue_ns_curve, continue_pd_curve,
 };
+use crate::dde::{DdeBranch, RootOptions, continue_equilibrium as dde_continue_equilibrium};
 use crate::ep::{EpSetup, continue_ep};
 use crate::error::EngineError;
 use crate::hopfcurve::continue_hopf_curve;
 use crate::ivp::{IvpOptions, IvpSetup, integrate};
 use crate::lpcurve::continue_lp_curve;
-use crate::model::{Evaluator, build, build_allowing_t};
+use crate::model::{Evaluator, build, build_allowing_t, build_dde};
 use crate::panic::{clear_last_panic, install_hook, mark_worker, payload_message, take_last_panic};
 use crate::switch::{special_index, switch_bp};
 use pc_ode::{Model, ModelInfo};
@@ -50,6 +51,10 @@ pub enum RunKind {
     NsCurve(CycleCurveStart),
     /// The HOM curve of orbits homoclinic to a saddle, in two parameters.
     HomCurve(HomStart),
+    /// The equilibrium branch of a delay equation from `RunSpec::setup`, with the characteristic
+    /// roots counted by `RootOptions` (SPEC 8s). The continuation runs once and the branch
+    /// appears when it ends, so a poll sees no points before then.
+    DdeEq(RootOptions),
     /// An initial value run over `tspan` from the state `setup.u0` with the parameters
     /// `setup.params`. The model may depend on t.
     Ivp { tspan: [f64; 2], opts: IvpOptions },
@@ -222,6 +227,10 @@ fn follow(
         RunKind::PdCurve(cs) => continue_pd_curve(model, cs, opts, &shared.cancel, on_point),
         RunKind::NsCurve(cs) => continue_ns_curve(model, cs, opts, &shared.cancel, on_point),
         RunKind::HomCurve(hs) => continue_hom_curve(model, hs, opts, &shared.cancel, on_point),
+        // `body` sends a delay run to `body_dde` before it builds an ODE model.
+        RunKind::DdeEq(_) => Err(EngineError::BadProblem(
+            "a delay run has no ODE model to follow".into(),
+        )),
         RunKind::Ivp { tspan, opts } => {
             let ivp = IvpSetup {
                 x0: setup.u0.clone(),
@@ -248,6 +257,9 @@ fn body(shared: &Shared, spec: RunSpec) -> RunState {
                 "only an equilibrium run can switch branches".into(),
             )),
         );
+    }
+    if let RunKind::DdeEq(roots) = spec.kind {
+        return body_dde(shared, spec, roots);
     }
     // Only an initial value run may depend on t.
     let built = if matches!(spec.kind, RunKind::Ivp { .. }) {
@@ -297,6 +309,74 @@ fn body(shared: &Shared, spec: RunSpec) -> RunState {
     match follow(shared, model.as_mut(), &RunKind::Ep, &next, &spec.opts, 1) {
         Ok(b) => finish(shared, Ok(&b)),
         Err(e) => finish(shared, Err(e)),
+    }
+}
+
+/// Follows the equilibrium branch of a delay equation (SPEC 8s). The engine returns the branch in
+/// one piece, so branch 0 stays empty until the end and a cancelled run keeps no points.
+fn body_dde(shared: &Shared, spec: RunSpec, roots: RootOptions) -> RunState {
+    let mut model = match build_dde(&spec.model, &spec.info, spec.evaluator) {
+        Ok(m) => m,
+        Err(e) => return finish(shared, Err(e)),
+    };
+    shared.lock().branches.push(placeholder());
+    match dde_continue_equilibrium(&mut model, &spec.setup, &roots, &spec.opts, &shared.cancel) {
+        Ok(b) => {
+            let branch = dde_branch(b);
+            shared.lock().branches[0] = branch.clone();
+            finish(shared, Ok(&branch))
+        }
+        Err(e) => {
+            shared.lock().branches[0].stop = match &e {
+                EngineError::Cancelled => StopReason::Cancelled,
+                other => StopReason::Error(other.clone()),
+            };
+            finish(shared, Err(e))
+        }
+    }
+}
+
+/// A delay equilibrium branch as a [`Branch`]. The root count of a point goes in `tests[0]` as
+/// a float, with the other two tests NaN, and there is no tangent, eigenvalue, step length or
+/// iteration count. A special point carries both counts in `extras.values`.
+fn dde_branch(b: DdeBranch) -> Branch {
+    let point = |alpha: f64, x: Vec<f64>, count: usize| Point {
+        u: x,
+        alpha,
+        tangent: Vec::new(),
+        eigenvalues: Vec::new(),
+        tests: [count as f64, f64::NAN, f64::NAN],
+        codim2: Vec::new(),
+        h: 0.0,
+        newton_iters: 0,
+        mesh: Vec::new(),
+    };
+    Branch {
+        points: b
+            .points
+            .into_iter()
+            .map(|p| point(p.alpha, p.x, p.unstable))
+            .collect(),
+        specials: b
+            .specials
+            .into_iter()
+            .map(|s| SpecialPoint {
+                label: s.label.to_string(),
+                index: s.between[1],
+                point: point(s.alpha, s.x, s.unstable_after),
+                extras: Extras {
+                    omega: s.omega,
+                    values: vec![
+                        ("unstable_before".to_string(), s.unstable_before as f64),
+                        ("unstable_after".to_string(), s.unstable_after as f64),
+                    ],
+                    refined: false,
+                    ..Extras::default()
+                },
+            })
+            .collect(),
+        stop: b.stop,
+        warnings: b.warnings,
     }
 }
 
@@ -717,5 +797,53 @@ mod tests {
         assert_eq!(payload_message(a.as_ref()), "static text");
         let b = catch_unwind(|| panic!("{}", String::from("owned text"))).unwrap_err();
         assert_eq!(payload_message(b.as_ref()), "owned text");
+    }
+
+    #[test]
+    fn a_delay_branch_keeps_the_root_count_in_the_first_test() {
+        let b = dde_branch(DdeBranch {
+            points: vec![
+                crate::dde::DdePoint {
+                    alpha: 0.5,
+                    x: vec![1.0],
+                    unstable: 0,
+                },
+                crate::dde::DdePoint {
+                    alpha: 0.7,
+                    x: vec![1.5],
+                    unstable: 2,
+                },
+            ],
+            specials: vec![crate::dde::DdeSpecial {
+                label: "H",
+                alpha: 0.6,
+                x: vec![1.25],
+                omega: Some(1.5),
+                between: [0, 1],
+                unstable_before: 0,
+                unstable_after: 2,
+            }],
+            stop: StopReason::Bounds,
+            warnings: vec!["w".to_string()],
+        });
+        assert_eq!(b.points.len(), 2);
+        assert_eq!(b.points[1].tests[0], 2.0);
+        assert!(b.points[1].tests[1].is_nan() && b.points[1].tests[2].is_nan());
+        assert!(b.points[0].tangent.is_empty() && b.points[0].eigenvalues.is_empty());
+        let s = &b.specials[0];
+        assert_eq!(
+            (s.label.as_str(), s.index, s.extras.omega),
+            ("H", 1, Some(1.5))
+        );
+        assert_eq!(s.point.tests[0], 2.0);
+        assert_eq!(
+            s.extras.values,
+            [
+                ("unstable_before".to_string(), 0.0),
+                ("unstable_after".to_string(), 2.0)
+            ]
+        );
+        assert_eq!(b.stop, StopReason::Bounds);
+        assert_eq!(b.warnings, ["w"]);
     }
 }
