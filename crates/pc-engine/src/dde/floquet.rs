@@ -9,7 +9,7 @@
 //! The formulation is my own derivation; it is checked against a numerical oracle in the
 //! tests, not against a published formula.
 
-use super::cycle::{DdeCycleSetup, DdeCycleStart, check_profile, check_setup};
+use super::cycle::{DdeCycleSetup, DdeCycleStart, check_mesh, check_profile, check_setup, locate};
 use super::eq::time_of;
 use super::nodes::Nodes;
 use crate::cycle::{CollocationBasis, try_zeros};
@@ -129,8 +129,26 @@ pub(super) fn monodromy(
     options: &DdeFloquetOptions,
     cancel: &AtomicBool,
 ) -> Result<(Vec<f64>, usize), EngineError> {
+    monodromy_on(model, setup, cycle, options, None, cancel)
+}
+
+/// [`monodromy`] on the mesh `mesh` (`ntst + 1` points from 0 to 1) of the profile, or on the
+/// uniform mesh for `None`. Interval `j` has the step `h_j = T (s_{j+1} - s_j)`, its Gauss
+/// points sit at `s_j + c_i (s_{j+1} - s_j)`, and the delayed points are found on the mesh
+/// (SPEC section 8p). `None` takes the formulas of the uniform mesh unchanged.
+pub(super) fn monodromy_on(
+    model: &mut DdeModel,
+    setup: &DdeCycleSetup,
+    cycle: &DdeCycleStart,
+    options: &DdeFloquetOptions,
+    mesh: Option<&[f64]>,
+    cancel: &AtomicBool,
+) -> Result<(Vec<f64>, usize), EngineError> {
     let (n, _) = check_setup(model, setup)?;
     check_profile(&cycle.profile, n, setup)?;
+    if let Some(mesh) = mesh {
+        check_mesh(mesh, setup.ntst)?;
+    }
     if !(cycle.period.is_finite() && cycle.period > 0.0) {
         return Err(EngineError::BadProblem(format!(
             "the period is {}; it must be finite and positive",
@@ -153,7 +171,11 @@ pub(super) fn monodromy(
     let lag: Vec<Vec<f64>> = taus.iter().map(|&tau| nodes.lagrange_at(-tau)).collect();
     let a_irk = irk_matrix(&basis);
     let (c, bw) = (basis.nodes(), basis.weights());
-    let h = t / ntst as f64;
+    // The step of interval `j`: `T / N` on the uniform mesh.
+    let h_of = |j: usize| match mesh {
+        None => t / ntst as f64,
+        Some(mesh) => t * (mesh[j + 1] - mesh[j]),
+    };
 
     let n_user = model.n_user_params;
     let n_p = model.eval.n_p();
@@ -181,17 +203,26 @@ pub(super) fn monodromy(
             return Err(EngineError::Cancelled);
         }
         let at = j * mm * n;
+        let h = h_of(j);
         for i in 0..mm {
             for (cc, uc) in u.iter_mut().enumerate() {
                 *uc = (0..=mm)
                     .map(|l| basis.value_at_node(i, l) * cycle.profile[at + l * n + cc])
                     .sum();
             }
-            let s = (j as f64 + c[i]) / nn;
+            let s = match mesh {
+                None => (j as f64 + c[i]) / nn,
+                Some(mesh) => mesh[j] + c[i] * (mesh[j + 1] - mesh[j]),
+            };
             for k in 0..n_s {
                 let sp = (s - taus[k] / t).rem_euclid(1.0);
-                let jk = ((nn * sp).floor() as usize).min(ntst - 1);
-                let zeta = nn * sp - jk as f64;
+                let (jk, zeta) = match mesh {
+                    None => {
+                        let jk = ((nn * sp).floor() as usize).min(ntst - 1);
+                        (jk, nn * sp - jk as f64)
+                    }
+                    Some(mesh) => locate(mesh, sp),
+                };
                 basis.values(zeta, &mut lv);
                 let base = jk * mm * n;
                 full[n_user + k] = (0..=mm)
@@ -296,6 +327,136 @@ fn irk_matrix(basis: &CollocationBasis) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Evaluator, build_dde};
+    use pc_ode::{MapLoader, SourceMap, load};
+    use std::f64::consts::{FRAC_PI_2, PI};
+
+    const NTST: usize = 20;
+    const NCOL: usize = 4;
+
+    fn osc() -> DdeModel {
+        let src = format!(
+            "par mu=0.3, tau={FRAC_PI_2:?}\nx'=-delay(x,tau)+mu*x*(1-x^2-delay(x,tau)^2)\ndone\n"
+        );
+        let mut map = SourceMap::new();
+        let top = map.add("t.ode", &src);
+        let l = load(top, &mut map, &mut MapLoader::new());
+        build_dde(&l.expanded, &l.info, Evaluator::Fallback).expect("model builds")
+    }
+
+    fn hand_mesh() -> Vec<f64> {
+        let mut mesh = vec![0.0];
+        for j in 0..NTST {
+            let w = if j % 2 == 0 { 0.5 } else { 1.5 };
+            mesh.push(mesh[j] + w / NTST as f64);
+        }
+        mesh[NTST] = 1.0;
+        mesh
+    }
+
+    fn uniform_mesh() -> Vec<f64> {
+        (0..=NTST).map(|j| j as f64 / NTST as f64).collect()
+    }
+
+    /// The exact orbit `sin(2 pi s)` of OSC at its base points on `mesh`.
+    fn sine_start(mesh: &[f64]) -> DdeCycleStart {
+        let mut profile = Vec::new();
+        for j in 0..NTST {
+            for l in 0..NCOL {
+                let s = mesh[j] + (l as f64 / NCOL as f64) * (mesh[j + 1] - mesh[j]);
+                profile.push((2.0 * PI * s).sin());
+            }
+        }
+        profile.push(0.0);
+        DdeCycleStart {
+            profile,
+            period: 2.0 * PI,
+        }
+    }
+
+    fn setup() -> DdeCycleSetup {
+        DdeCycleSetup {
+            params: vec![0.3, FRAC_PI_2],
+            free: 0,
+            ntst: NTST,
+            ncol: NCOL,
+        }
+    }
+
+    fn options() -> DdeFloquetOptions {
+        DdeFloquetOptions {
+            nhist: 16,
+            count: 2,
+        }
+    }
+
+    fn leading(phi: &[f64], d: usize) -> Vec<(f64, f64)> {
+        summarize(eigenvalues(phi, d).expect("eigenvalues"), 2).multipliers
+    }
+
+    fn max_gap(a: &[(f64, f64)], b: &[(f64, f64)]) -> f64 {
+        assert_eq!(a.len(), b.len());
+        a.iter()
+            .zip(b)
+            .fold(0.0, |w, (x, y)| w.max((x.0 - y.0).hypot(x.1 - y.1)))
+    }
+
+    #[test]
+    fn an_explicit_uniform_mesh_gives_the_same_eigenvalues() {
+        let mut m = osc();
+        let cancel = AtomicBool::new(false);
+        let start = sine_start(&uniform_mesh());
+        let (a, d) = monodromy(&mut m, &setup(), &start, &options(), &cancel).unwrap();
+        let mesh = uniform_mesh();
+        let (b, _) =
+            monodromy_on(&mut m, &setup(), &start, &options(), Some(&mesh), &cancel).unwrap();
+        let gap = max_gap(&leading(&a, d), &leading(&b, d));
+        assert!(gap < 1e-10, "gap {gap:e}");
+    }
+
+    /// The same orbit sampled on a mesh with intervals of 0.5 / N and 1.5 / N gives the same
+    /// leading multipliers as the uniform mesh, up to the discretization error.
+    #[test]
+    fn a_hand_made_mesh_gives_the_leading_multipliers_of_the_uniform_mesh() {
+        let mut m = osc();
+        let cancel = AtomicBool::new(false);
+        let uniform = floquet_multipliers(
+            &mut m,
+            &setup(),
+            &sine_start(&uniform_mesh()),
+            &options(),
+            &cancel,
+        )
+        .unwrap();
+        let mesh = hand_mesh();
+        let (phi, d) = monodromy_on(
+            &mut m,
+            &setup(),
+            &sine_start(&mesh),
+            &options(),
+            Some(&mesh),
+            &cancel,
+        )
+        .unwrap();
+        let hand = leading(&phi, d);
+        let gap = max_gap(&uniform.multipliers, &hand);
+        assert!(
+            gap < 1.2e-7,
+            "gap {gap:e}: {:?} vs {hand:?}",
+            uniform.multipliers
+        );
+    }
+
+    #[test]
+    fn a_bad_mesh_is_refused() {
+        let mut m = osc();
+        let cancel = AtomicBool::new(false);
+        let start = sine_start(&uniform_mesh());
+        let mut bad = uniform_mesh();
+        bad.pop();
+        let r = monodromy_on(&mut m, &setup(), &start, &options(), Some(&bad), &cancel);
+        assert!(matches!(r, Err(EngineError::BadProblem(_))), "{r:?}");
+    }
 
     #[test]
     fn irk_matrix_has_the_gauss_row_sums_and_order_conditions() {

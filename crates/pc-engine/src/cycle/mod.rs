@@ -25,6 +25,7 @@ pub use hom_adjoint::{
     AdjointResidual, AdjointSetup, InclinationFlips, adjoint_residual, inclination_flips,
 };
 pub use lpc::{LpcProblem, continue_lpc_curve};
+pub(crate) use mesh::{interpolate, new_mesh};
 pub use normal::{
     CycleBifurcation, CycleNormalForm, curve_point_normal_form, lc_point_normal_form,
 };

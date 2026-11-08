@@ -17,12 +17,12 @@
 //! in all, so the solution set is a curve in `(u, T, alpha)`.
 
 use super::eq::{check_params, time_of};
-use super::floquet::{DdeFloquetOptions, check_floquet, monodromy, summarize};
+use super::floquet::{DdeFloquetOptions, check_floquet, monodromy_on, summarize};
 use super::lyap::pair;
 use crate::branch::{Options, Point, StopReason};
 use crate::cycle::{
-    CYCLE_LABELS, CollocationBasis, NCOL_RANGE, nearest_pair_is_complex, nontrivial, pair_product,
-    phase_row, shifted_product, try_zeros,
+    CYCLE_LABELS, CollocationBasis, NCOL_RANGE, interpolate, nearest_pair_is_complex, new_mesh,
+    nontrivial, pair_product, phase_row, shifted_product, try_zeros,
 };
 use crate::error::EngineError;
 use crate::model::DdeModel;
@@ -168,6 +168,23 @@ fn reference_row(
     Ok((phase, phase0))
 }
 
+/// Refuses a mesh that is not `ntst + 1` finite values with `mesh[0] = 0`, `mesh[ntst] = 1`
+/// and strictly increasing in between.
+pub(super) fn check_mesh(mesh: &[f64], ntst: usize) -> Result<(), EngineError> {
+    let ok = mesh.len() == ntst + 1
+        && mesh[0] == 0.0
+        && mesh[ntst] == 1.0
+        && mesh.windows(2).all(|w| w[0] < w[1]);
+    if ok {
+        Ok(())
+    } else {
+        Err(EngineError::BadProblem(format!(
+            "the mesh must be {} increasing values from 0 to 1",
+            ntst + 1
+        )))
+    }
+}
+
 /// The collocation system of one setup, against a phase reference.
 struct DdeCycleProblem<'a> {
     m: &'a mut DdeModel,
@@ -186,6 +203,29 @@ struct DdeCycleProblem<'a> {
     /// Never set. `state_jacobian` has no cancel argument, so a run is cancelled between
     /// steps and not inside one monodromy matrix.
     never: AtomicBool,
+    /// The `ntst + 1` mesh points, `0 = s_0 < ... < s_N = 1` (SPEC section 8p).
+    mesh: Vec<f64>,
+    /// True while the mesh is the uniform `j / N`. `fill` and the monodromy then take the
+    /// formulas of the fixed mesh unchanged. Any other mesh, an explicit uniform one too,
+    /// takes the general path.
+    uniform: bool,
+    /// Accepted points between mesh adaptations; `None` keeps the mesh fixed.
+    adapt_every: Option<usize>,
+    /// Accepted points since the last adaptation, and whether the current point adapted.
+    since: usize,
+    adapted_here: bool,
+}
+
+/// The interval of `mesh` that holds `sp` in `[0, 1]` and the position of `sp` in it, in
+/// `[0, 1]`. A point on a node belongs to the interval that starts there, and 1 belongs to
+/// the last interval (SPEC section 8p).
+pub(super) fn locate(mesh: &[f64], sp: f64) -> (usize, f64) {
+    let ntst = mesh.len() - 1;
+    let jp = mesh
+        .partition_point(|&s| s <= sp)
+        .saturating_sub(1)
+        .min(ntst - 1);
+    (jp, (sp - mesh[jp]) / (mesh[jp + 1] - mesh[jp]))
 }
 
 impl<'a> DdeCycleProblem<'a> {
@@ -210,7 +250,19 @@ impl<'a> DdeCycleProblem<'a> {
             phase0,
             floquet: None,
             never: AtomicBool::new(false),
+            mesh: (0..=s.ntst).map(|j| j as f64 / s.ntst as f64).collect(),
+            uniform: true,
+            adapt_every: None,
+            since: 0,
+            adapted_here: false,
         })
+    }
+
+    /// Takes `mesh` (`ntst + 1` increasing values from 0 to 1) and switches to the general
+    /// formulas.
+    fn set_mesh(&mut self, mesh: Vec<f64>) {
+        self.mesh = mesh;
+        self.uniform = false;
     }
 
     /// Writes the equations to `res` (`dim - 1` values) and the column-major Jacobian to
@@ -231,9 +283,11 @@ impl<'a> DdeCycleProblem<'a> {
             dim,
             phase,
             phase0,
+            mesh,
+            uniform,
             ..
         } = self;
-        let (n, ntst, dim, free) = (*n, *ntst, *dim, *free);
+        let (n, ntst, dim, free, uniform) = (*n, *ntst, *dim, *free, *uniform);
         let rows = dim - 1;
         let mm = basis.m();
         let bad_len = |what: &str| EngineError::BadProblem(format!("wrong length of {what}"));
@@ -268,6 +322,14 @@ impl<'a> DdeCycleProblem<'a> {
             .map(|d| matches!(d.time, DelayTime::Param(j) if j == free))
             .collect();
         let nn = ntst as f64;
+        // The factor `1 / delta_j` of `d/ds` on interval `j`; `N` on the uniform mesh.
+        let scale = |j: usize| {
+            if uniform {
+                nn
+            } else {
+                1.0 / (mesh[j + 1] - mesh[j])
+            }
+        };
         if let Some(j) = jac.as_deref_mut() {
             j.fill(0.0);
         }
@@ -283,17 +345,26 @@ impl<'a> DdeCycleProblem<'a> {
         let mut lag_du = vec![0.0; n_s];
         for j in 0..ntst {
             let at = j * mm * n;
+            let sc = scale(j);
             for i in 0..mm {
                 for (c, uc) in u.iter_mut().enumerate() {
                     *uc = (0..=mm)
                         .map(|l| basis.value_at_node(i, l) * x[at + l * n + c])
                         .sum();
                 }
-                let s = (j as f64 + basis.nodes()[i]) / nn;
+                let s = if uniform {
+                    (j as f64 + basis.nodes()[i]) / nn
+                } else {
+                    mesh[j] + basis.nodes()[i] * (mesh[j + 1] - mesh[j])
+                };
                 for k in 0..n_s {
                     let sp = (s - taus[k] / t).rem_euclid(1.0);
-                    let jp_k = ((nn * sp).floor() as usize).min(ntst - 1);
-                    let zeta = nn * sp - jp_k as f64;
+                    let (jp_k, zeta) = if uniform {
+                        let jp_k = ((nn * sp).floor() as usize).min(ntst - 1);
+                        (jp_k, nn * sp - jp_k as f64)
+                    } else {
+                        locate(mesh, sp)
+                    };
                     basis.values(zeta, &mut lv);
                     basis.derivatives(zeta, &mut dv);
                     let base = jp_k * mm * n;
@@ -306,7 +377,7 @@ impl<'a> DdeCycleProblem<'a> {
                     }
                     lag_j[k] = jp_k;
                     lag_l[k].copy_from_slice(&lv);
-                    lag_du[k] = nn * dy;
+                    lag_du[k] = scale(jp_k) * dy;
                     full[n_user + k] = y;
                 }
                 m.eval.eval(&EntryKind::F, &u, &full, &[], &mut f)?;
@@ -316,7 +387,7 @@ impl<'a> DdeCycleProblem<'a> {
                         let du: f64 = (0..=mm)
                             .map(|l| basis.derivative_at_node(i, l) * x[at + l * n + c])
                             .sum();
-                        r[r0 + c] = nn * du - t * f[c];
+                        r[r0 + c] = sc * du - t * f[c];
                     }
                 }
                 let Some(jm) = jac.as_deref_mut() else {
@@ -332,7 +403,7 @@ impl<'a> DdeCycleProblem<'a> {
                             let col = at + l * n + c2;
                             jm[row + rows * col] -= t * ju[c + n * c2] * v;
                         }
-                        jm[row + rows * (at + l * n + c)] += nn * d;
+                        jm[row + rows * (at + l * n + c)] += sc * d;
                     }
                     let mut dt = -f[c];
                     let mut da = -t * jp[c + n * free];
@@ -416,7 +487,8 @@ impl Problem for DdeCycleProblem<'_> {
             profile: x[..plen].to_vec(),
             period: x[plen],
         };
-        let (phi, _) = monodromy(self.m, &setup, &start, &options, &self.never)?;
+        let mesh = (!self.uniform).then_some(self.mesh.as_slice());
+        let (phi, _) = monodromy_on(self.m, &setup, &start, &options, mesh, &self.never)?;
         Ok(Some(phi))
     }
 
@@ -463,6 +535,59 @@ impl Problem for DdeCycleProblem<'_> {
             self.phase = phase;
             self.phase0 = phase0;
         }
+    }
+
+    /// The mesh of the profile, stored with each point of an adapting run; empty when the
+    /// run keeps the mesh fixed (SPEC section 8p).
+    fn mesh(&self) -> Vec<f64> {
+        if self.adapt_every.is_some() {
+            self.mesh.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Moves the mesh every `adapt_every` accepted points and after a failed corrector, at
+    /// most once per point, and interpolates the profile part of x and v onto it. T and
+    /// alpha stay. The interpolated x becomes the reference of the phase row.
+    fn adapt(&mut self, x: &mut [f64], v: &mut [f64], failed: bool) -> bool {
+        let Some(every) = self.adapt_every else {
+            return false;
+        };
+        if !failed {
+            self.adapted_here = false;
+            self.since += 1;
+        }
+        let due = if failed {
+            !self.adapted_here
+        } else {
+            self.since >= every
+        };
+        if !due {
+            return false;
+        }
+        self.since = 0;
+        self.adapted_here = true;
+        let k = self.dim - 2;
+        if x.len() < self.dim || v.len() < self.dim {
+            return false;
+        }
+        let Some(new) = new_mesh(&self.basis, self.n, &self.mesh, &x[..k], true) else {
+            return false;
+        };
+        let m = self.basis.m();
+        // Without the memory for the new profile, the mesh stays.
+        let (Ok(xu), Ok(vu)) = (
+            interpolate(&self.basis, self.n, &self.mesh, &new, m, &x[..k]),
+            interpolate(&self.basis, self.n, &self.mesh, &new, m, &v[..k]),
+        ) else {
+            return false;
+        };
+        x[..k].copy_from_slice(&xu);
+        v[..k].copy_from_slice(&vu);
+        self.set_mesh(new);
+        self.accept(x);
+        true
     }
 }
 
@@ -654,6 +779,17 @@ pub struct DdeCyclePoint {
     /// `min |mu - 1|` over all multipliers of the discretized `Phi(T)`; NaN when `multipliers`
     /// is empty.
     pub trivial_error: f64,
+    /// The `N + 1` mesh points, from 0 to 1, that `profile` lives on. Empty on a run without
+    /// [`DdeMeshAdapt`] (SPEC section 8p).
+    pub mesh: Vec<f64>,
+}
+
+/// Mesh adaptation for [`continue_cycle_adapt`] (SPEC section 8p).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DdeMeshAdapt {
+    /// Accepted points between adaptations, at least 1. A failed corrector also adapts the
+    /// mesh, at most once per accepted point.
+    pub every: usize,
 }
 
 /// A special point on a branch of periodic orbits of a delay equation.
@@ -708,6 +844,7 @@ fn cycle_point(q: &Point, dim: usize, count: usize) -> DdeCyclePoint {
         newton_iters: q.newton_iters,
         multipliers: multipliers.multipliers,
         trivial_error: multipliers.trivial_error,
+        mesh: q.mesh.clone(),
     }
 }
 
@@ -748,13 +885,44 @@ fn check_floquet_keyed(
 /// The run reports LPC points, folds of the branch, and with `floquet` also PD and NS
 /// points from the Floquet multipliers at every point and every locator trial (SPEC
 /// section 8o). `detect_*` and `mesh_adapt` have no effect. Without `floquet`, the points
-/// carry no multipliers.
+/// carry no multipliers. The mesh stays uniform and the points carry no mesh.
 pub fn continue_cycle_floquet(
     model: &mut DdeModel,
     setup: &DdeCycleSetup,
     start: &DdeCycleStart,
     opts: &Options,
     floquet: Option<&DdeFloquetOptions>,
+    cancel: &AtomicBool,
+) -> Result<DdeCycleBranch, EngineError> {
+    continue_cycle_on(model, setup, start, opts, floquet, None, cancel)
+}
+
+/// [`continue_cycle_floquet`] with the mesh moving along the branch (SPEC section 8p). The
+/// start mesh is uniform. Every `adapt.every` accepted points, and after a failed corrector,
+/// the mesh is redistributed from the profile and the profile is interpolated onto it. Each
+/// point and special carries the mesh of its profile. `opts.mesh_adapt` has no effect.
+///
+/// The checks of [`continue_cycle_floquet`] come first, then `adapt.every >= 1` and
+/// `setup.ntst >= 2`; both give `BadProblem` with a message that starts with `adapt: `.
+pub fn continue_cycle_adapt(
+    model: &mut DdeModel,
+    setup: &DdeCycleSetup,
+    start: &DdeCycleStart,
+    opts: &Options,
+    floquet: Option<&DdeFloquetOptions>,
+    adapt: &DdeMeshAdapt,
+    cancel: &AtomicBool,
+) -> Result<DdeCycleBranch, EngineError> {
+    continue_cycle_on(model, setup, start, opts, floquet, Some(adapt), cancel)
+}
+
+fn continue_cycle_on(
+    model: &mut DdeModel,
+    setup: &DdeCycleSetup,
+    start: &DdeCycleStart,
+    opts: &Options,
+    floquet: Option<&DdeFloquetOptions>,
+    adapt: Option<&DdeMeshAdapt>,
     cancel: &AtomicBool,
 ) -> Result<DdeCycleBranch, EngineError> {
     if cancel.load(Ordering::Relaxed) {
@@ -776,6 +944,18 @@ pub fn continue_cycle_floquet(
     if let Some(f) = floquet {
         check_floquet_keyed(model, setup, n, f)?;
     }
+    if let Some(a) = adapt {
+        if a.every == 0 {
+            return Err(EngineError::BadProblem(
+                "adapt: every must be at least 1".into(),
+            ));
+        }
+        if setup.ntst < 2 {
+            return Err(EngineError::BadProblem(
+                "adapt: the mesh needs ntst of at least 2".into(),
+            ));
+        }
+    }
     let mut opts = opts.clone();
     opts.detect_lp = false;
     opts.detect_bp = false;
@@ -784,6 +964,7 @@ pub fn continue_cycle_floquet(
     let first = correct_cycle(model, setup, start, &opts, cancel)?;
     let mut p = DdeCycleProblem::new(model, setup, n, dim, &first.profile)?;
     p.floquet = floquet.cloned();
+    p.adapt_every = adapt.map(|a| a.every);
     let count = floquet.map_or(0, |f| f.count);
     let mut x0 = first.profile;
     x0.push(first.period);
@@ -809,4 +990,217 @@ pub fn continue_cycle_floquet(
         stop: branch.stop,
         warnings: branch.warnings,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Evaluator, build_dde};
+    use pc_ode::{MapLoader, SourceMap, load};
+    use std::f64::consts::{FRAC_PI_2, PI};
+
+    const NTST: usize = 20;
+    const NCOL: usize = 4;
+
+    /// The manufactured steep model of SPEC section 8p with `G = 20`: the exact orbit is
+    /// `y1 = cos t`, `y2 = sin t`, `x = tanh(20 cos t)`, `T = 2 pi`, for every `c` and `tau`.
+    const STEEP: &str = "par c=0.5, tau=1\n\
+        x'=-x+c*(delay(x,tau)-tanh(20*delay(y1,tau)))+tanh(20*y1)+20*(1-tanh(20*y1)^2)*(-y2)\n\
+        y1'=y1-y2-y1*(y1^2+y2^2)\n\
+        y2'=y1+y2-y2*(y1^2+y2^2)\n\
+        done\n";
+
+    fn build(src: &str) -> DdeModel {
+        let mut map = SourceMap::new();
+        let top = map.add("t.ode", src);
+        let l = load(top, &mut map, &mut MapLoader::new());
+        build_dde(&l.expanded, &l.info, Evaluator::Fallback).expect("model builds")
+    }
+
+    fn osc() -> DdeModel {
+        build(&format!(
+            "par mu=0.3, tau={FRAC_PI_2:?}\nx'=-delay(x,tau)+mu*x*(1-x^2-delay(x,tau)^2)\ndone\n"
+        ))
+    }
+
+    /// Intervals that alternate between `0.5 / N` and `1.5 / N`.
+    fn hand_mesh() -> Vec<f64> {
+        let mut mesh = vec![0.0];
+        for j in 0..NTST {
+            let w = if j % 2 == 0 { 0.5 } else { 1.5 };
+            mesh.push(mesh[j] + w / NTST as f64);
+        }
+        mesh[NTST] = 1.0;
+        mesh
+    }
+
+    fn uniform_mesh() -> Vec<f64> {
+        (0..=NTST).map(|j| j as f64 / NTST as f64).collect()
+    }
+
+    /// The base points of `mesh`: `s_j + (l / m) (s_{j+1} - s_j)`, then 1.
+    fn base_points(mesh: &[f64]) -> Vec<f64> {
+        let mut s = Vec::new();
+        for j in 0..NTST {
+            for l in 0..NCOL {
+                s.push(mesh[j] + (l as f64 / NCOL as f64) * (mesh[j + 1] - mesh[j]));
+            }
+        }
+        s.push(1.0);
+        s
+    }
+
+    fn steep_profile(mesh: &[f64]) -> Vec<f64> {
+        base_points(mesh)
+            .iter()
+            .flat_map(|s| {
+                let (sn, cs) = (2.0 * PI * s).sin_cos();
+                [(20.0 * cs).tanh(), cs, sn]
+            })
+            .collect()
+    }
+
+    fn sine_profile(mesh: &[f64]) -> Vec<f64> {
+        base_points(mesh)
+            .iter()
+            .map(|s| (2.0 * PI * s).sin())
+            .collect()
+    }
+
+    fn setup(params: &[f64], free: usize) -> DdeCycleSetup {
+        DdeCycleSetup {
+            params: params.to_vec(),
+            free,
+            ntst: NTST,
+            ncol: NCOL,
+        }
+    }
+
+    fn problem<'a>(
+        m: &'a mut DdeModel,
+        params: &[f64],
+        free: usize,
+        reference: &[f64],
+    ) -> DdeCycleProblem<'a> {
+        let st = setup(params, free);
+        let (n, dim) = check_setup(m, &st).expect("setup");
+        DdeCycleProblem::new(m, &st, n, dim, reference).expect("problem")
+    }
+
+    /// A point that is not on the orbit: the exact profile with a smooth bump, `T` and
+    /// `alpha` moved off their values.
+    fn perturbed(profile: &[f64], alpha: f64) -> Vec<f64> {
+        let mut x: Vec<f64> = profile
+            .iter()
+            .enumerate()
+            .map(|(q, v)| v + 0.03 * (0.37 * q as f64 + 0.5).sin())
+            .collect();
+        x.push(6.1);
+        x.push(alpha);
+        x
+    }
+
+    fn residual_of(p: &mut DdeCycleProblem, x: &[f64]) -> Vec<f64> {
+        let mut r = vec![0.0; p.dim - 1];
+        p.fill(x, Some(&mut r), None).expect("residual");
+        r
+    }
+
+    fn jacobian_of(p: &mut DdeCycleProblem, x: &[f64]) -> Vec<f64> {
+        let mut j = vec![0.0; (p.dim - 1) * p.dim];
+        p.fill(x, None, Some(&mut j)).expect("jacobian");
+        j
+    }
+
+    /// The largest `|jac - fd| / (1 + |jac|)` over all entries, against central differences.
+    fn jacobian_error(p: &mut DdeCycleProblem, x: &[f64]) -> f64 {
+        let jac = jacobian_of(p, x);
+        let (rows, dim) = (p.dim - 1, p.dim);
+        let mut worst: f64 = 0.0;
+        for col in 0..dim {
+            let h = 1e-6 * (1.0 + x[col].abs());
+            let (mut xp, mut xm) = (x.to_vec(), x.to_vec());
+            xp[col] += h;
+            xm[col] -= h;
+            let (rp, rm) = (residual_of(p, &xp), residual_of(p, &xm));
+            for row in 0..rows {
+                let fd = (rp[row] - rm[row]) / (2.0 * h);
+                let a = jac[row + rows * col];
+                worst = worst.max((a - fd).abs() / (1.0 + a.abs()));
+            }
+        }
+        worst
+    }
+
+    #[test]
+    fn jacobian_on_a_hand_made_mesh_matches_central_differences() {
+        for (free, alpha) in [(1usize, 1.05), (0usize, 0.55)] {
+            let mut m = build(STEEP);
+            let reference = steep_profile(&uniform_mesh());
+            let mut p = problem(&mut m, &[0.5, 1.0], free, &reference);
+            p.set_mesh(hand_mesh());
+            let x = perturbed(&steep_profile(&hand_mesh()), alpha);
+            let err = jacobian_error(&mut p, &x);
+            assert!(err < 1e-6, "free = {free}: relative error {err:e}");
+        }
+    }
+
+    #[test]
+    fn an_explicit_uniform_mesh_agrees_with_the_uniform_path() {
+        for (free, alpha) in [(1usize, 1.05), (0usize, 0.55)] {
+            let mut m = build(STEEP);
+            let reference = steep_profile(&uniform_mesh());
+            let x = perturbed(&reference, alpha);
+            let mut p = problem(&mut m, &[0.5, 1.0], free, &reference);
+            let (r0, j0) = (residual_of(&mut p, &x), jacobian_of(&mut p, &x));
+            p.set_mesh(uniform_mesh());
+            let (r1, j1) = (residual_of(&mut p, &x), jacobian_of(&mut p, &x));
+            for (a, b) in r0.iter().zip(&r1).chain(j0.iter().zip(&j1)) {
+                assert!(
+                    (a - b).abs() <= 1e-12 * (1.0 + a.abs()),
+                    "free = {free}: {a} vs {b}"
+                );
+            }
+        }
+    }
+
+    /// The residual of the exact orbit of OSC on the hand-made mesh is small: it is the
+    /// interpolation error of the degree-4 pieces on intervals up to 1.5 / N wide.
+    #[test]
+    fn the_exact_orbit_has_a_small_residual_on_a_hand_made_mesh() {
+        let mut m = osc();
+        let mesh = hand_mesh();
+        let mut x = sine_profile(&mesh);
+        x.push(2.0 * PI);
+        x.push(0.3);
+        let reference = sine_profile(&uniform_mesh());
+        let mut p = problem(&mut m, &[0.3, FRAC_PI_2], 0, &reference);
+        p.set_mesh(mesh);
+        let r = residual_of(&mut p, &x);
+        // The collocation rows only. The phase row is not zero here, since its reference
+        // holds the values on the uniform mesh.
+        let pr = NTST * NCOL;
+        let worst = r[..pr].iter().fold(0.0_f64, |a, v| a.max(v.abs()));
+        assert!(worst < 1.5e-4, "largest residual {worst:e}");
+        // The periodicity row is zero for the exact profile: its ends agree.
+        assert!(r[pr].abs() < 1e-15, "periodicity row {}", r[pr]);
+    }
+
+    #[test]
+    fn a_shifted_point_on_a_node_goes_to_the_interval_that_starts_there() {
+        let mesh = hand_mesh();
+        for j in 0..NTST {
+            assert_eq!(locate(&mesh, mesh[j]), (j, 0.0), "node {j}");
+        }
+        let below = f64::from_bits(mesh[5].to_bits() - 1);
+        let (jp, zeta) = locate(&mesh, below);
+        assert_eq!(jp, 4);
+        assert!(zeta > 1.0 - 1e-12 && zeta <= 1.0, "zeta {zeta}");
+        // A value that rounds to 1 after the wrap belongs to the last interval.
+        assert_eq!(locate(&mesh, 1.0), (NTST - 1, 1.0));
+        let mid = 0.5 * (mesh[7] + mesh[8]);
+        let (jp, zeta) = locate(&mesh, mid);
+        assert_eq!(jp, 7);
+        assert!((zeta - 0.5).abs() < 1e-14, "zeta {zeta}");
+    }
 }
