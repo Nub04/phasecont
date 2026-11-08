@@ -81,7 +81,7 @@ switch kind
         block = n*(ntst*ncol + 1) + n + 2;
         nmesh = ntst + 1;
         labels = ["NSA" "BLS" "BLU" "NSF" "NDS" "NDU" "TLS" "TLU" ...
-            "ZES" "ZEU" "OFS" "OFU"];
+            "ZES" "ZEU" "OFS" "OFU" "IFS" "IFU"];
         extra = numel(labels);
     otherwise
         error("phasecont:model:badOption", ...

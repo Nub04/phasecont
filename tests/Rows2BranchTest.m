@@ -454,9 +454,9 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
 
         function homCurveRows(testCase)
             % HOM curve, n = 2, NTST = 2, NCOL = 2: rows of [a2, orbit(10),
-            % T, x0(2), a1, mesh(3), eig_re(2), eig_im(2), codim2(12), h,
-            % it], 36 rows in all.
-            c2 = [1:12; NaN(1, 10) 0.5 0.6];
+            % T, x0(2), a1, mesh(3), eig_re(2), eig_im(2), codim2(14), h,
+            % it], 38 rows in all.
+            c2 = [1:14; NaN(1, 12) 0.5 0.6];
             pts = [ ...
                 0.5, 0 0 1 2 3 4 1 1 0.1 0.1, 20, 0.01 0.02, -0.1, 0 0.4 1, -1 2, 0 0, c2(1, :), 0.01, 2; ...
                 0.6, 0 0 2 3 4 5 2 2 0.1 0.1, 20, 0.03 0.04, -0.2, 0 0.5 1, -1.5 2.5, 0 0, c2(2, :), 0.02, 3].';
@@ -477,7 +477,7 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
             testCase.verifySize(br.Tests, [2 0]);
             testCase.verifyEqual(br.Codim2, c2);
             testCase.verifyEqual(br.Codim2Labels, ["NSA" "BLS" "BLU" "NSF" ...
-                "NDS" "NDU" "TLS" "TLU" "ZES" "ZEU" "OFS" "OFU"]);
+                "NDS" "NDU" "TLS" "TLU" "ZES" "ZEU" "OFS" "OFU" "IFS" "IFU"]);
             testCase.verifySize(br.Kappa, [0 1]);
             testCase.verifyEqual(br.StepSize, [0.01; 0.02]);
             testCase.verifyEqual(br.NewtonIters, [2; 3]);
@@ -501,19 +501,19 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
             st = struct("points", 0, "stop", [], "warnings", [], ...
                 "specials", []);
             e = phasecont.Model.empty;
-            % The stride for n = 2, NTST = 2, NCOL = 2 is 36.
+            % The stride for n = 2, NTST = 2, NCOL = 2 is 38.
             testCase.verifyError(@() phasecont.internal.rows2branch(e, [1 2], ...
-                [0; 0], 2, zeros(36, 0), zeros(36, 0), st, "HOM"), ...
+                [0; 0], 2, zeros(38, 0), zeros(38, 0), st, "HOM"), ...
                 "phasecont:model:badOption");
             testCase.verifyError(@() phasecont.internal.rows2branch(e, [1 2], ...
                 [0; 0], 2, zeros(26, 0), zeros(26, 0), st, "HOM", [2 2]), ...
                 "phasecont:model:badRows");
             br = phasecont.internal.rows2branch(e, [1 2], [0; 0], 2, ...
-                zeros(36, 0), zeros(36, 0), st, "HOM", [2 2]);
+                zeros(38, 0), zeros(38, 0), st, "HOM", [2 2]);
             testCase.verifySize(br.Alpha, [0 2]);
             testCase.verifySize(br.U, [0 10]);
             testCase.verifySize(br.X0, [0 2]);
-            testCase.verifySize(br.Codim2, [0 12]);
+            testCase.verifySize(br.Codim2, [0 14]);
             testCase.verifySize(br.Period, [0 1]);
         end
     end

@@ -57,7 +57,8 @@ classdef Branch < handle
     %                "CPC" "R1"] for "LPC", ["LPPD" "PDNS" "GPD" "R2"] for
     %                "PD", ["R1" "R2" "R3" "R4" "LPNS" "PDNS" "CH"] for "NS",
     %                ["NSA" "BLS" "BLU" "NSF" "NDS" "NDU" "TLS" "TLU" "ZES"
-    %                "ZEU" "OFS" "OFU"] for "HOM"
+    %                "ZEU" "OFS" "OFU" "IFS" "IFU"] for "HOM" (the last two
+    %                columns are NaN unless InclinationFlips was true)
     %   Period       period of the orbit at each point, N-by-1 (cycles
     %                only); for "HOM", the fixed truncation time T
     %   X0           the saddle at each point, N-by-n ("HOM" only)

@@ -75,6 +75,8 @@ switch label
     case "ZEU", name = "Zero or Hopf at the saddle, unstable side";
     case "OFS", name = "Orbit flip, stable side";
     case "OFU", name = "Orbit flip, unstable side";
+    case "IFS", name = "Inclination flip, stable side";
+    case "IFU", name = "Inclination flip, unstable side";
     otherwise, name = label;
 end
 end

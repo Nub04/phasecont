@@ -53,7 +53,10 @@ function br = continuation(m, start, options)
 %   holds [a b], C.X0 the saddle, C.Eigenvalues the eigenvalues of the
 %   Jacobian at the saddle and C.cycle(i) the orbit at point i. The codim-2
 %   points (NSA, BLS, BLU, NSF, NDS, NDU, TLS, TLU, ZES, ZEU, OFS, OFU) are
-%   in C.Specials. Detect, Switch and Var do not apply.
+%   in C.Specials. With InclinationFlips = true the engine also solves an
+%   adjoint problem at every point and reports the inclination flips IFS and
+%   IFU. Their columns of C.Codim2 are NaN otherwise.
+%   Detect, Switch and Var do not apply.
 %
 %   Name-value options
 %     Type       "EP" (default), "LP", "H", "LC", "LPC", "PD", "NS" or "HOM"
@@ -82,6 +85,9 @@ function br = continuation(m, start, options)
 %                curve of any other Type is plotted in the plane of its two
 %                free parameters
 %     Params     struct or vector that overrides the parameters of START
+%     InclinationFlips  true adds the inclination flips IFS and IFU to the
+%                codim-2 tests of a HOM curve, at the cost of one linear solve
+%                per point (logical scalar, default false); Type "HOM" only
 %
 %   Options that are not given keep the engine defaults. If START is a
 %   special point (any label except "EP"), the run does not report that
@@ -108,6 +114,7 @@ arguments
     options.Plot (1,1) logical = false
     options.Var = []
     options.Params = []
+    options.InclinationFlips = []
 end
 import phasecont.internal.num2json
 
@@ -121,6 +128,18 @@ isCycle = type == "LC";
 isCycleCurve = type == "LPC" || type == "PD" || type == "NS";
 isHom = type == "HOM";
 isCurve = type == "LP" || type == "H" || isCycleCurve || isHom;
+flips = false;
+if ~isempty(options.InclinationFlips)
+    if ~isHom
+        error("phasecont:model:badOption", ...
+            "InclinationFlips applies to Type = ""HOM"" only.");
+    end
+    flips = options.InclinationFlips;
+    if ~(islogical(flips) && isscalar(flips))
+        error("phasecont:model:badOption", ...
+            "InclinationFlips must be a logical scalar.");
+    end
+end
 grid = [];
 if isCycle
     if ~isa(options.Detect, "missing") || ~isempty(options.Switch)
@@ -222,6 +241,9 @@ if isHom
     if from == "cycle"
         problem = problem + ",""mesh"":[" + ...
             strjoin(arrayfun(@num2json, mesh), ",") + "]";
+    end
+    if flips
+        problem = problem + ",""inclination_flips"":true";
     end
     problem = problem + ",""options"":{" + strjoin(parts, ",") + "}";
 elseif isCycleCurve

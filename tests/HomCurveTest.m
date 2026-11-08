@@ -24,7 +24,7 @@ classdef HomCurveTest < matlab.unittest.TestCase
             "x'=y" + newline + "y'=b1+b2*x+x^2+x*y" + newline + ...
             "init x=0,y=0" + newline + "done" + newline
         Labels = ["NSA" "BLS" "BLU" "NSF" "NDS" "NDU" "TLS" "TLU" ...
-            "ZES" "ZEU" "OFS" "OFU"]
+            "ZES" "ZEU" "OFS" "OFU" "IFS" "IFU"]
     end
 
     properties
@@ -107,7 +107,9 @@ classdef HomCurveTest < matlab.unittest.TestCase
             testCase.verifySize(hom.Alpha, [k 2]);
             testCase.verifySize(hom.Mesh, [k ntst + 1]);
             testCase.verifySize(hom.Eigenvalues, [k n]);
-            testCase.verifySize(hom.Codim2, [k 12]);
+            testCase.verifySize(hom.Codim2, [k 14]);
+            % The IF columns are NaN without InclinationFlips.
+            testCase.verifyTrue(all(isnan(hom.Codim2(:, 13:14)), "all"));
             testCase.verifyEqual(hom.Codim2Labels, testCase.Labels);
             testCase.verifyEqual([hom.NTST hom.NCOL], [ntst ncol]);
             testCase.verifyEqual(hom.Period, repmat(20, k, 1), AbsTol = 1e-12);
@@ -163,6 +165,38 @@ classdef HomCurveTest < matlab.unittest.TestCase
             testCase.verifyEqual(hom2.Alpha(1, 1), -0.0023714546120554, AbsTol = 1e-8);
         end
 
+        function inclinationFlipsAddTheIFSLabel(testCase)
+            % SPEC section 8b-3, test 3: at (a, b, c, beta) = (-0.25, 1, -3, 1)
+            % from alpha = 0 to 2.1 at T = 20 there is one IFS label, within
+            % 5e-3 of the oracle zero alpha = 1.8961, and no other label.
+            m = testCase.model(testCase.Sandstede);
+            orbit = testCase.sandstedeOrbit(-0.25, 20);
+            orbit.p.c = -3;
+            orbit.p.beta = 1;
+            hom = @(varargin) phasecont.continuation(m, orbit, "Type", "HOM", ...
+                "Free", ["mut" "alpha"], "NTST", 160, "NCOL", 4, ...
+                "Bounds", [-0.1 2.1], "Hmax", 0.05, "MaxNewton", 15, varargin{:});
+
+            off = hom();
+            testCase.verifyEqual(off.Stop, "Bounds");
+            testCase.verifyEmpty(off.Specials);
+            testCase.verifyTrue(all(isnan(off.Codim2(:, 13:14)), "all"));
+
+            on = hom("InclinationFlips", true);
+            testCase.verifyEqual(on.Stop, "Bounds");
+            testCase.verifySize(on.Codim2, [numel(on.Period) 14]);
+            testCase.verifyFalse(any(isnan(on.Codim2(:, 13:14)), "all"));
+            testCase.assertNumElements(on.Specials, 1);
+            testCase.verifyEqual(on.Specials.Label, "IFS");
+            testCase.verifyEqual(on.Specials.P(m.Parameters == "alpha"), 1.8961, ...
+                AbsTol = 5e-3);
+
+            % An explicit false is the same as leaving the option out.
+            same = hom("InclinationFlips", false);
+            testCase.verifyEmpty(same.Specials);
+            testCase.verifyTrue(all(isnan(same.Codim2(:, 13:14)), "all"));
+        end
+
         function optionErrors(testCase)
             m = testCase.model(testCase.Sandstede);
             orbit = testCase.sandstedeOrbit(-0.25, 20);
@@ -199,6 +233,16 @@ classdef HomCurveTest < matlab.unittest.TestCase
             % Index applies to HOM only.
             testCase.verifyError(@() phasecont.continuation(m, eq, Free = "mu", ...
                 Index = 1), "phasecont:model:badOption");
+            % InclinationFlips applies to HOM only, even when false, and
+            % takes a logical scalar.
+            testCase.verifyError(@() phasecont.continuation(m, eq, Free = "mu", ...
+                InclinationFlips = true), "phasecont:model:badOption");
+            testCase.verifyError(@() phasecont.continuation(m, eq, Free = "mu", ...
+                InclinationFlips = false), "phasecont:model:badOption");
+            testCase.verifyError(@() hom(orbit, Free = ["mut" "a"], NTST = 20, ...
+                NCOL = 4, InclinationFlips = 1), "phasecont:model:badOption");
+            testCase.verifyError(@() hom(orbit, Free = ["mut" "a"], NTST = 20, ...
+                NCOL = 4, InclinationFlips = [true false]), "phasecont:model:badOption");
         end
 
         function indexChecksOnAnLCBranch(testCase)
