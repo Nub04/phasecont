@@ -196,6 +196,7 @@ unsafe fn rhs_at(
     nout: usize,
 ) -> Result<()> {
     let h = model_handle(model)?;
+    h.ode_only()?;
     if t.is_none() && !h.names.autonomous {
         return Err(Error::NonAutonomous(
             "the model depends on t; call model_rhs_t".into(),
@@ -357,6 +358,7 @@ pub unsafe extern "C" fn model_info(model: u64, out_json: *mut *mut c_char) -> i
         let v = json!({
             "n": h.n(),
             "n_p": h.n_p(),
+            "delay": h.delay,
             "variables": names.states,
             "parameters": names.parameters,
             "values": names.par_values,
@@ -419,6 +421,7 @@ pub unsafe extern "C" fn model_equilibrium(
 ) -> i32 {
     barrier(|| {
         let h = model_handle(model)?;
+        h.ode_only()?;
         let n = h.n();
         if !h.names.autonomous {
             return Err(Error::NonAutonomous(EngineError::NonAutonomous.to_string()));
@@ -539,6 +542,7 @@ pub unsafe extern "C" fn ens_start(
         let out_ens = unsafe { out_ptr(out_ens, "ens") }?;
         *out_ens = 0;
         let h = model_handle(model)?;
+        h.ode_only()?;
         let text = unsafe { str_arg(job_json, "job_json") }?;
         let x0 = unsafe { f64_arg(x0, nx, "x0") }?;
         let params = unsafe { f64_arg(params, np, "params") }?;

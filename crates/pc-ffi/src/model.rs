@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 
 use pc_engine::{
-    EpSetup, Evaluator, ModelEval, Options, build_allowing_t, engine_kinds, entry_symbol,
-    equilibrium,
+    EpSetup, Evaluator, ModelEval, Options, build_allowing_t, build_dde, engine_kinds,
+    entry_symbol, equilibrium,
 };
 use pc_ir::{EntryKind, IrModel};
 use pc_ode::{Model, ModelInfo};
@@ -73,6 +73,8 @@ pub(crate) struct ModelHandle {
     /// The lowered model. A run reads its names and defaults to check a problem.
     pub ir: IrModel,
     pub names: Names,
+    /// True for a model with `delay(...)` calls (SPEC 8s). Only an "EP" run takes one.
+    pub delay: bool,
     /// The evaluator the model thread holds, with the library path for an AOT one.
     /// Written by that thread after a successful compile.
     evaluator: Arc<Mutex<Option<Evaluator>>>,
@@ -103,9 +105,11 @@ impl ModelHandle {
         let (tx, rx) = mpsc::channel();
         let max_frame = Arc::new(AtomicU32::new(0));
         let evaluator = Arc::new(Mutex::new(None));
+        let delay = !ir.delays.is_empty();
         let ctx = Context {
             model: model.clone(),
             info: info.clone(),
+            delay,
             warm_x: names.init.clone(),
             warm_p: names.par_values.clone(),
             max_frame: Arc::clone(&max_frame),
@@ -121,6 +125,7 @@ impl ModelHandle {
             info,
             ir,
             names,
+            delay,
             evaluator,
             c_file: Mutex::new(None),
             max_frame,
@@ -162,6 +167,14 @@ impl ModelHandle {
         rrx.recv().map_err(|_| gone())?
     }
 
+    /// The error for an entry that has no delay form. Call it first in such an entry.
+    pub fn ode_only(&self) -> Result<()> {
+        if self.delay {
+            return Err(bad_arg(DELAY_MODEL));
+        }
+        Ok(())
+    }
+
     pub fn compile(&self, which: Evaluator) -> Result<()> {
         match self.call(Request::Compile(which))? {
             Reply::Compiled => Ok(()),
@@ -171,6 +184,7 @@ impl ModelHandle {
 
     /// Writes the C library source for every engine entry into `dir` and records the path.
     pub fn emit_c(&self, dir: PathBuf) -> Result<PathBuf> {
+        self.ode_only()?;
         match self.call(Request::EmitC(dir))? {
             Reply::CFile(path) => {
                 *lock(&self.c_file) = Some(path.clone());
@@ -181,6 +195,7 @@ impl ModelHandle {
     }
 
     pub fn rhs(&self, x: Vec<f64>, p: Vec<f64>, t: f64) -> Result<Vec<f64>> {
+        self.ode_only()?;
         match self.call(Request::Rhs { x, p, t })? {
             Reply::Rhs(out) => Ok(out),
             _ => Err(Error::Internal("unexpected reply to rhs".into())),
@@ -188,6 +203,7 @@ impl ModelHandle {
     }
 
     pub fn equilibrium(&self, setup: EpSetup, opts: Options) -> Result<Equilibrium> {
+        self.ode_only()?;
         match self.call(Request::Equilibrium { setup, opts })? {
             Reply::Equilibrium(e) => Ok(e),
             _ => Err(Error::Internal("unexpected reply to equilibrium".into())),
@@ -224,6 +240,9 @@ fn serve(ctx: Context, rx: Receiver<Msg>) {
     }
 }
 
+/// The text of the error for an entry that a delay model cannot use.
+pub(crate) const DELAY_MODEL: &str = "the model has delay terms, and this entry is for ODE models";
+
 /// The text of the error for a model that has no evaluator yet.
 pub(crate) const NOT_COMPILED: &str = "model is not compiled; call model_compile first";
 
@@ -244,6 +263,8 @@ fn compiled(ev: &mut Option<Box<dyn ModelEval>>) -> Result<&mut dyn ModelEval> {
 struct Context {
     model: Model,
     info: ModelInfo,
+    /// A delay model compiles through `build_dde`.
+    delay: bool,
     /// The declared start and parameters, used to compile `F` at once.
     warm_x: Vec<f64>,
     warm_p: Vec<f64>,
@@ -254,11 +275,18 @@ struct Context {
 fn handle(req: Request, ctx: &Context, ev: &mut Option<Box<dyn ModelEval>>) -> Result<Reply> {
     match req {
         Request::Compile(which) => {
-            let mut built = build_allowing_t(&ctx.model, &ctx.info, which.clone())?;
+            let mut p = ctx.warm_p.clone();
+            let mut built = if ctx.delay {
+                // The hidden delay slots follow the declared parameters, then `t`.
+                let dm = build_dde(&ctx.model, &ctx.info, which.clone())?;
+                p.resize(p.len() + dm.delays.len(), 0.0);
+                dm.eval
+            } else {
+                build_allowing_t(&ctx.model, &ctx.info, which.clone())?
+            };
             // The JIT compiles an entry on its first call. Run `F` once so that the
             // compile happens here and `jit_max_frame` is set. The value does not matter,
             // and a NaN at the declared start is not an error.
-            let mut p = ctx.warm_p.clone();
             p.push(0.0);
             let mut out = vec![0.0; built.n()];
             let _ = built.eval(&EntryKind::F, &ctx.warm_x, &p, &[], &mut out);

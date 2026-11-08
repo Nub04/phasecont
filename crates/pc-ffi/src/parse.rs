@@ -112,28 +112,50 @@ fn parse_inline(text: &str) -> Outcome {
             result: Err(Error::Model(msg)),
         };
     }
-    let result = match pc_ir::lower(&loaded.expanded, &loaded.info) {
-        Ok(ir) => Ok(Parsed {
-            names: Names {
-                states: ir.state_names.clone(),
-                parameters: ir.param_names.clone(),
-                aux: ir.aux_names.clone(),
-                init: ir.init.clone(),
-                par_values: ir.par_values.clone(),
-                autonomous: ir.autonomous,
-                source_sha256: sha256_hex(text.as_bytes()),
-                options: option_pairs(&loaded.expanded, text),
-            },
-            ir,
-            model: loaded.expanded,
-            info: loaded.info,
-        }),
+    let result = match lower_either(&loaded.expanded, &loaded.info) {
+        Ok(ir) => {
+            // A delay model lists its user parameters only. The hidden delay slots come after
+            // them in the IR and are not part of any buffer the caller sees (SPEC 8s).
+            let n_user = ir.n_user_params;
+            Ok(Parsed {
+                names: Names {
+                    states: ir.state_names.clone(),
+                    parameters: ir.param_names[..n_user].to_vec(),
+                    aux: ir.aux_names.clone(),
+                    init: ir.init.clone(),
+                    par_values: ir.par_values[..n_user].to_vec(),
+                    autonomous: ir.autonomous,
+                    source_sha256: sha256_hex(text.as_bytes()),
+                    options: option_pairs(&loaded.expanded, text),
+                },
+                ir,
+                model: loaded.expanded,
+                info: loaded.info,
+            })
+        }
         Err(errs) => {
             let msgs: Vec<&str> = errs.iter().map(|e| e.message.as_str()).collect();
             Err(Error::Model(msgs.join("; ")))
         }
     };
     Outcome { diag, result }
+}
+
+/// Lowers an ODE model, or a delay model when `lower` refuses a `delay(...)` call. `lower_dde`
+/// refuses a model without one, so a text lowers one way at most. When both fail, the errors
+/// are those of `lower_dde` if `lower` saw a delay call and those of `lower` otherwise.
+fn lower_either(
+    model: &pc_ode::Model,
+    info: &pc_ode::ModelInfo,
+) -> std::result::Result<pc_ir::IrModel, Vec<pc_ir::IrError>> {
+    let errs = match pc_ir::lower(model, info) {
+        Ok(ir) => return Ok(ir),
+        Err(errs) => errs,
+    };
+    if !errs.iter().any(|e| e.kind == pc_ir::IrErrorKind::Delay) {
+        return Err(errs);
+    }
+    pc_ir::lower_dde(model, info)
 }
 
 #[cfg(test)]

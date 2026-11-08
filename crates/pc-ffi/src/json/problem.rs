@@ -363,7 +363,10 @@ fn only_keys(map: &Map<String, Value>, allowed: &[&str], path: &str) -> Result<(
 /// Position of the parameter `name` (names match without regard to case).
 fn param_index(ir: &IrModel, name: &str) -> Option<usize> {
     let key = name.to_lowercase();
-    ir.param_names.iter().position(|p| p.to_lowercase() == key)
+    // The hidden delay slots of a delay model come after the user parameters and are not names.
+    ir.param_names[..ir.n_user_params]
+        .iter()
+        .position(|p| p.to_lowercase() == key)
 }
 
 /// A label followed by a 1-based ordinal, for example `BP1`: the form that
