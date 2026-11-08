@@ -76,7 +76,7 @@ const CRIT_TOL: f64 = 1e-6;
 
 /// Smallest `omega` that a start may have. Below it the split into `a` and `b` is badly
 /// scaled.
-const OMEGA_MIN: f64 = 1e-8;
+pub const OMEGA_MIN: f64 = 1e-8;
 
 /// Margin on the sizes below which the pair at `+-i omega` is lost near a Bogdanov-Takens
 /// point. The constant has no source (SPEC section 8k).

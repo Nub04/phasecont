@@ -17,7 +17,10 @@ use crate::cycle::{
     CycleCurveStart, CycleStart, HomStart, continue_cycle, continue_hom_curve, continue_lpc_curve,
     continue_ns_curve, continue_pd_curve,
 };
-use crate::dde::{DdeBranch, RootOptions, continue_equilibrium as dde_continue_equilibrium};
+use crate::dde::{
+    DdeBranch, DdeHopfBranch, HopfExtras, HopfSetup, RootOptions,
+    continue_equilibrium as dde_continue_equilibrium, continue_hopf_with as dde_continue_hopf_with,
+};
 use crate::ep::{EpSetup, continue_ep};
 use crate::error::EngineError;
 use crate::hopfcurve::continue_hopf_curve;
@@ -55,6 +58,14 @@ pub enum RunKind {
     /// roots counted by `RootOptions` (SPEC 8s). The continuation runs once and the branch
     /// appears when it ends, so a poll sees no points before then.
     DdeEq(RootOptions),
+    /// The Hopf curve of a delay equilibrium in the two parameters `free`, from the start
+    /// `setup.u0` and `setup.params` with the frequency `omega`, and the additions of `extras`
+    /// (SPEC 8s, slice 2). Like `DdeEq` it runs once and the branch appears when it ends.
+    DdeHopf {
+        free: [usize; 2],
+        omega: f64,
+        extras: HopfExtras,
+    },
     /// An initial value run over `tspan` from the state `setup.u0` with the parameters
     /// `setup.params`. The model may depend on t.
     Ivp { tspan: [f64; 2], opts: IvpOptions },
@@ -228,7 +239,7 @@ fn follow(
         RunKind::NsCurve(cs) => continue_ns_curve(model, cs, opts, &shared.cancel, on_point),
         RunKind::HomCurve(hs) => continue_hom_curve(model, hs, opts, &shared.cancel, on_point),
         // `body` sends a delay run to `body_dde` before it builds an ODE model.
-        RunKind::DdeEq(_) => Err(EngineError::BadProblem(
+        RunKind::DdeEq(_) | RunKind::DdeHopf { .. } => Err(EngineError::BadProblem(
             "a delay run has no ODE model to follow".into(),
         )),
         RunKind::Ivp { tspan, opts } => {
@@ -258,8 +269,14 @@ fn body(shared: &Shared, spec: RunSpec) -> RunState {
             )),
         );
     }
-    if let RunKind::DdeEq(roots) = spec.kind {
-        return body_dde(shared, spec, roots);
+    match spec.kind {
+        RunKind::DdeEq(roots) => return body_dde(shared, spec, roots),
+        RunKind::DdeHopf {
+            free,
+            omega,
+            extras,
+        } => return body_dde_hopf(shared, spec, free, omega, extras),
+        _ => {}
     }
     // Only an initial value run may depend on t.
     let built = if matches!(spec.kind, RunKind::Ivp { .. }) {
@@ -335,6 +352,109 @@ fn body_dde(shared: &Shared, spec: RunSpec, roots: RootOptions) -> RunState {
         }
     }
 }
+
+/// Follows the Hopf curve of a delay equilibrium (SPEC 8s, slice 2). Like `body_dde` it stores
+/// the branch when the engine returns it, and a cancelled run keeps no points.
+fn body_dde_hopf(
+    shared: &Shared,
+    spec: RunSpec,
+    free: [usize; 2],
+    omega: f64,
+    extras: HopfExtras,
+) -> RunState {
+    let mut model = match build_dde(&spec.model, &spec.info, spec.evaluator) {
+        Ok(m) => m,
+        Err(e) => return finish(shared, Err(e)),
+    };
+    shared.lock().branches.push(placeholder());
+    let setup = HopfSetup {
+        free,
+        params: spec.setup.params.clone(),
+        x0: spec.setup.u0.clone(),
+        omega,
+    };
+    match dde_continue_hopf_with(&mut model, &setup, &spec.opts, &shared.cancel, &extras) {
+        Ok(b) => {
+            let branch = dde_hopf_branch(b);
+            shared.lock().branches[0] = branch.clone();
+            finish(shared, Ok(&branch))
+        }
+        Err(e) => {
+            shared.lock().branches[0].stop = match &e {
+                EngineError::Cancelled => StopReason::Cancelled,
+                other => StopReason::Error(other.clone()),
+            };
+            finish(shared, Err(e))
+        }
+    }
+}
+
+/// A delay Hopf curve as a [`Branch`]. `u` is `[x, alpha1, kappa]`, `alpha` is the second free
+/// parameter and `codim2` is `[l1, hh]`, NaN where the engine has `None`. A special has the row
+/// of its point with both NaN. There is no tangent, eigenvalue, mesh, step length or iteration
+/// count. `omega2` of an `HH` special goes in `extras.values`.
+fn dde_hopf_branch(b: DdeHopfBranch) -> Branch {
+    let point = |alpha: [f64; 2], x: &[f64], kappa: f64, l1: f64, hh: f64| {
+        let mut u = x.to_vec();
+        u.push(alpha[0]);
+        u.push(kappa);
+        Point {
+            u,
+            alpha: alpha[1],
+            tangent: Vec::new(),
+            eigenvalues: Vec::new(),
+            tests: [f64::NAN; 3],
+            codim2: vec![l1, hh],
+            h: 0.0,
+            newton_iters: 0,
+            mesh: Vec::new(),
+        }
+    };
+    Branch {
+        points: b
+            .points
+            .iter()
+            .map(|p| {
+                point(
+                    p.alpha,
+                    &p.x,
+                    p.kappa,
+                    p.l1.unwrap_or(f64::NAN),
+                    p.hh.unwrap_or(f64::NAN),
+                )
+            })
+            .collect(),
+        specials: b
+            .specials
+            .iter()
+            .map(|s| {
+                let mut extras = Extras {
+                    omega: (s.kappa > 0.0).then(|| s.kappa.sqrt()),
+                    refined: false,
+                    ..Extras::default()
+                };
+                if s.label == "GH" {
+                    extras.coefficient = s.l2;
+                    extras.normalization = Some(DDE_GH_NORMALIZATION.to_string());
+                }
+                if let Some(w2) = s.omega2 {
+                    extras.values.push(("omega2".to_string(), w2));
+                }
+                SpecialPoint {
+                    label: s.label.to_string(),
+                    index: s.index,
+                    point: point(s.alpha, &s.x, s.kappa, f64::NAN, f64::NAN),
+                    extras,
+                }
+            })
+            .collect(),
+        stop: b.stop,
+        warnings: b.warnings,
+    }
+}
+
+/// The normalization of the second Lyapunov coefficient of a delay Hopf curve (SPEC 8g-2).
+pub const DDE_GH_NORMALIZATION: &str = "|q|=1, p Delta'(i omega) q=1";
 
 /// A delay equilibrium branch as a [`Branch`]. The root count of a point goes in `tests[0]` as
 /// a float, with the other two tests NaN, and there is no tangent, eigenvalue, step length or
@@ -843,6 +963,75 @@ mod tests {
                 ("unstable_after".to_string(), 2.0)
             ]
         );
+        assert_eq!(b.stop, StopReason::Bounds);
+        assert_eq!(b.warnings, ["w"]);
+    }
+
+    #[test]
+    fn a_delay_hopf_branch_has_two_codim2_values_and_no_ode_data() {
+        use crate::dde::{DdeHopfPoint, DdeHopfSpecial};
+        let p = |a1: f64, a2: f64, kappa: f64, l1: Option<f64>, hh: Option<f64>| DdeHopfPoint {
+            alpha: [a1, a2],
+            x: vec![0.5, -0.5],
+            kappa,
+            omega: (kappa > 0.0).then(|| kappa.sqrt()),
+            l1,
+            hh,
+        };
+        let s = |label: &'static str, kappa: f64, l2: Option<f64>, omega2: Option<f64>| {
+            DdeHopfSpecial {
+                label,
+                alpha: [1.5, 0.25],
+                x: vec![0.5, -0.5],
+                kappa,
+                index: 1,
+                l2,
+                omega2,
+            }
+        };
+        let b = dde_hopf_branch(DdeHopfBranch {
+            points: vec![
+                p(1.0, 0.0, 2.25, Some(-0.5), None),
+                p(1.2, 0.1, 2.25, None, Some(0.75)),
+            ],
+            specials: vec![
+                s("GH", 2.25, Some(0.125), None),
+                s("HH", 4.0, None, Some(3.0)),
+                s("BT", -1.0, None, None),
+            ],
+            stop: StopReason::Bounds,
+            warnings: vec!["w".to_string()],
+        });
+        // u = [x, alpha1, kappa]; alpha is the second parameter; codim2 is [l1, hh].
+        assert_eq!(b.points[0].u, [0.5, -0.5, 1.0, 2.25]);
+        assert_eq!(b.points[0].alpha, 0.0);
+        assert_eq!(b.points[0].codim2[0], -0.5);
+        assert!(b.points[0].codim2[1].is_nan());
+        assert!(b.points[1].codim2[0].is_nan());
+        assert_eq!(b.points[1].codim2[1], 0.75);
+        assert!(b.points[0].tangent.is_empty() && b.points[0].eigenvalues.is_empty());
+        assert!(b.points[0].mesh.is_empty());
+        assert!(b.points[0].tests.iter().all(|t| t.is_nan()));
+        // GH: l2 as the coefficient and the normalization text of SPEC 8g-2.
+        let gh = &b.specials[0];
+        assert_eq!((gh.label.as_str(), gh.index), ("GH", 1));
+        assert_eq!(gh.extras.omega, Some(1.5));
+        assert_eq!(gh.extras.coefficient, Some(0.125));
+        assert_eq!(
+            gh.extras.normalization.as_deref(),
+            Some("|q|=1, p Delta'(i omega) q=1")
+        );
+        assert!(!gh.extras.refined);
+        assert!(gh.point.codim2.iter().all(|c| c.is_nan()));
+        assert_eq!(gh.point.u, [0.5, -0.5, 1.5, 2.25]);
+        assert_eq!(gh.point.alpha, 0.25);
+        // HH: omega2 in the values, no coefficient, no normalization.
+        let hh = &b.specials[1];
+        assert_eq!(hh.extras.omega, Some(2.0));
+        assert_eq!(hh.extras.values, [("omega2".to_string(), 3.0)]);
+        assert!(hh.extras.coefficient.is_none() && hh.extras.normalization.is_none());
+        // BT: kappa < 0 has no omega.
+        assert_eq!(b.specials[2].extras.omega, None);
         assert_eq!(b.stop, StopReason::Bounds);
         assert_eq!(b.warnings, ["w"]);
     }
