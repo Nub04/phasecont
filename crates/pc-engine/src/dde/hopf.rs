@@ -611,8 +611,9 @@ fn start_vector(m: &mut DdeModel, s: &HopfSetup) -> Result<(Vec<f64>, Vec<f64>),
 /// system in `(u, a, b, a1, kappa)`, with the tolerances and iteration cap of `opts`;
 /// `NewtonFailed` when it does not converge. The first tangent points to increasing second
 /// parameter, and `Options::direction` -1 reverses it. `Options::bounds` apply to the
-/// second parameter, and `detect` and `mesh_adapt` are not used. A cancelled run is
-/// `Err(EngineError::Cancelled)`.
+/// second parameter, and `detect` and `mesh_adapt` are not used. A cancel flag that is set at
+/// the call is `Err(EngineError::Cancelled)`. A flag set during the run ends it with stop
+/// `Cancelled` and the points found so far.
 pub fn continue_hopf(
     model: &mut DdeModel,
     setup: &HopfSetup,

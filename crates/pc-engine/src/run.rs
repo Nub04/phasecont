@@ -354,7 +354,8 @@ fn body_dde(shared: &Shared, spec: RunSpec, roots: RootOptions) -> RunState {
 }
 
 /// Follows the Hopf curve of a delay equilibrium (SPEC 8s, slice 2). Like `body_dde` it stores
-/// the branch when the engine returns it, and a cancelled run keeps no points.
+/// the branch when the engine returns it. A flag set at the call keeps no points. A flag set
+/// during the run keeps the points the engine found, with stop `Cancelled`.
 fn body_dde_hopf(
     shared: &Shared,
     spec: RunSpec,

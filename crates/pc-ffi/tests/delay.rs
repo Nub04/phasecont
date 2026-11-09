@@ -1089,7 +1089,10 @@ fn the_coefficients_key_is_an_error_on_every_other_run_type() {
 }
 
 #[test]
-fn a_hopf_run_cancelled_right_after_the_start_keeps_no_points() {
+fn a_hopf_run_cancelled_right_after_the_start_ends_cancelled() {
+    // The worker can take a few steps before it sees the flag, so the number of points is not
+    // pinned (SPEC 8s, slice 2, test 4). What holds: the state, the stop name, and the reported
+    // count equal to the rows that `run_copy` returns.
     let m = compiled(HUTCH);
     let json = r#"{"type":"H","free":["r","tau"],"omega":1.57,"options":{"h0":0.0001,"hmax":0.0001,"max_steps":100000,"bounds":[0.5,1000]}}"#;
     let (rc, run) = start_with(&m, json, &[1.001], &[1.57, 1.0]);
@@ -1098,11 +1101,15 @@ fn a_hopf_run_cancelled_right_after_the_start_keeps_no_points() {
     assert_eq!((api().run_cancel)(run.0), 0, "{}", last_error());
     let st = wait(&run);
     assert_eq!(st["state"], "cancelled", "{st}");
-    let total: u64 = st["branches"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|b| b["points"].as_u64().unwrap())
-        .sum();
-    assert_eq!(total, 0, "{st}");
+    let b = &st["branches"].as_array().unwrap()[0];
+    assert_eq!(b["stop"], "Cancelled", "{st}");
+    let points = b["points"].as_u64().unwrap() as usize;
+    let stride = st["stride"].as_u64().unwrap() as usize;
+    // `copy` needs a non-empty buffer, so a run that kept no points has nothing to copy.
+    if points > 0 {
+        let (rc, rows, vals) = copy(run.0, 0, 0, points, stride);
+        assert_eq!(rc, 0, "{}", last_error());
+        assert_eq!(rows, points, "{st}");
+        assert!(vals.iter().all(|v| !v.is_infinite()), "{st}");
+    }
 }
