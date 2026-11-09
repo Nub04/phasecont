@@ -300,3 +300,44 @@ fn a_cancelled_run_returns_cancelled() {
         Err(e) => panic!("unexpected error {e}"),
     }
 }
+
+/// With `t = alpha t'` Hutchinson's Hopf point is `r = alpha pi/2` with `omega = alpha pi/2`.
+/// At `alpha = 1e-9` that frequency is below the absolute 1e-8 the classification used before
+/// it followed the size of the matrices (SPEC section 8e), and the crossing is still an `H`.
+#[test]
+fn a_hopf_point_at_a_tiny_time_scale_is_still_an_h() {
+    let a = 1e-9;
+    for which in both() {
+        let o = Options {
+            h0: 0.01 * a,
+            hmin: 1e-8 * a,
+            hmax: 0.05 * a,
+            bounds: (1.2 * a, 2.0 * a),
+            direction: 1.0,
+            tol_x: 1e-12 * a,
+            tol_f: 1e-12 * a,
+            tol_refine: 1e-12 * a,
+            ..Options::default()
+        };
+        let b = ok(HUTCH, which, &[1.3 * a, 1.0 / a], 1.0, ro(30), &o);
+        assert_eq!(labels(&b), ["H"], "{:?} {:?}", b.specials, b.warnings);
+        let h = &b.specials[0];
+        assert!(
+            (h.alpha / a - PI / 2.0).abs() <= 1e-6,
+            "alpha = {}",
+            h.alpha
+        );
+        assert!(
+            (h.omega.unwrap() / a - PI / 2.0).abs() <= 1e-6,
+            "omega = {:?}",
+            h.omega
+        );
+        // The root finder's absolute tolerances put candidates unconverged at this scale. That
+        // is a warning about the count, so it is the only warning allowed.
+        assert!(
+            b.warnings.iter().all(|w| w.contains("did not converge")),
+            "{:?}",
+            b.warnings
+        );
+    }
+}

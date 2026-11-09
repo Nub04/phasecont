@@ -149,7 +149,8 @@ function br = continuation(m, start, options)
 %                Type "EP", optional for "H", refused for "LC" and for an ODE
 %                model); see above
 %     Omega      frequency of the Hopf point a delay "H" curve or "LC" run
-%                starts from, a finite real scalar above 1e-8 (required for a
+%                starts from, a finite real scalar above 0, and above 1e-8 times the
+%                size of the matrices of the linearization (required for a
 %                state vector start, an error with a Point); Type "H" or "LC"
 %                of a delay model only
 %     Eps        amplitude of the first orbit of a delay "LC" run, a finite

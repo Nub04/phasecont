@@ -46,7 +46,7 @@
 
 use super::eq::{check_params, check_state, field, linearize};
 use super::hopfhopf::hopf_hopf;
-use super::lyap::lyapunov;
+use super::lyap::{check_omega_finite, check_omega_floor, lyapunov, matrix_size};
 use super::lyap2::lyapunov2;
 use super::roots::{CharRoot, LinearDde, RootOptions, RootSet, SHIFT, characteristic_roots};
 use super::zerohopf::zero_hopf;
@@ -361,8 +361,8 @@ impl HopfProblem<'_> {
             return f64::NAN;
         };
         let kappa = x[3 * self.n + 1];
-        // The locator probes kappa near 1e-17 at a BT point, where nothing can be linearized.
-        if kappa.is_nan() || kappa <= 0.0 || kappa.sqrt() <= OMEGA_MIN {
+        // The locator probes kappa near 1e-17 at a BT point, where the pair is not a pair.
+        if kappa.is_nan() || kappa <= 0.0 {
             return f64::NAN;
         }
         let lin = match self.lin_at(x) {
@@ -373,6 +373,9 @@ impl HopfProblem<'_> {
             }
         };
         let omega = kappa.sqrt();
+        if omega <= OMEGA_MIN * matrix_size(&lin) {
+            return f64::NAN;
+        }
         // Near BT the pair at +-i omega is lost to rounding or to the root finder, which says
         // nothing about a second crossing. The floor only excuses a missing pair: a pair that
         // the roots show is used at any omega, because a large entry that is not part of the
@@ -542,12 +545,7 @@ fn validate(m: &DdeModel, s: &HopfSetup, opts: &Options) -> Result<(), EngineErr
     }
     check_params(m, &s.params)?;
     check_state(m, &s.x0)?;
-    if !(s.omega.is_finite() && s.omega > OMEGA_MIN) {
-        return bad(format!(
-            "omega is {}; the start needs a finite omega above {OMEGA_MIN:e}",
-            s.omega
-        ));
-    }
+    check_omega_finite(s.omega, "omega")?;
     let second_is_delay = m
         .delays
         .iter()
@@ -697,6 +695,11 @@ fn run_hopf(
         return Err(EngineError::Cancelled);
     }
     validate(model, setup, opts)?;
+    check_omega_floor(
+        &linearize(model, &setup.x0, &setup.params)?,
+        setup.omega,
+        "omega",
+    )?;
     if let Some(ro) = &extras.hh
         && !(ro.re_min.is_finite() && ro.re_min < 0.0)
     {

@@ -11,7 +11,7 @@ use pc_engine::{
     LP_CURVE_LABELS, LPC_CURVE_LABELS, NCOL_RANGE, NS_CURVE_LABELS, Options, PD_CURVE_LABELS,
     PdStart, RootOptions, RunKind, RunSpec,
 };
-use pc_engine::{DDE_HOPF_OMEGA_MIN, DdeFloquetOptions, DdeHopfExtras};
+use pc_engine::{DdeFloquetOptions, DdeHopfExtras};
 use pc_ir::IrModel;
 use pc_ode::{Model, ModelInfo};
 use serde_json::{Map, Value};
@@ -856,8 +856,9 @@ fn parse_hopf_keys(
         })?,
         "omega",
     )?;
-    if omega <= DDE_HOPF_OMEGA_MIN {
-        return Err(format!("omega: must be above {DDE_HOPF_OMEGA_MIN:e}"));
+    // The engine compares omega with the size of the matrices, so only the sign is checked here.
+    if !omega.is_finite() || omega <= 0.0 {
+        return Err("omega: must be finite and above 0".into());
     }
     if cycle {
         return Ok((Some(omega), false, false));
@@ -2171,7 +2172,7 @@ mod tests {
             ("eps", json!(-1.0), "eps: must be a number above 0"),
             ("eps", json!("x"), "eps: must be a number above 0"),
             ("eps", Value::Null, "eps: must be a number above 0"),
-            ("omega", json!(1e-9), "omega: must be above 1e-8"),
+            ("omega", json!(0.0), "omega: must be finite and above 0"),
             ("floquet", json!({"nhist": 6}), "floquet.count"),
             ("floquet", json!({"count": 2}), "floquet.nhist"),
             ("floquet", json!({"nhist": 0, "count": 2}), "floquet.nhist"),

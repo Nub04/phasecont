@@ -205,10 +205,25 @@ pub(crate) fn dot(a: &[f64], b: &[f64]) -> f64 {
 /// First tangent at the start `x` of a curve: the unit null vector of the `(dim-1)` by `dim`
 /// Jacobian, with the sign chosen so that its first component of size above `RANK_TOL` is
 /// positive. `Options::direction` -1 reverses it in `run_branch`.
+///
+/// The columns have the units of the unknowns, so their norms can differ by many orders of
+/// magnitude (a delay time of 1e3 beside a rate of 1e-3). The rank test and the null vector
+/// use the columns divided by their norms, and the vector is scaled back, so the units of
+/// the unknowns do not decide whether a start is regular.
 pub(crate) fn start_tangent(p: &mut dyn Problem, x: &[f64]) -> Result<Vec<f64>, EngineError> {
     let m = p.dim() - 1;
     let mut jac = vec![0.0; m * (m + 1)];
     p.jacobian(x, &mut jac)?;
+    let mut col = vec![1.0; m + 1];
+    for (j, c) in col.iter_mut().enumerate() {
+        let nrm = norm(&jac[j * m..(j + 1) * m]);
+        if nrm.is_finite() && nrm > 0.0 {
+            *c = nrm;
+            for v in &mut jac[j * m..(j + 1) * m] {
+                *v /= nrm;
+            }
+        }
+    }
     let s = singular_values(&jac, m, m + 1)?;
     if s.iter().any(|v| !v.is_finite()) {
         return Err(EngineError::NotFinite("Jacobian at the start".into()));
@@ -221,6 +236,13 @@ pub(crate) fn start_tangent(p: &mut dyn Problem, x: &[f64]) -> Result<Vec<f64>, 
         ));
     }
     let mut t = null_right(&jac, m, m + 1, 1)?.swap_remove(0);
+    for (c, k) in t.iter_mut().zip(&col) {
+        *c /= k;
+    }
+    let len = norm(&t);
+    for c in t.iter_mut() {
+        *c /= len;
+    }
     let lead = t
         .iter()
         .copied()

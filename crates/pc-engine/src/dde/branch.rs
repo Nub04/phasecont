@@ -6,7 +6,8 @@
 //! `palc::correct` to bracket each crossing. The method is my own, built from the definition
 //! of a local bifurcation of an equilibrium; SPEC section 8e says so.
 
-use super::eq::{Collapsed, check_params, stability};
+use super::eq::{Collapsed, check_params, linearize, stability};
+use super::lyap::matrix_size;
 use super::roots::{CharRoot, RootOptions, RootSet};
 use crate::branch::{Options, StopReason};
 use crate::ep::{EpProblem, EpSetup, equilibrium as ep_equilibrium};
@@ -16,7 +17,10 @@ use crate::palc::{Corrected, correct, run_branch};
 use pc_ir::DelayTime;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// A pair of roots that crosses with `|Im| <= OMEGA_MIN` is reported as a real crossing.
+/// A pair of roots that crosses with `|Im| <= OMEGA_MIN * matrix_size` is reported as a real
+/// crossing, where `matrix_size` is the size of the matrices of the linearization there (the
+/// floor follows the time scale of the model, as the Hopf and Lyapunov floors do). When the
+/// linearization fails the floor is `OMEGA_MIN` itself.
 const OMEGA_MIN: f64 = 1e-8;
 /// A bracket is at most this fraction of the step length wide.
 const REL_WIDTH: f64 = 1e-12;
@@ -165,6 +169,17 @@ impl Ctx<'_> {
             }
         }
         Ok(set)
+    }
+
+    /// The imaginary part below which a crossing at `x = (u, alpha)` counts as real.
+    fn omega_floor(&mut self, x: &[f64]) -> f64 {
+        let n = x.len() - 1;
+        let mut p = self.setup.params.clone();
+        p[self.setup.free] = x[n];
+        match linearize(self.m, &x[..n], &p).map(|lin| matrix_size(&lin)) {
+            Ok(size) if size > 0.0 => OMEGA_MIN * size,
+            _ => OMEGA_MIN,
+        }
     }
 
     /// `X(h)`: the solution of `G = 0` on the hyperplane `v^T (X - xk) = h`, or `None` when
@@ -392,8 +407,9 @@ pub fn continue_equilibrium(
             };
             let set = ctx.roots_at(&x_end, "a classification point")?;
             let lead = leading_positive(&set);
+            let floor = ctx.omega_floor(&x_end);
             match lead {
-                Some(r) if r.im.abs() > OMEGA_MIN => {
+                Some(r) if r.im.abs() > floor => {
                     let n = x_end.len() - 1;
                     found.push((
                         k,

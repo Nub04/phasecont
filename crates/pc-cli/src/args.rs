@@ -519,7 +519,8 @@ The problem file is a JSON object. Every key but l2 is required:
   params   object of numbers by parameter name; a parameter left out keeps the value
            of the model file
   x0       the equilibrium, one value per state
-  omega    the angular frequency of the Hopf point, above 1e-8; l1 changes by about
+  omega    the angular frequency of the Hopf point, above 1e-8 times the size of the
+           matrices of the linearization; l1 changes by about
            86 per unit of omega for the FitzHugh-Nagumo example of the spec, so give
            it to all its digits
   l2       optional boolean, false if left out. true computes the second Lyapunov
@@ -563,7 +564,8 @@ The problem file is a JSON object. Every key is required, and an unknown key is 
   params   object of numbers by parameter name; a parameter left out keeps the value
            of the model file
   x0       the equilibrium, one value per state
-  omega    the angular frequency of the Hopf pair, above 1e-8
+  omega    the angular frequency of the Hopf pair, above 1e-8 times the size of the
+           matrices of the linearization
 
 The output has the keys e, equilibrium_residual, g011, g021, g110, g111, g200, g210, g300,
 null_residual_hopf, null_residual_zero, omega, s, s_product and theta, in alphabetical
@@ -605,8 +607,8 @@ The problem file is a JSON object. Every key is required, and an unknown key is 
   params   object of numbers by parameter name; a parameter left out keeps the value
            of the model file
   x0       the equilibrium, one value per state
-  omega1   the larger angular frequency, above 1e-8
-  omega2   the smaller angular frequency, above 1e-8 and below omega1
+  omega1   the larger angular frequency, above 1e-8 times the matrix size
+  omega2   the smaller angular frequency, above that floor and below omega1
 
 The output has the keys case, delta, equilibrium_residual, g0021, g1011, g1110, g2100,
 null_residual_1, null_residual_2, omega1, omega2, product, sign and theta, in alphabetical
@@ -663,7 +665,7 @@ The problem file is a JSON object. Every key but options is required:
            of the model file. The two names in free give the start point
   free     array of two different declared parameter names, [first, second]
   x0       start values of Newton's method for the state, one per state
-  omega    start value of the angular frequency, above 1e-8
+  omega    start value of the angular frequency, above 1e-8 times the matrix size
   lyapunov optional boolean, false if left out. true adds \"l1\" to every point and
            labels GH (generalized Hopf), where l1 changes sign. l1 is null where kappa
            is not above 0 or where dde-lyap would refuse the point. Each point then
