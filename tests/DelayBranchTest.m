@@ -873,8 +873,10 @@ classdef DelayBranchTest < matlab.unittest.TestCase
 
         function aDelayCycleStartsFromAHopfPointOfAnEquilibriumBranch(testCase)
             % The H point of a slice 1 branch supplies the equilibrium, the
-            % parameters and the frequency. Its position is only as exact as
-            % the root count, so the tolerances are looser.
+            % parameters and the frequency. Measured on 2026-11-09: the H
+            % point is within 2.2e-14 of the exact tau and omega, and Alpha(1)
+            % differs by 5.6e-10 from the value of the exact start (the first
+            % orbit is a first-order correction at Eps), so the bound is 2e-9.
             m = testCase.model(testCase.Osc);
             eq = phasecont.continuation(m, 0, Free = "tau", ...
                 Params = struct(mu = 0.3, tau = 1.2), ...
@@ -888,7 +890,7 @@ classdef DelayBranchTest < matlab.unittest.TestCase
             testCase.verifyEqual(br.Type, "LC");
             testCase.verifyEqual(br.Stop, "Bounds");
             testCase.assertSize(br.Alpha, [25 1]);
-            testCase.verifyEqual(br.Alpha(1), 1.3276067784641747, AbsTol = 1e-6);
+            testCase.verifyEqual(br.Alpha(1), 1.3276067784641747, AbsTol = 2e-9);
             testCase.verifyEqual(br.Alpha(end), pi/2, AbsTol = 1e-9);
             testCase.verifyEqual(br.Period(end), 2*pi, AbsTol = 5e-11);
             testCase.verifyEqual(max(br.U(end, :)), 1, AbsTol = 1e-12);
