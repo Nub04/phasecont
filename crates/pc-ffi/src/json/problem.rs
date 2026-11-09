@@ -11,7 +11,7 @@ use pc_engine::{
     LP_CURVE_LABELS, LPC_CURVE_LABELS, NCOL_RANGE, NS_CURVE_LABELS, Options, PD_CURVE_LABELS,
     PdStart, RootOptions, RunKind, RunSpec,
 };
-use pc_engine::{DDE_HOPF_OMEGA_MIN, DdeHopfExtras};
+use pc_engine::{DDE_HOPF_OMEGA_MIN, DdeFloquetOptions, DdeHopfExtras};
 use pc_ir::IrModel;
 use pc_ode::{Model, ModelInfo};
 use serde_json::{Map, Value};
@@ -28,6 +28,14 @@ pub enum Kind {
     DdeEp,
     /// The Hopf curve of a delay equilibrium (SPEC 8s, slice 2). It reads as `"H"` in the JSON.
     DdeHopf,
+    /// The branch of periodic orbits of a delay equation from a Hopf point (SPEC 8s, slice 4).
+    /// It reads as `"LC"` in the JSON. `count` is the number of multipliers kept per point, 0
+    /// without `floquet`.
+    DdeLc {
+        ntst: usize,
+        ncol: usize,
+        count: usize,
+    },
     Lp,
     Hopf,
     Lc {
@@ -64,7 +72,7 @@ impl Kind {
             Kind::Ep | Kind::DdeEp => "EP",
             Kind::Lp => "LP",
             Kind::Hopf | Kind::DdeHopf => "H",
-            Kind::Lc { .. } => "LC",
+            Kind::Lc { .. } | Kind::DdeLc { .. } => "LC",
             Kind::Lpc { .. } => "LPC",
             Kind::Pd { .. } => "PD",
             Kind::Ns { .. } => "NS",
@@ -82,7 +90,7 @@ impl Kind {
             Kind::Lp => &LP_CURVE_LABELS,
             Kind::Hopf => &HOPF_CURVE_LABELS,
             Kind::DdeHopf => &DDE_HOPF_LABELS,
-            Kind::Lc { .. } => &CYCLE_LABELS,
+            Kind::Lc { .. } | Kind::DdeLc { .. } => &CYCLE_LABELS,
             Kind::Lpc { .. } => &LPC_CURVE_LABELS,
             Kind::Pd { .. } => &PD_CURVE_LABELS,
             Kind::Ns { .. } => &NS_CURVE_LABELS,
@@ -142,8 +150,18 @@ const CYCLE_KEYS: [&str; 3] = ["ntst", "ncol", "mesh"];
 /// Values in one row of a run of cycles or a HOM curve of `kind` with `n` states, or
 /// `None` when that overflows or `kind` has no mesh: `n (N m + 1) + N + 2 n` plus 8 for
 /// LC, LPC and PD, 13 for NS and `n + 18` for HOM. `pc-ffi`'s row layout documents the
-/// parts.
+/// parts. A delay LC row has no mesh and no eigenvalues of a Jacobian: it is
+/// `n (N m + 1) + 5 + 2 c` with `c` multipliers (SPEC 8s, slice 4).
 pub fn cycle_stride(kind: Kind, n: usize) -> Option<usize> {
+    if let Kind::DdeLc { ntst, ncol, count } = kind {
+        // alpha, the period, h, iters and trivial_error, then the real and imaginary parts
+        return ntst
+            .checked_mul(ncol)?
+            .checked_add(1)?
+            .checked_mul(n)?
+            .checked_add(5)?
+            .checked_add(count.checked_mul(2)?);
+    }
     let (ntst, ncol) = kind.mesh_size()?;
     // alpha, the tail of u, the last mesh point, the tests, h and iters
     let rest = kind
@@ -186,6 +204,12 @@ pub struct Problem {
     /// Whether a delay Hopf run computes the coefficients at its `ZH` and `HH` specials
     /// (SPEC 8s, slice 3). Off when the key is missing.
     pub coefficients: bool,
+    /// The size of the first guess of a delay cycle run, `Some` exactly when `kind` is
+    /// `DdeLc`. The key `eps` has no default (SPEC 8s, slice 4).
+    pub eps: Option<f64>,
+    /// The Floquet options of a delay cycle run, `Some` when the key `floquet` is there. The
+    /// count is also in `Kind::DdeLc`.
+    pub floquet: Option<DdeFloquetOptions>,
 }
 
 impl Problem {
@@ -246,6 +270,18 @@ impl Problem {
                 })
             }
             (Kind::DdeEp, ..) if let Some(roots) = self.roots => RunKind::DdeEq(roots),
+            (Kind::DdeLc { ntst, ncol, .. }, ..)
+                if let (Some(omega), Some(eps)) = (self.omega, self.eps) =>
+            {
+                RunKind::DdeCycle {
+                    free: self.setup.free,
+                    omega,
+                    eps,
+                    ntst,
+                    ncol,
+                    floquet: self.floquet.clone(),
+                }
+            }
             (Kind::DdeHopf, Some(free), _) if let Some(omega) = self.omega => RunKind::DdeHopf {
                 free,
                 omega,
@@ -341,7 +377,10 @@ impl Problem {
                 spec.switch_at = self.switch;
                 spec
             }
-            RunKind::Ivp { .. } | RunKind::DdeEq(_) | RunKind::DdeHopf { .. } => {
+            RunKind::Ivp { .. }
+            | RunKind::DdeEq(_)
+            | RunKind::DdeHopf { .. }
+            | RunKind::DdeCycle { .. } => {
                 let mut spec = RunSpec::new(model, info, evaluator, self.setup, self.opts);
                 spec.kind = kind;
                 spec
@@ -452,6 +491,8 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
             "omega",
             "lyapunov",
             "coefficients",
+            "eps",
+            "floquet",
         ],
         "",
     )?;
@@ -459,12 +500,25 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
     let delay = !ir.delays.is_empty();
     let kind = match top.get("type") {
         None => return Err("type: missing".into()),
+        // A delay equation takes no other run, whatever its other keys say (SPEC 8s).
+        Some(Value::String(s))
+            if delay && matches!(s.as_str(), "LP" | "LPC" | "PD" | "NS" | "HOM") =>
+        {
+            return Err(DELAY_TYPE_REFUSAL.into());
+        }
         Some(Value::String(s)) if s == "EP" && delay => Kind::DdeEp,
         Some(Value::String(s)) if s == "EP" => Kind::Ep,
         Some(Value::String(s)) if s == "LP" => Kind::Lp,
         Some(Value::String(s)) if s == "H" && delay => Kind::DdeHopf,
         Some(Value::String(s)) if s == "H" => Kind::Hopf,
         Some(Value::String(s)) if s == "IVP" => return parse_ivp(top, ir, mode),
+        Some(Value::String(s)) if s == "LC" && delay => {
+            cycle_size(top, ir.n(), |ntst, ncol| Kind::DdeLc {
+                ntst,
+                ncol,
+                count: 0,
+            })?
+        }
         Some(Value::String(s)) if s == "LC" => {
             cycle_size(top, ir.n(), |ntst, ncol| Kind::Lc { ntst, ncol })?
         }
@@ -491,13 +545,29 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
     if top.contains_key("tspan") {
         return Err("tspan: only an IVP run takes this key".into());
     }
-    if delay && !matches!(kind, Kind::DdeEp | Kind::DdeHopf) {
-        return Err("type: a delay equation takes only \"EP\" or \"H\"".into());
-    }
     let roots = parse_roots(top, kind)?;
     let (omega, lyapunov, coefficients) = parse_hopf_keys(top, kind)?;
+    let (eps, floquet) = parse_cycle_keys(top, kind)?;
+    // The count of multipliers is part of the row layout, so the kind carries it.
+    let kind = match (kind, &floquet) {
+        (Kind::DdeLc { ntst, ncol, .. }, Some(f)) => {
+            let kind = Kind::DdeLc {
+                ntst,
+                ncol,
+                count: f.count,
+            };
+            if cycle_stride(kind, ir.n()).is_none() {
+                return Err("floquet.count: too large".into());
+            }
+            kind
+        }
+        _ => kind,
+    };
     let curve_of_cycles = matches!(kind, Kind::Lpc { .. } | Kind::Pd { .. } | Kind::Ns { .. });
-    let one_free = matches!(kind, Kind::Ep | Kind::DdeEp | Kind::Lc { .. });
+    let one_free = matches!(
+        kind,
+        Kind::Ep | Kind::DdeEp | Kind::Lc { .. } | Kind::DdeLc { .. }
+    );
     let (free, curve_free) = match (one_free, top.get("free")) {
         (_, None) => return Err("free: missing".into()),
         (true, Some(Value::String(name))) => (
@@ -538,13 +608,25 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         Kind::Hom { .. } => Some(hom_from(top)?),
         _ if curve_of_cycles => Some(point_from(top)?),
         _ => {
-            if let Some(key) = CYCLE_KEYS.iter().find(|k| top.contains_key(**k)) {
-                return Err(format!(
-                    "{key}: only an LC, LPC, PD, NS or HOM run takes this key"
-                ));
-            }
-            if top.contains_key("start") {
-                return Err("start: only an LC or HOM run takes this key".into());
+            if matches!(kind, Kind::DdeLc { .. }) {
+                // A delay cycle run starts at a Hopf point on a uniform mesh (SPEC 8s, slice 4).
+                for key in ["start", "mesh"] {
+                    if top.contains_key(key) {
+                        return Err(format!(
+                            "{key}: a delay cycle run starts at a Hopf point on a uniform \
+                             mesh and takes no {key}"
+                        ));
+                    }
+                }
+            } else {
+                if let Some(key) = CYCLE_KEYS.iter().find(|k| top.contains_key(**k)) {
+                    return Err(format!(
+                        "{key}: only an LC, LPC, PD, NS or HOM run takes this key"
+                    ));
+                }
+                if top.contains_key("start") {
+                    return Err("start: only an LC or HOM run takes this key".into());
+                }
             }
             None
         }
@@ -570,6 +652,11 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         None if curve_of_cycles && mode == Mode::Cli => {
             return Err(
                 "u0: missing; a curve of cycles needs the orbit and the period of its start".into(),
+            );
+        }
+        None if matches!(kind, Kind::DdeLc { .. }) && mode == Mode::Cli => {
+            return Err(
+                "u0: missing; a delay cycle run needs the equilibrium at its Hopf point".into(),
             );
         }
         None => ir.init.clone(),
@@ -609,6 +696,20 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
             return Err(
                 "options.detect: a delay Hopf run always looks for its codim-2 points \
                         and takes no detect"
+                    .into(),
+            );
+        }
+        Kind::DdeLc { .. } if has_option("detect") => {
+            return Err(
+                "options.detect: a delay cycle run labels LPC, PD and NS itself and takes no \
+                 detect"
+                    .into(),
+            );
+        }
+        Kind::DdeLc { .. } if has_option("mesh_adapt") => {
+            return Err(
+                "options.mesh_adapt: a delay cycle run keeps its uniform mesh and takes no \
+                 mesh_adapt"
                     .into(),
             );
         }
@@ -656,7 +757,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         }
     }
 
-    if matches!(kind, Kind::DdeEp | Kind::DdeHopf) {
+    if matches!(kind, Kind::DdeEp | Kind::DdeHopf | Kind::DdeLc { .. }) {
         if switch.is_some() {
             return Err("switch: a delay-equation run cannot switch branches".into());
         }
@@ -680,6 +781,8 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         omega,
         lyapunov,
         coefficients,
+        eps,
+        floquet,
     };
     if mode == Mode::Cli {
         problem.check_u0_len(ir.n(), problem.setup.u0.len())?;
@@ -714,31 +817,50 @@ fn parse_roots(top: &Map<String, Value>, kind: Kind) -> Result<Option<RootOption
     Ok(Some(RootOptions { n, re_min }))
 }
 
-/// The `omega`, `lyapunov` and `coefficients` keys of a delay Hopf run (SPEC 8s, slices 2 and
-/// 3). `omega` is required there and has no default, and it must be above the engine's floor,
-/// so a bad value is refused at the start. `lyapunov` and `coefficients` are false when the
-/// key is left out and must be booleans otherwise. Any other kind refuses all three.
+/// The refusal of a type that a delay equation does not take (SPEC 8s). At the C ABI the types
+/// `LP`, `LPC`, `PD`, `NS`, `HOM` and `IVP` are stopped by the delay gate before the parser
+/// sees them, so this text is what `pc-cli` and a direct `parse_problem` call report.
+const DELAY_TYPE_REFUSAL: &str = "type: a delay equation takes only \"EP\", \"H\" or \"LC\"";
+
+/// The `omega`, `lyapunov` and `coefficients` keys of a delay Hopf run, and the `omega` key of a
+/// delay cycle run (SPEC 8s, slices 2 to 4). `omega` is required there and has no default, and
+/// it must be above the engine's floor, so a bad value is refused at the start. `lyapunov` and
+/// `coefficients` are false when the key is left out and must be booleans otherwise, and only a
+/// Hopf run takes them. Any other kind refuses all three.
 fn parse_hopf_keys(
     top: &Map<String, Value>,
     kind: Kind,
 ) -> Result<(Option<f64>, bool, bool), String> {
+    let cycle = matches!(kind, Kind::DdeLc { .. });
     if kind != Kind::DdeHopf {
-        for key in ["omega", "lyapunov", "coefficients"] {
-            if top.contains_key(key) {
+        let keys: &[&str] = if cycle {
+            &["lyapunov", "coefficients"]
+        } else {
+            &["omega", "lyapunov", "coefficients"]
+        };
+        for key in keys {
+            if top.contains_key(*key) {
                 return Err(format!(
                     "{key}: only a delay-equation Hopf run takes this key"
                 ));
             }
         }
-        return Ok((None, false, false));
+        if !cycle {
+            return Ok((None, false, false));
+        }
     }
+    let what = if cycle { "cycle" } else { "Hopf" };
     let omega = number(
-        top.get("omega")
-            .ok_or("omega: missing; a delay Hopf run needs the frequency of its start")?,
+        top.get("omega").ok_or_else(|| {
+            format!("omega: missing; a delay {what} run needs the frequency of its start")
+        })?,
         "omega",
     )?;
     if omega <= DDE_HOPF_OMEGA_MIN {
         return Err(format!("omega: must be above {DDE_HOPF_OMEGA_MIN:e}"));
+    }
+    if cycle {
+        return Ok((Some(omega), false, false));
     }
     let flag = |key: &str| match top.get(key) {
         None => Ok(false),
@@ -746,6 +868,48 @@ fn parse_hopf_keys(
         Some(_) => Err(format!("{key}: expected true or false")),
     };
     Ok((Some(omega), flag("lyapunov")?, flag("coefficients")?))
+}
+
+/// The `eps` and `floquet` keys of a delay cycle run (SPEC 8s, slice 4). `eps` is required and
+/// has no default. `floquet` is an object with the integers `nhist` and `count`, both of at
+/// least 1 and both required, and no other member. The engine checks the values against the
+/// model. Any other kind refuses both keys.
+fn parse_cycle_keys(
+    top: &Map<String, Value>,
+    kind: Kind,
+) -> Result<(Option<f64>, Option<DdeFloquetOptions>), String> {
+    if !matches!(kind, Kind::DdeLc { .. }) {
+        for key in ["eps", "floquet"] {
+            if top.contains_key(key) {
+                return Err(format!(
+                    "{key}: only a delay-equation cycle run takes this key"
+                ));
+            }
+        }
+        return Ok((None, None));
+    }
+    let eps = match top.get("eps").and_then(Value::as_f64) {
+        Some(x) if x.is_finite() && x > 0.0 => x,
+        _ => return Err("eps: must be a number above 0".into()),
+    };
+    let floquet = match top.get("floquet") {
+        None => None,
+        Some(v) => {
+            let map = object(v, "floquet")?;
+            only_keys(map, &["nhist", "count"], "floquet")?;
+            Some(DdeFloquetOptions {
+                nhist: count(
+                    map.get("nhist").ok_or("floquet.nhist: missing")?,
+                    "floquet.nhist",
+                )?,
+                count: count(
+                    map.get("count").ok_or("floquet.count: missing")?,
+                    "floquet.count",
+                )?,
+            })
+        }
+    };
+    Ok((Some(eps), floquet))
 }
 
 /// The model's parameter values with the ones that `params` sets.
@@ -778,7 +942,7 @@ fn u0_values(v: &Value) -> Result<Vec<f64>, String> {
 /// An `IVP` problem: `tspan`, the solver options, and the start state and parameters.
 fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Problem, String> {
     if !ir.delays.is_empty() {
-        return Err("type: a delay equation takes only \"EP\" or \"H\"".into());
+        return Err(DELAY_TYPE_REFUSAL.into());
     }
     if top.contains_key("free") {
         return Err("free: an IVP run has no free parameter".into());
@@ -803,11 +967,9 @@ fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Probl
     if top.contains_key("roots") {
         return Err("roots: only a delay-equation run takes this key".into());
     }
-    for key in ["omega", "lyapunov", "coefficients"] {
+    for key in ["omega", "lyapunov", "coefficients", "eps", "floquet"] {
         if top.contains_key(key) {
-            return Err(format!(
-                "{key}: only a delay-equation Hopf run takes this key"
-            ));
+            return Err(format!("{key}: only a delay-equation run takes this key"));
         }
     }
     let tspan = match top.get("tspan") {
@@ -850,6 +1012,8 @@ fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Probl
         omega: None,
         lyapunov: false,
         coefficients: false,
+        eps: None,
+        floquet: None,
     };
     if mode == Mode::Cli {
         problem.check_u0_len(ir.n(), problem.setup.u0.len())?;
@@ -1919,5 +2083,145 @@ mod tests {
         let ir = model();
         let msg = parse_problem(&json!({"type": "XX"}), &ir, Mode::Abi).unwrap_err();
         assert!(msg.contains("\"IVP\""), "{msg}");
+    }
+
+    /// A scalar delay model.
+    fn delay_model() -> IrModel {
+        let mut map = SourceMap::new();
+        let top = map.add("t.ode", "par r=1.3, tau=1\nx'=r*x*(1-delay(x,tau))\ndone\n");
+        let loaded = load(top, &mut map, &mut MapLoader::new());
+        pc_ir::lower_dde(&loaded.expanded, &loaded.info).expect("the delay model lowers")
+    }
+
+    #[test]
+    fn a_delay_equation_takes_only_ep_h_and_lc() {
+        let ir = delay_model();
+        let text = "type: a delay equation takes only \"EP\", \"H\" or \"LC\"";
+        for ty in ["LP", "LPC", "PD", "NS", "HOM", "IVP"] {
+            let v = json!({"type": ty, "free": "tau"});
+            let msg = parse_problem(&v, &ir, Mode::Abi).unwrap_err();
+            assert_eq!(msg, text, "type {ty}");
+        }
+        // A type that no run has gets the generic text.
+        let msg = parse_problem(&json!({"type": "FOO"}), &ir, Mode::Abi).unwrap_err();
+        assert!(msg.starts_with("type: expected"), "{msg}");
+    }
+
+    #[test]
+    fn a_delay_cycle_run_reads_its_keys() {
+        let ir = delay_model();
+        let v = json!({
+            "type": "LC", "free": "tau", "ntst": 8, "ncol": 3,
+            "omega": 1.5, "eps": 0.05, "floquet": {"nhist": 6, "count": 2},
+        });
+        let p = parse_problem(&v, &ir, Mode::Abi).unwrap();
+        assert_eq!(
+            p.kind,
+            Kind::DdeLc {
+                ntst: 8,
+                ncol: 3,
+                count: 2
+            }
+        );
+        assert_eq!(p.omega, Some(1.5));
+        assert_eq!(p.eps, Some(0.05));
+        assert_eq!(p.floquet, Some(DdeFloquetOptions { nhist: 6, count: 2 }));
+        assert_eq!(p.kind.name(), "LC");
+        assert_eq!(p.kind.labels(), ["LPC", "PD", "NS"]);
+        let RunKind::DdeCycle {
+            free,
+            omega,
+            eps,
+            ntst,
+            ncol,
+            floquet,
+        } = p.run_kind()
+        else {
+            panic!("expected a delay cycle run");
+        };
+        assert_eq!((free, omega, eps, ntst, ncol), (1, 1.5, 0.05, 8, 3));
+        assert_eq!(floquet, Some(DdeFloquetOptions { nhist: 6, count: 2 }));
+        // Without `floquet` the count is 0.
+        let v = json!({
+            "type": "LC", "free": "tau", "ntst": 8, "ncol": 3, "omega": 1.5, "eps": 0.05,
+        });
+        let p = parse_problem(&v, &ir, Mode::Abi).unwrap();
+        assert_eq!(
+            p.kind,
+            Kind::DdeLc {
+                ntst: 8,
+                ncol: 3,
+                count: 0
+            }
+        );
+        assert_eq!(p.floquet, None);
+    }
+
+    #[test]
+    fn a_delay_cycle_run_names_the_key_it_refuses() {
+        let ir = delay_model();
+        let ok = || {
+            json!({
+                "type": "LC", "free": "tau", "ntst": 8, "ncol": 3,
+                "omega": 1.5, "eps": 0.05,
+            })
+        };
+        let cases = [
+            ("eps", json!(0.0), "eps: must be a number above 0"),
+            ("eps", json!(-1.0), "eps: must be a number above 0"),
+            ("eps", json!("x"), "eps: must be a number above 0"),
+            ("eps", Value::Null, "eps: must be a number above 0"),
+            ("omega", json!(1e-9), "omega: must be above 1e-8"),
+            ("floquet", json!({"nhist": 6}), "floquet.count"),
+            ("floquet", json!({"count": 2}), "floquet.nhist"),
+            ("floquet", json!({"nhist": 0, "count": 2}), "floquet.nhist"),
+            (
+                "floquet",
+                json!({"nhist": 6, "count": 2, "x": 1}),
+                "floquet",
+            ),
+            ("start", json!("orbit"), "start"),
+            ("mesh", json!([0.0, 1.0]), "mesh"),
+            ("roots", json!(1), "roots"),
+            ("lyapunov", json!(true), "lyapunov"),
+            ("coefficients", json!(true), "coefficients"),
+            ("switch", json!(true), "switch"),
+            ("tspan", json!([0.0, 1.0]), "tspan"),
+        ];
+        for (key, value, want) in cases {
+            let mut v = ok();
+            v[key] = value;
+            let msg = parse_problem(&v, &ir, Mode::Abi).unwrap_err();
+            assert!(msg.contains(want), "{key}: {msg}");
+        }
+        for key in ["eps", "omega"] {
+            let mut v = ok();
+            v.as_object_mut().unwrap().remove(key);
+            let msg = parse_problem(&v, &ir, Mode::Abi).unwrap_err();
+            assert!(msg.starts_with(key), "{key}: {msg}");
+        }
+        for key in ["detect", "mesh_adapt"] {
+            let mut v = ok();
+            v["options"] = json!({ key: 1 });
+            let msg = parse_problem(&v, &ir, Mode::Abi).unwrap_err();
+            assert!(msg.contains(key), "{key}: {msg}");
+        }
+        let mut v = ok();
+        v["free"] = json!(["tau", "r"]);
+        assert!(parse_problem(&v, &ir, Mode::Abi).is_err());
+    }
+
+    #[test]
+    fn the_delay_cycle_keys_are_errors_on_an_ode_run() {
+        let ir = model2();
+        for (key, value) in [
+            ("eps", json!(0.05)),
+            ("floquet", json!({"nhist": 6, "count": 2})),
+        ] {
+            let mut v = json!({"type": "LC", "free": "a", "ntst": 8, "ncol": 3});
+            v[key] = value;
+            let msg = parse_problem(&v, &ir, Mode::Abi).unwrap_err();
+            assert!(msg.starts_with(key), "{key}: {msg}");
+        }
     }
 }

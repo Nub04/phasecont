@@ -32,6 +32,9 @@ impl Handle for RunHandle {
 /// of the Jacobian at x0. A row of a delay equilibrium branch is `[alpha, u(n), roots]`, with
 /// `roots` the number of characteristic roots with a positive real part. A row of a delay Hopf
 /// curve is `[a2, x(n), a1, kappa, l1, hh]`, with NaN where `l1` or `hh` is off or undefined.
+/// A row of a delay cycle branch on N intervals of m points is `[alpha, u(n (N m + 1)), T, h,
+/// newton_iters, mu_re(c), mu_im(c), trivial_error]`, with `c` the multipliers kept and
+/// NaN where the engine has no value (no `floquet`, or fewer than `c` multipliers).
 pub(crate) fn stride(kind: Kind, n: usize) -> usize {
     match kind {
         Kind::Ep => 3 * n + 6,
@@ -39,6 +42,8 @@ pub(crate) fn stride(kind: Kind, n: usize) -> usize {
         Kind::DdeEp => n + 2,
         // [alpha2, x(n), alpha1, kappa, l1, hh]
         Kind::DdeHopf => n + 5,
+        // [alpha, u(n (N m + 1)), T, h, iters, mu_re(c), mu_im(c), trivial_error]
+        Kind::DdeLc { .. } => cycle_stride(kind, n).unwrap_or(usize::MAX),
         // [t, x(n)]
         Kind::Ivp => n + 1,
         Kind::Lp => 1 + (n + 1) + 2 * n + kind.labels().len() + 2,
@@ -67,6 +72,23 @@ pub(crate) fn pack_row(kind: Kind, p: &Point, n: usize, out: &mut [f64]) {
         out[n + 4] = p.codim2.get(1).copied().unwrap_or(nan);
         return;
     }
+    if let Kind::DdeLc { ntst, ncol, count } = kind {
+        // `u` is the profile followed by T, `eigenvalues` the leading multipliers and `tests[0]`
+        // the trivial multiplier error (SPEC 8s, slice 4). `stride` has checked the sizes.
+        let m = n * (ntst * ncol + 1) + 1;
+        for i in 0..m {
+            out[1 + i] = p.u.get(i).copied().unwrap_or(nan);
+        }
+        out[m + 1] = p.h;
+        out[m + 2] = p.newton_iters as f64;
+        for i in 0..count {
+            let (re, im) = p.eigenvalues.get(i).copied().unwrap_or((nan, nan));
+            out[m + 3 + i] = re;
+            out[m + 3 + count + i] = im;
+        }
+        out[m + 3 + 2 * count] = p.tests.first().copied().unwrap_or(nan);
+        return;
+    }
     if matches!(kind, Kind::Ivp | Kind::DdeEp) {
         for i in 0..n {
             out[1 + i] = p.u.get(i).copied().unwrap_or(nan);
@@ -81,7 +103,7 @@ pub(crate) fn pack_row(kind: Kind, p: &Point, n: usize, out: &mut [f64]) {
     // The state block: `n` values, plus a1 (and kappa) on a curve, or the orbit, T and
     // what follows T on a curve of cycles or a HOM curve.
     let (block, mesh) = match kind {
-        Kind::Ep | Kind::DdeEp | Kind::DdeHopf | Kind::Ivp => (n, 0),
+        Kind::Ep | Kind::DdeEp | Kind::DdeHopf | Kind::DdeLc { .. } | Kind::Ivp => (n, 0),
         Kind::Lp => (n + 1, 0),
         Kind::Hopf => (n + 2, 0),
         Kind::Lc { ntst, ncol }
@@ -492,5 +514,57 @@ mod tests {
         .unwrap_err();
         assert_eq!(e.code(), 1);
         assert_eq!(e.to_string(), "panic: m (at f.rs:1:2)");
+    }
+
+    #[test]
+    fn a_delay_cycle_row_is_the_orbit_the_period_and_the_multipliers() {
+        // n = 1, ntst 2, ncol 2: five profile values, then T.
+        let profile = [0.0, 0.1, 0.2, 0.3, 0.4];
+        let mut p = point();
+        p.u = profile.iter().copied().chain([6.25]).collect();
+        p.alpha = 1.5;
+        p.h = 0.5;
+        p.newton_iters = 4;
+        p.eigenvalues = vec![(1.5, 0.0), (0.25, -0.5)];
+        p.tests = [1e-12, f64::NAN, f64::NAN];
+        let kind = Kind::DdeLc {
+            ntst: 2,
+            ncol: 2,
+            count: 2,
+        };
+        // [alpha, profile(5), T, h, iters, mu_re(2), mu_im(2), trivial_error]
+        assert_eq!(stride(kind, 1), 1 + 5 + 1 + 2 + 4 + 1);
+        let mut row = vec![0.0; stride(kind, 1)];
+        pack_row(kind, &p, 1, &mut row);
+        assert_eq!(&row[..7], [1.5, 0.0, 0.1, 0.2, 0.3, 0.4, 6.25]);
+        assert_eq!(&row[7..9], [0.5, 4.0]);
+        assert_eq!(&row[9..13], [1.5, 0.25, 0.0, -0.5]);
+        assert_eq!(row[13], 1e-12);
+        // Fewer multipliers than `count` pad with NaN, and a missing orbit is NaN.
+        p.eigenvalues = vec![(1.5, 0.0)];
+        pack_row(kind, &p, 1, &mut row);
+        assert_eq!(row[9], 1.5);
+        assert!(row[10].is_nan() && row[12].is_nan());
+        assert_eq!(row[11], 0.0);
+        p.u.truncate(3);
+        pack_row(kind, &p, 1, &mut row);
+        assert!(row[4].is_nan() && row[6].is_nan());
+        // Without `floquet` the row has no multiplier columns and ends with the trivial error.
+        let kind = Kind::DdeLc {
+            ntst: 2,
+            ncol: 2,
+            count: 0,
+        };
+        assert_eq!(stride(kind, 1), 1 + 5 + 1 + 2 + 1);
+        let mut row = vec![0.0; stride(kind, 1)];
+        p.u = profile.iter().copied().chain([6.25]).collect();
+        p.tests = [f64::NAN; 3];
+        pack_row(kind, &p, 1, &mut row);
+        assert_eq!(&row[..7], [1.5, 0.0, 0.1, 0.2, 0.3, 0.4, 6.25]);
+        assert_eq!(&row[7..9], [0.5, 4.0]);
+        assert!(row[9].is_nan());
+        assert_eq!(kind.name(), "LC");
+        assert_eq!(kind.labels(), ["LPC", "PD", "NS"]);
+        assert_eq!(kind.mesh_size(), None);
     }
 }

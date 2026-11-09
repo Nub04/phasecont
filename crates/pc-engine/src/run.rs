@@ -18,8 +18,12 @@ use crate::cycle::{
     continue_ns_curve, continue_pd_curve,
 };
 use crate::dde::{
-    DdeBranch, DdeHopfBranch, HopfExtras, HopfSetup, RootOptions,
+    DdeBranch, DdeCycleBranch, DdeCycleSetup, DdeCycleStart, DdeFloquetOptions, DdeHopfBranch,
+    DdeHopfCycle, HopfExtras, HopfSetup, RootOptions,
+    check_cycle_floquet as dde_check_cycle_floquet,
+    continue_cycle_floquet as dde_continue_cycle_floquet,
     continue_equilibrium as dde_continue_equilibrium, continue_hopf_with as dde_continue_hopf_with,
+    hopf_cycle as dde_hopf_cycle,
 };
 use crate::ep::{EpSetup, continue_ep};
 use crate::error::EngineError;
@@ -65,6 +69,20 @@ pub enum RunKind {
         free: [usize; 2],
         omega: f64,
         extras: HopfExtras,
+    },
+    /// The branch of periodic orbits of a delay equation that leaves the Hopf point
+    /// `setup.u0`, `setup.params` (the value of `free` in `params` is the Hopf value) with the
+    /// frequency `omega` and the first-guess amplitude `eps`, on a uniform mesh of `ntst`
+    /// intervals with `ncol` collocation points each, and the multipliers of `floquet` when it
+    /// is set (SPEC 8s, slice 4). It runs once and the branch appears when it ends, like
+    /// `DdeEq`.
+    DdeCycle {
+        free: usize,
+        omega: f64,
+        eps: f64,
+        ntst: usize,
+        ncol: usize,
+        floquet: Option<DdeFloquetOptions>,
     },
     /// An initial value run over `tspan` from the state `setup.u0` with the parameters
     /// `setup.params`. The model may depend on t.
@@ -239,9 +257,9 @@ fn follow(
         RunKind::NsCurve(cs) => continue_ns_curve(model, cs, opts, &shared.cancel, on_point),
         RunKind::HomCurve(hs) => continue_hom_curve(model, hs, opts, &shared.cancel, on_point),
         // `body` sends a delay run to `body_dde` before it builds an ODE model.
-        RunKind::DdeEq(_) | RunKind::DdeHopf { .. } => Err(EngineError::BadProblem(
-            "a delay run has no ODE model to follow".into(),
-        )),
+        RunKind::DdeEq(_) | RunKind::DdeHopf { .. } | RunKind::DdeCycle { .. } => Err(
+            EngineError::BadProblem("a delay run has no ODE model to follow".into()),
+        ),
         RunKind::Ivp { tspan, opts } => {
             let ivp = IvpSetup {
                 x0: setup.u0.clone(),
@@ -276,6 +294,17 @@ fn body(shared: &Shared, spec: RunSpec) -> RunState {
             omega,
             extras,
         } => return body_dde_hopf(shared, spec, free, omega, extras),
+        RunKind::DdeCycle {
+            free,
+            omega,
+            eps,
+            ntst,
+            ncol,
+            ref floquet,
+        } => {
+            let floquet = floquet.clone();
+            return body_dde_cycle(shared, spec, free, omega, eps, ntst, ncol, floquet);
+        }
         _ => {}
     }
     // Only an initial value run may depend on t.
@@ -350,6 +379,115 @@ fn body_dde(shared: &Shared, spec: RunSpec, roots: RootOptions) -> RunState {
             };
             finish(shared, Err(e))
         }
+    }
+}
+
+/// Follows the periodic orbits that leave a Hopf point of a delay equation (SPEC 8s, slice 4):
+/// the `floquet` check, the Hopf corrector, then the continuation, as `pc-cli dde-cycle branch`
+/// does. Like `body_dde_hopf` it stores the branch when the engine returns it. A flag set at the
+/// call keeps no points. A flag set during the continuation keeps the points the engine found,
+/// with stop `Cancelled`.
+#[allow(clippy::too_many_arguments)]
+fn body_dde_cycle(
+    shared: &Shared,
+    spec: RunSpec,
+    free: usize,
+    omega: f64,
+    eps: f64,
+    ntst: usize,
+    ncol: usize,
+    floquet: Option<DdeFloquetOptions>,
+) -> RunState {
+    let mut model = match build_dde(&spec.model, &spec.info, spec.evaluator) {
+        Ok(m) => m,
+        Err(e) => return finish(shared, Err(e)),
+    };
+    shared.lock().branches.push(placeholder());
+    let mut setup = DdeCycleSetup {
+        params: spec.setup.params.clone(),
+        free,
+        ntst,
+        ncol,
+    };
+    let run = (|| {
+        if let Some(f) = floquet.as_ref() {
+            dde_check_cycle_floquet(&model, &setup, f)?;
+        }
+        let hopf = DdeHopfCycle {
+            x: spec.setup.u0.clone(),
+            omega,
+            eps,
+        };
+        let c = dde_hopf_cycle(&mut model, &setup, &hopf, &spec.opts, &shared.cancel)?;
+        setup.params[free] = c.alpha;
+        let start = DdeCycleStart {
+            profile: c.profile,
+            period: c.period,
+        };
+        dde_continue_cycle_floquet(
+            &mut model,
+            &setup,
+            &start,
+            &spec.opts,
+            floquet.as_ref(),
+            &shared.cancel,
+        )
+    })();
+    match run {
+        Ok(b) => {
+            let branch = dde_cycle_branch(b);
+            shared.lock().branches[0] = branch.clone();
+            finish(shared, Ok(&branch))
+        }
+        Err(e) => {
+            shared.lock().branches[0].stop = match &e {
+                EngineError::Cancelled => StopReason::Cancelled,
+                other => StopReason::Error(other.clone()),
+            };
+            finish(shared, Err(e))
+        }
+    }
+}
+
+/// A delay cycle branch as a [`Branch`]. `u` is the profile followed by the period, `alpha` the
+/// free parameter and `eigenvalues` the leading multipliers by modulus (empty without
+/// `floquet`). `tests[0]` is the trivial multiplier error, NaN without `floquet`, and there is
+/// no tangent, codim-2 value or mesh (the mesh is uniform). A special has the point of the
+/// engine and no extras.
+fn dde_cycle_branch(b: DdeCycleBranch) -> Branch {
+    use crate::dde::DdeCyclePoint;
+    let point = |p: &DdeCyclePoint| {
+        let mut u = p.profile.clone();
+        u.push(p.period);
+        Point {
+            u,
+            alpha: p.alpha,
+            tangent: Vec::new(),
+            eigenvalues: p.multipliers.clone(),
+            tests: [p.trivial_error, f64::NAN, f64::NAN],
+            codim2: Vec::new(),
+            h: p.h,
+            newton_iters: p.newton_iters,
+            mesh: Vec::new(),
+        }
+    };
+    Branch {
+        points: b.points.iter().map(point).collect(),
+        specials: b
+            .specials
+            .iter()
+            .map(|s| SpecialPoint {
+                label: s.label.clone(),
+                index: s.index,
+                point: point(&s.point),
+                extras: Extras {
+                    refined: false,
+                    ..Extras::default()
+                },
+            })
+            .collect(),
+        stop: b.stop,
+        warnings: b.warnings,
     }
 }
 
@@ -1038,6 +1176,61 @@ mod tests {
         assert!(hh.extras.coefficient.is_none() && hh.extras.normalization.is_none());
         // BT: kappa < 0 has no omega.
         assert_eq!(b.specials[2].extras.omega, None);
+        assert_eq!(b.stop, StopReason::Bounds);
+        assert_eq!(b.warnings, ["w"]);
+    }
+
+    #[test]
+    fn a_delay_cycle_branch_keeps_the_orbit_the_period_and_the_multipliers() {
+        use crate::dde::{DdeCycleBranch, DdeCyclePoint, DdeCycleSpecial};
+        let p = |alpha: f64, period: f64, mu: &[(f64, f64)], err: f64| DdeCyclePoint {
+            profile: vec![0.0, 0.5, 1.0],
+            period,
+            alpha,
+            h: 0.25,
+            newton_iters: 3,
+            multipliers: mu.to_vec(),
+            trivial_error: err,
+            mesh: Vec::new(),
+        };
+        let s = |label: &str, index: usize, point: DdeCyclePoint| DdeCycleSpecial {
+            label: label.to_string(),
+            index,
+            point,
+        };
+        let first = p(1.5, 6.0, &[(1.0, 0.0), (0.5, 0.25)], 1e-12);
+        let b = dde_cycle_branch(DdeCycleBranch {
+            points: vec![first.clone(), p(1.25, 6.5, &[], f64::NAN)],
+            specials: vec![
+                s("LPC", 0, first.clone()),
+                s("PD", 1, p(1.25, 6.5, &[(-1.0, 0.0)], 2e-9)),
+                s("NS", 1, p(1.2, 6.6, &[(0.5, 0.8660254037844386)], 3e-9)),
+            ],
+            stop: StopReason::Bounds,
+            warnings: vec!["w".to_string()],
+        });
+        // u is the profile followed by T; the multipliers are the eigenvalues; the trivial
+        // error is tests[0]; no codim-2 values, mesh or tangent.
+        assert_eq!(b.points[0].u, [0.0, 0.5, 1.0, 6.0]);
+        assert_eq!(b.points[0].alpha, 1.5);
+        assert_eq!(b.points[0].eigenvalues, [(1.0, 0.0), (0.5, 0.25)]);
+        assert_eq!(b.points[0].tests[0], 1e-12);
+        assert!(b.points[0].tests[1].is_nan() && b.points[0].tests[2].is_nan());
+        assert_eq!((b.points[0].h, b.points[0].newton_iters), (0.25, 3));
+        assert!(b.points[1].eigenvalues.is_empty() && b.points[1].tests[0].is_nan());
+        for q in &b.points {
+            assert!(q.codim2.is_empty() && q.mesh.is_empty() && q.tangent.is_empty());
+        }
+        let labels: Vec<_> = b
+            .specials
+            .iter()
+            .map(|s| (s.label.as_str(), s.index))
+            .collect();
+        assert_eq!(labels, [("LPC", 0), ("PD", 1), ("NS", 1)]);
+        assert_eq!(b.specials[1].point.u, [0.0, 0.5, 1.0, 6.5]);
+        assert_eq!(b.specials[1].point.eigenvalues, [(-1.0, 0.0)]);
+        assert_eq!(b.specials[2].point.alpha, 1.2);
+        assert!(b.specials.iter().all(|s| !s.extras.refined));
         assert_eq!(b.stop, StopReason::Bounds);
         assert_eq!(b.warnings, ["w"]);
     }

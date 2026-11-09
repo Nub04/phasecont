@@ -234,9 +234,9 @@ pub unsafe extern "C" fn run_start(
         let text = unsafe { str_arg(problem_json, "problem_json") }?;
         let v: Value = serde_json::from_str(text)
             .map_err(|e| Error::BadProblem(format!("problem_json: {e}")))?;
-        // A delay model takes the types "EP" and "H". A type that names another run is refused
-        // with the same text as the ODE-only entries; anything else is left to the parser
-        // (SPEC 8s).
+        // A delay model takes the types "EP", "H" and "LC". A type that names another run is
+        // refused with the same text as the ODE-only entries; anything else is left to the
+        // parser (SPEC 8s).
         if h.delay && v["type"].as_str().is_some_and(is_other_run_type) {
             return Err(bad_arg(DELAY_MODEL));
         }
@@ -261,10 +261,10 @@ pub unsafe extern "C" fn run_start(
     })
 }
 
-/// The run types that a delay model does not take: every `type` of the problem JSON but `"EP"`
-/// and `"H"`.
+/// The run types that a delay model does not take: every `type` of the problem JSON but `"EP"`,
+/// `"H"` and `"LC"`.
 fn is_other_run_type(t: &str) -> bool {
-    matches!(t, "LP" | "LC" | "LPC" | "PD" | "NS" | "HOM" | "IVP")
+    matches!(t, "LP" | "LPC" | "PD" | "NS" | "HOM" | "IVP")
 }
 
 fn run_handle(id: u64) -> Result<Arc<RunHandle>> {

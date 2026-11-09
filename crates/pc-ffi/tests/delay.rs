@@ -278,7 +278,8 @@ fn emit_c_on_a_delay_handle_is_an_error() {
 #[test]
 fn every_run_type_except_ep_is_refused_on_a_delay_handle() {
     let m = compiled(HUTCH);
-    for ty in ["LP", "LC", "LPC", "PD", "NS", "HOM", "IVP"] {
+    // "LC" is the periodic orbit run of slice 4 and is no longer refused.
+    for ty in ["LP", "LPC", "PD", "NS", "HOM", "IVP"] {
         let json = format!(r#"{{"type":"{ty}","free":"r"}}"#);
         let (rc, run) = start_with(&m, &json, &[1.0], &[1.3, 1.0]);
         assert_eq!(rc, BAD_ARG, "{ty}");
@@ -1106,6 +1107,484 @@ fn a_hopf_run_cancelled_right_after_the_start_ends_cancelled() {
     let points = b["points"].as_u64().unwrap() as usize;
     let stride = st["stride"].as_u64().unwrap() as usize;
     // `copy` needs a non-empty buffer, so a run that kept no points has nothing to copy.
+    if points > 0 {
+        let (rc, rows, vals) = copy(run.0, 0, 0, points, stride);
+        assert_eq!(rc, 0, "{}", last_error());
+        assert_eq!(rows, points, "{st}");
+        assert!(vals.iter().all(|v| !v.is_infinite()), "{st}");
+    }
+}
+
+// ---- Periodic orbits from a Hopf point (SPEC section 8s, slice 4) ----
+
+const OSC: &str = "par mu=0.3, tau=1.3272372818926783\n\
+    x'=-delay(x,tau)+mu*x*(1-x^2-delay(x,tau)^2)\n\
+    done\n";
+const OSC_TAU_H: f64 = 1.327_237_281_892_678_3;
+const OSC_OMEGA_H: f64 = 0.953_939_201_416_945_7;
+const NTST: usize = 20;
+const NCOL: usize = 4;
+const HALF_PI: f64 = std::f64::consts::FRAC_PI_2;
+const FLOQUET: &str = r#","floquet":{"nhist":12,"count":4}"#;
+
+fn lpc_model() -> String {
+    format!(
+        "par a=0.25, tau={HALF_PI:?}\n\
+         x'=-delay(x,tau)+x*(a-(x^2+delay(x,tau)^2-1)^2)\n\
+         done\n"
+    )
+}
+
+fn cycle_options(bounds: &str, direction: i32, hmax: f64, max_steps: usize) -> String {
+    format!(
+        r#""options":{{"max_newton":30,"hmax":{hmax:?},"max_steps":{max_steps},"bounds":{bounds},"direction":{direction}}}"#
+    )
+}
+
+/// A delay "LC" problem with ntst 20, ncol 4 and eps 0.05. `floquet` is "" or a `,"floquet":..`
+/// fragment.
+fn cycle_problem(free: &str, omega: f64, floquet: &str, options: &str) -> String {
+    format!(
+        r#"{{"type":"LC","free":"{free}","ntst":20,"ncol":4,"omega":{omega:?},"eps":0.05{floquet},{options}}}"#
+    )
+}
+
+fn osc_problem(floquet: &str) -> String {
+    let o = cycle_options(&format!("[1.0,{HALF_PI:?}]"), 1, 0.5, 500);
+    cycle_problem("tau", OSC_OMEGA_H, floquet, &o)
+}
+
+fn lpc_problem() -> String {
+    let o = cycle_options("[-0.5,1.1]", -1, 0.1, 500);
+    cycle_problem("a", 1.0, FLOQUET, &o)
+}
+
+fn cycle_engine_options(bounds: (f64, f64), direction: f64, hmax: f64) -> pc_engine::Options {
+    pc_engine::Options {
+        bounds,
+        direction,
+        hmax,
+        max_steps: 500,
+        max_newton: 30,
+        ..pc_engine::Options::default()
+    }
+}
+
+/// The engine run the run entries must reproduce, in the order of `pc-cli dde-cycle branch`:
+/// the `floquet` check, the Hopf corrector, then the continuation.
+fn engine_cycle(
+    text: &str,
+    params: &[f64],
+    free: usize,
+    x: &[f64],
+    omega: f64,
+    floquet: Option<pc_engine::DdeFloquetOptions>,
+    opts: &pc_engine::Options,
+) -> pc_engine::DdeCycleBranch {
+    use std::sync::atomic::AtomicBool;
+    let mut dm = engine_model(text);
+    let mut setup = pc_engine::DdeCycleSetup {
+        params: params.to_vec(),
+        free,
+        ntst: NTST,
+        ncol: NCOL,
+    };
+    let cancel = AtomicBool::new(false);
+    if let Some(f) = floquet.as_ref() {
+        pc_engine::dde_check_cycle_floquet(&dm, &setup, f).expect("floquet options");
+    }
+    let hopf = pc_engine::DdeHopfCycle {
+        x: x.to_vec(),
+        omega,
+        eps: 0.05,
+    };
+    let c = pc_engine::dde_hopf_cycle(&mut dm, &setup, &hopf, opts, &cancel).expect("hopf cycle");
+    setup.params[free] = c.alpha;
+    let start = pc_engine::DdeCycleStart {
+        profile: c.profile,
+        period: c.period,
+    };
+    pc_engine::dde_continue_cycle_floquet(&mut dm, &setup, &start, opts, floquet.as_ref(), &cancel)
+        .expect("the engine run")
+}
+
+/// The row of a point: `[alpha, profile, period, h, iters, mu_re (c), mu_im (c), trivial_error]`.
+fn cycle_row(p: &pc_engine::DdeCyclePoint, count: usize) -> Vec<f64> {
+    let mut r = vec![p.alpha];
+    r.extend_from_slice(&p.profile);
+    r.extend([p.period, p.h, p.newton_iters as f64]);
+    for k in 0..count {
+        r.push(p.multipliers.get(k).map_or(f64::NAN, |m| m.0));
+    }
+    for k in 0..count {
+        r.push(p.multipliers.get(k).map_or(f64::NAN, |m| m.1));
+    }
+    r.push(p.trivial_error);
+    r
+}
+
+fn cycle_stride(n: usize, count: usize) -> usize {
+    n * (NTST * NCOL + 1) + 5 + 2 * count
+}
+
+/// Starts the run, waits for it, and checks it against the engine branch. Returns the poll
+/// state and all rows.
+fn check_cycle_run(
+    m: &Id,
+    json: &str,
+    u0: &[f64],
+    p: &[f64],
+    want: &pc_engine::DdeCycleBranch,
+    count: usize,
+) -> (Value, Vec<Vec<f64>>) {
+    let n = u0.len();
+    let stride = cycle_stride(n, count);
+    let (rc, run) = start_with(m, json, u0, p);
+    assert_eq!(rc, 0, "{json}: {}", last_error());
+    let run = Id(run);
+    let st = wait(&run);
+    assert_eq!(st["state"], "done", "{st}");
+    assert_eq!(st["kind"], "LC");
+    assert_eq!(st["n"], n);
+    assert_eq!(st["stride"], stride);
+    assert_eq!(st["codim2_labels"], serde_json::json!(["LPC", "PD", "NS"]));
+    let jb = &st["branches"].as_array().unwrap()[0];
+    assert_eq!(jb["points"], want.points.len(), "{st}");
+    assert_eq!(jb["stop"], "Bounds");
+    assert!(matches!(want.stop, pc_engine::StopReason::Bounds));
+    assert_eq!(jb["warnings"], serde_json::json!(want.warnings));
+    let (rc, nrows, vals) = copy(run.0, 0, 0, want.points.len(), stride);
+    assert_eq!(rc, 0, "{}", last_error());
+    assert_eq!(nrows, want.points.len());
+    let mut rows = Vec::new();
+    for (r, pt) in want.points.iter().enumerate() {
+        let got = vals[r * stride..(r + 1) * stride].to_vec();
+        assert!(
+            same_bits(&got, &cycle_row(pt, count)),
+            "row {r}: {got:?} vs {:?}",
+            cycle_row(pt, count)
+        );
+        rows.push(got);
+    }
+    // The specials agree with the engine's in label and index, and carry the row of their point.
+    let js = jb["specials"].as_array().unwrap();
+    assert_eq!(js.len(), want.specials.len(), "{jb}");
+    for (k, s) in want.specials.iter().enumerate() {
+        assert_eq!(js[k]["label"], s.label, "{jb}");
+        assert_eq!(js[k]["index"], s.index, "{jb}");
+        let (rc, nrows, v) = copy(run.0, 0, 1 + k as u32, 1, stride);
+        assert_eq!(rc, 0, "{}", last_error());
+        assert_eq!(nrows, 1);
+        assert!(same_bits(&v, &cycle_row(&s.point, count)), "special {k}");
+    }
+    (st, rows)
+}
+
+fn profile_of(row: &[f64], n: usize) -> &[f64] {
+    &row[1..1 + n * (NTST * NCOL + 1)]
+}
+
+fn period_of(row: &[f64], n: usize) -> f64 {
+    row[1 + n * (NTST * NCOL + 1)]
+}
+
+fn max_of(v: &[f64]) -> f64 {
+    v.iter().fold(f64::NEG_INFINITY, |a, &x| a.max(x))
+}
+
+fn min_of(v: &[f64]) -> f64 {
+    v.iter().fold(f64::INFINITY, |a, &x| a.min(x))
+}
+
+/// The periodic trapezoid rule of `u^2` over one period, on the base points.
+fn mean_square(profile: &[f64]) -> f64 {
+    let q = profile.len() - 1;
+    profile[..q].iter().map(|v| v * v).sum::<f64>() / q as f64
+}
+
+#[test]
+fn an_osc_cycle_run_equals_the_engine_and_reaches_the_exact_orbit() {
+    let opts = cycle_engine_options((1.0, HALF_PI), 1.0, 0.5);
+    let want = engine_cycle(OSC, &[0.3, OSC_TAU_H], 1, &[0.0], OSC_OMEGA_H, None, &opts);
+    assert_eq!(want.points.len(), 25, "{}", want.points.len());
+    let m = compiled(OSC);
+    let (st, rows) = check_cycle_run(&m, &osc_problem(""), &[0.0], &[0.3, OSC_TAU_H], &want, 0);
+    assert_eq!(st["stride"], 86);
+    assert!(
+        (rows[0][0] - 1.327_606_778_464_174_7).abs() <= 1e-9,
+        "{}",
+        rows[0][0]
+    );
+    let last = rows.last().unwrap();
+    assert!((last[0] - HALF_PI).abs() <= 1e-9, "{}", last[0]);
+    let (profile, period) = (profile_of(last, 1), period_of(last, 1));
+    assert!(
+        (period - 2.0 * std::f64::consts::PI).abs() <= 5e-11,
+        "{period}"
+    );
+    assert!((max_of(profile) - 1.0).abs() <= 1e-12);
+    assert!((min_of(profile) + 1.0).abs() <= 1e-12);
+    assert!((mean_square(profile) - 0.5).abs() <= 6e-9);
+    let amp: Vec<f64> = rows
+        .iter()
+        .map(|r| max_of(profile_of(r, 1)) - min_of(profile_of(r, 1)))
+        .collect();
+    assert!(amp.windows(2).all(|w| w[1] > w[0]), "{amp:?}");
+    // Without `floquet` the last column is NaN and there are no multiplier columns.
+    assert!(rows.iter().all(|r| r[r.len() - 1].is_nan()));
+}
+
+#[test]
+fn an_lpc_cycle_run_with_floquet_equals_the_engine_and_labels_the_fold() {
+    let floquet = pc_engine::DdeFloquetOptions {
+        nhist: 12,
+        count: 4,
+    };
+    let opts = cycle_engine_options((-0.5, 1.1), -1.0, 0.1);
+    let want = engine_cycle(
+        &lpc_model(),
+        &[1.0, HALF_PI],
+        0,
+        &[0.0],
+        1.0,
+        Some(floquet),
+        &opts,
+    );
+    assert_eq!(want.points.len(), 99, "{}", want.points.len());
+    let m = compiled(&lpc_model());
+    let (st, rows) = check_cycle_run(&m, &lpc_problem(), &[0.0], &[1.0, HALF_PI], &want, 4);
+    let specials = st["branches"][0]["specials"].as_array().unwrap();
+    assert_eq!(specials.len(), 1, "{st}");
+    assert_eq!(specials[0]["label"], "LPC");
+    assert_eq!(specials[0]["index"], 67);
+    let two_pi = 2.0 * std::f64::consts::PI;
+    let stride = cycle_stride(1, 4);
+    let mut min_at = 0;
+    for (i, r) in rows.iter().enumerate() {
+        assert!((period_of(r, 1) - two_pi).abs() <= 2e-10, "row {i}");
+        assert!(
+            r[stride - 1] <= 2e-10,
+            "row {i} trivial error {}",
+            r[stride - 1]
+        );
+        let radius = max_of(profile_of(r, 1)).max(-min_of(profile_of(r, 1)));
+        let defect = (radius * radius - 1.0).powi(2) - r[0];
+        assert!(defect.abs() <= 5e-8, "row {i}: {defect:e}");
+        let want_r = if i < 67 {
+            (1.0 - r[0].sqrt()).sqrt()
+        } else {
+            (1.0 + r[0].sqrt()).sqrt()
+        };
+        if r[0] >= 0.0 {
+            assert!(
+                (radius - want_r).abs() <= 1e-8,
+                "row {i}: {radius} vs {want_r}"
+            );
+        }
+        if r[0] < rows[min_at][0] {
+            min_at = i;
+        }
+        // Four multiplier columns per row, the first one real.
+        let k0 = stride - 1 - 8;
+        assert!(r[k0 + 4].abs() <= 1e-9 || !r[k0 + 4].is_finite() || r[k0].is_finite());
+    }
+    assert!(min_at.abs_diff(67) <= 2, "minimum at {min_at}");
+    assert!(rows[..=min_at].windows(2).all(|w| w[1][0] < w[0][0]));
+    assert!(rows[min_at..].windows(2).all(|w| w[1][0] > w[0][0]));
+    let k0 = stride - 1 - 8;
+    assert!(rows[0][k0] > 1.0 && rows[0][k0] < 1.05, "{}", rows[0][k0]);
+    assert!(rows[0][k0 + 4].abs() <= 1e-9, "{}", rows[0][k0 + 4]);
+}
+
+/// A bad delay cycle problem: the call fails with BAD_PROBLEM, makes no run, and names `key`.
+fn refuse_cycle(m: &Id, json: &str, key: &str) {
+    let (rc, run) = start_with(m, json, &[0.0], &[0.3, OSC_TAU_H]);
+    assert_eq!(rc, BAD_PROBLEM, "{json}: {}", last_error());
+    assert_eq!(run, 0, "{json}");
+    assert!(last_error().contains(key), "{json}: {}", last_error());
+}
+
+#[test]
+fn bad_delay_cycle_runs_name_the_key() {
+    let m = compiled(OSC);
+    let o = cycle_options("[1.0,1.5]", 1, 0.5, 50);
+    let base = |ntst: &str, ncol: &str, omega: &str, eps: &str, floquet: &str| {
+        format!(r#"{{"type":"LC","free":"tau"{ntst}{ncol}{omega}{eps}{floquet},{o}}}"#)
+    };
+    let n = r#","ntst":20"#;
+    let c = r#","ncol":4"#;
+    let w = r#","omega":0.95"#;
+    let e = r#","eps":0.05"#;
+    let cases: Vec<(String, &str)> = vec![
+        (base("", c, w, e, ""), "ntst"),
+        (base(r#","ntst":1.5"#, c, w, e, ""), "ntst"),
+        (base(r#","ntst":0"#, c, w, e, ""), "ntst"),
+        (base(r#","ntst":-3"#, c, w, e, ""), "ntst"),
+        (base(n, "", w, e, ""), "ncol"),
+        (base(n, r#","ncol":2.5"#, w, e, ""), "ncol"),
+        (base(n, r#","ncol":1"#, w, e, ""), "ncol"),
+        (base(n, r#","ncol":8"#, w, e, ""), "ncol"),
+        (base(n, c, "", e, ""), "omega"),
+        (base(n, c, r#","omega":"x""#, e, ""), "omega"),
+        (base(n, c, r#","omega":0"#, e, ""), "omega"),
+        (base(n, c, r#","omega":null"#, e, ""), "omega"),
+        (base(n, c, w, "", ""), "eps"),
+        (base(n, c, w, r#","eps":0"#, ""), "eps"),
+        (base(n, c, w, r#","eps":-0.05"#, ""), "eps"),
+        (base(n, c, w, r#","eps":"big""#, ""), "eps"),
+        (base(n, c, w, r#","eps":null"#, ""), "eps"),
+        (base(n, c, w, e, r#","floquet":1"#), "floquet"),
+        (base(n, c, w, e, r#","floquet":[]"#), "floquet"),
+        (base(n, c, w, e, r#","floquet":null"#), "floquet"),
+        (base(n, c, w, e, r#","floquet":{"count":4}"#), "nhist"),
+        (base(n, c, w, e, r#","floquet":{"nhist":12}"#), "count"),
+        (
+            base(n, c, w, e, r#","floquet":{"nhist":0,"count":4}"#),
+            "nhist",
+        ),
+        (
+            base(n, c, w, e, r#","floquet":{"nhist":12,"count":0}"#),
+            "count",
+        ),
+        (
+            base(n, c, w, e, r#","floquet":{"nhist":2.5,"count":4}"#),
+            "nhist",
+        ),
+        (
+            base(n, c, w, e, r#","floquet":{"nhist":12,"count":4,"x":1}"#),
+            "x",
+        ),
+    ];
+    for (json, key) in &cases {
+        refuse_cycle(&m, json, key);
+    }
+    // `free` is one name.
+    for free in [r#"["tau"]"#, "1", r#""nope""#] {
+        let json = format!(
+            r#"{{"type":"LC","free":{free},"ntst":20,"ncol":4,"omega":0.95,"eps":0.05,{o}}}"#
+        );
+        refuse_cycle(&m, &json, "free");
+    }
+    // Keys that a delay cycle run does not take.
+    let good = |extra: &str| {
+        format!(
+            r#"{{"type":"LC","free":"tau","ntst":20,"ncol":4,"omega":0.95,"eps":0.05{extra},{o}}}"#
+        )
+    };
+    for extra in [
+        r#","start":"orbit""#,
+        r#","mesh":[0,1]"#,
+        r#","roots":{"n":30,"re_min":-0.5}"#,
+        r#","lyapunov":true"#,
+        r#","coefficients":true"#,
+        r#","inclination_flips":true"#,
+        r#","switch":{}"#,
+        r#","start_is_special":true"#,
+        r#","tspan":[0,1]"#,
+        r#","bogus":1"#,
+    ] {
+        let key = extra.split('"').nth(1).unwrap();
+        refuse_cycle(&m, &good(extra), key);
+    }
+    for opt in ["detect", "mesh_adapt"] {
+        let json = format!(
+            r#"{{"type":"LC","free":"tau","ntst":20,"ncol":4,"omega":0.95,"eps":0.05,"options":{{"{opt}":true,"bounds":[1.0,1.5]}}}}"#
+        );
+        refuse_cycle(&m, &json, opt);
+    }
+}
+
+#[test]
+fn a_delay_cycle_run_needs_u0_and_right_length_buffers() {
+    let m = compiled(OSC);
+    let json = osc_problem("");
+    let (rc, run) = start_with(&m, &json, &[0.0, 0.0], &[0.3, OSC_TAU_H]);
+    assert_eq!(rc, BAD_ARG, "{}", last_error());
+    assert_eq!(run, 0);
+    assert!(last_error().contains("u0"), "{}", last_error());
+    let (rc, run) = start_with(&m, &json, &[0.0], &[0.3]);
+    assert_eq!(rc, BAD_ARG, "{}", last_error());
+    assert_eq!(run, 0);
+    assert!(last_error().contains("params"), "{}", last_error());
+    let (rc, run) = start_with(&m, &json, &[], &[0.3, OSC_TAU_H]);
+    assert_ne!(rc, 0);
+    assert_eq!(run, 0);
+}
+
+#[test]
+fn the_cycle_keys_are_errors_on_an_ode_cycle_run() {
+    let om = compiled("par a=1, b=2\nx'=-a*x+b*y\ny'=-b*x-a*y\ndone\n");
+    for extra in [
+        r#","omega":1.0"#,
+        r#","eps":0.05"#,
+        r#","floquet":{"nhist":12,"count":4}"#,
+    ] {
+        let json = format!(r#"{{"type":"LC","free":"a","ntst":10,"ncol":4{extra}}}"#);
+        let (rc, run) = start_with(&om, &json, &[0.0, 0.0], &[1.0, 2.0]);
+        assert_ne!(rc, 0, "{json}");
+        assert_eq!(run, 0, "{json}");
+        let key = extra.split('"').nth(1).unwrap();
+        assert!(last_error().contains(key), "{json}: {}", last_error());
+    }
+}
+
+/// Starts a run that the parser accepts and returns the failed state and its error text.
+fn failed_run(m: &Id, json: &str, u0: &[f64], p: &[f64]) -> String {
+    let (rc, run) = start_with(m, json, u0, p);
+    assert_eq!(rc, 0, "{json}: {}", last_error());
+    let run = Id(run);
+    let t0 = Instant::now();
+    loop {
+        let (rc, v) = poll_raw(run.0);
+        if rc != 0 {
+            return last_error();
+        }
+        let v = v.unwrap();
+        if v["state"] != "running" {
+            assert_eq!(v["state"], "failed", "{json}: {v}");
+            return v["error"].as_str().map_or_else(last_error, str::to_owned);
+        }
+        assert!(t0.elapsed() < Duration::from_secs(60), "run did not finish");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn engine_side_errors_of_a_delay_cycle_run_fail_the_run() {
+    let m = compiled(OSC);
+    // A delay-time `free` with a lower bound of 0.
+    let o = cycle_options("[0.0,2.0]", 1, 0.5, 50);
+    let json = cycle_problem("tau", OSC_OMEGA_H, "", &o);
+    let text = failed_run(&m, &json, &[0.0], &[0.3, OSC_TAU_H]);
+    assert!(text.contains("bounds") || text.contains("delay"), "{text}");
+    // `count` above the number of unknowns of the history is refused with the `floquet` prefix,
+    // and before the corrector runs: omega is bad as well, and the text is the floquet one.
+    let o = cycle_options("[1.0,1.5]", 1, 0.5, 50);
+    let json = cycle_problem("tau", -1.0, r#","floquet":{"nhist":2,"count":99}"#, &o);
+    let (rc, _) = start_with(&m, &json, &[0.0], &[0.3, OSC_TAU_H]);
+    if rc == 0 {
+        let text = failed_run(&m, &json, &[0.0], &[0.3, OSC_TAU_H]);
+        assert!(text.starts_with("floquet: "), "{text}");
+    } else {
+        assert!(last_error().contains("omega"), "{}", last_error());
+    }
+}
+
+#[test]
+fn a_delay_cycle_run_cancelled_right_after_the_start_ends_cancelled() {
+    let m = compiled(OSC);
+    let o = r#""options":{"h0":0.0001,"hmax":0.0001,"max_steps":100000,"bounds":[1.0,1000]}"#;
+    let json = cycle_problem("tau", OSC_OMEGA_H, "", o);
+    let (rc, run) = start_with(&m, &json, &[0.0], &[0.3, OSC_TAU_H]);
+    assert_eq!(rc, 0, "{}", last_error());
+    let run = Id(run);
+    assert_eq!((api().run_cancel)(run.0), 0, "{}", last_error());
+    let st = wait(&run);
+    assert_eq!(st["state"], "cancelled", "{st}");
+    let b = &st["branches"].as_array().unwrap()[0];
+    assert_eq!(b["stop"], "Cancelled", "{st}");
+    let points = b["points"].as_u64().unwrap() as usize;
+    let stride = st["stride"].as_u64().unwrap() as usize;
     if points > 0 {
         let (rc, rows, vals) = copy(run.0, 0, 0, points, stride);
         assert_eq!(rc, 0, "{}", last_error());
