@@ -15,7 +15,7 @@ pub enum Status {
     /// Supported, but XPPAUT 8.0 rejects it, so each use gives the
     /// portability warning (`ceil`).
     Portability,
-    /// `delay`: kept and warned about (ODE0054); only `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap`, `dde-zh`, `dde-hh` and `dde-cycle` read it.
+    /// `delay`: kept and warned about (ODE0054); read by `phasecont.continuation` (equilibria and Hopf curves) and by `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap`, `dde-zh`, `dde-hh` and `dde-cycle`.
     Delay,
     /// `shift`: kept and warned about (ODE0055).
     Shift,

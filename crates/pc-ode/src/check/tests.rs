@@ -642,7 +642,11 @@ fn message_text_per_code() {
         ("aux v=1\nx'=v", AUX_IN_FORMULA, "output only"),
         ("x'=1\ny(t+1)=1", MIXED_KIND, "ODEs and maps"),
         ("x'=1\n!d=x", DERIVED_NON_PARAMETER, "not a parameter"),
-        ("x'=delay(x,1)", UNSUPPORTED_DELAY, "read only by"),
+        (
+            "x'=delay(x,1)",
+            UNSUPPORTED_DELAY,
+            "is read by `phasecont.continuation`",
+        ),
         (
             "x'=shift(x,1)",
             UNSUPPORTED_SHIFT,
@@ -902,7 +906,7 @@ fn delay_with_one_argument() {
                 code: UNSUPPORTED_DELAY,
                 severity: Severity::Warning,
                 span: nth(text, "delay", 0),
-                message: "`delay` is read only by `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap`, `dde-zh`, `dde-hh` and `dde-cycle`; simulation and ODE continuation do not support it"
+                message: "`delay` is read by `phasecont.continuation` (equilibria and Hopf curves) and by `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap`, `dde-zh`, `dde-hh` and `dde-cycle`; simulation and the ODE-only entries do not support it"
                     .to_string(),
                 fix_it: None,
                 notes: Vec::new(),

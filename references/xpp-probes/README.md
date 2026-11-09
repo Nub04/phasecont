@@ -94,7 +94,7 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `fn-basic` | What do the elementary builtins give? | `tan(1)`, `asin(1)`, `sinh(1)`, `erf(1)`, `min(3,2)`, `sign(-3)` and 12 more | 18 values, see the file | no diagnostic | matches |
 | `fn-bessel` | Is the order of besselj and bessely truncated toward zero? | `besselj(1.5,1)`, `besselj(-0.5,1)`, `bessely(1.5,1)` | equal to the integer order | no diagnostic | matches |
 | `fn-ceil` | Is ceil accepted? | `ceil(2.5)` | error (no output) | ODE0013 warning, XPPAUT 8.0 rejects this | PhaseCont choice |
-| `fn-delay` | Does delay(x,1) evaluate at t=0? | `10*delay(x,1)` | 30 | ODE0054 warning, `delay` read only by `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap`, `dde-zh`, `dde-hh` and `dde-cycle` | PhaseCont choice |
+| `fn-delay` | Does delay(x,1) evaluate at t=0? | `10*delay(x,1)` | 30 | ODE0054 warning, `delay` read by `phasecont.continuation` (equilibria and Hopf curves) and by `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap`, `dde-zh`, `dde-hh` and `dde-cycle` | PhaseCont choice |
 | `fn-fact` | Is fact a builtin (fact(3))? | `fact(3)` | error (no output) | ODE0039 error, undeclared name | matches |
 | `fn-flr` | Is flr a floor? | `flr(2)`, `flr(-2)`, `flr(-2.5)` | v1=2 v2=-2 v3=-3 | no diagnostic; computes v1=2 v2=-2 v3=-3 | matches |
 | `fn-gamma` | Is gamma a builtin (gamma(3))? | `gamma(3)` | error (no output) | ODE0039 error, undeclared name | matches |

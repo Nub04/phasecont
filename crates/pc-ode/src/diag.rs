@@ -273,7 +273,7 @@ pub const CODES: &[(Code, Severity, &str)] = &[
     (
         Code(54),
         Severity::Warning,
-        "`delay` is read only by `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap`, `dde-zh`, `dde-hh` and `dde-cycle`",
+        "`delay` is read by `phasecont.continuation` (equilibria and Hopf curves) and by `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap`, `dde-zh`, `dde-hh` and `dde-cycle`",
     ),
     (Code(55), Severity::Warning, "`shift` is not supported"),
     (Code(56), Severity::Warning, "`del_shft` is not supported"),
@@ -512,5 +512,17 @@ mod tests {
             assert!(err.contains(want), "{rows}: {err}");
         }
         assert!(check_doc_table("no section", &table).is_err());
+    }
+
+    #[test]
+    fn ode0054_names_the_matlab_entry_in_the_table_and_the_doc() {
+        let (_, _, summary) = CODES.iter().find(|(c, _, _)| c.0 == 54).unwrap();
+        assert!(summary.contains("`phasecont.continuation`"), "{summary}");
+        let row = LANGUAGE
+            .lines()
+            .find(|l| l.trim_start().starts_with("| ODE0054 |"))
+            .unwrap();
+        assert!(row.contains("`phasecont.continuation`"), "{row}");
+        assert!(!row.contains("read only by"), "{row}");
     }
 }
