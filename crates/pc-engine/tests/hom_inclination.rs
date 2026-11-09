@@ -314,3 +314,75 @@ fn the_noise_models_have_no_bracket_above_1e_10() {
     }
     println!("largest bracket end over the noise models: {worst:e}");
 }
+
+/// SPEC §8b-3, acceptance 7. The inclination flips of Sandstede's model in the form of
+/// Giraldo, Krauskopf and Osinga (2022), where `gamma` couples z to x. The published
+/// values of alpha at the flip are 0.4664012 for (a, b, c, beta, gamma) = (0.22, 1, -2, 1, 2)
+/// (case B, arXiv:2207.13846) and 0.3694818 for (0.7, 1, -2, 1, 2) (case C,
+/// arXiv:2207.13854). Case C has lambda_S = -0.3, so its end values are far above the
+/// floor. The IFS label must sit within 1e-5 of the published value for T = 20, 30 and 40.
+#[test]
+fn the_published_flips_of_cases_b_and_c_are_found() {
+    let cases = [("B", 0.22, 0.466_401_2), ("C", 0.7, 0.369_481_8)];
+    for (name, a, published) in cases {
+        for period in [20.0, 30.0, 40.0] {
+            let mut start = sandstede_start((a, 1.0, -2.0, 1.0), period);
+            start.params[7] = 2.0;
+            let mut m = model_of("sandstede", &Evaluator::Jit);
+            let b = run(m.as_mut(), &start, (-0.1, 0.8));
+            let labels = labels_of(&b);
+            let larger: Vec<f64> = brackets(&b, IFS).iter().map(|x| x.1).collect();
+            println!("case {name} T = {period}: labels {labels:?}, larger ends {larger:?}");
+            let ifs: Vec<f64> = labels
+                .iter()
+                .filter(|l| l.0 == "IFS")
+                .map(|l| l.1)
+                .collect();
+            assert_eq!(ifs.len(), 1, "case {name} T = {period}: {labels:?}");
+            assert!(
+                (ifs[0] - published).abs() < 1e-5,
+                "case {name} T = {period}: alpha {} against {published}",
+                ifs[0]
+            );
+            assert!(
+                larger.iter().all(|v| *v > 1e-6),
+                "case {name} T = {period}: larger ends {larger:?}"
+            );
+        }
+    }
+}
+
+/// SPEC §8b-3, acceptance 7, mesh part. The sign reference of the adjoint is the whole
+/// vector, interpolated onto the new mesh when the mesh moves. Case B at T = 30 gives the
+/// published label with the default adaptation, which moves the mesh, and with none.
+#[test]
+fn the_sign_reference_follows_the_mesh_when_it_moves() {
+    let mut start = sandstede_start((0.22, 1.0, -2.0, 1.0), 30.0);
+    start.params[7] = 2.0;
+    let uniform: Vec<f64> = (0..=start.ntst)
+        .map(|i| i as f64 / start.ntst as f64)
+        .collect();
+    for adapt in [3, 0] {
+        let mut m = model_of("sandstede", &Evaluator::Jit);
+        let cancel = AtomicBool::new(false);
+        let o = Options {
+            mesh_adapt: adapt,
+            ..opts((-0.1, 0.8))
+        };
+        let b = continue_hom_curve(m.as_mut(), &start, &o, &cancel, &mut |_| {}).unwrap();
+        let last = &b.points.last().unwrap().mesh;
+        let moved = last.len() != uniform.len()
+            || last.iter().zip(&uniform).any(|(a, c)| (a - c).abs() > 1e-6);
+        assert_eq!(moved, adapt > 0, "mesh_adapt {adapt}: moved {moved}");
+        let ifs: Vec<f64> = labels_of(&b)
+            .iter()
+            .filter(|l| l.0 == "IFS")
+            .map(|l| l.1)
+            .collect();
+        assert_eq!(ifs.len(), 1, "mesh_adapt {adapt}: {ifs:?}");
+        assert!(
+            (ifs[0] - 0.466_401_2).abs() < 1e-5,
+            "mesh_adapt {adapt}: {ifs:?}"
+        );
+    }
+}

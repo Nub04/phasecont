@@ -16,6 +16,7 @@
 use super::continuation::Scaled;
 use super::curve::{CycleCurveStart, run_curve};
 use super::hom_adjoint::{AdjointSetup, inclination_flips, orient_adjoint, solve_adjoint};
+use super::mesh;
 use super::problem::{CycleProblem, CycleSetup, Extra, check_dims};
 use crate::branch::{Branch, Options, Point};
 use crate::ep::{EpSetup, equilibrium};
@@ -103,8 +104,8 @@ pub struct HomProblem<'a> {
     f: Vec<f64>,
     /// Whether IFS and IFU are computed (`HomStart::inclination_flips`).
     inclination_flips: bool,
-    /// The end values [phi(0), phi(1)] of the adjoint at the last accepted point, which
-    /// fix the sign of the adjoint at the points after it. They do not depend on the mesh.
+    /// The adjoint phi at all base points of the last accepted point, which fixes the sign
+    /// of the adjoint at the points after it. `adapt` interpolates it onto the new mesh.
     phi_prev: Option<Vec<f64>>,
     /// The right eigenvectors v_S and v_{S+1} of A at the last accepted point, for their signs.
     v_prev: [Option<Vec<f64>>; 2],
@@ -116,8 +117,8 @@ pub struct HomProblem<'a> {
 /// An adjoint solve at `x` with its sign fixed against the last accepted point.
 struct FlipCache {
     x: Vec<f64>,
-    /// [phi(0), phi(1)].
-    ends: Vec<f64>,
+    /// The oriented adjoint at all base points.
+    phi: Vec<f64>,
     vectors: [Option<Vec<f64>>; 2],
     ifs: f64,
     ifu: f64,
@@ -498,7 +499,7 @@ impl<'a> HomProblem<'a> {
         let r = inclination_flips(a, n, ns, period, &ends[..n], &ends[n..], &self.v_prev)?;
         Ok(FlipCache {
             x: x.to_vec(),
-            ends,
+            phi,
             vectors: r.vectors,
             ifs: r.ifs,
             ifu: r.ifu,
@@ -737,7 +738,7 @@ impl Problem for HomProblem<'_> {
         if self.inclination_flips {
             self.flip_tests(x, &a);
             if let Some(c) = self.flips.as_ref().filter(|c| c.x == x) {
-                self.phi_prev = Some(c.ends.clone());
+                self.phi_prev = Some(c.phi.clone());
                 self.v_prev = c.vectors.clone();
             }
         }
@@ -747,8 +748,19 @@ impl Problem for HomProblem<'_> {
         self.outer.mesh()
     }
 
+    /// Moves the mesh as on a cycle branch and interpolates the reference adjoint onto it.
     fn adapt(&mut self, x: &mut [f64], v: &mut [f64], failed: bool) -> bool {
-        self.outer.adapt(x, v, failed)
+        let old = self.outer.mesh_points().to_vec();
+        if !self.outer.adapt(x, v, failed) {
+            return false;
+        }
+        let (n, m) = (self.n, self.outer.basis().m());
+        let new = self.outer.mesh_points().to_vec();
+        self.phi_prev = self
+            .phi_prev
+            .take()
+            .and_then(|q| mesh::interpolate(self.outer.basis(), n, &old, &new, m, &q).ok());
+        true
     }
 
     fn bordered_solve(

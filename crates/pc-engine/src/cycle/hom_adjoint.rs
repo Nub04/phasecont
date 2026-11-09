@@ -312,13 +312,16 @@ fn solve_adjoint_seeded(
 /// end values `[phi(0), phi(1)]`, 2n numbers (SPEC §8b-3).
 ///
 /// With `prev` None, the component of largest magnitude of the ends is made positive. With
-/// the ends of the previous accepted point as `prev`, `phi` is flipped when the dot product
-/// of the two end vectors is negative.
+/// the whole `phi` of the previous accepted point as `prev` (on the same mesh), `phi` is
+/// flipped when the dot product of the two vectors over all base points is negative. The
+/// ends are not used for that: phi has unit norm over all points, so its ends are a small
+/// and noisy share of it, and their dot product changes sign erratically at a long T.
+/// A `prev` of another length is ignored, as if there were none.
 pub fn orient_adjoint(phi: &mut [f64], n: usize, prev: Option<&[f64]>) -> Vec<f64> {
     let mut ends = phi[..n].to_vec();
     ends.extend_from_slice(&phi[phi.len() - n..]);
-    let flip = match prev {
-        Some(q) => ends.iter().zip(q).map(|(a, b)| a * b).sum::<f64>() < 0.0,
+    let flip = match prev.filter(|q| q.len() == phi.len()) {
+        Some(q) => phi.iter().zip(q).map(|(a, b)| a * b).sum::<f64>() < 0.0,
         None => {
             let big = ends
                 .iter()
@@ -530,21 +533,47 @@ mod tests {
     }
 
     #[test]
-    fn later_points_follow_the_previous_ends() {
-        let prev = [1.0, 0.0, 0.0, 1.0];
-        let mut same = phi2([0.9, 0.1], [5.0, 5.0], [-0.1, 1.1]);
+    fn later_points_follow_the_previous_vector() {
+        let prev = phi2([1.0, 0.0], [5.0, 5.0], [0.0, 1.0]);
+        let mut same = phi2([0.9, 0.1], [5.0, 4.0], [-0.1, 1.1]);
         let before = same.clone();
         orient_adjoint(&mut same, 2, Some(&prev));
         assert_eq!(same, before);
-        let mut opposite = phi2([-0.9, -0.1], [5.0, 5.0], [0.1, -1.1]);
+        let mut opposite = phi2([-0.9, -0.1], [-5.0, -4.0], [0.1, -1.1]);
         let ends = orient_adjoint(&mut opposite, 2, Some(&prev));
-        assert_eq!(opposite, phi2([0.9, 0.1], [-5.0, -5.0], [-0.1, 1.1]));
+        assert_eq!(opposite, phi2([0.9, 0.1], [5.0, 4.0], [-0.1, 1.1]));
         assert_eq!(ends, vec![0.9, 0.1, -0.1, 1.1]);
         // A tie (zero dot product) keeps the sign.
         let mut tie = phi2([0.0, 1.0], [0.0, 0.0], [1.0, 0.0]);
+        let tie_prev = phi2([1.0, 0.0], [0.0, 0.0], [0.0, 1.0]);
         let before = tie.clone();
-        orient_adjoint(&mut tie, 2, Some(&prev));
+        orient_adjoint(&mut tie, 2, Some(&tie_prev));
         assert_eq!(tie, before);
+    }
+
+    #[test]
+    fn the_interior_decides_where_the_ends_are_tiny_and_disagree() {
+        // The ends are 1e-8 of the norm and their dot product with the previous ends is
+        // negative, as at a long T, but the vectors are the same up to rounding.
+        let prev = phi2([2e-8, -3e-8], [0.6, 0.8], [-1e-8, 4e-8]);
+        let mut phi = phi2([-5e-9, 7e-9], [0.6, 0.8], [3e-9, -2e-9]);
+        let before = phi.clone();
+        let ends = orient_adjoint(&mut phi, 2, Some(&prev));
+        assert_eq!(phi, before);
+        assert_eq!(ends, vec![-5e-9, 7e-9, 3e-9, -2e-9]);
+        // And the same vector with its sign reversed is flipped back.
+        let mut neg: Vec<f64> = before.iter().map(|v| -v).collect();
+        orient_adjoint(&mut neg, 2, Some(&prev));
+        assert_eq!(neg, before);
+    }
+
+    #[test]
+    fn a_previous_vector_of_another_length_is_ignored() {
+        let prev = [1.0, 0.0, 0.0, 1.0];
+        let mut phi = phi2([-0.2, 0.3], [9.0, 9.0], [-0.1, -0.7]);
+        orient_adjoint(&mut phi, 2, Some(&prev));
+        // The first-point rule: the largest end component (-0.7) is made positive.
+        assert_eq!(phi, phi2([0.2, -0.3], [-9.0, -9.0], [0.1, 0.7]));
     }
 
     #[test]
