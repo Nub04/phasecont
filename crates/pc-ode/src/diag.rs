@@ -273,7 +273,7 @@ pub const CODES: &[(Code, Severity, &str)] = &[
     (
         Code(54),
         Severity::Warning,
-        "`delay` is read by `phasecont.continuation` (equilibria and Hopf curves) and by `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap`, `dde-zh`, `dde-hh` and `dde-cycle`",
+        "`delay` is read by `phasecont.continuation` (equilibria, Hopf curves and periodic orbits from a Hopf point) and by `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap`, `dde-zh`, `dde-hh` and `dde-cycle`",
     ),
     (Code(55), Severity::Warning, "`shift` is not supported"),
     (Code(56), Severity::Warning, "`del_shft` is not supported"),

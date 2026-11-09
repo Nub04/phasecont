@@ -971,7 +971,7 @@ impl<'a> Checker<'a> {
                 Status::Delay => Some((
                     UNSUPPORTED_DELAY,
                     format!(
-                        "`{}` is read by `phasecont.continuation` (equilibria and Hopf curves) and by `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap`, `dde-zh`, `dde-hh` and `dde-cycle`; simulation and the ODE-only entries do not support it",
+                        "`{}` is read by `phasecont.continuation` (equilibria, Hopf curves and periodic orbits from a Hopf point) and by `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap`, `dde-zh`, `dde-hh` and `dde-cycle`; simulation and the ODE-only entries do not support it",
                         name.text
                     ),
                 )),

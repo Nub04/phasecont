@@ -906,7 +906,7 @@ fn delay_with_one_argument() {
                 code: UNSUPPORTED_DELAY,
                 severity: Severity::Warning,
                 span: nth(text, "delay", 0),
-                message: "`delay` is read by `phasecont.continuation` (equilibria and Hopf curves) and by `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap`, `dde-zh`, `dde-hh` and `dde-cycle`; simulation and the ODE-only entries do not support it"
+                message: "`delay` is read by `phasecont.continuation` (equilibria, Hopf curves and periodic orbits from a Hopf point) and by `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap`, `dde-zh`, `dde-hh` and `dde-cycle`; simulation and the ODE-only entries do not support it"
                     .to_string(),
                 fix_it: None,
                 notes: Vec::new(),
