@@ -22,8 +22,9 @@
 
 use super::eq::{check_params, check_state, linearize, residual};
 use super::lyap::{
-    C, NULL_RESIDUAL_MAX, OMEGA_MIN, PAIRING_MIN, bilinear, check_regular, check_simple_kernel,
-    delta, embed, frobenius_real, matvec, norm2, second_ratio, solve, transpose, unstack,
+    C, NULL_RESIDUAL_MAX, PAIRING_MIN, bilinear, check_omega_finite, check_omega_floor,
+    check_regular, check_simple_kernel, delta, embed, frobenius_real, matvec, norm2, second_ratio,
+    solve, transpose, unstack,
 };
 use super::lyap2::{Ctx, add, conj_all};
 use super::roots::LinearDde;
@@ -80,14 +81,11 @@ fn zero_hopf_scaled(
     s0: f64,
     s1: C,
 ) -> Result<ZeroHopf, EngineError> {
-    if !(omega.is_finite() && omega > OMEGA_MIN) {
-        return Err(EngineError::BadProblem(format!(
-            "omega is {omega}; it must be finite and above {OMEGA_MIN:e}"
-        )));
-    }
+    check_omega_finite(omega, "omega")?;
     check_params(m, p)?;
     check_state(m, x)?;
     let lin = linearize(m, x, p)?;
+    check_omega_floor(&lin, omega, "omega")?;
     let n = lin.dim;
     let mut v = vectors(&lin, omega)?;
     check_regular(&delta(&lin, 2.0 * omega, 0), n, "Delta(2 i omega)")?;

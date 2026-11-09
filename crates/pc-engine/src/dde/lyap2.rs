@@ -20,7 +20,8 @@
 
 use super::eq::{check_params, check_state, full_params, linearize, residual, time_of};
 use super::lyap::{
-    C, OMEGA_MIN, Q_NORM, bilinear, check_regular, delta, direction, form, matvec, pair, solve,
+    C, Q_NORM, bilinear, check_omega_finite, check_omega_floor, check_regular, delta, direction,
+    form, matvec, pair, solve,
 };
 use super::roots::LinearDde;
 use crate::error::EngineError;
@@ -64,14 +65,11 @@ fn lyapunov2_scaled(
     omega: f64,
     s: C,
 ) -> Result<Lyapunov2, EngineError> {
-    if !(omega.is_finite() && omega > OMEGA_MIN) {
-        return Err(EngineError::BadProblem(format!(
-            "omega is {omega}; it must be finite and above {OMEGA_MIN:e}"
-        )));
-    }
+    check_omega_finite(omega, "omega")?;
     check_params(m, p)?;
     check_state(m, x)?;
     let lin = linearize(m, x, p)?;
+    check_omega_floor(&lin, omega, "omega")?;
     let n = lin.dim;
     let pr = pair(&lin, omega)?;
     let q: Vec<C> = pr.q.iter().map(|c| *c * s).collect();

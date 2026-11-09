@@ -40,6 +40,9 @@ pub const NULL_RESIDUAL_MAX: f64 = 1e-4;
 pub const PAIRING_MIN: f64 = 1e-8;
 /// The smallest ratio of the extreme singular values of `Delta(0)` and `Delta(2 i omega)`.
 pub const RESONANCE_MIN: f64 = 1e-8;
+/// The smallest `omega` as a fraction of the size of the linearization, see
+/// [`matrix_size`]. The floor is relative because a rescaling of time multiplies `omega` and
+/// every matrix by the same factor (SPEC section 8g).
 pub(super) const OMEGA_MIN: f64 = 1e-8;
 
 /// The coefficient at one Hopf point.
@@ -75,14 +78,11 @@ fn lyapunov_scaled(
     omega: f64,
     q_norm: f64,
 ) -> Result<Lyapunov, EngineError> {
-    if !(omega.is_finite() && omega > OMEGA_MIN) {
-        return Err(EngineError::BadProblem(format!(
-            "omega is {omega}; it must be finite and above {OMEGA_MIN:e}"
-        )));
-    }
+    check_omega_finite(omega, "omega")?;
     check_params(m, p)?;
     check_state(m, x)?;
     let lin = linearize(m, x, p)?;
+    check_omega_floor(&lin, omega, "omega")?;
     let pr = pair(&lin, omega)?;
     let q: Vec<C> = pr.q.iter().map(|c| c.scale(q_norm)).collect();
     let pv: Vec<C> = pr.p.iter().map(|c| c.scale(1.0 / q_norm)).collect();
@@ -234,6 +234,45 @@ pub(super) fn norm2(v: &[C]) -> f64 {
         .sqrt()
 }
 
+/// `|A_0|_F + sum_j |A_j|_F`, the size of the linearization (SPEC section 8g).
+pub(super) fn matrix_size(lin: &LinearDde) -> f64 {
+    frobenius_real(&lin.a0)
+        + lin
+            .delays
+            .iter()
+            .map(|(_, a)| frobenius_real(a))
+            .sum::<f64>()
+}
+
+/// `omega` must be finite and positive. The floor against the matrices comes later, in
+/// [`check_omega_floor`], since it needs the linearization.
+pub(super) fn check_omega_finite(omega: f64, name: &str) -> Result<(), EngineError> {
+    if omega.is_finite() && omega > 0.0 {
+        Ok(())
+    } else {
+        Err(EngineError::BadProblem(format!(
+            "{name} is {omega}; it must be finite and positive"
+        )))
+    }
+}
+
+/// `omega` must be above `OMEGA_MIN` times the size of the linearization.
+pub(super) fn check_omega_floor(
+    lin: &LinearDde,
+    omega: f64,
+    name: &str,
+) -> Result<(), EngineError> {
+    let size = matrix_size(lin);
+    if omega > OMEGA_MIN * size {
+        Ok(())
+    } else {
+        Err(EngineError::BadProblem(format!(
+            "{name} is {omega}; it must be above {OMEGA_MIN:e} times the size {size:e} of the \
+             matrices of the linearization"
+        )))
+    }
+}
+
 pub(super) fn frobenius_real(a: &[f64]) -> f64 {
     a.iter().map(|v| v * v).sum::<f64>().sqrt()
 }
@@ -268,13 +307,7 @@ pub(super) fn pair(lin: &LinearDde, omega: f64) -> Result<Pair, EngineError> {
     let dp = delta(lin, omega, 1);
     let right = null_right(&embed(&d, n), 2 * n, 2 * n, 1)?.remove(0);
     let q = unstack(&right, n);
-    let scale = omega
-        + frobenius_real(&lin.a0)
-        + lin
-            .delays
-            .iter()
-            .map(|(_, a)| frobenius_real(a))
-            .sum::<f64>();
+    let scale = omega + matrix_size(lin);
     let null_residual = norm2(&matvec(&d, n, &q)) / scale;
     if null_residual.is_nan() || null_residual > NULL_RESIDUAL_MAX {
         return Err(EngineError::BadProblem(format!(

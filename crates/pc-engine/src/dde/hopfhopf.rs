@@ -26,8 +26,9 @@
 
 use super::eq::{check_params, check_state, linearize, residual};
 use super::lyap::{
-    C, NULL_RESIDUAL_MAX, OMEGA_MIN, PAIRING_MIN, RESONANCE_MIN, bilinear, check_regular, delta,
-    embed, frobenius_real, matvec, norm2, solve, transpose, unstack,
+    C, NULL_RESIDUAL_MAX, PAIRING_MIN, RESONANCE_MIN, bilinear, check_omega_finite,
+    check_omega_floor, check_regular, delta, embed, frobenius_real, matvec, norm2, solve,
+    transpose, unstack,
 };
 use super::lyap2::{Ctx, add, conj_all};
 use super::roots::LinearDde;
@@ -87,13 +88,8 @@ fn hopf_hopf_scaled(
     d1: C,
     d2: C,
 ) -> Result<HopfHopf, EngineError> {
-    for (name, w) in [("omega1", omega1), ("omega2", omega2)] {
-        if !(w.is_finite() && w > OMEGA_MIN) {
-            return Err(EngineError::BadProblem(format!(
-                "{name} is {w}; it must be finite and above {OMEGA_MIN:e}"
-            )));
-        }
-    }
+    check_omega_finite(omega1, "omega1")?;
+    check_omega_finite(omega2, "omega2")?;
     if omega1 <= omega2 {
         return Err(EngineError::BadProblem(format!(
             "omega1 = {omega1} must be greater than omega2 = {omega2}; the frequencies are not \
@@ -103,6 +99,8 @@ fn hopf_hopf_scaled(
     check_params(m, p)?;
     check_state(m, x)?;
     let lin = linearize(m, x, p)?;
+    check_omega_floor(&lin, omega1, "omega1")?;
+    check_omega_floor(&lin, omega2, "omega2")?;
     let n = lin.dim;
     check_regular(&delta(&lin, 0.0, 0), n, "Delta(0)")?;
     let mut v = vectors(&lin, omega1, omega2)?;
