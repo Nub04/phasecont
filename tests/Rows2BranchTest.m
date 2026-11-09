@@ -616,6 +616,30 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
             testCase.verifyFalse(sp.Data.refined);
         end
 
+        function delayHopfSpecialsCarryTheirCoefficients(testCase)
+            % The specials key "coefficients" becomes Data.values; a
+            % special without the key gets an empty struct (SPEC 8s,
+            % slice 3 test 7).
+            n = 1;
+            pts = [2.0, 1, 0.5, 0.01, NaN, NaN; ...
+                   2.5, 1, 0.6, 0.00, NaN, NaN].';
+            specials = pts;
+            st = struct("points", 2, "stop", "Bounds", ...
+                "specials", {{ ...
+                    struct("label", "ZH", "index", 0, "refined", false, ...
+                        "omega", 0.1, "coefficients", struct( ...
+                            "g200_re", -1, "g110_im", 0.45, "s", 0)), ...
+                    struct("label", "HH", "index", 1, "refined", false, ...
+                        "omega", 0.1)}});
+            br = phasecont.internal.rows2branch(phasecont.Model.empty, ...
+                [1 2], [10; 20], n, pts, specials, st, "DDEH");
+            testCase.assertSize(br.Specials, [2 1]);
+            testCase.verifyEqual(br.Specials(1).Data.values, ...
+                struct(g200_re = -1, g110_im = 0.45, s = 0));
+            testCase.verifyTrue(isstruct(br.Specials(2).Data.values));
+            testCase.verifyEmpty(fieldnames(br.Specials(2).Data.values));
+        end
+
         function delayHopfRowsWithNoPointsGiveAnEmptyBranch(testCase)
             n = 1;
             rows = zeros(n + 5, 0);

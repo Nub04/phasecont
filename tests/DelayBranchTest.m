@@ -26,6 +26,33 @@ classdef DelayBranchTest < matlab.unittest.TestCase
         AStar = 1.454526952022688
         Omega1Star = 1.5160279413134377
         Omega2Star = 1.1308210684126256
+        % SPEC 8s slice 3: the zero-Hopf model of SPEC 8f test 5 and the
+        % coupled model with quadratic and cubic terms.
+        Zh = "par a=0, tau=1, b=1" + newline + ...
+            "x'=-(a+y)*x-b*delay(x,tau)" + newline + ...
+            "y'=a-y*y" + newline + "done" + newline
+        CoupledNl = "par a=1.4, b=1.2, c=1, d=0.1" + newline + ...
+            "x'=c*y-a*delay(x,1)+x*x+x*y-x*x*x" + newline + ...
+            "y'=-d*x-b*delay(y,1.5)+y*y*y+x*y*y" + newline + "done" + newline
+        % The values of the engine run (pc-ffi test, 2026-11-08), pinned
+        % to 1e-12 relative. Zeros are exact zeros of the model.
+        ZhValues = struct( ...
+            g200_re = -1, g200_im = 0, ...
+            g110_re = -0.2884004391420009, g110_im = 0.45301835045029015, ...
+            g011_re = 0, g011_im = 0, g300_re = 0, g300_im = 0, ...
+            g111_re = 0, g111_im = 0, ...
+            g210_re = 0.024758119360069802, g210_im = -0.1894641175334449, ...
+            g021_re = 0, g021_im = 0, s_product = 0, s = 0, ...
+            theta = 0.2884004391420009)
+        HhValues = struct( ...
+            omega_large = 1.5160279413134377, ...
+            omega_small = 1.1308210684126256, ...
+            g2100_re = -0.48383228630347963, g2100_im = 0.011378451292987219, ...
+            g1011_re = -0.8907179371819094, g1011_im = -1.0542732722112986, ...
+            g1110_re = 0.25251313826270416, g1110_im = 0.16044532760123023, ...
+            g0021_re = 0.829549652892998, g0021_im = -0.5605505214493246, ...
+            theta = -1.0737367366445048, delta = -0.5219022074610322, ...
+            product = -0.40136290516147716, sign = -1)
     end
 
     properties
@@ -90,6 +117,34 @@ classdef DelayBranchTest < matlab.unittest.TestCase
                     c = 1, d = 0.1), Omega = 1.54, Bounds = [0.5 1.4], ...
                 Hmax = 0.05, Direction = 1, TolX = 1e-12, TolF = 1e-12, ...
                 MaxNewton = 20);
+        end
+
+        function br = zhCurve(testCase, extra)
+            m = testCase.model(testCase.Zh);
+            br = phasecont.continuation(m, [0.001 -0.249], extra{:}, ...
+                Type = "H", Free = ["a" "tau"], Params = struct(a = 0.07, ...
+                    tau = 1.4071360574511174, b = 1), Omega = 0.98, ...
+                Bounds = [1.3 2.0], Hmax = 0.05, Direction = 1, ...
+                TolX = 1e-12, TolF = 1e-12, MaxNewton = 20);
+        end
+
+        function br = coupledNlCurve(testCase, extra)
+            m = testCase.model(testCase.CoupledNl);
+            br = phasecont.continuation(m, [0.001 0.001], extra{:}, ...
+                Type = "H", Free = ["a" "b"], Params = struct(a = 1.46, ...
+                    b = 0.8, c = 1, d = 0.1), Omega = 1.54, ...
+                Bounds = [0.5 1.4], Hmax = 0.05, Direction = 1, ...
+                TolX = 1e-12, TolF = 1e-12, MaxNewton = 20);
+        end
+
+        function verifyValues(testCase, have, want)
+            % Every field of WANT is in HAVE, within 1e-12 relative.
+            for name = string(fieldnames(want)).'
+                testCase.assertTrue(isfield(have, name), ...
+                    "no field " + name + " in Data.values");
+                testCase.verifyEqual(have.(name), want.(name), ...
+                    "field " + name, RelTol = 1e-12, AbsTol = 1e-14);
+            end
         end
     end
 
@@ -556,6 +611,143 @@ classdef DelayBranchTest < matlab.unittest.TestCase
                 @() phasecont.continuation(m, 1, Free = "r", ...
                     Roots = testCase.Roots, Lyapunov = true, ...
                     Bounds = [1.2 2]), id, "Lyapunov");
+        end
+
+        function zeroHopfCoefficientsArriveAtTheZhSpecial(testCase)
+            c = testCase.zhCurve({"Coefficients", true});
+            zh = c.points("ZH");
+            testCase.assertNumElements(zh, 1);
+            testCase.verifyValues(zh.Data.values, testCase.ZhValues);
+            v = zh.Data.values;
+            % The closed form of SPEC 8i test 7.
+            testCase.verifyEqual(v.g200_re, -1, AbsTol = 1e-6);
+            testCase.verifyEqual(complex(v.g110_re, v.g110_im), ...
+                -0.288400439142001 + 0.4530183504502902i, AbsTol = 1e-6);
+            testCase.verifyLessThanOrEqual(abs(v.g011_re), 1e-6);
+            testCase.verifyLessThanOrEqual(abs(v.s_product), 1e-6);
+            % The residual fields say how well the located point fits.
+            testCase.verifyLessThanOrEqual(v.null_residual_zero, 1e-12);
+            testCase.verifyLessThanOrEqual(v.null_residual_hopf, 1e-12);
+            testCase.verifyLessThanOrEqual(v.equilibrium_residual, 1e-12);
+            testCase.verifyEmpty(c.Warnings);
+            testCase.verifyEqual(zh.Label, "ZH");
+        end
+
+        function theZhSpecialHasNoValuesWithoutTheOption(testCase)
+            off = testCase.zhCurve({});
+            zh = off.points("ZH");
+            testCase.assertNumElements(zh, 1);
+            testCase.verifyTrue(isstruct(zh.Data.values));
+            testCase.verifyEmpty(fieldnames(zh.Data.values));
+            % The option does not move a point or a special.
+            on = testCase.zhCurve({"Coefficients", true});
+            testCase.verifyEqual(on.Alpha, off.Alpha);
+            testCase.verifyEqual(on.U, off.U);
+            testCase.verifyEqual(on.Kappa, off.Kappa);
+            testCase.verifyEqual(on.Codim2, off.Codim2);
+            testCase.verifyEqual(on.points("ZH").P, zh.P);
+            testCase.verifyEqual(on.points("ZH").Index, zh.Index);
+            % An explicit false is the default.
+            f = testCase.zhCurve({"Coefficients", false});
+            testCase.verifyEmpty(fieldnames(f.points("ZH").Data.values));
+            testCase.verifyEqual(f.Alpha, off.Alpha);
+        end
+
+        function hopfHopfCoefficientsArriveWithOmega2(testCase)
+            c = testCase.coupledNlCurve({"Roots", struct(N = 30, ReMin = -3), ...
+                "Coefficients", true});
+            hh = c.points("HH");
+            testCase.assertNumElements(hh, 1);
+            testCase.verifyValues(hh.Data.values, testCase.HhValues);
+            testCase.verifyEqual(hh.Data.values.omega2, ...
+                testCase.Omega2Star, AbsTol = 1e-6);
+            testCase.verifyEqual(hh.Data.values.omega_large, ...
+                testCase.Omega1Star, AbsTol = 1e-6);
+            testCase.verifyEqual(hh.Data.values.omega_small, ...
+                testCase.Omega2Star, AbsTol = 1e-6);
+            testCase.verifyLessThanOrEqual(hh.Data.values.null_residual_1, 1e-12);
+            testCase.verifyLessThanOrEqual(hh.Data.values.null_residual_2, 1e-12);
+            testCase.verifyEmpty(c.Warnings);
+        end
+
+        function coefficientsWithoutRootsGiveTheZhValuesOnly(testCase)
+            % HH is labeled only with Roots (slice 2), so the HH values
+            % need Roots too; the option alone is no error.
+            c = testCase.coupledNlCurve({"Coefficients", true});
+            testCase.verifyEmpty(c.points("HH"));
+            testCase.verifyEmpty(c.Warnings);
+        end
+
+        function coefficientsDoNotMoveTheHopfHopfRows(testCase)
+            roots = {"Roots", struct(N = 30, ReMin = -3)};
+            off = testCase.coupledNlCurve(roots);
+            on = testCase.coupledNlCurve([roots, {"Coefficients", true}]);
+            testCase.verifyEqual(on.Alpha, off.Alpha);
+            testCase.verifyEqual(on.U, off.U);
+            testCase.verifyEqual(on.Codim2, off.Codim2);
+            testCase.verifyEqual(on.points("HH").P, off.points("HH").P);
+            testCase.verifyEqual(on.points("HH").Data.values.omega2, ...
+                off.points("HH").Data.values.omega2);
+        end
+
+        function aBranchWithCoefficientsSurvivesASessionRoundTrip(testCase)
+            m = testCase.model(testCase.Zh);
+            c = phasecont.continuation(m, [0.001 -0.249], Type = "H", ...
+                Free = ["a" "tau"], Params = struct(a = 0.07, ...
+                    tau = 1.4071360574511174, b = 1), Omega = 0.98, ...
+                Coefficients = true, Bounds = [1.3 2.0], Hmax = 0.05, ...
+                Direction = 1, TolX = 1e-12, TolF = 1e-12, MaxNewton = 20);
+            file = fullfile(testCase.Dir, "zh.pcs");
+            save(phasecont.Session(m, {c}), file);
+            back = phasecont.Session.load(file);
+            testCase.addTeardown(@() delete(back.Model));
+            b = back.Items{1};
+            zh = b.points("ZH");
+            testCase.assertNumElements(zh, 1);
+            testCase.verifyEqual(zh.Data.values, c.points("ZH").Data.values);
+            testCase.verifyValues(zh.Data.values, testCase.ZhValues);
+            testCase.verifyEqual(b.Alpha, c.Alpha);
+        end
+
+        function badCoefficientsValuesAreRefused(testCase)
+            m = testCase.model(testCase.Zh);
+            base = {"Type", "H", "Free", ["a" "tau"], "Params", ...
+                struct(a = 0.07, tau = 1.4071360574511174, b = 1), ...
+                "Omega", 0.98, "Bounds", [1.3 2.0]};
+            for flag = {1, "yes", [true false], [], NaN}
+                try
+                    phasecont.continuation(m, [0.001 -0.249], base{:}, ...
+                        Coefficients = flag{1});
+                    testCase.verifyFail("accepted Coefficients");
+                catch err
+                    testCase.verifySubstring(string(err.identifier), "phasecont:");
+                    testCase.verifySubstring(string(err.message), "Coefficients");
+                end
+            end
+        end
+
+        function coefficientsKeepTheirPlace(testCase)
+            % The option belongs to a delay model with Type "H".
+            id = "phasecont:model:badOption";
+            ode = testCase.model(testCase.Decay);
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(ode, 3, Free = "a", ...
+                    Coefficients = true, Bounds = [1 3]), id, "Coefficients");
+            m = testCase.model(testCase.Hutch);
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(m, 1, Free = "r", ...
+                    Roots = testCase.Roots, Coefficients = true, ...
+                    Bounds = [1.2 2]), id, "Coefficients");
+            % Another Type is refused too (the engine has no delay LP run).
+            w = testCase.model(testCase.Wright);
+            try
+                phasecont.continuation(w, 0.001, Type = "LP", ...
+                    Free = ["a" "b"], Params = struct(a = 1.57, b = 0), ...
+                    Coefficients = true, Bounds = [-1 1]);
+                testCase.verifyFail("accepted Coefficients with Type LP");
+            catch err
+                testCase.verifySubstring(string(err.identifier), "phasecont:");
+            end
         end
     end
 end

@@ -84,9 +84,12 @@ function br = continuation(m, start, options)
 %   C.Codim2Labels = ["GH" "HH"]; C.Eigenvalues, C.Tests and C.RootCount are
 %   empty. C.Specials holds BT and ZH always, GH with Lyapunov = true and HH
 %   with Roots = struct(N = n, ReMin = r), the root search at every point.
-%   Lyapunov is a logical scalar, default false. Detect, Switch, MeshAdapt
-%   and Var are refused. As for equilibria, the curve arrives when the run
-%   ends.
+%   Lyapunov is a logical scalar, default false. With Coefficients = true
+%   the zero-Hopf coefficients of each ZH special and the Hopf-Hopf
+%   coefficients of each HH special arrive in Special.Data.values (HH needs
+%   Roots too); a special where the engine refuses has none, and the branch
+%   gets a warning. Detect, Switch, MeshAdapt and Var are refused. As for
+%   equilibria, the curve arrives when the run ends.
 %
 %   Name-value options
 %     Type       "EP" (default), "LP", "H", "LC", "LPC", "PD", "NS" or "HOM"
@@ -132,6 +135,10 @@ function br = continuation(m, start, options)
 %     Lyapunov   true adds the first Lyapunov coefficient and the GH label to
 %                a delay "H" curve (logical scalar, default false); Type "H"
 %                of a delay model only
+%     Coefficients  true adds the zero-Hopf and Hopf-Hopf coefficients to the
+%                ZH and HH specials of a delay "H" curve, as the fields of
+%                Data.values (logical scalar, default false); Type "H" of a
+%                delay model only
 %
 %   Options that are not given keep the engine defaults. If START is a
 %   special point (any label except "EP"), the run does not report that
@@ -163,6 +170,7 @@ arguments
     options.Roots = []
     options.Omega = missing
     options.Lyapunov = missing
+    options.Coefficients = missing
 end
 import phasecont.internal.num2json
 
@@ -179,7 +187,7 @@ end
 isDelayHopf = isDelay && type == "H";
 roots = delayRoots(options.Roots, isDelay, isDelayHopf);
 if ~isDelayHopf
-    for name = ["Omega" "Lyapunov"]
+    for name = ["Omega" "Lyapunov" "Coefficients"]
         if ~isa(options.(name), "missing")
             error("phasecont:model:badOption", ...
                 "%s applies to Type = ""H"" of a delay model only.", name);
@@ -206,8 +214,16 @@ if isDelay
     end
 end
 lyapunov = false;
+coefficients = false;
 omega = [];
 if isDelayHopf
+    if ~isa(options.Coefficients, "missing")
+        coefficients = options.Coefficients;
+        if ~(islogical(coefficients) && isscalar(coefficients))
+            error("phasecont:model:badOption", ...
+                "Coefficients must be a logical scalar.");
+        end
+    end
     if ~isa(options.Lyapunov, "missing")
         lyapunov = options.Lyapunov;
         if ~(islogical(lyapunov) && isscalar(lyapunov))
@@ -385,7 +401,8 @@ elseif isCycleCurve
 elseif isDelayHopf
     problem = "{""type"":""H"",""free"":" + jsonencode(free) + ...
         ",""omega"":" + num2json(omega) + ...
-        ",""lyapunov"":" + lower(string(lyapunov));
+        ",""lyapunov"":" + lower(string(lyapunov)) + ...
+        ",""coefficients"":" + lower(string(coefficients));
     if roots.N > 0
         problem = problem + ",""roots"":{""n"":" + num2json(roots.N) + ...
             ",""re_min"":" + num2json(roots.ReMin) + "}";
