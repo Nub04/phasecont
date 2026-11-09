@@ -48,9 +48,11 @@ function br = rows2branch(m, free, p, n, points, specials, branchStatus, kind, g
 % "LC" with M.IsDelay) is [alpha, profile(1..n(NTST*NCOL+1)), T, h, iters,
 % mu_re(1..c), mu_im(1..c), trivial_error], where c is the number of Floquet
 % multipliers the run computed (0 without Floquet). The width is
-% n(NTST*NCOL+1) + 5 + 2c and c follows from it. The mesh is uniform and not
-% in the row; the Branch is Type "LC" with Mesh rebuilt from NTST, Stable
-% false, Tests and Codim2 with 0 columns and an empty RootCount.
+% n(NTST*NCOL+1) + 5 + 2c. GRID is [NTST NCOL c] for these branches, so the
+% width is checked against it and a row of any other width is refused. The
+% mesh is uniform and not in the row; the Branch is Type "LC" with Mesh
+% rebuilt from NTST, Stable false, Tests and Codim2 with 0 columns and an
+% empty RootCount.
 % All have NaN for missing values. The function makes no
 % engine calls.
 %
@@ -322,15 +324,16 @@ function br = delayCycleBranch(m, free, p, n, points, specials, branchStatus, gr
 % A branch of periodic orbits of a delay model. A row is [alpha, profile
 % (n(NTST*NCOL+1)), T, h, iters, mu_re (c), mu_im (c), trivial_error], where
 % c is the number of Floquet multipliers the run computed (0 without
-% Floquet). The mesh is uniform and not stored in the row.
+% Floquet) and is the third value of GRID. The mesh is uniform and not
+% stored in the row.
 [name, idx] = freeParameters(m, free, 1);
-[ntst, ncol] = cycleGrid("LC", grid);
+[ntst, ncol, c] = delayCycleGrid(grid);
 p = double(p(:));
 np = n*(ntst*ncol + 1);
-c = (size(points, 1) - np - 5) / 2;
-if c < 0 || c ~= round(c) || size(specials, 1) ~= size(points, 1)
+width = np + 5 + 2*c;
+if size(points, 1) ~= width || size(specials, 1) ~= width
     error("phasecont:model:badRows", ...
-        "Expected rows of %d + 2c values, got %d and %d.", np + 5, ...
+        "Expected rows of %d values, got %d and %d.", width, ...
         size(points, 1), size(specials, 1));
 end
 [alpha, prof, per, h, iters, ev] = unpackCycleRows(points, np, c);
@@ -466,6 +469,19 @@ if ~isnumeric(grid) || numel(grid) ~= 2 ...
 end
 ntst = double(grid(1));
 ncol = double(grid(2));
+end
+
+function [ntst, ncol, c] = delayCycleGrid(grid)
+% NTST, NCOL and the Floquet count c from GRID = [NTST NCOL c]. NTST and
+% NCOL are positive integers and c is a non-negative integer.
+if ~isnumeric(grid) || numel(grid) ~= 3 || any(~isfinite(grid)) ...
+        || any(grid(1:2) < 1) || any(grid ~= round(grid)) || grid(3) < 0
+    error("phasecont:model:badOption", ...
+        "A delay cycle branch needs [NTST NCOL c]: NTST and NCOL positive, c at least 0, all integers.");
+end
+ntst = double(grid(1));
+ncol = double(grid(2));
+c = double(grid(3));
 end
 
 function [name, idx] = freeParameters(m, free, count)

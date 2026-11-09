@@ -691,7 +691,7 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
                     "coefficient", [], "omega", [], "normalization", [], ...
                     "refined", false));
             br = phasecont.internal.rows2branch(phasecont.Model.empty, 1, ...
-                [0.3; 1.3], n, pts, specials, st, "DDELC", [2 1]);
+                [0.3; 1.3], n, pts, specials, st, "DDELC", [2 1 2]);
             testCase.verifyEqual(br.Type, "LC");
             testCase.verifyEqual(br.Free, "p1");
             testCase.verifyEqual(br.Alpha, [1.1; 1.2]);
@@ -740,7 +740,7 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
             st = struct("points", 3, "stop", "MaxSteps", "warnings", {{}}, ...
                 "specials", info);
             br = phasecont.internal.rows2branch(phasecont.Model.empty, 2, ...
-                [10; 20; 30], n, pts, specials, st, "DDELC", [2 1]);
+                [10; 20; 30], n, pts, specials, st, "DDELC", [2 1 1]);
             testCase.assertNumElements(br.Specials, 2);
             testCase.verifyEqual(br.Specials(1).P, [10; 0.6; 30]);
             testCase.verifyEqual(br.Specials(2).P, [10; 0.7; 30]);
@@ -760,7 +760,7 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
             st = struct("points", 2, "stop", "Bounds", "warnings", {{}}, ...
                 "specials", []);
             br = phasecont.internal.rows2branch(phasecont.Model.empty, 1, ...
-                [1; 2], n, pts, zeros(8, 0), st, "DDELC", [2 1]);
+                [1; 2], n, pts, zeros(8, 0), st, "DDELC", [2 1 0]);
             testCase.verifySize(br.Eigenvalues, [2 0]);
             testCase.verifyEqual(br.Alpha, [1.0; 1.1]);
             testCase.verifyEqual(br.Period, [6.28; 6.28]);
@@ -773,7 +773,7 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
                 "specials", []);
             rows = zeros(6 + 5, 0);
             br = phasecont.internal.rows2branch(phasecont.Model.empty, 1, ...
-                [1; 2], n, rows, rows, st, "DDELC", [2 1]);
+                [1; 2], n, rows, rows, st, "DDELC", [2 1 0]);
             testCase.verifySize(br.Alpha, [0 1]);
             testCase.verifySize(br.U, [0 6]);
             testCase.verifySize(br.Period, [0 1]);
@@ -802,7 +802,7 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
             st = struct("points", 4, "stop", "Bounds", "warnings", {{}}, ...
                 "specials", info);
             br = phasecont.internal.rows2branch(phasecont.Model.empty, 2, ...
-                [10; 20; 30], n, pts, specials, st, "DDELC", [3 2]);
+                [10; 20; 30], n, pts, specials, st, "DDELC", [3 2 2]);
             testCase.verifyEqual(br.NTST, 3);
             testCase.verifyEqual(br.NCOL, 2);
             testCase.verifySize(br.U, [4 7]);
@@ -834,7 +834,7 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
                 "specials", []);
             rows = zeros(6 + 5 + 4, 0);
             br = phasecont.internal.rows2branch(phasecont.Model.empty, 1, ...
-                [1; 2], n, rows, rows, st, "DDELC", [2 1]);
+                [1; 2], n, rows, rows, st, "DDELC", [2 1 2]);
             testCase.verifySize(br.Alpha, [0 1]);
             testCase.verifySize(br.Eigenvalues, [0 2]);
         end
@@ -847,15 +847,48 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
             rows = zeros(12, 1);
             testCase.verifyError(@() phasecont.internal.rows2branch( ...
                 phasecont.Model.empty, 1, [1; 2], n, rows, rows, st, ...
-                "DDELC", [2 1]), "phasecont:model:badRows");
+                "DDELC", [2 1 0]), "phasecont:model:badRows");
             rows = zeros(10, 1);
             testCase.verifyError(@() phasecont.internal.rows2branch( ...
                 phasecont.Model.empty, 1, [1; 2], n, rows, rows, st, ...
-                "DDELC", [2 1]), "phasecont:model:badRows");
+                "DDELC", [2 1 0]), "phasecont:model:badRows");
             % Points and specials with different widths.
             testCase.verifyError(@() phasecont.internal.rows2branch( ...
                 phasecont.Model.empty, 1, [1; 2], n, zeros(11, 1), ...
-                zeros(13, 1), st, "DDELC", [2 1]), "phasecont:model:badRows");
+                zeros(13, 1), st, "DDELC", [2 1 0]), "phasecont:model:badRows");
+        end
+
+        function delayCycleRowsMustMatchTheGivenMultiplierCount(testCase)
+            % GRID(3) is c. Rows two values wider than 11 + 2c are refused
+            % instead of being read as one more multiplier, and so are rows
+            % whose width fits another c.
+            n = 2;
+            st = struct("points", 1, "stop", "Bounds");
+            wide = zeros(13, 1);
+            testCase.verifyError(@() phasecont.internal.rows2branch( ...
+                phasecont.Model.empty, 1, [1; 2], n, wide, wide, st, ...
+                "DDELC", [2 1 0]), "phasecont:model:badRows");
+            testCase.verifyError(@() phasecont.internal.rows2branch( ...
+                phasecont.Model.empty, 1, [1; 2], n, zeros(11, 1), ...
+                zeros(11, 1), st, "DDELC", [2 1 1]), "phasecont:model:badRows");
+            br = phasecont.internal.rows2branch(phasecont.Model.empty, 1, ...
+                [1; 2], n, wide, zeros(13, 0), struct("points", 1, ...
+                "stop", "Bounds", "warnings", {{}}, "specials", []), ...
+                "DDELC", [2 1 1]);
+            testCase.verifySize(br.Eigenvalues, [1 1]);
+        end
+
+        function delayCycleGridNeedsThreeIntegers(testCase)
+            n = 1;
+            rows = zeros(8, 1);
+            st = struct("points", 1, "stop", "Bounds");
+            bad = {[2 1], [2 1 0 0], [2 1 -1], [2 1 0.5], [0 1 0], [2 0 0], ...
+                [2 1 NaN], "abc"};
+            for k = 1:numel(bad)
+                testCase.verifyError(@() phasecont.internal.rows2branch( ...
+                    phasecont.Model.empty, 1, [1; 2], n, rows, rows, st, ...
+                    "DDELC", bad{k}), "phasecont:model:badOption");
+            end
         end
 
         function delayCycleRowsNeedOneFreeParameterAndAGrid(testCase)
@@ -864,7 +897,7 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
             st = struct("points", 1, "stop", "Bounds");
             testCase.verifyError(@() phasecont.internal.rows2branch( ...
                 phasecont.Model.empty, [1 2], [1; 2], n, rows, rows, st, ...
-                "DDELC", [2 1]), "phasecont:model:badOption");
+                "DDELC", [2 1 0]), "phasecont:model:badOption");
             testCase.verifyError(@() phasecont.internal.rows2branch( ...
                 phasecont.Model.empty, 1, [1; 2], n, rows, rows, st, ...
                 "DDELC"), "phasecont:model:badOption");

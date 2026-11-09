@@ -363,6 +363,12 @@ end
 if isDelayCycle
     [u0, p, ~] = startValues(m, start, options.Params);
     omega = delayHopfOmega(start, omega, "LC");
+    % The third grid value is the number of Floquet multipliers per row, so
+    % rows2branch checks the row width against it and does not infer it.
+    grid(3) = 0;
+    if ~isempty(floquet)
+        grid(3) = floquet.Count;
+    end
     from = "";
     mesh = [];
 elseif isCycle
