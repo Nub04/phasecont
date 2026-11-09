@@ -34,7 +34,8 @@ impl Handle for RunHandle {
 /// curve is `[a2, x(n), a1, kappa, l1, hh]`, with NaN where `l1` or `hh` is off or undefined.
 /// A row of a delay cycle branch on N intervals of m points is `[alpha, u(n (N m + 1)), T, h,
 /// newton_iters, mu_re(c), mu_im(c), trivial_error]`, with `c` the multipliers kept and
-/// NaN where the engine has no value (no `floquet`, or fewer than `c` multipliers).
+/// NaN where the engine has no value (no `floquet`, or fewer than `c` multipliers). A run with
+/// mesh adaptation appends the mesh, N + 1 values, after `trivial_error` (SPEC 8s, slice 5).
 pub(crate) fn stride(kind: Kind, n: usize) -> usize {
     match kind {
         Kind::Ep => 3 * n + 6,
@@ -72,9 +73,16 @@ pub(crate) fn pack_row(kind: Kind, p: &Point, n: usize, out: &mut [f64]) {
         out[n + 4] = p.codim2.get(1).copied().unwrap_or(nan);
         return;
     }
-    if let Kind::DdeLc { ntst, ncol, count } = kind {
+    if let Kind::DdeLc {
+        ntst,
+        ncol,
+        count,
+        adapt,
+    } = kind
+    {
         // `u` is the profile followed by T, `eigenvalues` the leading multipliers and `tests[0]`
-        // the trivial multiplier error (SPEC 8s, slice 4). `stride` has checked the sizes.
+        // the trivial multiplier error (SPEC 8s, slice 4). With `adapt` the mesh follows, NaN
+        // padded when it does not have N + 1 values (slice 5). `stride` has checked the sizes.
         let m = n * (ntst * ncol + 1) + 1;
         for i in 0..m {
             out[1 + i] = p.u.get(i).copied().unwrap_or(nan);
@@ -87,6 +95,18 @@ pub(crate) fn pack_row(kind: Kind, p: &Point, n: usize, out: &mut [f64]) {
             out[m + 3 + count + i] = im;
         }
         out[m + 3 + 2 * count] = p.tests.first().copied().unwrap_or(nan);
+        if adapt {
+            let mesh = &mut out[m + 4 + 2 * count..];
+            debug_assert_eq!(mesh.len(), ntst + 1);
+            let kept = if p.mesh.len() == ntst + 1 {
+                &p.mesh[..]
+            } else {
+                &[]
+            };
+            for (i, slot) in mesh.iter_mut().enumerate() {
+                *slot = kept.get(i).copied().unwrap_or(nan);
+            }
+        }
         return;
     }
     if matches!(kind, Kind::Ivp | Kind::DdeEp) {
@@ -531,6 +551,7 @@ mod tests {
             ntst: 2,
             ncol: 2,
             count: 2,
+            adapt: false,
         };
         // [alpha, profile(5), T, h, iters, mu_re(2), mu_im(2), trivial_error]
         assert_eq!(stride(kind, 1), 1 + 5 + 1 + 2 + 4 + 1);
@@ -554,6 +575,7 @@ mod tests {
             ntst: 2,
             ncol: 2,
             count: 0,
+            adapt: false,
         };
         assert_eq!(stride(kind, 1), 1 + 5 + 1 + 2 + 1);
         let mut row = vec![0.0; stride(kind, 1)];
@@ -564,7 +586,67 @@ mod tests {
         assert_eq!(&row[7..9], [0.5, 4.0]);
         assert!(row[9].is_nan());
         assert_eq!(kind.name(), "LC");
-        assert_eq!(kind.labels(), ["LPC", "PD", "NS"]);
+        assert_eq!(kind.labels(), ["LPC", "PD", "NS", "BPC"]);
         assert_eq!(kind.mesh_size(), None);
+    }
+
+    #[test]
+    fn a_delay_cycle_row_with_adaptation_ends_with_the_mesh() {
+        // n = 1, ntst 2, ncol 2, two multipliers: the row of slice 4 plus N + 1 mesh values.
+        let profile = [0.0, 0.1, 0.2, 0.3, 0.4];
+        let mut p = point();
+        p.u = profile.iter().copied().chain([6.25]).collect();
+        p.alpha = 1.5;
+        p.h = 0.5;
+        p.newton_iters = 4;
+        p.eigenvalues = vec![(1.5, 0.0), (0.25, -0.5)];
+        p.tests = [1e-12, f64::NAN, f64::NAN];
+        p.mesh = vec![0.0, 0.375, 1.0];
+        let plain = Kind::DdeLc {
+            ntst: 2,
+            ncol: 2,
+            count: 2,
+            adapt: false,
+        };
+        let kind = Kind::DdeLc {
+            ntst: 2,
+            ncol: 2,
+            count: 2,
+            adapt: true,
+        };
+        assert_eq!(stride(kind, 1), stride(plain, 1) + 3);
+        let mut slice4 = vec![0.0; stride(plain, 1)];
+        pack_row(plain, &p, 1, &mut slice4);
+        let mut row = vec![0.0; stride(kind, 1)];
+        pack_row(kind, &p, 1, &mut row);
+        // The part before the mesh is the row of a run without adaptation, bit for bit.
+        let head = stride(plain, 1);
+        assert!(
+            row[..head]
+                .iter()
+                .zip(&slice4)
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+        );
+        assert_eq!(&row[head..], [0.0, 0.375, 1.0]);
+        // A mesh of the wrong length is NaN, and so is a missing one.
+        p.mesh = vec![0.0, 1.0];
+        pack_row(kind, &p, 1, &mut row);
+        assert!(row[head..].iter().all(|v| v.is_nan()));
+        p.mesh.clear();
+        pack_row(kind, &p, 1, &mut row);
+        assert!(row[head..].iter().all(|v| v.is_nan()));
+        // Without multipliers the mesh follows the trivial error directly.
+        let kind = Kind::DdeLc {
+            ntst: 2,
+            ncol: 2,
+            count: 0,
+            adapt: true,
+        };
+        p.mesh = vec![0.0, 0.5, 1.0];
+        let mut row = vec![0.0; stride(kind, 1)];
+        pack_row(kind, &p, 1, &mut row);
+        assert_eq!(stride(kind, 1), 1 + 5 + 1 + 2 + 1 + 3);
+        assert_eq!(row[9], 1e-12);
+        assert_eq!(&row[10..], [0.0, 0.5, 1.0]);
     }
 }

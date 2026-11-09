@@ -11,7 +11,7 @@ use pc_engine::{
     LP_CURVE_LABELS, LPC_CURVE_LABELS, NCOL_RANGE, NS_CURVE_LABELS, Options, PD_CURVE_LABELS,
     PdStart, RootOptions, RunKind, RunSpec,
 };
-use pc_engine::{DdeFloquetOptions, DdeHopfExtras};
+use pc_engine::{DdeFloquetOptions, DdeHopfExtras, DdeMeshAdapt};
 use pc_ir::IrModel;
 use pc_ode::{Model, ModelInfo};
 use serde_json::{Map, Value};
@@ -28,13 +28,15 @@ pub enum Kind {
     DdeEp,
     /// The Hopf curve of a delay equilibrium (SPEC 8s, slice 2). It reads as `"H"` in the JSON.
     DdeHopf,
-    /// The branch of periodic orbits of a delay equation from a Hopf point (SPEC 8s, slice 4).
-    /// It reads as `"LC"` in the JSON. `count` is the number of multipliers kept per point, 0
-    /// without `floquet`.
+    /// The branch of periodic orbits of a delay equation from a Hopf point (SPEC 8s, slices 4
+    /// and 5). It reads as `"LC"` in the JSON. `count` is the number of multipliers kept per
+    /// point, 0 without `floquet`. `adapt` is true when `options.mesh_adapt` is above 0, and
+    /// each row then ends with the mesh.
     DdeLc {
         ntst: usize,
         ncol: usize,
         count: usize,
+        adapt: bool,
     },
     Lp,
     Hopf,
@@ -64,6 +66,9 @@ pub enum Kind {
 /// The two test columns of a delay Hopf run: the first Lyapunov coefficient and the Hopf-Hopf
 /// test (SPEC 8s, slice 2). They are also the labels that the run can add to `BT` and `ZH`.
 const DDE_HOPF_LABELS: [&str; 2] = ["GH", "HH"];
+/// The labels of a branch of delay cycles (SPEC 8s, slice 5): the three of an ODE cycle and the
+/// branch point `BPC`, which appears only when the run sets `bpc`.
+const DDE_CYCLE_LABELS: [&str; 4] = ["LPC", "PD", "NS", "BPC"];
 
 impl Kind {
     /// The `type` string of the problem JSON.
@@ -90,7 +95,8 @@ impl Kind {
             Kind::Lp => &LP_CURVE_LABELS,
             Kind::Hopf => &HOPF_CURVE_LABELS,
             Kind::DdeHopf => &DDE_HOPF_LABELS,
-            Kind::Lc { .. } | Kind::DdeLc { .. } => &CYCLE_LABELS,
+            Kind::Lc { .. } => &CYCLE_LABELS,
+            Kind::DdeLc { .. } => &DDE_CYCLE_LABELS,
             Kind::Lpc { .. } => &LPC_CURVE_LABELS,
             Kind::Pd { .. } => &PD_CURVE_LABELS,
             Kind::Ns { .. } => &NS_CURVE_LABELS,
@@ -150,17 +156,26 @@ const CYCLE_KEYS: [&str; 3] = ["ntst", "ncol", "mesh"];
 /// Values in one row of a run of cycles or a HOM curve of `kind` with `n` states, or
 /// `None` when that overflows or `kind` has no mesh: `n (N m + 1) + N + 2 n` plus 8 for
 /// LC, LPC and PD, 13 for NS and `n + 18` for HOM. `pc-ffi`'s row layout documents the
-/// parts. A delay LC row has no mesh and no eigenvalues of a Jacobian: it is
-/// `n (N m + 1) + 5 + 2 c` with `c` multipliers (SPEC 8s, slice 4).
+/// parts. A delay LC row has no eigenvalues of a Jacobian and no mesh unless the run adapts
+/// it: it is `n (N m + 1) + 5 + 2 c` with `c` multipliers, plus `N + 1` for the mesh of an
+/// adapting run (SPEC 8s, slices 4 and 5).
 pub fn cycle_stride(kind: Kind, n: usize) -> Option<usize> {
-    if let Kind::DdeLc { ntst, ncol, count } = kind {
-        // alpha, the period, h, iters and trivial_error, then the real and imaginary parts
+    if let Kind::DdeLc {
+        ntst,
+        ncol,
+        count,
+        adapt,
+    } = kind
+    {
+        // alpha, the period, h, iters and trivial_error, then the real and imaginary parts,
+        // then the mesh of N + 1 points on an adapting run
         return ntst
             .checked_mul(ncol)?
             .checked_add(1)?
             .checked_mul(n)?
             .checked_add(5)?
-            .checked_add(count.checked_mul(2)?);
+            .checked_add(count.checked_mul(2)?)?
+            .checked_add(if adapt { ntst.checked_add(1)? } else { 0 });
     }
     let (ntst, ncol) = kind.mesh_size()?;
     // alpha, the tail of u, the last mesh point, the tests, h and iters
@@ -210,6 +225,13 @@ pub struct Problem {
     /// The Floquet options of a delay cycle run, `Some` when the key `floquet` is there. The
     /// count is also in `Kind::DdeLc`.
     pub floquet: Option<DdeFloquetOptions>,
+    /// Whether a delay cycle run computes the BPC test and labels `BPC` (SPEC 8s, slice 5).
+    /// Off when the key is missing.
+    pub bpc: bool,
+    /// The direction of the branch that a delay cycle switch follows, `+1` along the tangent
+    /// and `-1` against it. `Some` exactly when `switch` is there on a delay cycle run, and it
+    /// has no default.
+    pub switch_direction: Option<i32>,
 }
 
 impl Problem {
@@ -280,6 +302,11 @@ impl Problem {
                     ntst,
                     ncol,
                     floquet: self.floquet.clone(),
+                    adapt: (self.opts.mesh_adapt > 0).then_some(DdeMeshAdapt {
+                        every: self.opts.mesh_adapt,
+                    }),
+                    bpc: self.bpc,
+                    switch_direction: self.switch_direction,
                 }
             }
             (Kind::DdeHopf, Some(free), _) if let Some(omega) = self.omega => RunKind::DdeHopf {
@@ -377,10 +404,14 @@ impl Problem {
                 spec.switch_at = self.switch;
                 spec
             }
-            RunKind::Ivp { .. }
-            | RunKind::DdeEq(_)
-            | RunKind::DdeHopf { .. }
-            | RunKind::DdeCycle { .. } => {
+            RunKind::DdeCycle { .. } => {
+                // The special point to switch at stays in `switch_at`, as on an EP run.
+                let mut spec = RunSpec::new(model, info, evaluator, self.setup, self.opts);
+                spec.kind = kind;
+                spec.switch_at = self.switch;
+                spec
+            }
+            RunKind::Ivp { .. } | RunKind::DdeEq(_) | RunKind::DdeHopf { .. } => {
                 let mut spec = RunSpec::new(model, info, evaluator, self.setup, self.opts);
                 spec.kind = kind;
                 spec
@@ -493,6 +524,8 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
             "coefficients",
             "eps",
             "floquet",
+            "bpc",
+            "switch_direction",
         ],
         "",
     )?;
@@ -517,6 +550,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
                 ntst,
                 ncol,
                 count: 0,
+                adapt: false,
             })?
         }
         Some(Value::String(s)) if s == "LC" => {
@@ -555,6 +589,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
                 ntst,
                 ncol,
                 count: f.count,
+                adapt: false,
             };
             if cycle_stride(kind, ir.n()).is_none() {
                 return Err("floquet.count: too large".into());
@@ -663,9 +698,36 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         Some(v) => u0_values(v)?,
     };
 
-    let opts = match top.get("options") {
+    let mut opts = match top.get("options") {
         None => Options::default(),
         Some(o) => parse_options(o)?,
+    };
+    // A delay cycle run adapts its mesh only when `options.mesh_adapt` says so. The engine's
+    // default of 3 belongs to the other cycle problems and would change slice 4 results.
+    if matches!(kind, Kind::DdeLc { .. })
+        && !top
+            .get("options")
+            .is_some_and(|o| o.get("mesh_adapt").is_some())
+    {
+        opts.mesh_adapt = 0;
+    }
+    // An adapting delay cycle run keeps its mesh in every row, so the kind carries the flag.
+    let kind = match kind {
+        Kind::DdeLc {
+            ntst, ncol, count, ..
+        } => {
+            let kind = Kind::DdeLc {
+                ntst,
+                ncol,
+                count,
+                adapt: opts.mesh_adapt > 0,
+            };
+            if cycle_stride(kind, ir.n()).is_none() {
+                return Err("ntst: ntst times ncol is too large".into());
+            }
+            kind
+        }
+        _ => kind,
     };
     let has_option = |key: &str| top.get("options").is_some_and(|o| o.get(key).is_some());
     if kind == Kind::DdeEp
@@ -706,13 +768,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
                     .into(),
             );
         }
-        Kind::DdeLc { .. } if has_option("mesh_adapt") => {
-            return Err(
-                "options.mesh_adapt: a delay cycle run keeps its uniform mesh and takes no \
-                 mesh_adapt"
-                    .into(),
-            );
-        }
+        Kind::DdeLc { .. } => {}
         _ if has_option("mesh_adapt") => {
             return Err(
                 "options.mesh_adapt: only an LC, LPC, PD, NS or HOM run adapts its mesh".into(),
@@ -732,6 +788,8 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         Some(_) => return Err("switch: expected a string".into()),
     };
 
+    let (bpc, switch_direction) = parse_switch_keys(top, kind, switch.as_deref(), &opts)?;
+
     let start_is_special = match top.get("start_is_special") {
         None => false,
         Some(Value::Bool(b)) => *b,
@@ -748,7 +806,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         return Err("inclination_flips: only a HOM run takes this key".into());
     }
 
-    if !matches!(kind, Kind::Ep | Kind::DdeEp) {
+    if !matches!(kind, Kind::Ep | Kind::DdeEp | Kind::DdeLc { .. }) {
         if switch.is_some() {
             return Err("switch: only an EP run can switch branches".into());
         }
@@ -758,7 +816,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
     }
 
     if matches!(kind, Kind::DdeEp | Kind::DdeHopf | Kind::DdeLc { .. }) {
-        if switch.is_some() {
+        if switch.is_some() && !matches!(kind, Kind::DdeLc { .. }) {
             return Err("switch: a delay-equation run cannot switch branches".into());
         }
         if top.contains_key("start_is_special") {
@@ -783,6 +841,8 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         coefficients,
         eps,
         floquet,
+        bpc,
+        switch_direction,
     };
     if mode == Mode::Cli {
         problem.check_u0_len(ir.n(), problem.setup.u0.len())?;
@@ -913,6 +973,58 @@ fn parse_cycle_keys(
     Ok((Some(eps), floquet))
 }
 
+/// The `bpc` and `switch_direction` keys of a delay cycle run (SPEC 8s, slice 5). `bpc` is false
+/// when the key is left out and must be a boolean otherwise. `switch_direction` is `1` or `-1`,
+/// required with `switch` and refused without it, and has no default, because the two
+/// directions give two different branches. A switch needs `bpc` (the label it names comes from
+/// that test) and takes no mesh adaptation (the engine rejects an adapted mesh). Any other kind
+/// refuses both keys.
+fn parse_switch_keys(
+    top: &Map<String, Value>,
+    kind: Kind,
+    switch: Option<&str>,
+    opts: &Options,
+) -> Result<(bool, Option<i32>), String> {
+    if !matches!(kind, Kind::DdeLc { .. }) {
+        for key in ["bpc", "switch_direction"] {
+            if top.contains_key(key) {
+                return Err(format!(
+                    "{key}: only a delay-equation cycle run takes this key"
+                ));
+            }
+        }
+        return Ok((false, None));
+    }
+    let bpc = match top.get("bpc") {
+        None => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err("bpc: expected true or false".into()),
+    };
+    let direction = match top.get("switch_direction") {
+        None => None,
+        Some(v) => match v.as_i64() {
+            Some(1) => Some(1),
+            Some(-1) => Some(-1),
+            _ => return Err("switch_direction: expected 1 or -1".into()),
+        },
+    };
+    match (switch, direction) {
+        (None, Some(_)) => Err("switch_direction: only a run with switch takes this key".into()),
+        (None, None) => Ok((bpc, None)),
+        (Some(_), None) => Err(
+            "switch_direction: missing; a switch needs 1 (along the tangent) or -1 (against it)"
+                .into(),
+        ),
+        (Some(_), Some(_)) if !bpc => {
+            Err("switch: a delay cycle switch needs \"bpc\": true".into())
+        }
+        (Some(_), Some(_)) if opts.mesh_adapt > 0 => {
+            Err("switch: a delay cycle switch takes no options.mesh_adapt above 0".into())
+        }
+        (Some(_), Some(d)) => Ok((bpc, Some(d))),
+    }
+}
+
 /// The model's parameter values with the ones that `params` sets.
 fn parse_params(top: &Map<String, Value>, ir: &IrModel) -> Result<Vec<f64>, String> {
     // A delay model lists its user parameters only; the hidden slots are set by the engine.
@@ -1015,6 +1127,8 @@ fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Probl
         coefficients: false,
         eps: None,
         floquet: None,
+        bpc: false,
+        switch_direction: None,
     };
     if mode == Mode::Cli {
         problem.check_u0_len(ir.n(), problem.setup.u0.len())?;
@@ -2121,14 +2235,15 @@ mod tests {
             Kind::DdeLc {
                 ntst: 8,
                 ncol: 3,
-                count: 2
+                count: 2,
+                adapt: false
             }
         );
         assert_eq!(p.omega, Some(1.5));
         assert_eq!(p.eps, Some(0.05));
         assert_eq!(p.floquet, Some(DdeFloquetOptions { nhist: 6, count: 2 }));
         assert_eq!(p.kind.name(), "LC");
-        assert_eq!(p.kind.labels(), ["LPC", "PD", "NS"]);
+        assert_eq!(p.kind.labels(), ["LPC", "PD", "NS", "BPC"]);
         let RunKind::DdeCycle {
             free,
             omega,
@@ -2136,12 +2251,16 @@ mod tests {
             ntst,
             ncol,
             floquet,
+            adapt,
+            bpc,
+            switch_direction,
         } = p.run_kind()
         else {
             panic!("expected a delay cycle run");
         };
         assert_eq!((free, omega, eps, ntst, ncol), (1, 1.5, 0.05, 8, 3));
         assert_eq!(floquet, Some(DdeFloquetOptions { nhist: 6, count: 2 }));
+        assert_eq!((adapt, bpc, switch_direction), (None, false, None));
         // Without `floquet` the count is 0.
         let v = json!({
             "type": "LC", "free": "tau", "ntst": 8, "ncol": 3, "omega": 1.5, "eps": 0.05,
@@ -2152,10 +2271,164 @@ mod tests {
             Kind::DdeLc {
                 ntst: 8,
                 ncol: 3,
-                count: 0
+                count: 0,
+                adapt: false
             }
         );
         assert_eq!(p.floquet, None);
+    }
+
+    fn delay_lc() -> Value {
+        json!({
+            "type": "LC", "free": "tau", "ntst": 8, "ncol": 3,
+            "omega": 1.5, "eps": 0.05,
+        })
+    }
+
+    #[test]
+    fn a_delay_cycle_run_reads_bpc_and_mesh_adapt() {
+        let ir = delay_model();
+        let mut v = delay_lc();
+        v["bpc"] = json!(true);
+        v["options"] = json!({"mesh_adapt": 3});
+        let p = parse_problem(&v, &ir, Mode::Abi).unwrap();
+        assert!(p.bpc);
+        assert_eq!(
+            p.kind,
+            Kind::DdeLc {
+                ntst: 8,
+                ncol: 3,
+                count: 0,
+                adapt: true
+            }
+        );
+        let RunKind::DdeCycle {
+            adapt,
+            bpc,
+            switch_direction,
+            ..
+        } = p.run_kind()
+        else {
+            panic!("expected a delay cycle run");
+        };
+        assert_eq!(adapt, Some(DdeMeshAdapt { every: 3 }));
+        assert!(bpc);
+        assert_eq!(switch_direction, None);
+        // `mesh_adapt` 0 is off and `bpc` false is the same as no key.
+        let mut v = delay_lc();
+        v["bpc"] = json!(false);
+        v["options"] = json!({"mesh_adapt": 0});
+        let p = parse_problem(&v, &ir, Mode::Abi).unwrap();
+        assert!(!p.bpc);
+        assert_eq!(p.kind.name(), "LC");
+        assert!(matches!(p.kind, Kind::DdeLc { adapt: false, .. }));
+        // Bad values name the key.
+        for (key, value) in [
+            ("bpc", json!(1)),
+            ("bpc", json!("yes")),
+            ("bpc", Value::Null),
+        ] {
+            let mut v = delay_lc();
+            v[key] = value;
+            let msg = parse_problem(&v, &ir, Mode::Abi).unwrap_err();
+            assert!(msg.starts_with(key), "{msg}");
+        }
+        let mut v = delay_lc();
+        v["options"] = json!({"mesh_adapt": -1});
+        assert!(parse_problem(&v, &ir, Mode::Abi).is_err());
+    }
+
+    #[test]
+    fn a_delay_cycle_run_reads_a_switch_at_a_bpc() {
+        let ir = delay_model();
+        let mut v = delay_lc();
+        v["bpc"] = json!(true);
+        v["switch"] = json!("BPC1");
+        v["switch_direction"] = json!(-1);
+        let p = parse_problem(&v, &ir, Mode::Abi).unwrap();
+        assert_eq!(p.switch.as_deref(), Some("BPC1"));
+        let RunKind::DdeCycle {
+            bpc,
+            switch_direction,
+            ..
+        } = p.run_kind()
+        else {
+            panic!("expected a delay cycle run");
+        };
+        assert!(bpc);
+        assert_eq!(switch_direction, Some(-1));
+        // A direction of +1 and a lower-case label are fine, and `floquet` goes with a switch.
+        let mut v = delay_lc();
+        v["bpc"] = json!(true);
+        v["switch"] = json!("bpc2");
+        v["switch_direction"] = json!(1);
+        v["floquet"] = json!({"nhist": 6, "count": 2});
+        assert!(parse_problem(&v, &ir, Mode::Abi).is_ok());
+    }
+
+    #[test]
+    fn a_delay_cycle_switch_names_the_key_it_refuses() {
+        let ir = delay_model();
+        let run = |extra: Value| {
+            let mut v = delay_lc();
+            for (k, x) in extra.as_object().unwrap() {
+                v[k] = x.clone();
+            }
+            parse_problem(&v, &ir, Mode::Abi).unwrap_err()
+        };
+        let msg = run(json!({"bpc": true, "switch": "BPC1"}));
+        assert!(msg.starts_with("switch_direction"), "{msg}");
+        let msg = run(json!({"bpc": true, "switch": "BPC1", "switch_direction": 2}));
+        assert!(msg.starts_with("switch_direction"), "{msg}");
+        let msg = run(json!({"bpc": true, "switch": "BPC1", "switch_direction": "up"}));
+        assert!(msg.starts_with("switch_direction"), "{msg}");
+        let msg = run(json!({"bpc": true, "switch_direction": 1}));
+        assert!(msg.starts_with("switch_direction"), "{msg}");
+        let msg = run(json!({"switch": "BPC1", "switch_direction": 1}));
+        assert!(msg.contains("bpc"), "{msg}");
+        let msg = run(json!({
+            "bpc": true, "switch": "BPC1", "switch_direction": 1,
+            "options": {"mesh_adapt": 2},
+        }));
+        assert!(msg.contains("mesh_adapt"), "{msg}");
+        for name in ["", "BPC", "BPC0", "1", "BPC1x"] {
+            let msg = run(json!({"bpc": true, "switch": name, "switch_direction": 1}));
+            assert!(msg.starts_with("switch"), "{name}: {msg}");
+        }
+        // A switch that is not a string is refused, and so are `detect` and a special start.
+        let msg = run(json!({"bpc": true, "switch": true, "switch_direction": 1}));
+        assert!(msg.contains("switch"), "{msg}");
+        let msg = run(json!({"bpc": true, "options": {"detect": 1}}));
+        assert!(msg.contains("detect"), "{msg}");
+    }
+
+    #[test]
+    fn bpc_and_switch_direction_are_errors_on_every_other_kind() {
+        let ode = model2();
+        let delay = delay_model();
+        let cases: [(&IrModel, Value); 4] = [
+            (
+                &ode,
+                json!({"type": "LC", "free": "a", "ntst": 8, "ncol": 3, "start": "hopf"}),
+            ),
+            (&ode, json!({"type": "EP", "free": "a"})),
+            (
+                &delay,
+                json!({"type": "EP", "free": "tau", "roots": {"n": 4, "re_min": -1.0}}),
+            ),
+            (
+                &delay,
+                json!({"type": "H", "free": ["tau", "r"], "omega": 1.5, "roots": {"n": 4, "re_min": -1.0}}),
+            ),
+        ];
+        for (ir, base) in cases {
+            for (key, value) in [("bpc", json!(true)), ("switch_direction", json!(1))] {
+                let mut v = base.clone();
+                v[key] = value;
+                let msg = parse_problem(&v, ir, Mode::Abi).unwrap_err();
+                assert!(msg.starts_with(key), "{base}: {key}: {msg}");
+            }
+        }
     }
 
     #[test]
@@ -2187,6 +2460,7 @@ mod tests {
             ("lyapunov", json!(true), "lyapunov"),
             ("coefficients", json!(true), "coefficients"),
             ("switch", json!(true), "switch"),
+            ("switch", json!("BPC1"), "switch_direction"),
             ("tspan", json!([0.0, 1.0]), "tspan"),
         ];
         for (key, value, want) in cases {
@@ -2201,12 +2475,10 @@ mod tests {
             let msg = parse_problem(&v, &ir, Mode::Abi).unwrap_err();
             assert!(msg.starts_with(key), "{key}: {msg}");
         }
-        for key in ["detect", "mesh_adapt"] {
-            let mut v = ok();
-            v["options"] = json!({ key: 1 });
-            let msg = parse_problem(&v, &ir, Mode::Abi).unwrap_err();
-            assert!(msg.contains(key), "{key}: {msg}");
-        }
+        let mut v = ok();
+        v["options"] = json!({"detect": 1});
+        let msg = parse_problem(&v, &ir, Mode::Abi).unwrap_err();
+        assert!(msg.contains("detect"), "{msg}");
         let mut v = ok();
         v["free"] = json!(["tau", "r"]);
         assert!(parse_problem(&v, &ir, Mode::Abi).is_err());

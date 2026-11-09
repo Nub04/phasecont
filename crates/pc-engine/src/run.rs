@@ -19,11 +19,13 @@ use crate::cycle::{
 };
 use crate::dde::{
     DdeBranch, DdeCycleBranch, DdeCycleSetup, DdeCycleStart, DdeFloquetOptions, DdeHopfBranch,
-    DdeHopfCycle, HopfExtras, HopfSetup, RootOptions,
+    DdeHopfCycle, DdeMeshAdapt, HopfExtras, HopfSetup, RootOptions,
     check_cycle_floquet as dde_check_cycle_floquet,
+    continue_cycle_adapt as dde_continue_cycle_adapt, continue_cycle_bpc as dde_continue_cycle_bpc,
     continue_cycle_floquet as dde_continue_cycle_floquet,
+    continue_cycle_switch as dde_continue_cycle_switch,
     continue_equilibrium as dde_continue_equilibrium, continue_hopf_with as dde_continue_hopf_with,
-    hopf_cycle as dde_hopf_cycle,
+    hopf_cycle as dde_hopf_cycle, switch_cycle_bpc as dde_switch_cycle_bpc,
 };
 use crate::ep::{EpSetup, continue_ep};
 use crate::error::EngineError;
@@ -75,7 +77,9 @@ pub enum RunKind {
     /// frequency `omega` and the first-guess amplitude `eps`, on a uniform mesh of `ntst`
     /// intervals with `ncol` collocation points each, and the multipliers of `floquet` when it
     /// is set (SPEC 8s, slice 4). It runs once and the branch appears when it ends, like
-    /// `DdeEq`.
+    /// `DdeEq`. Slice 5 adds the mesh adaptation `adapt`, the `BPC` label `bpc` and the switch
+    /// at a `BPC` named by `RunSpec::switch_at`, followed in the direction `switch_direction`
+    /// (+1 along the tangent of the other branch, -1 against it).
     DdeCycle {
         free: usize,
         omega: f64,
@@ -83,6 +87,9 @@ pub enum RunKind {
         ntst: usize,
         ncol: usize,
         floquet: Option<DdeFloquetOptions>,
+        adapt: Option<DdeMeshAdapt>,
+        bpc: bool,
+        switch_direction: Option<i32>,
     },
     /// An initial value run over `tspan` from the state `setup.u0` with the parameters
     /// `setup.params`. The model may depend on t.
@@ -100,7 +107,8 @@ pub struct RunSpec {
     pub setup: EpSetup,
     pub opts: Options,
     /// Name of a special point of the first branch, for example `"BP1"`. When set, the
-    /// run switches there and follows the second branch. Only an `Ep` run can switch.
+    /// run switches there and follows the second branch. Only an `Ep` run and a delay cycle
+    /// run (at a `BPC`) can switch.
     pub switch_at: Option<String>,
     /// Test hook: wraps the evaluator in one that panics in `eval` after this many
     /// successful calls.
@@ -279,7 +287,7 @@ fn follow(
 }
 
 fn body(shared: &Shared, spec: RunSpec) -> RunState {
-    if spec.switch_at.is_some() && !matches!(spec.kind, RunKind::Ep) {
+    if spec.switch_at.is_some() && !matches!(spec.kind, RunKind::Ep | RunKind::DdeCycle { .. }) {
         return finish(
             shared,
             Err(EngineError::BadProblem(
@@ -294,17 +302,7 @@ fn body(shared: &Shared, spec: RunSpec) -> RunState {
             omega,
             extras,
         } => return body_dde_hopf(shared, spec, free, omega, extras),
-        RunKind::DdeCycle {
-            free,
-            omega,
-            eps,
-            ntst,
-            ncol,
-            ref floquet,
-        } => {
-            let floquet = floquet.clone();
-            return body_dde_cycle(shared, spec, free, omega, eps, ntst, ncol, floquet);
-        }
+        RunKind::DdeCycle { .. } => return body_dde_cycle(shared, spec),
         _ => {}
     }
     // Only an initial value run may depend on t.
@@ -382,22 +380,45 @@ fn body_dde(shared: &Shared, spec: RunSpec, roots: RootOptions) -> RunState {
     }
 }
 
-/// Follows the periodic orbits that leave a Hopf point of a delay equation (SPEC 8s, slice 4):
-/// the `floquet` check, the Hopf corrector, then the continuation, as `pc-cli dde-cycle branch`
-/// does. Like `body_dde_hopf` it stores the branch when the engine returns it. A flag set at the
-/// call keeps no points. A flag set during the continuation keeps the points the engine found,
-/// with stop `Cancelled`.
-#[allow(clippy::too_many_arguments)]
-fn body_dde_cycle(
-    shared: &Shared,
-    spec: RunSpec,
-    free: usize,
-    omega: f64,
-    eps: f64,
-    ntst: usize,
-    ncol: usize,
-    floquet: Option<DdeFloquetOptions>,
-) -> RunState {
+/// Follows the periodic orbits that leave a Hopf point of a delay equation (SPEC 8s, slices 4
+/// and 5): the `floquet` check, the Hopf corrector, then the continuation, as `pc-cli dde-cycle
+/// branch` does, with the `BPC` label and the mesh adaptation when the run asks for them. Like
+/// `body_dde_hopf` it stores the branch when the engine returns it. A flag set at the call keeps
+/// no points. A flag set during the continuation keeps the points the engine found, with stop
+/// `Cancelled`.
+///
+/// With `switch_at` the run is five steps (SPEC 8s, slice 5). It checks the keys, corrects the
+/// Hopf start and follows the first branch with `BPC` labels (it stores branch 0 at once), then
+/// finds the named `BPC`, switches there and follows the other branch into branch 1. A failure
+/// after step 2 keeps branch 0 and ends the run in `Failed`.
+fn body_dde_cycle(shared: &Shared, spec: RunSpec) -> RunState {
+    let RunKind::DdeCycle {
+        free,
+        omega,
+        eps,
+        ntst,
+        ncol,
+        ref floquet,
+        ref adapt,
+        bpc,
+        switch_direction,
+    } = spec.kind
+    else {
+        return finish(
+            shared,
+            Err(EngineError::BadProblem("not a delay cycle run".into())),
+        );
+    };
+    let (floquet, adapt) = (floquet.clone(), *adapt);
+    let switching = spec.switch_at.is_some();
+    if switching && adapt.is_some() {
+        return finish(
+            shared,
+            Err(EngineError::BadProblem(
+                "a switch cannot be combined with mesh adaptation".into(),
+            )),
+        );
+    }
     let mut model = match build_dde(&spec.model, &spec.info, spec.evaluator) {
         Ok(m) => m,
         Err(e) => return finish(shared, Err(e)),
@@ -424,23 +445,81 @@ fn body_dde_cycle(
             profile: c.profile,
             period: c.period,
         };
-        dde_continue_cycle_floquet(
+        let (m, s, o, fl, cancel) = (
             &mut model,
             &setup,
-            &start,
             &spec.opts,
             floquet.as_ref(),
             &shared.cancel,
-        )
+        );
+        match (adapt.as_ref(), bpc || switching) {
+            (Some(a), true) => dde_continue_cycle_bpc(m, s, &start, o, fl, Some(a), cancel),
+            (Some(a), false) => dde_continue_cycle_adapt(m, s, &start, o, fl, a, cancel),
+            (None, true) => dde_continue_cycle_bpc(m, s, &start, o, fl, None, cancel),
+            (None, false) => dde_continue_cycle_floquet(m, s, &start, o, fl, cancel),
+        }
     })();
-    match run {
+    let first = match run {
         Ok(b) => {
-            let branch = dde_cycle_branch(b);
+            let branch = dde_cycle_branch(&b);
             shared.lock().branches[0] = branch.clone();
-            finish(shared, Ok(&branch))
+            if !switching {
+                return finish(shared, Ok(&branch));
+            }
+            (b, branch)
         }
         Err(e) => {
             shared.lock().branches[0].stop = match &e {
+                EngineError::Cancelled => StopReason::Cancelled,
+                other => StopReason::Error(other.clone()),
+            };
+            return finish(shared, Err(e));
+        }
+    };
+    let (first_cycle, first_branch) = first;
+    if shared.cancel.load(Ordering::Relaxed) || first_branch.stop == StopReason::Cancelled {
+        return finish(shared, Ok(&first_branch));
+    }
+    let (Some(name), Some(direction)) = (spec.switch_at.as_deref(), switch_direction) else {
+        return finish(
+            shared,
+            Err(EngineError::BadProblem("a switch needs a direction".into())),
+        );
+    };
+    let Some(k) = special_index(&first_branch, name) else {
+        return finish(
+            shared,
+            Err(EngineError::BadProblem(format!(
+                "no special point {name} to switch at"
+            ))),
+        );
+    };
+    let sw = match dde_switch_cycle_bpc(&mut model, &setup, &first_cycle, k) {
+        Ok(sw) => sw,
+        Err(e) => return finish(shared, Err(e)),
+    };
+    if shared.cancel.load(Ordering::Relaxed) {
+        return finish(shared, Ok(&first_branch));
+    }
+    shared.lock().branches.push(placeholder());
+    let mut opts = spec.opts.clone();
+    opts.direction = f64::from(direction);
+    match dde_continue_cycle_switch(
+        &mut model,
+        &setup,
+        &sw,
+        &opts,
+        floquet.as_ref(),
+        bpc,
+        &shared.cancel,
+    ) {
+        Ok(b) => {
+            let branch = dde_cycle_branch(&b);
+            shared.lock().branches[1] = branch.clone();
+            finish(shared, Ok(&branch))
+        }
+        Err(e) => {
+            shared.lock().branches[1].stop = match &e {
                 EngineError::Cancelled => StopReason::Cancelled,
                 other => StopReason::Error(other.clone()),
             };
@@ -452,9 +531,10 @@ fn body_dde_cycle(
 /// A delay cycle branch as a [`Branch`]. `u` is the profile followed by the period, `alpha` the
 /// free parameter and `eigenvalues` the leading multipliers by modulus (empty without
 /// `floquet`). `tests[0]` is the trivial multiplier error, NaN without `floquet`, and there is
-/// no tangent, codim-2 value or mesh (the mesh is uniform). A special has the point of the
-/// engine and no extras.
-fn dde_cycle_branch(b: DdeCycleBranch) -> Branch {
+/// no tangent or codim-2 value. `mesh` is the adapted mesh of the point and is empty on a run
+/// without adaptation (the mesh is then uniform). A special has the point of the engine and no
+/// extras.
+fn dde_cycle_branch(b: &DdeCycleBranch) -> Branch {
     use crate::dde::DdeCyclePoint;
     let point = |p: &DdeCyclePoint| {
         let mut u = p.profile.clone();
@@ -468,7 +548,7 @@ fn dde_cycle_branch(b: DdeCycleBranch) -> Branch {
             codim2: Vec::new(),
             h: p.h,
             newton_iters: p.newton_iters,
-            mesh: Vec::new(),
+            mesh: p.mesh.clone(),
         }
     };
     Branch {
@@ -486,8 +566,8 @@ fn dde_cycle_branch(b: DdeCycleBranch) -> Branch {
                 },
             })
             .collect(),
-        stop: b.stop,
-        warnings: b.warnings,
+        stop: b.stop.clone(),
+        warnings: b.warnings.clone(),
     }
 }
 
@@ -1199,7 +1279,7 @@ mod tests {
             point,
         };
         let first = p(1.5, 6.0, &[(1.0, 0.0), (0.5, 0.25)], 1e-12);
-        let b = dde_cycle_branch(DdeCycleBranch {
+        let b = dde_cycle_branch(&DdeCycleBranch {
             points: vec![first.clone(), p(1.25, 6.5, &[], f64::NAN)],
             specials: vec![
                 s("LPC", 0, first.clone()),
@@ -1233,5 +1313,42 @@ mod tests {
         assert!(b.specials.iter().all(|s| !s.extras.refined));
         assert_eq!(b.stop, StopReason::Bounds);
         assert_eq!(b.warnings, ["w"]);
+    }
+
+    #[test]
+    fn a_delay_cycle_branch_keeps_the_bpc_specials_and_the_adapted_meshes() {
+        use crate::dde::{DdeCycleBranch, DdeCyclePoint, DdeCycleSpecial};
+        let p = |alpha: f64, mesh: &[f64]| DdeCyclePoint {
+            profile: vec![0.0, 0.5, 1.0],
+            period: 6.0,
+            alpha,
+            h: 0.25,
+            newton_iters: 2,
+            multipliers: Vec::new(),
+            trivial_error: f64::NAN,
+            mesh: mesh.to_vec(),
+        };
+        let bpc = p(1.45, &[0.0, 0.25, 1.0]);
+        let b = dde_cycle_branch(&DdeCycleBranch {
+            points: vec![p(1.4, &[0.0, 0.5, 1.0]), bpc.clone()],
+            specials: vec![DdeCycleSpecial {
+                label: "BPC".to_string(),
+                index: 1,
+                point: bpc,
+            }],
+            stop: StopReason::MaxSteps,
+            warnings: Vec::new(),
+        });
+        // Each point and each special keeps its own mesh.
+        assert_eq!(b.points[0].mesh, [0.0, 0.5, 1.0]);
+        assert_eq!(b.points[1].mesh, [0.0, 0.25, 1.0]);
+        assert_eq!(b.specials[0].label, "BPC");
+        assert_eq!(b.specials[0].index, 1);
+        assert_eq!(b.specials[0].point.mesh, [0.0, 0.25, 1.0]);
+        // `special_index` finds it by label and ordinal, which the switch relies on.
+        assert_eq!(special_index(&b, "BPC1"), Some(0));
+        assert_eq!(special_index(&b, "bpc1"), Some(0));
+        assert_eq!(special_index(&b, "BPC2"), None);
+        assert_eq!(special_index(&b, "LPC1"), None);
     }
 }

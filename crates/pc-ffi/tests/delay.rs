@@ -1247,7 +1247,10 @@ fn check_cycle_run(
     assert_eq!(st["kind"], "LC");
     assert_eq!(st["n"], n);
     assert_eq!(st["stride"], stride);
-    assert_eq!(st["codim2_labels"], serde_json::json!(["LPC", "PD", "NS"]));
+    assert_eq!(
+        st["codim2_labels"],
+        serde_json::json!(["LPC", "PD", "NS", "BPC"])
+    );
     let jb = &st["branches"].as_array().unwrap()[0];
     assert_eq!(jb["points"], want.points.len(), "{st}");
     assert_eq!(jb["stop"], "Bounds");
@@ -1549,6 +1552,37 @@ fn failed_run(m: &Id, json: &str, u0: &[f64], p: &[f64]) -> String {
     }
 }
 
+/// Polls a run until it fails, checks the code is `BadProblem`, and returns the error text with
+/// the rows `run_copy` still gives for branch 0. `run_poll` has no JSON for a failed run, so the
+/// kept branch is read through `run_copy` only.
+fn failed_keeping_branch_0(
+    m: &Id,
+    json: &str,
+    u0: &[f64],
+    p: &[f64],
+    stride: usize,
+) -> (String, usize, Vec<f64>) {
+    let (rc, run) = start_with(m, json, u0, p);
+    assert_eq!(rc, 0, "{json}: {}", last_error());
+    let run = Id(run);
+    let t0 = Instant::now();
+    loop {
+        let (rc, v) = poll_raw(run.0);
+        if rc != 0 {
+            assert_eq!(rc, BAD_PROBLEM, "{json}: {}", last_error());
+            assert!(v.is_none(), "{json}");
+            let text = last_error();
+            let (rc, rows, vals) = copy(run.0, 0, 0, 2000, stride);
+            assert_eq!(rc, 0, "{json}: {}", last_error());
+            return (text, rows, vals);
+        }
+        let v = v.unwrap();
+        assert_eq!(v["state"], "running", "{json}: the run did not fail: {v}");
+        assert!(t0.elapsed() < Duration::from_secs(60), "run did not finish");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 #[test]
 fn engine_side_errors_of_a_delay_cycle_run_fail_the_run() {
     let m = compiled(OSC);
@@ -1591,4 +1625,443 @@ fn a_delay_cycle_run_cancelled_right_after_the_start_ends_cancelled() {
         assert_eq!(rows, points, "{st}");
         assert!(vals.iter().all(|v| !v.is_infinite()), "{st}");
     }
+}
+
+// ---- BPC, mesh adaptation and switching of delay cycles (SPEC section 8s, slice 5) ----
+
+/// `OSC` with a decoupled second variable. `z' = (tau - m0) z - z^3` has a pitchfork at
+/// `tau = m0`, so the cycle branch has a branch point of cycles there and a switched branch
+/// with `z^2 = tau - m0`.
+const OSCZ: &str = "par mu=0.3, tau=1.3272372818926783, m0=1.45\n\
+    x'=-delay(x,tau)+mu*x*(1-x^2-delay(x,tau)^2)\n\
+    z'=(tau-m0)*z-z^3\n\
+    done\n";
+const OSCZ_PARAMS: [f64; 3] = [0.3, OSC_TAU_H, 1.45];
+const OSCZ_M0: f64 = 1.45;
+
+fn oscz_options(extra: &str) -> String {
+    format!(
+        r#""options":{{"max_newton":30,"hmax":0.05,"max_steps":400,"bounds":[1.0,{HALF_PI:?}],"direction":1{extra}}}"#
+    )
+}
+
+/// A delay "LC" problem on `OSCZ`; `keys` is a `,"key":value` fragment.
+fn oscz_problem(keys: &str, options_extra: &str) -> String {
+    cycle_problem("tau", OSC_OMEGA_H, keys, &oscz_options(options_extra))
+}
+
+fn oscz_opts(direction: f64) -> pc_engine::Options {
+    pc_engine::Options {
+        bounds: (1.0, HALF_PI),
+        direction,
+        hmax: 0.05,
+        max_steps: 400,
+        max_newton: 30,
+        mesh_adapt: 0,
+        ..pc_engine::Options::default()
+    }
+}
+
+/// The first pass of an `OSCZ` run, in the order of the run entries: the Hopf corrector, then the
+/// continuation of the kind the keys pick. Returns the model, the setup with the corrected
+/// parameter and the branch.
+fn oscz_first(
+    floquet: Option<&pc_engine::DdeFloquetOptions>,
+    adapt: Option<&pc_engine::DdeMeshAdapt>,
+    bpc: bool,
+) -> (
+    pc_engine::DdeModel,
+    pc_engine::DdeCycleSetup,
+    pc_engine::DdeCycleBranch,
+) {
+    use std::sync::atomic::AtomicBool;
+    let mut dm = engine_model(OSCZ);
+    let mut setup = pc_engine::DdeCycleSetup {
+        params: OSCZ_PARAMS.to_vec(),
+        free: 1,
+        ntst: NTST,
+        ncol: NCOL,
+    };
+    let cancel = AtomicBool::new(false);
+    let opts = oscz_opts(1.0);
+    let hopf = pc_engine::DdeHopfCycle {
+        x: vec![0.0, 0.0],
+        omega: OSC_OMEGA_H,
+        eps: 0.05,
+    };
+    let c = pc_engine::dde_hopf_cycle(&mut dm, &setup, &hopf, &opts, &cancel).expect("hopf cycle");
+    setup.params[1] = c.alpha;
+    let start = pc_engine::DdeCycleStart {
+        profile: c.profile,
+        period: c.period,
+    };
+    let b = match (adapt, bpc) {
+        (Some(a), true) => pc_engine::dde_continue_cycle_bpc(
+            &mut dm,
+            &setup,
+            &start,
+            &opts,
+            floquet,
+            Some(a),
+            &cancel,
+        ),
+        (Some(a), false) => {
+            pc_engine::dde_continue_cycle_adapt(&mut dm, &setup, &start, &opts, floquet, a, &cancel)
+        }
+        (None, true) => pc_engine::dde_continue_cycle_bpc(
+            &mut dm, &setup, &start, &opts, floquet, None, &cancel,
+        ),
+        (None, false) => {
+            pc_engine::dde_continue_cycle_floquet(&mut dm, &setup, &start, &opts, floquet, &cancel)
+        }
+    }
+    .expect("the engine run");
+    (dm, setup, b)
+}
+
+/// The row of a point as the run entries pack it: `cycle_row`, then the mesh when the run adapts.
+fn cycle_row_adapt(p: &pc_engine::DdeCyclePoint, count: usize, adapt: bool) -> Vec<f64> {
+    let mut r = cycle_row(p, count);
+    if adapt {
+        assert_eq!(p.mesh.len(), NTST + 1);
+        r.extend_from_slice(&p.mesh);
+    }
+    r
+}
+
+/// Checks branch `b` of a finished run against the engine branch, bit for bit: the stop reason,
+/// the warnings, every point and every special (label, index and row). Returns the rows.
+fn check_branch(
+    run: &Id,
+    st: &Value,
+    b: u32,
+    want: &pc_engine::DdeCycleBranch,
+    n: usize,
+    count: usize,
+    adapt: bool,
+) -> Vec<Vec<f64>> {
+    let stride = cycle_stride(n, count) + if adapt { NTST + 1 } else { 0 };
+    assert_eq!(st["stride"], stride, "{st}");
+    let jb = &st["branches"].as_array().unwrap()[b as usize];
+    assert_eq!(jb["points"], want.points.len(), "{jb}");
+    assert_eq!(jb["stop"], format!("{:?}", want.stop), "{jb}");
+    assert_eq!(jb["warnings"], serde_json::json!(want.warnings), "{jb}");
+    let (rc, nrows, vals) = copy(run.0, b, 0, want.points.len(), stride);
+    assert_eq!(rc, 0, "{}", last_error());
+    assert_eq!(nrows, want.points.len());
+    let mut rows = Vec::new();
+    for (r, pt) in want.points.iter().enumerate() {
+        let got = vals[r * stride..(r + 1) * stride].to_vec();
+        let exp = cycle_row_adapt(pt, count, adapt);
+        assert!(same_bits(&got, &exp), "branch {b} row {r}");
+        rows.push(got);
+    }
+    let js = jb["specials"].as_array().unwrap();
+    assert_eq!(js.len(), want.specials.len(), "{jb}");
+    for (k, sp) in want.specials.iter().enumerate() {
+        assert_eq!(js[k]["label"], sp.label, "{jb}");
+        assert_eq!(js[k]["index"], sp.index, "{jb}");
+        let (rc, nrows, v) = copy(run.0, b, 1 + k as u32, 1, stride);
+        assert_eq!(rc, 0, "{}", last_error());
+        assert_eq!(nrows, 1);
+        assert!(
+            same_bits(&v, &cycle_row_adapt(&sp.point, count, adapt)),
+            "branch {b} special {k}"
+        );
+    }
+    rows
+}
+
+/// Starts an `OSCZ` run, waits for it and returns the id and the final state.
+fn run_oscz(json: &str) -> (Id, Value) {
+    let m = compiled(OSCZ);
+    let (rc, run) = start_with(&m, json, &[0.0, 0.0], &OSCZ_PARAMS);
+    assert_eq!(rc, 0, "{json}: {}", last_error());
+    let run = Id(run);
+    let st = wait(&run);
+    // The model handle must outlive the run; leak it into the state check by keeping it alive
+    // until here.
+    drop(m);
+    (run, st)
+}
+
+#[test]
+fn a_bpc_run_labels_the_pitchfork_and_equals_the_engine() {
+    let (_, _, want) = oscz_first(None, None, true);
+    assert_eq!(want.points.len(), 126);
+    assert_eq!(want.specials.len(), 1);
+    assert_eq!(want.specials[0].label, "BPC");
+    assert_eq!(want.specials[0].index, 97);
+    assert!((want.specials[0].point.alpha - OSCZ_M0).abs() <= 1e-12);
+    let (run, st) = run_oscz(&oscz_problem(r#","bpc":true"#, ""));
+    assert_eq!(st["state"], "done", "{st}");
+    assert_eq!(st["branches"].as_array().unwrap().len(), 1, "{st}");
+    assert_eq!(st["n"], 2);
+    let rows = check_branch(&run, &st, 0, &want, 2, 0, false);
+    let last = rows.last().unwrap();
+    assert!((last[0] - HALF_PI).abs() <= 1e-9, "{}", last[0]);
+    assert!((period_of_n(last, 2) - 2.0 * std::f64::consts::PI).abs() <= 1e-6);
+}
+
+fn period_of_n(row: &[f64], n: usize) -> f64 {
+    row[1 + n * (NTST * NCOL + 1)]
+}
+
+#[test]
+fn a_run_without_bpc_has_no_special_and_the_rows_of_slice_4() {
+    let (_, _, want) = oscz_first(None, None, false);
+    assert_eq!(want.points.len(), 126);
+    assert!(want.specials.is_empty());
+    for keys in ["", r#","bpc":false"#] {
+        let (run, st) = run_oscz(&oscz_problem(keys, ""));
+        assert_eq!(st["state"], "done", "{st}");
+        check_branch(&run, &st, 0, &want, 2, 0, false);
+    }
+    // `"mesh_adapt": 0` is the same as no key.
+    let (run, st) = run_oscz(&oscz_problem("", r#","mesh_adapt":0"#));
+    check_branch(&run, &st, 0, &want, 2, 0, false);
+}
+
+#[test]
+fn a_switch_at_the_bpc_runs_both_directions_like_the_engine() {
+    let (mut dm, setup, first) = oscz_first(None, None, true);
+    let (_, st0) = run_oscz(&oscz_problem(r#","bpc":true"#, ""));
+    assert_eq!(st0["state"], "done", "{st0}");
+    let k = 0; // the only special of the first pass is the BPC
+    let mut ends = Vec::new();
+    for dir in [1, -1] {
+        let keys = format!(r#","bpc":true,"switch":"BPC1","switch_direction":{dir}"#);
+        let (run, st) = run_oscz(&oscz_problem(&keys, ""));
+        assert_eq!(st["state"], "done", "{st}");
+        assert_eq!(st["branches"].as_array().unwrap().len(), 2, "{st}");
+        // Branch 0 is the first pass of the plain BPC run.
+        check_branch(&run, &st, 0, &first, 2, 0, false);
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let sw = pc_engine::dde_switch_cycle_bpc(&mut dm, &setup, &first, k).expect("switch");
+        let want = pc_engine::dde_continue_cycle_switch(
+            &mut dm,
+            &setup,
+            &sw,
+            &oscz_opts(f64::from(dir)),
+            None,
+            true,
+            &cancel,
+        )
+        .expect("switched branch");
+        assert!(want.points.len() > 20, "{}", want.points.len());
+        let rows = check_branch(&run, &st, 1, &want, 2, 0, false);
+        // On the switched branch z is constant on the cycle with z^2 = alpha - m0.
+        let last = rows.last().unwrap();
+        let z: Vec<f64> = (0..=NTST * NCOL).map(|j| last[1 + 2 * j + 1]).collect();
+        assert!(max_of(&z) - min_of(&z) <= 1e-11, "{z:?}");
+        assert!(
+            (z[0] * z[0] - (last[0] - OSCZ_M0)).abs() <= 1e-11,
+            "{}",
+            z[0]
+        );
+        ends.push(z[0]);
+    }
+    // The two directions end on the two branches of the pitchfork, z and -z.
+    assert!(ends[0] * ends[1] < 0.0, "{ends:?}");
+    assert!((ends[0].abs() - ends[1].abs()).abs() <= 1e-11, "{ends:?}");
+}
+
+#[test]
+fn a_switch_with_floquet_carries_the_multiplier_columns() {
+    let floquet = pc_engine::DdeFloquetOptions {
+        nhist: 12,
+        count: 4,
+    };
+    let (mut dm, setup, first) = oscz_first(Some(&floquet), None, true);
+    let keys = format!(r#"{FLOQUET},"bpc":true,"switch":"BPC1","switch_direction":1"#);
+    let (run, st) = run_oscz(&oscz_problem(&keys, ""));
+    assert_eq!(st["state"], "done", "{st}");
+    check_branch(&run, &st, 0, &first, 2, 4, false);
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let sw = pc_engine::dde_switch_cycle_bpc(&mut dm, &setup, &first, 0).expect("switch");
+    let want = pc_engine::dde_continue_cycle_switch(
+        &mut dm,
+        &setup,
+        &sw,
+        &oscz_opts(1.0),
+        Some(&floquet),
+        true,
+        &cancel,
+    )
+    .expect("switched branch");
+    let rows = check_branch(&run, &st, 1, &want, 2, 4, false);
+    // The z multiplier of the switched cycle is exp(-2 (alpha - m0) T), the stable one of the
+    // pitchfork, so some multiplier modulus is below 1 at the end.
+    let stride = cycle_stride(2, 4);
+    let last = rows.last().unwrap();
+    let k0 = stride - 1 - 8;
+    let mods: Vec<f64> = (0..4)
+        .map(|c| last[k0 + c].hypot(last[k0 + 4 + c]))
+        .collect();
+    assert!(mods.iter().any(|m| *m < 0.9), "{mods:?}");
+}
+
+#[test]
+fn mesh_adaptation_moves_the_mesh_and_equals_the_engine() {
+    let adapt = pc_engine::DdeMeshAdapt { every: 3 };
+    let (_, _, want) = oscz_first(None, Some(&adapt), true);
+    assert_eq!(want.points.len(), 123);
+    assert_eq!(want.specials.len(), 1);
+    assert_eq!(want.specials[0].index, 95);
+    let (run, st) = run_oscz(&oscz_problem(r#","bpc":true"#, r#","mesh_adapt":3"#));
+    assert_eq!(st["state"], "done", "{st}");
+    let rows = check_branch(&run, &st, 0, &want, 2, 0, true);
+    let stride = cycle_stride(2, 0) + NTST + 1;
+    let uniform: Vec<f64> = (0..=NTST).map(|i| i as f64 / NTST as f64).collect();
+    let mut moved = 0;
+    for r in &rows {
+        let mesh = &r[stride - (NTST + 1)..];
+        assert_eq!(mesh[0], 0.0);
+        assert_eq!(mesh[NTST], 1.0);
+        assert!(mesh.windows(2).all(|w| w[1] > w[0]), "{mesh:?}");
+        if mesh.iter().zip(&uniform).any(|(a, b)| (a - b).abs() > 1e-9) {
+            moved += 1;
+        }
+    }
+    assert!(moved > 0, "the mesh never moved");
+    let last = rows.last().unwrap();
+    assert!((period_of_n(last, 2) - 2.0 * std::f64::consts::PI).abs() <= 1e-6);
+    // Adaptation without `bpc` runs `continue_cycle_adapt` and has no special.
+    let (_, _, want) = oscz_first(None, Some(&adapt), false);
+    let (run, st) = run_oscz(&oscz_problem("", r#","mesh_adapt":3"#));
+    assert_eq!(st["state"], "done", "{st}");
+    check_branch(&run, &st, 0, &want, 2, 0, true);
+}
+
+#[test]
+fn bad_switch_keys_are_refused_before_the_run_and_a_missing_special_fails_it() {
+    let m = compiled(OSCZ);
+    let refuse = |json: &str, key: &str| {
+        let (rc, run) = start_with(&m, json, &[0.0, 0.0], &OSCZ_PARAMS);
+        assert_eq!(rc, BAD_PROBLEM, "{json}: {}", last_error());
+        assert_eq!(run, 0, "{json}");
+        assert!(last_error().contains(key), "{json}: {}", last_error());
+    };
+    let sw = r#","bpc":true,"switch":"BPC1""#;
+    // A switch needs a direction, and the direction is 1 or -1.
+    refuse(&oscz_problem(sw, ""), "switch_direction");
+    for d in ["0", "2", "-2", "1.5", r#""up""#, "null"] {
+        refuse(
+            &oscz_problem(&format!(r#"{sw},"switch_direction":{d}"#), ""),
+            "switch_direction",
+        );
+    }
+    refuse(
+        &oscz_problem(r#","bpc":true,"switch_direction":1"#, ""),
+        "switch_direction",
+    );
+    // A switch needs `bpc`, and a mesh_adapt above 0 is not allowed with it.
+    refuse(
+        &oscz_problem(r#","switch":"BPC1","switch_direction":1"#, ""),
+        "bpc",
+    );
+    refuse(
+        &oscz_problem(r#","bpc":false,"switch":"BPC1","switch_direction":1"#, ""),
+        "bpc",
+    );
+    refuse(
+        &oscz_problem(
+            &format!(r#"{sw},"switch_direction":1"#),
+            r#","mesh_adapt":3"#,
+        ),
+        "mesh_adapt",
+    );
+    // `bpc` and `mesh_adapt` of the wrong type or value.
+    for v in ["1", r#""yes""#, "null", "[true]"] {
+        refuse(&oscz_problem(&format!(r#","bpc":{v}"#), ""), "bpc");
+    }
+    for v in ["-1", "1.5", r#""3""#, "true"] {
+        refuse(
+            &oscz_problem("", &format!(r#","mesh_adapt":{v}"#)),
+            "mesh_adapt",
+        );
+    }
+    // A switch label that is not a label and a number.
+    for lab in ["", "BPC", "BPC0", "1"] {
+        refuse(
+            &oscz_problem(
+                &format!(r#","bpc":true,"switch":"{lab}","switch_direction":1"#),
+                "",
+            ),
+            "switch",
+        );
+    }
+    // The new keys are errors on a delay run that is not a cycle run.
+    let o = r#""options":{"bounds":[1.2,2.0]}"#;
+    for extra in [r#","bpc":true"#, r#","switch_direction":1"#] {
+        let json = format!(r#"{{"type":"EP","free":"tau",{ROOTS}{extra},{o}}}"#);
+        refuse(&json, extra.split('"').nth(1).unwrap());
+    }
+    // A label with no such special point passes the parser and fails the run. `run_poll` gives
+    // the code 6, and the first pass stays readable as branch 0.
+    let (_, _, first) = oscz_first(None, None, true);
+    let stride = cycle_stride(2, 0);
+    for lab in ["LPC1", "BPC2", "NS1", "BPC-1"] {
+        let keys = format!(r#","bpc":true,"switch":"{lab}","switch_direction":1"#);
+        let json = oscz_problem(&keys, "");
+        let (text, rows, vals) =
+            failed_keeping_branch_0(&m, &json, &[0.0, 0.0], &OSCZ_PARAMS, stride);
+        assert!(text.contains(lab), "{lab}: {text}");
+        assert_eq!(rows, 126, "{lab}");
+        for (r, pt) in first.points.iter().enumerate() {
+            let got = &vals[r * stride..(r + 1) * stride];
+            assert!(same_bits(got, &cycle_row(pt, 0)), "{lab} row {r}");
+        }
+    }
+}
+
+#[test]
+fn a_switch_at_a_fold_is_refused_by_the_engine_and_keeps_the_first_branch() {
+    let floquet = pc_engine::DdeFloquetOptions {
+        nhist: 12,
+        count: 4,
+    };
+    let want = engine_cycle(
+        &lpc_model(),
+        &[1.0, HALF_PI],
+        0,
+        &[0.0],
+        1.0,
+        Some(floquet),
+        &cycle_engine_options((-0.5, 1.1), -1.0, 0.1),
+    );
+    assert_eq!(want.points.len(), 99);
+    let m = compiled(&lpc_model());
+    let o = cycle_options("[-0.5,1.1]", -1, 0.1, 500);
+    let keys = format!(r#"{FLOQUET},"bpc":true,"switch":"LPC1","switch_direction":1"#);
+    let json = cycle_problem("a", 1.0, &keys, &o);
+    let stride = cycle_stride(1, 4);
+    let (text, rows, vals) = failed_keeping_branch_0(&m, &json, &[0.0], &[1.0, HALF_PI], stride);
+    assert!(text.contains("LPC") && text.contains("not a BPC"), "{text}");
+    assert_eq!(rows, 99);
+    for (r, pt) in want.points.iter().enumerate() {
+        let got = &vals[r * stride..(r + 1) * stride];
+        assert!(same_bits(got, &cycle_row(pt, 4)), "row {r}");
+    }
+}
+
+#[test]
+fn a_switch_run_cancelled_in_the_first_pass_keeps_only_branch_0() {
+    let m = compiled(OSCZ);
+    let o = r#""options":{"h0":0.0001,"hmax":0.0001,"max_steps":100000,"bounds":[1.0,1000]}"#;
+    let json = cycle_problem(
+        "tau",
+        OSC_OMEGA_H,
+        r#","bpc":true,"switch":"BPC1","switch_direction":-1"#,
+        o,
+    );
+    let (rc, run) = start_with(&m, &json, &[0.0, 0.0], &OSCZ_PARAMS);
+    assert_eq!(rc, 0, "{}", last_error());
+    let run = Id(run);
+    assert_eq!((api().run_cancel)(run.0), 0, "{}", last_error());
+    let st = wait(&run);
+    assert_eq!(st["state"], "cancelled", "{st}");
+    let bs = st["branches"].as_array().unwrap();
+    assert_eq!(bs.len(), 1, "{st}");
+    assert_eq!(bs[0]["stop"], "Cancelled", "{st}");
 }
