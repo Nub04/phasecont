@@ -69,10 +69,10 @@ function br = continuation(m, start, options)
 %   fold (LP) or a branch point (BP) where it changes by one; the Data of the
 %   point holds omega and the counts before and after in Data.values. The
 %   branch has no Eigenvalues, Tests or Codim2. START must be a state vector
-%   or an EP point. Detect takes "LP" and "BP" only (default both). Switch,
-%   MeshAdapt and every Type other than "EP", "H" and "LC" are refused. The
-%   engine returns the points when the run ends, so a live Plot draws once and
-%   a cancelled run keeps nothing.
+%   or an EP point. Detect takes "LP" and "BP" only (default both). Switch and
+%   MeshAdapt apply to Type = "LC" only, and every Type other than "EP", "H"
+%   and "LC" is refused. The engine returns the points when the run ends, so a
+%   live Plot draws once and a cancelled run keeps nothing.
 %
 %   C = phasecont.continuation(M, START, Type = "H", Free = ["a" "b"], Omega =
 %   w) follows the curve of Hopf points of a delay model. START is an H point
@@ -106,8 +106,18 @@ function br = continuation(m, start, options)
 %   columns. LC.Alpha, LC.U (one orbit per row), LC.Period and LC.cycle(i)
 %   work as for an ODE cycle, the mesh is uniform, and LC.Specials holds the
 %   LPC, PD and NS points the engine finds, with the orbit in Special.Data.
-%   Roots, Lyapunov, Coefficients, Detect, MeshAdapt, Switch and Var are
-%   refused, and the branch arrives when the run ends.
+%   Detect = "BPC" also labels the branch points of the discretized cycle
+%   problem (default off, and no other Detect entry is accepted). MeshAdapt =
+%   k moves the mesh every k steps (k at least 1, default 0, no adaptation);
+%   LC.Mesh and Special.Data.mesh then hold the mesh of each point.
+%   BRS = phasecont.continuation(M, START, Type = "LC", ..., Detect = "BPC",
+%   Switch = "BPC1", SwitchDirection = 1) follows the branch and then the
+%   branch that leaves its first BPC along the tangent there (1) or against it
+%   (-1); BRS is a 1-by-2 array, as for equilibria. Switch needs Detect = "BPC"
+%   and SwitchDirection, which has no default because the two directions give
+%   two different branches, and it takes no MeshAdapt above 0. Roots,
+%   Lyapunov, Coefficients and Var are refused, and the branch arrives when
+%   the run ends.
 %
 %   Name-value options
 %     Type       "EP" (default), "LP", "H", "LC", "LPC", "PD", "NS" or "HOM"
@@ -129,8 +139,13 @@ function br = continuation(m, start, options)
 %     MaxNewton  most Newton iterations per step
 %     Detect     labels to detect, a subset of ["LP" "BP" "H"] (default all);
 %                Type "EP" only; ["LP" "BP"] only, and the default, for a
-%                delay model
-%     Switch     special point to switch at, like "BP1"; Type "EP" only
+%                delay model; "BPC" only, and off by default, for a delay "LC"
+%     Switch     special point to switch at, like "BP1"; Type "EP", or "LC" of a
+%                delay model (like "BPC1", with SwitchDirection and Detect =
+%                "BPC")
+%     SwitchDirection  1 follows the switched branch along the tangent at the
+%                special point and -1 against it, required with Switch for a
+%                delay "LC" run and refused otherwise
 %     Plot       true draws the branch while the run goes and ends with the
 %                styled plot of Branch.plot (default false)
 %     Var        variable to plot, a name or an index into M.Variables
@@ -143,8 +158,8 @@ function br = continuation(m, start, options)
 %                per point (logical scalar, default false); Type "HOM" only
 %     MeshAdapt  number of continuation steps between two mesh adaptations of
 %                a cycle or homoclinic orbit; 0 keeps the start mesh (integer
-%                of at least 0, engine default 3); Type "LC", "LPC", "PD",
-%                "NS" or "HOM" only
+%                of at least 0, engine default 3, and 0 for a delay "LC");
+%                Type "LC", "LPC", "PD", "NS" or "HOM" only
 %     Roots      struct(N = n, ReMin = r) for a delay model (required for
 %                Type "EP", optional for "H", refused for "LC" and for an ODE
 %                model); see above
@@ -190,6 +205,7 @@ arguments
     options.MaxNewton = []
     options.Detect = missing
     options.Switch = []
+    options.SwitchDirection = []
     options.Plot (1,1) logical = false
     options.Var = []
     options.Params = []
@@ -241,13 +257,13 @@ if isDelay
     % The engine's delay entry follows equilibria, the Hopf curve through one
     % of their Hopf points and the cycles that start at one. A Hopf point
     % comes from the root count, and the other cycle options do not exist.
-    if ~isempty(options.MeshAdapt)
+    if ~isDelayCycle && ~isempty(options.MeshAdapt)
         error("phasecont:model:badOption", ...
-            "MeshAdapt does not apply to a delay model.");
+            "MeshAdapt applies to Type = ""LC"" of a delay model only.");
     end
-    if ~isempty(options.Switch)
+    if ~isDelayCycle && ~isempty(options.Switch)
         error("phasecont:model:badOption", ...
-            "Switch does not apply to a delay model.");
+            "Switch applies to Type = ""LC"" of a delay model only.");
     end
     if isDelayCycle && ~isempty(options.Var)
         error("phasecont:model:badOption", ...
@@ -325,9 +341,18 @@ if ~isempty(meshAdapt)
             "MeshAdapt must be an integer of at least 0.");
     end
 end
+if ~isDelayCycle && ~isempty(options.SwitchDirection)
+    error("phasecont:model:badOption", ...
+        "SwitchDirection applies to Type = ""LC"" of a delay model only.");
+end
+detectBpc = false;
+switchDirection = [];
+if isDelayCycle
+    [detectBpc, switchDirection] = delayCycleSwitch(options, meshAdapt);
+end
 grid = [];
 if isCycle
-    if ~isa(options.Detect, "missing") || ~isempty(options.Switch)
+    if ~isDelayCycle && (~isa(options.Detect, "missing") || ~isempty(options.Switch))
         error("phasecont:model:badOption", ...
             "Detect and Switch do not apply to Type = ""LC"".");
     end
@@ -371,6 +396,10 @@ if isDelayCycle
     grid(3) = 0;
     if ~isempty(floquet)
         grid(3) = floquet.Count;
+    end
+    % A fourth value of 1 says the rows end with the adapted mesh.
+    if ~isempty(meshAdapt) && meshAdapt > 0
+        grid(4) = 1;
     end
     from = "";
     mesh = [];
@@ -472,6 +501,12 @@ elseif isDelayCycle
     if ~isempty(floquet)
         problem = problem + ",""floquet"":{""nhist"":" + num2json(floquet.NHist) + ...
             ",""count"":" + num2json(floquet.Count) + "}";
+    end
+    if detectBpc
+        problem = problem + ",""bpc"":true";
+    end
+    if ~isempty(switchDirection)
+        problem = problem + ",""switch_direction"":" + num2json(switchDirection);
     end
     problem = problem + ",""options"":{" + strjoin(parts, ",") + "}";
 elseif isDelayHopf
@@ -615,6 +650,49 @@ end
         end
         drawnow limitrate
     end
+end
+
+function [detectBpc, direction] = delayCycleSwitch(options, meshAdapt)
+% The Detect, Switch and SwitchDirection options of a delay "LC" run. Detect
+% takes "BPC" only and is off by default. A switch names a BPC, so it needs
+% Detect = "BPC", and it needs a direction, 1 or -1, which has no default
+% because the two directions follow two different branches. The engine takes
+% no adapted mesh for a switch.
+detectBpc = false;
+if ~isa(options.Detect, "missing")
+    detect = string(options.Detect);
+    if ~all(detect == "BPC")
+        error("phasecont:model:badOption", ...
+            "Detect for Type = ""LC"" of a delay model takes ""BPC"" only.");
+    end
+    detectBpc = ~isempty(detect);
+end
+direction = [];
+hasSwitch = ~isempty(options.Switch);
+d = options.SwitchDirection;
+if ~hasSwitch
+    if ~isempty(d)
+        error("phasecont:model:badOption", ...
+            "SwitchDirection needs the Switch option.");
+    end
+    return
+end
+if isempty(d)
+    error("phasecont:model:badOption", ...
+        "Switch needs SwitchDirection, 1 or -1: the two directions follow two different branches.");
+end
+if ~(isnumeric(d) && isreal(d) && isscalar(d) && (d == 1 || d == -1))
+    error("phasecont:model:badOption", "SwitchDirection must be 1 or -1.");
+end
+if ~detectBpc
+    error("phasecont:model:badOption", ...
+        "Switch for a delay ""LC"" run needs Detect = ""BPC"", the label it names.");
+end
+if ~isempty(meshAdapt) && meshAdapt > 0
+    error("phasecont:model:badOption", ...
+        "Switch takes no MeshAdapt above 0 for a delay ""LC"" run.");
+end
+direction = double(d);
 end
 
 function roots = delayRoots(value, isDelay, optional)

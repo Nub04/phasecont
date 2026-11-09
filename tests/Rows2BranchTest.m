@@ -878,17 +878,91 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
             testCase.verifySize(br.Eigenvalues, [1 1]);
         end
 
-        function delayCycleGridNeedsThreeIntegers(testCase)
+        function delayCycleGridNeedsThreeOrFourIntegers(testCase)
+            % GRID is [NTST NCOL c] or [NTST NCOL c adapt] with adapt 0 or 1.
             n = 1;
             rows = zeros(8, 1);
             st = struct("points", 1, "stop", "Bounds");
-            bad = {[2 1], [2 1 0 0], [2 1 -1], [2 1 0.5], [0 1 0], [2 0 0], ...
-                [2 1 NaN], "abc"};
+            bad = {[2 1], [2 1 0 0 0], [2 1 -1], [2 1 0.5], [0 1 0], ...
+                [2 0 0], [2 1 NaN], [2 1 0 2], [2 1 0 -1], [2 1 0 0.5], ...
+                [2 1 0 NaN], "abc"};
             for k = 1:numel(bad)
                 testCase.verifyError(@() phasecont.internal.rows2branch( ...
                     phasecont.Model.empty, 1, [1; 2], n, rows, rows, st, ...
                     "DDELC", bad{k}), "phasecont:model:badOption");
             end
+            % A fourth entry of 0 is a valid grid without adaptation.
+            br = phasecont.internal.rows2branch(phasecont.Model.empty, 1, ...
+                [1; 2], n, rows, zeros(8, 0), struct("points", 1, ...
+                "stop", "Bounds", "warnings", {{}}, "specials", []), ...
+                "DDELC", [2 1 0 0]);
+            testCase.verifyEqual(br.Mesh, [0 0.5 1]);
+        end
+
+        function delayCycleRowsWithAdaptationEndWithTheMesh(testCase)
+            % GRID = [3 2 2 1] with n = 1: the profile has 7 values, c = 2
+            % makes 7 + 5 + 4 = 16 and the 4 mesh values after the trivial
+            % multiplier error make the stride 20. The mesh is each point's
+            % own, and a special keeps the mesh of its own row.
+            n = 1;
+            row = @(a, k, mesh) [a, k + (1:7), 6 + a, 0.01*k, k, 1.5 0.5, ...
+                0 0.25, 1e-9, mesh].';
+            m1 = [0 0.3 0.7 1];
+            m2 = [0 0.2 0.6 1];
+            m3 = [0 NaN NaN 1];
+            pts = [row(0.1, 10, m1), row(0.2, 20, m2), row(0.3, 30, m3)];
+            specials = pts(:, 2);
+            info = struct("label", "BPC", "index", 1, "coefficient", [], ...
+                "omega", [], "normalization", [], "refined", false);
+            st = struct("points", 3, "stop", "Bounds", "warnings", {{}}, ...
+                "specials", info);
+            br = phasecont.internal.rows2branch(phasecont.Model.empty, 2, ...
+                [10; 20; 30], n, pts, specials, st, "DDELC", [3 2 2 1]);
+            testCase.verifyEqual(br.Mesh, [m1; m2; m3]);
+            testCase.verifyEqual(br.U, pts(2:8, :).');
+            testCase.verifyEqual(br.Period, [6.1; 6.2; 6.3]);
+            testCase.verifyEqual(br.Eigenvalues, ...
+                repmat([complex(1.5, 0) complex(0.5, 0.25)], 3, 1));
+            testCase.verifyEqual(br.StepSize, [0.1; 0.2; 0.3]);
+            testCase.verifyEqual(br.NewtonIters, [10; 20; 30]);
+            testCase.assertNumElements(br.Specials, 1);
+            sp = br.Specials;
+            testCase.verifyEqual(sp.Label, "BPC");
+            testCase.verifyEqual(sp.Index, 2);
+            testCase.verifyEqual(sp.P, [10; 0.2; 30]);
+            testCase.verifyEqual(sp.Data.mesh, m2);
+            testCase.verifyEqual(sp.Data.period, 6.2);
+            testCase.verifyEqual(sp.U, pts(2:8, 2));
+        end
+
+        function delayCycleRowsWithAdaptationRefuseTheWidthWithoutTheMesh(testCase)
+            % With adapt the mesh is part of the stride. Rows without it are
+            % refused, and so are rows with the mesh when adapt is 0.
+            n = 1;
+            st = struct("points", 1, "stop", "Bounds");
+            plain = zeros(7 + 5 + 4, 1);
+            withMesh = zeros(7 + 5 + 4 + 4, 1);
+            testCase.verifyError(@() phasecont.internal.rows2branch( ...
+                phasecont.Model.empty, 1, [1; 2], n, plain, plain, st, ...
+                "DDELC", [3 2 2 1]), "phasecont:model:badRows");
+            testCase.verifyError(@() phasecont.internal.rows2branch( ...
+                phasecont.Model.empty, 1, [1; 2], n, withMesh, withMesh, st, ...
+                "DDELC", [3 2 2]), "phasecont:model:badRows");
+            testCase.verifyError(@() phasecont.internal.rows2branch( ...
+                phasecont.Model.empty, 1, [1; 2], n, withMesh, withMesh, st, ...
+                "DDELC", [3 2 2 0]), "phasecont:model:badRows");
+        end
+
+        function delayCycleRowsWithAdaptationAndNoPointsKeepTheMeshColumns(testCase)
+            n = 1;
+            st = struct("points", 0, "stop", [], "warnings", [], ...
+                "specials", []);
+            rows = zeros(7 + 5 + 4 + 4, 0);
+            br = phasecont.internal.rows2branch(phasecont.Model.empty, 1, ...
+                [1; 2], n, rows, rows, st, "DDELC", [3 2 2 1]);
+            testCase.verifySize(br.Alpha, [0 1]);
+            testCase.verifySize(br.Mesh, [0 4]);
+            testCase.verifySize(br.Eigenvalues, [0 2]);
         end
 
         function delayCycleRowsNeedOneFreeParameterAndAGrid(testCase)

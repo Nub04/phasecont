@@ -66,6 +66,14 @@ classdef DelayBranchTest < matlab.unittest.TestCase
         LpcModel = "par a=0.25, tau=1.5707963267948966" + newline + ...
             "x'=-delay(x,tau)+x*(a-(x^2+delay(x,tau)^2-1)^2)" + newline + ...
             "done" + newline
+        % SPEC 8s slice 5: OSC with a decoupled z' = (tau - m0) z - z^3. The
+        % cycles of OSC are cycles of the pair with z = 0, their z multiplier
+        % is exp((tau - m0) T), and a pitchfork at tau = m0 gives the branch
+        % z^2 = tau - m0.
+        Oscz = "par mu=0.3, tau=1.3272372818926783, m0=1.45" + newline + ...
+            "x'=-delay(x,tau)+mu*x*(1-x^2-delay(x,tau)^2)" + newline + ...
+            "z'=(tau-m0)*z-z^3" + newline + "done" + newline
+        OsczM0 = 1.45
     end
 
     properties
@@ -169,6 +177,18 @@ classdef DelayBranchTest < matlab.unittest.TestCase
                 NCOL = 4, Eps = 0.05, Floquet = struct(NHist = 12, Count = 4), ...
                 MaxNewton = 30, Hmax = 0.1, MaxSteps = 500, Direction = -1, ...
                 Bounds = [-0.5 1.1]);
+        end
+
+        function br = osczRun(testCase, m, extra)
+            % The OSCZ cycle run of SPEC 8s slice 5: a Hopf start at the
+            % origin, tau from the Hopf value up to pi/2. EXTRA is a cell of
+            % name-value pairs (Detect, Switch, MeshAdapt, Floquet, ...).
+            br = phasecont.continuation(m, [0 0], extra{:}, Type = "LC", ...
+                Free = "tau", Params = struct(mu = 0.3, ...
+                    tau = testCase.OscTauH, m0 = testCase.OsczM0), ...
+                Omega = testCase.OscOmegaH, NTST = 20, NCOL = 4, Eps = 0.05, ...
+                MaxNewton = 30, Hmax = 0.05, MaxSteps = 400, Direction = 1, ...
+                Bounds = [1 pi/2]);
         end
 
         function args = oscArgs(testCase)
@@ -1143,12 +1163,6 @@ classdef DelayBranchTest < matlab.unittest.TestCase
                 @() phasecont.continuation(m, 0, args{:}, Detect = "LP"), ...
                 id, "Detect");
             testCase.verifyErrorText( ...
-                @() phasecont.continuation(m, 0, args{:}, MeshAdapt = 2), ...
-                id, "MeshAdapt");
-            testCase.verifyErrorText( ...
-                @() phasecont.continuation(m, 0, args{:}, Switch = "BP1"), ...
-                id, "Switch");
-            testCase.verifyErrorText( ...
                 @() phasecont.continuation(m, 0, args{:}, Var = "x"), ...
                 id, "Var");
             % Two free parameters are for the curves.
@@ -1186,6 +1200,234 @@ classdef DelayBranchTest < matlab.unittest.TestCase
             testCase.verifyErrorText( ...
                 @() phasecont.continuation(w, base{:}, Floquet = fl), ...
                 id, "Floquet");
+        end
+
+        % ---- SPEC 8s slice 5: BPC, mesh adaptation and switching ----
+
+        function oszBpcBranchMatchesTheEngineRowsAndHasTheBpc(testCase)
+            m = testCase.model(testCase.Oscz);
+            problem = "{""type"":""LC"",""free"":""tau"",""ntst"":20," + ...
+                """ncol"":4,""omega"":0.9539392014169457,""eps"":0.05," + ...
+                """bpc"":true,""options"":{""max_newton"":30,""hmax"":0.05," + ...
+                """max_steps"":400,""direction"":1," + ...
+                """bounds"":[1,1.5707963267948966]}}";
+            out = phasecont.internal.runLoop(m, problem, [0; 0], ...
+                [0.3; testCase.OscTauH; testCase.OsczM0]);
+            rows = out.Points{1};
+            testCase.assertSize(rows, [167 126]);
+            br = testCase.osczRun(m, {"Detect", "BPC"});
+            testCase.verifyEqual(br.Type, "LC");
+            testCase.verifyEqual(br.Stop, "Bounds");
+            testCase.assertSize(br.Alpha, [126 1]);
+            testCase.verifyEqual(br.Alpha, rows(1, :).', RelTol = 1e-12);
+            testCase.verifyEqual(br.U, rows(2:163, :).', RelTol = 1e-12, ...
+                AbsTol = 1e-14);
+            testCase.verifyEqual(br.Period, rows(164, :).', RelTol = 1e-12);
+            testCase.verifyEqual(br.StepSize, rows(165, :).', RelTol = 1e-12);
+            testCase.verifyEqual(br.NewtonIters, rows(166, :).', RelTol = 1e-12);
+            testCase.verifyTrue(all(isnan(rows(167, :))));
+            % One special, a BPC at the pitchfork tau = m0. The index of the
+            % engine is 97 and the one of the Branch counts from 1.
+            testCase.assertNumElements(br.Specials, 1);
+            bpc = br.points("BPC");
+            testCase.assertNumElements(bpc, 1);
+            testCase.verifyEqual(bpc.Index, 98);
+            testCase.verifyEqual(bpc.P(2), testCase.OsczM0, AbsTol = 1e-11);
+            testCase.verifyEqual(bpc.Data.mesh, linspace(0, 1, 21), AbsTol = 1e-15);
+            testCase.verifyEqual(bpc.Data.ntst, 20);
+            testCase.verifyEqual(bpc.Data.period, out.Specials{1}(164, 1), ...
+                RelTol = 1e-12);
+            testCase.verifyEqual(bpc.Data.period, br.Period(bpc.Index), ...
+                AbsTol = 5e-3);
+            testCase.verifyEqual(bpc.U, out.Specials{1}(2:163, 1), ...
+                RelTol = 1e-12, AbsTol = 1e-14);
+            % The orbit is the cycle of OSC with z = 0.
+            testCase.verifyEqual(br.Alpha(1), 1.3276067784641745, AbsTol = 1e-9);
+            testCase.verifyEqual(br.Alpha(end), pi/2, AbsTol = 1e-9);
+            testCase.verifyEqual(br.Period(end), 2*pi, AbsTol = 1e-10);
+            x = br.U(end, 1:2:end);
+            z = br.U(end, 2:2:end);
+            testCase.verifyEqual(max(abs(x)), 1, AbsTol = 1e-11);
+            testCase.verifyLessThanOrEqual(max(abs(z)), 1e-12);
+            % Without Detect there is no BPC and the points are the same.
+            plain = testCase.osczRun(m, {});
+            testCase.verifyEmpty(plain.Specials);
+            testCase.verifyEqual(plain.Alpha, br.Alpha);
+            testCase.verifyEqual(plain.U, br.U);
+        end
+
+        function aBpcBranchWithMultipliersHasTheZMultiplier(testCase)
+            % The z multiplier of the cycle with z = 0 is exp((tau - m0) T).
+            m = testCase.model(testCase.Oscz);
+            br = testCase.osczRun(m, {"Detect", "BPC", ...
+                "Floquet", struct(NHist = 20, Count = 6)});
+            testCase.assertSize(br.Alpha, [126 1]);
+            testCase.verifySize(br.Eigenvalues, [126 6]);
+            want = exp((br.Alpha - testCase.OsczM0) .* br.Period);
+            nearest = min(abs(br.Eigenvalues - want), [], 2) ./ want;
+            testCase.verifyLessThan(max(nearest), 1e-9);
+            testCase.verifyEqual(br.points("BPC").Index, 98);
+        end
+
+        function switchingAtTheBpcGivesTwoBranchesWithThePitchforkInvariants(testCase)
+            m = testCase.model(testCase.Oscz);
+            fl = struct(NHist = 20, Count = 6);
+            main = testCase.osczRun(m, {"Detect", "BPC", "Floquet", fl});
+            zEnd = zeros(1, 2);
+            for k = 1:2
+                d = [1 -1];
+                brs = testCase.osczRun(m, {"Detect", "BPC", "Floquet", fl, ...
+                    "Switch", "BPC1", "SwitchDirection", d(k)});
+                testCase.assertSize(brs, [1 2]);
+                % The first branch is the run without the switch.
+                testCase.verifyEqual(brs(1).Alpha, main.Alpha);
+                testCase.verifyEqual(brs(1).U, main.U);
+                testCase.verifyEqual(brs(1).points("BPC").Index, 98);
+                sw = brs(2);
+                testCase.verifyEqual(sw.Type, "LC");
+                testCase.verifyEqual(sw.Free, "tau");
+                testCase.verifyEqual(sw.NTST, 20);
+                testCase.verifyEqual(sw.NCOL, 4);
+                testCase.verifyEqual(sw.Stop, "Bounds");
+                testCase.assertSize(sw.Alpha, [74 1]);
+                testCase.verifyEmpty(sw.Specials);
+                testCase.verifyEqual(sw.Alpha(1), testCase.OsczM0, AbsTol = 1e-9);
+                testCase.verifyEqual(sw.Alpha(end), pi/2, AbsTol = 1e-9);
+                testCase.verifyEqual(sw.Period(end), 2*pi, AbsTol = 1e-10);
+                % z is constant along the orbit and z^2 = tau - m0.
+                z = sw.U(:, 2:2:end);
+                testCase.verifyLessThan(max(abs(z.^2 - (sw.Alpha - testCase.OsczM0)), ...
+                    [], "all"), 1e-12);
+                zEnd(k) = z(end, 1);
+                testCase.verifyEqual(abs(zEnd(k)), 0.3475576596694392, AbsTol = 1e-9);
+                % The z multiplier on the new branch is exp(-2 (tau - m0) T).
+                want = exp(-2*(sw.Alpha - testCase.OsczM0) .* sw.Period);
+                nearest = min(abs(sw.Eigenvalues - want), [], 2) ./ want;
+                testCase.verifyLessThan(max(nearest), 1e-9);
+            end
+            testCase.verifyLessThan(zEnd(1)*zEnd(2), 0);
+        end
+
+        function meshAdaptationGivesAMeshPerPointAndPerSpecial(testCase)
+            m = testCase.model(testCase.Oscz);
+            br = testCase.osczRun(m, {"Detect", "BPC", "MeshAdapt", 3});
+            testCase.assertSize(br.Alpha, [123 1]);
+            testCase.verifyEqual(br.Stop, "Bounds");
+            testCase.verifyEqual(br.Period(end), 2*pi, AbsTol = 1e-6);
+            testCase.assertSize(br.Mesh, [123 21]);
+            testCase.verifyEqual(br.Mesh(:, 1), zeros(123, 1));
+            testCase.verifyEqual(br.Mesh(:, end), ones(123, 1));
+            testCase.verifyGreaterThan(min(diff(br.Mesh, 1, 2), [], "all"), 0);
+            uniform = repmat(linspace(0, 1, 21), 123, 1);
+            moved = max(abs(br.Mesh - uniform), [], 2) > 1e-9;
+            testCase.verifyTrue(any(moved));
+            bpc = br.points("BPC");
+            testCase.assertNumElements(bpc, 1);
+            testCase.verifyEqual(bpc.Index, 96);
+            testCase.verifyEqual(bpc.P(2), testCase.OsczM0, AbsTol = 1e-9);
+            sm = bpc.Data.mesh;
+            testCase.verifySize(sm, [1 21]);
+            testCase.verifyEqual(sm([1 end]), [0 1]);
+            testCase.verifyGreaterThan(min(diff(sm)), 0);
+            testCase.verifyLessThan(max(abs(sm - br.Mesh(bpc.Index, :))), 0.05);
+            % MeshAdapt = 0 is the run of slice 4: a uniform mesh.
+            flat = testCase.osczRun(m, {"Detect", "BPC", "MeshAdapt", 0});
+            testCase.verifyEqual(flat.Mesh, repmat(linspace(0, 1, 21), 126, 1), ...
+                AbsTol = 1e-15);
+        end
+
+        function adaptedAndSwitchedBranchesSurviveASessionRoundTrip(testCase)
+            m = testCase.model(testCase.Oscz);
+            adapted = testCase.osczRun(m, {"Detect", "BPC", "MeshAdapt", 3});
+            brs = testCase.osczRun(m, {"Detect", "BPC", "Switch", "BPC1", ...
+                "SwitchDirection", -1});
+            file = fullfile(testCase.Dir, "oscz.pcs");
+            save(phasecont.Session(m, {adapted, brs(1), brs(2)}), file);
+            back = phasecont.Session.load(file);
+            testCase.addTeardown(@() delete(back.Model));
+            testCase.assertNumElements(back.Items, 3);
+            want = {adapted, brs(1), brs(2)};
+            for k = 1:3
+                b = back.Items{k};
+                testCase.verifyEqual(b.Type, "LC");
+                testCase.verifyEqual(b.Alpha, want{k}.Alpha);
+                testCase.verifyEqual(b.U, want{k}.U);
+                testCase.verifyEqual(b.Period, want{k}.Period);
+                testCase.verifyEqual(b.Mesh, want{k}.Mesh);
+                testCase.verifyEqual(b.Stop, want{k}.Stop);
+                testCase.verifyEqual(numel(b.Specials), numel(want{k}.Specials));
+            end
+            testCase.verifyEqual(back.Items{1}.points("BPC").Data.mesh, ...
+                adapted.points("BPC").Data.mesh);
+            testCase.verifyEqual(back.Items{2}.points("BPC").P, ...
+                brs(1).points("BPC").P);
+        end
+
+        function theBpcSwitchAndMeshOptionsOfADelayCycleRunAreChecked(testCase)
+            m = testCase.model(testCase.Oscz);
+            id = "phasecont:model:badOption";
+            run = @(varargin) phasecont.continuation(m, [0 0], varargin{:}, ...
+                Type = "LC", Free = "tau", Params = struct(mu = 0.3, ...
+                    tau = testCase.OscTauH, m0 = testCase.OsczM0), ...
+                Omega = testCase.OscOmegaH, NTST = 20, NCOL = 4, Eps = 0.05);
+            % A switch needs a direction, the BPC label and no adaptation.
+            testCase.verifyErrorText( ...
+                @() run(Detect = "BPC", Switch = "BPC1"), id, "SwitchDirection");
+            testCase.verifyErrorText( ...
+                @() run(Detect = "BPC", SwitchDirection = 1), id, "Switch");
+            testCase.verifyErrorText( ...
+                @() run(Switch = "BPC1", SwitchDirection = 1), id, "Detect");
+            testCase.verifyErrorText( ...
+                @() run(Detect = "BPC", Switch = "BPC1", SwitchDirection = 1, ...
+                    MeshAdapt = 3), id, "MeshAdapt");
+            for bad = {0, 2, -2, 1.5, "up", [1 -1], NaN}
+                testCase.verifyErrorText( ...
+                    @() run(Detect = "BPC", Switch = "BPC1", ...
+                        SwitchDirection = bad{1}), id, "SwitchDirection");
+            end
+            % Detect takes BPC only on a delay cycle.
+            testCase.verifyErrorText(@() run(Detect = "LPC"), id, "BPC");
+            testCase.verifyErrorText(@() run(Detect = ["BPC" "LP"]), id, "BPC");
+            testCase.verifyErrorText(@() run(Detect = "LP"), id, "BPC");
+            % MeshAdapt is an integer of at least 0.
+            for bad = {-1, 1.5, "a", [1 2], NaN, Inf}
+                testCase.verifyErrorText( ...
+                    @() run(MeshAdapt = bad{1}), id, "MeshAdapt");
+            end
+        end
+
+        function aSwitchThatTheEngineCannotFollowRaisesAnEngineError(testCase)
+            % There is no LPC and no second BPC on the OSCZ branch.
+            m = testCase.model(testCase.Oscz);
+            for name = ["LPC1" "BPC2"]
+                try
+                    testCase.osczRun(m, {"Detect", "BPC", "Switch", name, ...
+                        "SwitchDirection", 1});
+                    testCase.verifyFail("no error for the switch " + name);
+                catch err
+                    testCase.verifySubstring(string(err.identifier), "phasecont:");
+                    testCase.verifyNotEmpty(err.message);
+                end
+            end
+        end
+
+        function theSwitchOptionsBelongToADelayCycleRun(testCase)
+            id = "phasecont:model:badOption";
+            h = testCase.model(testCase.Hutch);
+            base = {"Free", "r", "Roots", testCase.Roots, "Bounds", [1.2 2]};
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(h, 1, base{:}, SwitchDirection = 1), ...
+                id, "SwitchDirection");
+            ode = testCase.model(testCase.Decay);
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(ode, 3, Free = "a", Bounds = [1 3], ...
+                    SwitchDirection = 1), id, "SwitchDirection");
+            w = testCase.model(testCase.Wright);
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(w, 0.001, Type = "H", ...
+                    Free = ["a" "b"], Params = struct(a = 1.57, b = 0), ...
+                    Omega = 1.57, Bounds = [-1 1], SwitchDirection = 1), ...
+                id, "SwitchDirection");
         end
     end
 end

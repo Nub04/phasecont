@@ -52,7 +52,9 @@ function br = rows2branch(m, free, p, n, points, specials, branchStatus, kind, g
 % width is checked against it and a row of any other width is refused. The
 % mesh is uniform and not in the row; the Branch is Type "LC" with Mesh
 % rebuilt from NTST, Stable false, Tests and Codim2 with 0 columns and an
-% empty RootCount.
+% empty RootCount. A run with mesh adaptation has GRID = [NTST NCOL c 1] and
+% N+1 mesh values after trivial_error, which become Mesh and the mesh of each
+% special point; any other fourth entry than 0 or 1 is refused.
 % All have NaN for missing values. The function makes no
 % engine calls.
 %
@@ -324,13 +326,14 @@ function br = delayCycleBranch(m, free, p, n, points, specials, branchStatus, gr
 % A branch of periodic orbits of a delay model. A row is [alpha, profile
 % (n(NTST*NCOL+1)), T, h, iters, mu_re (c), mu_im (c), trivial_error], where
 % c is the number of Floquet multipliers the run computed (0 without
-% Floquet) and is the third value of GRID. The mesh is uniform and not
-% stored in the row.
+% Floquet) and is the third value of GRID. Without adaptation the mesh is
+% uniform and not stored in the row; with it (a fourth GRID value of 1) the
+% N + 1 mesh values follow trivial_error.
 [name, idx] = freeParameters(m, free, 1);
-[ntst, ncol, c] = delayCycleGrid(grid);
+[ntst, ncol, c, adapt] = delayCycleGrid(grid);
 p = double(p(:));
 np = n*(ntst*ncol + 1);
-width = np + 5 + 2*c;
+width = np + 5 + 2*c + adapt*(ntst + 1);
 if size(points, 1) ~= width || size(specials, 1) ~= width
     error("phasecont:model:badRows", ...
         "Expected rows of %d values, got %d and %d.", width, ...
@@ -338,7 +341,11 @@ if size(points, 1) ~= width || size(specials, 1) ~= width
 end
 [alpha, prof, per, h, iters, ev] = unpackCycleRows(points, np, c);
 npts = size(alpha, 1);
-mesh = repmat(linspace(0, 1, ntst + 1), npts, 1);
+if adapt
+    mesh = points(end-ntst:end, :).';
+else
+    mesh = repmat(linspace(0, 1, ntst + 1), npts, 1);
+end
 [stop, warn] = stopAndWarnings(branchStatus);
 
 info = specialList(branchStatus);
@@ -355,7 +362,11 @@ for k = 1:numel(info)
     pk(idx) = ak;
     data = specialData(info{k});
     data.period = tk;
-    data.mesh = uniform;
+    if adapt
+        data.mesh = specials(end-ntst:end, k).';
+    else
+        data.mesh = uniform;
+    end
     data.ntst = ntst;
     data.ncol = ncol;
     pts(end+1, 1) = phasecont.Point(U = sk(:), P = pk, ...
@@ -471,17 +482,21 @@ ntst = double(grid(1));
 ncol = double(grid(2));
 end
 
-function [ntst, ncol, c] = delayCycleGrid(grid)
-% NTST, NCOL and the Floquet count c from GRID = [NTST NCOL c]. NTST and
-% NCOL are positive integers and c is a non-negative integer.
-if ~isnumeric(grid) || numel(grid) ~= 3 || any(~isfinite(grid)) ...
-        || any(grid(1:2) < 1) || any(grid ~= round(grid)) || grid(3) < 0
+function [ntst, ncol, c, adapt] = delayCycleGrid(grid)
+% NTST, NCOL, the Floquet count c and the adaptation flag from GRID = [NTST
+% NCOL c] or [NTST NCOL c adapt]. NTST and NCOL are positive integers, c is a
+% non-negative integer and adapt is 0 or 1 (0 when GRID has 3 entries).
+if ~isnumeric(grid) || ~(numel(grid) == 3 || numel(grid) == 4) ...
+        || any(~isfinite(grid)) || any(grid(1:2) < 1) ...
+        || any(grid ~= round(grid)) || grid(3) < 0 ...
+        || (numel(grid) == 4 && ~(grid(4) == 0 || grid(4) == 1))
     error("phasecont:model:badOption", ...
-        "A delay cycle branch needs [NTST NCOL c]: NTST and NCOL positive, c at least 0, all integers.");
+        "A delay cycle branch needs [NTST NCOL c] or [NTST NCOL c adapt]: NTST and NCOL positive, c at least 0, adapt 0 or 1, all integers.");
 end
 ntst = double(grid(1));
 ncol = double(grid(2));
 c = double(grid(3));
+adapt = numel(grid) == 4 && grid(4) == 1;
 end
 
 function [name, idx] = freeParameters(m, free, count)
