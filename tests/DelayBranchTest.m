@@ -14,6 +14,8 @@ classdef DelayBranchTest < matlab.unittest.TestCase
         Decay = "par a=2" + newline + "init x=3" + newline + ...
             "x'=-a*x" + newline + "done" + newline
         Roots = struct(N = 30, ReMin = -0.5)
+        LyapunovNotice = "Lyapunov is not set, so this Hopf curve has no GH points " + ...
+            "and the l1 column of Codim2 is NaN. Pass Lyapunov=true to compute them."
         Wright = "par a=1.5, b=0" + newline + ...
             "u'=-a*delay(u,1)*(1+u)+b*u^3" + newline + "done" + newline
         Coupled = "par a=1.4, b=1.2, c=1, d=0.1" + newline + ...
@@ -437,7 +439,7 @@ classdef DelayBranchTest < matlab.unittest.TestCase
             testCase.verifyEqual(c.Free, ["r" "tau"]);
             testCase.verifyEqual(c.FreeIndex, [1 2]);
             testCase.verifyEqual(c.Stop, "Bounds");
-            testCase.verifyEmpty(c.Warnings);
+            testCase.verifyEqual(c.Warnings, testCase.LyapunovNotice);
             n = size(c.Alpha, 1);
             testCase.assertGreaterThan(n, 5);
             testCase.verifySize(c.Alpha, [n 2]);
@@ -499,6 +501,21 @@ classdef DelayBranchTest < matlab.unittest.TestCase
                 MaxNewton = 20);
             testCase.verifyEqual(d.Alpha, c.Alpha);
             testCase.verifyEqual(d.Codim2, c.Codim2);
+        end
+
+        function aDelayHopfCurveWithoutLyapunovSaysSo(testCase)
+            m = testCase.model(testCase.Wright);
+            d = phasecont.continuation(m, 0.001, Type = "H", ...
+                Free = ["a" "b"], Params = struct(a = 1.57, b = 0), ...
+                Omega = 1.57, Bounds = [-1 1], Hmax = 0.05, Direction = 1, ...
+                TolX = 1e-12, TolF = 1e-12, MaxNewton = 20);
+            testCase.verifyEqual(d.Warnings, testCase.LyapunovNotice);
+            c = testCase.wrightCurve(false);
+            testCase.verifyEqual(d.Alpha, c.Alpha);
+            testCase.verifyEqual(d.Codim2, c.Codim2);
+            % A caller that passes the option has chosen, so there is no notice.
+            testCase.verifyEmpty(c.Warnings);
+            testCase.verifyEmpty(testCase.wrightCurve(true).Warnings);
         end
 
         function coupledCurveLabelsTheHopfHopfPointWithRoots(testCase)
@@ -668,7 +685,7 @@ classdef DelayBranchTest < matlab.unittest.TestCase
             testCase.verifyLessThanOrEqual(v.null_residual_zero, 1e-12);
             testCase.verifyLessThanOrEqual(v.null_residual_hopf, 1e-12);
             testCase.verifyLessThanOrEqual(v.equilibrium_residual, 1e-12);
-            testCase.verifyEmpty(c.Warnings);
+            testCase.verifyEqual(c.Warnings, testCase.LyapunovNotice);
             testCase.verifyEqual(zh.Label, "ZH");
         end
 
@@ -706,7 +723,7 @@ classdef DelayBranchTest < matlab.unittest.TestCase
                 testCase.Omega2Star, AbsTol = 1e-6);
             testCase.verifyLessThanOrEqual(hh.Data.values.null_residual_1, 1e-12);
             testCase.verifyLessThanOrEqual(hh.Data.values.null_residual_2, 1e-12);
-            testCase.verifyEmpty(c.Warnings);
+            testCase.verifyEqual(c.Warnings, testCase.LyapunovNotice);
         end
 
         function coefficientsWithoutRootsGiveTheZhValuesOnly(testCase)
@@ -714,7 +731,7 @@ classdef DelayBranchTest < matlab.unittest.TestCase
             % need Roots too; the option alone is no error.
             c = testCase.coupledNlCurve({"Coefficients", true});
             testCase.verifyEmpty(c.points("HH"));
-            testCase.verifyEmpty(c.Warnings);
+            testCase.verifyEqual(c.Warnings, testCase.LyapunovNotice);
         end
 
         function coefficientsDoNotMoveTheHopfHopfRows(testCase)

@@ -84,7 +84,9 @@ function br = continuation(m, start, options)
 %   C.Codim2Labels = ["GH" "HH"]; C.Eigenvalues, C.Tests and C.RootCount are
 %   empty. C.Specials holds BT and ZH always, GH with Lyapunov = true and HH
 %   with Roots = struct(N = n, ReMin = r), the root search at every point.
-%   Lyapunov is a logical scalar, default false. With Coefficients = true
+%   Lyapunov is a logical scalar, default false; a run that does not pass it
+%   adds a notice to C.Warnings saying that GH and l1 are left out. With
+%   Coefficients = true
 %   the zero-Hopf coefficients of each ZH special and the Hopf-Hopf
 %   coefficients of each HH special arrive in Special.Data.values (HH needs
 %   Roots too); a special where the engine refuses has none, and the branch
@@ -259,6 +261,7 @@ if isDelay
     end
 end
 lyapunov = false;
+lyapunovGiven = ~isa(options.Lyapunov, "missing");
 coefficients = false;
 omega = [];
 if isDelayHopf
@@ -578,8 +581,13 @@ record = phasecont.internal.RunRecord(struct( ...
     "N", n, "Json", out.Json, "Points", {out.Points}, ...
     "Specials", {out.Specials}, "Stride", out.Stride));
 for b = 1:nb
+    status = st.branches(b);
+    if isDelayHopf && ~lyapunovGiven
+        % The default leaves out GH and l1 (SPEC 8s), so say so.
+        status = addWarning(status, lyapunovNotice());
+    end
     one = phasecont.internal.rows2branch(m, free, p, n, out.Points{b}, ...
-        out.Specials{b}, st.branches(b), type, grid);
+        out.Specials{b}, status, type, grid);
     one.attachRecord(record, b);
     br(1, b) = one;
 end
@@ -915,4 +923,19 @@ if isCount && value ~= round(value)
     error("phasecont:model:badOption", "%s must be an integer.", name);
 end
 s = """" + key + """:" + phasecont.internal.num2json(double(value));
+end
+
+function s = lyapunovNotice()
+s = "Lyapunov is not set, so this Hopf curve has no GH points and the l1 " + ...
+    "column of Codim2 is NaN. Pass Lyapunov=true to compute them.";
+end
+
+function status = addWarning(status, text)
+% Appends TEXT to the warnings of one branch status, which rows2branch reads.
+old = strings(0, 1);
+if isfield(status, "warnings") && ~isempty(status.warnings)
+    old = string(status.warnings);
+    old = old(:);
+end
+status.warnings = [old; text];
 end
