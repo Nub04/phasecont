@@ -366,7 +366,7 @@ fn the_larger_frequency_comes_first() {
     let c = hand_made("HH", x, OMEGA1_STAR * OMEGA1_STAR, Some(OMEGA1_STAR));
     match dde_special_coefficients(&mut m, &c, &p) {
         Err(EngineError::BadProblem(msg)) => {
-            assert!(msg.contains("omega"), "{msg}");
+            assert!(msg.contains("must be greater than omega2"), "{msg}");
         }
         other => panic!("expected BadProblem, got {other:?}"),
     }
