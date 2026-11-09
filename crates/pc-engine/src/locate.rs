@@ -576,15 +576,40 @@ mod codim2_tests {
     /// models a test that is zero at the start up to rounding. The `crossing_ok` hook
     /// accepts a bracket whose larger end value is at least `floor`, and records its calls
     /// in `seen`.
-    #[derive(Default)]
     struct Curve {
         pole: bool,
+        /// With `pole`, the test is `sign(d) / sqrt(|d|)` instead of `1 / d`.
+        weak: bool,
+        /// A zero with a decaying numerator: `d / (d^2 + 1e-6)`, whose end values look like a
+        /// pole's.
+        lorentz: bool,
+        /// Multiplies the test and the noise.
+        scale: f64,
+        /// Amplitude of a deterministic noise of `x1`, relative to `scale`.
+        noise: f64,
         drop: bool,
         at_start: bool,
         nan_from: Option<usize>,
         calls: usize,
         floor: f64,
         seen: std::cell::RefCell<Vec<(usize, f64, f64)>>,
+    }
+    impl Default for Curve {
+        fn default() -> Self {
+            Curve {
+                pole: false,
+                weak: false,
+                lorentz: false,
+                scale: 1.0,
+                noise: 0.0,
+                drop: false,
+                at_start: false,
+                nan_from: None,
+                calls: 0,
+                floor: 0.0,
+                seen: Default::default(),
+            }
+        }
     }
     fn zero() -> Curve {
         Curve::default()
@@ -622,7 +647,15 @@ mod codim2_tests {
             } else {
                 x[1] - 0.05
             };
-            Ok(vec![if self.pole { 1.0 / d } else { d }])
+            let v = match (self.pole, self.weak, self.lorentz) {
+                (true, true, _) => d.signum() / d.abs().sqrt(),
+                (true, false, _) => 1.0 / d,
+                (false, _, true) => d / (d * d + 1e-6),
+                _ => d,
+            };
+            // Noise that is a fixed function of the position, as rounding is.
+            let n = self.noise * (x[1] * 1.234_567e13).sin();
+            Ok(vec![self.scale * (v + n)])
         }
         fn codim2_label(&self, i: usize, _eigs: &[(f64, f64)]) -> Option<&'static str> {
             if self.drop {
@@ -843,6 +876,81 @@ mod codim2_tests {
             w,
             vec!["could not locate ZZ between points 0 and 1".to_string()]
         );
+    }
+
+    #[test]
+    fn a_pole_is_dropped_at_any_scale_and_under_noise() {
+        // The guard compares values on the step with each other, so a pole at the scale of
+        // 1e-6 or 1e6, with or without noise on the test, still ends at a large value. A
+        // weak pole (exponent 1/2) has smaller end values and is dropped as well.
+        for scale in [1e-6, 1.0, 1e6] {
+            for noise in [0.0, 1e-6] {
+                for weak in [false, true] {
+                    let end = scale * if weak { 0.05f64.powf(-0.5) } else { 20.0 };
+                    let p = Curve {
+                        pole: true,
+                        weak,
+                        scale,
+                        noise,
+                        ..zero()
+                    };
+                    let (w, sp) = run(p, pt_with(0.0, -end), pt_with(0.1, end));
+                    let case = format!("scale {scale}, noise {noise}, weak {weak}");
+                    assert!(sp.is_empty(), "{case}: {sp:?}");
+                    assert_eq!(
+                        w,
+                        vec!["could not locate ZZ between points 0 and 1".to_string()],
+                        "{case}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_zero_with_a_decaying_numerator_is_not_taken_for_a_pole() {
+        // d / (d^2 + 1e-6) has end values that fall off like a pole's, 1 / d, but it crosses
+        // zero at d = 0, between the extremes at d = +-1e-3. The step runs from x1 = -0.02 to
+        // 0.08, so the zero is at s = 0.7 and the first regula falsi trial is far from it.
+        let f = |x: f64| {
+            let d = x - 0.05;
+            d / (d * d + 1e-6)
+        };
+        let (a, b) = (-0.02, 0.08);
+        let pts = [pt_with(a, f(a)), pt_with(b, f(b))];
+        let (w, sp) = run_from(
+            Curve {
+                lorentz: true,
+                ..zero()
+            },
+            &[0.0, a],
+            &pts,
+        );
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(sp.len(), 1);
+        assert_eq!((sp[0].label.as_str(), sp[0].index), ("ZZ", 1));
+        assert!(
+            (sp[0].point.alpha - 0.05).abs() < 1e-8,
+            "{}",
+            sp[0].point.alpha
+        );
+    }
+
+    #[test]
+    fn a_zero_is_found_under_noise_at_any_scale() {
+        // Noise of 1e-10 of the scale on the test, a zero at the middle of the step.
+        for scale in [1e-6, 1.0, 1e6] {
+            let p = Curve {
+                scale,
+                noise: 1e-10,
+                ..zero()
+            };
+            let (w, sp) = run(p, pt_with(0.0, -0.05 * scale), pt_with(0.1, 0.05 * scale));
+            let case = format!("scale {scale}");
+            assert!(w.is_empty(), "{case}: {w:?}");
+            assert_eq!(sp.len(), 1, "{case}");
+            assert!((sp[0].point.alpha - 0.05).abs() < 1e-7, "{case}");
+        }
     }
 
     #[test]
