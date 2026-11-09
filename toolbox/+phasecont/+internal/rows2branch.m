@@ -15,8 +15,9 @@ function br = rows2branch(m, free, p, n, points, specials, branchStatus, kind, g
 %   ST        the status struct of this branch (stop, warnings, specials)
 %   KIND      "EP" (default), "LP", "H", "LC", "LPC", "PD", "NS", "HOM",
 %             "DDE" (a delay equilibrium; "EP" with a delay model does the
-%             same) or "DDEH" (the Hopf curve of a delay equilibrium; "H"
-%             with a delay model does the same)
+%             same), "DDEH" (the Hopf curve of a delay equilibrium; "H"
+%             with a delay model does the same) or "DDELC" (periodic orbits
+%             of a delay model; "LC" with a delay model does the same)
 %   GRID      [NTST NCOL] of a run of cycles or a HOM curve: mesh
 %             intervals and collocation points
 %
@@ -43,6 +44,13 @@ function br = rows2branch(m, free, p, n, points, specials, branchStatus, kind, g
 % Type "H" with N-by-0 Eigenvalues and Tests, the two codim-2 values in
 % Codim2 (labels "GH" and "HH", NaN where the run did not compute them) and
 % Kappa.
+% A column of a branch of periodic orbits of a delay model (kind "DDELC", or
+% "LC" with M.IsDelay) is [alpha, profile(1..n(NTST*NCOL+1)), T, h, iters,
+% mu_re(1..c), mu_im(1..c), trivial_error], where c is the number of Floquet
+% multipliers the run computed (0 without Floquet). The width is
+% n(NTST*NCOL+1) + 5 + 2c and c follows from it. The mesh is uniform and not
+% in the row; the Branch is Type "LC" with Mesh rebuilt from NTST, Stable
+% false, Tests and Codim2 with 0 columns and an empty RootCount.
 % All have NaN for missing values. The function makes no
 % engine calls.
 %
@@ -63,6 +71,10 @@ if kind == "DDE" || (kind == "EP" && ~isempty(m) && m.IsDelay)
 end
 if kind == "DDEH" || (kind == "H" && ~isempty(m) && m.IsDelay)
     br = delayHopfBranch(m, free, p, n, points, specials, branchStatus);
+    return
+end
+if kind == "DDELC" || (kind == "LC" && ~isempty(m) && m.IsDelay)
+    br = delayCycleBranch(m, free, p, n, points, specials, branchStatus, grid);
     return
 end
 nmesh = 0;
@@ -306,6 +318,85 @@ br = phasecont.Branch(struct( ...
     "Specials", pts, "Stop", stop, "Warnings", warn, "Model", m));
 end
 
+function br = delayCycleBranch(m, free, p, n, points, specials, branchStatus, grid)
+% A branch of periodic orbits of a delay model. A row is [alpha, profile
+% (n(NTST*NCOL+1)), T, h, iters, mu_re (c), mu_im (c), trivial_error], where
+% c is the number of Floquet multipliers the run computed (0 without
+% Floquet). The mesh is uniform and not stored in the row.
+[name, idx] = freeParameters(m, free, 1);
+[ntst, ncol] = cycleGrid("LC", grid);
+p = double(p(:));
+np = n*(ntst*ncol + 1);
+c = (size(points, 1) - np - 5) / 2;
+if c < 0 || c ~= round(c) || size(specials, 1) ~= size(points, 1)
+    error("phasecont:model:badRows", ...
+        "Expected rows of %d + 2c values, got %d and %d.", np + 5, ...
+        size(points, 1), size(specials, 1));
+end
+[alpha, prof, per, h, iters, ev] = unpackCycleRows(points, np, c);
+npts = size(alpha, 1);
+mesh = repmat(linspace(0, 1, ntst + 1), npts, 1);
+[stop, warn] = stopAndWarnings(branchStatus);
+
+info = specialList(branchStatus);
+if numel(info) ~= size(specials, 2)
+    error("phasecont:model:badRows", ...
+        "The status lists %d special points but %d rows were copied.", ...
+        numel(info), size(specials, 2));
+end
+pts = phasecont.Point.empty(0, 1);
+uniform = linspace(0, 1, ntst + 1);
+for k = 1:numel(info)
+    [ak, sk, tk, ~, ~, ek] = unpackCycleRows(specials(:, k), np, c);
+    pk = p;
+    pk(idx) = ak;
+    data = specialData(info{k});
+    data.period = tk;
+    data.mesh = uniform;
+    data.ntst = ntst;
+    data.ncol = ncol;
+    pts(end+1, 1) = phasecont.Point(U = sk(:), P = pk, ...
+        Eigenvalues = ek(:), Label = string(info{k}.label), ...
+        Index = double(info{k}.index) + 1, Data = data, Model = m); %#ok<AGROW>
+end
+
+br = phasecont.Branch(struct( ...
+    "Type", "LC", "Free", name, "FreeIndex", idx, "P", p, "Alpha", alpha, ...
+    "U", prof, "Eigenvalues", ev, "Stable", false(npts, 1), ...
+    "Tests", zeros(npts, 0), "Codim2", zeros(npts, 0), ...
+    "Codim2Labels", strings(1, 0), "RootCount", zeros(0, 1), ...
+    "Period", per, "Mesh", mesh, "NTST", ntst, "NCOL", ncol, ...
+    "StepSize", h, "NewtonIters", iters, ...
+    "Specials", pts, "Stop", stop, "Warnings", warn, "Model", m));
+end
+
+function [alpha, prof, per, h, iters, ev] = unpackCycleRows(rows, np, c)
+% Split delay cycle rows: alpha, the profile, the period, h, the Newton
+% iterations and the c leading multipliers. The trailing trivial-multiplier
+% error stays in the row and is not read.
+alpha = rows(1, :).';
+prof = rows(2:1+np, :).';
+per = rows(2+np, :).';
+h = rows(3+np, :).';
+iters = rows(4+np, :).';
+ev = complex(rows(5+np:4+np+c, :).', rows(5+np+c:4+np+2*c, :).');
+if isempty(alpha)
+    prof = zeros(0, np);
+    ev = complex(zeros(0, c));
+end
+end
+
+function data = specialData(info)
+% The fields of Point.Data that every special point of a run carries.
+data = struct( ...
+    "coefficient", numberField(info, "coefficient"), ...
+    "coefficient2", numberField(info, "coefficient2"), ...
+    "omega", numberField(info, "omega"), ...
+    "normalization", textField(info, "normalization"), ...
+    "refined", flagField(info, "refined"), ...
+    "values", structField(info, "coefficients"));
+end
+
 function checkDelayRows(stride, points, specials)
 if size(points, 1) ~= stride || size(specials, 1) ~= stride
     error("phasecont:model:badRows", ...
@@ -339,13 +430,7 @@ pts = phasecont.Point.empty(0, 1);
 for k = 1:numel(info)
     pk = p;
     pk(idx) = freeValues(specials(:, k));
-    data = struct( ...
-        "coefficient", numberField(info{k}, "coefficient"), ...
-        "coefficient2", numberField(info{k}, "coefficient2"), ...
-        "omega", numberField(info{k}, "omega"), ...
-        "normalization", textField(info{k}, "normalization"), ...
-        "refined", flagField(info{k}, "refined"), ...
-        "values", structField(info{k}, "coefficients"));
+    data = specialData(info{k});
     pts(end+1, 1) = phasecont.Point(U = specials(2:1+n, k), P = pk, ...
         Eigenvalues = complex(zeros(0, 1)), Label = string(info{k}.label), ...
         Index = double(info{k}.index) + 1, Data = data, Model = m); %#ok<AGROW>

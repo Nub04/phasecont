@@ -53,6 +53,17 @@ classdef DelayBranchTest < matlab.unittest.TestCase
             g0021_re = 0.829549652892998, g0021_im = -0.5605505214493246, ...
             theta = -1.0737367366445048, delta = -0.5219022074610322, ...
             product = -0.40136290516147716, sign = -1)
+        % SPEC 8s slice 4: the models and numbers of SPEC 8n and 8o. OSC has
+        % the Hopf point (tau, omega) below at mu = 0.3 and cycles of period
+        % 2 pi at tau = pi/2. The LPC model has cycles a = (r^2 - 1)^2.
+        Osc = "par mu=0.3, tau=1.3272372818926783" + newline + ...
+            "x'=-delay(x,tau)+mu*x*(1-x^2-delay(x,tau)^2)" + newline + ...
+            "done" + newline
+        OscTauH = 1.3272372818926783
+        OscOmegaH = 0.9539392014169457
+        LpcModel = "par a=0.25, tau=1.5707963267948966" + newline + ...
+            "x'=-delay(x,tau)+x*(a-(x^2+delay(x,tau)^2-1)^2)" + newline + ...
+            "done" + newline
     end
 
     properties
@@ -135,6 +146,34 @@ classdef DelayBranchTest < matlab.unittest.TestCase
                     b = 0.8, c = 1, d = 0.1), Omega = 1.54, ...
                 Bounds = [0.5 1.4], Hmax = 0.05, Direction = 1, ...
                 TolX = 1e-12, TolF = 1e-12, MaxNewton = 20);
+        end
+
+        function br = oscCycle(testCase, extra)
+            % The OSC cycle run of SPEC 8s slice 4, test 1, from a numeric
+            % start at the Hopf point.
+            m = testCase.model(testCase.Osc);
+            br = phasecont.continuation(m, 0, extra{:}, Type = "LC", ...
+                Free = "tau", Params = struct(mu = 0.3, tau = testCase.OscTauH), ...
+                Omega = testCase.OscOmegaH, NTST = 20, NCOL = 4, Eps = 0.05, ...
+                MaxNewton = 30, Hmax = 0.5, MaxSteps = 500, Direction = 1, ...
+                Bounds = [1 pi/2]);
+        end
+
+        function br = lpcCycle(testCase)
+            % The cycle run of SPEC 8s slice 4, test 2, with 4 multipliers.
+            m = testCase.model(testCase.LpcModel);
+            br = phasecont.continuation(m, 0, Type = "LC", Free = "a", ...
+                Params = struct(a = 1, tau = pi/2), Omega = 1, NTST = 20, ...
+                NCOL = 4, Eps = 0.05, Floquet = struct(NHist = 12, Count = 4), ...
+                MaxNewton = 30, Hmax = 0.1, MaxSteps = 500, Direction = -1, ...
+                Bounds = [-0.5 1.1]);
+        end
+
+        function args = oscArgs(testCase)
+            % Valid arguments of an OSC cycle run, for the error tests.
+            args = {"Type", "LC", "Free", "tau", "Params", ...
+                struct(mu = 0.3, tau = testCase.OscTauH), "Omega", ...
+                testCase.OscOmegaH, "NTST", 20, "NCOL", 4, "Eps", 0.05};
         end
 
         function verifyValues(testCase, have, want)
@@ -748,6 +787,386 @@ classdef DelayBranchTest < matlab.unittest.TestCase
             catch err
                 testCase.verifySubstring(string(err.identifier), "phasecont:");
             end
+        end
+
+        function oscCycleFromANumericStartHasTheEngineNumbers(testCase)
+            br = testCase.oscCycle({});
+            testCase.verifyEqual(br.Type, "LC");
+            testCase.verifyEqual(br.Stop, "Bounds");
+            testCase.verifyEmpty(br.Warnings);
+            testCase.assertSize(br.Alpha, [25 1]);
+            testCase.verifyEqual(br.Alpha(1), 1.3276067784641747, AbsTol = 1e-9);
+            testCase.verifyEqual(br.Alpha(end), pi/2, AbsTol = 1e-9);
+            testCase.verifyEqual(br.Period(end), 2*pi, AbsTol = 5e-11);
+            testCase.verifySize(br.U, [25 81]);
+            testCase.verifyEqual(max(br.U(end, :)), 1, AbsTol = 1e-12);
+            testCase.verifyEqual(min(br.U(end, :)), -1, AbsTol = 1e-12);
+            amp = max(br.U, [], 2);
+            testCase.verifyGreaterThan(min(diff(amp)), 0);
+            testCase.verifyEmpty(br.Specials);
+        end
+
+        function aDelayCycleBranchHasTheCycleLayout(testCase)
+            br = testCase.oscCycle({});
+            npts = numel(br.Alpha);
+            testCase.verifyEqual(br.Free, "tau");
+            testCase.verifyEqual(br.NTST, 20);
+            testCase.verifyEqual(br.NCOL, 4);
+            testCase.verifySize(br.Period, [npts 1]);
+            testCase.verifyEqual(br.Mesh, repmat(linspace(0, 1, 21), npts, 1), ...
+                AbsTol = 1e-15);
+            testCase.verifySize(br.Eigenvalues, [npts 0]);
+            testCase.verifyEqual(br.Stable, false(npts, 1));
+            testCase.verifySize(br.Tests, [npts 0]);
+            testCase.verifySize(br.Codim2, [npts 0]);
+            testCase.verifyEmpty(br.RootCount);
+            testCase.verifyEqual(br.P, [0.3; testCase.OscTauH]);
+            testCase.verifyEqual(br.StepSize(1), 0);
+            testCase.verifyEqual(br.NewtonIters(1), 0);
+        end
+
+        function aDelayCycleBranchMatchesTheEngineRows(testCase)
+            % The branch holds the rows of the engine call as the layout of
+            % SPEC 8s slice 4 puts them.
+            m = testCase.model(testCase.Osc);
+            problem = "{""type"":""LC"",""free"":""tau"",""ntst"":20," + ...
+                """ncol"":4,""omega"":0.9539392014169457,""eps"":0.05," + ...
+                """options"":{""max_newton"":30,""hmax"":0.5,""max_steps"":500," + ...
+                """direction"":1,""bounds"":[1,1.5707963267948966]}}";
+            out = phasecont.internal.runLoop(m, problem, 0, [0.3; testCase.OscTauH]);
+            rows = out.Points{1};
+            testCase.assertSize(rows, [86 25]);
+            br = testCase.oscCycle({});
+            testCase.verifyEqual(br.Alpha, rows(1, :).', RelTol = 1e-12);
+            testCase.verifyEqual(br.U, rows(2:82, :).', RelTol = 1e-12);
+            testCase.verifyEqual(br.Period, rows(83, :).', RelTol = 1e-12);
+            testCase.verifyEqual(br.StepSize, rows(84, :).', RelTol = 1e-12);
+            testCase.verifyEqual(br.NewtonIters, rows(85, :).', RelTol = 1e-12);
+            testCase.verifyTrue(all(isnan(rows(86, :))));
+        end
+
+        function aDelayCycleBranchMatchesTheEngineRowsWithMultipliers(testCase)
+            % The same comparison for the run with four multipliers: the
+            % columns after h and iters are Re mu, Im mu and trivial_error.
+            m = testCase.model(testCase.LpcModel);
+            problem = "{""type"":""LC"",""free"":""a"",""ntst"":20," + ...
+                """ncol"":4,""omega"":1,""eps"":0.05," + ...
+                """floquet"":{""nhist"":12,""count"":4}," + ...
+                """options"":{""max_newton"":30,""hmax"":0.1,""max_steps"":500," + ...
+                """direction"":-1,""bounds"":[-0.5,1.1]}}";
+            out = phasecont.internal.runLoop(m, problem, 0, [1; pi/2]);
+            rows = out.Points{1};
+            testCase.assertSize(rows, [94 99]);
+            br = testCase.lpcCycle();
+            testCase.verifyEqual(br.Alpha, rows(1, :).', RelTol = 1e-12);
+            testCase.verifyEqual(br.U, rows(2:82, :).', RelTol = 1e-12);
+            testCase.verifyEqual(br.Period, rows(83, :).', RelTol = 1e-12);
+            testCase.verifyEqual(br.StepSize, rows(84, :).', RelTol = 1e-12);
+            testCase.verifyEqual(br.NewtonIters, rows(85, :).', RelTol = 1e-12);
+            testCase.verifyEqual(real(br.Eigenvalues), rows(86:89, :).', ...
+                RelTol = 1e-12, AbsTol = 1e-14);
+            testCase.verifyEqual(imag(br.Eigenvalues), rows(90:93, :).', ...
+                RelTol = 1e-12, AbsTol = 1e-14);
+            % The trivial multiplier error is kept in the rows and is small.
+            testCase.verifyLessThan(max(abs(rows(94, :))), 1e-6);
+        end
+
+        function aDelayCycleStartsFromAHopfPointOfAnEquilibriumBranch(testCase)
+            % The H point of a slice 1 branch supplies the equilibrium, the
+            % parameters and the frequency. Its position is only as exact as
+            % the root count, so the tolerances are looser.
+            m = testCase.model(testCase.Osc);
+            eq = phasecont.continuation(m, 0, Free = "tau", ...
+                Params = struct(mu = 0.3, tau = 1.2), ...
+                Roots = struct(N = 30, ReMin = -0.5), Bounds = [1.2 1.5], ...
+                Direction = 1, Hmax = 0.05);
+            h = eq.points("H");
+            testCase.assertNumElements(h, 1);
+            br = phasecont.continuation(m, h, Type = "LC", Free = "tau", ...
+                NTST = 20, NCOL = 4, Eps = 0.05, MaxNewton = 30, Hmax = 0.5, ...
+                MaxSteps = 500, Direction = 1, Bounds = [1 pi/2]);
+            testCase.verifyEqual(br.Type, "LC");
+            testCase.verifyEqual(br.Stop, "Bounds");
+            testCase.assertSize(br.Alpha, [25 1]);
+            testCase.verifyEqual(br.Alpha(1), 1.3276067784641747, AbsTol = 1e-6);
+            testCase.verifyEqual(br.Alpha(end), pi/2, AbsTol = 1e-9);
+            testCase.verifyEqual(br.Period(end), 2*pi, AbsTol = 5e-11);
+            testCase.verifyEqual(max(br.U(end, :)), 1, AbsTol = 1e-12);
+        end
+
+        function aDelayCycleHasItsOrbitThroughCycle(testCase)
+            br = testCase.oscCycle({});
+            npts = numel(br.Alpha);
+            [t, x] = br.cycle(npts);
+            testCase.verifySize(t, [81 1]);
+            testCase.verifySize(x, [81 1]);
+            testCase.verifyEqual(t(1), 0);
+            testCase.verifyEqual(t(end), br.Period(npts), RelTol = 1e-14);
+            testCase.verifyEqual(max(x), 1, AbsTol = 1e-12);
+            testCase.verifyEqual(x(end), x(1), AbsTol = 1e-9);
+            % The orbit is x = sin(t + phase): its mean square is 1/2.
+            testCase.verifyEqual(trapz(t, x.^2) / t(end), 0.5, AbsTol = 6e-9);
+        end
+
+        function lpcModelCycleHasMultipliersAndTheLpcSpecial(testCase)
+            br = testCase.lpcCycle();
+            testCase.verifyEqual(br.Stop, "Bounds");
+            testCase.assertSize(br.Alpha, [99 1]);
+            testCase.verifySize(br.Eigenvalues, [99 4]);
+            testCase.verifyTrue(all(isfinite(br.Eigenvalues), "all"));
+            testCase.verifyEqual(br.Eigenvalues(1, 1), ...
+                complex(real(br.Eigenvalues(1, 1)), 0), AbsTol = 1e-9);
+            testCase.verifyGreaterThan(real(br.Eigenvalues(1, 1)), 1);
+            testCase.verifyEqual(br.Period, 2*pi*ones(99, 1), AbsTol = 2e-10);
+            r = max(br.U, [], 2);
+            testCase.verifyEqual((r.^2 - 1).^2, br.Alpha, AbsTol = 5e-8);
+            % Before the fold the amplitude is sqrt(1 - sqrt(alpha)), after
+            % it sqrt(1 + sqrt(alpha)). The first and last points are far
+            % from the fold.
+            testCase.verifyEqual(r(1), sqrt(1 - sqrt(br.Alpha(1))), AbsTol = 1e-8);
+            testCase.verifyEqual(r(end), sqrt(1 + sqrt(br.Alpha(end))), AbsTol = 1e-8);
+            % The cycles are unstable on the way to the fold: the leading
+            % multiplier is real and a little above 1.
+            mu1 = br.Eigenvalues(1, 1);
+            testCase.verifyEqual(real(mu1), 1.018, AbsTol = 0.005);
+            lpc = br.points("LPC");
+            testCase.assertNumElements(lpc, 1);
+            testCase.verifyEqual(br.Specials, lpc);
+            testCase.verifyEqual(lpc.Index, 68);
+            testCase.verifyEqual(lpc.P(1), 0, AbsTol = 2e-11);
+            testCase.verifyEqual(lpc.P(2), pi/2);
+            testCase.verifyEqual(lpc.Data.period, 2*pi, AbsTol = 2e-10);
+            testCase.verifyEqual(lpc.Data.ntst, 20);
+            testCase.verifyEqual(lpc.Data.ncol, 4);
+            testCase.verifySize(lpc.U, [81 1]);
+            testCase.verifySize(lpc.Eigenvalues, [4 1]);
+            testCase.verifySize(lpc.Data.mesh, [1 21]);
+            % Alpha falls to the fold and then rises again.
+            [~, k] = min(br.Alpha);
+            testCase.verifyLessThanOrEqual(abs(k - lpc.Index), 2);
+            testCase.verifyLessThan(max(diff(br.Alpha(1:k))), 0);
+            testCase.verifyGreaterThan(min(diff(br.Alpha(k:end))), 0);
+        end
+
+        function aDelayCycleBranchSurvivesASessionRoundTrip(testCase)
+            m = testCase.model(testCase.LpcModel);
+            c = phasecont.continuation(m, 0, Type = "LC", Free = "a", ...
+                Params = struct(a = 1, tau = pi/2), Omega = 1, NTST = 20, ...
+                NCOL = 4, Eps = 0.05, Floquet = struct(NHist = 12, Count = 4), ...
+                MaxNewton = 30, Hmax = 0.1, MaxSteps = 500, Direction = -1, ...
+                Bounds = [-0.5 1.1]);
+            file = fullfile(testCase.Dir, "cycle.pcs");
+            save(phasecont.Session(m, {c}), file);
+            back = phasecont.Session.load(file);
+            testCase.addTeardown(@() delete(back.Model));
+            testCase.assertNumElements(back.Items, 1);
+            b = back.Items{1};
+            testCase.verifyEqual(b.Type, "LC");
+            testCase.verifyEqual(b.Free, c.Free);
+            testCase.verifyEqual(b.Alpha, c.Alpha);
+            testCase.verifyEqual(b.U, c.U);
+            testCase.verifyEqual(b.Period, c.Period);
+            testCase.verifyEqual(b.NTST, c.NTST);
+            testCase.verifyEqual(b.NCOL, c.NCOL);
+            testCase.verifyEqual(b.Mesh, c.Mesh);
+            testCase.verifyEqual(b.Eigenvalues, c.Eigenvalues);
+            testCase.verifyEqual(b.Stable, c.Stable);
+            testCase.verifyEqual(b.Stop, c.Stop);
+            testCase.verifyEqual(b.points("LPC").Index, c.points("LPC").Index);
+            testCase.verifyEqual(b.points("LPC").P, c.points("LPC").P);
+            testCase.verifyEqual(b.points("LPC").Data.period, ...
+                c.points("LPC").Data.period);
+        end
+
+        function aDelayCycleRunNeedsItsOwnOptions(testCase)
+            m = testCase.model(testCase.Osc);
+            id = "phasecont:model:badOption";
+            args = testCase.oscArgs();
+            keys = ["NTST" "NCOL" "Eps"];
+            for k = keys
+                at = find(string(args(1:2:end)) == k) * 2 - 1;
+                rest = args;
+                rest(at:at+1) = [];
+                testCase.verifyErrorText( ...
+                    @() phasecont.continuation(m, 0, rest{:}), id, k);
+            end
+        end
+
+        function badEpsValuesAreRefused(testCase)
+            m = testCase.model(testCase.Osc);
+            args = testCase.oscArgs();
+            args(end-1:end) = [];
+            for eps = {0, -0.05, NaN, Inf, "0.05", [0.05 0.1], [], 1 + 2i, true}
+                try
+                    phasecont.continuation(m, 0, args{:}, Eps = eps{1});
+                    testCase.verifyFail("accepted Eps " + string(class(eps{1})));
+                catch err
+                    testCase.verifyEqual(string(err.identifier), ...
+                        "phasecont:model:badOption");
+                    testCase.verifySubstring(string(err.message), "Eps");
+                end
+            end
+        end
+
+        function badFloquetValuesAreRefused(testCase)
+            m = testCase.model(testCase.Osc);
+            args = testCase.oscArgs();
+            bad = {1, "x", [], struct(NHist = 12), struct(Count = 4), ...
+                struct(NHist = 0, Count = 1), struct(NHist = 12, Count = 0), ...
+                struct(NHist = 1.5, Count = 1), struct(NHist = 12, Count = 1.5), ...
+                struct(NHist = [1 2], Count = 1), ...
+                struct(NHist = 12, Count = 4, Extra = 1), ...
+                struct(NHist = "12", Count = 4), ...
+                repmat(struct(NHist = 12, Count = 4), 1, 2)};
+            for f = bad
+                try
+                    phasecont.continuation(m, 0, args{:}, Floquet = f{1});
+                    testCase.verifyFail("accepted a bad Floquet");
+                catch err
+                    testCase.verifyEqual(string(err.identifier), ...
+                        "phasecont:model:badOption");
+                    testCase.verifySubstring(string(err.message), "Floquet");
+                end
+            end
+        end
+
+        function omegaRulesOfADelayCycleRun(testCase)
+            id = "phasecont:model:badOption";
+            % A numeric start needs Omega.
+            m = testCase.model(testCase.Osc);
+            args = testCase.oscArgs();
+            at = find(string(args(1:2:end)) == "Omega") * 2 - 1;
+            rest = args;
+            rest(at:at+1) = [];
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(m, 0, rest{:}), id, "Omega");
+            % A Point start supplies it, so giving it is an error.
+            h = testCase.model(testCase.Hutch);
+            eq = testCase.hutchinson(h);
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(h, eq.points("H"), Type = "LC", ...
+                    Free = "r", NTST = 20, NCOL = 4, Eps = 0.05, ...
+                    Omega = pi/2), id, "Omega");
+            % A bad value.
+            for omega = {[1 2], "1", NaN, Inf, [], 1 + 2i}
+                try
+                    phasecont.continuation(m, 0, args{:}, Omega = omega{1});
+                    testCase.verifyFail("accepted Omega " + class(omega{1}));
+                catch err
+                    testCase.verifyEqual(string(err.identifier), id);
+                    testCase.verifySubstring(string(err.message), "Omega");
+                end
+            end
+            % A Point that is not an H point, even when it carries a
+            % frequency: the label decides.
+            pt = phasecont.Point(U = 1, P = [1.3; 1], Label = "EP", Model = h, ...
+                Data = struct(omega = pi/2));
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(h, pt, Type = "LC", Free = "r", ...
+                    NTST = 20, NCOL = 4, Eps = 0.05), ...
+                "phasecont:model:badStart", "not from ""EP""");
+            % An H point without a frequency in its data.
+            bare = phasecont.Point(U = 1, P = [1.3; 1], Label = "H", Model = h);
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(h, bare, Type = "LC", Free = "r", ...
+                    NTST = 20, NCOL = 4, Eps = 0.05), ...
+                "phasecont:model:badStart", "Data.omega");
+        end
+
+        function aFrequencyBelowTheEngineFloorIsRefusedForACycle(testCase)
+            % The floor of 1e-8 is the engine's (SPEC 8s): zero and 1e-9
+            % reach it through the JSON and come back as an engine error.
+            m = testCase.model(testCase.Osc);
+            args = testCase.oscArgs();
+            at = find(string(args(1:2:end)) == "Omega") * 2 - 1;
+            rest = args;
+            rest(at:at+1) = [];
+            for omega = [0 1e-9]
+                try
+                    phasecont.continuation(m, 0, rest{:}, Omega = omega);
+                    testCase.verifyFail("accepted Omega " + string(omega));
+                catch err
+                    testCase.verifySubstring(string(err.identifier), "phasecont:");
+                    testCase.verifySubstring(string(err.message), "omega");
+                end
+            end
+        end
+
+        function anOdeModelRefusesTheDelayCycleOptions(testCase)
+            ode = testCase.model(testCase.Decay);
+            id = "phasecont:model:badOption";
+            common = {"Type", "LC", "Free", "a", "NTST", 20, "NCOL", 4};
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(ode, 3, common{:}, Eps = 0.05), ...
+                id, "Eps");
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(ode, 3, common{:}, ...
+                    Floquet = struct(NHist = 12, Count = 4)), id, "Floquet");
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(ode, 3, common{:}, Omega = 1), ...
+                id, "Omega");
+        end
+
+        function optionsThatADelayCycleRunDoesNotHaveAreRefused(testCase)
+            m = testCase.model(testCase.Osc);
+            id = "phasecont:model:badOption";
+            args = testCase.oscArgs();
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(m, 0, args{:}, ...
+                    Roots = struct(N = 30, ReMin = -0.5)), id, "Roots");
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(m, 0, args{:}, Lyapunov = true), ...
+                id, "Lyapunov");
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(m, 0, args{:}, Coefficients = true), ...
+                id, "Coefficients");
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(m, 0, args{:}, Detect = "LP"), ...
+                id, "Detect");
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(m, 0, args{:}, MeshAdapt = 2), ...
+                id, "MeshAdapt");
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(m, 0, args{:}, Switch = "BP1"), ...
+                id, "Switch");
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(m, 0, args{:}, Var = "x"), ...
+                id, "Var");
+            % Two free parameters are for the curves.
+            rest = args;
+            rest{4} = ["mu" "tau"];
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(m, 0, rest{:}), ...
+                "phasecont:model:unknownParameter", "Free");
+        end
+
+        function epsAndFloquetBelongToADelayCycleRun(testCase)
+            id = "phasecont:model:badOption";
+            fl = struct(NHist = 12, Count = 4);
+            ode = testCase.model(testCase.Decay);
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(ode, 3, Free = "a", Eps = 0.05, ...
+                    Bounds = [1 3]), id, "Eps");
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(ode, 3, Free = "a", Floquet = fl, ...
+                    Bounds = [1 3]), id, "Floquet");
+            h = testCase.model(testCase.Hutch);
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(h, 1, Free = "r", ...
+                    Roots = testCase.Roots, Eps = 0.05, Bounds = [1.2 2]), ...
+                id, "Eps");
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(h, 1, Free = "r", ...
+                    Roots = testCase.Roots, Floquet = fl, Bounds = [1.2 2]), ...
+                id, "Floquet");
+            w = testCase.model(testCase.Wright);
+            base = {0.001, "Type", "H", "Free", ["a" "b"], "Params", ...
+                struct(a = 1.57, b = 0), "Omega", 1.57, "Bounds", [-1 1]};
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(w, base{:}, Eps = 0.05), id, "Eps");
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(w, base{:}, Floquet = fl), ...
+                id, "Floquet");
         end
     end
 end

@@ -671,5 +671,203 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
                 phasecont.Model.empty, 1, [10; 20], n, rows, rows, st, ...
                 "DDEH"), "phasecont:model:badOption");
         end
+
+        function delayCycleRowsMakeACycleBranch(testCase)
+            % Kind "DDELC": a row is [alpha, profile (n(Nm+1)), period, h,
+            % iters, mu_re (c), mu_im (c), trivial_error]. With n = 2,
+            % ntst = 2 and ncol = 1 the profile has 6 values and c = 2 makes
+            % the stride 15.
+            n = 2;
+            nan = NaN;
+            prof1 = [1 2 3 4 5 6];
+            prof2 = [2 4 6 8 10 12];
+            pts = [ ...
+                1.1, prof1, 6.2, 0,   0, 1.5 nan, 0.0 nan, 1e-9; ...
+                1.2, prof2, 6.4, 0.1, 3, 0.5 0.25, 0.0 0.5, 2e-9].';
+            specials = [1.2, prof2, 6.4, 0.1, 3, 0.5 0.25, 0.0 0.5, 2e-9].';
+            st = struct("points", 2, "stop", "Bounds", ...
+                "warnings", {{"w1"}}, ...
+                "specials", struct("label", "NS", "index", 1, ...
+                    "coefficient", [], "omega", [], "normalization", [], ...
+                    "refined", false));
+            br = phasecont.internal.rows2branch(phasecont.Model.empty, 1, ...
+                [0.3; 1.3], n, pts, specials, st, "DDELC", [2 1]);
+            testCase.verifyEqual(br.Type, "LC");
+            testCase.verifyEqual(br.Free, "p1");
+            testCase.verifyEqual(br.Alpha, [1.1; 1.2]);
+            testCase.verifyEqual(br.U, [prof1; prof2]);
+            testCase.verifyEqual(br.Period, [6.2; 6.4]);
+            testCase.verifyEqual(br.NTST, 2);
+            testCase.verifyEqual(br.NCOL, 1);
+            testCase.verifyEqual(br.Mesh, [0 0.5 1; 0 0.5 1]);
+            testCase.verifyEqual(br.Eigenvalues, ...
+                [complex(1.5, 0) complex(nan, nan); ...
+                 complex(0.5, 0) complex(0.25, 0.5)]);
+            testCase.verifyEqual(br.Stable, [false; false]);
+            testCase.verifySize(br.Tests, [2 0]);
+            testCase.verifySize(br.Codim2, [2 0]);
+            testCase.verifyEqual(br.Codim2Labels, strings(1, 0));
+            testCase.verifySize(br.RootCount, [0 1]);
+            testCase.verifyEqual(br.StepSize, [0; 0.1]);
+            testCase.verifyEqual(br.NewtonIters, [0; 3]);
+            testCase.verifyEqual(br.Stop, "Bounds");
+            testCase.verifyEqual(br.Warnings, "w1");
+            testCase.assertNumElements(br.Specials, 1);
+            sp = br.Specials;
+            testCase.verifyEqual(sp.Label, "NS");
+            testCase.verifyEqual(sp.Index, 2);
+            testCase.verifyEqual(sp.P, [1.2; 1.3]);
+            testCase.verifyEqual(sp.U, prof2.');
+            testCase.verifyEqual(sp.Eigenvalues, ...
+                [complex(0.5, 0); complex(0.25, 0.5)]);
+            testCase.verifyEqual(sp.Data.period, 6.4);
+            testCase.verifyEqual(sp.Data.ntst, 2);
+            testCase.verifyEqual(sp.Data.ncol, 1);
+            testCase.verifyEqual(sp.Data.mesh, [0 0.5 1]);
+        end
+
+        function delayCycleSpecialsTakeTheirFreeValue(testCase)
+            % PD and NS specials: the special's own alpha goes into P at the
+            % free index, the other parameters keep the run's values.
+            n = 1;
+            prof = [1 2 3];
+            row = @(a, T) [a, prof, T, 0.1, 2, 0.9, 0.1, 1e-9].';
+            pts = [row(0.5, 6), row(0.6, 6.1), row(0.7, 6.2)];
+            specials = [row(0.6, 6.1), row(0.7, 6.2)];
+            info = struct("label", {"PD"; "NS"}, "index", {1; 2}, ...
+                "coefficient", [], "omega", [], "normalization", [], ...
+                "refined", false);
+            st = struct("points", 3, "stop", "MaxSteps", "warnings", {{}}, ...
+                "specials", info);
+            br = phasecont.internal.rows2branch(phasecont.Model.empty, 2, ...
+                [10; 20; 30], n, pts, specials, st, "DDELC", [2 1]);
+            testCase.assertNumElements(br.Specials, 2);
+            testCase.verifyEqual(br.Specials(1).P, [10; 0.6; 30]);
+            testCase.verifyEqual(br.Specials(2).P, [10; 0.7; 30]);
+            testCase.verifyEqual(br.Specials(1).Label, "PD");
+            testCase.verifyEqual(br.Specials(2).Label, "NS");
+            testCase.verifySize(br.points("PD"), [1 1]);
+            testCase.verifyEqual(br.Eigenvalues, ...
+                repmat(complex(0.9, 0.1), 3, 1));
+        end
+
+        function delayCycleRowsWithoutFloquetHaveNoEigenvalues(testCase)
+            % count 0: the stride is n(Nm+1) + 5 and Eigenvalues has 0
+            % columns.
+            n = 1;
+            row = @(a) [a, 1 2 3, 6.28, 0.1, 2, NaN].';
+            pts = [row(1.0), row(1.1)];
+            st = struct("points", 2, "stop", "Bounds", "warnings", {{}}, ...
+                "specials", []);
+            br = phasecont.internal.rows2branch(phasecont.Model.empty, 1, ...
+                [1; 2], n, pts, zeros(8, 0), st, "DDELC", [2 1]);
+            testCase.verifySize(br.Eigenvalues, [2 0]);
+            testCase.verifyEqual(br.Alpha, [1.0; 1.1]);
+            testCase.verifyEqual(br.Period, [6.28; 6.28]);
+            testCase.verifySize(br.Specials, [0 1]);
+        end
+
+        function delayCycleRowsWithNoPointsGiveAnEmptyBranch(testCase)
+            n = 2;
+            st = struct("points", 0, "stop", [], "warnings", [], ...
+                "specials", []);
+            rows = zeros(6 + 5, 0);
+            br = phasecont.internal.rows2branch(phasecont.Model.empty, 1, ...
+                [1; 2], n, rows, rows, st, "DDELC", [2 1]);
+            testCase.verifySize(br.Alpha, [0 1]);
+            testCase.verifySize(br.U, [0 6]);
+            testCase.verifySize(br.Period, [0 1]);
+            testCase.verifySize(br.Mesh, [0 3]);
+            testCase.verifySize(br.Eigenvalues, [0 0]);
+        end
+
+        function delayCycleSpecialsKeepTheirOwnValues(testCase)
+            % Three specials of one run, each with values of its own: the
+            % mesh grid [3 2] gives a profile of 7 values, c = 2 a stride of
+            % 16. Index is the engine index plus 1, and the U, Eigenvalues
+            % and period of a special come from its own row, NaN included.
+            n = 1;
+            nan = NaN;
+            row = @(a, k, T, mre, mim) [a, k + (1:7), T, 0.01*k, k, mre, mim, ...
+                1e-9].';
+            pts = [ ...
+                row(0.10, 10, 6.10, [1.5 0.1], [0 0]), ...
+                row(0.20, 20, 6.20, [1.2 0.2], [0 0]), ...
+                row(0.30, 30, 6.30, [-1.0 0.3], [0 0.7]), ...
+                row(0.40, 40, 6.40, [0.9 nan], [0.4 nan])];
+            specials = pts(:, [2 3 4]);
+            info = struct("label", {"PD"; "NS"; "LPC"}, "index", {1; 2; 3}, ...
+                "coefficient", [], "omega", [], "normalization", [], ...
+                "refined", false);
+            st = struct("points", 4, "stop", "Bounds", "warnings", {{}}, ...
+                "specials", info);
+            br = phasecont.internal.rows2branch(phasecont.Model.empty, 2, ...
+                [10; 20; 30], n, pts, specials, st, "DDELC", [3 2]);
+            testCase.verifyEqual(br.NTST, 3);
+            testCase.verifyEqual(br.NCOL, 2);
+            testCase.verifySize(br.U, [4 7]);
+            testCase.verifyEqual(br.Mesh, repmat([0 1 2 3]/3, 4, 1), ...
+                AbsTol = 1e-15);
+            testCase.verifyEqual(br.Eigenvalues(4, :), ...
+                [complex(0.9, 0.4) complex(nan, nan)]);
+            testCase.assertNumElements(br.Specials, 3);
+            labels = ["PD" "NS" "LPC"];
+            idx = [2 3 4];
+            alpha = [0.20 0.30 0.40];
+            period = [6.20 6.30 6.40];
+            for k = 1:3
+                sp = br.Specials(k);
+                testCase.verifyEqual(sp.Label, labels(k));
+                testCase.verifyEqual(sp.Index, idx(k));
+                testCase.verifyEqual(sp.P, [10; alpha(k); 30]);
+                testCase.verifyEqual(sp.U, pts(2:8, idx(k)));
+                testCase.verifyEqual(sp.Data.period, period(k));
+                testCase.verifyEqual(sp.Eigenvalues, br.Eigenvalues(idx(k), :).');
+            end
+        end
+
+        function delayCycleRowsWithNoPointsKeepTheirMultiplierColumns(testCase)
+            % Rows of width 6 + 5 + 2c with c = 2 and no points: the branch is
+            % empty and Eigenvalues has 2 columns.
+            n = 2;
+            st = struct("points", 0, "stop", [], "warnings", [], ...
+                "specials", []);
+            rows = zeros(6 + 5 + 4, 0);
+            br = phasecont.internal.rows2branch(phasecont.Model.empty, 1, ...
+                [1; 2], n, rows, rows, st, "DDELC", [2 1]);
+            testCase.verifySize(br.Alpha, [0 1]);
+            testCase.verifySize(br.Eigenvalues, [0 2]);
+        end
+
+        function delayCycleRowsOfTheWrongWidthAreRefused(testCase)
+            % n = 2, ntst 2, ncol 1: the stride is 11 + 2c, so 12 is no
+            % valid width, and an ODE cycle row has another one still.
+            n = 2;
+            st = struct("points", 1, "stop", "Bounds");
+            rows = zeros(12, 1);
+            testCase.verifyError(@() phasecont.internal.rows2branch( ...
+                phasecont.Model.empty, 1, [1; 2], n, rows, rows, st, ...
+                "DDELC", [2 1]), "phasecont:model:badRows");
+            rows = zeros(10, 1);
+            testCase.verifyError(@() phasecont.internal.rows2branch( ...
+                phasecont.Model.empty, 1, [1; 2], n, rows, rows, st, ...
+                "DDELC", [2 1]), "phasecont:model:badRows");
+            % Points and specials with different widths.
+            testCase.verifyError(@() phasecont.internal.rows2branch( ...
+                phasecont.Model.empty, 1, [1; 2], n, zeros(11, 1), ...
+                zeros(13, 1), st, "DDELC", [2 1]), "phasecont:model:badRows");
+        end
+
+        function delayCycleRowsNeedOneFreeParameterAndAGrid(testCase)
+            n = 1;
+            rows = zeros(8, 1);
+            st = struct("points", 1, "stop", "Bounds");
+            testCase.verifyError(@() phasecont.internal.rows2branch( ...
+                phasecont.Model.empty, [1 2], [1; 2], n, rows, rows, st, ...
+                "DDELC", [2 1]), "phasecont:model:badOption");
+            testCase.verifyError(@() phasecont.internal.rows2branch( ...
+                phasecont.Model.empty, 1, [1; 2], n, rows, rows, st, ...
+                "DDELC"), "phasecont:model:badOption");
+        end
     end
 end

@@ -60,7 +60,7 @@ function br = continuation(m, start, options)
 %
 %   BR = phasecont.continuation(M, X0, Free = "r", Roots = struct(N = 30,
 %   ReMin = -0.5)) follows the equilibria of a delay model, one whose
-%   equations call delay(x, tau). Type is "EP" or "H" for it. N is the
+%   equations call delay(x, tau). Type is "EP", "H" or "LC" for it. N is the
 %   degree of the pseudospectral approximation of the characteristic roots and
 %   ReMin the smallest real part to look for; ReMin must be below 0, and
 %   neither has a default. BR.RootCount holds the number of roots with
@@ -70,9 +70,9 @@ function br = continuation(m, start, options)
 %   point holds omega and the counts before and after in Data.values. The
 %   branch has no Eigenvalues, Tests or Codim2. START must be a state vector
 %   or an EP point. Detect takes "LP" and "BP" only (default both). Switch,
-%   MeshAdapt and every Type other than "EP" and "H" are refused. The engine
-%   returns the points when the run ends, so a live Plot draws once and a
-%   cancelled run keeps nothing.
+%   MeshAdapt and every Type other than "EP", "H" and "LC" are refused. The
+%   engine returns the points when the run ends, so a live Plot draws once and
+%   a cancelled run keeps nothing.
 %
 %   C = phasecont.continuation(M, START, Type = "H", Free = ["a" "b"], Omega =
 %   w) follows the curve of Hopf points of a delay model. START is an H point
@@ -91,12 +91,29 @@ function br = continuation(m, start, options)
 %   gets a warning. Detect, Switch, MeshAdapt and Var are refused. As for
 %   equilibria, the curve arrives when the run ends.
 %
+%   LC = phasecont.continuation(M, START, Type = "LC", Free = "tau", NTST = 20,
+%   NCOL = 4, Omega = w, Eps = 0.05, Floquet = struct(NHist = 12, Count = 4))
+%   follows the periodic orbits of a delay model that branch off an H point.
+%   START is an H point of a delay equilibrium branch, which supplies the
+%   frequency, or a state vector with Params and the Omega of that Hopf point;
+%   Omega with a Point start is an error. The first orbit is the Hopf orbit of
+%   amplitude Eps, corrected by the engine, and Free is one parameter. NTST,
+%   NCOL and Eps have no default. With Floquet the engine also computes the
+%   leading Count Floquet multipliers of every orbit on a history grid of NHist
+%   intervals, and LC.Eigenvalues holds them; without it that array has no
+%   columns. LC.Alpha, LC.U (one orbit per row), LC.Period and LC.cycle(i)
+%   work as for an ODE cycle, the mesh is uniform, and LC.Specials holds the
+%   LPC, PD and NS points the engine finds, with the orbit in Special.Data.
+%   Roots, Lyapunov, Coefficients, Detect, MeshAdapt, Switch and Var are
+%   refused, and the branch arrives when the run ends.
+%
 %   Name-value options
 %     Type       "EP" (default), "LP", "H", "LC", "LPC", "PD", "NS" or "HOM"
 %     Free       free parameter, one of M.Parameters (required); two names
 %                for Type "LP", "H", "LPC", "PD", "NS" or "HOM"
 %     NTST NCOL  mesh intervals and collocation points per interval,
-%                positive integers (required for Type "LC" and for "HOM"
+%                positive integers (required for Type "LC", also of a delay
+%                model, and for "HOM"
 %                from a struct; for "LPC", "PD", "NS" and "HOM" from an LC
 %                branch they default to those of the start)
 %     Index      the point of the LC branch a HOM curve starts from
@@ -115,7 +132,8 @@ function br = continuation(m, start, options)
 %     Plot       true draws the branch while the run goes and ends with the
 %                styled plot of Branch.plot (default false)
 %     Var        variable to plot, a name or an index into M.Variables
-%                (default the first variable of M); Type "EP" or "LC", a
+%                (default the first variable of M); Type "EP" or "LC" (not a
+%                delay "LC"), a
 %                curve of any other Type is plotted in the plane of its two
 %                free parameters
 %     Params     struct or vector that overrides the parameters of START
@@ -127,11 +145,19 @@ function br = continuation(m, start, options)
 %                of at least 0, engine default 3); Type "LC", "LPC", "PD",
 %                "NS" or "HOM" only
 %     Roots      struct(N = n, ReMin = r) for a delay model (required for
-%                Type "EP", optional for "H", refused for an ODE model); see
-%                above
-%     Omega      frequency of the Hopf point a delay "H" curve starts from,
-%                a finite real scalar above 1e-8 (required for a state vector
-%                start, an error with a Point); Type "H" of a delay model only
+%                Type "EP", optional for "H", refused for "LC" and for an ODE
+%                model); see above
+%     Omega      frequency of the Hopf point a delay "H" curve or "LC" run
+%                starts from, a finite real scalar above 1e-8 (required for a
+%                state vector start, an error with a Point); Type "H" or "LC"
+%                of a delay model only
+%     Eps        amplitude of the first orbit of a delay "LC" run, a finite
+%                real scalar above 0 (required); Type "LC" of a delay model
+%                only
+%     Floquet    struct(NHist = h, Count = c) with integers of at least 1: the
+%                history grid and the number of leading Floquet multipliers
+%                to report for a delay "LC" run (default none); Type "LC" of a
+%                delay model only
 %     Lyapunov   true adds the first Lyapunov coefficient and the GH label to
 %                a delay "H" curve (logical scalar, default false); Type "H"
 %                of a delay model only
@@ -171,6 +197,8 @@ arguments
     options.Omega = missing
     options.Lyapunov = missing
     options.Coefficients = missing
+    options.Eps = missing
+    options.Floquet = missing
 end
 import phasecont.internal.num2json
 
@@ -180,24 +208,37 @@ if ~isscalar(type) || ~ismember(type, ["EP" "LP" "H" "LC" "LPC" "PD" "NS" "HOM"]
         "Type must be ""EP"", ""LP"", ""H"", ""LC"", ""LPC"", ""PD"", ""NS"" or ""HOM"".");
 end
 isDelay = m.IsDelay;
-if isDelay && type ~= "EP" && type ~= "H"
+if isDelay && type ~= "EP" && type ~= "H" && type ~= "LC"
     error("phasecont:model:badOption", ...
-        "Type must be ""EP"" or ""H"" for a delay model, got ""%s"".", type);
+        "Type must be ""EP"", ""H"" or ""LC"" for a delay model, got ""%s"".", type);
 end
 isDelayHopf = isDelay && type == "H";
-roots = delayRoots(options.Roots, isDelay, isDelayHopf);
-if ~isDelayHopf
-    for name = ["Omega" "Lyapunov" "Coefficients"]
-        if ~isa(options.(name), "missing")
-            error("phasecont:model:badOption", ...
-                "%s applies to Type = ""H"" of a delay model only.", name);
-        end
+isDelayCycle = isDelay && type == "LC";
+if isDelayCycle && ~(isempty(options.Roots) && ~isstruct(options.Roots))
+    error("phasecont:model:badOption", ...
+        "Roots does not apply to Type = ""LC"" of a delay model.");
+end
+roots = delayRoots(options.Roots, isDelay, isDelayHopf || isDelayCycle);
+for name = ["Lyapunov" "Coefficients"]
+    if ~isDelayHopf && ~isa(options.(name), "missing")
+        error("phasecont:model:badOption", ...
+            "%s applies to Type = ""H"" of a delay model only.", name);
+    end
+end
+if ~(isDelayHopf || isDelayCycle) && ~isa(options.Omega, "missing")
+    error("phasecont:model:badOption", ...
+        "Omega applies to Type = ""H"" or ""LC"" of a delay model only.");
+end
+for name = ["Eps" "Floquet"]
+    if ~isDelayCycle && ~isa(options.(name), "missing")
+        error("phasecont:model:badOption", ...
+            "%s applies to Type = ""LC"" of a delay model only.", name);
     end
 end
 if isDelay
-    % The engine's delay entry follows equilibria and the Hopf curve through
-    % one of their Hopf points. A Hopf point comes from the root count, and
-    % none of the cycle options exist.
+    % The engine's delay entry follows equilibria, the Hopf curve through one
+    % of their Hopf points and the cycles that start at one. A Hopf point
+    % comes from the root count, and the other cycle options do not exist.
     if ~isempty(options.MeshAdapt)
         error("phasecont:model:badOption", ...
             "MeshAdapt does not apply to a delay model.");
@@ -205,6 +246,10 @@ if isDelay
     if ~isempty(options.Switch)
         error("phasecont:model:badOption", ...
             "Switch does not apply to a delay model.");
+    end
+    if isDelayCycle && ~isempty(options.Var)
+        error("phasecont:model:badOption", ...
+            "Var does not apply to Type = ""LC"" of a delay model.");
     end
     if type == "EP" && ~isa(options.Detect, "missing") ...
             && ~all(ismember(string(options.Detect), ["LP" "BP"]))
@@ -231,13 +276,21 @@ if isDelayHopf
                 "Lyapunov must be a logical scalar.");
         end
     end
-    if ~isa(options.Omega, "missing")
-        omega = options.Omega;
-        if ~(isnumeric(omega) && isreal(omega) && isscalar(omega) && isfinite(omega))
-            error("phasecont:model:badOption", ...
-                "Omega must be a finite real scalar.");
-        end
-        omega = double(omega);
+end
+if (isDelayHopf || isDelayCycle) && ~isa(options.Omega, "missing")
+    omega = options.Omega;
+    if ~(isnumeric(omega) && isreal(omega) && isscalar(omega) && isfinite(omega))
+        error("phasecont:model:badOption", ...
+            "Omega must be a finite real scalar.");
+    end
+    omega = double(omega);
+end
+eps0 = [];
+floquet = [];
+if isDelayCycle
+    eps0 = delayCycleEps(options.Eps);
+    if ~isa(options.Floquet, "missing")
+        floquet = delayCycleFloquet(options.Floquet);
     end
 end
 isCycle = type == "LC";
@@ -307,7 +360,12 @@ elseif ~isscalar(free) || ~any(m.Parameters == free)
     error("phasecont:model:unknownParameter", ...
         "Free must be one of: %s.", strjoin(m.Parameters, ", "));
 end
-if isCycle
+if isDelayCycle
+    [u0, p, ~] = startValues(m, start, options.Params);
+    omega = delayHopfOmega(start, omega, "LC");
+    from = "";
+    mesh = [];
+elseif isCycle
     [u0, p, from, mesh] = cycleStart(m, start, options.Params);
 elseif isCycleCurve
     [u0, p, mesh, grid] = curveCycleStart(m, start, options.Params, type);
@@ -322,7 +380,7 @@ elseif isHom
 else
     [u0, p, special] = startValues(m, start, options.Params);
     if isDelayHopf
-        omega = delayHopfOmega(start, omega);
+        omega = delayHopfOmega(start, omega, "H");
     elseif isDelay && special
         error("phasecont:model:badStart", ...
             "A delay run starts from an equilibrium (label ""EP""), not from ""%s"".", ...
@@ -398,6 +456,15 @@ elseif isCycleCurve
         ",""ntst"":" + num2json(grid(1)) + ",""ncol"":" + num2json(grid(2)) + ...
         ",""mesh"":[" + strjoin(arrayfun(@num2json, mesh), ",") + "]" + ...
         ",""options"":{" + strjoin(parts, ",") + "}";
+elseif isDelayCycle
+    problem = "{""type"":""LC"",""free"":" + jsonencode(free) + ...
+        ",""ntst"":" + num2json(grid(1)) + ",""ncol"":" + num2json(grid(2)) + ...
+        ",""omega"":" + num2json(omega) + ",""eps"":" + num2json(eps0);
+    if ~isempty(floquet)
+        problem = problem + ",""floquet"":{""nhist"":" + num2json(floquet.NHist) + ...
+            ",""count"":" + num2json(floquet.Count) + "}";
+    end
+    problem = problem + ",""options"":{" + strjoin(parts, ",") + "}";
 elseif isDelayHopf
     problem = "{""type"":""H"",""free"":" + jsonencode(free) + ...
         ",""omega"":" + num2json(omega) + ...
@@ -571,14 +638,15 @@ end
 roots = struct("N", double(value.N), "ReMin", double(value.ReMin));
 end
 
-function omega = delayHopfOmega(start, omega)
-% The frequency of a delay Hopf curve. A Point start must carry an H label and
-% supplies it in Data.omega, so Omega is then an error; a state vector needs it.
+function omega = delayHopfOmega(start, omega, kind)
+% The frequency of a delay Hopf curve or of the cycles that start at a Hopf
+% point. A Point start must carry an H label and supplies it in Data.omega, so
+% Omega is then an error; a state vector needs it.
 if isa(start, "phasecont.Point")
     if start.Label ~= "H"
         error("phasecont:model:badStart", ...
-            "A delay ""H"" run starts from an H point, not from ""%s"".", ...
-            start.Label);
+            "A delay ""%s"" run starts from an H point, not from ""%s"".", ...
+            kind, start.Label);
     end
     if ~isempty(omega)
         error("phasecont:model:badOption", ...
@@ -594,6 +662,39 @@ elseif isempty(omega)
     error("phasecont:model:badOption", ...
         "A state vector start needs the Omega option, the frequency of the Hopf point.");
 end
+end
+
+function eps0 = delayCycleEps(value)
+% The amplitude of the first orbit of a delay cycle run. It has no default.
+if isa(value, "missing")
+    error("phasecont:model:badOption", ...
+        "The Eps option is required for Type = ""LC"" of a delay model.");
+end
+if ~(isnumeric(value) && isreal(value) && isscalar(value) && isfinite(value) ...
+        && value > 0)
+    error("phasecont:model:badOption", ...
+        "Eps must be a finite real scalar above 0.");
+end
+eps0 = double(value);
+end
+
+function fl = delayCycleFloquet(value)
+% The Floquet option of a delay cycle run: struct(NHist = h, Count = c).
+ok = isstruct(value) && isscalar(value) ...
+    && isequal(sort(string(fieldnames(value))), ["Count"; "NHist"]);
+if ok
+    h = value.NHist;
+    c = value.Count;
+    ok = isnumeric(h) && isreal(h) && isscalar(h) && isfinite(h) ...
+        && h >= 1 && h == round(h) ...
+        && isnumeric(c) && isreal(c) && isscalar(c) && isfinite(c) ...
+        && c >= 1 && c == round(c);
+end
+if ~ok
+    error("phasecont:model:badOption", ...
+        "Floquet must be struct(NHist = h, Count = c) with integers h and c of at least 1.");
+end
+fl = struct("NHist", double(value.NHist), "Count", double(value.Count));
 end
 
 function [u0, p, special] = startValues(m, start, params)

@@ -43,17 +43,21 @@ classdef Branch < handle
     %                N-by-n(NTST*NCOL+1) (see cycle)
     %   Eigenvalues  N-by-n complex; the Floquet multipliers for "LC",
     %                "LPC", "PD" and "NS"; for "HOM", the eigenvalues of the
-    %                Jacobian at the saddle X0; N-by-0 for a delay model
+    %                Jacobian at the saddle X0; N-by-0 for a delay model,
+    %                except the leading Floquet multipliers of a delay "LC"
+    %                run that asked for them with Floquet (N-by-Count)
     %   Stable       true where all eigenvalues have negative real part; for
     %                "LC", where all multipliers except the one closest to 1
     %                have modulus below 1; false everywhere on a curve, whose
     %                points are never hyperbolic; for a delay model, true
-    %                where RootCount is 0
+    %                where RootCount is 0; false everywhere on a delay "LC"
+    %                branch, which has no stability test
     %   RootCount    for a delay model, the number of characteristic roots
     %                with positive real part at each point, N-by-1; empty
-    %                for an ODE model
+    %                for an ODE model and for a delay "LC" branch
     %   Tests        [psi_LP psi_BP psi_H] at each point, N-by-3; [psi_LPC
-    %                psi_PD psi_NS] for "LC"; N-by-0 on a curve
+    %                psi_PD psi_NS] for "LC" (N-by-0 for a delay "LC"); N-by-0
+    %                on a curve
     %   Codim2       codim-2 test values at each point of a curve, N-by-k
     %                (N-by-0 for Type "EP" and "LC")
     %   Codim2Labels the k labels of the columns of Codim2: ["CP" "BT" "ZH"]
