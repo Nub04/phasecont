@@ -42,6 +42,41 @@ pub fn guard<T>(f: impl FnOnce() -> T) -> Result<T, String> {
     })
 }
 
+/// A value whose drop cannot unwind into the drop of its neighbours.
+///
+/// Every `Drop` of the opencl3 objects ends in `.expect(...)` on the release call. When one
+/// object fails to release, the panic unwinds and the drop glue goes on with the next field.
+/// A second failing release then panics while the first still unwinds, and Rust aborts the
+/// process, which no `catch_unwind` can stop. `Quiet` runs the drop of its value inside
+/// [`guard`], so a failed release leaks one handle and the next drop still starts clean.
+pub struct Quiet<T>(ManuallyDrop<T>);
+
+impl<T> Quiet<T> {
+    pub fn new(value: T) -> Self {
+        Quiet(ManuallyDrop::new(value))
+    }
+}
+
+impl<T> std::ops::Deref for Quiet<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for Quiet<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+
+impl<T> Drop for Quiet<T> {
+    fn drop(&mut self) {
+        // SAFETY: the value is dropped here and nowhere else, and never used afterwards.
+        let _ = guard(|| unsafe { ManuallyDrop::drop(&mut self.0) });
+    }
+}
+
 /// A kernel the emitter cannot write is an unsupported model, whichever dialect was asked for.
 pub fn kernel_err(e: KernelError) -> EnsembleError {
     match e {
@@ -158,6 +193,67 @@ mod tests {
     use super::*;
     use crate::job::Status;
     use crate::kernel::CTL;
+
+    /// A value whose drop always panics, like an opencl3 object whose release failed.
+    struct Bomb<'a>(&'a std::sync::atomic::AtomicUsize);
+
+    impl Drop for Bomb<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            panic!("release failed");
+        }
+    }
+
+    #[test]
+    fn two_failing_drops_in_one_scope_do_not_abort() {
+        let dropped = std::sync::atomic::AtomicUsize::new(0);
+        // Without `Quiet` the second bomb would panic while the first still unwinds, and the
+        // test process would abort instead of failing.
+        let ran = guard(|| {
+            let _first = Quiet::new(Bomb(&dropped));
+            let _second = Quiet::new(Bomb(&dropped));
+        });
+        assert!(ran.is_ok(), "{ran:?}");
+        assert_eq!(dropped.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn failing_drops_of_the_fields_of_one_struct_do_not_abort() {
+        struct Pair<'a> {
+            _a: Quiet<Bomb<'a>>,
+            _b: Quiet<Bomb<'a>>,
+            _c: Quiet<Bomb<'a>>,
+        }
+        let dropped = std::sync::atomic::AtomicUsize::new(0);
+        let ran = guard(|| {
+            let _pair = Pair {
+                _a: Quiet::new(Bomb(&dropped)),
+                _b: Quiet::new(Bomb(&dropped)),
+                _c: Quiet::new(Bomb(&dropped)),
+            };
+        });
+        assert!(ran.is_ok(), "{ran:?}");
+        assert_eq!(dropped.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn a_failing_drop_during_unwinding_does_not_abort() {
+        let dropped = std::sync::atomic::AtomicUsize::new(0);
+        let ran = guard(|| {
+            let _bomb = Quiet::new(Bomb(&dropped));
+            panic!("the run itself failed");
+        });
+        assert_eq!(ran.unwrap_err(), "the run itself failed");
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_quiet_value_reads_and_writes_through() {
+        let mut v = Quiet::new(vec![1, 2, 3]);
+        v.push(4);
+        assert_eq!(v.len(), 4);
+        assert_eq!(*v, [1, 2, 3, 4]);
+    }
 
     #[test]
     fn the_global_size_covers_every_member_in_whole_groups() {

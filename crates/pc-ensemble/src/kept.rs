@@ -53,6 +53,17 @@ impl<T> Kept<T> {
         Some(slots.swap_remove(at).1)
     }
 
+    /// Removes the value kept for `key` only if it is the one `seen` points to, and returns it.
+    /// A run that failed removes the value it used. Another run may have replaced that value
+    /// after an earlier failure, and the new one must stay.
+    pub fn forget_if(&self, key: usize, seen: &Arc<T>) -> Option<Arc<T>> {
+        let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
+        let at = slots
+            .iter()
+            .position(|(k, v)| *k == key && Arc::ptr_eq(v, seen))?;
+        Some(slots.swap_remove(at).1)
+    }
+
     /// How many values are kept.
     pub fn len(&self) -> usize {
         self.slots
@@ -204,6 +215,23 @@ mod tests {
         kept.get_or_make(1, counted(&built, 5)).unwrap();
         assert!(kept.forget(0).is_none());
         assert_eq!(kept.len(), 1);
+    }
+
+    #[test]
+    fn forget_if_removes_only_the_value_that_was_seen() {
+        let kept = Kept::new();
+        let built = AtomicUsize::new(0);
+        let old = kept.get_or_make(0, counted(&built, 1)).unwrap();
+        drop(kept.forget(0));
+        let new = kept.get_or_make(0, counted(&built, 2)).unwrap();
+        // A second failing run still holds the old value and asks to remove it.
+        assert!(kept.forget_if(0, &old).is_none());
+        assert_eq!(kept.len(), 1);
+        assert!(Arc::ptr_eq(&kept.get(0).unwrap(), &new));
+        let gone = kept.forget_if(0, &new).expect("the seen value is kept");
+        assert!(Arc::ptr_eq(&gone, &new));
+        assert!(kept.is_empty());
+        assert!(kept.forget_if(1, &new).is_none());
     }
 
     #[test]

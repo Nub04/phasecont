@@ -54,11 +54,27 @@ fn drv_text(step: &str, e: &DriverError) -> String {
     format!("{step}: {:?}", e.0)
 }
 
+/// The driver errors that NVIDIA documents as leaving the process unable to use CUDA: an
+/// illegal address (700), a launch timeout (702), a device assert (710), a hardware stack
+/// error, an illegal instruction, a misaligned address, an invalid address space or an
+/// invalid program counter (714 to 718) and a launch failure (719). On the RTX 5060 test
+/// machine, a new context made after error 700 failed with 700 as well
+/// (`tests/sticky.rs`), so dropping the context does not clear these errors.
+const STICKY: [u32; 9] = [700, 702, 710, 714, 715, 716, 717, 718, 719];
+
+/// Added to the text of a sticky error.
+const STICKY_NOTE: &str = "; the driver can keep this error until the process ends, so if later \
+GPU runs fail the same way, restart the process (in MATLAB, restart MATLAB)";
+
 /// A driver error of a copy, a launch or a synchronize. A watchdog stop is its own error.
 fn drv(step: &'static str) -> impl Fn(DriverError) -> EnsembleError {
     move |e| {
-        let text = drv_text(step, &e);
-        if e.0 as u32 == LAUNCH_TIMEOUT {
+        let code = e.0 as u32;
+        let mut text = drv_text(step, &e);
+        if STICKY.contains(&code) {
+            text.push_str(STICKY_NOTE);
+        }
+        if code == LAUNCH_TIMEOUT {
             EnsembleError::GpuTimeout(text)
         } else {
             EnsembleError::GpuLaunch(text)
@@ -450,6 +466,8 @@ pub fn run_cuda(
     };
     let src = kernel_source(&tape, integrator_of(job.method), scalar, Dialect::Cuda)
         .map_err(kernel_err)?;
+    // The entry this run used, so that a failure removes that one and not a newer one.
+    let mut used: Option<Arc<Entry>> = None;
     let ran = guard(|| {
         // The context comes from the table inside the guard, because `CudaContext::new`
         // panics when a library is missing and the last drop of a context can too.
@@ -460,18 +478,22 @@ pub fn run_cuda(
                 ctx,
             }))
         })?;
-        session(&entry, device, p, job, &checked, &tape, &src, cancel)
+        let entry = used.insert(entry);
+        session(entry, device, p, job, &checked, &tape, &src, cancel)
     })
     .unwrap_or_else(|msg| Err(EnsembleError::GpuLaunch(format!("panic in cudarc: {msg}"))));
     if matches!(
         ran,
         Err(EnsembleError::GpuLaunch(_) | EnsembleError::GpuTimeout(_))
-    ) {
+    ) && let Some(seen) = &used
+    {
         // A driver error can stay in the context and fail every later call, so the next run
-        // on this device starts from a new one.
-        let gone = CONTEXTS.forget(device.index);
+        // on this device starts from a new one. Only the entry this run used is removed.
+        let gone = CONTEXTS.forget_if(device.index, seen);
         let _ = guard(|| drop(gone));
     }
+    // The last drop of an entry can panic, so this one is dropped where a panic is caught.
+    let _ = guard(|| drop(used));
     ran
 }
 
@@ -611,6 +633,10 @@ fn launch_all<T: Real + DeviceRepr>(
 
     drive(&mut packed.ctl, members as usize, cancel, |steps| {
         let started = Instant::now();
+        #[cfg(feature = "fault-injection")]
+        if crate::fault::take_panic_fault() {
+            panic!("injected panic in launch");
+        }
         {
             let mut b = stream.launch_builder(function);
             b.arg(&rc)
@@ -681,6 +707,64 @@ mod tests {
         let raw: Vec<c_char> = b"error: x\0garbage".iter().map(|&b| b as c_char).collect();
         assert_eq!(c_text(&raw), "error: x");
         assert_eq!(c_text(&[]), "");
+    }
+
+    #[test]
+    fn a_launch_timeout_is_a_timeout_and_other_driver_errors_are_launch_errors() {
+        use dsys::CUresult;
+        let timeout = drv("synchronize")(DriverError(CUresult::CUDA_ERROR_LAUNCH_TIMEOUT));
+        assert!(
+            matches!(&timeout, EnsembleError::GpuTimeout(m) if m.contains("LAUNCH_TIMEOUT")),
+            "{timeout:?}"
+        );
+        // The launch failure, an illegal address and an out of memory stay launch errors.
+        for code in [
+            CUresult::CUDA_ERROR_LAUNCH_FAILED,
+            CUresult::CUDA_ERROR_ILLEGAL_ADDRESS,
+            CUresult::CUDA_ERROR_OUT_OF_MEMORY,
+        ] {
+            let other = drv("launch")(DriverError(code));
+            assert!(
+                matches!(&other, EnsembleError::GpuLaunch(m) if m.starts_with("launch: ")),
+                "{other:?}"
+            );
+        }
+        assert_eq!(LAUNCH_TIMEOUT, CUresult::CUDA_ERROR_LAUNCH_TIMEOUT as u32);
+    }
+
+    #[test]
+    fn a_sticky_error_says_to_restart_and_the_others_do_not() {
+        use dsys::CUresult::*;
+        let codes = [
+            CUDA_ERROR_ILLEGAL_ADDRESS,
+            CUDA_ERROR_LAUNCH_TIMEOUT,
+            CUDA_ERROR_ASSERT,
+            CUDA_ERROR_HARDWARE_STACK_ERROR,
+            CUDA_ERROR_ILLEGAL_INSTRUCTION,
+            CUDA_ERROR_MISALIGNED_ADDRESS,
+            CUDA_ERROR_INVALID_ADDRESS_SPACE,
+            CUDA_ERROR_INVALID_PC,
+            CUDA_ERROR_LAUNCH_FAILED,
+        ];
+        let listed: Vec<u32> = codes.iter().map(|&c| c as u32).collect();
+        assert_eq!(listed, STICKY, "the list matches the driver's numbers");
+        for code in codes {
+            let e = drv("synchronize")(DriverError(code));
+            let (EnsembleError::GpuLaunch(m) | EnsembleError::GpuTimeout(m)) = e else {
+                panic!("a device error is a launch or a timeout");
+            };
+            assert!(m.contains("restart"), "{m}");
+        }
+        for code in [
+            CUDA_ERROR_INVALID_VALUE,
+            CUDA_ERROR_OUT_OF_MEMORY,
+            CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES,
+        ] {
+            let EnsembleError::GpuLaunch(m) = drv("launch")(DriverError(code)) else {
+                panic!("a launch error");
+            };
+            assert!(!m.contains("restart"), "{m}");
+        }
     }
 
     #[test]

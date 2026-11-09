@@ -11,6 +11,7 @@ use common::*;
 use pc_ensemble::device::{Backend, BackendState, DeviceInfo, find_device, list_devices};
 use pc_ensemble::run::run_on;
 use pc_ensemble::{EnsembleError, EnsembleResult, Method, Precision};
+use std::sync::atomic::AtomicBool;
 
 /// The device to test, or `None` after a skip.
 fn device_of(backend: Backend) -> Option<DeviceInfo> {
@@ -58,12 +59,22 @@ fn try_job(
     method: Method,
     precision: Precision,
 ) -> Result<EnsembleResult, EnsembleError> {
+    try_job_with(device, src, method, precision, &NO_CANCEL())
+}
+
+fn try_job_with(
+    device: &DeviceInfo,
+    src: &str,
+    method: Method,
+    precision: Precision,
+    cancel: &AtomicBool,
+) -> Result<EnsembleResult, EnsembleError> {
     let model = build_model(src);
     let members = 64;
     let x0 = vec![0.5; members * model.n()];
     let params = vec![1.0; model.n_p()];
     let j = job(&model, members, &x0, &params, 1.0, method, precision);
-    run_on(device, &j, &NO_CANCEL())
+    run_on(device, &j, cancel)
 }
 
 fn run_job(device: &DeviceInfo, src: &str, method: Method, precision: Precision) -> EnsembleResult {
@@ -138,8 +149,34 @@ fn steps(backend: Backend) {
     }
     assert_eq!(kept(backend, 0), 8, "the cache holds at most 8 kernels");
 
+    cancel_keeps_the_entry(&device, backend);
+
     #[cfg(feature = "fault-injection")]
-    eviction(&device, backend);
+    {
+        eviction(&device, backend);
+        panic_eviction(&device, backend);
+    }
+}
+
+/// A run that starts with the cancel flag set ends with `Cancelled`. That is not a device
+/// error, so the entry stays, and the next run reuses it.
+fn cancel_keeps_the_entry(device: &DeviceInfo, backend: Backend) {
+    let (method, precision) = if device.fp64 {
+        (DP5_STD, Precision::Double)
+    } else {
+        (DP5_SINGLE, Precision::Single)
+    };
+    run_job(device, DECAY, method, precision);
+    let held = kept(backend, 0);
+    assert!(held >= 1, "the run keeps its entry");
+    let warm = compiles(backend);
+    let flag = AtomicBool::new(true);
+    let err = try_job_with(device, DECAY, method, precision, &flag).expect_err("cancelled");
+    assert_eq!(err, EnsembleError::Cancelled);
+    assert_eq!(kept(backend, 0), held, "a cancel does not remove the entry");
+    assert_eq!(compiles(backend), warm, "and reuses the kernel");
+    run_job(device, DECAY, method, precision);
+    assert_eq!(compiles(backend), warm, "the next run reuses it too");
 }
 
 #[test]
@@ -177,6 +214,45 @@ fn eviction(device: &DeviceInfo, backend: Backend) {
     assert_eq!(compiles(backend), warm, "the failed run reused the kernel");
 
     // The flag is one-shot: this run is not armed.
+    let after = run_job(device, DECAY, method, precision);
+    assert_eq!(compiles(backend), warm + 1, "a new context compiles again");
+    assert_eq!(kept(backend, 0), 1, "and keeps its entry");
+    assert_eq!(
+        before.states, after.states,
+        "the new context gives the same states"
+    );
+}
+
+/// A panic inside the library call ends the run with `gpuLaunch` and removes the entry, as a
+/// launch error does. Nothing reaches the caller as a panic.
+#[cfg(feature = "fault-injection")]
+fn panic_eviction(device: &DeviceInfo, backend: Backend) {
+    let (method, precision) = if device.fp64 {
+        (DP5_STD, Precision::Double)
+    } else {
+        (DP5_SINGLE, Precision::Single)
+    };
+    let before = run_job(device, DECAY, method, precision);
+    assert!(kept(backend, 0) >= 1, "the run keeps its entry");
+    let warm = compiles(backend);
+
+    pc_ensemble::fault::arm_panic_fault();
+    let err = try_job(device, DECAY, method, precision).expect_err("the armed panic fails");
+    let library = match backend {
+        Backend::Cuda => "panic in cudarc",
+        _ => "panic in opencl3",
+    };
+    assert!(
+        matches!(&err, EnsembleError::GpuLaunch(m) if m.contains(library) && m.contains("injected")),
+        "{err:?}"
+    );
+    assert_eq!(kept(backend, 0), 0, "the panicked run removed the entry");
+    assert_eq!(
+        compiles(backend),
+        warm,
+        "the panicked run reused the kernel"
+    );
+
     let after = run_job(device, DECAY, method, precision);
     assert_eq!(compiles(backend), warm + 1, "a new context compiles again");
     assert_eq!(kept(backend, 0), 1, "and keeps its entry");

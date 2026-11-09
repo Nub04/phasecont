@@ -4,8 +4,10 @@
 //! for NVIDIA when no NVRTC is around. Nothing here links the OpenCL library. opencl3 is built
 //! with its `dynamic` feature, so the first call opens `OpenCL.dll` or `libOpenCL.so.1`, and a
 //! missing library comes back as an error code instead of a link failure. Several opencl3
-//! types still panic in their `Drop` code when the driver reports an error, so every call and
-//! every drop runs inside [`guard`], which turns a panic into an error (rule 7).
+//! types still panic in their `Drop` code when the driver reports an error, so every call
+//! runs inside [`guard`], which turns a panic into an error (rule 7). Every object is held in a
+//! [`Quiet`], which guards its own drop. A guard around the whole scope is not enough: a
+//! second failing release while the first one unwinds aborts the process.
 //!
 //! The kernel is compiled for OpenCL C 1.2. Single precision divide and square root are
 //! correctly rounded when the device can do that, and the kernel text switches off floating
@@ -38,7 +40,7 @@ use pc_codegen::kernel::{Dialect, Scalar};
 
 use crate::abi::{Packed, integrator_of, pack};
 use crate::device::{Backend, BackendState, DeviceInfo};
-use crate::gpu::{check_alloc, drive, global_size, guard, kernel_err};
+use crate::gpu::{Quiet, check_alloc, drive, global_size, guard, kernel_err};
 use crate::job::{Checked, EnsembleError, EnsembleResult, Job, Label, Precision, validate};
 use crate::kept::{Kept, Lru};
 use crate::kernel::kernel_source;
@@ -297,23 +299,28 @@ pub fn run_opencl(
         driver: info.driver.clone(),
         precision: job.precision,
     };
+    // The entry this run used, so that a failure removes that one and not a newer one.
+    let mut used: Option<Arc<Shared>> = None;
     let ran = guard(|| {
         let shared = SHARED.get_or_make(device.index, || make_shared(handle))?;
+        let shared = used.insert(shared);
         session(
-            &shared, handle, info, label, job, &checked, &tape, &src, cancel,
+            shared, handle, info, label, job, &checked, &tape, &src, cancel,
         )
     })
     .unwrap_or_else(|msg| Err(EnsembleError::GpuLaunch(format!("panic in opencl3: {msg}"))));
     if matches!(
         ran,
         Err(EnsembleError::GpuLaunch(_) | EnsembleError::GpuTimeout(_))
-    ) {
+    ) && let Some(seen) = &used
+    {
         // A lost device or a stuck queue would fail every later run, so the next run on this
-        // device starts from a new context. The drops of opencl3 panic on a failed release,
-        // so the removed value is dropped inside the guard.
-        let gone = SHARED.forget(device.index);
+        // device starts from a new context. Only the entry this run used is removed. The drops
+        // of opencl3 panic on a failed release, so removed values are dropped inside a guard.
+        let gone = SHARED.forget_if(device.index, seen);
         let _ = guard(|| drop(gone));
     }
+    let _ = guard(|| drop(used));
     ran
 }
 
@@ -321,9 +328,9 @@ pub fn run_opencl(
 /// built for it.
 struct Shared {
     // The programs drop first, then the queue, then the context.
-    programs: Lru<ProgramKey, Arc<Program>>,
-    queue: CommandQueue,
-    ctx: Context,
+    programs: Lru<ProgramKey, Arc<Quiet<Program>>>,
+    queue: Quiet<CommandQueue>,
+    ctx: Quiet<Context>,
 }
 
 /// The kernel text, the build options and the precision of a built program.
@@ -360,8 +367,8 @@ fn make_shared(handle: Handle) -> Result<Arc<Shared>, EnsembleError> {
     let queue = CommandQueue::create_default(&ctx, 0).map_err(cl("create command queue"))?;
     Ok(Arc::new(Shared {
         programs: Lru::new(PROGRAMS_KEPT),
-        queue,
-        ctx,
+        queue: Quiet::new(queue),
+        ctx: Quiet::new(ctx),
     }))
 }
 
@@ -386,10 +393,11 @@ fn session(
             .get_or_make((src.to_owned(), options.clone(), job.precision), || {
                 BUILDS.fetch_add(1, Ordering::SeqCst);
                 Program::create_and_build_from_source(ctx, src, &options)
-                    .map(Arc::new)
+                    .map(|program| Arc::new(Quiet::new(program)))
                     .map_err(|log| EnsembleError::GpuCompile(log.trim().to_owned()))
             })?;
     let kernel = Kernel::create(&program, ENTRY)
+        .map(Quiet::new)
         .map_err(|e| EnsembleError::GpuCompile(cl_text("create kernel", &e)))?;
     let group = kernel
         .get_work_group_size(id)
@@ -424,7 +432,7 @@ fn upload<T>(
     queue: &CommandQueue,
     data: &[T],
     step: &'static str,
-) -> Result<Buffer<T>, EnsembleError> {
+) -> Result<Quiet<Buffer<T>>, EnsembleError> {
     if data.is_empty() {
         return Err(EnsembleError::BadJob(format!("{step}: nothing to copy")));
     }
@@ -432,6 +440,7 @@ fn upload<T>(
     // elements on the device.
     let mut buf =
         unsafe { Buffer::<T>::create(ctx, CL_MEM_READ_WRITE, data.len(), ptr::null_mut()) }
+            .map(Quiet::new)
             .map_err(cl(step))?;
     // SAFETY: the buffer holds `data.len()` elements and the write blocks, so `data` is read
     // before the call returns.
@@ -531,6 +540,10 @@ fn launch_all<T: Real>(
     let ctl_len = packed.ctl.len();
     drive(&mut packed.ctl, packed.members, cancel, |steps| {
         let started = Instant::now();
+        #[cfg(feature = "fault-injection")]
+        if crate::fault::take_panic_fault() {
+            panic!("injected panic in launch");
+        }
         let steps: cl_ulong = steps;
         set(kernel, 8, &steps, "set steps")?;
         // SAFETY: the arguments follow the signature of `pc_ens` in order and type, the
@@ -589,6 +602,15 @@ mod tests {
         // Another error code stays a launch error however long it took.
         let other = launch_error("launch", &ClError(-30), Duration::from_secs(10));
         assert!(matches!(other, EnsembleError::GpuLaunch(_)));
+    }
+
+    #[test]
+    fn the_timeout_threshold_is_one_and_a_half_seconds() {
+        let e = ClError(CL_OUT_OF_RESOURCES);
+        let below = launch_error("synchronize", &e, Duration::from_millis(1400));
+        assert!(matches!(below, EnsembleError::GpuLaunch(_)), "{below:?}");
+        let at = launch_error("synchronize", &e, Duration::from_millis(1500));
+        assert!(matches!(at, EnsembleError::GpuTimeout(_)), "{at:?}");
     }
 
     #[test]
