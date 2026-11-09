@@ -115,9 +115,9 @@ function br = continuation(m, start, options)
 %                for Type "LP", "H", "LPC", "PD", "NS" or "HOM"
 %     NTST NCOL  mesh intervals and collocation points per interval,
 %                positive integers (required for Type "LC", also of a delay
-%                model, and for "HOM"
-%                from a struct; for "LPC", "PD", "NS" and "HOM" from an LC
-%                branch they default to those of the start)
+%                model, and for "HOM" from a struct; for "LPC", "PD", "NS"
+%                and "HOM" from an LC branch they default to those of the
+%                start)
 %     Index      the point of the LC branch a HOM curve starts from
 %                (required for Type "HOM" from a Branch)
 %     MaxSteps   most steps per branch
@@ -135,9 +135,8 @@ function br = continuation(m, start, options)
 %                styled plot of Branch.plot (default false)
 %     Var        variable to plot, a name or an index into M.Variables
 %                (default the first variable of M); Type "EP" or "LC" (not a
-%                delay "LC"), a
-%                curve of any other Type is plotted in the plane of its two
-%                free parameters
+%                delay "LC"). A curve of any other Type is plotted in the
+%                plane of its two free parameters
 %     Params     struct or vector that overrides the parameters of START
 %     InclinationFlips  true adds the inclination flips IFS and IFU to the
 %                codim-2 tests of a HOM curve, at the cost of one linear solve
