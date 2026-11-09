@@ -208,6 +208,28 @@ classdef AppTest < matlab.unittest.TestCase
             testCase.verifyEqual(testCase.count(app, "pc-equilibrium-stable"), 0);
         end
 
+        function aPointWithoutEigenvaluesIsNotDrawnAsStable(testCase)
+            % A session file can hold an equilibrium whose eigenvalue
+            % lists are empty. The app must not read "no eigenvalues" as
+            % "all eigenvalues have negative real part".
+            app = testCase.makeApp(testCase.Spiral);
+            pt = app.findEquilibrium(0.5, 0.5);
+            r = pt.Record;
+            f = struct("Kind", r.Kind, "Problem", r.Problem, "Type", r.Type, ...
+                "Free", r.Free, "Grid", r.Grid, "N", r.N, ...
+                "ModelSha", r.ModelSha, "U0", r.U0, "P", r.P, ...
+                "Result", struct("U", pt.U, "Eigenvalues", complex(zeros(0, 1))));
+            bare = phasecont.Point(U = pt.U, P = pt.P, Label = "EP", ...
+                Model = app.Model, Record = phasecont.internal.RunRecord(f));
+            file = fullfile(testCase.Dir, "bare.pcsession.json");
+            save(phasecont.Session(app.Model, {bare}), file);
+            app2 = phasecont.app.PhasePlane(file, Visible = "off");
+            testCase.addTeardown(@() delete(app2));
+            testCase.verifyEqual(testCase.count(app2, "pc-equilibrium-stable"), 0);
+            testCase.verifyEqual(testCase.count(app2, "pc-equilibrium-unstable"), 0);
+            testCase.verifyEqual(testCase.count(app2, "pc-equilibrium-unknown"), 1);
+        end
+
         function clickModeChoosesWhatAClickDoes(testCase)
             app = testCase.makeApp("@ total=2" + newline + testCase.Spiral);
             testCase.verifyClass(app.clickAt(0.5, 0.5), "phasecont.Trajectory");

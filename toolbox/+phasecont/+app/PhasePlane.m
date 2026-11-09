@@ -609,7 +609,16 @@ classdef PhasePlane < handle
                 h = plot(it, Parent = ax, Var = [app.XIndex app.YIndex]);
                 set(h, PickableParts = "none");
             elseif isa(it, "phasecont.Point")
-                if all(real(it.Eigenvalues) < 0)
+                ev = it.Eigenvalues;
+                if isempty(ev) || ~all(isfinite(ev))
+                    % No usable eigenvalues: say so with a cross, since an
+                    % empty list would otherwise count as "all stable".
+                    line(ax, it.U(app.XIndex), it.U(app.YIndex), Marker = "x", ...
+                        MarkerSize = 8, LineStyle = "none", Color = [0 0 0], ...
+                        Tag = "pc-equilibrium-unknown", PickableParts = "none");
+                    return
+                end
+                if all(real(ev) < 0)
                     tag = "pc-equilibrium-stable";
                     face = [0 0 0];
                 else
