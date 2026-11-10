@@ -473,18 +473,15 @@ classdef Model < handle
                 if isDelay && obj.Evaluator == "aot"
                     obj.Evaluator = "jit";
                 end
-                aotFailed = false;
                 if obj.Evaluator == "aot"
                     [ok, aot] = phasecont.Model.compileAot(id);
                     if ~ok
                         obj.Evaluator = "jit";
-                        aotFailed = true;
                     end
                 end
-                % The AOT build compiles the JIT while it emits the C text,
-                % so after a failed attempt the JIT may already be there.
-                if obj.Evaluator ~= "aot" && ~(aotFailed ...
-                        && phasecont.Model.engineRunsOn(id, obj.Evaluator))
+                % The AOT build only emits the C text, so after a failed
+                % attempt the JIT is built here like for any other model.
+                if obj.Evaluator ~= "aot"
                     pckern("model_compile", id, ...
                         sprintf('{"evaluator":"%s"}', obj.Evaluator));
                 end
@@ -527,13 +524,6 @@ classdef Model < handle
     methods (Static, Access = private)
         function s = emptyAotInfo()
             s = struct("Compiler", "", "Version", "", "Flags", "", "Library", "");
-        end
-
-        function tf = engineRunsOn(id, evaluator)
-            % True when model id is already compiled for the evaluator.
-            cur = jsondecode(pckern("model_info", id));
-            tf = isfield(cur, "evaluator") && ischar(cur.evaluator) ...
-                && string(cur.evaluator) == evaluator;
         end
 
         function [ok, aot] = compileAot(id)

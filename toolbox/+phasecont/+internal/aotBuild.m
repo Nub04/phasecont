@@ -44,7 +44,9 @@ emitDir = fullfile(root, "emit");
 if ~isfolder(emitDir)
     mkdir(emitDir);
 end
-pckern("model_compile", id, jsonencode(struct("emit_c", emitDir)));
+% "none" writes the C file and builds no evaluator, so no JIT is compiled
+% for a library that is about to replace it.
+pckern("model_compile", id, jsonencode(struct("emit_c", emitDir, "evaluator", "none")));
 cfile = string(jsondecode(pckern("model_info", id)).c_file);
 text = string(fileread(cfile, Encoding = "UTF-8"));
 hook = phasecont.internal.aotHook();
