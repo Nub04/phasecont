@@ -896,7 +896,7 @@ Time scale of the delay Hopf curve (bcbcea6; SPEC sections 8e and 8f, tests 11 a
   - From the final P7a review (2026-10-29):
     - `Stable` is false for a point whose eigenvalues are NaN. The engine fills NaN only after an internal fault, and carrying the last value forward would be a silent default, so it stays.
     - Fixed: the engine now rejects a `stride` that is not the run's (audit item 7b, 6bce632), and `count == 0` reaches the library (audit item 7a).
-    - The `wsl.exe` command in `buildfile.m` does not escape `$` or quotes in paths. (`scripts/build-pckern` and the Linux and macOS branch of `buildfile.m` now follow `CARGO_TARGET_DIR`; the branch has not run on a Linux or macOS MATLAB.)
+    - The `wsl.exe` commands in `buildfile.m` now refuse a path with a double quote, `$`, a backtick, a backslash, `%` or a line break (`scripts/wslArg.m`, `phasecont:build:unsafePath`), since wsl.exe and bash cannot take those escaped reliably. (`scripts/build-pckern` and the Linux and macOS branch of `buildfile.m` follow `CARGO_TARGET_DIR`; the branch has not run on a Linux or macOS MATLAB.)
     - `continuation` rejects a start Point from another Model object with the same source. (Plotting a `Branch` after its Model is deleted works; the variables are labeled u1, u2, ...)
     - `BuildTest/gatewayIsBuiltIntoTheBinFolder` is filtered, not failed, when the gateway is missing, so that `buildtool test` runs without a build. `buildtool package` depends on `mex`, and `packageToolbox` refuses a stage without the MEX file.
   - AOT cache: a cache hit trusts `isfile` alone, with no staged rename and no rebuild after a failed load, so a partial library warns until the cache folder is deleted.

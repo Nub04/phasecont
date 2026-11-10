@@ -26,7 +26,7 @@ function cargoTask(context)
 %   Windows MATLAB, repo under \\wsl.localhost\:  run scripts/build-pckern in WSL.
 %   Linux and macOS:  cargo build in the repo, then copy the library.
 root = context.Plan.RootFolder;
-cleanup = addTestsToPath(root); %#ok<NASGU>
+cleanup = addHelpersToPath(root); %#ok<NASGU>
 bin = fixtures.binFolder(root);
 if ~isfolder(bin)
     mkdir(bin);
@@ -49,7 +49,7 @@ elseif ispc && isWslPath(root)
     % It also takes a quoted -d value literally, so the distro name (which
     % has no spaces) is left unquoted.
     cmd = sprintf('wsl.exe -d %s --cd "%s" -- bash scripts/build-pckern win64 "%s"', ...
-        distro, linuxPath, strrep(bin, "\", "/"));
+        distro, wslArg(linuxPath), wslArg(strrep(bin, "\", "/")));
     status = runFromLocalFolder(cmd);
     if status ~= 0
         error("phasecont:build:cargo", ...
@@ -90,7 +90,7 @@ if ~isfile(src)
     error("phasecont:build:noGateway", ...
         "mex/pckern_gateway.c does not exist yet");
 end
-cleanup = addTestsToPath(root); %#ok<NASGU>
+cleanup = addHelpersToPath(root); %#ok<NASGU>
 bin = fixtures.binFolder(root);
 if ~isfolder(bin)
     mkdir(bin);
@@ -190,7 +190,7 @@ args = "cargo run -q --locked -p pc-cli -- licenses" + ...
     " --out build/THIRD_PARTY_LICENSES.txt --overrides licenses/overrides";
 if ispc && isWslPath(root)
     [distro, linuxPath] = splitWslPath(root);
-    cmd = sprintf('wsl.exe -d %s --cd "%s" -- %s', distro, linuxPath, args);
+    cmd = sprintf('wsl.exe -d %s --cd "%s" -- %s', distro, wslArg(linuxPath), args);
     status = runFromLocalFolder(cmd);
 else
     if ispc
@@ -221,10 +221,11 @@ function id = toolboxUuid
 id = "1abed604-32e4-4ec7-9cea-49389af763ff";
 end
 
-function cleanup = addTestsToPath(root)
-% Put tests/ on the path (for +fixtures) until the returned object is cleared.
+function cleanup = addHelpersToPath(root)
+% Put tests/ (for +fixtures) and scripts/ (for wslArg) on the path until the
+% returned object is cleared.
 oldPath = path;
-addpath(fullfile(root, "tests"));
+addpath(fullfile(root, "tests"), fullfile(root, "scripts"));
 cleanup = onCleanup(@() path(oldPath));
 end
 
