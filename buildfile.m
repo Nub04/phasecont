@@ -65,7 +65,15 @@ else
         error("phasecont:build:cargo", ...
             "cargo build failed (exit %d); see the output above", status);
     end
-    built = fullfile(root, "target", "release", lib);
+    % Cargo writes to CARGO_TARGET_DIR when it is set; a relative value is
+    % relative to the folder the build ran in, which is the repo root.
+    targetDir = string(getenv("CARGO_TARGET_DIR"));
+    if strlength(targetDir) == 0
+        targetDir = fullfile(root, "target");
+    elseif ~startsWith(targetDir, filesep)
+        targetDir = fullfile(root, targetDir);
+    end
+    built = fullfile(targetDir, "release", lib);
     copyfile(built, bin);
     fprintf("Copied %s to %s\n", built, bin);
 end
