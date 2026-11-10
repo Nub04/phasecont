@@ -226,6 +226,30 @@ classdef AotTest < matlab.unittest.TestCase
             testCase.verifyEqual(m.rhs([0.3 0.9]), j.rhs([0.3 0.9]));
         end
 
+        function damagedCachedLibraryIsRebuilt(testCase)
+            % A cache hit trusts the file, so a library that a killed build
+            % left half written would otherwise warn on every load. The
+            % loader removes the cache folder and builds once more.
+            testCase.needCompiler();
+            ff = testCase.write("f.ode", testCase.Fhn);
+            tag = "/* damaged-cache-" + string(randi(1e9)) + " */";
+            phasecont.internal.aotHook(@(text) text + newline + tag + newline);
+            j = phasecont.Model(ff);
+            lib = phasecont.internal.aotBuild(j.Id);
+            testCase.addTeardown(@() rmdir(fileparts(lib), "s"));
+            fid = fopen(lib, "w");
+            fwrite(fid, "not a library", "char");
+            fclose(fid);
+            lastwarn("");
+            m = phasecont.Model(ff, Evaluator = "aot");
+            [msg, id] = lastwarn;
+            testCase.verifyEmpty(id, "unexpected warning: " + string(msg));
+            testCase.assertEqual(m.Evaluator, "aot");
+            testCase.verifyEqual(m.AotInfo.Library, lib);
+            testCase.verifyGreaterThan(dir(lib).bytes, 100);
+            testCase.verifyEqual(m.rhs([0.3 0.9]), j.rhs([0.3 0.9]));
+        end
+
         function unloadableLibraryWarnsAndFallsBackToJit(testCase)
             testCase.needCompiler();
             % A text file named like a library: the build step is bypassed

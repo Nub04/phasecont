@@ -539,26 +539,37 @@ classdef Model < handle
         function [ok, aot] = compileAot(id)
             % Build and load the AOT library for model id. On any failure
             % warn and return ok = false; the caller then builds the JIT.
+            % A cache hit trusts the file, so a library that does not load
+            % may be a damaged one: its folder is removed and the library is
+            % built and loaded once more before the load failure is reported.
             ok = false;
             aot = phasecont.Model.emptyAotInfo();
-            try
-                [lib, built] = phasecont.internal.aotBuild(id);
-            catch err
-                warning("phasecont:aot:compile", ...
-                    "AOT compile failed, using the JIT: %s", err.message);
-                return
+            for attempt = 1:2
+                try
+                    [lib, built] = phasecont.internal.aotBuild(id);
+                catch err
+                    warning("phasecont:aot:compile", ...
+                        "AOT compile failed, using the JIT: %s", err.message);
+                    return
+                end
+                try
+                    pckern("model_compile", id, jsonencode( ...
+                        struct("evaluator", "aot", "aot_lib", char(lib))));
+                    ok = true;
+                    aot = built;
+                    return
+                catch err
+                end
+                if attempt == 1
+                    [removed, ~] = rmdir(fileparts(lib), "s");
+                    if ~removed
+                        break
+                    end
+                end
             end
-            try
-                pckern("model_compile", id, jsonencode( ...
-                    struct("evaluator", "aot", "aot_lib", char(lib))));
-            catch err
-                warning("phasecont:aot:load", ...
-                    "AOT library could not be loaded, using the JIT: %s", ...
-                    err.message);
-                return
-            end
-            ok = true;
-            aot = built;
+            warning("phasecont:aot:load", ...
+                "AOT library could not be loaded, using the JIT: %s", ...
+                err.message);
         end
 
         function full = fullPath(file)
