@@ -5,7 +5,8 @@ function [lib, info] = aotBuild(id)
 %   returns the absolute path of the library. INFO has the fields Compiler,
 %   Version, Flags and Library.
 %
-%   The library lives under tempdir/phasecont-aot. Its folder name joins a
+%   The library lives under the folder that aotCacheRoot returns (under
+%   tempdir, private to the user). Its folder name joins a
 %   hash of the C text, a hash of the build flags, the compiler name and
 %   its version, so the same text built by the same compiler is compiled
 %   once. The engine names the C file after the hash of its text, and that
@@ -38,7 +39,7 @@ else
     flagArgs = {"CFLAGS=$CFLAGS -ffp-contract=off", "LINKEXPORT=", "LINKEXPORTVER="};
 end
 
-root = fullfile(tempdir, "phasecont-aot");
+root = phasecont.internal.aotCacheRoot();
 emitDir = fullfile(root, "emit");
 if ~isfolder(emitDir)
     mkdir(emitDir);
