@@ -1,0 +1,58 @@
+name: GPU report
+description: Send the self-test output of an AMD, Apple or other GPU that has not run PhaseCont yet.
+title: "GPU report: <vendor and model>"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Run `scripts/gpu-report` from a checkout (see "Test your GPU" in the README) and attach or paste the file it writes.
+        The report holds device names, driver strings, the OS name and the self-test output. It does not hold your user name, host name or file paths.
+  - type: dropdown
+    id: vendor
+    attributes:
+      label: GPU vendor
+      options:
+        - AMD
+        - Apple
+        - Intel
+        - NVIDIA
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: GPU model and driver version
+      description: For example the card name and the driver number from your system settings.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and version
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: What the script printed
+      options:
+        - Every self-test passed
+        - At least one self-test failed
+        - Every backend was missing or had no device
+        - The script or the CLI did not run
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Report
+      description: Paste the whole report file, or drag the file into this box.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: How you built or got `pc-cli`, and anything that looked wrong.

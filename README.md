@@ -114,7 +114,7 @@ app = phasecont.app.ModelEditor;
 
 An ensemble runs many trajectories of one model at once, for a grid of start states or parameter sets. It does not speed up a single run or a continuation. Those stay on the CPU in double precision.
 
-The ensemble engine has backends for the CPU, for CUDA (NVIDIA, through NVRTC), for OpenCL (NVIDIA, AMD and Intel) and for Metal (Apple GPUs, single precision only). The CUDA and OpenCL backends have run on an NVIDIA RTX 5060 (2026-11-07), and the OpenCL backend on an Intel Arc 140T (2026-11-08). The self-test below passed on both in single and double precision. No AMD or Apple device has run, and the Metal host code has been type-checked for macOS but never run, so a run on one of those is the first real check. Run these in order:
+The ensemble engine has backends for the CPU, for CUDA (NVIDIA, through NVRTC), for OpenCL (NVIDIA, AMD and Intel) and for Metal (Apple GPUs, single precision only). The CUDA and OpenCL backends have run on an NVIDIA RTX 5060 (2026-11-07), and the OpenCL backend on an Intel Arc 140T (2026-11-08, again on 2026-11-10 through MATLAB and the command line tool). The self-test below passed on both in single and double precision. No AMD or Apple device has run, and the Metal host code has been type-checked for macOS but never run, so a run on one of those is the first real check. Run these in order:
 
 1. List what the engine finds:
 
@@ -157,7 +157,13 @@ The ensemble engine has backends for the CPU, for CUDA (NVIDIA, through NVRTC), 
    PC_REQUIRE_GPU=cuda,opencl scripts/matlab-win "buildtool test"
    ```
 
-If you have an AMD or Apple GPU, the most useful report is the JSON that `pc-cli gpu selftest --backend opencl --precision single` prints (`--backend metal` on a Mac), together with the output of `pc-cli gpu list`. Please attach both to an issue. AMD runs through OpenCL, and nobody has run it on AMD hardware yet. Nobody has run the Metal backend on a Mac yet either.
+If you have an AMD or Apple GPU, the most useful report comes from one command. Build `pc-cli` (`cargo build --release -p pc-cli`), then run this from the repo root:
+
+```sh
+scripts/gpu-report
+```
+
+It lists the devices, runs the self-test on every GPU it finds in single precision (and in double precision where the device has it), and writes `gpu-report-<date>.txt`. The file holds device names, driver strings, the OS name and the self-test output, and no user name, host name or paths. Attach it to a new "GPU report" issue. The script exits with 0 when every self-test that ran passed, 1 when one failed and 2 when `pc-cli` is missing. To use another binary, pass `--cli PATH`, and `--out FILE` sets the file name. By hand, the same data is the output of `pc-cli gpu list` and of `pc-cli gpu selftest --backend opencl --precision single` (`--backend metal` on a Mac). AMD runs through OpenCL, and nobody has run it on AMD hardware yet. Nobody has run the Metal backend on a physical Mac yet either.
 
 ## LaTeX figures and tables
 
