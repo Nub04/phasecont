@@ -175,6 +175,33 @@ classdef AotTest < matlab.unittest.TestCase
             testCase.verifyEqual(b.rhs([0.3 0.9]), a.rhs([0.3 0.9]));
         end
 
+        function libraryFolderIsNamedFromTheCFileHash(testCase)
+            % Without a hook the C text is the file the engine wrote, whose
+            % name carries a hash of that text, so the MATLAB side reads the
+            % hash from the name instead of hashing the text again.
+            testCase.needCompiler();
+            m = phasecont.Model(testCase.write("f.ode", testCase.Fhn));
+            lib = phasecont.internal.aotBuild(m.Id);
+            cfile = string(jsondecode(pckern("model_info", m.Id)).c_file);
+            hash = extractBetween(cfile, "pc_model_", ".c");
+            testCase.assertNotEmpty(hash);
+            testCase.verifySubstring(lib, hash);
+            testCase.verifyTrue(isfile(lib));
+        end
+
+        function hookedTextGetsItsOwnLibrary(testCase)
+            % The hook changes the text that is compiled, so the library must
+            % not be the one built for the unchanged text.
+            testCase.needCompiler();
+            ff = testCase.write("f.ode", testCase.Fhn);
+            plain = phasecont.Model(ff, Evaluator = "aot");
+            phasecont.internal.aotHook(@(text) text + newline + "/* hooked */" + newline);
+            hooked = phasecont.Model(ff, Evaluator = "aot");
+            testCase.assertEqual(hooked.Evaluator, "aot");
+            testCase.verifyNotEqual(hooked.AotInfo.Library, plain.AotInfo.Library);
+            testCase.verifyEqual(hooked.rhs([0.3 0.9]), plain.rhs([0.3 0.9]));
+        end
+
         function configAotSelectsAotWithoutEvaluator(testCase)
             testCase.needCompiler();
             phasecont.config("Codegen", "aot");

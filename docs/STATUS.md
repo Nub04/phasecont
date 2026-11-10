@@ -903,9 +903,7 @@ Time scale of the delay Hopf curve (bcbcea6; SPEC sections 8e and 8f, tests 11 a
     - A `Branch` keeps its `Model` handle, so variable lookup fails after the Model is deleted, and `continuation` rejects a start Point from another Model object with the same source.
     - `BuildTest/gatewayIsBuiltIntoTheBinFolder` cannot fail when the gateway is missing.
   - AOT cache: a cache hit trusts `isfile` alone, with no staged rename and no rebuild after a failed load, so a partial library warns until the cache folder is deleted.
-  - AOT hash: `textHash` is a per-byte MATLAB loop on every Model construction; read the hash from the `c_file` name when no hook is set.
   - AOT cache folder: the path is predictable in a shared `tempdir` with no ownership check (a Linux `/tmp` concern), and AotTest uses the real cache.
-  - AOT Model: the class help does not mention `Evaluator="aot"`, `AotInfo` or the config key, `Evaluator=""` is accepted, and a failed AOT attempt compiles the JIT a second time.
   - Licenses: overrides are keyed by crate name only, so a `Cargo.lock` bump can reuse an old text for a new version.
   - Package: `PackageTest` reads metadata with regexes that depend on attribute spelling, and the stage root's `matlabPath` entry is an empty string.
   - Clean install: the `notAddon` negative path is untested, since it needs a real install. The add-on folder setting read prints a note when it fails.

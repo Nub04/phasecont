@@ -6,8 +6,11 @@ function [lib, info] = aotBuild(id)
 %   Version, Flags and Library.
 %
 %   The library lives under tempdir/phasecont-aot. Its folder name joins a
-%   hash of the C text and the build flags with the compiler name and
-%   version, so the same text built by the same compiler is compiled once.
+%   hash of the C text, a hash of the build flags, the compiler name and
+%   its version, so the same text built by the same compiler is compiled
+%   once. The engine names the C file after the hash of its text, and that
+%   hash is used as it is. A hook that changes the text (the test hook)
+%   makes this function hash the changed text.
 %   Floating-point contraction
 %   is turned off (/fp:strict on MSVC, -ffp-contract=off elsewhere) so the
 %   results match the JIT. A failed compile raises phasecont:aot:compile.
@@ -44,16 +47,22 @@ pckern("model_compile", id, jsonencode(struct("emit_c", emitDir)));
 cfile = string(jsondecode(pckern("model_info", id)).c_file);
 text = string(fileread(cfile, Encoding = "UTF-8"));
 hook = phasecont.internal.aotHook();
+[~, base] = fileparts(cfile);
+textKey = extractAfter(string(base), "pc_model_");
 if ~isempty(hook)
     text = string(hook(text));
+    textKey = textHash(text);
+elseif ismissing(textKey) || isempty(regexp(textKey, "^[0-9a-f]{16}$", "once"))
+    % Not the name the engine writes; hash the text here.
+    textKey = textHash(text);
 end
 
 compilerKey = matlab.lang.makeValidName(name + "_" + version);
-% The flags are part of the hash, so a library built with other flags or
+% The flags are part of the key, so a library built with other flags or
 % link settings is never reused.
-key = textHash(text + newline + flags) + "_" + compilerKey;
+key = textKey + textHash(flags) + "_" + compilerKey;
 dest = fullfile(root, key);
-output = "pcaot_" + extractBefore(key + "_", "_");
+output = "pcaot_" + textKey;
 lib = string(fullfile(dest, output + "." + mexext));
 info = struct("Compiler", name, "Version", version, "Flags", flags, ...
     "Library", lib);

@@ -19,6 +19,20 @@ classdef Model < handle
     % The model lives in the engine and is freed when the object is deleted
     % or cleared. Saving a Model stores its source text, and loading it
     % compiles the text again.
+    %
+    % Evaluator chooses how the engine runs the equations:
+    %   "jit"       native code compiled in the MATLAB process
+    %   "fallback"  an interpreter, slower, for hosts without a JIT
+    %   "aot"       a C library built with mex, which needs a C compiler
+    %               chosen with mex -setup C. If the build or the load
+    %               fails, the model runs on the JIT and a warning with an
+    %               identifier phasecont:aot:* says so. A delay model
+    %               always uses the JIT.
+    % With no Evaluator argument, or Evaluator = "", the session option
+    % phasecont.config("Codegen") decides; it is "jit" until it is set.
+    % Model.Evaluator holds the evaluator the model runs on, and
+    % Model.AotInfo holds Compiler, Version, Flags and Library of the AOT
+    % library ("" for every other evaluator).
 
     properties (SetAccess = private)
         File (1,1) string = ""
@@ -459,13 +473,18 @@ classdef Model < handle
                 if isDelay && obj.Evaluator == "aot"
                     obj.Evaluator = "jit";
                 end
+                aotFailed = false;
                 if obj.Evaluator == "aot"
                     [ok, aot] = phasecont.Model.compileAot(id);
                     if ~ok
                         obj.Evaluator = "jit";
+                        aotFailed = true;
                     end
                 end
-                if obj.Evaluator ~= "aot"
+                % The AOT build compiles the JIT while it emits the C text,
+                % so after a failed attempt the JIT may already be there.
+                if obj.Evaluator ~= "aot" && ~(aotFailed ...
+                        && phasecont.Model.engineRunsOn(id, obj.Evaluator))
                     pckern("model_compile", id, ...
                         sprintf('{"evaluator":"%s"}', obj.Evaluator));
                 end
@@ -508,6 +527,13 @@ classdef Model < handle
     methods (Static, Access = private)
         function s = emptyAotInfo()
             s = struct("Compiler", "", "Version", "", "Flags", "", "Library", "");
+        end
+
+        function tf = engineRunsOn(id, evaluator)
+            % True when model id is already compiled for the evaluator.
+            cur = jsondecode(pckern("model_info", id));
+            tf = isfield(cur, "evaluator") && ischar(cur.evaluator) ...
+                && string(cur.evaluator) == evaluator;
         end
 
         function [ok, aot] = compileAot(id)
