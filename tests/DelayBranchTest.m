@@ -36,6 +36,14 @@ classdef DelayBranchTest < matlab.unittest.TestCase
         CoupledNl = "par a=1.4, b=1.2, c=1, d=0.1" + newline + ...
             "x'=c*y-a*delay(x,1)+x*x+x*y-x*x*x" + newline + ...
             "y'=-d*x-b*delay(y,1.5)+y*y*y+x*y*y" + newline + "done" + newline
+        % The zero-Hopf model with a decoupled oscillator u' = w v, v' = -w u.
+        % Its roots are +-i w for every parameter. At the ZH point omega = b = 1,
+        % so w = 2 puts a root at 2 omega and the ZH coefficients are refused;
+        % w = 3 leaves them defined.
+        ZhOsc = "par a=0, tau=1, b=1, w=2" + newline + ...
+            "x'=-(a+y)*x-b*delay(x,tau)" + newline + ...
+            "y'=a-y*y" + newline + "u'=w*v" + newline + "v'=-w*u" + newline + ...
+            "done" + newline
         % The values of the engine run (pc-ffi test, 2026-11-08), pinned
         % to 1e-12 relative. Zeros are exact zeros of the model.
         ZhValues = struct( ...
@@ -145,6 +153,15 @@ classdef DelayBranchTest < matlab.unittest.TestCase
             br = phasecont.continuation(m, [0.001 -0.249], extra{:}, ...
                 Type = "H", Free = ["a" "tau"], Params = struct(a = 0.07, ...
                     tau = 1.4071360574511174, b = 1), Omega = 0.98, ...
+                Bounds = [1.3 2.0], Hmax = 0.05, Direction = 1, ...
+                TolX = 1e-12, TolF = 1e-12, MaxNewton = 20);
+        end
+
+        function br = zhOscCurve(testCase, w, extra)
+            m = testCase.model(testCase.ZhOsc);
+            br = phasecont.continuation(m, [0.001 -0.249 0 0], extra{:}, ...
+                Type = "H", Free = ["a" "tau"], Params = struct(a = 0.07, ...
+                    tau = 1.4071360574511174, b = 1, w = w), Omega = 0.98, ...
                 Bounds = [1.3 2.0], Hmax = 0.05, Direction = 1, ...
                 TolX = 1e-12, TolF = 1e-12, MaxNewton = 20);
         end
@@ -727,6 +744,43 @@ classdef DelayBranchTest < matlab.unittest.TestCase
             f = testCase.zhCurve({"Coefficients", false});
             testCase.verifyEmpty(fieldnames(f.points("ZH").Data.values));
             testCase.verifyEqual(f.Alpha, off.Alpha);
+        end
+
+        function aRefusedZhSpecialGivesTheWarningText(testCase)
+            % The engine refuses the ZH coefficients at a 1:2 resonance
+            % (SPEC 8s slice 3). The run still returns, the special has no
+            % values, and the refusal is a warning of the branch.
+            c = testCase.zhOscCurve(2, {"Coefficients", true});
+            zh = c.points("ZH");
+            testCase.assertNumElements(zh, 1);
+            testCase.verifyEmpty(fieldnames(zh.Data.values));
+            refused = c.Warnings(startsWith(c.Warnings, "coefficients:"));
+            testCase.assertNumElements(refused, 1);
+            % The engine counts specials from 0, the front end from 1.
+            prefix = "coefficients: the ZH special at index " + ...
+                (zh.Index - 1) + " has none: ";
+            testCase.verifyTrue(startsWith(refused, prefix), refused);
+            testCase.verifySubstring(refused, "Delta(2 i omega)");
+            testCase.verifyEqual( ...
+                c.Warnings(~startsWith(c.Warnings, "coefficients:")), ...
+                testCase.LyapunovNotice);
+            % The refusal does not move a point or a special.
+            off = testCase.zhOscCurve(2, {});
+            testCase.verifyEqual(off.Warnings, testCase.LyapunovNotice);
+            testCase.verifyEqual(c.Alpha, off.Alpha);
+            testCase.verifyEqual(c.U, off.U);
+            testCase.verifyEqual(c.Codim2, off.Codim2);
+            testCase.verifyEqual(c.points("ZH").P, off.points("ZH").P);
+            testCase.verifyEqual(c.points("ZH").Index, off.points("ZH").Index);
+        end
+
+        function theSameRunWithoutTheResonanceHasValuesAndNoWarning(testCase)
+            c = testCase.zhOscCurve(3, {"Coefficients", true});
+            zh = c.points("ZH");
+            testCase.assertNumElements(zh, 1);
+            testCase.verifyEqual(zh.Data.values.g200_re, -1, AbsTol = 1e-6);
+            testCase.verifyFalse(any(startsWith(c.Warnings, "coefficients:")));
+            testCase.verifyEqual(c.Warnings, testCase.LyapunovNotice);
         end
 
         function hopfHopfCoefficientsArriveWithOmega2(testCase)
