@@ -49,12 +49,37 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo deny check
 
-  # The VS Code extension and the pc-lsp server it starts. This job builds the
-  # linux-x64 .vsix with vsce, a dev-only build tool (docs/STATUS.md lists its
-  # licence exception). It does not publish to the Marketplace.
+  # The VS Code extension and the pc-lsp server it starts. This job builds one .vsix
+  # per platform with vsce, a dev-only build tool (docs/STATUS.md lists its licence
+  # exception). It does not publish to the Marketplace. The darwin-x64 server is
+  # cross built on the Apple silicon runner and is packaged without being started.
   vscode:
     if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: linux-x64
+            os: ubuntu-latest
+            exe: pc-lsp
+            run_server: true
+          - id: win32-x64
+            os: windows-latest
+            exe: pc-lsp.exe
+            run_server: true
+          - id: darwin-arm64
+            os: macos-latest
+            exe: pc-lsp
+            run_server: true
+          - id: darwin-x64
+            os: macos-latest
+            exe: pc-lsp
+            rust_target: x86_64-apple-darwin
+            run_server: false
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -62,17 +87,38 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: 1.99.1
+          targets: ${{ matrix.rust_target }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
       - name: Build pc-lsp
-        run: cargo build --release -p pc-lsp
-      - name: Place the server and check that it starts
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
         run: |
           set -eu
-          mkdir -p editors/vscode/server/linux-x64
-          cp target/release/pc-lsp editors/vscode/server/linux-x64/pc-lsp
-          editors/vscode/server/linux-x64/pc-lsp --version
+          if [ -n "$RUST_TARGET" ]; then
+            cargo build --release -p pc-lsp --target "$RUST_TARGET"
+          else
+            cargo build --release -p pc-lsp
+          fi
+      - name: Place the server and check that it starts
+        env:
+          ID: ${{ matrix.id }}
+          EXE: ${{ matrix.exe }}
+          RUST_TARGET: ${{ matrix.rust_target }}
+          RUN_SERVER: ${{ matrix.run_server }}
+        run: |
+          set -eu
+          if [ -n "$RUST_TARGET" ]; then
+            built="target/$RUST_TARGET/release/$EXE"
+          else
+            built="target/release/$EXE"
+          fi
+          mkdir -p "editors/vscode/server/$ID"
+          cp "$built" "editors/vscode/server/$ID/$EXE"
+          if [ "$RUN_SERVER" = "true" ]; then
+            "editors/vscode/server/$ID/$EXE" --version
+          fi
       - name: Install the npm packages without running install scripts
         working-directory: editors/vscode
         run: npm ci --ignore-scripts
@@ -81,24 +127,33 @@ jobs:
         run: npm test
       - name: Build the .vsix
         working-directory: editors/vscode
+        env:
+          ID: ${{ matrix.id }}
         run: |
           set -eu
           mkdir -p ../../build
-          npx --no-install vsce package --no-dependencies --target linux-x64 --out ../../build/
-      - name: List the .vsix and check that no node_modules ship
+          npx --no-install vsce package --no-dependencies --target "$ID" --out ../../build/
+      - name: Check what the .vsix holds
+        working-directory: editors/vscode
+        env:
+          ID: ${{ matrix.id }}
+          EXE: ${{ matrix.exe }}
         run: |
+          # vsce ls prints the files that go into the package, one per line, and runs the
+          # same ignore rules as vsce package. It needs no unzip, which Windows runners lack.
           set -eu
-          v=$(ls build/*.vsix)
-          unzip -l "$v"
-          if unzip -l "$v" | grep -q node_modules; then
+          ls ../../build/*.vsix
+          list=$(npx --no-install vsce ls --no-dependencies)
+          echo "$list"
+          if echo "$list" | grep -q node_modules; then
             echo "node_modules is inside the .vsix" >&2
             exit 1
           fi
-          unzip -l "$v" | grep -q 'extension/server/linux-x64/pc-lsp$'
-          unzip -l "$v" | grep -q 'extension/dist/extension.js$'
+          echo "$list" | grep -qx "server/$ID/$EXE"
+          echo "$list" | grep -qx 'dist/extension.js'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: vscode-extension-linux-x64
+          name: vscode-extension-${{ matrix.id }}
           path: build/*.vsix
           if-no-files-found: error
 
