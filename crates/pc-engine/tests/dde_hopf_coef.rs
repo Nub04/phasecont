@@ -179,6 +179,13 @@ fn same_bits(a: &[(&'static str, f64)], b: &[(&'static str, f64)]) {
 }
 
 fn same_curve(a: &DdeHopfBranch, b: &DdeHopfBranch) {
+    same_points_and_specials(a, b);
+    assert_eq!(a.warnings, b.warnings);
+    assert_eq!(a.stop, b.stop);
+}
+
+/// `same_curve` without the warnings and the stop reason.
+fn same_points_and_specials(a: &DdeHopfBranch, b: &DdeHopfBranch) {
     assert_eq!(a.points.len(), b.points.len());
     for (p, q) in a.points.iter().zip(&b.points) {
         for (u, v) in p.alpha.iter().zip(&q.alpha) {
@@ -201,8 +208,6 @@ fn same_curve(a: &DdeHopfBranch, b: &DdeHopfBranch) {
         assert_eq!(s.kappa.to_bits(), t.kappa.to_bits());
         assert_eq!(s.omega2.map(f64::to_bits), t.omega2.map(f64::to_bits));
     }
-    assert_eq!(a.warnings, b.warnings);
-    assert_eq!(a.stop, b.stop);
 }
 
 // Test 1.
@@ -412,5 +417,82 @@ fn only_zh_and_hh_are_computed() {
             dde_special_coefficients(&mut m, &sp, &p).is_err(),
             "{label}"
         );
+    }
+}
+
+// The ZH model with a decoupled oscillator u' = w v, v' = -w u, whose roots are +-i w for every
+// parameter value. At the ZH point the Hopf frequency is b = 1, so w = 2 puts a root at
+// 2 i omega: Delta(2 i omega) is singular and `zero_hopf` refuses there. The curve itself does
+// not notice the oscillator, since its block of Delta(i omega) is regular for omega != w.
+const ZH_OSC: &str = "par a=0, tau=1, b=1, w=2\n\
+x'=-(a+y)*x-b*delay(x,tau)\n\
+y'=a-y*y\n\
+u'=w*v\n\
+v'=-w*u\n\
+done\n";
+
+fn osc_setup(w: f64) -> DdeHopfSetup {
+    setup(
+        [0, 1],
+        &[0.07, 1.4071360574511174, 1.0, w],
+        &[0.001, -0.249, 0.0, 0.0],
+        0.98,
+    )
+}
+
+// Test 5: a refusal inside a whole run is a branch warning, not a failed run.
+#[test]
+fn a_refused_special_in_a_run_becomes_a_branch_warning() {
+    for which in both() {
+        let s = osc_setup(2.0);
+        let on = run(ZH_OSC, which.clone(), &s, &zh_opts(), &extras(true, false));
+        assert_eq!(on.specials.len(), 1, "{:?}", on.specials);
+        let sp = &on.specials[0];
+        assert_eq!(sp.label, "ZH");
+        assert!(sp.coefficients.is_empty(), "{:?}", sp.coefficients);
+        let ours: Vec<&String> = on
+            .warnings
+            .iter()
+            .filter(|w| w.starts_with("coefficients"))
+            .collect();
+        assert_eq!(ours.len(), 1, "{:?}", on.warnings);
+        let prefix = format!(
+            "coefficients: the ZH special at index {} has none: ",
+            sp.index
+        );
+        assert!(ours[0].starts_with(&prefix), "{}", ours[0]);
+        assert!(ours[0].contains("Delta(2 i omega)"), "{}", ours[0]);
+        // The curve and the special are those of a run without the option, and the other
+        // warnings and the stop reason do not change.
+        let off = run(ZH_OSC, which, &s, &zh_opts(), &extras(false, false));
+        same_points_and_specials(&on, &off);
+        assert_eq!(on.stop, off.stop);
+        assert!(off.warnings.iter().all(|w| !w.starts_with("coefficients")));
+        let others: Vec<&String> = on
+            .warnings
+            .iter()
+            .filter(|w| !w.starts_with("coefficients"))
+            .collect();
+        assert_eq!(others, off.warnings.iter().collect::<Vec<_>>());
+    }
+}
+
+// Test 6: the same model with the oscillator moved off 2 omega gets its coefficients and no
+// warning, so the refusal above comes from the resonance and not from the extra variables.
+#[test]
+fn the_same_run_without_the_resonance_has_coefficients() {
+    for which in both() {
+        let s = osc_setup(3.0);
+        let b = run(ZH_OSC, which, &s, &zh_opts(), &extras(true, false));
+        assert_eq!(b.specials.len(), 1, "{:?}", b.specials);
+        let sp = &b.specials[0];
+        assert!(!sp.coefficients.is_empty());
+        assert!(
+            b.warnings.iter().all(|w| !w.starts_with("coefficients")),
+            "{:?}",
+            b.warnings
+        );
+        // The extra block does not touch the published ZH values (section 8i test 7).
+        assert!((value(sp, "g200_re") + 1.0).abs() < 1e-6);
     }
 }
