@@ -830,14 +830,16 @@ Reads a 64-bit Windows PE file (the cross-built pckern.dll) and prints the DLLs
 it imports, one per line in table order, each once. Delay-loaded imports follow
 with the suffix \" (delay)\". The names are compared without regard to case with
 an allow-list: kernel32, ntdll, userenv, ws2_32, bcryptprimitives, bcrypt,
-advapi32, msvcrt and api-ms-win-*. A name outside the list is reported on stderr.
+advapi32, msvcrt, dbghelp and API set names of the form
+api-ms-win-<words>-l<n>-<n>-<n>.dll. A name outside the list is reported on stderr.
+A file over 256 MiB is refused without being read.
 
 options:
   --         the next argument is the file, even if it starts with `-`
   -h, --help print this help
 
 exit codes: 0 every import is allowed, 1 an import is outside the allow-list or
-the file cannot be read or is not a 64-bit PE file, 2 usage error
+the file cannot be read, is over 256 MiB or is not a 64-bit PE file, 2 usage error
 ";
 
 pub const LICENSES_HELP: &str = "\

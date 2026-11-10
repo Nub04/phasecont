@@ -47,6 +47,24 @@ fn a_text_file_is_a_malformed_pe_file() {
     assert!(stdout(&o).is_empty());
 }
 
+/// A file over the size limit is refused before it is read. A sparse file keeps the test cheap.
+#[test]
+fn a_file_over_the_size_limit_is_refused_unread() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("dll-imports-big");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create scratch dir");
+    let big = std::fs::File::create(dir.join("big.dll")).expect("create file");
+    big.set_len(256 * 1024 * 1024 + 1).expect("set length");
+    drop(big);
+    let o = common::run(&dir, &["dll-imports", "big.dll"]);
+    assert_eq!(code(&o), 1);
+    let err = stderr(&o);
+    assert!(err.starts_with("pc-cli: big.dll: "), "{err}");
+    assert!(err.contains("larger than 256 MiB"), "{err}");
+    assert!(!err.contains("not a PE file"), "{err}");
+    assert!(stdout(&o).is_empty());
+}
+
 #[test]
 fn zero_or_two_files_are_usage_errors() {
     for args in [

@@ -902,7 +902,6 @@ Time scale of the delay Hopf curve (bcbcea6; SPEC sections 8e and 8f, tests 11 a
   - From the final P7a review (2026-10-29):
     - `Stable` is false for a point whose eigenvalues are NaN. The engine fills NaN only after an internal fault, and carrying the last value forward would be a silent default, so it stays.
     - Fixed: the engine now rejects a `stride` that is not the run's (audit item 7b, 6bce632), and `count == 0` reaches the library (audit item 7a).
-    - `dll-imports` accepts any `api-ms-win-` prefix and reads the whole file without a size limit.
     - `scripts/build-pckern` and `buildfile.m` ignore `CARGO_TARGET_DIR`, and the `wsl.exe` command does not escape `$` or quotes in paths.
     - A `Branch` keeps its `Model` handle, so variable lookup fails after the Model is deleted, and `continuation` rejects a start Point from another Model object with the same source.
     - `BuildTest/gatewayIsBuiltIntoTheBinFolder` cannot fail when the gateway is missing.
