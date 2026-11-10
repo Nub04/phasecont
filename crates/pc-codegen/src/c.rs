@@ -439,10 +439,37 @@ fn node(out: &mut String, dag: &Dag, id: NodeId, lens: &Lens, table_ok: &dyn Fn(
 /// - Build with `-ffp-contract=off` under gcc (it ignores the pragma that the file carries
 ///   for clang and MSVC), or the compiler may fuse multiplies and adds and change bits.
 ///
+/// The file ends with `PC_EXPORT unsigned long long pc_aot_tag(void)`, which returns the hash
+/// of the text before it (see [`emit_c_tagged`]).
+///
 /// A leaf index outside the array lengths of its entry, and a table node whose table is
 /// missing or malformed, give a NaN constant, as `pc_ir::eval::eval` does. Table data is
 /// written as bit patterns, so every value (NaN payloads, -0.0, infinities) is exact.
 pub fn emit_c(ir: &IrModel, entries: &[(String, &Entry)]) -> Result<String, CNameError> {
+    emit_c_tagged(ir, entries).map(|e| e.text)
+}
+
+/// The C text of a model and its load tag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmittedC {
+    /// The whole file, ending in the `pc_aot_tag` function.
+    pub text: String,
+    /// What `pc_aot_tag` returns: the FNV-1a 64 hash of every byte of `text` before that
+    /// function. A host that loads a built library compares it with the library's value to
+    /// see that the library came from this text.
+    pub tag: u64,
+}
+
+/// FNV-1a, 64 bit. It names the emitted file and tags the library, so it must not change
+/// between releases.
+pub fn fnv1a64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+/// [`emit_c`] with the tag that the file's `pc_aot_tag` returns. The text is the same.
+pub fn emit_c_tagged(ir: &IrModel, entries: &[(String, &Entry)]) -> Result<EmittedC, CNameError> {
     let mut idents: Vec<(&str, String)> = Vec::with_capacity(entries.len());
     for (name, _) in entries {
         let ident = c_ident(name);
@@ -550,5 +577,10 @@ pub fn emit_c(ir: &IrModel, entries: &[(String, &Entry)]) -> Result<String, CNam
         }
         s.push_str("}\n\n");
     }
-    Ok(s)
+    let tag = fnv1a64(s.as_bytes());
+    let _ = write!(
+        s,
+        "PC_EXPORT unsigned long long pc_aot_tag(void) {{\n    return 0x{tag:016x}ULL;\n}}\n"
+    );
+    Ok(EmittedC { text: s, tag })
 }

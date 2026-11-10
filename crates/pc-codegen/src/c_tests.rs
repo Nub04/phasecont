@@ -2,7 +2,7 @@
 //! text live in `tests/aot.rs`.
 
 use crate::c::MATH_FIELDS;
-use crate::{CNameError, c_ident, emit_c};
+use crate::{CNameError, c_ident, emit_c, emit_c_tagged, fnv1a64};
 use pc_ir::EntryKind;
 use pc_ir::math::MathTable;
 
@@ -96,6 +96,7 @@ fn reserved_names_are_rejected() {
         "pc_f",
         "pc_math",
         "pc_aot_init",
+        "pc_aot_tag",
         "PC_EXPORT",
         "uint8_t",
         "int64_t",
@@ -124,4 +125,55 @@ fn reserved_names_are_rejected() {
     ];
     let named: Vec<(String, &pc_ir::Entry)> = ok.iter().map(|s| (s.to_string(), &e)).collect();
     emit_c(&ir, &named).expect("plain names");
+}
+
+/// The text up to the tag function, which is what the tag hashes.
+fn before_tag(c: &str) -> &str {
+    let at = c
+        .find("PC_EXPORT unsigned long long pc_aot_tag(void)")
+        .expect("pc_aot_tag is exported");
+    &c[..at]
+}
+
+#[test]
+fn the_tag_hashes_the_text_before_the_tag_function() {
+    let mut ir = build_model("par p=2\nx'=-x*p\ndone\n");
+    let e = ir.entry(&EntryKind::F).expect("entry");
+    let named = [("f".to_string(), &e)];
+    let t = emit_c_tagged(&ir, &named).expect("emit");
+    assert_eq!(t.tag, fnv1a64(before_tag(&t.text).as_bytes()));
+    // The function is the last thing in the file and returns that value.
+    let tail = &t.text[t
+        .text
+        .find("PC_EXPORT unsigned long long pc_aot_tag(void)")
+        .unwrap()..];
+    assert!(
+        tail.contains(&format!("return 0x{:016x}ULL;", t.tag)),
+        "{tail}"
+    );
+    assert_eq!(tail.matches("PC_EXPORT").count(), 1, "{tail}");
+    // `emit_c` gives the same text.
+    assert_eq!(emit_c(&ir, &named).expect("emit"), t.text);
+}
+
+#[test]
+fn the_same_model_gives_the_same_tag_and_another_model_another() {
+    let tag = |src: &str| {
+        let mut ir = build_model(src);
+        let e = ir.entry(&EntryKind::F).expect("entry");
+        emit_c_tagged(&ir, &[("f".to_string(), &e)])
+            .expect("emit")
+            .tag
+    };
+    let a = "par p=2\nx'=-x*p\ndone\n";
+    assert_eq!(tag(a), tag(a));
+    assert_ne!(tag(a), tag("par p=2\nx'=-x*p+1\ndone\n"));
+}
+
+#[test]
+fn fnv1a64_matches_the_published_vectors() {
+    // Fowler, Noll and Vo, test vectors for FNV-1a 64.
+    assert_eq!(fnv1a64(b""), 0xcbf2_9ce4_8422_2325);
+    assert_eq!(fnv1a64(b"a"), 0xaf63_dc4c_8601_ec8c);
+    assert_eq!(fnv1a64(b"foobar"), 0x8594_4171_f739_67e8);
 }
