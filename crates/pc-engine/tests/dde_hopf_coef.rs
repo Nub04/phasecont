@@ -496,3 +496,74 @@ fn the_same_run_without_the_resonance_has_coefficients() {
         assert!((value(sp, "g200_re") + 1.0).abs() < 1e-6);
     }
 }
+
+// The active control system of Bosschaert, Janssens and Kuznetsov (arXiv 1903.08276 v1, Sec. 8.3),
+// the model of SPEC section 8j test 1. Its Hopf-Hopf point is at (zeta, tau) = (ZETA, TAU).
+const ACS: &str = "par zeta=-0.01622437043055295, tau=5.898023025699427\n\
+    s'=tau*y\n\
+    y'=tau*(-s-2*zeta*y)+tau*(-0.1*delay(s,1)-0.52*delay(y,1)+0.1*delay(s,1)^3)\n\
+    done\n";
+const ACS_ZETA: f64 = -0.016_224_370_430_552_95;
+const ACS_TAU: f64 = 5.898_023_025_699_427;
+const ACS_W1: f64 = 7.644_926_613_449_257_5;
+const ACS_W2: f64 = 4.527_486_915_496_89;
+
+// Test 2, the independent half: the Hopf curve of the published model, run through its own
+// Hopf-Hopf point. The values come from a numpy script written for SPEC section 8j and from the
+// paper (four printed digits). Neither is the engine's own output, unlike the direct call above.
+#[test]
+fn hh_values_on_the_published_model_match_the_numpy_values_and_the_paper() {
+    // (name, numpy value, printed value, unit of the last printed digit)
+    let want: [(&str, f64, f64, f64); 11] = [
+        ("g2100_re", -0.091_452_514_113_883_53, -0.0915, 1e-4),
+        ("g2100_im", 0.121_439_974_396_385_96, 0.1214, 1e-4),
+        ("g1011_re", -0.308_448_621_979_563_9, -0.3084, 1e-4),
+        ("g1011_im", 0.409_589_535_276_780_66, 0.4096, 1e-4),
+        ("g1110_re", 0.215_070_731_513_221_98, 0.2151, 1e-4),
+        ("g1110_im", 0.387_604_330_232_565_2, 0.3876, 1e-4),
+        ("g0021_re", 0.181_346_219_418_256_54, 0.1813, 1e-4),
+        ("g0021_im", 0.326_825_409_590_890_07, 0.3268, 1e-4),
+        ("theta", -1.700_882_560_270_852_2, -1.7009, 1e-4),
+        ("delta", -2.351_720_273_599_037, -2.3517, 1e-4),
+        ("product", -0.016_584_567_690_847_526, -0.0166, 1e-4),
+    ];
+    for which in both() {
+        // A Hopf point of the larger-frequency curve at tau = 5.8, found with a Newton solve on
+        // the characteristic equation in a scratch script.
+        let s = setup(
+            [0, 1],
+            &[-0.061_838_555_573_730_6, 5.8],
+            &[0.0, 0.0],
+            7.468_270_805_042_674,
+        );
+        let b = run(
+            ACS,
+            which,
+            &s,
+            &opts(0.05, (5.5, 6.3), 1.0),
+            &extras(true, true),
+        );
+        let hh: Vec<_> = b.specials.iter().filter(|sp| sp.label == "HH").collect();
+        assert_eq!(hh.len(), 1, "{:?}", b.specials);
+        let sp = hh[0];
+        assert!((sp.alpha[0] - ACS_ZETA).abs() < 1e-9, "{:?}", sp.alpha);
+        assert!((sp.alpha[1] - ACS_TAU).abs() < 1e-9, "{:?}", sp.alpha);
+        assert!((value(sp, "omega_large") - ACS_W1).abs() < 1e-9);
+        assert!((value(sp, "omega_small") - ACS_W2).abs() < 1e-9);
+        for (name, numpy, printed, unit) in want {
+            let got = value(sp, name);
+            // The special is located to the last digits of the parameters, and the run and the
+            // numpy script agree to about 1e-15 relative. The bound leaves room for a libm that
+            // rounds differently.
+            assert!(
+                (got - numpy).abs() <= 1e-10 * numpy.abs(),
+                "{name}: {got} vs numpy {numpy}"
+            );
+            assert!(
+                (got - printed).abs() <= 0.5 * unit * (1.0 + 1e-9),
+                "{name}: {got} vs printed {printed}"
+            );
+        }
+        assert_eq!(value(sp, "sign"), -1.0);
+    }
+}
