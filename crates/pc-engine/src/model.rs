@@ -167,6 +167,18 @@ fn build_checked(
     finish(model, info, which, ir, require_autonomous)
 }
 
+/// Refuses with `BadProblem` a model with a formula table whose formula reads a
+/// parameter, the check that [`build`] makes. A caller that writes C without building an
+/// evaluator calls it first, so that such a model fails before the C file exists.
+pub fn check_tables(model: &Model, info: &ModelInfo) -> Result<(), EngineError> {
+    match table_reading_a_parameter(model, info) {
+        Some(name) => Err(EngineError::BadProblem(format!(
+            "table {name} reads a parameter; tables are tabulated once from the declared values"
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// The checks and the evaluator that `build` and `build_dde` share.
 fn finish(
     model: &Model,
@@ -178,11 +190,7 @@ fn finish(
     if require_autonomous && !ir.autonomous {
         return Err(EngineError::NonAutonomous);
     }
-    if let Some(name) = table_reading_a_parameter(model, info) {
-        return Err(EngineError::BadProblem(format!(
-            "table {name} reads a parameter; tables are tabulated once from the declared values"
-        )));
-    }
+    check_tables(model, info)?;
     Ok(match which {
         Evaluator::Jit => Box::new(CompiledModel::new(ir)),
         Evaluator::Aot { lib, tag } => {

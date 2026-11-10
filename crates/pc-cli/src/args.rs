@@ -901,7 +901,7 @@ pub const EMIT_HELP: &str = "\
 usage: pc-cli emit-c [-o out.c] [--] <file.ode>
 
 Writes C code with the functions F, JacU and JacP (JacP has no outputs when
-the model has no parameters) and pc_aot_init. Without -o the code goes to
+the model has no parameters), pc_aot_init and pc_aot_tag. Without -o the code goes to
 stdout. Diagnostics and refusals go to stderr.
 
 options:

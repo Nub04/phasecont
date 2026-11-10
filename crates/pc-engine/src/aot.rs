@@ -1,7 +1,7 @@
 //! Evaluating model entries with a compiled AOT C library.
 //!
-//! The library comes from `pc_codegen::emit_c`: it exports `pc_aot_init` and one function
-//! per entry, named by [`entry_symbol`]. [`AotEval`] opens it, hands it the `pc-ir` math
+//! The library comes from `pc_codegen::emit_c`: it exports `pc_aot_init`, `pc_aot_tag` and one
+//! function per entry, named by [`entry_symbol`]. [`AotEval`] opens it, hands it the `pc-ir` math
 //! table so that it calls the same functions as the JIT, and keeps it loaded for as long
 //! as the evaluator lives.
 

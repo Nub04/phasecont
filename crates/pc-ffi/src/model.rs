@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 
 use pc_engine::{
-    EpSetup, Evaluator, ModelEval, Options, build_allowing_t, build_dde, engine_kinds,
-    entry_symbol, equilibrium,
+    EpSetup, Evaluator, ModelEval, Options, build_allowing_t, build_dde, check_tables,
+    engine_kinds, entry_symbol, equilibrium,
 };
 use pc_ir::{EntryKind, IrModel};
 use pc_ode::{Model, ModelInfo};
@@ -328,6 +328,8 @@ fn handle(req: Request, ctx: &Context, ev: &mut Option<Box<dyn ModelEval>>) -> R
             Ok(Reply::Compiled)
         }
         Request::EmitC(dir) => {
+            // `evaluator: "none"` builds nothing that would make this check.
+            check_tables(&ctx.model, &ctx.info)?;
             let (path, tag) = write_c(&ctx.model, &ctx.info, &dir)?;
             ctx.tag.set(Some(tag));
             Ok(Reply::CFile(path))

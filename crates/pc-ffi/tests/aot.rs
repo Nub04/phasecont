@@ -460,6 +460,35 @@ fn none_needs_emit_c_and_refuses_an_aot_lib() {
     assert!(info(&m)["evaluator"].is_null());
 }
 
+/// A formula table whose formula reads a parameter, which the engine refuses.
+const TABLE_READS_PARAM: &str = "par a=2\n\
+init x=1\n\
+table h % 11 0 6.25 a*sin(t)\n\
+x'=-x+h(x)\n\
+done\n";
+
+#[test]
+fn a_table_that_reads_a_parameter_is_refused_before_any_c_file_is_written() {
+    for opts in [
+        |dir: &str| format!(r#"{{"evaluator":"none","emit_c":{dir}}}"#),
+        |dir: &str| format!(r#"{{"emit_c":{dir}}}"#),
+    ] {
+        let tmp = Temp::new("table-param");
+        let m = parse(TABLE_READS_PARAM);
+        let rc = compile(&m, &opts(&json_path(&tmp.0)));
+        assert_ne!(rc, 0, "{}", opts("dir"));
+        assert!(
+            last_error().contains("reads a parameter"),
+            "{}",
+            last_error()
+        );
+        // The refusal comes before the folder or the file exists, and no evaluator is set.
+        assert!(!tmp.0.exists(), "{}", opts("dir"));
+        assert!(info(&m)["c_file"].is_null());
+        assert!(info(&m)["evaluator"].is_null());
+    }
+}
+
 #[test]
 fn a_library_built_from_another_model_gives_5_and_names_the_tag() {
     let (ta, tb) = (Temp::new("tag-a"), Temp::new("tag-b"));
