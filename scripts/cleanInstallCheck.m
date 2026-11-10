@@ -246,8 +246,10 @@ end
 % release only the repo check above applies.
 try
     addonFolder = string(settings().matlab.addons.InstallationFolder.ActiveValue);
-catch
+catch err
     addonFolder = "";
+    fprintf("Could not read the add-on folder setting (%s); only the repo check applies.\n", ...
+        err.message);
 end
 if strlength(addonFolder) > 0 && ~startsWith(lower(root), lower(addonFolder))
     error("phasecont:install:notAddon", ...
