@@ -235,6 +235,22 @@ classdef PlotTest < matlab.unittest.TestCase
             end
         end
 
+        function test6cPlotsAfterTheModelIsDeleted(testCase, Evaluator)
+            % A deleted Model leaves the Branch with its numbers; the plot
+            % labels the variables u1, u2, ... as for a Branch with no Model.
+            m = testCase.model(testCase.Lorenz, Evaluator);
+            eq = phasecont.equilibrium(m, [0 0 0], ...
+                Params = struct(s = 10, r = 0.5, b = 8/3));
+            br = phasecont.continuation(m, eq, Free = "r", Direction = 1, ...
+                MaxSteps = 20, Bounds = [0 2]);
+            delete(m);
+            ax = testCase.newAxes();
+            plot(br(1), Var = 2, Parent = ax);
+            testCase.verifyEqual(string(ax.YLabel.String), "u2");
+            testCase.verifyError(@() plot(br(1), Var = 4, Parent = ax), ...
+                "phasecont:model:unknownVariable");
+        end
+
         function test7EmptyBranch(testCase)
             ax = testCase.newAxes();
             h = plot(phasecont.Branch(), Parent = ax);

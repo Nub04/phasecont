@@ -319,7 +319,7 @@ classdef Branch < handle
 
         function vi = variableIndex(br, var)
             % Index into the columns of U from a name or an index.
-            if isempty(br.Model)
+            if ~br.hasModel()
                 n = br.stateCount();
                 names = strings(0, 1);
             else
@@ -329,8 +329,13 @@ classdef Branch < handle
             vi = phasecont.internal.variableIndex(var, n, names);
         end
 
+        function tf = hasModel(br)
+            % True while the Model handle is set and has not been deleted.
+            tf = ~isempty(br.Model) && isvalid(br.Model);
+        end
+
         function name = variableName(br, vi)
-            if isempty(br.Model)
+            if ~br.hasModel()
                 name = "u" + vi;
             else
                 name = br.Model.Variables(vi);
