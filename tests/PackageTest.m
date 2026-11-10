@@ -97,9 +97,14 @@ classdef PackageTest < matlab.unittest.TestCase
             testCase.build();
             [~, folder] = testCase.unpack();
             cfg = readMetadata(folder, "configuration.xml");
-            tok = regexp(cfg, '<matlabPath>([^<]*)</matlabPath>', "tokens");
-            paths = string(cellfun(@(c) c{1}, tok, UniformOutput = false));
-            testCase.verifyEqual(sort(reshape(paths, 1, [])), sort(["", "/bin/win64", ...
+            nodes = getElementsByTagName(cfg, "matlabPath");
+            paths = strings(1, getLength(nodes));
+            for k = 1:numel(paths)
+                paths(k) = string(getTextContent(item(nodes, k - 1)));
+            end
+            % The empty entry is the stage root itself, as packageToolbox
+            % writes it.
+            testCase.verifyEqual(sort(paths), sort(["", "/bin/win64", ...
                 "/bin/glnxa64", "/bin/maca64", "/examples"]));
         end
 
@@ -735,26 +740,32 @@ bytes = fread(fid, Inf, "uint8=>uint8");
 fclose(fid);
 end
 
-function xml = readMetadata(folder, name)
-xml = string(fileread(fullfile(folder, "metadata", name)));
+function doc = readMetadata(folder, name)
+% Parse a metadata file, so the checks do not depend on how the XML is
+% spelled (attribute order, quote style, white space).
+doc = parseFile(matlab.io.xml.dom.Parser, fullfile(folder, "metadata", name));
 end
 
-function value = tagText(xml, tag)
-% Text of the first <tag ...>text</tag> element
-tok = regexp(xml, "<" + regexptranslate("escape", tag) + "[^>]*>([^<]*)</", ...
-    "tokens", "once");
-if isempty(tok)
+function value = tagText(doc, tag)
+% Text content of the first element with this tag name (a prefixed name such
+% as cp:version is matched as written)
+nodes = getElementsByTagName(doc, tag);
+if getLength(nodes) == 0
     value = "<absent>";
 else
-    value = strtrim(string(tok{1}));
+    value = strtrim(string(getTextContent(item(nodes, 0))));
 end
 end
 
-function value = attribute(xml, name)
-tok = regexp(xml, " " + name + '="([^"]*)"', "tokens", "once");
-if isempty(tok)
-    value = "<absent>";
-else
-    value = string(tok{1});
+function value = attribute(doc, name)
+% Value of this attribute on the first element that has it
+nodes = getElementsByTagName(doc, "*");
+value = "<absent>";
+for k = 0:getLength(nodes) - 1
+    el = item(nodes, k);
+    if hasAttribute(el, name)
+        value = string(getAttribute(el, name));
+        return
+    end
 end
 end

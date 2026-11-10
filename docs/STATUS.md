@@ -902,7 +902,7 @@ Time scale of the delay Hopf curve (bcbcea6; SPEC sections 8e and 8f, tests 11 a
   - AOT cache: a cache hit trusts `isfile` alone, with no staged rename and no rebuild after a failed load, so a partial library warns until the cache folder is deleted.
   - AOT cache folder: the path is predictable in a shared `tempdir` with no ownership check (a Linux `/tmp` concern), and AotTest uses the real cache.
   - Licenses: overrides are keyed by crate name only, so a `Cargo.lock` bump can reuse an old text for a new version.
-  - Package: `PackageTest` reads metadata with regexes that depend on attribute spelling, and the stage root's `matlabPath` entry is an empty string.
+  - Package: the stage root's `matlabPath` entry is an empty string, as `packageToolbox` writes it, and `PackageTest` pins that. (`PackageTest` now reads the metadata through the XML parser, so it does not depend on attribute spelling.)
   - Clean install: the `notAddon` negative path is untested, since it needs a real install. The add-on folder setting read prints a note when it fails.
   - Clean install: the `.mltbx` is uploaded only after the check passes, and a failure in the licenses step stops the `matlab-windows` job.
   - AOT load: `AotEval::open` checks only that the symbols exist. The emitted C has no dimension or `pc_math_t` layout export, so a hand-picked `aot_lib` built for another model passes `open` and reads out of bounds. The MATLAB flow cannot reach this, since the cache folder is named from a hash of the C text. A fix needs an exported tag in `pc-codegen`.
