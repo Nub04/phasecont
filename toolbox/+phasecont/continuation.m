@@ -552,23 +552,8 @@ problem = problem + "}";
 
 varIdx = 0;
 if ~isCurve && (options.Plot || ~isempty(options.Var))
-    if isempty(options.Var)
-        varIdx = 1;
-    else
-        v = options.Var;
-        if isnumeric(v) && isscalar(v) && v >= 1 && v <= numel(m.Variables) ...
-                && v == round(v)
-            varIdx = double(v);
-        elseif (isstring(v) || ischar(v)) && isscalar(string(v))
-            varIdx = find(m.Variables == string(v), 1);
-        else
-            varIdx = [];
-        end
-        if isempty(varIdx)
-            error("phasecont:model:unknownVariable", ...
-                "Var must be one of: %s.", strjoin(m.Variables, ", "));
-        end
-    end
+    varIdx = phasecont.internal.variableIndex(options.Var, numel(m.Variables), ...
+        m.Variables);
 end
 ax = [];
 if options.Plot

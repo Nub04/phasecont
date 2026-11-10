@@ -893,7 +893,6 @@ Time scale of the delay Hopf curve (bcbcea6; SPEC sections 8e and 8f, tests 11 a
   - (c) ASan has not run on GitHub yet; it runs on pull requests, the nightly schedule and manual runs. The licenses step in `pckern-win` passed on its first hosted run on 2026-11-04.
 - Known minors from reviews, parked:
   - `special_tangent` threshold flips LP orientation with refinement noise.
-  - Variable lookup is duplicated in `Branch.m` and `continuation.m`.
   - The special-marker edge is black on dark themes.
   - The live line advances ColorOrderIndex, so the final plot uses the second color.
   - From the final P7a review (2026-10-29):

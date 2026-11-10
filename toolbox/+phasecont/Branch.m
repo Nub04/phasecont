@@ -326,18 +326,7 @@ classdef Branch < handle
                 names = br.Model.Variables;
                 n = numel(names);
             end
-            if isempty(var)
-                vi = 1;
-            elseif isnumeric(var) && isscalar(var) && var == round(var) ...
-                    && var >= 1 && var <= n
-                vi = double(var);
-            elseif (isstring(var) || ischar(var)) && isscalar(string(var)) ...
-                    && any(names == string(var))
-                vi = find(names == string(var), 1);
-            else
-                error("phasecont:model:unknownVariable", ...
-                    "Var must be one of: %s.", strjoin(names, ", "));
-            end
+            vi = phasecont.internal.variableIndex(var, n, names);
         end
 
         function name = variableName(br, vi)
