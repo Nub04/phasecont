@@ -1,0 +1,8 @@
+# Lengyel-Epstein chlorine dioxide-iodine-malonic acid model in nondimensional form, from the
+# equations in Strogatz, Nonlinear Dynamics and Chaos, 3rd ed., Section 8.3 (eq. 4 and 5).
+# The equilibrium is x = a/5, y = 1 + (a/5)^2. The Hopf curve is b = 3a/5 - 25/a.
+par a=10,b=3.5
+x'=a-x-4*x*y/(1+x^2)
+y'=b*x*(1-y/(1+x^2))
+init x=2,y=5
+done
