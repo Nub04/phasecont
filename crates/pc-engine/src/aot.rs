@@ -75,16 +75,43 @@ pub struct AotEval {
 }
 
 impl AotEval {
-    /// Opens `path`, calls `pc_aot_init` with the math table and resolves the entries
-    /// that the model sizes call for: `f`, `jac_u`, `aux` when `n_aux > 0` and `jac_p` when
-    /// `n_p > 0`. Directional entries are resolved on first use. A library that cannot be
-    /// opened, or lacks `pc_aot_init` or a required entry, is `EngineError::Model`.
-    pub fn open(path: &Path, n: usize, n_p: usize, n_aux: usize) -> Result<AotEval, EngineError> {
+    /// Opens `path`, checks its `pc_aot_tag` against `tag`, calls `pc_aot_init` with the
+    /// math table and resolves the entries that the model sizes call for: `f`, `jac_u`,
+    /// `aux` when `n_aux > 0` and `jac_p` when `n_p > 0`. Directional entries are resolved
+    /// on first use. A library that cannot be opened, lacks `pc_aot_tag`, returns another
+    /// tag, or lacks `pc_aot_init` or a required entry, is `EngineError::Model`.
+    ///
+    /// `tag` is `pc_codegen::EmittedC::tag` of the text the library was built from. The
+    /// check finds a stale, misplaced or wrong-path library; it is not a security control,
+    /// since the loader has already run the file's initializers.
+    pub fn open(
+        path: &Path,
+        n: usize,
+        n_p: usize,
+        n_aux: usize,
+        tag: u64,
+    ) -> Result<AotEval, EngineError> {
         let bad =
             |what: String| EngineError::Model(format!("AOT library {}: {what}", path.display()));
         // SAFETY: loading runs the initializers of the file. The file is a library that
         // PhaseCont's C emitter wrote and the host compiled; its initializers are empty.
         let lib = unsafe { Library::new(path) }.map_err(|e| bad(format!("cannot open: {e}")))?;
+        // SAFETY: `pc_aot_tag` is emitted as `unsigned long long pc_aot_tag(void)`, which
+        // has the layout of `extern "C" fn() -> u64` on every supported target.
+        let found = unsafe {
+            let f: libloading::Symbol<unsafe extern "C" fn() -> u64> =
+                lib.get(b"pc_aot_tag\0").map_err(|e| {
+                    bad(format!(
+                        "no pc_aot_tag, so it was not built from this model's C text: {e}"
+                    ))
+                })?;
+            f()
+        };
+        if found != tag {
+            return Err(bad(format!(
+                "pc_aot_tag is {found:#018x}, expected {tag:#018x}; the library was built from other C text"
+            )));
+        }
         // SAFETY: `pc_aot_init` is emitted as `void pc_aot_init(const pc_math_t *)`, and
         // `pc_math_t` has the field order of the `#[repr(C)]` `MathTable`.
         unsafe {

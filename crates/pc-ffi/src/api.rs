@@ -20,7 +20,7 @@ use crate::error::{Error, Result, bad_arg};
 use crate::import;
 use crate::json::problem::{Kind, Mode, parse_options, parse_problem};
 use crate::latex;
-use crate::model::{DELAY_MODEL, ModelHandle, NOT_COMPILED};
+use crate::model::{Build, DELAY_MODEL, ModelHandle, NOT_COMPILED};
 use crate::parse::{MAX_MODEL_TEXT, parse_model};
 use crate::registry::{self, Handle};
 use crate::run::{RunHandle, pack_row, poll_json, stride};
@@ -87,7 +87,8 @@ pub unsafe extern "C" fn model_from_ode(
 
 /// What `model_compile` reads from its options.
 struct CompileOptions {
-    evaluator: Evaluator,
+    /// None for `"evaluator":"none"`: write the C file and build no evaluator.
+    evaluator: Option<Build>,
     emit_c: Option<PathBuf>,
 }
 
@@ -103,10 +104,12 @@ fn string_option<'a>(
 }
 
 /// Reads the `model_compile` options: NULL or an object with the keys `evaluator`
-/// ("jit", "fallback" or "aot"), `aot_lib` (required by "aot") and `emit_c` (a folder).
+/// ("jit", "fallback", "aot" or "none"), `aot_lib` (required by "aot") and `emit_c` (a
+/// folder). "none" needs `emit_c`: it writes the C file and builds no evaluator, and it
+/// leaves the evaluator of an already compiled handle as it is.
 fn compile_options(opts: *const c_char) -> Result<CompileOptions> {
     let mut out = CompileOptions {
-        evaluator: Evaluator::Jit,
+        evaluator: Some(Build::Jit),
         emit_c: None,
     };
     if opts.is_null() {
@@ -127,22 +130,30 @@ fn compile_options(opts: *const c_char) -> Result<CompileOptions> {
         )));
     }
     let lib = string_option(map, "aot_lib")?;
+    out.emit_c = string_option(map, "emit_c")?.map(PathBuf::from);
     out.evaluator = match string_option(map, "evaluator")? {
-        None | Some("jit") => Evaluator::Jit,
-        Some("fallback") => Evaluator::Fallback,
-        Some("aot") => Evaluator::Aot {
-            lib: PathBuf::from(lib.ok_or_else(|| bad_arg("evaluator \"aot\" needs \"aot_lib\""))?),
-        },
+        None | Some("jit") => Some(Build::Jit),
+        Some("fallback") => Some(Build::Fallback),
+        Some("aot") => {
+            Some(Build::Aot(PathBuf::from(lib.ok_or_else(|| {
+                bad_arg("evaluator \"aot\" needs \"aot_lib\"")
+            })?)))
+        }
+        Some("none") => {
+            if out.emit_c.is_none() {
+                return Err(bad_arg("evaluator \"none\" needs \"emit_c\""));
+            }
+            None
+        }
         Some(_) => {
             return Err(bad_arg(
-                "evaluator: expected \"jit\", \"fallback\" or \"aot\"",
+                "evaluator: expected \"jit\", \"fallback\", \"aot\" or \"none\"",
             ));
         }
     };
-    if lib.is_some() && !matches!(out.evaluator, Evaluator::Aot { .. }) {
+    if lib.is_some() && !matches!(out.evaluator, Some(Build::Aot(_))) {
         return Err(bad_arg("aot_lib: only valid with evaluator \"aot\""));
     }
-    out.emit_c = string_option(map, "emit_c")?.map(PathBuf::from);
     Ok(out)
 }
 
@@ -153,7 +164,10 @@ pub unsafe extern "C" fn model_compile(model: u64, opts: *const c_char) -> i32 {
         if let Some(dir) = o.emit_c {
             h.emit_c(dir)?;
         }
-        h.compile(o.evaluator)
+        match o.evaluator {
+            Some(build) => h.compile(build),
+            None => Ok(()),
+        }
     })
 }
 
@@ -362,7 +376,7 @@ pub unsafe extern "C" fn model_info(model: u64, out_json: *mut *mut c_char) -> i
             Evaluator::Aot { .. } => "aot",
         });
         let aot_lib = match &evaluator {
-            Some(Evaluator::Aot { lib }) => Some(lib.to_string_lossy().into_owned()),
+            Some(Evaluator::Aot { lib, .. }) => Some(lib.to_string_lossy().into_owned()),
             _ => None,
         };
         let c_file = h.c_file().map(|p| p.to_string_lossy().into_owned());

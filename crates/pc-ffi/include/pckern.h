@@ -108,9 +108,13 @@ typedef struct pc_api_v1_t {
                             char **diag_json);
 
   /* Builds the evaluator. opts_json is NULL or an object with the keys
-   * "evaluator" ("jit", "fallback" or "aot"), "aot_lib" (needed by and only
-   * valid with "aot") and "emit_c" (a folder for the model's C text); any
-   * other key is PC_ERR_BAD_ARG. NULL means "jit". See docs/SPEC.md section 10. */
+   * "evaluator" ("jit", "fallback", "aot" or "none"), "aot_lib" (needed by and
+   * only valid with "aot") and "emit_c" (a folder for the model's C text); any
+   * other key is PC_ERR_BAD_ARG. NULL means "jit". "none" needs "emit_c": it
+   * writes the C file and builds no evaluator, and it leaves the evaluator of
+   * an already compiled handle as it is. "aot" loads a library built from the
+   * C text of this model and gives PC_ERR_MODEL when the library reports
+   * another pc_aot_tag. See docs/SPEC.md section 10. */
   int32_t (*model_compile)(uint64_t model, const char *opts_json);
 
   /* Evaluates f(x, p). Needs a compiled model. nx and nout must equal n, np
@@ -164,8 +168,9 @@ typedef struct pc_api_v1_t {
    * are the names, values the parameter values from the file and init the
    * initial values from the file. aux lists the names of the auxiliary quantities and
    * autonomous is false when the right-hand side uses t. evaluator is "jit",
-   * "fallback" or null before model_compile. jit_max_frame is the largest
-   * JIT stack frame compiled so far (0 before model_compile). */
+   * "fallback" or null before an evaluator is built (model_compile with
+   * "evaluator":"none" builds none). jit_max_frame is the largest JIT stack
+   * frame compiled so far (0 before the JIT is built). */
   int32_t (*model_info)(uint64_t model, char **info_json);
 
   /* Newton solve from u0 with the given parameters. opts_json is NULL or the

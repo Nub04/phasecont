@@ -4,6 +4,7 @@
 //! thread. The MATLAB side sends owned requests over a channel and waits for
 //! the reply, which also serializes calls from several threads.
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -39,8 +40,16 @@ pub(crate) struct Names {
     pub options: Vec<(String, String)>,
 }
 
+/// The evaluator a `compile` request asks for. An AOT one gets its load tag on the model
+/// thread, from the C text of this model.
+pub(crate) enum Build {
+    Jit,
+    Fallback,
+    Aot(PathBuf),
+}
+
 enum Request {
-    Compile(Evaluator),
+    Compile(Build),
     EmitC(PathBuf),
     Rhs { x: Vec<f64>, p: Vec<f64>, t: f64 },
     Equilibrium { setup: EpSetup, opts: Options },
@@ -114,6 +123,7 @@ impl ModelHandle {
             warm_p: names.par_values.clone(),
             max_frame: Arc::clone(&max_frame),
             evaluator: Arc::clone(&evaluator),
+            tag: Cell::new(None),
         };
         let thread = std::thread::Builder::new()
             .name("pckern-model".into())
@@ -175,7 +185,7 @@ impl ModelHandle {
         Ok(())
     }
 
-    pub fn compile(&self, which: Evaluator) -> Result<()> {
+    pub fn compile(&self, which: Build) -> Result<()> {
         match self.call(Request::Compile(which))? {
             Reply::Compiled => Ok(()),
             _ => Err(Error::Internal("unexpected reply to compile".into())),
@@ -270,12 +280,35 @@ struct Context {
     warm_p: Vec<f64>,
     max_frame: Arc<AtomicU32>,
     evaluator: Arc<Mutex<Option<Evaluator>>>,
+    /// The `pc_aot_tag` of this model's C text, once `emit_c` or an AOT compile has made it.
+    tag: Cell<Option<u64>>,
+}
+
+impl Context {
+    /// The tag a library built from this model's C text reports.
+    fn aot_tag(&self) -> Result<u64> {
+        if let Some(t) = self.tag.get() {
+            return Ok(t);
+        }
+        let t = emit_model(&self.model, &self.info)?.tag;
+        self.tag.set(Some(t));
+        Ok(t)
+    }
 }
 
 fn handle(req: Request, ctx: &Context, ev: &mut Option<Box<dyn ModelEval>>) -> Result<Reply> {
     match req {
-        Request::Compile(which) => {
+        Request::Compile(build) => {
             let mut p = ctx.warm_p.clone();
+            let which = match build {
+                Build::Jit => Evaluator::Jit,
+                Build::Fallback => Evaluator::Fallback,
+                // `build_dde` refuses an AOT evaluator before it reads the tag.
+                Build::Aot(lib) => Evaluator::Aot {
+                    tag: if ctx.delay { 0 } else { ctx.aot_tag()? },
+                    lib,
+                },
+            };
             let mut built = if ctx.delay {
                 // The hidden delay slots follow the declared parameters, then `t`.
                 let dm = build_dde(&ctx.model, &ctx.info, which.clone())?;
@@ -294,7 +327,11 @@ fn handle(req: Request, ctx: &Context, ev: &mut Option<Box<dyn ModelEval>>) -> R
             *lock(&ctx.evaluator) = Some(which);
             Ok(Reply::Compiled)
         }
-        Request::EmitC(dir) => Ok(Reply::CFile(write_c(&ctx.model, &ctx.info, &dir)?)),
+        Request::EmitC(dir) => {
+            let (path, tag) = write_c(&ctx.model, &ctx.info, &dir)?;
+            ctx.tag.set(Some(tag));
+            Ok(Reply::CFile(path))
+        }
         Request::Rhs { x, mut p, t } => {
             let ev = compiled(ev)?;
             p.push(t);
@@ -319,16 +356,8 @@ fn handle(req: Request, ctx: &Context, ev: &mut Option<Box<dyn ModelEval>>) -> R
     }
 }
 
-/// FNV-1a, 64 bit. It names the C file, so it must not change between releases.
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
-        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
-    })
-}
-
-/// Lowers the model, emits C for every entry in `engine_kinds` and writes it to
-/// `<dir>/pc_model_<hash>.c`, creating `dir` if it is missing.
-fn write_c(model: &Model, info: &ModelInfo, dir: &Path) -> Result<PathBuf> {
+/// Lowers the model and emits C for every entry in `engine_kinds`, with the load tag.
+fn emit_model(model: &Model, info: &ModelInfo) -> Result<pc_codegen::EmittedC> {
     let mut ir = pc_ir::lower(model, info).map_err(|errs| {
         let msgs: Vec<&str> = errs.iter().map(|e| e.message.as_str()).collect();
         Error::Model(msgs.join("; "))
@@ -343,11 +372,20 @@ fn write_c(model: &Model, info: &ModelInfo, dir: &Path) -> Result<PathBuf> {
     }
     let named: Vec<(String, &pc_ir::Entry)> =
         kinds.iter().map(entry_symbol).zip(entries.iter()).collect();
-    let text =
-        pc_codegen::emit_c(&ir, &named).map_err(|e| Error::Internal(format!("emit_c: {e}")))?;
-    let path = dir.join(format!("pc_model_{:016x}.c", fnv1a64(text.as_bytes())));
+    pc_codegen::emit_c_tagged(&ir, &named).map_err(|e| Error::Internal(format!("emit_c: {e}")))
+}
+
+/// Writes the C text of the model to `<dir>/pc_model_<hash>.c`, creating `dir` if it is
+/// missing. The file name hashes the text with FNV-1a 64, which must not change between
+/// releases. Returns the path and the load tag.
+fn write_c(model: &Model, info: &ModelInfo, dir: &Path) -> Result<(PathBuf, u64)> {
+    let c = emit_model(model, info)?;
+    let path = dir.join(format!(
+        "pc_model_{:016x}.c",
+        pc_codegen::fnv1a64(c.text.as_bytes())
+    ));
     std::fs::create_dir_all(dir)
-        .and_then(|()| std::fs::write(&path, &text))
+        .and_then(|()| std::fs::write(&path, &c.text))
         .map_err(|e| bad_arg(format!("emit_c: cannot write {}: {e}", path.display())))?;
-    Ok(path)
+    Ok((path, c.tag))
 }

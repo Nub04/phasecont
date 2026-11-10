@@ -4,7 +4,7 @@
 
 mod common;
 
-use pc_codegen::emit_c;
+use pc_codegen::emit_c_tagged;
 use pc_engine::{AotEval, EngineError, Evaluator, ModelEval, build, engine_kinds, entry_symbol};
 use pc_ir::check::{Rng, draw_point};
 use pc_ir::{Entry, EntryKind, IrModel, lower};
@@ -122,11 +122,20 @@ fn load_path(path: &Path) -> Option<Loaded> {
 }
 
 /// Builds the library for `ir` with every entry the engine uses.
-fn emit_all(ir: &mut IrModel) -> String {
+fn emit_all(ir: &mut IrModel) -> (String, u64) {
     let kinds = engine_kinds();
     let entries: Vec<Entry> = kinds.iter().map(|k| ir.entry(k).expect("entry")).collect();
     let named: Vec<(String, &Entry)> = kinds.iter().map(entry_symbol).zip(entries.iter()).collect();
-    emit_c(ir, &named).expect("emit")
+    let t = emit_c_tagged(ir, &named).expect("emit");
+    (t.text, t.tag)
+}
+
+/// A tag that no emitted library is likely to carry, for the hand-written libraries.
+const TAG: u64 = 0x1234_5678_9abc_def0;
+
+/// The C text of an exported `pc_aot_tag` that returns `tag`.
+fn tag_fn(tag: u64) -> String {
+    format!("unsigned long long pc_aot_tag(void) {{ return 0x{tag:016x}ULL; }}\n")
 }
 
 /// Same bits, or both NaN.
@@ -150,11 +159,12 @@ fn aot_matches_jit_on_the_corpus() {
         let Ok(mut ir) = lower(&loaded.expanded, &loaded.info) else {
             continue;
         };
-        let c = emit_all(&mut ir);
+        let (c, tag) = emit_all(&mut ir);
         let tmp = Temp::new("corpus");
         let so = compile(&tmp, &c).unwrap_or_else(|e| panic!("{name}: {e}"));
         let (n, n_p, n_aux) = (ir.n(), ir.n_p(), ir.aux.len());
-        let mut aot = AotEval::open(&so, n, n_p, n_aux).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let mut aot =
+            AotEval::open(&so, n, n_p, n_aux, tag).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!((aot.n(), aot.n_p()), (n, n_p), "{name}");
         let mut jit = CompiledModel::new(ir);
         let mut rng = Rng(11);
@@ -207,8 +217,9 @@ fn build_with_aot_runs_a_model() {
     let (model, info) = common::load("lorenz");
     let mut ir = lower(&model, &info).expect("lower");
     let tmp = Temp::new("build");
-    let so = compile(&tmp, &emit_all(&mut ir)).expect("compile");
-    let mut aot = build(&model, &info, Evaluator::Aot { lib: so }).expect("build aot");
+    let (c, tag) = emit_all(&mut ir);
+    let so = compile(&tmp, &c).expect("compile");
+    let mut aot = build(&model, &info, Evaluator::Aot { lib: so, tag }).expect("build aot");
     let mut jit = build(&model, &info, Evaluator::Jit).expect("build jit");
     assert_eq!((aot.n(), aot.n_p()), (jit.n(), jit.n_p()));
     let x = [0.3, -0.7, 1.9];
@@ -228,6 +239,7 @@ fn build_with_aot_runs_a_model() {
         &info,
         Evaluator::Aot {
             lib: PathBuf::from("/no/such/dir/model.so"),
+            tag,
         },
     );
     assert!(matches!(r, Err(EngineError::Model(_))));
@@ -235,7 +247,7 @@ fn build_with_aot_runs_a_model() {
 
 #[test]
 fn missing_library_is_a_model_error() {
-    let r = AotEval::open(Path::new("/no/such/dir/model.so"), 1, 1, 0);
+    let r = AotEval::open(Path::new("/no/such/dir/model.so"), 1, 1, 0, 0);
     match r {
         Err(EngineError::Model(m)) => assert!(m.contains("model.so"), "{m}"),
         Err(e) => panic!("wrong error {e:?}"),
@@ -250,12 +262,12 @@ fn library_without_init_is_a_model_error() {
         return;
     }
     let tmp = Temp::new("noinit");
-    let so = compile(
-        &tmp,
-        "void f(const double *x, const double *p, double *out) { out[0] = x[0] + p[0]; }\n",
-    )
-    .expect("compile");
-    match AotEval::open(&so, 1, 1, 0) {
+    let c = format!(
+        "{}void f(const double *x, const double *p, double *out) {{ out[0] = x[0] + p[0]; }}\n",
+        tag_fn(TAG)
+    );
+    let so = compile(&tmp, &c).expect("compile");
+    match AotEval::open(&so, 1, 1, 0, TAG) {
         Err(EngineError::Model(m)) => assert!(m.contains("pc_aot_init"), "{m}"),
         Err(e) => panic!("wrong error {e:?}"),
         Ok(_) => panic!("opened a library without pc_aot_init"),
@@ -270,10 +282,13 @@ fn library_without_an_entry_is_a_model_error() {
     }
     // Has pc_aot_init and f, but no jac_u.
     let tmp = Temp::new("noentry");
-    let c = "struct t; void pc_aot_init(const struct t *m) { (void)m; }\n\
-             void f(const double *x, const double *p, double *out) { out[0] = x[0] + p[0]; }\n";
-    let so = compile(&tmp, c).expect("compile");
-    match AotEval::open(&so, 1, 0, 0) {
+    let c = format!(
+        "{}struct t; void pc_aot_init(const struct t *m) {{ (void)m; }}\n\
+         void f(const double *x, const double *p, double *out) {{ out[0] = x[0] + p[0]; }}\n",
+        tag_fn(TAG)
+    );
+    let so = compile(&tmp, &c).expect("compile");
+    match AotEval::open(&so, 1, 0, 0, TAG) {
         Err(EngineError::Model(m)) => assert!(m.contains("jac_u"), "{m}"),
         Err(e) => panic!("wrong error {e:?}"),
         Ok(_) => panic!("opened a library without jac_u"),
@@ -292,10 +307,88 @@ fn missing_directional_entry_is_an_error_at_first_use() {
     let entries: Vec<Entry> = kinds.iter().map(|k| ir.entry(k).unwrap()).collect();
     let named: Vec<(String, &Entry)> = kinds.iter().map(entry_symbol).zip(&entries).collect();
     let tmp = Temp::new("nodir");
-    let so = compile(&tmp, &emit_c(&ir, &named).expect("emit")).expect("compile");
-    let mut aot = AotEval::open(&so, ir.n(), ir.n_p(), ir.aux.len()).expect("open");
+    let t = emit_c_tagged(&ir, &named).expect("emit");
+    let so = compile(&tmp, &t.text).expect("compile");
+    let mut aot = AotEval::open(&so, ir.n(), ir.n_p(), ir.aux.len(), t.tag).expect("open");
     let kind = EntryKind::Dir(vec![pc_ir::Slot::U]);
     let mut out = [0.0];
     let r = aot.eval(&kind, &[0.5], &[1.0, 0.0], &[1.0], &mut out);
     assert!(matches!(r, Err(EngineError::Model(_))), "{r:?}");
+}
+
+/// Emits and compiles the named model of `tests/models`.
+fn built(name: &str, tag: &str) -> (PathBuf, u64, (usize, usize, usize), Temp) {
+    let (model, info) = common::load(name);
+    let mut ir = lower(&model, &info).expect("lower");
+    let (c, t) = emit_all(&mut ir);
+    let tmp = Temp::new(tag);
+    let so = compile(&tmp, &c).expect("compile");
+    (so, t, (ir.n(), ir.n_p(), ir.aux.len()), tmp)
+}
+
+#[test]
+fn a_library_of_another_model_is_refused_by_its_tag() {
+    if gcc_version().is_none() {
+        println!("skip: gcc not found, AOT tag test not run");
+        return;
+    }
+    // Same n, n_p and n_aux, different C text: only the tag tells them apart.
+    let (so_a, tag_a, shape_a, _ta) = built("fold", "tag-a");
+    let (so_b, tag_b, shape_b, _tb) = built("fold_neg", "tag-b");
+    assert_eq!(shape_a, shape_b);
+    assert_ne!(tag_a, tag_b);
+    let (n, n_p, n_aux) = shape_a;
+    match AotEval::open(&so_b, n, n_p, n_aux, tag_a) {
+        Err(EngineError::Model(m)) => {
+            assert!(m.contains("pc_aot_tag"), "{m}");
+            assert!(m.contains(&format!("{tag_a:#018x}")), "{m}");
+            assert!(m.contains(&format!("{tag_b:#018x}")), "{m}");
+        }
+        Err(e) => panic!("wrong error {e:?}"),
+        Ok(_) => panic!("opened the library of another model"),
+    }
+    // Each library opens with its own tag.
+    AotEval::open(&so_a, n, n_p, n_aux, tag_a).expect("open a");
+    AotEval::open(&so_b, n, n_p, n_aux, tag_b).expect("open b");
+}
+
+#[test]
+fn library_without_a_tag_symbol_is_a_model_error() {
+    if gcc_version().is_none() {
+        println!("skip: gcc not found, AOT tag test not run");
+        return;
+    }
+    // An older library: init and f, but no pc_aot_tag. The tag check runs before init.
+    let tmp = Temp::new("notag");
+    let c = "struct t; void pc_aot_init(const struct t *m) { (void)m; }\n\
+             void f(const double *x, const double *p, double *out) { out[0] = x[0] + p[0]; }\n";
+    let so = compile(&tmp, c).expect("compile");
+    match AotEval::open(&so, 1, 1, 0, TAG) {
+        Err(EngineError::Model(m)) => assert!(m.contains("pc_aot_tag"), "{m}"),
+        Err(e) => panic!("wrong error {e:?}"),
+        Ok(_) => panic!("opened a library without pc_aot_tag"),
+    }
+}
+
+#[test]
+fn build_refuses_a_library_with_the_wrong_tag() {
+    if gcc_version().is_none() {
+        println!("skip: gcc not found, AOT tag test not run");
+        return;
+    }
+    let (so, tag, _, _t) = built("fold", "build-tag");
+    let (model, info) = common::load("fold");
+    let r = build(
+        &model,
+        &info,
+        Evaluator::Aot {
+            lib: so.clone(),
+            tag: tag ^ 1,
+        },
+    );
+    assert!(
+        matches!(r, Err(EngineError::Model(_))),
+        "wrong tag accepted"
+    );
+    build(&model, &info, Evaluator::Aot { lib: so, tag }).expect("matching tag");
 }

@@ -242,7 +242,7 @@ fn compile_options() {
     assert_eq!(compile(&m, Some(r#"{"evaluator":"gpu"}"#)), 2);
     assert_eq!(
         last_error(),
-        "evaluator: expected \"jit\", \"fallback\" or \"aot\""
+        "evaluator: expected \"jit\", \"fallback\", \"aot\" or \"none\""
     );
     assert_eq!(compile(&m, Some(r#"{"evaluator":"jit","x":1}"#)), 2);
     assert!(last_error().contains('x'), "{}", last_error());

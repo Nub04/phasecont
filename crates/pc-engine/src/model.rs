@@ -119,8 +119,11 @@ pub enum Evaluator {
     /// The f64 interpreter in `pc_ir`.
     Fallback,
     /// A C library from `pc_codegen::emit_c`, built by the host, at this path. The entries
-    /// are named by [`crate::entry_symbol`].
-    Aot { lib: PathBuf },
+    /// are named by [`crate::entry_symbol`]. `tag` is the `pc_codegen::EmittedC::tag` of
+    /// the text the library was built from; [`build`] refuses a library that returns
+    /// another value from `pc_aot_tag`. A delay model never reaches the tag, since
+    /// [`build_dde`] refuses an AOT library first.
+    Aot { lib: PathBuf, tag: u64 },
 }
 
 /// Lowers `model` and returns an evaluator for it.
@@ -182,7 +185,9 @@ fn finish(
     }
     Ok(match which {
         Evaluator::Jit => Box::new(CompiledModel::new(ir)),
-        Evaluator::Aot { lib } => Box::new(AotEval::open(&lib, ir.n(), ir.n_p(), ir.aux.len())?),
+        Evaluator::Aot { lib, tag } => {
+            Box::new(AotEval::open(&lib, ir.n(), ir.n_p(), ir.aux.len(), tag)?)
+        }
         Evaluator::Fallback => {
             let fb = Fallback::new(model, info, &ir);
             Box::new(FallbackEval {

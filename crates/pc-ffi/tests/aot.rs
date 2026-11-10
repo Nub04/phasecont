@@ -356,3 +356,142 @@ fn aot_without_aot_lib_and_other_bad_options_give_2() {
     }
     assert!(info(&m)["evaluator"].is_null());
 }
+
+/// Same shape as `LORENZ`, other equations, so another C text.
+const LORENZ_B: &str = "par s=10, r=28, b=2.6666666666666665\n\
+init x=1,y=1,z=1\n\
+x'=s*(y-x)\n\
+y'=x*(r-z)-y\n\
+z'=x*y-2*b*z\n\
+done\n";
+
+fn raw_rhs(m: &Id) -> i32 {
+    let (x, p) = ([1.0; 3], [10.0, 28.0, 8.0 / 3.0]);
+    let mut out = [f64::NAN; 3];
+    unsafe {
+        (api().model_rhs)(
+            m.0,
+            x.as_ptr(),
+            x.len(),
+            p.as_ptr(),
+            p.len(),
+            out.as_mut_ptr(),
+            out.len(),
+        )
+    }
+}
+
+#[test]
+fn none_writes_the_c_file_and_builds_no_evaluator() {
+    let tmp = Temp::new("none");
+    let m = parse(LORENZ);
+    let rc = compile(
+        &m,
+        &format!(r#"{{"emit_c":{},"evaluator":"none"}}"#, json_path(&tmp.0)),
+    );
+    assert_eq!(rc, 0, "{}", last_error());
+    let i = info(&m);
+    let c_file = PathBuf::from(i["c_file"].as_str().expect("c_file"));
+    assert!(c_file.is_file());
+    assert!(i["evaluator"].is_null(), "{i}");
+    assert_eq!(i["jit_max_frame"], 0);
+    // The handle is not compiled: rhs is the "not compiled" bad-argument error.
+    assert_eq!(raw_rhs(&m), 2);
+    assert!(last_error().contains("not compiled"), "{}", last_error());
+    // The same C file comes out as with the JIT built, and a later compile still works.
+    let other = Temp::new("none-jit");
+    let j = parse(LORENZ);
+    let jit_file = emit(&j, &other.0);
+    assert_eq!(
+        std::fs::read_to_string(&c_file).unwrap(),
+        std::fs::read_to_string(&jit_file).unwrap()
+    );
+    assert_eq!(compile(&m, r#"{"evaluator":"jit"}"#), 0, "{}", last_error());
+    assert_eq!(info(&m)["evaluator"], "jit");
+    assert_eq!(raw_rhs(&m), 0);
+}
+
+#[test]
+fn emit_c_alone_still_builds_the_jit() {
+    let tmp = Temp::new("alone");
+    let m = parse(LORENZ);
+    emit(&m, &tmp.0);
+    assert_eq!(info(&m)["evaluator"], "jit");
+    assert_eq!(raw_rhs(&m), 0);
+}
+
+#[test]
+fn none_keeps_the_evaluator_a_compiled_handle_has() {
+    let tmp = Temp::new("none-keep");
+    for name in ["jit", "fallback"] {
+        let m = parse(LORENZ);
+        assert_eq!(
+            compile(&m, &format!(r#"{{"evaluator":"{name}"}}"#)),
+            0,
+            "{}",
+            last_error()
+        );
+        let rc = compile(
+            &m,
+            &format!(r#"{{"emit_c":{},"evaluator":"none"}}"#, json_path(&tmp.0)),
+        );
+        assert_eq!(rc, 0, "{}", last_error());
+        let i = info(&m);
+        assert_eq!(i["evaluator"], name, "{i}");
+        assert!(i["c_file"].is_string());
+        assert_eq!(raw_rhs(&m), 0);
+    }
+}
+
+#[test]
+fn none_needs_emit_c_and_refuses_an_aot_lib() {
+    let tmp = Temp::new("none-bad");
+    let m = parse(LORENZ);
+    let dir = json_path(&tmp.0);
+    for opts in [
+        r#"{"evaluator":"none"}"#.to_string(),
+        format!(r#"{{"evaluator":"none","aot_lib":"x","emit_c":{dir}}}"#),
+        r#"{"evaluator":"none","aot_lib":"x"}"#.to_string(),
+    ] {
+        assert_eq!(compile(&m, &opts), 2, "{opts}: {}", last_error());
+    }
+    // Nothing was written or compiled by the refused calls.
+    assert!(!tmp.0.exists());
+    assert!(info(&m)["evaluator"].is_null());
+}
+
+#[test]
+fn a_library_built_from_another_model_gives_5_and_names_the_tag() {
+    let (ta, tb) = (Temp::new("tag-a"), Temp::new("tag-b"));
+    let a = parse(LORENZ);
+    let b = parse(LORENZ_B);
+    let (ca, cb) = (emit(&a, &ta.0), emit(&b, &tb.0));
+    assert_ne!(ca.file_name(), cb.file_name());
+    let (Some(lib_a), Some(lib_b)) = (build_lib(&ca), build_lib(&cb)) else {
+        return;
+    };
+    // B's library is a stale or misplaced file for A: same n, n_p and n_aux, other text.
+    let rc = compile(
+        &a,
+        &format!(r#"{{"evaluator":"aot","aot_lib":{}}}"#, json_path(&lib_b)),
+    );
+    assert_eq!(rc, 5, "{}", last_error());
+    assert!(last_error().contains("pc_aot_tag"), "{}", last_error());
+    assert!(info(&a)["evaluator"] == "jit");
+    // Its own library loads.
+    let own = format!(r#"{{"evaluator":"aot","aot_lib":{}}}"#, json_path(&lib_a));
+    assert_eq!(compile(&a, &own), 0, "{}", last_error());
+    assert_eq!(info(&a)["evaluator"], "aot");
+
+    // A handle that never emitted C computes the tag when it loads.
+    let fresh = parse(LORENZ);
+    let wrong = format!(r#"{{"evaluator":"aot","aot_lib":{}}}"#, json_path(&lib_b));
+    assert_eq!(compile(&fresh, &wrong), 5, "{}", last_error());
+    assert!(info(&fresh)["evaluator"].is_null());
+    assert_eq!(compile(&fresh, &own), 0, "{}", last_error());
+    let jit = parse(LORENZ);
+    assert_eq!(compile(&jit, r#"{"evaluator":"jit"}"#), 0);
+    let (x, p) = ([0.3, -0.7, 1.9], [10.0, 28.0, 8.0 / 3.0]);
+    let (got, want) = (rhs(&fresh, &x, &p), rhs(&jit, &x, &p));
+    assert!(got.iter().zip(&want).all(|(a, b)| same(*a, *b)));
+}
