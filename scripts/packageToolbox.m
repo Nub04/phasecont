@@ -100,6 +100,11 @@ if ~isfolder(fullfile(opts.Root, "toolbox", "examples"))
     error("phasecont:package:missingFile", ...
         "Folder not found: %s", fullfile(opts.Root, "toolbox", "examples"));
 end
+if ~hasPackageableFile(fullfile(opts.Root, "toolbox", "examples"))
+    error("phasecont:package:missingFile", ...
+        "No file to package in %s (dotfiles and dot-folders are left out)", ...
+        fullfile(opts.Root, "toolbox", "examples"));
+end
 
 % Check every input before deleting or writing anything.
 binaries = platformBinaries(opts.BinFolder, platforms);
@@ -134,7 +139,11 @@ end
 if isfolder(stage)
     rmdir(stage, "s");
 end
-mkdir(stage);
+[made, msg] = mkdir(stage);
+if ~made
+    error("phasecont:package:badStage", ...
+        "Cannot create the stage folder %s: %s", stage, msg);
+end
 
 % toolbox/ goes to the stage root. toolbox/bin is skipped: binaries come
 % from BinFolder only.
@@ -146,10 +155,19 @@ for e = entries(:)'
     copyfile(fullfile(e.folder, e.name), fullfile(stage, e.name));
 end
 
-% Dotfiles such as .gitkeep stay out of the package, at any depth.
+% Dot-folders (with everything in them) and dotfiles such as .gitkeep stay
+% out of the package, at any depth.
 hidden = dir(fullfile(stage, "**", ".*"));
+hidden = hidden(~ismember({hidden.name}, {'.', '..'}));
+for h = hidden([hidden.isdir])'
+    if isfolder(fullfile(h.folder, h.name))   % a parent may be gone already
+        rmdir(fullfile(h.folder, h.name), "s");
+    end
+end
 for h = hidden(~[hidden.isdir])'
-    delete(fullfile(h.folder, h.name));
+    if isfile(fullfile(h.folder, h.name))
+        delete(fullfile(h.folder, h.name));
+    end
 end
 
 binStages = strings(1, numel(platforms));
@@ -187,6 +205,23 @@ o.OutputFile = outPath;
 
 matlab.addons.toolbox.packageToolbox(o);
 outputFile = string(outPath);
+end
+
+function tf = hasPackageableFile(folder)
+% True when folder holds a file that the package keeps: one whose name and
+% whose folders below the given one do not start with a dot.
+listing = dir(fullfile(folder, "**", "*"));
+listing = listing(~[listing.isdir]);
+tf = false;
+prefix = strlength(string(folder)) + 1;
+for f = listing(:)'
+    below = extractAfter(string(f.folder), min(prefix, strlength(string(f.folder))));
+    parts = [split(below, filesep); string(f.name)];
+    if ~any(startsWith(parts(parts ~= ""), "."))
+        tf = true;
+        return
+    end
+end
 end
 
 function files = platformBinaries(binFolder, platforms)

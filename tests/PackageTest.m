@@ -507,6 +507,48 @@ classdef PackageTest < matlab.unittest.TestCase
             testCase.verifyIntact(work);
         end
 
+        function examplesWithoutPackageableFileIsCaughtBeforeDeleting(testCase)
+            work = testCase.prepareStage();
+            root = testCase.makeRoot("noexamplefiles");
+            delete(fullfile(root, "toolbox", "examples", "ex.m"));
+            writelines("x", fullfile(root, "toolbox", "examples", ".gitkeep"));
+            mkdir(fullfile(root, "toolbox", "examples", ".hidden"));
+            writelines("x", fullfile(root, "toolbox", "examples", ".hidden", "h.m"));
+            testCase.verifyError(@() testCase.build(strings(1, 0), ...
+                struct(Root = root)), "phasecont:package:missingFile");
+            testCase.verifyIntact(work);
+        end
+
+        function stageThatCannotBeCreatedGivesBadStage(testCase)
+            % The parent "package" is a file, so mkdir of the stage fails.
+            blocker = fullfile(testCase.Temp, "blocker");
+            mkdir(blocker);
+            writelines("x", fullfile(blocker, "package"));
+            testCase.Stage = fullfile(blocker, "package", "PhaseCont");
+            testCase.verifyError(@() testCase.build(), "phasecont:package:badStage");
+            testCase.verifyTrue(isfile(fullfile(blocker, "package")));
+        end
+
+        function dotFoldersAndBinFolderAreLeftOut(testCase)
+            root = testCase.makeRoot("dotfolders");
+            mkdir(fullfile(root, "toolbox", "+phasecont", ".hidden", "deep"));
+            writelines("x", fullfile(root, "toolbox", "+phasecont", ".hidden", "secret.m"));
+            writelines("x", fullfile(root, "toolbox", "+phasecont", ".hidden", "deep", "d.m"));
+            mkdir(fullfile(root, "toolbox", ".cache"));
+            writelines("x", fullfile(root, "toolbox", ".cache", "c.m"));
+            mkdir(fullfile(root, "toolbox", "bin", "win64"));
+            writelines("x", fullfile(root, "toolbox", "bin", "win64", "stray.m"));
+            testCase.build(strings(1, 0), struct(Root = root));
+            names = testCase.unpack();
+            testCase.verifyTrue(any(names == "+phasecont/f.m"));
+            testCase.verifyTrue(any(names == "examples/ex.m"));
+            testCase.verifyTrue(any(names == "bin/win64/pckern.dll"));
+            testCase.verifyFalse(any(contains(names, "/.") | startsWith(names, ".")), ...
+                "a dot-folder or its files are in the package");
+            testCase.verifyFalse(any(names == "bin/win64/stray.m"), ...
+                "toolbox/bin was copied into the package");
+        end
+
         function returnsTheNormalizedOutputPath(testCase)
             file = testCase.build(strings(1, 0), ...
                 struct(OutputFile = testCase.Output + filesep));
@@ -616,6 +658,18 @@ classdef PackageTest < matlab.unittest.TestCase
             work = fullfile(testCase.Temp);
             writelines("s", fullfile(work, "sibling.txt"));
             writelines("s", fullfile(work, "package", "sibling.txt"));
+        end
+
+        function root = makeRoot(testCase, name)
+            % Small repo root: one class file, one example, the two license
+            % files packageToolbox needs.
+            root = fullfile(testCase.Temp, name);
+            mkdir(fullfile(root, "toolbox", "+phasecont"));
+            mkdir(fullfile(root, "toolbox", "examples"));
+            writelines("x", fullfile(root, "toolbox", "+phasecont", "f.m"));
+            writelines("x", fullfile(root, "toolbox", "examples", "ex.m"));
+            writelines("x", fullfile(root, "LICENSE"));
+            writelines("x", fullfile(root, "THIRD_PARTY_NOTICES.md"));
         end
 
         function verifyIntact(testCase, work)
