@@ -44,6 +44,10 @@ classdef BuildTest < matlab.unittest.TestCase
             root = fileparts(fileparts(mfilename("fullpath")));
             testCase.verifyTrue(isfile(fullfile(root, "mex", ...
                 "pckern_gateway.c")));
+            % A missing build is filtered here, so that buildtool test runs
+            % without a Rust toolchain. buildtool package depends on mex
+            % and packageToolbox refuses a stage without the MEX file, so a
+            % release cannot go out without the gateway.
             built = fullfile(fixtures.binFolder(root), "pckern." + mexext);
             testCase.assumeTrue(isfile(built), ...
                 "pckern has not been built (run buildtool mex)");
