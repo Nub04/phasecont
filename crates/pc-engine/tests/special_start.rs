@@ -80,10 +80,15 @@ fn lp_start_leaves_on_both_sides_of_the_fold() {
             let p0 = &nb.points[0];
             assert!((p0.alpha - lp.point.alpha).abs() < 1e-10, "{which:?}");
             assert!((p0.u[0] - lp.point.u[0]).abs() < 1e-10, "{which:?}");
-            // Residual of a + x^2 at every point.
+            // Residual of a + x^2 at every point, and no point beyond the fold in alpha.
             for p in &nb.points {
                 let r = p.alpha + p.u[0] * p.u[0];
                 assert!(r.abs() <= o.tol_f, "{which:?} dir {dir}: {r:e}");
+                assert!(
+                    p.alpha <= lp.point.alpha + o.tol_f,
+                    "{which:?} dir {dir}: alpha {:e} is past the LP",
+                    p.alpha
+                );
             }
             let last = nb.points.last().unwrap();
             let dist = (last.u[0] - p0.u[0])
@@ -93,7 +98,9 @@ fn lp_start_leaves_on_both_sides_of_the_fold() {
             assert!(nb.points[1].u[0] != p0.u[0], "{which:?}");
             sides.push(last.u[0].signum());
         }
-        assert!(sides[0] != sides[1], "{which:?}: {sides:?}");
+        // Direction 1 leaves toward increasing x, the first state component, because
+        // the alpha component of the tangent is zero at an LP (SPEC section 11).
+        assert_eq!(sides, [1.0, -1.0], "{which:?}");
     }
 }
 
