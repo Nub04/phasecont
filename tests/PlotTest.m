@@ -204,6 +204,37 @@ classdef PlotTest < matlab.unittest.TestCase
             testCase.verifyEqual(nnz(tags == "pc-special"), numel(br.Specials));
         end
 
+        function test6bLiveLineKeepsTheFirstColor(testCase, Evaluator)
+            % The live line must not use up a color of the color order, so
+            % the final plot starts with the first one.
+            m = testCase.model(testCase.Fold, Evaluator);
+            eq = phasecont.equilibrium(m, -1);
+            fig = figure(Visible = "off");
+            testCase.addTeardown(@() close(fig, "force"));
+            phasecont.continuation(m, eq, Free = "a", Direction = 1, ...
+                MaxSteps = 100, Bounds = [-5 5], Plot = true);
+            ax = gca;
+            st = findobj(ax, "Tag", "pc-stable");
+            testCase.assertNotEmpty(st);
+            testCase.verifyEqual(st(1).Color, ax.ColorOrder(1, :));
+            testCase.verifyEqual(ax.ColorOrderIndex, 2);
+        end
+
+        function test2bSpecialMarkersFollowTheAxesColors(testCase, Evaluator)
+            % A dark axes must not get a black marker edge.
+            br = testCase.foldBranch(Evaluator);
+            ax = testCase.newAxes();
+            ax.Color = [0.1 0.1 0.12];
+            ax.XColor = [0.9 0.9 0.85];
+            plot(br, Parent = ax);
+            mk = findobj(ax, "Tag", "pc-special");
+            testCase.assertNotEmpty(mk);
+            for k = 1:numel(mk)
+                testCase.verifyEqual(mk(k).MarkerEdgeColor, ax.XColor);
+                testCase.verifyEqual(mk(k).MarkerFaceColor, ax.Color);
+            end
+        end
+
         function test7EmptyBranch(testCase)
             ax = testCase.newAxes();
             h = plot(phasecont.Branch(), Parent = ax);

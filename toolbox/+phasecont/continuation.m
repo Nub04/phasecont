@@ -556,8 +556,12 @@ if ~isCurve && (options.Plot || ~isempty(options.Var))
         m.Variables);
 end
 ax = [];
+liveIndex = 1;
 if options.Plot
     ax = newplot;
+    % The live lines use up colors of the color order, so the index is put
+    % back before the styled plot, which then starts with the same color.
+    liveIndex = ax.ColorOrderIndex;
     if isCurve
         xlabel(ax, free(1));
         ylabel(ax, free(2));
@@ -614,6 +618,7 @@ end
 if options.Plot
     % Replace the live lines with the styled plot.
     delete(lines(isgraphics(lines)));
+    ax.ColorOrderIndex = liveIndex;
     for b = 1:nb
         if isCurve
             plot(br(b), Parent = ax);

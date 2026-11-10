@@ -394,11 +394,18 @@ end
 
 function h = specialMarks(ax, specials, px, py, dx, dy)
 % A marker (Tag "pc-special") and a text label ("pc-label") per special point.
+% The marker takes the axes foreground for its edge and the axes background
+% for its face, so it shows on light and dark axes.
 h = gobjects(0, 1);
+edge = ax.XColor;
+face = ax.Color;
+if ~isnumeric(face)
+    face = ancestor(ax, "figure").Color;
+end
 for k = 1:numel(specials)
     h(end+1, 1) = line(ax, px(k), py(k), LineStyle = "none", ...
-        Marker = "o", MarkerSize = 7, MarkerEdgeColor = "k", ...
-        MarkerFaceColor = "w", Tag = "pc-special"); %#ok<AGROW>
+        Marker = "o", MarkerSize = 7, MarkerEdgeColor = edge, ...
+        MarkerFaceColor = face, Tag = "pc-special"); %#ok<AGROW>
     h(end+1, 1) = text(ax, px(k) + dx, py(k) + dy, specials(k).Label, ...
         HorizontalAlignment = "left", VerticalAlignment = "bottom", ...
         Tag = "pc-label"); %#ok<AGROW>
