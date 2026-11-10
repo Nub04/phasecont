@@ -347,7 +347,7 @@ fn an_override_without_a_source_fails_and_is_named() {
         let o = run_with_overrides(&root, &ws);
         assert_eq!(code(&o), 1, "{name}");
         let err = stderr(&o);
-        assert!(err.contains("nolic"), "{name}: {err}");
+        assert!(err.contains("nolic: "), "{name}: {err}");
         assert!(err.contains("SOURCE"), "{name}: {err}");
         assert!(!root.join("out.txt").exists(), "{name}: no output file");
     }
@@ -361,7 +361,7 @@ fn a_license_file_that_is_not_utf8_fails_and_is_named() {
     let o = run_plain(&root, &ws);
     assert_eq!(code(&o), 1);
     let err = stderr(&o);
-    assert!(err.contains("nolic"), "{err}");
+    assert!(err.contains("nolic 1.2.3: "), "{err}");
     assert!(err.contains("LICENSE-MIT"), "{err}");
     assert!(err.contains("UTF-8"), "{err}");
     assert!(!root.join("out.txt").exists());
@@ -376,7 +376,7 @@ fn an_override_license_that_is_not_utf8_fails_and_is_named() {
     let o = run_with_overrides(&root, &ws);
     assert_eq!(code(&o), 1);
     let err = stderr(&o);
-    assert!(err.contains("nolic"), "{err}");
+    assert!(err.contains("nolic override: "), "{err}");
     assert!(err.contains("LICENSE"), "{err}");
     assert!(err.contains("UTF-8"), "{err}");
     assert!(!root.join("out.txt").exists());
@@ -407,6 +407,56 @@ fn an_overrides_path_that_is_not_a_folder_fails_early() {
     assert!(err.contains("overrides folder not found"), "{err}");
     assert!(err.contains("no-such-folder"), "{err}");
     assert!(!out.exists());
+}
+
+#[test]
+fn an_overrides_path_that_is_a_file_says_it_is_not_a_folder() {
+    let root = scratch("ov-file");
+    let ws = fixture(&root, None);
+    let out = root.join("out.txt");
+    let ov = root.join("ov-is-a-file");
+    write(&ov, "not a folder\n");
+    let o = common::run(
+        &ws,
+        &[
+            "licenses",
+            "--target",
+            TARGET,
+            "--package",
+            "app",
+            "--out",
+            out.to_str().expect("utf-8 path"),
+            "--overrides",
+            ov.to_str().expect("utf-8 path"),
+        ],
+    );
+    assert_eq!(code(&o), 1);
+    let err = stderr(&o);
+    assert!(err.contains("overrides path is not a folder"), "{err}");
+    assert!(!err.contains("not found"), "{err}");
+    assert!(err.contains("ov-is-a-file"), "{err}");
+    assert!(!out.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_license_file_that_cannot_be_read_is_named() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = scratch("unreadable");
+    let ws = fixture(&root, Some("nolic"));
+    let lic = root.join("nolic/LICENSE-MIT");
+    write(&lic, "text\n");
+    fs::set_permissions(&lic, fs::Permissions::from_mode(0o000)).expect("chmod");
+    if fs::read(&lic).is_ok() {
+        // Running as root: the mode does not block the read, so there is nothing to test.
+        return;
+    }
+    let o = run_plain(&root, &ws);
+    assert_eq!(code(&o), 1);
+    let err = stderr(&o);
+    assert!(err.contains("nolic 1.2.3: cannot read "), "{err}");
+    assert!(err.contains("LICENSE-MIT"), "the file is named: {err}");
+    assert!(!root.join("out.txt").exists());
 }
 
 /// Writes `app` with a Windows-only and a macOS-only dependency and runs

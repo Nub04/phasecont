@@ -910,8 +910,6 @@ Time scale of the delay Hopf curve (bcbcea6; SPEC sections 8e and 8f, tests 11 a
   - AOT hash: `textHash` is a per-byte MATLAB loop on every Model construction; read the hash from the `c_file` name when no hook is set.
   - AOT cache folder: the path is predictable in a shared `tempdir` with no ownership check (a Linux `/tmp` concern), and AotTest uses the real cache.
   - AOT Model: the class help does not mention `Evaluator="aot"`, `AotInfo` or the config key, `Evaluator=""` is accepted, and a failed AOT attempt compiles the JIT a second time.
-  - Licenses: `--overrides` on a regular file says "not found", the help text calls SOURCE an "upstream URL and tag", and the exit-1 list leaves out SOURCE, UTF-8 and `--overrides`.
-  - Licenses: the `licenses.rs` doc lists `LICENSE*` only, a read failure names the folder and not the file, and two "names the crate" tests also match the fixture path.
   - Licenses: overrides are keyed by crate name only, so a `Cargo.lock` bump can reuse an old text for a new version.
   - Example: the comment says every setting is given, but H0, Hmin, Hmax and the tolerances use engine defaults, and the output leaves out `Branch.Stop` and `Warnings`.
   - Example: the test checks only that the printed output is non-empty, does not assert distinct Hopf points or table columns, and `traceAt` never checks Newton convergence.

@@ -25,9 +25,10 @@ struct Krate {
 ///
 /// Crates with several versions are ordered by name, then by version as plain
 /// text, so 0.10.0 sorts before 0.9.0. With `overrides`, a crate that ships no
-/// license file of its own takes the `LICENSE*` files and the `SOURCE` note
-/// from `overrides/<crate name>/`. The override applies to every version of
-/// that crate that ships no license file. A missing, unreadable or empty
+/// license file of its own takes the `LICENSE*`, `LICENCE*`, `COPYING*` and
+/// `NOTICE*` files and the `SOURCE` note from `overrides/<crate name>/`. The
+/// override applies to every version of that crate that ships no license
+/// file. A missing, unreadable or empty
 /// `SOURCE`, a license file that is not UTF-8, and an `overrides` path that is
 /// not a folder are errors. Workspace crates add their `NOTICE*` files, which hold
 /// the notices of the code they port (see `THIRD_PARTY_NOTICES.md`).
@@ -53,7 +54,11 @@ fn run(
     overrides: Option<&Path>,
 ) -> Result<(), String> {
     if let Some(o) = overrides.filter(|o| !o.is_dir()) {
-        return Err(format!("overrides folder not found: {}", o.display()));
+        return Err(if o.exists() {
+            format!("overrides path is not a folder: {}", o.display())
+        } else {
+            format!("overrides folder not found: {}", o.display())
+        });
     }
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let output = Command::new(&cargo)
@@ -207,14 +212,14 @@ fn closure(meta: &Value, package: &str) -> Result<Vec<Krate>, String> {
 /// Name and text of each license file in `dir`, sorted by name. Line endings
 /// become LF. A file that is not UTF-8 is an error, so no byte is rewritten.
 fn license_files(dir: &Path) -> Result<Vec<(String, String)>, String> {
-    let io = |e: std::io::Error| format!("cannot read {}: {e}", dir.display());
+    let io = |path: &Path, e: std::io::Error| format!("cannot read {}: {e}", path.display());
     let mut files = Vec::new();
-    for entry in std::fs::read_dir(dir).map_err(io)? {
-        let entry = entry.map_err(io)?;
+    for entry in std::fs::read_dir(dir).map_err(|e| io(dir, e))? {
+        let entry = entry.map_err(|e| io(dir, e))?;
         let name = entry.file_name().to_string_lossy().into_owned();
         let lower = name.to_ascii_lowercase();
         if entry.path().is_file() && PREFIXES.iter().any(|p| lower.starts_with(p)) {
-            let bytes = std::fs::read(entry.path()).map_err(io)?;
+            let bytes = std::fs::read(entry.path()).map_err(|e| io(&entry.path(), e))?;
             let body = String::from_utf8(bytes)
                 .map_err(|_| format!("{} is not UTF-8 ({})", name, dir.display()))?
                 .replace("\r\n", "\n");

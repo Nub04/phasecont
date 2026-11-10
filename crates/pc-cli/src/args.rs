@@ -857,11 +857,14 @@ options:
   --out FILE       file to write (required); not written on failure
   --overrides DIR  folder with one subfolder per crate that ships no license file;
                    its LICENSE*, LICENCE*, COPYING* and NOTICE* files and its SOURCE file
-                   (upstream URL and tag) stand in for the missing files (no default)
+                   (a note on where the files came from, such as an upstream URL and tag;
+                   it must not be empty) stand in for the missing files (no default)
   -h, --help       print this help
 
 exit codes: 0 the file was written, 1 cargo failed, the package is unknown, a
-crate ships no license file or the file cannot be written, 2 usage error
+crate ships no license file, a license file is not UTF-8, the --overrides path is
+not a folder, an override has no SOURCE or an empty one, or the file cannot be
+written, 2 usage error
 ";
 
 pub const LATEX_HELP: &str = "\
