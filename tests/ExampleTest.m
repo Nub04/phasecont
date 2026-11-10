@@ -16,6 +16,12 @@ classdef ExampleTest < matlab.unittest.TestCase
         function fitzhughNagumoHopfPoints(testCase)
             out = evalc("br = fitzhugh_nagumo_example(Plot = false);");
             testCase.verifyNotEmpty(out);
+            % The printed table has its four columns and the Hopf label, and
+            % each run reports why it stopped.
+            testCase.verifySubstring(out, "Label");
+            testCase.verifySubstring(out, "omega");
+            testCase.verifySubstring(out, "H");
+            testCase.verifyEqual(count(out, "stopped:"), numel(br));
             hp = [];
             for k = 1:numel(br)
                 hp = [hp; br(k).points("H")]; %#ok<AGROW>
@@ -23,6 +29,9 @@ classdef ExampleTest < matlab.unittest.TestCase
             testCase.verifyNumElements(hp, 2, "expected two Hopf points");
             m = br(1).Model;
             idx = br(1).FreeIndex;
+            testCase.verifyGreaterThan( ...
+                abs(hp(1).P(idx) - hp(2).P(idx)), 1e-3, ...
+                "the two Hopf points are not distinct");
             for k = 1:numel(hp)
                 found = hp(k).P(idx);
                 % Independent root find: the trace of the Jacobian at the
@@ -61,6 +70,10 @@ for it = 1:50
     if norm(du) < 1e-14
         break
     end
+end
+if norm(du) > 1e-10
+    error("ExampleTest:traceAt", ...
+        "Newton did not converge for I = %g (last step %g)", I, norm(du));
 end
 t = trace(jac(m, u, p));
 end

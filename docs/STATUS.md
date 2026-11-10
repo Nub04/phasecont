@@ -907,8 +907,6 @@ Time scale of the delay Hopf curve (bcbcea6; SPEC sections 8e and 8f, tests 11 a
   - AOT cache folder: the path is predictable in a shared `tempdir` with no ownership check (a Linux `/tmp` concern), and AotTest uses the real cache.
   - AOT Model: the class help does not mention `Evaluator="aot"`, `AotInfo` or the config key, `Evaluator=""` is accepted, and a failed AOT attempt compiles the JIT a second time.
   - Licenses: overrides are keyed by crate name only, so a `Cargo.lock` bump can reuse an old text for a new version.
-  - Example: the comment says every setting is given, but H0, Hmin, Hmax and the tolerances use engine defaults, and the output leaves out `Branch.Stop` and `Warnings`.
-  - Example: the test checks only that the printed output is non-empty, does not assert distinct Hopf points or table columns, and `traceAt` never checks Newton convergence.
   - Package: `PackageTest` reads metadata with regexes that depend on attribute spelling, the `toolbox/bin` skip is untested, and the stage root's `matlabPath` entry is an empty string.
   - Package: `toolbox/examples` with no packageable file fails after the stage is deleted, a stage on a missing drive gives a raw MKDIR error, and files in dot-folders under `toolbox/` are shipped.
   - Clean install: the `notAddon` negative path is untested, `settings()` has a silent catch fallback, and `buildfileValue` has no negative tests for single-quoted or concatenated literals.
