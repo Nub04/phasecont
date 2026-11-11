@@ -567,9 +567,9 @@ fn dp5_step<T: Real>(ctx: &Ctx<T>, par: &Dp5Par<T>, wk: &mut Work<T>, t: T, h: T
     let (p, vals, k) = (&mut *wk.p, &mut *wk.vals, &mut *wk.k);
     for s in 1..=5 {
         let (done, rest) = k.split_at_mut(s * n);
-        sum_stages(yt, &co.a[s - 1][..s], done);
-        for (v, &yi) in yt.iter_mut().zip(y) {
-            *v = yi + h * *v;
+        let c = &co.a[s - 1][..s];
+        for (i, (v, &yi)) in yt.iter_mut().zip(y).enumerate() {
+            *v = yi + h * stage_sum(c, done, n, i);
         }
         let ts = if co.c[s - 1] == T::ONE {
             t_end
@@ -579,15 +579,13 @@ fn dp5_step<T: Real>(ctx: &Ctx<T>, par: &Dp5Par<T>, wk: &mut Work<T>, t: T, h: T
         eval_at(ctx, yt, p, ts, vals, &mut rest[..n]);
     }
     let (done, rest) = k.split_at_mut(6 * n);
-    sum_stages(y1, &co.a[5], done);
-    for (v, &yi) in y1.iter_mut().zip(y) {
-        *v = yi + h * *v;
+    for (i, (v, &yi)) in y1.iter_mut().zip(y).enumerate() {
+        *v = yi + h * stage_sum(&co.a[5], done, n, i);
     }
     eval_at(ctx, y1, p, t_end, vals, &mut rest[..n]);
-    // The stage inputs are no longer needed, so `yt` holds the error sums.
-    sum_stages(yt, &co.e, k);
     let mut sum = T::ZERO;
-    for ((&e, &yi), &y1i) in yt.iter().zip(y).zip(y1.iter()) {
+    for (i, (&yi, &y1i)) in y.iter().zip(y1.iter()).enumerate() {
+        let e = stage_sum(&co.e, k, n, i);
         let sk = par.atol + par.rtol * yi.abs().fmax(y1i.abs());
         let r = h * e / sk;
         sum = sum + r * r;
@@ -595,18 +593,16 @@ fn dp5_step<T: Real>(ctx: &Ctx<T>, par: &Dp5Par<T>, wk: &mut Work<T>, t: T, h: T
     (sum / T::from_u32(n as u32)).sqrt()
 }
 
-/// Sets `acc[i]` to the sum over `j` of `c[j] * k_j[i]`, where `k_j` is the `j`-th block of
-/// `acc.len()` values in `k`. Each sum starts from zero and adds the stages in order,
-/// zero coefficients included, so every element sees the same operations as the loop
-/// `a = a + c[j] * k_j[i]` would give it. Looping over the stages outside lets the inner
-/// loop run without index checks.
-fn sum_stages<T: Real>(acc: &mut [T], c: &[T], k: &[T]) {
-    acc.fill(T::ZERO);
-    for (&cj, kj) in c.iter().zip(k.chunks_exact(acc.len())) {
-        for (a, &v) in acc.iter_mut().zip(kj) {
-            *a = *a + cj * v;
-        }
+/// The sum over `j` of `c[j] * k[j * n + i]`, started from zero with the stages added in
+/// order, zero coefficients included. Every DP5 sum goes through here, so each element sees
+/// the same operations in the same order. The sum stays in a register for the whole element;
+/// a pass over the whole state per stage was slower at small `n`.
+fn stage_sum<T: Real>(c: &[T], k: &[T], n: usize, i: usize) -> T {
+    let mut acc = T::ZERO;
+    for (j, &cj) in c.iter().enumerate() {
+        acc = acc + cj * k[j * n + i];
     }
+    acc
 }
 
 /// The starting step of `dopri5` (`HINIT`). `k0` holds `f(t0, y0)`.
