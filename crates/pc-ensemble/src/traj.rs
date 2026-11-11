@@ -17,7 +17,7 @@
 
 use crate::job::{Checked, Job, Method, Params, Status};
 use crate::real::Real;
-use crate::tape::Tape;
+use crate::tape::{CpuTape, Slab, Tape};
 
 /// Nodes c2 to c7 of the pair.
 const C: [f64; 6] = [1.0 / 5.0, 3.0 / 10.0, 4.0 / 5.0, 8.0 / 9.0, 1.0, 1.0];
@@ -161,7 +161,8 @@ pub enum Kind<T: Real> {
 
 /// What every member of a run shares.
 pub struct Ctx<'a, T: Real> {
-    pub tape: &'a Tape,
+    /// The right-hand side, lowered once for `T`.
+    pub rhs: CpuTape<T>,
     pub n: usize,
     pub n_p: usize,
     pub x0: &'a [f64],
@@ -181,7 +182,7 @@ pub struct Ctx<'a, T: Real> {
 
 impl<'a, T: Real> Ctx<'a, T> {
     /// Rounds the job to `T`. The job must have passed `validate`.
-    pub fn new(job: &Job<'a>, checked: &Checked, tape: &'a Tape) -> Self {
+    pub fn new(job: &Job<'a>, checked: &Checked, tape: &Tape) -> Self {
         let times: Vec<T> = checked.times.iter().map(|&s| T::from_f64(s)).collect();
         let t0 = T::from_f64(job.t0);
         let co = Coef::new();
@@ -213,7 +214,7 @@ impl<'a, T: Real> Ctx<'a, T> {
         };
         let bounds = T::from_f64(job.bounds);
         Ctx {
-            tape,
+            rhs: CpuTape::new(tape),
             n: checked.n,
             n_p: checked.n_p,
             x0: job.x0,
@@ -246,7 +247,7 @@ pub struct Work<'a, T: Real> {
     yt: &'a mut [T],
     k: &'a mut [T],
     p: &'a mut [T],
-    vals: &'a mut [T],
+    vals: &'a mut Slab<T>,
     out: &'a mut [T],
 }
 
@@ -305,14 +306,14 @@ impl<T: Real> Traj<T> {
     }
 
     /// Runs up to `budget` step attempts and returns true when the member is finished.
-    /// `vals` is scratch of at least `tape.len()` values; `w` is the member's workspace and
-    /// `out` its output slice, `times.len() * n` values that start as NaN.
+    /// `vals` is scratch from `ctx.rhs.slab()`; `w` is the member's workspace and `out` its
+    /// output slice, `times.len() * n` values that start as NaN.
     pub fn advance(
         &mut self,
         ctx: &Ctx<T>,
         w: &mut [T],
         out: &mut [T],
-        vals: &mut [T],
+        vals: &mut Slab<T>,
         budget: u64,
     ) -> bool {
         if self.status != Status::Running {
@@ -554,9 +555,9 @@ impl<T: Real> Traj<T> {
     }
 }
 
-fn eval_at<T: Real>(ctx: &Ctx<T>, x: &[T], p: &mut [T], t: T, vals: &mut [T], out: &mut [T]) {
+fn eval_at<T: Real>(ctx: &Ctx<T>, x: &[T], p: &mut [T], t: T, vals: &mut Slab<T>, out: &mut [T]) {
     p[ctx.n_p] = t;
-    ctx.tape.eval(x, p, vals, out);
+    ctx.rhs.eval(x, p, vals, out);
 }
 
 /// One Dormand-Prince step from `(t, y)` with `k0 = f(t, y)` given. Fills `k1` to `k6` and

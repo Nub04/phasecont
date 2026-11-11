@@ -47,7 +47,6 @@ fn run_as<T: Real>(
     let mut work = vec![T::ZERO; members * work_len];
     let mut out = vec![T::NAN; members * out_len];
     let mut trajs: Vec<Traj<T>> = (0..members).map(Traj::new).collect();
-    let scratch = tape.len();
 
     loop {
         if cancel.load(Ordering::Relaxed) {
@@ -58,7 +57,7 @@ fn run_as<T: Real>(
             .zip(work.par_chunks_mut(work_len))
             .zip(out.par_chunks_mut(out_len))
             .for_each_init(
-                || vec![T::ZERO; scratch],
+                || ctx.rhs.slab(),
                 |vals, ((tr, w), o)| {
                     if !cancel.load(Ordering::Relaxed) {
                         tr.advance(&ctx, w, o, vals, steps_per_launch);

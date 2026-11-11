@@ -1016,6 +1016,7 @@ dependencies = [
  "pc-engine",
  "pc-ir",
  "pc-ode",
+ "proptest",
  "rayon",
 ]
 
