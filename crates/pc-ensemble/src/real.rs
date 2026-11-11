@@ -25,6 +25,8 @@ pub trait Real:
     const ZERO: Self;
     const ONE: Self;
     const NAN: Self;
+    /// The largest finite value.
+    const MAX: Self;
     /// Unit roundoff for the step-too-small test of the adaptive method: 2.3e-16 for `f64`
     /// as in `dopri5`, and 2^-23 for `f32`.
     const UROUND_F64: f64;
@@ -78,6 +80,7 @@ macro_rules! impl_real {
             const ZERO: Self = 0.0;
             const ONE: Self = 1.0;
             const NAN: Self = <$t>::NAN;
+            const MAX: Self = <$t>::MAX;
             const UROUND_F64: f64 = $uround;
             const NAME: &'static str = $name;
 

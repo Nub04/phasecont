@@ -53,6 +53,32 @@ fn growth_past_the_bound_stops_with_bounds() {
 }
 
 #[test]
+fn a_non_finite_state_is_non_finite_under_any_bound() {
+    // A NaN state under a finite bound, and an overflow under a bound that rounds to infinity
+    // in single precision, both end with NONFINITE, never BOUNDS.
+    let nan = build_model("x'=ln(x)\ndone\n");
+    let blow = build_model("x'=x*x*x*x\ndone\n");
+    for method in [Method::Rk4 { dt: 0.01 }, DP5_STD] {
+        let mut j = job(&nan, 1, &[-1.0], &[], 1.0, method, Precision::Double);
+        j.bounds = 1e3;
+        assert_eq!(run(&j).status[0], Status::NonFinite, "{method:?}");
+    }
+    for bounds in [1e300, f64::INFINITY] {
+        let mut j = job(
+            &blow,
+            1,
+            &[1e10],
+            &[],
+            1.0,
+            Method::Rk4 { dt: 0.01 },
+            Precision::Single,
+        );
+        j.bounds = bounds;
+        assert_eq!(run(&j).status[0], Status::NonFinite, "{bounds}");
+    }
+}
+
+#[test]
 fn samples_after_a_failure_stay_nan() {
     let m = build_model("x'=x*x\ndone\n");
     let mut j = job(&m, 1, &[0.5], &[], 4.0, DP5_STD, Precision::Double);

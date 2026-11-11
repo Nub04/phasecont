@@ -168,6 +168,10 @@ pub struct Ctx<'a, T: Real> {
     pub params: Params<'a>,
     pub t0: T,
     pub bounds: T,
+    /// `bounds` capped at the largest finite value. A state passes the step check when every
+    /// `|y| <= lim`, and that test is false for NaN and infinity even when `bounds` is
+    /// infinite, so one pass catches both failures.
+    pub lim: T,
     pub max_steps: u32,
     /// The output times rounded to `T`.
     pub times: Vec<T>,
@@ -207,6 +211,7 @@ impl<'a, T: Real> Ctx<'a, T> {
                 hmax: T::from_f64(hmax),
             }),
         };
+        let bounds = T::from_f64(job.bounds);
         Ctx {
             tape,
             n: checked.n,
@@ -214,7 +219,8 @@ impl<'a, T: Real> Ctx<'a, T> {
             x0: job.x0,
             params: job.params,
             t0,
-            bounds: T::from_f64(job.bounds),
+            bounds,
+            lim: bounds.fmin(T::MAX),
             max_steps: job.max_steps,
             times,
             kind,
@@ -448,7 +454,15 @@ impl<T: Real> Traj<T> {
 
     /// Sets the status and returns true when the new state `y1` is not finite or leaves the
     /// bounds. The member then keeps its last accepted state and time.
+    /// One pass without early exit tests the whole state against `lim`. Only when it fails
+    /// does the slow path look again, so that NONFINITE still comes before BOUNDS.
     fn reject_state(&mut self, ctx: &Ctx<T>, y1: &[T]) -> bool {
+        let lim = ctx.lim;
+        // Written as a positive test so that NaN fails it.
+        let ok = y1.iter().fold(true, |acc, &v| acc & (v.abs() <= lim));
+        if ok {
+            return false;
+        }
         if !all_finite(y1) {
             self.status = Status::NonFinite;
             return true;
