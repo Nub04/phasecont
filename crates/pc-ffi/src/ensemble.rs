@@ -11,7 +11,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 
-use pc_ensemble::device::{find_device, list_devices};
+use pc_ensemble::device::{Backend, find_device, list_devices};
+use pc_ensemble::job::NativeRhs;
 use pc_ensemble::run::run_on;
 use pc_ensemble::{
     EnsembleError, EnsembleResult, Job, Label, Params, Precision, Status, job::validate,
@@ -130,6 +131,7 @@ fn job_of<'a>(
     x0: &'a [f64],
     params: &'a [f64],
     per_member: bool,
+    native: Option<NativeRhs>,
 ) -> Job<'a> {
     Job {
         model: ir,
@@ -147,6 +149,7 @@ fn job_of<'a>(
         bounds: head.bounds,
         max_steps: head.max_steps,
         precision: head.precision,
+        native,
     }
 }
 
@@ -173,12 +176,22 @@ pub(crate) fn start(
     if members == 0 {
         return Err(EnsembleError::BadJob("x0 must hold at least one member".into()).into());
     }
-    validate(&job_of(&model.ir, &head, members, x0, params, per_member))?;
+    validate(&job_of(
+        &model.ir, &head, members, x0, params, per_member, None,
+    ))?;
     let device = find_device(head.backend, head.device).map_err(Error::GpuUnavailable)?;
+    // Only a double-precision CPU run calls a compiled `F`. The first such run of a model
+    // compiles it, after `validate`, so a model the ensemble refuses is never compiled.
+    let native = if device.backend == Backend::Cpu && head.precision == Precision::Double {
+        model.native_rhs()?
+    } else {
+        None
+    };
 
     let (model, x0, params) = (Arc::clone(model), x0.to_vec(), params.to_vec());
     let handle = EnsHandle::spawn(move |cancel| {
-        let job = job_of(&model.ir, &head, members, &x0, &params, per_member);
+        // `model` keeps the handle, and with it the code behind `native`, alive for the run.
+        let job = job_of(&model.ir, &head, members, &x0, &params, per_member, native);
         run_on(&device, &job, cancel)
     })?;
     Ok(registry::insert(handle))

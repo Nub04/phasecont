@@ -403,6 +403,42 @@ fn a_frame_over_4096_bytes_runs() {
 }
 
 #[test]
+fn frame_belongs_to_the_compiled_entries() {
+    // A big model first, then a small one: the small one's frame must not inherit the big
+    // one's, which `max_frame` (a high-water mark per thread) would give.
+    let mut big = Dag::new(10_000);
+    let x = big.var(0);
+    let prods: Vec<NodeId> = (1..=1500)
+        .map(|i| {
+            let c = big.konst(i as f64 + 0.5);
+            big.mul(x, c)
+        })
+        .collect();
+    let mut acc = prods[0];
+    for &p in &prods[1..] {
+        acc = big.add(acc, p);
+    }
+    for &p in prods.iter().rev() {
+        acc = big.sub(acc, p);
+    }
+    let e = entry(vec![acc]);
+    let large = compile(&[(EntryKind::F, &e)], &big).expect("compile");
+    assert!(
+        large.frame() > 4096,
+        "frame is only {} bytes",
+        large.frame()
+    );
+
+    let mut small = Dag::new(10);
+    let y = small.var(0);
+    let two = small.konst(2.0);
+    let out = small.mul(y, two);
+    let e = entry(vec![out]);
+    let tiny = compile(&[(EntryKind::F, &e)], &small).expect("compile");
+    assert!(tiny.frame() < 256, "frame is {} bytes", tiny.frame());
+    assert!(crate::max_frame() >= large.frame());
+}
+#[test]
 fn a_forced_error_after_module_creation_frees_the_module() {
     let dag = Dag::new(10);
     let before = module::FREED.with(|c| c.get());

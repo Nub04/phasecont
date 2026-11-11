@@ -83,6 +83,7 @@ pub fn compile(entries: &[(EntryKind, &Entry)], dag: &Dag) -> Result<JitEntries,
         module,
         tables,
         fns,
+        frame,
     } = &mut je;
     let Some(module) = module.as_mut() else {
         return Err(JitError::Cranelift("module missing".into()));
@@ -165,6 +166,7 @@ pub fn compile(entries: &[(EntryKind, &Entry)], dag: &Dag) -> Result<JitEntries,
         cl(&name, module.define_function(id, &mut ctx))?;
         if let Some(fl) = ctx.compiled_code().and_then(|c| c.buffer.frame_layout()) {
             module::MAX_FRAME.with(|m| m.set(m.get().max(fl.frame_to_fp_offset)));
+            *frame = (*frame).max(fl.frame_to_fp_offset);
         }
         module.clear_context(&mut ctx);
         compiled.push((kind.clone(), id));

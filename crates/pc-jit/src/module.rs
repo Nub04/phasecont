@@ -28,6 +28,8 @@ pub struct JitEntries {
     /// One copy of each table the code reads. The code holds their addresses.
     pub(crate) tables: Vec<Box<[f64]>>,
     pub(crate) fns: Vec<(EntryKind, *const u8)>,
+    /// The largest frame (bytes below the frame pointer) among these entries.
+    pub(crate) frame: u32,
 }
 
 impl JitEntries {
@@ -41,6 +43,7 @@ impl JitEntries {
             module: Some(JITModule::new(jb)),
             tables: Vec::new(),
             fns: Vec::new(),
+            frame: 0,
         })
     }
 
@@ -54,6 +57,12 @@ impl JitEntries {
         // SAFETY: plain entries were built with the PlainFn signature and the host's
         // default calling convention.
         Some(unsafe { std::mem::transmute::<*const u8, PlainFn>(*code) })
+    }
+
+    /// The largest stack frame, in bytes, of any entry in this value. `max_frame` is a
+    /// high-water mark over every compile on the thread; this one belongs to these entries.
+    pub fn frame(&self) -> u32 {
+        self.frame
     }
 
     /// The function of a `Dir` entry, or `None` for another kind or a missing entry.

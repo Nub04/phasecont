@@ -12,10 +12,12 @@ use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
-use pc_ensemble::device::{DeviceInfo, find_device, list_devices};
+use pc_ensemble::device::{Backend, DeviceInfo, find_device, list_devices};
+use pc_ensemble::job::{NATIVE_FRAME_LIMIT, NativeRhs};
 use pc_ensemble::run::run_on;
 use pc_ensemble::{EnsembleError, EnsembleResult, Job, Method, Output, Params, Precision};
-use pc_ir::IrModel;
+use pc_ir::{Entry, EntryKind, IrModel};
+use pc_jit::JitEntries;
 use pckern::json::ensemble::{
     HEAD_KEYS, Head, Parsed, numbers, object, only_keys, parse_head, required, rows,
 };
@@ -186,6 +188,8 @@ pub fn ensemble(file: &Path, job_path: &Path) -> ExitCode {
         bounds: spec.head.bounds,
         max_steps: spec.head.max_steps,
         precision: spec.head.precision,
+        // A one-shot run does not repay a compile; the tape gives the same bits.
+        native: None,
     };
     match run_on(&device, &job, &AtomicBool::new(false)) {
         Ok(result) => out(&to_text(&result_json(&result)), 0),
@@ -332,6 +336,26 @@ fn l96_x0(n: usize, members: usize) -> Vec<f64> {
     x0
 }
 
+/// Compiles `F` of `ir` for a double-precision CPU row, the way `ens_start` does. Returns the
+/// code, the function and the compile time in seconds, or `None` when the tape runs instead.
+fn bench_native(ir: &IrModel) -> Option<(JitEntries, NativeRhs, f64)> {
+    let start = Instant::now();
+    let entry = Entry {
+        kind: EntryKind::F,
+        outputs: ir.f.clone(),
+    };
+    let je = pc_jit::compile(&[(EntryKind::F, &entry)], &ir.dag).ok()?;
+    if je.frame() > NATIVE_FRAME_LIMIT {
+        return None;
+    }
+    let f = je.plain(&EntryKind::F)?;
+    // SAFETY: `f` is the `F` entry of `ir` with `n` outputs. The JIT gives the bits of the
+    // tape, keeps no state and its frame is within the limit. The caller keeps `je` alive
+    // until the last run that uses `f` has returned.
+    let native = unsafe { NativeRhs::new(f) };
+    Some((je, native, start.elapsed().as_secs_f64()))
+}
+
 fn bench_row(case: &BenchCase, device: &DeviceInfo, precision: Precision, members: usize) -> Value {
     let head = |extra: Value| {
         let mut row = json!({
@@ -363,6 +387,12 @@ fn bench_row(case: &BenchCase, device: &DeviceInfo, precision: Precision, member
         ),
         CaseKind::L96(n) => (l96_x0(n, members), vec![8.0], false, 10.0, rk4),
     };
+    // Compiled outside the timed loop, once per row, and kept until the row ends.
+    let jit = if device.backend == Backend::Cpu && precision == Precision::Double {
+        bench_native(&case.ir)
+    } else {
+        None
+    };
     let job = Job {
         model: &case.ir,
         members,
@@ -379,6 +409,7 @@ fn bench_row(case: &BenchCase, device: &DeviceInfo, precision: Precision, member
         bounds: f64::INFINITY,
         max_steps: 1_000_000,
         precision,
+        native: jit.as_ref().map(|(_, f, _)| *f),
     };
     let cancel = AtomicBool::new(false);
     let mut best = f64::INFINITY;
@@ -410,6 +441,8 @@ fn bench_row(case: &BenchCase, device: &DeviceInfo, precision: Precision, member
         "member_steps": steps,
         "member_steps_per_second": steps as f64 / best,
         "bits": bits,
+        "jit": jit.is_some(),
+        "jit_compile_seconds": jit.as_ref().map(|(_, _, s)| *s),
     }))
 }
 

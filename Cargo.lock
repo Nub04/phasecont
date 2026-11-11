@@ -1015,6 +1015,7 @@ dependencies = [
  "pc-codegen",
  "pc-engine",
  "pc-ir",
+ "pc-jit",
  "pc-ode",
  "proptest",
  "rayon",

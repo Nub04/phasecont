@@ -15,7 +15,7 @@
 //! Workspace of a member, `10 n + n_p + 1` values in this order: `y`, `y1`, `yt`, the seven
 //! stages `k0` to `k6`, and the parameters followed by the time.
 
-use crate::job::{Checked, Job, Method, Params, Status};
+use crate::job::{Checked, Job, Method, NativeRhs, Params, Precision, Status};
 use crate::real::Real;
 use crate::tape::{CpuTape, Slab, Tape};
 
@@ -163,6 +163,8 @@ pub enum Kind<T: Real> {
 pub struct Ctx<'a, T: Real> {
     /// The right-hand side, lowered once for `T`.
     pub rhs: CpuTape<T>,
+    /// A compiled right-hand side, set only for a double precision job that carries one.
+    pub native: Option<NativeRhs>,
     pub n: usize,
     pub n_p: usize,
     pub x0: &'a [f64],
@@ -215,6 +217,11 @@ impl<'a, T: Real> Ctx<'a, T> {
         let bounds = T::from_f64(job.bounds);
         Ctx {
             rhs: CpuTape::new(tape),
+            native: if job.precision == Precision::Double {
+                job.native
+            } else {
+                None
+            },
             n: checked.n,
             n_p: checked.n_p,
             x0: job.x0,
@@ -558,7 +565,10 @@ impl<T: Real> Traj<T> {
 }
 
 fn eval_at<T: Real>(ctx: &Ctx<T>, x: &[T], t: T, vals: &mut Slab<T>, out: &mut [T]) {
-    ctx.rhs.eval_xt(x, t, vals, out);
+    match ctx.native {
+        Some(f) => ctx.rhs.eval_native(f, x, t, vals, out),
+        None => ctx.rhs.eval_xt(x, t, vals, out),
+    }
 }
 
 /// One Dormand-Prince step from `(t, y)` with `k0 = f(t, y)` given. Fills `k1` to `k6` and

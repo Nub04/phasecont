@@ -15,7 +15,9 @@ use pc_engine::{
     EpSetup, Evaluator, ModelEval, Options, build_allowing_t, build_dde, check_tables,
     engine_kinds, entry_symbol, equilibrium,
 };
-use pc_ir::{EntryKind, IrModel};
+use pc_ensemble::job::{NATIVE_FRAME_LIMIT, NativeRhs};
+use pc_ir::{Entry, EntryKind, IrModel};
+use pc_jit::JitEntries;
 use pc_ode::{Model, ModelInfo};
 
 use crate::barrier::guarded;
@@ -51,8 +53,17 @@ pub(crate) enum Build {
 enum Request {
     Compile(Build),
     EmitC(PathBuf),
-    Rhs { x: Vec<f64>, p: Vec<f64>, t: f64 },
-    Equilibrium { setup: EpSetup, opts: Options },
+    Rhs {
+        x: Vec<f64>,
+        p: Vec<f64>,
+        t: f64,
+    },
+    Equilibrium {
+        setup: EpSetup,
+        opts: Options,
+    },
+    /// Compile `F` for the ensemble workers. The code stays on the model thread's slot.
+    EnsembleF,
     Panic,
 }
 
@@ -68,6 +79,7 @@ enum Reply {
     CFile(PathBuf),
     Rhs(Vec<f64>),
     Equilibrium(Equilibrium),
+    EnsembleF(Option<NativeRhs>),
 }
 
 enum Msg {
@@ -80,10 +92,16 @@ pub(crate) struct ModelHandle {
     pub model: Model,
     pub info: ModelInfo,
     /// The lowered model. A run reads its names and defaults to check a problem.
-    pub ir: IrModel,
+    pub ir: Arc<IrModel>,
     pub names: Names,
     /// True for a model with `delay(...)` calls (SPEC 8s). Only an "EP" run takes one.
     pub delay: bool,
+    /// The compiled `F` of the ensemble workers, from the first double-precision CPU run.
+    /// The outer `None` means not tried yet, the inner one that the model has none (a delay
+    /// model, an `F` with a frame over [`NATIVE_FRAME_LIMIT`], or a compile error). The code
+    /// lives in a slot of the model thread, so it lives as long as this handle, and a new
+    /// `model_compile` does not touch it.
+    native: Mutex<Option<Option<NativeRhs>>>,
     /// The evaluator the model thread holds, with the library path for an AOT one.
     /// Written by that thread after a successful compile.
     evaluator: Arc<Mutex<Option<Evaluator>>>,
@@ -115,9 +133,11 @@ impl ModelHandle {
         let max_frame = Arc::new(AtomicU32::new(0));
         let evaluator = Arc::new(Mutex::new(None));
         let delay = !ir.delays.is_empty();
+        let ir = Arc::new(ir);
         let ctx = Context {
             model: model.clone(),
             info: info.clone(),
+            ir: Arc::clone(&ir),
             delay,
             warm_x: names.init.clone(),
             warm_p: names.par_values.clone(),
@@ -136,6 +156,7 @@ impl ModelHandle {
             ir,
             names,
             delay,
+            native: Mutex::new(None),
             evaluator,
             c_file: Mutex::new(None),
             max_frame,
@@ -220,6 +241,26 @@ impl ModelHandle {
         }
     }
 
+    /// The compiled `F` for the ensemble workers, or `None` when the model has none (a delay
+    /// model, an oversized frame, a compile error) and the run uses the tape. The first call
+    /// compiles on the model thread, 0.1 to 7 ms for the models measured; later calls return
+    /// the stored value.
+    ///
+    /// The returned function stays valid while `self` lives. A run holds an `Arc` of this
+    /// handle, so it does.
+    pub fn native_rhs(&self) -> Result<Option<NativeRhs>> {
+        let mut slot = lock(&self.native);
+        if let Some(done) = *slot {
+            return Ok(done);
+        }
+        let got = match self.call(Request::EnsembleF)? {
+            Reply::EnsembleF(f) => f,
+            _ => return Err(Error::Internal("unexpected reply to ensemble F".into())),
+        };
+        *slot = Some(got);
+        Ok(got)
+    }
+
     /// Test hook: panics on the model thread.
     pub fn debug_panic(&self) -> Result<()> {
         self.call(Request::Panic).map(|_| ())
@@ -241,8 +282,11 @@ impl Drop for ModelHandle {
 /// The model thread. It ends on `Stop` or when the channel closes.
 fn serve(ctx: Context, rx: Receiver<Msg>) {
     let mut ev: Option<Box<dyn ModelEval>> = None;
+    // Declared after `ev`, so it drops first. Ensemble workers call into it only while an
+    // `Arc<ModelHandle>` is alive, and the handle's `Drop` joins this thread.
+    let mut native: Option<JitEntries> = None;
     while let Ok(Msg::Call(req, reply)) = rx.recv() {
-        let r = guarded(|| handle(*req, &ctx, &mut ev));
+        let r = guarded(|| handle(*req, &ctx, &mut ev, &mut native));
         // The JIT compiles each entry on first use, so the frame can grow after any request.
         ctx.max_frame.store(pc_jit::max_frame(), Ordering::Relaxed);
         // The caller may have gone; nothing to do then.
@@ -280,8 +324,39 @@ struct Context {
     warm_p: Vec<f64>,
     max_frame: Arc<AtomicU32>,
     evaluator: Arc<Mutex<Option<Evaluator>>>,
+    /// The lowered model, for the ensemble `F`.
+    ir: Arc<IrModel>,
     /// The `pc_aot_tag` of this model's C text, once `emit_c` or an AOT compile has made it.
     tag: Cell<Option<u64>>,
+}
+
+/// Compiles `F` of the lowered model into `slot` and returns a function for ensemble workers.
+/// Gives `None`, and leaves `slot` empty, for a delay model, for a frame over `limit` bytes
+/// and when Cranelift refuses the model. A run then uses the tape, which gives the same bits.
+fn compile_native(ctx: &Context, slot: &mut Option<JitEntries>, limit: u32) -> Option<NativeRhs> {
+    if ctx.delay {
+        return None;
+    }
+    // A second call must not replace the code that an earlier call handed out.
+    if slot.is_none() {
+        let entry = Entry {
+            kind: EntryKind::F,
+            outputs: ctx.ir.f.clone(),
+        };
+        let je = pc_jit::compile(&[(EntryKind::F, &entry)], &ctx.ir.dag).ok()?;
+        if je.frame() > limit {
+            return None;
+        }
+        je.plain(&EntryKind::F)?;
+        *slot = Some(je);
+    }
+    let f = slot.as_ref()?.plain(&EntryKind::F)?;
+    // SAFETY: `f` is the `F` entry of this model with `n` outputs, built by the JIT, which
+    // gives the bits of the tape (the 0 ulp tests in pc-ensemble) and keeps no state, so
+    // threads may call it at once. Its frame was within `limit` when it was stored. `slot`
+    // keeps the code until the model thread ends, and the handle joins that thread only
+    // after every run is done.
+    Some(unsafe { NativeRhs::new(f) })
 }
 
 impl Context {
@@ -296,8 +371,18 @@ impl Context {
     }
 }
 
-fn handle(req: Request, ctx: &Context, ev: &mut Option<Box<dyn ModelEval>>) -> Result<Reply> {
+fn handle(
+    req: Request,
+    ctx: &Context,
+    ev: &mut Option<Box<dyn ModelEval>>,
+    native: &mut Option<JitEntries>,
+) -> Result<Reply> {
     match req {
+        Request::EnsembleF => Ok(Reply::EnsembleF(compile_native(
+            ctx,
+            native,
+            NATIVE_FRAME_LIMIT,
+        ))),
         Request::Compile(build) => {
             let mut p = ctx.warm_p.clone();
             let which = match build {
@@ -390,4 +475,156 @@ fn write_c(model: &Model, info: &ModelInfo, dir: &Path) -> Result<(PathBuf, u64)
         .and_then(|()| std::fs::write(&path, &c.text))
         .map_err(|e| bad_arg(format!("emit_c: cannot write {}: {e}", path.display())))?;
     Ok((path, c.tag))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse::parse_model;
+    use pc_ensemble::device::{Backend, find_device};
+    use pc_ensemble::job::{Method, Output, Params};
+    use pc_ensemble::run::run_on;
+    use pc_ensemble::{EnsembleResult, Job, Precision};
+    use std::sync::atomic::AtomicBool;
+
+    const VDP: &str = "par mu=1.5\ninit x=2\ninit y=0\nx'=y\ny'=mu*(1-x*x)*y-x\ndone\n";
+    const HUTCH: &str = "par r=1.3, tau=1\nx'=r*x*(1-delay(x,tau))\ndone\n";
+
+    fn parsed(text: &str) -> crate::parse::Parsed {
+        parse_model(text.into()).unwrap().result.unwrap()
+    }
+
+    fn handle_of(text: &str) -> ModelHandle {
+        let p = parsed(text);
+        ModelHandle::new(p.model, p.info, p.names, p.ir).unwrap()
+    }
+
+    fn context_of(text: &str) -> Context {
+        let p = parsed(text);
+        Context {
+            delay: !p.ir.delays.is_empty(),
+            warm_x: p.names.init.clone(),
+            warm_p: p.names.par_values.clone(),
+            max_frame: Arc::new(AtomicU32::new(0)),
+            evaluator: Arc::new(Mutex::new(None)),
+            ir: Arc::new(p.ir),
+            model: p.model,
+            info: p.info,
+            tag: Cell::new(None),
+        }
+    }
+
+    /// A function pointer has no `PartialEq` here, so compare the address it prints.
+    fn address(f: Option<NativeRhs>) -> String {
+        format!("{:?}", f.expect("a native function"))
+    }
+
+    fn same_bits(a: &[f64], b: &[f64]) -> bool {
+        a.len() == b.len()
+            && a.iter()
+                .zip(b)
+                .all(|(x, y)| x.to_bits() == y.to_bits() || (x.is_nan() && y.is_nan()))
+    }
+
+    fn run(h: &ModelHandle, method: Method, native: Option<NativeRhs>) -> EnsembleResult {
+        let members = 7;
+        let x0: Vec<f64> = (0..members)
+            .flat_map(|k| [1.0 + 0.3 * k as f64, 0.1 * k as f64])
+            .collect();
+        let p = [1.5];
+        let job = Job {
+            model: &h.ir,
+            members,
+            x0: &x0,
+            params: Params::Shared(&p),
+            t0: 0.0,
+            t1: 6.0,
+            output: Output::Samples(vec![1.0, 2.5, 6.0]),
+            method,
+            bounds: f64::INFINITY,
+            max_steps: 1_000_000,
+            precision: Precision::Double,
+            native,
+        };
+        let device = find_device(Backend::Cpu, 0).unwrap();
+        run_on(&device, &job, &AtomicBool::new(false)).unwrap()
+    }
+
+    #[test]
+    fn a_frame_over_the_limit_gives_no_native_function() {
+        // A small model has no stack frame, so the guard needs a model that has one.
+        let ode: String = (0..40)
+            .map(|i| {
+                let (a, b, c) = ((i + 39) % 40, (i + 1) % 40, (i + 38) % 40);
+                format!("x{i}'=(x{b}-x{c})*x{a}-x{i}+8\ninit x{i}=1\n")
+            })
+            .collect::<String>()
+            + "done\n";
+        let ctx = context_of(&ode);
+        let mut slot = None;
+        assert!(compile_native(&ctx, &mut slot, NATIVE_FRAME_LIMIT).is_some());
+        let frame = slot.as_ref().unwrap().frame();
+        assert!(frame > 0, "the 40-state model should need a stack frame");
+        let mut refused = None;
+        assert!(compile_native(&ctx, &mut refused, frame - 1).is_none());
+        assert!(refused.is_none(), "a refused compile must not keep code");
+        assert!(compile_native(&ctx, &mut refused, frame).is_some());
+        assert!(refused.is_some());
+    }
+
+    #[test]
+    fn a_delay_model_gets_no_native_function() {
+        let ctx = context_of(HUTCH);
+        let mut slot = None;
+        assert!(compile_native(&ctx, &mut slot, NATIVE_FRAME_LIMIT).is_none());
+        assert!(slot.is_none());
+        assert!(handle_of(HUTCH).native_rhs().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_second_compile_keeps_the_first_code() {
+        let ctx = context_of(VDP);
+        let mut slot = None;
+        let a = address(compile_native(&ctx, &mut slot, NATIVE_FRAME_LIMIT));
+        let b = address(compile_native(&ctx, &mut slot, NATIVE_FRAME_LIMIT));
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn the_handle_compiles_once_and_a_recompile_leaves_the_code_alone() {
+        let h = handle_of(VDP);
+        let first = h.native_rhs().unwrap();
+        h.compile(Build::Jit).unwrap();
+        h.compile(Build::Jit).unwrap();
+        let second = h.native_rhs().unwrap();
+        assert_eq!(address(first), address(second));
+        // The code from before the recompiles still runs, and still gives the tape's bits.
+        let method = Method::Rk4 { dt: 0.01 };
+        let with = run(&h, method, first);
+        let without = run(&h, method, None);
+        assert!(same_bits(&with.states, &without.states));
+    }
+
+    #[test]
+    fn a_run_with_the_compiled_f_has_the_bits_of_the_tape() {
+        let h = handle_of(VDP);
+        let native = h.native_rhs().unwrap();
+        assert!(native.is_some(), "an ODE model gets a native function");
+        for method in [
+            Method::Rk4 { dt: 0.01 },
+            Method::Dp5 {
+                rtol: 1e-6,
+                atol: 1e-9,
+                hmax: f64::INFINITY,
+            },
+        ] {
+            let with = run(&h, method, native);
+            let without = run(&h, method, None);
+            assert!(same_bits(&with.states, &without.states), "{method:?}");
+            assert_eq!(with.status, without.status, "{method:?}");
+            assert!(same_bits(&with.t_reached, &without.t_reached), "{method:?}");
+            assert_eq!(with.accepted, without.accepted, "{method:?}");
+            assert_eq!(with.rejected, without.rejected, "{method:?}");
+        }
+    }
 }

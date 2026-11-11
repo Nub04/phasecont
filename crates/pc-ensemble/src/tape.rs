@@ -20,7 +20,7 @@ use pc_ir::IrModel;
 use pc_ir::dag::{Cmp, Fn1, Fn2, NodeId, Op};
 use pc_ir::eval::live_set;
 
-use crate::job::EnsembleError;
+use crate::job::{EnsembleError, NativeRhs};
 use crate::real::Real;
 
 #[derive(Clone, Debug)]
@@ -533,12 +533,54 @@ impl<T: Real> CpuTape<T> {
         self.bind(p, slab);
         self.eval_xt(x, p[self.np1 - 1], slab, out);
     }
+
+    /// [`CpuTape::eval_xt`] through a compiled `F`. The function reads `x` from the caller's
+    /// slice and the parameters and `t` from the slab, where [`CpuTape::bind`] put them, so the
+    /// slab's temporaries are not touched. Single precision runs [`CpuTape::eval_xt`] instead.
+    ///
+    /// Panics when `x` has fewer than `n` values or `out` fewer than the tape's outputs, before
+    /// the call.
+    #[inline]
+    pub fn eval_native(&self, f: NativeRhs, x: &[T], t: T, slab: &mut Slab<T>, out: &mut [T]) {
+        assert_eq!(
+            slab.0.len(),
+            self.slab_len(),
+            "the slab is from another tape"
+        );
+        let (Some(xv), Some(ov)) = (T::as_f64s(x), T::as_f64s_mut(out)) else {
+            return self.eval_xt(x, t, slab, out);
+        };
+        assert!(
+            xv.len() >= self.n,
+            "native rhs: {} states, the model has {}",
+            xv.len(),
+            self.n
+        );
+        assert!(
+            ov.len() >= self.outputs.len(),
+            "native rhs: room for {} outputs, the model has {}",
+            ov.len(),
+            self.outputs.len()
+        );
+        let Some(sv) = T::as_f64s_mut(slab.0.as_mut_slice()) else {
+            unreachable!("x and out were f64, so the slab is");
+        };
+        let ps = self.consts.len() + self.n;
+        sv[ps + self.np1 - 1] = t.to_f64();
+        // SAFETY: `xv` has `n` values and `sv[ps..]` the `n_p` parameters and `t`, in the order
+        // the function reads them; `ov` has room for every output. They are three distinct
+        // slices, so `out` does not alias an input. The contract of `NativeRhs::new` covers the
+        // rest.
+        unsafe { f.call(xv.as_ptr(), sv[ps..].as_ptr(), ov.as_mut_ptr()) };
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pc_ir::dag::Dag;
     use pc_ir::eval::eval;
+    use pc_ir::{Entry, EntryKind};
     use proptest::prelude::*;
 
     fn model(src: &str) -> IrModel {
@@ -758,6 +800,224 @@ mod tests {
             prop_assert_eq!(check::<f64>(&tape, &x, &p), Ok(()));
             prop_assert_eq!(check::<f32>(&tape, &x, &p), Ok(()));
         }
+    }
+
+    /// A [`Dag`] built from raw picks through its own constructors, and the [`Tape`] over all
+    /// its nodes in node order, so a node id is its slot. The constructors fold and
+    /// simplify; the tape and the JIT both start from the result.
+    ///
+    /// Only ops that `Tape::build` accepts: it refuses `Dir`, tables and the special
+    /// functions, the `Tape` evaluates them as NaN and the JIT would call the real function.
+    fn dag_case(n: usize, n_p: usize, raw: &[RawOp], outs: &[u32]) -> (Dag, Tape) {
+        let node = NodeId(0);
+        let fn1: Vec<Fn1> = FN1
+            .iter()
+            .copied()
+            .filter(|&f| unsupported_op(&Op::Call1(f, node)).is_none())
+            .collect();
+        let fn2: Vec<Fn2> = FN2
+            .iter()
+            .copied()
+            .filter(|&f| unsupported_op(&Op::Call2(f, node, node)).is_none())
+            .collect();
+        let mut dag = Dag::new(4096);
+        let mut ids: Vec<NodeId> = Vec::new();
+        for (i, &(kind, a, b, c, v, k)) in raw.iter().enumerate() {
+            let id = if i == 0 || (kind & 0x0f) < 3 {
+                match b % 6 {
+                    0 | 1 => dag.konst(v),
+                    2 | 3 => dag.var(a % n as u32),
+                    _ => dag.param(a % (n_p as u32 + 1)),
+                }
+            } else {
+                let pick = |x: u32| ids[x as usize % ids.len()];
+                let (x, y, z) = (pick(a), pick(b), pick(c));
+                match (kind >> 4) % 13 {
+                    0 => dag.neg(x),
+                    1 => dag.add(x, y),
+                    2 => dag.sub(x, y),
+                    3 => dag.mul(x, y),
+                    4 => dag.div(x, y),
+                    5 => dag.powi(x, k),
+                    6 => dag.call1(fn1[b as usize % fn1.len()], x),
+                    7 => dag.call2(fn2[c as usize % fn2.len()], x, y),
+                    8 => dag.cmp(CMP[c as usize % CMP.len()], x, y),
+                    9 => dag.and(x, y),
+                    10 => dag.or(x, y),
+                    11 => dag.not(x),
+                    _ => dag.select(x, y, z),
+                }
+            };
+            ids.push(id);
+        }
+        let ops = (0..dag.len()).map(|i| *dag.op(NodeId(i as u32))).collect();
+        let outputs = outs
+            .iter()
+            .map(|&o| ids[o as usize % ids.len()].0)
+            .collect();
+        let tape = Tape {
+            n,
+            n_p,
+            ops,
+            outputs,
+        };
+        (dag, tape)
+    }
+
+    /// Compiles the outputs of `tape` as an `F` entry of `dag` and runs it through
+    /// [`CpuTape::eval_native`], against [`CpuTape::eval_xt`] and [`Tape::eval`]. The slab first
+    /// sees other inputs, so a stale temporary or parameter would show.
+    fn check_native(dag: &Dag, tape: &Tape, x: &[f64], p: &[f64]) -> Result<(), String> {
+        let entry = Entry {
+            kind: EntryKind::F,
+            outputs: tape.outputs.iter().map(|&o| NodeId(o)).collect(),
+        };
+        let jit = pc_jit::compile(&[(EntryKind::F, &entry)], dag).map_err(|e| e.to_string())?;
+        let f = jit.plain(&EntryKind::F).ok_or("no F entry")?;
+        // SAFETY: the entry is the `F` of `dag` with `tape.n` outputs, and the JIT and the
+        // tape give the same bits (this test); it is called on one thread, and `jit` outlives
+        // every call below.
+        let native = unsafe { NativeRhs::new(f) };
+        let cpu = CpuTape::<f64>::new(tape);
+        let mut slab = cpu.slab();
+        let t = p[tape.n_p];
+
+        let mut vals = vec![0.0; tape.len()];
+        let mut interp = vec![0.0; tape.n];
+        tape.eval(x, p, &mut vals, &mut interp);
+
+        let mut by_tape = vec![0.0; tape.n];
+        cpu.eval(x, p, &mut slab, &mut by_tape);
+
+        let (xg, pg): (Vec<f64>, Vec<f64>) = (
+            x.iter().map(|v| v + 1.0).collect(),
+            p.iter().map(|v| v + 1.0).collect(),
+        );
+        let mut got = vec![f64::MAX; tape.n];
+        cpu.bind(&pg, &mut slab);
+        cpu.eval_native(native, &xg, pg[tape.n_p], &mut slab, &mut got);
+        cpu.bind(p, &mut slab);
+        cpu.eval_native(native, x, t, &mut slab, &mut got);
+        for i in 0..tape.n {
+            for (what, want) in [("CpuTape", by_tape[i]), ("Tape", interp[i])] {
+                if bits(got[i]) != bits(want) {
+                    return Err(format!("output {i}: jit {:e} vs {what} {:e}", got[i], want));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `(n, n_p, raw ops, output picks, x, p)`. A `Dag` has no `Debug`, so the case is built in
+    /// the test body.
+    type NativeIn = (usize, usize, Vec<RawOp>, Vec<u32>, Vec<f64>, Vec<f64>);
+
+    fn native_case() -> impl Strategy<Value = NativeIn> {
+        let raw = (
+            any::<u8>(),
+            any::<u32>(),
+            any::<u32>(),
+            any::<u32>(),
+            value(),
+            -18i32..=18,
+        );
+        (1usize..4, 0usize..3, proptest::collection::vec(raw, 1..40)).prop_flat_map(
+            |(n, n_p, raw)| {
+                (
+                    Just(n),
+                    Just(n_p),
+                    Just(raw),
+                    proptest::collection::vec(any::<u32>(), n),
+                    proptest::collection::vec(value(), n),
+                    proptest::collection::vec(value(), n_p + 1),
+                )
+            },
+        )
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1024))]
+
+        /// The compiled `F` gives the bits of `CpuTape` and `Tape`, for every op the tape takes
+        /// (SPEC 13, the `cpu` backend). Slow: each case compiles a module.
+        #[test]
+        fn the_jit_matches_cpu_tape_bit_for_bit((n, n_p, raw, outs, x, p) in native_case()) {
+            let (dag, tape) = dag_case(n, n_p, &raw, &outs);
+            prop_assert_eq!(check_native(&dag, &tape, &x, &p), Ok(()));
+        }
+    }
+
+    /// The compiled `F` of a model with `if`, `min`, `max`, integer powers and `t`.
+    #[test]
+    fn the_jit_runs_a_model_like_the_tape() {
+        let ir = model(
+            "par a=0.7, b=2\n\
+             x'=sin(x)*a+exp(-y)/(1+x^2)+b*x^5-abs(y)+if(x>y)then(max(x,y))else(min(x,y))\n\
+             y'=atan2(x,y)+sqrt(1+y*y)+heav(x-y)+sign(y)+mod(x,1.3)+x^(-3)+t\n\
+             done\n",
+        );
+        let tape = Tape::build(&ir).expect("tape");
+        let entry = Entry {
+            kind: EntryKind::F,
+            outputs: ir.f.clone(),
+        };
+        let jit = pc_jit::compile(&[(EntryKind::F, &entry)], &ir.dag).expect("compile");
+        let f = jit.plain(&EntryKind::F).expect("F");
+        // SAFETY: the `F` of `ir` with two outputs, on one thread, and `jit` outlives the loop.
+        let native = unsafe { NativeRhs::new(f) };
+        let cpu = CpuTape::<f64>::new(&tape);
+        let mut slab = cpu.slab();
+        cpu.bind(&[0.7, 2.0, 0.0], &mut slab);
+        for (x, y, t) in [
+            (0.3, -1.2, 0.0),
+            (2.0, 2.0, 5.5),
+            (-0.0, 0.0, -1.0),
+            (1e5, -1e5, 1.0),
+        ] {
+            let (mut want, mut got) = ([0.0; 2], [0.0; 2]);
+            cpu.eval_xt(&[x, y], t, &mut slab, &mut want);
+            cpu.eval_native(native, &[x, y], t, &mut slab, &mut got);
+            assert_eq!(bits(got[0]), bits(want[0]), "x at ({x},{y},{t})");
+            assert_eq!(bits(got[1]), bits(want[1]), "y at ({x},{y},{t})");
+        }
+    }
+
+    /// Single precision never calls the compiled function.
+    #[test]
+    fn single_precision_ignores_the_native_function() {
+        unsafe extern "C" fn poison(_: *const f64, _: *const f64, out: *mut f64) {
+            // SAFETY: the caller gave one output.
+            unsafe { *out = 12345.0 };
+        }
+        let ir = model("x'=sin(x)+1\ndone\n");
+        let tape = Tape::build(&ir).expect("tape");
+        // SAFETY: never called in single precision, which is what this test checks.
+        let native = unsafe { NativeRhs::new(poison) };
+        let cpu = CpuTape::<f32>::new(&tape);
+        let mut slab = cpu.slab();
+        cpu.bind(&[0.0], &mut slab);
+        let (mut want, mut got) = ([0.0f32], [0.0f32]);
+        cpu.eval_xt(&[0.5], 0.0, &mut slab, &mut want);
+        cpu.eval_native(native, &[0.5], 0.0, &mut slab, &mut got);
+        assert_eq!(got[0].to_bits(), want[0].to_bits());
+    }
+
+    /// A state or output slice that is too short is a panic, not a read past the end.
+    #[test]
+    #[should_panic(expected = "native")]
+    fn a_short_state_slice_is_refused_before_the_call() {
+        unsafe extern "C" fn never(_: *const f64, _: *const f64, _: *mut f64) {
+            std::process::abort();
+        }
+        let ir = model("x'=x\ny'=y\ndone\n");
+        let tape = Tape::build(&ir).expect("tape");
+        // SAFETY: refused before the call, which is what this test checks.
+        let native = unsafe { NativeRhs::new(never) };
+        let cpu = CpuTape::<f64>::new(&tape);
+        let mut slab = cpu.slab();
+        cpu.bind(&[0.0], &mut slab);
+        let mut out = [0.0; 2];
+        cpu.eval_native(native, &[1.0], 0.0, &mut slab, &mut out);
     }
 
     /// The written-out chain of `PowI` is the chain of [`powi`], including `k` of 0, 1 and
