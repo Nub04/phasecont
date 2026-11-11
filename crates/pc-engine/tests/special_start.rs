@@ -104,6 +104,43 @@ fn lp_start_leaves_on_both_sides_of_the_fold() {
     }
 }
 
+/// The LP orientation must not depend on how tightly the fold was refined. The refined LP
+/// has an alpha tangent component far below `RANK_TOL`, so the start takes the fallback
+/// (first state component above the tolerance), not the alpha sign that refinement noise
+/// would flip. This pins that behaviour for the tolerances a user can set.
+#[test]
+fn lp_start_orientation_does_not_depend_on_the_refinement_tolerance() {
+    for which in BOTH {
+        let mut seen: Vec<(f64, [f64; 2])> = Vec::new();
+        for tol_refine in [1e-6, 1e-8, 1e-10, 1e-12] {
+            let setup = EpSetup::new(0, vec![-1.0], vec![-1.0]);
+            let find = Options {
+                direction: 1.0,
+                hmax: 0.1,
+                max_steps: 400,
+                bounds: (-5.0, 5.0),
+                tol_refine,
+                ..Options::default()
+            };
+            let b = run("fold", which.clone(), &setup, &find).unwrap();
+            let (s, _) = start_at(&setup, &b, "LP1");
+            let mut sides = [0.0; 2];
+            for (k, dir) in [1.0, -1.0].into_iter().enumerate() {
+                let nb = run("fold", which.clone(), &s, &opts(dir, -5.0, 5.0)).unwrap();
+                sides[k] = nb.points.last().unwrap().u[0].signum();
+            }
+            seen.push((tol_refine, sides));
+        }
+        for (tol, sides) in &seen {
+            assert_eq!(
+                *sides,
+                [1.0, -1.0],
+                "{which:?} tol_refine {tol:e}: {seen:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn h_start_keeps_the_hopf_equilibrium_branch_going() {
     for which in BOTH {
