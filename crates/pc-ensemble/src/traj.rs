@@ -333,7 +333,9 @@ impl<T: Real> Traj<T> {
             vals,
             out,
         };
-        if !self.started {
+        if self.started {
+            ctx.rhs.bind(wk.p, wk.vals);
+        } else {
             self.start(ctx, &mut wk);
         }
         if self.status == Status::Running {
@@ -362,11 +364,11 @@ impl<T: Real> Traj<T> {
         for (dst, &s) in wk.p[..n_p].iter_mut().zip(src) {
             *dst = T::from_f64(s);
         }
-        wk.p[n_p] = ctx.t0;
+        ctx.rhs.bind(wk.p, wk.vals);
         let Kind::Dp5(par) = &ctx.kind else {
             return;
         };
-        eval_at(ctx, wk.y, wk.p, ctx.t0, wk.vals, &mut wk.k[..n]);
+        eval_at(ctx, wk.y, ctx.t0, wk.vals, &mut wk.k[..n]);
         if !all_finite(&wk.k[..n]) {
             self.status = Status::NonFinite;
             return;
@@ -394,7 +396,7 @@ impl<T: Real> Traj<T> {
         let (n, co) = (ctx.n, &ctx.co);
         let two = co.two;
         let (y, y1, yt) = (&mut *wk.y, &mut *wk.y1, &mut *wk.yt);
-        let (p, vals, out) = (&mut *wk.p, &mut *wk.vals, &mut *wk.out);
+        let (vals, out) = (&mut *wk.vals, &mut *wk.out);
         let mut ks = wk.k.chunks_exact_mut(n);
         let (Some(k1), Some(k2), Some(k3), Some(k4)) = (ks.next(), ks.next(), ks.next(), ks.next())
         else {
@@ -412,19 +414,19 @@ impl<T: Real> Traj<T> {
                 seg.a + T::from_u32(i + 1) * seg.h
             };
             let (h, half, h6) = (seg.h, seg.half, seg.h6);
-            eval_at(ctx, y, p, ts, vals, k1);
+            eval_at(ctx, y, ts, vals, k1);
             for ((t, &a), &k) in yt.iter_mut().zip(y.iter()).zip(k1.iter()) {
                 *t = a + half * k;
             }
-            eval_at(ctx, yt, p, ts + half, vals, k2);
+            eval_at(ctx, yt, ts + half, vals, k2);
             for ((t, &a), &k) in yt.iter_mut().zip(y.iter()).zip(k2.iter()) {
                 *t = a + half * k;
             }
-            eval_at(ctx, yt, p, ts + half, vals, k3);
+            eval_at(ctx, yt, ts + half, vals, k3);
             for ((t, &a), &k) in yt.iter_mut().zip(y.iter()).zip(k3.iter()) {
                 *t = a + h * k;
             }
-            eval_at(ctx, yt, p, t_next, vals, k4);
+            eval_at(ctx, yt, t_next, vals, k4);
             for j in 0..n {
                 let mut s = k1[j] + two * k2[j];
                 s = s + two * k3[j];
@@ -555,9 +557,8 @@ impl<T: Real> Traj<T> {
     }
 }
 
-fn eval_at<T: Real>(ctx: &Ctx<T>, x: &[T], p: &mut [T], t: T, vals: &mut Slab<T>, out: &mut [T]) {
-    p[ctx.n_p] = t;
-    ctx.rhs.eval(x, p, vals, out);
+fn eval_at<T: Real>(ctx: &Ctx<T>, x: &[T], t: T, vals: &mut Slab<T>, out: &mut [T]) {
+    ctx.rhs.eval_xt(x, t, vals, out);
 }
 
 /// One Dormand-Prince step from `(t, y)` with `k0 = f(t, y)` given. Fills `k1` to `k6` and
@@ -565,7 +566,7 @@ fn eval_at<T: Real>(ctx: &Ctx<T>, x: &[T], p: &mut [T], t: T, vals: &mut Slab<T>
 fn dp5_step<T: Real>(ctx: &Ctx<T>, par: &Dp5Par<T>, wk: &mut Work<T>, t: T, h: T, t_end: T) -> T {
     let (n, co) = (ctx.n, &ctx.co);
     let (y, y1, yt) = (&*wk.y, &mut *wk.y1, &mut *wk.yt);
-    let (p, vals, k) = (&mut *wk.p, &mut *wk.vals, &mut *wk.k);
+    let (vals, k) = (&mut *wk.vals, &mut *wk.k);
     for s in 1..=5 {
         let (done, rest) = k.split_at_mut(s * n);
         let c = &co.a[s - 1][..s];
@@ -577,13 +578,13 @@ fn dp5_step<T: Real>(ctx: &Ctx<T>, par: &Dp5Par<T>, wk: &mut Work<T>, t: T, h: T
         } else {
             t + co.c[s - 1] * h
         };
-        eval_at(ctx, yt, p, ts, vals, &mut rest[..n]);
+        eval_at(ctx, yt, ts, vals, &mut rest[..n]);
     }
     let (done, rest) = k.split_at_mut(6 * n);
     for (i, (v, &yi)) in y1.iter_mut().zip(y).enumerate() {
         *v = yi + h * stage_sum(&co.a[5], done, n, i);
     }
-    eval_at(ctx, y1, p, t_end, vals, &mut rest[..n]);
+    eval_at(ctx, y1, t_end, vals, &mut rest[..n]);
     let mut sum = T::ZERO;
     for (i, (&yi, &y1i)) in y.iter().zip(y1.iter()).enumerate() {
         let e = stage_sum(&co.e, k, n, i);
@@ -632,7 +633,7 @@ fn initial_step<T: Real>(ctx: &Ctx<T>, par: &Dp5Par<T>, wk: &mut Work<T>) -> T {
     {
         let (k0, rest) = wk.k.split_at_mut(n);
         let _ = k0;
-        eval_at(ctx, wk.yt, wk.p, t0 + h, wk.vals, &mut rest[..n]);
+        eval_at(ctx, wk.yt, t0 + h, wk.vals, &mut rest[..n]);
     }
     let mut s2 = T::ZERO;
     for i in 0..n {

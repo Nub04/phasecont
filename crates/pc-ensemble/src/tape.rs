@@ -285,8 +285,14 @@ enum Ins {
     Select(u32, u32, u32),
 }
 
-fn run<T: Real>(ins: Ins, s: &[T]) -> T {
-    let a = |i: u32| s[i as usize];
+/// Runs one instruction.
+///
+/// # Safety
+/// Every operand slot of `ins` must be below `s.len()`. [`CpuTape::new`] checks each operand
+/// against the slab layout, and [`CpuTape::eval_xt`] checks the slab length.
+unsafe fn run<T: Real>(ins: Ins, s: &[T]) -> T {
+    // SAFETY: the caller promises every operand slot is in range.
+    let a = |i: u32| unsafe { *s.get_unchecked(i as usize) };
     match ins {
         Ins::Neg(u) => -a(u),
         Ins::Add(u, w) => a(u) + a(w),
@@ -300,6 +306,17 @@ fn run<T: Real>(ins: Ins, s: &[T]) -> T {
         Ins::Or(u, w) => or(a(u), a(w)),
         Ins::Not(u) => not(a(u)),
         Ins::Select(c, u, w) => select(a(c), a(u), a(w)),
+    }
+}
+
+/// Copies `src` to `dst`, which have the same length, one element at a time. The state vector
+/// is a few values for most models, and a call into `memmove` costs more than the copy. The
+/// volatile store keeps the compiler from turning the loop back into that call.
+fn copy_states<T: Real>(dst: &mut [T], src: &[T]) {
+    assert_eq!(dst.len(), src.len());
+    for (d, &v) in dst.iter_mut().zip(src) {
+        // SAFETY: `d` is a valid, aligned, exclusive reference.
+        unsafe { std::ptr::write_volatile(d, v) };
     }
 }
 
@@ -478,22 +495,43 @@ impl<T: Real> CpuTape<T> {
         self.consts.len() + self.n + self.np1 + self.ins.len()
     }
 
-    /// Writes `f(t, x)` to `out`. `p` holds the `n_p` parameters followed by `t`. `slab`
-    /// must come from [`CpuTape::slab`] of this tape.
-    pub fn eval(&self, x: &[T], p: &[T], slab: &mut Slab<T>, out: &mut [T]) {
+    /// Loads the parameters into `slab`, once for a run of evaluations. `p` holds the `n_p`
+    /// parameters, and may hold `t` after them, which this ignores.
+    pub fn bind(&self, p: &[T], slab: &mut Slab<T>) {
+        let ps = self.consts.len() + self.n;
+        let np = self.np1 - 1;
+        slab.0[ps..ps + np].copy_from_slice(&p[..np]);
+    }
+
+    /// Writes `f(t, x)` to `out`, with the parameters of the last [`CpuTape::bind`] on this
+    /// slab. `slab` must come from [`CpuTape::slab`] of this tape.
+    pub fn eval_xt(&self, x: &[T], t: T, slab: &mut Slab<T>, out: &mut [T]) {
         let s = slab.0.as_mut_slice();
-        debug_assert_eq!(s.len(), self.slab_len());
+        assert_eq!(s.len(), self.slab_len(), "the slab is from another tape");
         let xs = self.consts.len();
         let ps = xs + self.n;
         let tb = ps + self.np1;
-        s[xs..ps].copy_from_slice(&x[..self.n]);
-        s[ps..tb].copy_from_slice(&p[..self.np1]);
+        copy_states(&mut s[xs..ps], &x[..self.n]);
+        s[tb - 1] = t;
         for (k, &ins) in self.ins.iter().enumerate() {
-            s[tb + k] = run(ins, s);
+            // SAFETY: `new` checked every operand slot against the slab layout, and the
+            // assert above made `s` that long. `tb + k` is below `s.len()` for the same reason.
+            unsafe {
+                let v = run(ins, s);
+                *s.get_unchecked_mut(tb + k) = v;
+            }
         }
         for (o, &i) in out.iter_mut().zip(&self.outputs) {
-            *o = s[i as usize];
+            // SAFETY: `new` checked every output slot against the instruction count.
+            *o = unsafe { *s.get_unchecked(i as usize) };
         }
+    }
+
+    /// Writes `f(t, x)` to `out`. `p` holds the `n_p` parameters followed by `t`. `slab`
+    /// must come from [`CpuTape::slab`] of this tape.
+    pub fn eval(&self, x: &[T], p: &[T], slab: &mut Slab<T>, out: &mut [T]) {
+        self.bind(p, slab);
+        self.eval_xt(x, p[self.np1 - 1], slab, out);
     }
 }
 
