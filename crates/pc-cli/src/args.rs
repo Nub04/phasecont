@@ -629,7 +629,9 @@ and Holmes (Ia, Ib, II, III, IVa, IVb, V, VIa, VIb, VIIa, VIIb or VIII), from th
 Re g2100, Re g1011, Re g1110 and Re g0021. It is null when one of them is 0 or when
 Re g2100 Re g0021 = Re g1011 Re g1110. omega1 is the first oscillator, and swapping the
 oscillators exchanges II with III and V with VIII. The label does not say how close the
-point is to a boundary between cases. SPEC section 8j-2 lists what is not verified.
+point is to a boundary between cases. The table is not checked against Guckenheimer and
+Holmes, Section 7.5 itself: it comes from two printed copies that may share a source, so
+treat the letter as unconfirmed. SPEC section 8j-2 lists what is not verified.
 
 options:
   --          the next argument is the file, even if it starts with `-`

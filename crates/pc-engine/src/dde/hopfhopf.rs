@@ -281,8 +281,9 @@ fn classify(g: &Coefficients) -> Classes {
 }
 
 /// The twelve unfolding cases of the Hopf-Hopf bifurcation in the lettering of Guckenheimer and
-/// Holmes, Section 7.5, as tabulated by Du, Niu, Guo and Wei, arXiv 1804.03775, Table I. SPEC
-/// section 8j-2 gives the table and the open points that go with it.
+/// Holmes, Section 7.5, as tabulated by Du, Niu, Guo and Wei, arXiv 1804.03775, Table I. The
+/// table is not checked against the book, so the letters are unconfirmed. SPEC section 8j-2
+/// gives the table and the open points that go with it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HhCase {
     Ia,
