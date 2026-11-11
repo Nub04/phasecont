@@ -28,8 +28,9 @@ struct Krate {
 /// license file of its own takes the `LICENSE*`, `LICENCE*`, `COPYING*` and
 /// `NOTICE*` files and the `SOURCE` note from `overrides/<crate name>/`. The
 /// override applies to every version of that crate that ships no license
-/// file. A missing, unreadable or empty
-/// `SOURCE`, a license file that is not UTF-8, and an `overrides` path that is
+/// file, and only for the versions listed in `overrides/<crate name>/VERSION`. A
+/// missing, unreadable or empty `SOURCE` or `VERSION`, a version that `VERSION` does
+/// not list, a license file that is not UTF-8, and an `overrides` path that is
 /// not a folder are errors. Workspace crates add their `NOTICE*` files, which hold
 /// the notices of the code they port (see `THIRD_PARTY_NOTICES.md`).
 pub fn licenses(
@@ -101,6 +102,7 @@ fn run(
             if source.trim().is_empty() {
                 return Err(format!("{}: {} is empty", k.name, path.display()));
             }
+            check_pin(&k.name, &k.version, &dir)?;
             note = format!(
                 "(license files supplied by PhaseCont, taken from: {})\n",
                 source.trim().replace("\r\n", "\n").replace('\n', "; ")
@@ -124,6 +126,33 @@ fn run(
         return Err(format!("no license file in: {}", missing.join(", ")));
     }
     std::fs::write(out, text).map_err(|e| format!("cannot write {}: {e}", out.display()))
+}
+
+/// An override holds the license text of one release. `dir/VERSION` lists the crate
+/// versions that text was taken from, one per line, and the override is used only for
+/// those. A `Cargo.lock` bump to another version fails here, so the text is checked
+/// again before it is reused.
+fn check_pin(name: &str, version: &str, dir: &Path) -> Result<(), String> {
+    let path = dir.join("VERSION");
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("{name}: cannot read {}: {e}", path.display()))?;
+    let pinned: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if pinned.is_empty() {
+        return Err(format!("{name}: {} is empty", path.display()));
+    }
+    if pinned.contains(&version) {
+        return Ok(());
+    }
+    Err(format!(
+        "{name} {version}: the override in {} is pinned to {}; check the license \
+         text of this version, then add it to VERSION",
+        dir.display(),
+        pinned.join(", ")
+    ))
 }
 
 fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {

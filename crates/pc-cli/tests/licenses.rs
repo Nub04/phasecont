@@ -176,11 +176,13 @@ fn missing_target_or_out_is_a_usage_error() {
     }
 }
 
-/// Writes `root/ov/<name>/` with a license file and a SOURCE file.
+/// Writes `root/ov/<name>/` with a license file, a SOURCE file and a VERSION file that
+/// pins the override to the fixture crates' version 1.2.3.
 fn override_for(root: &Path, name: &str, text: &str) {
     let dir = root.join("ov").join(name);
     write(&dir.join("LICENSE"), text);
     write(&dir.join("SOURCE"), "https://example.invalid/repo tag v9\n");
+    write(&dir.join("VERSION"), "1.2.3\n");
 }
 
 fn run_with_overrides(root: &Path, ws: &Path) -> std::process::Output {
@@ -351,6 +353,65 @@ fn an_override_without_a_source_fails_and_is_named() {
         assert!(err.contains("SOURCE"), "{name}: {err}");
         assert!(!root.join("out.txt").exists(), "{name}: no output file");
     }
+}
+
+#[test]
+fn an_override_pinned_to_another_version_fails_and_names_both() {
+    let root = scratch("ov-pin");
+    let ws = fixture(&root, Some("nolic"));
+    override_for(&root, "nolic", "override text\n");
+    write(&root.join("ov/nolic/VERSION"), "0.9.9\n");
+    let o = run_with_overrides(&root, &ws);
+    assert_eq!(code(&o), 1);
+    let err = stderr(&o);
+    assert!(err.contains("nolic 1.2.3: "), "{err}");
+    assert!(err.contains("pinned to 0.9.9"), "{err}");
+    assert!(err.contains("VERSION"), "{err}");
+    assert!(!root.join("out.txt").exists());
+}
+
+#[test]
+fn an_override_pinned_to_several_versions_accepts_any_of_them() {
+    let root = scratch("ov-pin-list");
+    let ws = fixture(&root, Some("nolic"));
+    override_for(&root, "nolic", "override text\n");
+    write(&root.join("ov/nolic/VERSION"), "\n0.9.9\r\n1.2.3\n\n");
+    let o = run_with_overrides(&root, &ws);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let text = fs::read_to_string(root.join("out.txt")).expect("output file");
+    assert!(text.contains("--- LICENSE ---\noverride text\n"), "{text}");
+}
+
+#[test]
+fn an_override_without_a_version_fails_and_is_named() {
+    for (name, version) in [("nover", None), ("emptyver", Some(" \n\n"))] {
+        let root = scratch(name);
+        let ws = fixture(&root, Some("nolic"));
+        override_for(&root, "nolic", "override text\n");
+        let ver = root.join("ov/nolic/VERSION");
+        match version {
+            None => fs::remove_file(&ver).expect("remove VERSION"),
+            Some(s) => write(&ver, s),
+        }
+        let o = run_with_overrides(&root, &ws);
+        assert_eq!(code(&o), 1, "{name}");
+        let err = stderr(&o);
+        assert!(err.contains("nolic: "), "{name}: {err}");
+        assert!(err.contains("VERSION"), "{name}: {err}");
+        assert!(!root.join("out.txt").exists(), "{name}: no output file");
+    }
+}
+
+#[test]
+fn the_pin_is_not_checked_for_a_crate_that_ships_its_own_license() {
+    let root = scratch("ov-pin-own");
+    let ws = fixture(&root, None);
+    override_for(&root, "withlic", "override text\n");
+    write(&root.join("ov/withlic/VERSION"), "0.0.1\n");
+    let o = run_with_overrides(&root, &ws);
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let text = fs::read_to_string(root.join("out.txt")).expect("output file");
+    assert!(!text.contains("override text"), "{text}");
 }
 
 #[test]

@@ -860,13 +860,15 @@ options:
   --overrides DIR  folder with one subfolder per crate that ships no license file;
                    its LICENSE*, LICENCE*, COPYING* and NOTICE* files and its SOURCE file
                    (a note on where the files came from, such as an upstream URL and tag;
-                   it must not be empty) stand in for the missing files (no default)
+                   it must not be empty) stand in for the missing files, and its VERSION
+                   file (the crate versions the text was taken from, one per line) must
+                   list the version in Cargo.lock (no default)
   -h, --help       print this help
 
 exit codes: 0 the file was written, 1 cargo failed, the package is unknown, a
 crate ships no license file, a license file is not UTF-8, the --overrides path is
-not a folder, an override has no SOURCE or an empty one, or the file cannot be
-written, 2 usage error
+not a folder, an override has no SOURCE or VERSION, an empty one, or a VERSION
+that does not list the locked version, or the file cannot be written, 2 usage error
 ";
 
 pub const LATEX_HELP: &str = "\
