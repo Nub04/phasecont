@@ -261,28 +261,95 @@ fn the_bench_labels_every_row() {
     let o = run(&scratch(), &["ensemble", "--bench", "--members", "10,20"]);
     assert_eq!(code(&o), 0, "{}", stderr(&o));
     let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
-    assert!(v["model"].as_str().unwrap().contains("van der Pol"));
+    // Without --case every case runs, and the report lists them in order with a title.
+    let names = ["vdp-rk4", "vdp-dp5", "l96-8", "l96-40"];
+    let cases = v["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), names.len(), "{v}");
+    for (c, name) in cases.iter().zip(names) {
+        assert_eq!(c["name"], name, "{v}");
+        assert!(!c["title"].as_str().unwrap().is_empty(), "{c}");
+    }
+    assert!(cases[0]["title"].as_str().unwrap().contains("van der Pol"));
+    assert!(
+        cases[3]["title"]
+            .as_str()
+            .unwrap()
+            .contains("Lorenz-96 (40 states")
+    );
     let all = v["rows"].as_array().unwrap();
-    // Every row names its backend, and a row the device cannot run says why.
+    // Every row names its case and backend, and a row the device cannot run says why.
     for r in all {
+        assert!(names.contains(&r["case"].as_str().unwrap()), "{r}");
         assert!(r["backend"].is_string() && r["device"].is_string(), "{r}");
         assert!(r["precision"].is_string(), "{r}");
-        if r.get("skipped").is_some() {
-            assert_ne!(r["backend"], "cpu", "{r}");
+        // The CPU skips only vdp-dp5 in single precision, whose rtol is below that floor.
+        if r.get("skipped").is_some() && r["backend"] == "cpu" {
+            assert_eq!(r["case"], "vdp-dp5", "{r}");
+            assert_eq!(r["precision"], "single", "{r}");
+            assert!(
+                r["skipped"]
+                    .as_str()
+                    .unwrap()
+                    .contains("double precision only")
+            );
         }
     }
-    // The CPU device, both precisions, two sizes. A macOS build adds Metal rows.
-    let rows: Vec<&Value> = all.iter().filter(|r| r["backend"] == "cpu").collect();
-    assert_eq!(rows.len(), 4, "{v}");
+    // Per case: the CPU device, both precisions, two sizes, less vdp-dp5 in single
+    // precision, which is one skipped row. A macOS build adds Metal rows.
+    let cpu: Vec<&Value> = all.iter().filter(|r| r["backend"] == "cpu").collect();
+    let skipped = cpu.iter().filter(|r| r.get("skipped").is_some()).count();
+    assert_eq!(skipped, 1, "{v}");
+    let rows: Vec<&Value> = cpu
+        .into_iter()
+        .filter(|r| r.get("skipped").is_none())
+        .collect();
+    assert_eq!(rows.len(), 4 * names.len() - 2, "{v}");
     for r in rows {
-        assert_eq!(r["backend"], "cpu");
         assert!(["single", "double"].contains(&r["precision"].as_str().unwrap()));
-        assert!([10, 20].contains(&r["members"].as_u64().unwrap()));
+        let members = r["members"].as_u64().unwrap();
+        assert!([10, 20].contains(&members));
         assert!(num(&r["seconds"]) > 0.0);
         assert!(num(&r["member_steps_per_second"]) > 0.0);
         assert!(r["device"].as_str().unwrap().contains("rayon"));
+        // The RK4 cases take 1000 steps of 0.01 from t = 0 to t = 10 per member.
+        if r["case"] != "vdp-dp5" {
+            let steps = r["member_steps"].as_u64().unwrap();
+            assert!((1000 * members..=1001 * members).contains(&steps), "{r}");
+        }
     }
     assert_eq!(v["repeats"], 3);
+}
+
+#[test]
+fn the_bench_runs_only_the_cases_asked_for() {
+    let o = run(
+        &scratch(),
+        &[
+            "ensemble",
+            "--bench",
+            "--members",
+            "10",
+            "--case",
+            "l96-8,vdp-dp5",
+        ],
+    );
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+    let cases: Vec<&str> = v["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(cases, ["l96-8", "vdp-dp5"]);
+    let cpu: Vec<&str> = v["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["backend"] == "cpu")
+        .map(|r| r["case"].as_str().unwrap())
+        .collect();
+    assert_eq!(cpu, ["l96-8", "l96-8", "vdp-dp5", "vdp-dp5"], "{v}");
 }
 
 #[test]
@@ -292,6 +359,9 @@ fn bad_bench_arguments_are_usage_errors() {
         &["ensemble", "--bench", "--members", "10,x"],
         &["ensemble", "--bench", "--members", ""],
         &["ensemble", "--members", "10"],
+        &["ensemble", "--bench", "--case", "nope"],
+        &["ensemble", "--bench", "--case", ""],
+        &["ensemble", "--case", "vdp-rk4"],
         &["ensemble", "--bench", "a.ode"],
         &["ensemble", "a.ode"],
         &["ensemble"],

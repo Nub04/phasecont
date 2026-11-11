@@ -17,6 +17,9 @@ pub const DEFAULT_SEED: u64 = 1;
 /// Ensemble sizes of `ensemble --bench` when `--members` is not given. The sizes are
 /// printed with the results, so they are a measurement setting and not a hidden default.
 pub const DEFAULT_BENCH_MEMBERS: [usize; 3] = [1_000, 10_000, 100_000];
+/// The cases of `ensemble --bench`, in the order they run when `--case` is not given. Each
+/// row of the report names its case, so running all of them is not a hidden default.
+pub const BENCH_CASES: [&str; 4] = ["vdp-rk4", "vdp-dp5", "l96-8", "l96-40"];
 
 /// What the command line asks for.
 #[derive(Debug, Clone, PartialEq)]
@@ -87,8 +90,11 @@ pub enum Command {
     },
     /// Run the ensemble described by a job file.
     Ensemble { file: PathBuf, job: PathBuf },
-    /// Time the ensemble engine on a built-in model.
-    EnsembleBench { members: Vec<usize> },
+    /// Time the ensemble engine on built-in cases.
+    EnsembleBench {
+        members: Vec<usize>,
+        cases: Vec<String>,
+    },
     /// Render a LaTeX figure or table from a JSON document.
     Latex {
         kind: pc_latex::Kind,
@@ -121,7 +127,7 @@ usage: pc-cli parse [--json] [--] <file.ode>
        pc-cli gpu list
        pc-cli gpu selftest --backend B [--device N] --precision P
        pc-cli ensemble [--] <file.ode> <job.json>
-       pc-cli ensemble --bench [--members N,N,...]
+       pc-cli ensemble --bench [--members N,N,...] [--case C,C,...]
        pc-cli dll-imports [--] <file.dll>
        pc-cli licenses --target TRIPLE... [--package NAME] --out FILE [--overrides DIR]
        pc-cli latex pgfplots|table [--standalone] [--out FILE.tex] [--] <input.json>
@@ -148,7 +154,7 @@ usage:
   pc-cli gpu list
   pc-cli gpu selftest --backend B [--device N] --precision P
   pc-cli ensemble <file.ode> <job.json>
-  pc-cli ensemble --bench [--members N,N,...]
+  pc-cli ensemble --bench [--members N,N,...] [--case C,C,...]
   pc-cli dll-imports <file.dll>
   pc-cli licenses --target TRIPLE... [--package NAME] --out FILE [--overrides DIR]
   pc-cli latex pgfplots|table [--standalone] [--out FILE.tex] [--] <input.json>
@@ -234,7 +240,7 @@ device (no report is printed, and this is never a pass)
 
 pub const ENSEMBLE_HELP: &str = "\
 usage: pc-cli ensemble [--] <file.ode> <job.json>
-       pc-cli ensemble --bench [--members N,N,...]
+       pc-cli ensemble --bench [--members N,N,...] [--case C,C,...]
 
 Runs many trajectories of one model and prints one JSON object. The job file
 needs every key below except `device`; nothing is filled in for a missing key.
@@ -258,12 +264,20 @@ backend, the device, the driver, the precision and single_precision. A result
 with single_precision true is a screening result: run the member again in double
 precision before it feeds continuation, normal forms or Floquet multipliers.
 
---bench times a built-in van der Pol ensemble on every device, in both
-precisions, at each size (default 1000,10000,100000) and prints one row each.
+--bench times built-in cases on every device, in both precisions, at each size
+(default 1000,10000,100000) and prints one row each. The cases (default all of
+them, in this order) are:
+
+  vdp-rk4   van der Pol, mu = 1.5, RK4 with dt 0.01, t from 0 to 10
+  vdp-dp5   van der Pol, mu from 0.1 to 10 per member, DP5 with rtol 1e-6,
+            atol 1e-9, t from 0 to 20 (double precision only)
+  l96-8     Lorenz-96 with 8 states, F = 8, RK4 with dt 0.01, t from 0 to 10
+  l96-40    the same with 40 states
 
 options:
   --bench        time the engine instead of reading a job file
   --members L    sizes for --bench, a comma-separated list of integers >= 1
+  --case L       cases for --bench, a comma-separated list of the names above
   --             the next argument is the file, even if it starts with `-`
   -h, --help     print this help
 
@@ -1450,6 +1464,7 @@ fn ensemble_command(rest: &[OsString]) -> Result<Command, UsageError> {
     let mut files: Vec<PathBuf> = Vec::new();
     let mut bench = false;
     let mut members: Option<Vec<usize>> = None;
+    let mut cases: Option<Vec<String>> = None;
     let mut literal = false;
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
@@ -1461,6 +1476,10 @@ fn ensemble_command(rest: &[OsString]) -> Result<Command, UsageError> {
             Some("--members") => {
                 let v = utf8(value("--members", &mut it)?)?;
                 members = Some(member_list(v)?);
+            }
+            Some("--case") => {
+                let v = utf8(value("--case", &mut it)?)?;
+                cases = Some(case_list(v)?);
             }
             Some(other) if other.starts_with('-') && other.len() > 1 => {
                 return Err(UsageError(format!("unknown option {other}")));
@@ -1476,10 +1495,14 @@ fn ensemble_command(rest: &[OsString]) -> Result<Command, UsageError> {
         }
         return Ok(Command::EnsembleBench {
             members: members.unwrap_or_else(|| DEFAULT_BENCH_MEMBERS.to_vec()),
+            cases: cases.unwrap_or_else(|| BENCH_CASES.iter().map(|c| c.to_string()).collect()),
         });
     }
     if members.is_some() {
         return Err(UsageError("--members only goes with --bench".to_string()));
+    }
+    if cases.is_some() {
+        return Err(UsageError("--case only goes with --bench".to_string()));
     }
     let mut files = files.into_iter();
     match (files.next(), files.next(), files.next()) {
@@ -1492,6 +1515,22 @@ fn ensemble_command(rest: &[OsString]) -> Result<Command, UsageError> {
             "ensemble needs a model file and a job file, or --bench".to_string(),
         )),
     }
+}
+
+/// `l96-40,vdp-dp5`: names from [`BENCH_CASES`] separated by commas, kept in that order.
+fn case_list(text: &str) -> Result<Vec<String>, UsageError> {
+    text.split(',')
+        .map(|part| {
+            if BENCH_CASES.contains(&part) {
+                Ok(part.to_string())
+            } else {
+                Err(UsageError(format!(
+                    "--case takes names from {} separated by commas, not `{part}`",
+                    BENCH_CASES.join(", ")
+                )))
+            }
+        })
+        .collect()
 }
 
 /// `10,2000,5`: positive integers separated by commas.
@@ -2186,23 +2225,32 @@ mod tests {
         );
     }
 
+    fn all_cases() -> Vec<String> {
+        BENCH_CASES.iter().map(|c| c.to_string()).collect()
+    }
+
     #[test]
     fn ensemble_bench_takes_sizes() {
         assert_eq!(
             p(&["ensemble", "--bench"]),
             Ok(Command::EnsembleBench {
-                members: DEFAULT_BENCH_MEMBERS.to_vec()
+                members: DEFAULT_BENCH_MEMBERS.to_vec(),
+                cases: all_cases(),
             })
         );
         assert_eq!(
             p(&["ensemble", "--bench", "--members", "10,2000,5"]),
             Ok(Command::EnsembleBench {
-                members: vec![10, 2000, 5]
+                members: vec![10, 2000, 5],
+                cases: all_cases(),
             })
         );
         assert_eq!(
             p(&["ensemble", "--members", "7", "--bench"]),
-            Ok(Command::EnsembleBench { members: vec![7] })
+            Ok(Command::EnsembleBench {
+                members: vec![7],
+                cases: all_cases(),
+            })
         );
         for args in [
             &["ensemble", "--bench", "--members", "0"][..],
@@ -2212,9 +2260,33 @@ mod tests {
             &["ensemble", "--bench", "--members"],
             &["ensemble", "--bench", "a.ode"],
             &["ensemble", "--bench", "a.ode", "b.json"],
+            &["ensemble", "--bench", "--case", "nope"],
+            &["ensemble", "--bench", "--case", "vdp-rk4,,l96-8"],
+            &["ensemble", "--bench", "--case", ""],
+            &["ensemble", "--bench", "--case"],
+            &["ensemble", "--case", "vdp-rk4"],
+            &["ensemble", "--case", "vdp-rk4", "a.ode", "b.json"],
         ] {
             assert!(p(args).is_err(), "{args:?}");
         }
+    }
+
+    #[test]
+    fn ensemble_bench_takes_cases_in_the_given_order() {
+        assert_eq!(
+            p(&["ensemble", "--bench", "--case", "l96-40,vdp-dp5"]),
+            Ok(Command::EnsembleBench {
+                members: DEFAULT_BENCH_MEMBERS.to_vec(),
+                cases: vec!["l96-40".to_string(), "vdp-dp5".to_string()],
+            })
+        );
+        assert_eq!(
+            p(&["ensemble", "--case", "vdp-rk4", "--bench", "--members", "5"]),
+            Ok(Command::EnsembleBench {
+                members: vec![5],
+                cases: vec!["vdp-rk4".to_string()],
+            })
+        );
     }
 
     #[cfg(unix)]

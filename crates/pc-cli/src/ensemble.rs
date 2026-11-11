@@ -21,6 +21,7 @@ use pckern::json::ensemble::{
 };
 use serde_json::{Value, json};
 
+use crate::args::BENCH_CASES;
 use crate::gpu::NO_DEVICE;
 use crate::ircmd::{Prepared, prepare};
 use crate::out;
@@ -225,22 +226,83 @@ fn result_json(r: &EnsembleResult) -> Value {
 // The benchmark.
 // ---------------------------------------------------------------------------------------
 
-const BENCH_MODEL: &str = "par mu=1.5\nx'=y\ny'=mu*(1-x*x)*y-x\ndone\n";
-const BENCH_TITLE: &str = "van der Pol (mu = 1.5), RK4 with dt 0.01 from t = 0 to t = 10";
-const BENCH_DT: f64 = 0.01;
-const BENCH_T1: f64 = 10.0;
+const VDP_MODEL: &str = "par mu=1.5\nx'=y\ny'=mu*(1-x*x)*y-x\ndone\n";
 const REPEATS: usize = 3;
 
-fn bench_model() -> IrModel {
-    use pc_ode::{MapLoader, SourceMap, load};
-    let mut map = SourceMap::new();
-    let top = map.add("bench.ode", BENCH_MODEL);
-    let loaded = load(top, &mut map, &mut MapLoader::new());
-    pc_ir::lower(&loaded.expanded, &loaded.info).expect("the benchmark model lowers")
+/// One case of `ensemble --bench`. Every run of a case times the same work, since the
+/// starting points and parameters follow a fixed pattern.
+struct BenchCase {
+    name: &'static str,
+    title: String,
+    ir: IrModel,
+    kind: CaseKind,
 }
 
-/// `members` starting points on a fixed pattern, so every run times the same work.
-fn bench_x0(members: usize) -> Vec<f64> {
+#[derive(Clone, Copy)]
+enum CaseKind {
+    /// van der Pol, mu = 1.5, RK4 with dt 0.01 from t = 0 to t = 10.
+    VdpRk4,
+    /// van der Pol with mu from 0.1 to 10 in a shuffled order, so members need different
+    /// step counts. DP5 with rtol 1e-6 and atol 1e-9 from t = 0 to t = 20.
+    VdpDp5,
+    /// Lorenz-96 with `n` states and F = 8, RK4 with dt 0.01 from t = 0 to t = 10. The
+    /// larger state shows register pressure in the GPU kernels.
+    L96(usize),
+}
+
+fn lower_text(file: &str, text: &str) -> IrModel {
+    use pc_ode::{MapLoader, SourceMap, load};
+    let mut map = SourceMap::new();
+    let top = map.add(file, text);
+    let loaded = load(top, &mut map, &mut MapLoader::new());
+    pc_ir::lower(&loaded.expanded, &loaded.info).expect("a benchmark model lowers")
+}
+
+/// Our own Lorenz-96 model: x_i' = (x_{i+1} - x_{i-2}) x_{i-1} - x_i + F, indexes mod n.
+fn l96_text(n: usize) -> String {
+    let mut text = String::from("par force=8\n");
+    for i in 0..n {
+        let (next, back2, back1) = ((i + 1) % n, (i + n - 2) % n, (i + n - 1) % n);
+        text.push_str(&format!("x{i}'=(x{next}-x{back2})*x{back1}-x{i}+force\n"));
+    }
+    text.push_str("done\n");
+    text
+}
+
+fn bench_case(name: &'static str) -> BenchCase {
+    let (title, ir, kind) = match name {
+        "vdp-rk4" => (
+            "van der Pol (mu = 1.5), RK4 with dt 0.01 from t = 0 to t = 10".to_string(),
+            lower_text("vdp.ode", VDP_MODEL),
+            CaseKind::VdpRk4,
+        ),
+        "vdp-dp5" => (
+            "van der Pol (mu from 0.1 to 10 per member), DP5 with rtol 1e-6 and atol 1e-9 \
+             from t = 0 to t = 20"
+                .to_string(),
+            lower_text("vdp.ode", VDP_MODEL),
+            CaseKind::VdpDp5,
+        ),
+        "l96-8" | "l96-40" => {
+            let n = if name == "l96-8" { 8 } else { 40 };
+            (
+                format!("Lorenz-96 ({n} states, F = 8), RK4 with dt 0.01 from t = 0 to t = 10"),
+                lower_text("l96.ode", &l96_text(n)),
+                CaseKind::L96(n),
+            )
+        }
+        _ => unreachable!("the argument parser only passes names from BENCH_CASES"),
+    };
+    BenchCase {
+        name,
+        title,
+        ir,
+        kind,
+    }
+}
+
+/// van der Pol starting points: x from -2 to 2, y from -1 to 1 in a shuffled order.
+fn vdp_x0(members: usize) -> Vec<f64> {
     let mut x0 = Vec::with_capacity(2 * members);
     for k in 0..members {
         let u = k as f64 / members as f64;
@@ -251,9 +313,29 @@ fn bench_x0(members: usize) -> Vec<f64> {
     x0
 }
 
-fn bench_row(ir: &IrModel, device: &DeviceInfo, precision: Precision, members: usize) -> Value {
+/// mu from 0.1 to 10 in a shuffled order, one value per member.
+fn vdp_mu(members: usize) -> Vec<f64> {
+    (0..members)
+        .map(|k| 0.1 + 9.9 * ((k as u64 * 7919) % members as u64) as f64 / members as f64)
+        .collect()
+}
+
+/// Lorenz-96 starting points within 0.25 of the equilibrium x_i = 8.
+fn l96_x0(n: usize, members: usize) -> Vec<f64> {
+    let mut x0 = Vec::with_capacity(n * members);
+    for k in 0..members {
+        for i in 0..n {
+            let u = ((7 * k + 31 * i) % 97) as f64 / 97.0;
+            x0.push(8.0 + 0.5 * (u - 0.5));
+        }
+    }
+    x0
+}
+
+fn bench_row(case: &BenchCase, device: &DeviceInfo, precision: Precision, members: usize) -> Value {
     let head = |extra: Value| {
         let mut row = json!({
+            "case": case.name,
             "backend": device.backend.name(),
             "device": device.name,
             "device_index": device.index,
@@ -265,17 +347,35 @@ fn bench_row(ir: &IrModel, device: &DeviceInfo, precision: Precision, members: u
         }
         row
     };
-    let x0 = bench_x0(members);
-    let params = [1.5];
+    let rk4 = Method::Rk4 { dt: 0.01 };
+    let (x0, params, per_member, t1, method) = match case.kind {
+        CaseKind::VdpRk4 => (vdp_x0(members), vec![1.5], false, 10.0, rk4),
+        CaseKind::VdpDp5 => (
+            vdp_x0(members),
+            vdp_mu(members),
+            true,
+            20.0,
+            Method::Dp5 {
+                rtol: 1e-6,
+                atol: 1e-9,
+                hmax: f64::INFINITY,
+            },
+        ),
+        CaseKind::L96(n) => (l96_x0(n, members), vec![8.0], false, 10.0, rk4),
+    };
     let job = Job {
-        model: ir,
+        model: &case.ir,
         members,
         x0: &x0,
-        params: Params::Shared(&params),
+        params: if per_member {
+            Params::PerMember(&params)
+        } else {
+            Params::Shared(&params)
+        },
         t0: 0.0,
-        t1: BENCH_T1,
+        t1,
         output: Output::Final,
-        method: Method::Rk4 { dt: BENCH_DT },
+        method,
         bounds: f64::INFINITY,
         max_steps: 1_000_000,
         precision,
@@ -307,32 +407,60 @@ fn bench_row(ir: &IrModel, device: &DeviceInfo, precision: Precision, members: u
     }))
 }
 
-/// `ensemble --bench`: times the engine on every device, in both precisions, at each size.
-pub fn bench(sizes: &[usize]) -> ExitCode {
-    let ir = bench_model();
+/// `ensemble --bench`: times each case on every device, in both precisions, at each size.
+pub fn bench(sizes: &[usize], names: &[String]) -> ExitCode {
+    let cases: Vec<BenchCase> = names
+        .iter()
+        .map(|name| {
+            let known = BENCH_CASES
+                .into_iter()
+                .find(|c| c == name)
+                .expect("the argument parser only passes names from BENCH_CASES");
+            bench_case(known)
+        })
+        .collect();
+    let devices = list_devices().devices;
     let mut rows = Vec::new();
-    for device in &list_devices().devices {
-        for precision in [Precision::Single, Precision::Double] {
-            if precision == Precision::Double && !device.fp64 {
-                rows.push(json!({
-                    "backend": device.backend.name(),
-                    "device": device.name,
-                    "device_index": device.index,
-                    "precision": precision.name(),
-                    "skipped": "the device has no double precision",
-                }));
-                continue;
-            }
-            for &members in sizes {
-                rows.push(bench_row(&ir, device, precision, members));
+    for case in &cases {
+        for device in &devices {
+            for precision in [Precision::Single, Precision::Double] {
+                let skipped = if precision == Precision::Double && !device.fp64 {
+                    Some("the device has no double precision")
+                } else if precision == Precision::Single && matches!(case.kind, CaseKind::VdpDp5) {
+                    // The engine refuses rtol 1e-6 in single precision, and a looser
+                    // tolerance there would time a different job.
+                    Some(
+                        "the case runs in double precision only: rtol 1e-6 is below the floor of single precision",
+                    )
+                } else {
+                    None
+                };
+                if let Some(why) = skipped {
+                    rows.push(json!({
+                        "case": case.name,
+                        "backend": device.backend.name(),
+                        "device": device.name,
+                        "device_index": device.index,
+                        "precision": precision.name(),
+                        "skipped": why,
+                    }));
+                    continue;
+                }
+                for &members in sizes {
+                    rows.push(bench_row(case, device, precision, members));
+                }
             }
         }
     }
+    let listed: Vec<Value> = cases
+        .iter()
+        .map(|c| json!({"name": c.name, "title": c.title}))
+        .collect();
     let report = json!({
-        "model": BENCH_TITLE,
+        "cases": listed,
         "repeats": REPEATS,
         "seconds": "the fastest of the repeats, including the host work around the launches",
-        "first_seconds": "the first repeat, which also pays for a GPU context that no earlier run in this process created",
+        "first_seconds": "the first repeat, which also pays for the GPU context and the kernel compile when no earlier run in this process made them",
         "rows": rows,
     });
     out(&to_text(&report), 0)

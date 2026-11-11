@@ -70,7 +70,7 @@ fn main() -> ExitCode {
             precision,
         }) => gpu::selftest(backend, device, precision),
         Ok(Command::Ensemble { file, job }) => ensemble::ensemble(&file, &job),
-        Ok(Command::EnsembleBench { members }) => ensemble::bench(&members),
+        Ok(Command::EnsembleBench { members, cases }) => ensemble::bench(&members, &cases),
         Ok(Command::SessionReplay {
             file,
             tol,
