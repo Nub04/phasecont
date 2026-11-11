@@ -36,6 +36,9 @@ pub trait Real:
     /// Rounds to nearest (ties to even).
     fn from_f64(x: f64) -> Self;
     fn to_f64(self) -> f64;
+    /// `to_f64` of every value. An `f64` vector comes back as the same buffer, so a double
+    /// run does not hold its output twice.
+    fn into_f64_vec(v: Vec<Self>) -> Vec<f64>;
     fn from_u32(n: u32) -> Self;
 
     fn abs(self) -> Self;
@@ -71,7 +74,7 @@ pub trait Real:
 
 macro_rules! impl_real {
     (
-        $t:ident, $name:literal, $uround:expr,
+        $t:ident, $name:literal, $uround:expr, widen $widen:path,
         sin $sin:path, cos $cos:path, tan $tan:path, asin $asin:path, acos $acos:path,
         atan $atan:path, sinh $sinh:path, cosh $cosh:path, tanh $tanh:path, exp $exp:path,
         ln $ln:path, log10 $log10:path, atan2 $atan2:path, pow $pow:path, fmod $fmod:path
@@ -86,6 +89,9 @@ macro_rules! impl_real {
 
             fn from_f64(x: f64) -> Self {
                 x as $t
+            }
+            fn into_f64_vec(v: Vec<Self>) -> Vec<f64> {
+                $widen(v)
             }
             fn to_f64(self) -> f64 {
                 f64::from(self)
@@ -166,18 +172,48 @@ macro_rules! impl_real {
     };
 }
 
+fn widen_f32(v: Vec<f32>) -> Vec<f64> {
+    v.into_iter().map(f64::from).collect()
+}
+
+fn widen_f64(v: Vec<f64>) -> Vec<f64> {
+    v
+}
+
 impl_real!(
-    f32, "single", 1.192_092_9e-7,
+    f32, "single", 1.192_092_9e-7, widen widen_f32,
     sin libm::sinf, cos libm::cosf, tan libm::tanf, asin libm::asinf, acos libm::acosf,
     atan libm::atanf, sinh libm::sinhf, cosh libm::coshf, tanh libm::tanhf, exp libm::expf,
     ln libm::logf, log10 libm::log10f, atan2 libm::atan2f, pow libm::powf, fmod libm::fmodf
 );
 
 impl_real!(
-    f64, "double", 2.3e-16,
+    f64, "double", 2.3e-16, widen widen_f64,
     sin pc_ir::math::sin, cos pc_ir::math::cos, tan pc_ir::math::tan, asin pc_ir::math::asin,
     acos pc_ir::math::acos, atan pc_ir::math::atan, sinh pc_ir::math::sinh,
     cosh pc_ir::math::cosh, tanh pc_ir::math::tanh, exp pc_ir::math::exp,
     ln pc_ir::math::ln, log10 pc_ir::math::log10, atan2 pc_ir::math::atan2,
     pow pc_ir::math::pow, fmod pc_ir::math::fmod
 );
+
+#[cfg(test)]
+mod tests {
+    use super::Real;
+
+    #[test]
+    fn widening_a_double_vector_keeps_its_buffer() {
+        let v = vec![1.0f64, -0.0, f64::NAN, 1e300];
+        let (ptr, bits): (_, Vec<u64>) = (v.as_ptr(), v.iter().map(|x| x.to_bits()).collect());
+        let w = f64::into_f64_vec(v);
+        assert_eq!(w.as_ptr(), ptr);
+        assert_eq!(w.iter().map(|x| x.to_bits()).collect::<Vec<_>>(), bits);
+    }
+
+    #[test]
+    fn widening_a_single_vector_converts_each_value() {
+        let v = vec![1.5f32, -0.0, f32::INFINITY, f32::MIN_POSITIVE];
+        let want: Vec<u64> = v.iter().map(|x| x.to_f64().to_bits()).collect();
+        let got: Vec<u64> = f32::into_f64_vec(v).iter().map(|x| x.to_bits()).collect();
+        assert_eq!(got, want);
+    }
+}

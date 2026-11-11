@@ -146,7 +146,7 @@ impl<T: Real> Packed<T> {
         Ok(EnsembleResult {
             n: self.n,
             members: self.members,
-            states: self.out.iter().map(|v| v.to_f64()).collect(),
+            states: T::into_f64_vec(self.out),
             accepted: (0..self.members).map(|m| self.ctl[m * CTL + 2]).collect(),
             rejected: (0..self.members).map(|m| self.ctl[m * CTL + 3]).collect(),
             status,

@@ -74,7 +74,7 @@ fn run_as<T: Real>(
     Ok(EnsembleResult {
         n: checked.n,
         members,
-        states: out.iter().map(|v| v.to_f64()).collect(),
+        states: T::into_f64_vec(out),
         status: trajs.iter().map(|t| t.status).collect(),
         t_reached: trajs
             .iter()
