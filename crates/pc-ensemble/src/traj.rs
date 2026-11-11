@@ -501,16 +501,17 @@ impl<T: Real> Traj<T> {
             let t_end = if landing { s } else { self.t + self.h };
             let err = dp5_step(ctx, par, wk, self.t, self.h, t_end);
             let fac11 = err.powf(co.expo1);
-            let fac = clamp(
-                fac11 / self.facold.powf(co.beta) / co.safe,
-                co.inv_fac2,
-                co.inv_fac1,
-            );
-            let mut hnew = self.h / fac;
             if err <= T::ONE {
                 if self.reject_state(ctx, wk.y1) {
                     return;
                 }
+                // Only an accepted step uses facold^beta, so a rejected one skips the power.
+                let fac = clamp(
+                    fac11 / self.facold.powf(co.beta) / co.safe,
+                    co.inv_fac2,
+                    co.inv_fac1,
+                );
+                let mut hnew = self.h / fac;
                 self.facold = err.fmax(co.facold_min);
                 self.accepted += 1;
                 self.t = t_end;
@@ -544,11 +545,10 @@ impl<T: Real> Traj<T> {
                 self.h = hnew;
             } else {
                 // The clamp above would give a NaN error a growth factor; shrink instead.
-                hnew = self.h / co.inv_fac1.fmin(fac11 / co.safe);
+                self.h = self.h / co.inv_fac1.fmin(fac11 / co.safe);
                 self.reject = true;
                 self.rejected += 1;
                 self.nan_err = err.is_nan();
-                self.h = hnew;
             }
         }
     }
@@ -563,40 +563,50 @@ fn eval_at<T: Real>(ctx: &Ctx<T>, x: &[T], p: &mut [T], t: T, vals: &mut [T], ou
 /// `y1`, and returns the scaled error norm. `t_end` is the time of the stages at c = 1.
 fn dp5_step<T: Real>(ctx: &Ctx<T>, par: &Dp5Par<T>, wk: &mut Work<T>, t: T, h: T, t_end: T) -> T {
     let (n, co) = (ctx.n, &ctx.co);
+    let (y, y1, yt) = (&*wk.y, &mut *wk.y1, &mut *wk.yt);
+    let (p, vals, k) = (&mut *wk.p, &mut *wk.vals, &mut *wk.k);
     for s in 1..=5 {
-        for i in 0..n {
-            let mut acc = T::ZERO;
-            for j in 0..s {
-                acc = acc + co.a[s - 1][j] * wk.k[j * n + i];
-            }
-            wk.yt[i] = wk.y[i] + h * acc;
+        let (done, rest) = k.split_at_mut(s * n);
+        sum_stages(yt, &co.a[s - 1][..s], done);
+        for (v, &yi) in yt.iter_mut().zip(y) {
+            *v = yi + h * *v;
         }
         let ts = if co.c[s - 1] == T::ONE {
             t_end
         } else {
             t + co.c[s - 1] * h
         };
-        eval_at(ctx, wk.yt, wk.p, ts, wk.vals, &mut wk.k[s * n..(s + 1) * n]);
+        eval_at(ctx, yt, p, ts, vals, &mut rest[..n]);
     }
-    for i in 0..n {
-        let mut acc = T::ZERO;
-        for j in 0..6 {
-            acc = acc + co.a[5][j] * wk.k[j * n + i];
-        }
-        wk.y1[i] = wk.y[i] + h * acc;
+    let (done, rest) = k.split_at_mut(6 * n);
+    sum_stages(y1, &co.a[5], done);
+    for (v, &yi) in y1.iter_mut().zip(y) {
+        *v = yi + h * *v;
     }
-    eval_at(ctx, wk.y1, wk.p, t_end, wk.vals, &mut wk.k[6 * n..7 * n]);
+    eval_at(ctx, y1, p, t_end, vals, &mut rest[..n]);
+    // The stage inputs are no longer needed, so `yt` holds the error sums.
+    sum_stages(yt, &co.e, k);
     let mut sum = T::ZERO;
-    for i in 0..n {
-        let mut e = T::ZERO;
-        for (j, ej) in co.e.iter().enumerate() {
-            e = e + *ej * wk.k[j * n + i];
-        }
-        let sk = par.atol + par.rtol * wk.y[i].abs().fmax(wk.y1[i].abs());
+    for ((&e, &yi), &y1i) in yt.iter().zip(y).zip(y1.iter()) {
+        let sk = par.atol + par.rtol * yi.abs().fmax(y1i.abs());
         let r = h * e / sk;
         sum = sum + r * r;
     }
     (sum / T::from_u32(n as u32)).sqrt()
+}
+
+/// Sets `acc[i]` to the sum over `j` of `c[j] * k_j[i]`, where `k_j` is the `j`-th block of
+/// `acc.len()` values in `k`. Each sum starts from zero and adds the stages in order,
+/// zero coefficients included, so every element sees the same operations as the loop
+/// `a = a + c[j] * k_j[i]` would give it. Looping over the stages outside lets the inner
+/// loop run without index checks.
+fn sum_stages<T: Real>(acc: &mut [T], c: &[T], k: &[T]) {
+    acc.fill(T::ZERO);
+    for (&cj, kj) in c.iter().zip(k.chunks_exact(acc.len())) {
+        for (a, &v) in acc.iter_mut().zip(kj) {
+            *a = *a + cj * v;
+        }
+    }
 }
 
 /// The starting step of `dopri5` (`HINIT`). `k0` holds `f(t0, y0)`.
