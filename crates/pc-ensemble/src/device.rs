@@ -62,6 +62,13 @@ pub fn cpu_driver() -> String {
     format!("pc-ensemble {}", env!("CARGO_PKG_VERSION"))
 }
 
+// Counts the calls to `list_devices` on this thread, so a test can tell that a lookup
+// skipped the GPU probe.
+#[cfg(test)]
+thread_local! {
+    static PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn cpu_device() -> DeviceInfo {
     DeviceInfo {
         backend: Backend::Cpu,
@@ -79,6 +86,8 @@ fn cpu_device() -> DeviceInfo {
 /// The first call probes the GPU libraries, so it can take a moment on a machine with a
 /// driver. A library that is missing shows up as [`BackendState::Unavailable`].
 pub fn list_devices() -> DeviceList {
+    #[cfg(test)]
+    PROBES.with(|c| c.set(c.get() + 1));
     let mut devices = vec![cpu_device()];
     devices.extend(crate::cuda::devices());
     devices.extend(crate::opencl::devices());
@@ -103,6 +112,15 @@ pub fn list_devices() -> DeviceList {
 /// A backend that is not built into this binary, one that cannot start and an index past
 /// the end of the list each get their own message, so a caller can print it as it is.
 pub fn find_device(backend: Backend, index: usize) -> Result<DeviceInfo, String> {
+    // The CPU needs no driver, so a CPU lookup skips the GPU probe. Inside MATLAB that probe
+    // loads the CUDA and OpenCL libraries, which adds about 330 MB for the whole session.
+    if backend == Backend::Cpu {
+        return if index == 0 {
+            Ok(cpu_device())
+        } else {
+            Err(format!("no cpu device {index}: the backend lists 1"))
+        };
+    }
     let list = list_devices();
     if let Some(d) = list
         .devices
@@ -129,4 +147,39 @@ pub fn find_device(backend: Backend, index: usize) -> Result<DeviceInfo, String>
             format!("no {name} device {index}: the backend lists {found}")
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn probes() -> usize {
+        PROBES.with(|c| c.get())
+    }
+
+    #[test]
+    fn the_counter_sees_a_probe() {
+        let before = probes();
+        let _ = list_devices();
+        assert_eq!(probes(), before + 1);
+    }
+
+    /// A CPU run needs no driver, so looking up its device must not load the CUDA, OpenCL or
+    /// Metal libraries. Inside MATLAB that load costs about 330 MB for the whole session.
+    #[test]
+    fn a_cpu_lookup_does_not_probe_the_gpu_libraries() {
+        let before = probes();
+        let d = find_device(Backend::Cpu, 0).expect("cpu");
+        assert_eq!(d, cpu_device());
+        let e = find_device(Backend::Cpu, 3).unwrap_err();
+        assert_eq!(e, "no cpu device 3: the backend lists 1");
+        assert_eq!(probes(), before, "find_device(Cpu, ..) called list_devices");
+    }
+
+    #[test]
+    fn a_gpu_lookup_still_probes() {
+        let before = probes();
+        let _ = find_device(Backend::Cuda, 0);
+        assert_eq!(probes(), before + 1);
+    }
 }
