@@ -134,12 +134,15 @@ impl<T: Real> Default for Coef<T> {
     }
 }
 
-/// An RK4 segment: `m` equal steps of length `h` from `a` to `b`.
+/// An RK4 segment: `m` equal steps of length `h` from `a` to `b`. `half = h * 0.5` and
+/// `h6 = h / 6` are computed once here, with the same operations a step would use.
 #[derive(Clone, Copy, Debug)]
 pub struct Seg<T: Real> {
     pub a: T,
     pub b: T,
     pub h: T,
+    pub half: T,
+    pub h6: T,
     pub m: u64,
 }
 
@@ -177,6 +180,7 @@ impl<'a, T: Real> Ctx<'a, T> {
     pub fn new(job: &Job<'a>, checked: &Checked, tape: &'a Tape) -> Self {
         let times: Vec<T> = checked.times.iter().map(|&s| T::from_f64(s)).collect();
         let t0 = T::from_f64(job.t0);
+        let co = Coef::new();
         let kind = match job.method {
             Method::Rk4 { dt } => {
                 let mut segs = Vec::with_capacity(times.len());
@@ -184,7 +188,15 @@ impl<'a, T: Real> Ctx<'a, T> {
                 for (&b64, &b) in checked.times.iter().zip(&times) {
                     let m = ((b64 - a64) / dt).ceil().max(1.0) as u64;
                     let h = (b - a) / T::from_f64(m as f64);
-                    segs.push(Seg { a, b, h, m });
+                    let (half, h6) = (h * co.half, h / co.six);
+                    segs.push(Seg {
+                        a,
+                        b,
+                        h,
+                        half,
+                        h6,
+                        m,
+                    });
                     (a64, a) = (b64, b);
                 }
                 Kind::Rk4(segs)
@@ -206,7 +218,7 @@ impl<'a, T: Real> Ctx<'a, T> {
             max_steps: job.max_steps,
             times,
             kind,
-            co: Coef::new(),
+            co,
         }
     }
 
@@ -361,10 +373,10 @@ impl<T: Real> Traj<T> {
         self.facold = ctx.co.facold0;
     }
 
-    fn finish_sample(&mut self, ctx: &Ctx<T>, wk: &mut Work<T>) {
-        let n = ctx.n;
+    fn finish_sample(&mut self, out: &mut [T], y: &[T]) {
+        let n = y.len();
         let at = self.si as usize * n;
-        wk.out[at..at + n].copy_from_slice(wk.y);
+        out[at..at + n].copy_from_slice(y);
         self.si += 1;
     }
 
@@ -373,6 +385,14 @@ impl<T: Real> Traj<T> {
     /// without fused multiply-add reproduces the bits.
     fn rk4(&mut self, ctx: &Ctx<T>, segs: &[Seg<T>], wk: &mut Work<T>, mut budget: u64) {
         let (n, co) = (ctx.n, &ctx.co);
+        let two = co.two;
+        let (y, y1, yt) = (&mut *wk.y, &mut *wk.y1, &mut *wk.yt);
+        let (p, vals, out) = (&mut *wk.p, &mut *wk.vals, &mut *wk.out);
+        let mut ks = wk.k.chunks_exact_mut(n);
+        let (Some(k1), Some(k2), Some(k3), Some(k4)) = (ks.next(), ks.next(), ks.next(), ks.next())
+        else {
+            unreachable!("the workspace holds seven stages");
+        };
         while budget > 0 {
             budget -= 1;
             let seg = &segs[self.si as usize];
@@ -384,44 +404,35 @@ impl<T: Real> Traj<T> {
             } else {
                 seg.a + T::from_u32(i + 1) * seg.h
             };
-            let h = seg.h;
-            let half = h * co.half;
-            eval_at(ctx, wk.y, wk.p, ts, wk.vals, &mut wk.k[..n]);
-            for j in 0..n {
-                wk.yt[j] = wk.y[j] + half * wk.k[j];
+            let (h, half, h6) = (seg.h, seg.half, seg.h6);
+            eval_at(ctx, y, p, ts, vals, k1);
+            for ((t, &a), &k) in yt.iter_mut().zip(y.iter()).zip(k1.iter()) {
+                *t = a + half * k;
             }
-            eval_at(ctx, wk.yt, wk.p, ts + half, wk.vals, &mut wk.k[n..2 * n]);
-            for j in 0..n {
-                wk.yt[j] = wk.y[j] + half * wk.k[n + j];
+            eval_at(ctx, yt, p, ts + half, vals, k2);
+            for ((t, &a), &k) in yt.iter_mut().zip(y.iter()).zip(k2.iter()) {
+                *t = a + half * k;
             }
-            eval_at(
-                ctx,
-                wk.yt,
-                wk.p,
-                ts + half,
-                wk.vals,
-                &mut wk.k[2 * n..3 * n],
-            );
-            for j in 0..n {
-                wk.yt[j] = wk.y[j] + h * wk.k[2 * n + j];
+            eval_at(ctx, yt, p, ts + half, vals, k3);
+            for ((t, &a), &k) in yt.iter_mut().zip(y.iter()).zip(k3.iter()) {
+                *t = a + h * k;
             }
-            eval_at(ctx, wk.yt, wk.p, t_next, wk.vals, &mut wk.k[3 * n..4 * n]);
-            let h6 = h / co.six;
+            eval_at(ctx, yt, p, t_next, vals, k4);
             for j in 0..n {
-                let mut s = wk.k[j] + co.two * wk.k[n + j];
-                s = s + co.two * wk.k[2 * n + j];
-                s = s + wk.k[3 * n + j];
-                wk.y1[j] = wk.y[j] + h6 * s;
+                let mut s = k1[j] + two * k2[j];
+                s = s + two * k3[j];
+                s = s + k4[j];
+                y1[j] = y[j] + h6 * s;
             }
-            if self.reject_state(ctx, wk) {
+            if self.reject_state(ctx, y1) {
                 return;
             }
-            wk.y.swap_with_slice(wk.y1);
+            y.swap_with_slice(y1);
             self.t = t_next;
             self.accepted += 1;
             self.step_in_seg += 1;
             if last_in_seg {
-                self.finish_sample(ctx, wk);
+                self.finish_sample(out, y);
                 self.step_in_seg = 0;
                 if self.si as usize == ctx.times.len() {
                     self.status = Status::Ok;
@@ -437,12 +448,12 @@ impl<T: Real> Traj<T> {
 
     /// Sets the status and returns true when the new state `y1` is not finite or leaves the
     /// bounds. The member then keeps its last accepted state and time.
-    fn reject_state(&mut self, ctx: &Ctx<T>, wk: &Work<T>) -> bool {
-        if !all_finite(wk.y1) {
+    fn reject_state(&mut self, ctx: &Ctx<T>, y1: &[T]) -> bool {
+        if !all_finite(y1) {
             self.status = Status::NonFinite;
             return true;
         }
-        if wk.y1.iter().any(|v| v.abs() > ctx.bounds) {
+        if y1.iter().any(|v| v.abs() > ctx.bounds) {
             self.status = Status::Bounds;
             return true;
         }
@@ -483,7 +494,7 @@ impl<T: Real> Traj<T> {
             );
             let mut hnew = self.h / fac;
             if err <= T::ONE {
-                if self.reject_state(ctx, wk) {
+                if self.reject_state(ctx, wk.y1) {
                     return;
                 }
                 self.facold = err.fmax(co.facold_min);
@@ -494,7 +505,7 @@ impl<T: Real> Traj<T> {
                 let (k0, rest) = wk.k.split_at_mut(n);
                 k0.copy_from_slice(&rest[5 * n..6 * n]);
                 if landing {
-                    self.finish_sample(ctx, wk);
+                    self.finish_sample(wk.out, wk.y);
                     if last {
                         self.status = Status::Ok;
                         return;
