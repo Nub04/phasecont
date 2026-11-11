@@ -320,6 +320,48 @@ fn the_bench_labels_every_row() {
     assert_eq!(v["repeats"], 3);
 }
 
+/// Every timed row carries a hash of the result bits, so an A/B of two builds also shows
+/// whether a change kept the bits. A second bench run gives the same hashes.
+#[test]
+fn bench_rows_carry_a_hash_of_the_result_bits() {
+    let bench = || {
+        let o = run(
+            &scratch(),
+            &[
+                "ensemble",
+                "--bench",
+                "--members",
+                "10",
+                "--case",
+                "vdp-rk4,vdp-dp5",
+            ],
+        );
+        assert_eq!(code(&o), 0, "{}", stderr(&o));
+        let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+        v["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["backend"] == "cpu" && r.get("skipped").is_none())
+            .map(|r| {
+                let bits = r["bits"].as_str().unwrap_or_else(|| panic!("{r}"));
+                assert_eq!(bits.len(), 16, "{r}");
+                assert!(bits.chars().all(|c| c.is_ascii_hexdigit()), "{r}");
+                (
+                    r["case"].to_string(),
+                    r["precision"].to_string(),
+                    bits.to_owned(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let first = bench();
+    assert_eq!(first.len(), 3);
+    // Single and double precision give different bits.
+    assert_ne!(first[0].2, first[1].2, "{first:?}");
+    assert_eq!(first, bench());
+}
+
 #[test]
 fn the_bench_runs_only_the_cases_asked_for() {
     let o = run(

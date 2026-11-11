@@ -384,14 +384,19 @@ fn bench_row(case: &BenchCase, device: &DeviceInfo, precision: Precision, member
     let mut best = f64::INFINITY;
     let mut first = f64::NAN;
     let mut steps = 0u64;
+    let mut bits = String::new();
     for repeat in 0..REPEATS {
         let start = Instant::now();
         let result = run_on(device, &job, &cancel);
         let seconds = start.elapsed().as_secs_f64();
         match result {
             Ok(r) => {
+                let h = result_bits(&r);
                 if repeat == 0 {
                     first = seconds;
+                    bits = h;
+                } else if h != bits {
+                    return head(json!({"error": "two repeats gave different bits"}));
                 }
                 best = best.min(seconds);
                 steps = r.accepted.iter().map(|&a| u64::from(a)).sum();
@@ -404,7 +409,29 @@ fn bench_row(case: &BenchCase, device: &DeviceInfo, precision: Precision, member
         "first_seconds": first,
         "member_steps": steps,
         "member_steps_per_second": steps as f64 / best,
+        "bits": bits,
     }))
+}
+
+/// FNV-1a over the bits of every state, status and step count of a result, as 16 hex
+/// digits. Two builds that give the same hash for a row gave the same result.
+fn result_bits(r: &EnsembleResult) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |bytes: &[u8]| {
+        for &b in bytes {
+            h = (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    for v in &r.states {
+        eat(&v.to_bits().to_le_bytes());
+    }
+    for m in 0..r.members {
+        eat(&[r.status[m] as u8]);
+        eat(&r.accepted[m].to_le_bytes());
+        eat(&r.rejected[m].to_le_bytes());
+        eat(&r.t_reached[m].to_bits().to_le_bytes());
+    }
+    format!("{h:016x}")
 }
 
 /// `ensemble --bench`: times each case on every device, in both precisions, at each size.
@@ -461,6 +488,7 @@ pub fn bench(sizes: &[usize], names: &[String]) -> ExitCode {
         "repeats": REPEATS,
         "seconds": "the fastest of the repeats, including the host work around the launches",
         "first_seconds": "the first repeat, which also pays for the GPU context and the kernel compile when no earlier run in this process made them",
+        "bits": "FNV-1a hash of the bits of every state, status, step count and end time; every repeat gives the same hash or the row is an error",
         "rows": rows,
     });
     out(&to_text(&report), 0)
