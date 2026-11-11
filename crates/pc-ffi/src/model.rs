@@ -343,7 +343,12 @@ fn compile_native(ctx: &Context, slot: &mut Option<JitEntries>, limit: u32) -> O
             kind: EntryKind::F,
             outputs: ctx.ir.f.clone(),
         };
-        let je = pc_jit::compile(&[(EntryKind::F, &entry)], &ctx.ir.dag).ok()?;
+        // `jit_max_frame` reports the frames of the model's own evaluator, so the compile for
+        // the ensemble puts the mark back.
+        let mark = pc_jit::max_frame();
+        let built = pc_jit::compile(&[(EntryKind::F, &entry)], &ctx.ir.dag);
+        pc_jit::set_max_frame(mark);
+        let je = built.ok()?;
         if je.frame() > limit {
             return None;
         }
@@ -481,6 +486,7 @@ fn write_c(model: &Model, info: &ModelInfo, dir: &Path) -> Result<(PathBuf, u64)
 mod tests {
     use super::*;
     use crate::parse::parse_model;
+    use crate::registry;
     use pc_ensemble::device::{Backend, find_device};
     use pc_ensemble::job::{Method, Output, Params};
     use pc_ensemble::run::run_on;
@@ -626,5 +632,110 @@ mod tests {
             assert_eq!(with.accepted, without.accepted, "{method:?}");
             assert_eq!(with.rejected, without.rejected, "{method:?}");
         }
+    }
+
+    /// Forty coupled states, so the compiled `F` has a stack frame.
+    fn lorenz96_40() -> String {
+        (0..40)
+            .map(|i| {
+                let (a, b, c) = ((i + 39) % 40, (i + 1) % 40, (i + 38) % 40);
+                format!("x{i}'=(x{b}-x{c})*x{a}-x{i}+8\ninit x{i}=1\n")
+            })
+            .collect::<String>()
+            + "done\n"
+    }
+
+    /// Uses `t`, two parameters, `x^3` and `y^2` (powi), `sin`, `cos`, `exp` and a branch.
+    const WIDE: &str = "par a=1.2, b=0.4\ninit x=0.5\ninit y=0.1\n\
+x'=y-a*x^3+b*sin(2*t)\n\
+y'=if(x>0)then(-x*y^2+cos(y))else(x^2*y-exp(-y*y))-0.1*y\n\
+done\n";
+
+    /// Seven members with their own `(a, b)`, on the model `WIDE`.
+    fn run_wide(h: &ModelHandle, method: Method, native: Option<NativeRhs>) -> EnsembleResult {
+        let members = 7;
+        let x0: Vec<f64> = (0..members)
+            .flat_map(|k| [0.5 - 0.2 * k as f64, 0.1 * k as f64])
+            .collect();
+        let p: Vec<f64> = (0..members)
+            .flat_map(|k| [0.8 + 0.15 * k as f64, 0.1 + 0.1 * k as f64])
+            .collect();
+        let job = Job {
+            model: &h.ir,
+            members,
+            x0: &x0,
+            params: Params::PerMember(&p),
+            t0: 0.0,
+            t1: 6.0,
+            output: Output::Samples(vec![1.0, 2.5, 6.0]),
+            method,
+            bounds: f64::INFINITY,
+            max_steps: 1_000_000,
+            precision: Precision::Double,
+            native,
+        };
+        let device = find_device(Backend::Cpu, 0).unwrap();
+        run_on(&device, &job, &AtomicBool::new(false)).unwrap()
+    }
+
+    #[test]
+    fn a_wide_model_with_t_per_member_parameters_and_a_branch_has_the_bits_of_the_tape() {
+        let h = handle_of(WIDE);
+        let native = h.native_rhs().unwrap();
+        assert!(native.is_some(), "an ODE model gets a native function");
+        for method in [
+            Method::Rk4 { dt: 0.01 },
+            Method::Dp5 {
+                rtol: 1e-6,
+                atol: 1e-9,
+                hmax: f64::INFINITY,
+            },
+        ] {
+            let with = run_wide(&h, method, native);
+            let without = run_wide(&h, method, None);
+            assert!(same_bits(&with.states, &without.states), "{method:?}");
+            assert_eq!(with.status, without.status, "{method:?}");
+            assert!(same_bits(&with.t_reached, &without.t_reached), "{method:?}");
+            assert_eq!(with.accepted, without.accepted, "{method:?}");
+            assert_eq!(with.rejected, without.rejected, "{method:?}");
+        }
+    }
+
+    const JOB: &str = r#"{"backend":"cpu","precision":"double","t0":0,"t1":1,"method":{"type":"rk4","dt":0.01},"output":"final","bounds":null,"max_steps":100000,"params":"shared"}"#;
+
+    #[test]
+    fn a_model_the_tape_refuses_is_not_compiled() {
+        // The JIT takes `erf`, the ensemble tape does not.
+        let h = Arc::new(handle_of("par k=1\ninit x=1\nx'=-k*erf(x)\ndone\n"));
+        let id = crate::ensemble::start(&h, JOB, &[1.0], &[1.0]).expect("the run starts");
+        assert!(
+            lock(&h.native).is_none(),
+            "a refused model must not be compiled"
+        );
+        registry::remove(id).unwrap();
+    }
+
+    #[test]
+    fn a_model_the_tape_takes_is_compiled_by_the_first_double_cpu_run() {
+        let h = Arc::new(handle_of(VDP));
+        assert!(lock(&h.native).is_none());
+        let id = crate::ensemble::start(&h, JOB, &[1.0, 0.0], &[1.5]).unwrap();
+        assert!(matches!(*lock(&h.native), Some(Some(_))));
+        registry::remove(id).unwrap();
+    }
+
+    #[test]
+    fn the_ensemble_compile_does_not_raise_the_reported_jit_frame() {
+        let h = handle_of(&lorenz96_40());
+        let before = h.max_frame();
+        assert!(h.native_rhs().unwrap().is_some());
+        assert_eq!(h.max_frame(), before);
+        // A compile on this thread leaves the mark where it was, too.
+        let ctx = context_of(&lorenz96_40());
+        let mut slot = None;
+        let mark = pc_jit::max_frame();
+        assert!(compile_native(&ctx, &mut slot, NATIVE_FRAME_LIMIT).is_some());
+        assert!(slot.as_ref().unwrap().frame() > 0);
+        assert_eq!(pc_jit::max_frame(), mark);
     }
 }

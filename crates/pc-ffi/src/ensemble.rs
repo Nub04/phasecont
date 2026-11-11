@@ -15,7 +15,7 @@ use pc_ensemble::device::{Backend, find_device, list_devices};
 use pc_ensemble::job::NativeRhs;
 use pc_ensemble::run::run_on;
 use pc_ensemble::{
-    EnsembleError, EnsembleResult, Job, Label, Params, Precision, Status, job::validate,
+    EnsembleError, EnsembleResult, Job, Label, Params, Precision, Status, Tape, job::validate,
 };
 use pc_ir::IrModel;
 use serde_json::{Value, json};
@@ -181,8 +181,12 @@ pub(crate) fn start(
     ))?;
     let device = find_device(head.backend, head.device).map_err(Error::GpuUnavailable)?;
     // Only a double-precision CPU run calls a compiled `F`. The first such run of a model
-    // compiles it, after `validate`, so a model the ensemble refuses is never compiled.
-    let native = if device.backend == Backend::Cpu && head.precision == Precision::Double {
+    // compiles it, after `validate` and only when the tape takes every op of `F`, so a model
+    // the ensemble refuses is never compiled. The refused run fails later, as before.
+    let native = if device.backend == Backend::Cpu
+        && head.precision == Precision::Double
+        && Tape::build(&model.ir).is_ok()
+    {
         model.native_rhs()?
     } else {
         None

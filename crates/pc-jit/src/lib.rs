@@ -23,6 +23,12 @@ pub fn max_frame() -> u32 {
     module::MAX_FRAME.with(std::cell::Cell::get)
 }
 
+/// Sets the mark that [`max_frame`] reports on the calling thread. A caller that compiles code
+/// the mark should not count (the ensemble `F`) reads the mark before and puts it back after.
+pub fn set_max_frame(mark: u32) {
+    module::MAX_FRAME.with(|m| m.set(mark));
+}
+
 use cranelift_codegen::ir::{AbiParam, UserFuncName, types};
 use cranelift_frontend::FunctionBuilderContext;
 use cranelift_module::{FuncId, Linkage, Module};
