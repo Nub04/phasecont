@@ -665,7 +665,10 @@ fn launch_all<T: Real + DeviceRepr>(
         Ok((took, ctl))
     })?;
     packed.out = stream.clone_dtoh(&out).map_err(drv("copy out to host"))?;
-    packed.work = stream.clone_dtoh(&work).map_err(drv("copy work to host"))?;
+    // `finish` reads `work` only for a member that did not end `Ok`.
+    if packed.needs_work() {
+        packed.work = stream.clone_dtoh(&work).map_err(drv("copy work to host"))?;
+    }
     stream
         .synchronize()
         .map_err(drv("synchronize after copy"))?;

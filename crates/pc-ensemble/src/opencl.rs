@@ -570,7 +570,10 @@ fn launch_all<T: Real>(
     })?;
     let done = Instant::now();
     download(queue, &out, &mut packed.out, "copy out to host", done)?;
-    download(queue, &work, &mut packed.work, "copy work to host", done)?;
+    // `finish` reads `work` only for a member that did not end `Ok`.
+    if packed.needs_work() {
+        download(queue, &work, &mut packed.work, "copy work to host", done)?;
+    }
     Ok(packed)
 }
 

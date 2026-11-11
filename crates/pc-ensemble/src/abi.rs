@@ -118,6 +118,15 @@ impl<T: Real> Packed<T> {
         ctl_done(&self.ctl, self.members)
     }
 
+    /// True when [`Packed::finish`] reads the `work` buffer: some member did not end `Ok`.
+    ///
+    /// An `Ok` member reached `t1`, and `finish` reports the last output time for it without
+    /// reading `work`, so a run where every member is `Ok` can skip the download of `work`.
+    pub fn needs_work(&self) -> bool {
+        let ok = u32::from(Status::Ok.code());
+        (0..self.members).any(|m| self.ctl[m * CTL] != ok)
+    }
+
     /// Turns the buffers of a finished run into a result.
     pub fn finish(self, label: Label) -> Result<EnsembleResult, EnsembleError> {
         let wl = work_len(self.n);
@@ -162,5 +171,84 @@ pub fn integrator_of(method: Method) -> crate::kernel::Integrator {
     match method {
         Method::Rk4 { .. } => crate::kernel::Integrator::Rk4,
         Method::Dp5 { .. } => crate::kernel::Integrator::Dp5,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::job::Precision;
+
+    /// Two members of one state, two output times, `ctl` and `work` as a device would leave them.
+    fn finished(codes: [Status; 2], t_reached: [f64; 2]) -> Packed<f64> {
+        let (n, members) = (1, 2);
+        let wl = work_len(n);
+        let mut ctl = vec![0u32; members * CTL];
+        let mut work = vec![0.0; members * wl];
+        for m in 0..members {
+            ctl[m * CTL] = u32::from(codes[m].code());
+            work[m * wl + 10 * n] = t_reached[m];
+        }
+        Packed {
+            n,
+            members,
+            ns: 2,
+            rc: Vec::new(),
+            segm: Vec::new(),
+            x0: vec![0.0; members * n],
+            par: vec![0.0],
+            pstride: 0,
+            work,
+            out: vec![1.0; members * 2 * n],
+            ctl,
+            max_steps: 100,
+            times: vec![0.5, 2.0],
+        }
+    }
+
+    fn label() -> Label {
+        Label {
+            backend: "cpu".into(),
+            device: "test".into(),
+            driver: String::new(),
+            precision: Precision::Double,
+        }
+    }
+
+    #[test]
+    fn a_run_of_ok_members_needs_no_work_buffer() {
+        let mut p = finished([Status::Ok, Status::Ok], [2.0, 2.0]);
+        assert!(!p.needs_work());
+        // `finish` must not read `work` then: poison it and compare with the clean result.
+        let clean = finished([Status::Ok, Status::Ok], [2.0, 2.0])
+            .finish(label())
+            .unwrap();
+        p.work.iter_mut().for_each(|w| *w = f64::NAN);
+        let r = p.finish(label()).unwrap();
+        assert_eq!(r.t_reached, clean.t_reached);
+        assert!(r.t_reached.iter().all(|&t| t.to_bits() == 2.0f64.to_bits()));
+        assert_eq!(r.states, clean.states);
+    }
+
+    #[test]
+    fn a_member_that_stopped_early_needs_the_work_buffer() {
+        for bad in [
+            Status::Bounds,
+            Status::StepTooSmall,
+            Status::MaxSteps,
+            Status::NonFinite,
+        ] {
+            let p = finished([Status::Ok, bad], [2.0, 0.75]);
+            assert!(p.needs_work(), "{bad:?}");
+            let r = p.finish(label()).unwrap();
+            assert_eq!(r.t_reached, vec![2.0, 0.75], "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_member_still_running_needs_the_work_buffer() {
+        let mut p = finished([Status::Ok, Status::Ok], [2.0, 2.0]);
+        p.ctl[CTL] = u32::from(Status::Running.code());
+        assert!(p.needs_work());
     }
 }

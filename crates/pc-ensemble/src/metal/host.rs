@@ -380,6 +380,9 @@ fn launch_all(
         })
     })?;
     download(&out, &mut packed.out, "copy out to host")?;
-    download(&work, &mut packed.work, "copy work to host")?;
+    // `finish` reads `work` only for a member that did not end `Ok`.
+    if packed.needs_work() {
+        download(&work, &mut packed.work, "copy work to host")?;
+    }
     Ok(packed)
 }
