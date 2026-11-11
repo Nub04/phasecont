@@ -333,52 +333,55 @@ fn launch_all(
         height: 1,
         depth: 1,
     };
-    let ctl_len = packed.ctl.len();
-    drive(&mut packed.ctl, packed.members, cancel, |steps: u64| {
-        // One pool per launch, so the command buffer and encoder of a long run are freed.
-        autoreleasepool(|_| {
-            let started = Instant::now();
-            let cb = queue.commandBuffer().ok_or_else(|| {
-                EnsembleError::GpuLaunch("create command buffer: Metal gave nil".into())
-            })?;
-            let enc = cb.computeCommandEncoder().ok_or_else(|| {
-                EnsembleError::GpuLaunch("create compute encoder: Metal gave nil".into())
-            })?;
-            enc.setComputePipelineState(pipeline);
-            for (i, b) in buffers.iter().enumerate() {
-                // SAFETY: the buffers have the sizes `crate::abi` documents and the kernel
-                // declares them at indices 0 to 6 in this order.
-                unsafe { enc.setBuffer_offset_atIndex(Some(*b), 0, i) };
-            }
-            set_value(&enc, &members, 7);
-            set_value(&enc, &steps, 8);
-            set_value(&enc, &max_steps, 9);
-            set_value(&enc, &ns, 10);
-            set_value(&enc, &pstride, 11);
-            enc.dispatchThreadgroups_threadsPerThreadgroup(groups, per_group);
-            enc.endEncoding();
-            cb.commit();
-            cb.waitUntilCompleted();
-            let took = started.elapsed();
-            if cb.status() == MTLCommandBufferStatus::Error {
-                return Err(match cb.error() {
-                    Some(e) => command_error(e.code(), &error_text(&e), took),
-                    None => EnsembleError::GpuLaunch(
-                        "the command buffer finished with an error and no description".into(),
-                    ),
-                });
-            }
-            if cb.status() != MTLCommandBufferStatus::Completed {
-                return Err(EnsembleError::GpuLaunch(format!(
-                    "the command buffer ended with status {}",
-                    cb.status().0
-                )));
-            }
-            let mut ctl = vec![0u32; ctl_len];
-            download(&ctl_d, &mut ctl, "copy ctl to host")?;
-            Ok((took, ctl))
-        })
-    })?;
+    drive(
+        &mut packed.ctl,
+        packed.members,
+        cancel,
+        |steps: u64, ctl| {
+            // One pool per launch, so the command buffer and encoder of a long run are freed.
+            autoreleasepool(|_| {
+                let started = Instant::now();
+                let cb = queue.commandBuffer().ok_or_else(|| {
+                    EnsembleError::GpuLaunch("create command buffer: Metal gave nil".into())
+                })?;
+                let enc = cb.computeCommandEncoder().ok_or_else(|| {
+                    EnsembleError::GpuLaunch("create compute encoder: Metal gave nil".into())
+                })?;
+                enc.setComputePipelineState(pipeline);
+                for (i, b) in buffers.iter().enumerate() {
+                    // SAFETY: the buffers have the sizes `crate::abi` documents and the kernel
+                    // declares them at indices 0 to 6 in this order.
+                    unsafe { enc.setBuffer_offset_atIndex(Some(*b), 0, i) };
+                }
+                set_value(&enc, &members, 7);
+                set_value(&enc, &steps, 8);
+                set_value(&enc, &max_steps, 9);
+                set_value(&enc, &ns, 10);
+                set_value(&enc, &pstride, 11);
+                enc.dispatchThreadgroups_threadsPerThreadgroup(groups, per_group);
+                enc.endEncoding();
+                cb.commit();
+                cb.waitUntilCompleted();
+                let took = started.elapsed();
+                if cb.status() == MTLCommandBufferStatus::Error {
+                    return Err(match cb.error() {
+                        Some(e) => command_error(e.code(), &error_text(&e), took),
+                        None => EnsembleError::GpuLaunch(
+                            "the command buffer finished with an error and no description".into(),
+                        ),
+                    });
+                }
+                if cb.status() != MTLCommandBufferStatus::Completed {
+                    return Err(EnsembleError::GpuLaunch(format!(
+                        "the command buffer ended with status {}",
+                        cb.status().0
+                    )));
+                }
+                download(&ctl_d, ctl, "copy ctl to host")?;
+                Ok(took)
+            })
+        },
+    )?;
     download(&out, &mut packed.out, "copy out to host")?;
     // `finish` reads `work` only for a member that did not end `Ok`.
     if packed.needs_work() {

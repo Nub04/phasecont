@@ -448,6 +448,41 @@ fn upload<T>(
     Ok(buf)
 }
 
+/// Creates a device buffer of `len` zeros.
+///
+/// The device clears the buffer with `clEnqueueFillBuffer` (OpenCL 1.2), so the zeros do not
+/// cross the bus. A driver that rejects the fill gets the same zeros as an upload. The queue
+/// is in order, so every later command sees the cleared buffer.
+fn zeroed<T: Real>(
+    ctx: &Context,
+    queue: &CommandQueue,
+    len: usize,
+    step: &'static str,
+) -> Result<Quiet<Buffer<T>>, EnsembleError> {
+    if len == 0 {
+        return Err(EnsembleError::BadJob(format!("{step}: nothing to clear")));
+    }
+    // SAFETY: no host pointer and no host-pointer flag, so the driver allocates `len`
+    // elements on the device.
+    let mut buf = unsafe { Buffer::<T>::create(ctx, CL_MEM_READ_WRITE, len, ptr::null_mut()) }
+        .map(Quiet::new)
+        .map_err(cl(step))?;
+    let bytes = len * std::mem::size_of::<T>();
+    // SAFETY: the pattern is one element and `bytes` is a whole number of elements that the
+    // buffer holds.
+    match unsafe { queue.enqueue_fill_buffer(&mut buf, &[T::ZERO], 0, bytes, &[]) } {
+        Ok(event) => drop(Quiet::new(event)),
+        Err(_) => {
+            let zeros = vec![T::ZERO; len];
+            // SAFETY: the buffer holds `len` elements and the write blocks, so `zeros` is read
+            // before the call returns.
+            unsafe { queue.enqueue_write_buffer(&mut buf, CL_BLOCKING, 0, &zeros, &[]) }
+                .map_err(cl(step))?;
+        }
+    }
+    Ok(buf)
+}
+
 /// Reads all of `buf` into `out` and waits for the copy.
 fn download<T>(
     queue: &CommandQueue,
@@ -502,7 +537,7 @@ fn launch_all<T: Real>(
     let segm = upload(ctx, queue, &packed.segm, "copy segm to device")?;
     let x0 = upload(ctx, queue, &packed.x0, "copy x0 to device")?;
     let par = upload(ctx, queue, &packed.par, "copy par to device")?;
-    let work = upload(ctx, queue, &packed.work, "copy work to device")?;
+    let work = zeroed::<T>(ctx, queue, packed.work.len(), "clear work on device")?;
     let out = upload(ctx, queue, &packed.out, "copy out to device")?;
     let ctl_d = upload(ctx, queue, &packed.ctl, "copy ctl to device")?;
 
@@ -537,8 +572,7 @@ fn launch_all<T: Real>(
     } else {
         (global, local)
     };
-    let ctl_len = packed.ctl.len();
-    drive(&mut packed.ctl, packed.members, cancel, |steps| {
+    drive(&mut packed.ctl, packed.members, cancel, |steps, ctl| {
         let started = Instant::now();
         #[cfg(feature = "fault-injection")]
         if crate::fault::take_panic_fault() {
@@ -564,9 +598,8 @@ fn launch_all<T: Real>(
             .finish()
             .map_err(|e| launch_error("synchronize", &e, started.elapsed()))?;
         let took = started.elapsed();
-        let mut ctl = vec![0u32; ctl_len];
-        download(queue, &ctl_d, &mut ctl, "copy ctl to host", started)?;
-        Ok((took, ctl))
+        download(queue, &ctl_d, ctl, "copy ctl to host", started)?;
+        Ok(took)
     })?;
     let done = Instant::now();
     download(queue, &out, &mut packed.out, "copy out to host", done)?;

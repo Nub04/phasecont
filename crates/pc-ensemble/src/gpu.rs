@@ -110,26 +110,31 @@ pub fn next_steps(steps: u64, took: Duration) -> u64 {
 
 /// Launches until no member is running.
 ///
-/// `launch(steps)` must run one launch of at most `steps` step attempts per member, wait for
-/// it to finish and return how long it took with the control words as they are afterwards.
-/// `ctl` holds the control words on entry and the last ones read on a normal return.
+/// `launch(steps, words)` must run one launch of at most `steps` step attempts per member, wait
+/// for it to finish, overwrite `words` with the control words as they are afterwards and return
+/// how long the launch took. `ctl` holds the control words on entry and the last ones read on a
+/// normal return.
+///
+/// `words` is one buffer of `ctl.len()` words that `drive` hands to every launch, so a poll
+/// allocates nothing: after each launch the buffer swaps places with `ctl`, and the buffer that
+/// held the previous words is the next one to be overwritten.
 ///
 /// The cancel flag is read before every launch. A launch that changes no control word is an
 /// error, since a launch gives every running member at least one step attempt and an attempt
-/// changes a counter. A launch that comes back with the wrong number of words is an error too.
+/// changes a counter. A launch that leaves `words` at the wrong length is an error too.
 pub fn drive(
     ctl: &mut Vec<u32>,
     members: usize,
     cancel: &AtomicBool,
-    mut launch: impl FnMut(u64) -> Result<(Duration, Vec<u32>), EnsembleError>,
+    mut launch: impl FnMut(u64, &mut Vec<u32>) -> Result<Duration, EnsembleError>,
 ) -> Result<(), EnsembleError> {
     let mut steps = FIRST_STEPS;
-    let mut before = ctl.clone();
+    let mut now = vec![0u32; ctl.len()];
     loop {
         if cancel.load(Ordering::Relaxed) {
             return Err(EnsembleError::Cancelled);
         }
-        let (took, now) = launch(steps)?;
+        let took = launch(steps, &mut now)?;
         if now.len() != ctl.len() {
             return Err(EnsembleError::GpuLaunch(format!(
                 "the kernel returned {} control words, expected {}",
@@ -137,16 +142,16 @@ pub fn drive(
                 ctl.len()
             )));
         }
-        *ctl = now;
+        // `ctl` now holds the latest words and `now` the ones before the launch.
+        std::mem::swap(ctl, &mut now);
         if ctl_done(ctl, members) {
             return Ok(());
         }
-        if *ctl == before {
+        if *ctl == now {
             return Err(EnsembleError::GpuLaunch(
                 "no member advanced in a launch of the kernel".into(),
             ));
         }
-        before.clone_from(ctl);
         steps = next_steps(steps, took);
     }
 }
@@ -327,11 +332,12 @@ mod tests {
         let mut ctl = words(3, Status::Running, 0);
         let mut seen = Vec::new();
         let cancel = AtomicBool::new(false);
-        drive(&mut ctl, 3, &cancel, |steps| {
+        drive(&mut ctl, 3, &cancel, |steps, now| {
             seen.push(steps);
             let n = seen.len() as u32;
             let status = if n == 3 { Status::Ok } else { Status::Running };
-            Ok((TARGET / 2, words(3, status, n)))
+            now.copy_from_slice(&words(3, status, n));
+            Ok(TARGET / 2)
         })
         .unwrap();
         assert_eq!(seen.len(), 3);
@@ -347,9 +353,10 @@ mod tests {
         let mut ctl = words(2, Status::Running, 0);
         let mut launches = 0;
         let cancel = AtomicBool::new(false);
-        drive(&mut ctl, 2, &cancel, |_| {
+        drive(&mut ctl, 2, &cancel, |_, now| {
             launches += 1;
-            Ok((TARGET, words(2, Status::Ok, 1)))
+            now.copy_from_slice(&words(2, Status::Ok, 1));
+            Ok(TARGET)
         })
         .unwrap();
         assert_eq!(launches, 1);
@@ -359,8 +366,9 @@ mod tests {
     fn a_launch_that_changes_nothing_is_an_error() {
         let mut ctl = words(2, Status::Running, 0);
         let cancel = AtomicBool::new(false);
-        let e = drive(&mut ctl, 2, &cancel, |_| {
-            Ok((TARGET, words(2, Status::Running, 0)))
+        let e = drive(&mut ctl, 2, &cancel, |_, now| {
+            now.copy_from_slice(&words(2, Status::Running, 0));
+            Ok(TARGET)
         })
         .unwrap_err();
         assert!(matches!(e, EnsembleError::GpuLaunch(m) if m.contains("no member advanced")));
@@ -371,10 +379,11 @@ mod tests {
         let mut ctl = words(1, Status::Running, 0);
         let cancel = AtomicBool::new(false);
         let mut n = 0;
-        let e = drive(&mut ctl, 1, &cancel, |_| {
+        let e = drive(&mut ctl, 1, &cancel, |_, now| {
             n += 1;
             // The first launch moves a counter, the second changes nothing.
-            Ok((TARGET, words(1, Status::Running, n.min(1))))
+            now.copy_from_slice(&words(1, Status::Running, n.min(1)));
+            Ok(TARGET)
         })
         .unwrap_err();
         assert!(matches!(e, EnsembleError::GpuLaunch(_)));
@@ -386,9 +395,10 @@ mod tests {
         let mut ctl = words(1, Status::Running, 0);
         let cancel = AtomicBool::new(true);
         let mut launched = false;
-        let e = drive(&mut ctl, 1, &cancel, |_| {
+        let e = drive(&mut ctl, 1, &cancel, |_, now| {
             launched = true;
-            Ok((TARGET, words(1, Status::Ok, 1)))
+            now.copy_from_slice(&words(1, Status::Ok, 1));
+            Ok(TARGET)
         })
         .unwrap_err();
         assert_eq!(e, EnsembleError::Cancelled);
@@ -400,10 +410,11 @@ mod tests {
         let mut ctl = words(1, Status::Running, 0);
         let cancel = AtomicBool::new(false);
         let mut n = 0;
-        let e = drive(&mut ctl, 1, &cancel, |_| {
+        let e = drive(&mut ctl, 1, &cancel, |_, now| {
             n += 1;
             cancel.store(true, Ordering::Relaxed);
-            Ok((TARGET, words(1, Status::Running, n)))
+            now.copy_from_slice(&words(1, Status::Running, n));
+            Ok(TARGET)
         })
         .unwrap_err();
         assert_eq!(e, EnsembleError::Cancelled);
@@ -414,7 +425,7 @@ mod tests {
     fn a_launch_error_comes_back_unchanged() {
         let mut ctl = words(1, Status::Running, 0);
         let cancel = AtomicBool::new(false);
-        let e = drive(&mut ctl, 1, &cancel, |_| {
+        let e = drive(&mut ctl, 1, &cancel, |_, _| {
             Err(EnsembleError::GpuTimeout("watchdog".into()))
         })
         .unwrap_err();
@@ -425,10 +436,53 @@ mod tests {
     fn control_words_of_the_wrong_length_are_an_error() {
         let mut ctl = words(2, Status::Running, 0);
         let cancel = AtomicBool::new(false);
-        let e = drive(&mut ctl, 2, &cancel, |_| {
-            Ok((TARGET, words(1, Status::Ok, 1)))
+        let e = drive(&mut ctl, 2, &cancel, |_, now| {
+            *now = words(1, Status::Ok, 1);
+            Ok(TARGET)
         })
         .unwrap_err();
         assert!(matches!(e, EnsembleError::GpuLaunch(m) if m.contains("control words")));
+    }
+
+    #[test]
+    fn a_long_run_reads_the_control_words_into_two_buffers() {
+        // Every launch gets a buffer of the right length, and the buffers that come back are
+        // always the same two: a poll allocates nothing.
+        let mut ctl = words(4, Status::Running, 0);
+        let cancel = AtomicBool::new(false);
+        let mut seen = Vec::new();
+        drive(&mut ctl, 4, &cancel, |_, now| {
+            assert_eq!(now.len(), 4 * CTL);
+            seen.push(now.as_ptr());
+            let n = seen.len() as u32;
+            let status = if n == 9 { Status::Ok } else { Status::Running };
+            now.copy_from_slice(&words(4, status, n));
+            Ok(TARGET)
+        })
+        .unwrap();
+        assert_eq!(seen.len(), 9);
+        let mut distinct = seen.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(distinct.len(), 2, "{seen:?}");
+        assert_eq!(ctl, words(4, Status::Ok, 9));
+    }
+
+    #[test]
+    fn an_error_leaves_the_last_good_words_in_ctl() {
+        let mut ctl = words(2, Status::Running, 0);
+        let cancel = AtomicBool::new(false);
+        let mut n = 0;
+        let e = drive(&mut ctl, 2, &cancel, |_, now| {
+            n += 1;
+            if n == 3 {
+                return Err(EnsembleError::GpuTimeout("watchdog".into()));
+            }
+            now.copy_from_slice(&words(2, Status::Running, n));
+            Ok(TARGET)
+        })
+        .unwrap_err();
+        assert_eq!(e, EnsembleError::GpuTimeout("watchdog".into()));
+        assert_eq!(ctl, words(2, Status::Running, 2));
     }
 }

@@ -27,8 +27,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use cudarc::driver::{
-    CudaContext, CudaFunction, DeviceRepr, DriverError, LaunchConfig, PushKernelArg, result,
-    sys as dsys,
+    CudaContext, CudaFunction, DeviceRepr, DriverError, LaunchConfig, PushKernelArg,
+    ValidAsZeroBits, result, sys as dsys,
 };
 use cudarc::nvrtc::{self, CompileError, CompileOptions, Ptx, compile_ptx_with_opts, sys as nsys};
 use pc_codegen::kernel::{Dialect, Scalar};
@@ -579,7 +579,7 @@ fn session(
 }
 
 /// Uploads the buffers, launches until no member is running and downloads the result.
-fn launch_all<T: Real + DeviceRepr>(
+fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
     ctx: &Arc<CudaContext>,
     function: &CudaFunction,
     mut packed: Packed<T>,
@@ -598,9 +598,11 @@ fn launch_all<T: Real + DeviceRepr>(
     let par = stream
         .clone_htod(packed.par.as_slice())
         .map_err(drv("copy par to device"))?;
+    // `work` starts as zeros: clear it on the device, which skips the upload of a buffer that
+    // is the largest of the run (`work_len(n)` values per member).
     let mut work = stream
-        .clone_htod(packed.work.as_slice())
-        .map_err(drv("copy work to device"))?;
+        .alloc_zeros::<T>(packed.work.len())
+        .map_err(drv("allocate work on the device"))?;
     let mut out = stream
         .clone_htod(packed.out.as_slice())
         .map_err(drv("copy out to device"))?;
@@ -631,7 +633,7 @@ fn launch_all<T: Real + DeviceRepr>(
     let pstride = packed.pstride as u64;
     let max_steps = packed.max_steps;
 
-    drive(&mut packed.ctl, members as usize, cancel, |steps| {
+    drive(&mut packed.ctl, members as usize, cancel, |steps, ctl| {
         let started = Instant::now();
         #[cfg(feature = "fault-injection")]
         if crate::fault::take_panic_fault() {
@@ -658,11 +660,13 @@ fn launch_all<T: Real + DeviceRepr>(
         }
         stream.synchronize().map_err(drv("synchronize"))?;
         let took = started.elapsed();
-        let ctl = stream.clone_dtoh(&ctl_d).map_err(drv("copy ctl to host"))?;
+        stream
+            .memcpy_dtoh(&ctl_d, ctl)
+            .map_err(drv("copy ctl to host"))?;
         stream
             .synchronize()
             .map_err(drv("synchronize after copy"))?;
-        Ok((took, ctl))
+        Ok(took)
     })?;
     packed.out = stream.clone_dtoh(&out).map_err(drv("copy out to host"))?;
     // `finish` reads `work` only for a member that did not end `Ok`.
