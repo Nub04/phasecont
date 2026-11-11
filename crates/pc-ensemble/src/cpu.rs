@@ -2,8 +2,10 @@
 //!
 //! The run is cut into launches of at most `steps_per_launch` step attempts per member, the
 //! same way a GPU run is. Members never read each other's state, so the cut changes nothing
-//! in the result; the tests check that bit for bit. The cancel flag is read between
-//! launches.
+//! in the result; the tests check that bit for bit. The cancel flag is read before each
+//! launch and before each member inside a launch, so after a cancel every thread finishes at
+//! most the member it is on. A cancelled run returns no result, so a member that a cancel
+//! skipped changes nothing.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -58,7 +60,9 @@ fn run_as<T: Real>(
             .for_each_init(
                 || vec![T::ZERO; scratch],
                 |vals, ((tr, w), o)| {
-                    tr.advance(&ctx, w, o, vals, steps_per_launch);
+                    if !cancel.load(Ordering::Relaxed) {
+                        tr.advance(&ctx, w, o, vals, steps_per_launch);
+                    }
                 },
             );
         if trajs.iter().all(|t| t.status != Status::Running) {

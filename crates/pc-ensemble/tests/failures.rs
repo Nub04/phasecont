@@ -316,6 +316,39 @@ fn cancel_during_a_long_run_returns_cancelled() {
     assert!(t0.elapsed() < Duration::from_secs(20), "{:?}", t0.elapsed());
 }
 
+/// Inside one launch the flag is read before each member, so a cancel waits for at most the
+/// member each thread is on. Every member here takes 50000 RK4 steps (a few milliseconds),
+/// and the whole run takes far longer than the test waits.
+#[test]
+fn cancel_inside_one_launch_returns_within_half_a_second() {
+    let m = build_model(DECAY);
+    let members = 200_000;
+    let x0 = vec![1.0; members];
+    let j = job(
+        &m,
+        members,
+        &x0,
+        &[1.0],
+        0.5,
+        Method::Rk4 { dt: 1e-5 },
+        Precision::Double,
+    );
+    let flag = AtomicBool::new(false);
+    let (res, set_at) = std::thread::scope(|s| {
+        let setter = s.spawn(|| {
+            std::thread::sleep(Duration::from_millis(200));
+            flag.store(true, Ordering::Relaxed);
+            std::time::Instant::now()
+        });
+        let res = run_cpu(&j, u64::MAX, &flag);
+        let back = std::time::Instant::now();
+        let set_at = setter.join().expect("setter thread");
+        (res, back.saturating_duration_since(set_at))
+    });
+    assert_eq!(res.unwrap_err(), EnsembleError::Cancelled);
+    assert!(set_at <= Duration::from_millis(500), "{set_at:?}");
+}
+
 #[test]
 fn zero_steps_per_launch_is_refused() {
     let m = build_model(DECAY);
