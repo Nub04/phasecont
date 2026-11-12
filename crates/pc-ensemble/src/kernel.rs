@@ -174,6 +174,18 @@ PC_FN pc_uint pc_bad_state(PC_PRIV pc_real *y1, pc_real bounds)
 "#;
 
 const RK4: &str = r#"
+/* The constants of segment `s`. They change only when a member moves to the next segment,
+   so a member loads them there and keeps them in registers for the steps in between. */
+#define PC_SEG_LOAD(s) \
+    do { \
+        m = segm[s]; \
+        sa = seg_a[s]; \
+        sb = seg_b[s]; \
+        h = seg_h[s]; \
+        hh = h * PC_HALF; \
+        h6 = h / PC_SIX; \
+    } while (0)
+
 PC_FN void pc_member(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
                      PC_IN pc_real *par, PC_GLOBAL pc_real *w, PC_GLOBAL pc_real *out,
                      PC_GLOBAL pc_uint *c, pc_ulong budget, pc_uint max_steps, pc_uint ns)
@@ -190,12 +202,19 @@ PC_FN void pc_member(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
     pc_uint accepted = c[2];
     pc_uint si = c[4];
     pc_uint ii = c[5];
+    pc_ulong m = 0u;
+    pc_real sa = PC_ZERO;
+    pc_real sb = PC_ZERO;
+    pc_real h = PC_ZERO;
+    pc_real hh = PC_ZERO;
+    pc_real h6 = PC_ZERO;
     pc_real t;
     pc_uint i;
 
     if (st != PC_RUNNING) {
         return;
     }
+    PC_SEG_LOAD(si);
     if (c[1] == 0u) {
         c[1] = 1u;
         t = rc[0];
@@ -209,15 +228,9 @@ PC_FN void pc_member(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
         }
     }
     while (budget > 0u && st == PC_RUNNING) {
-        pc_ulong m = segm[si];
-        pc_real sa = seg_a[si];
-        pc_real sb = seg_b[si];
-        pc_real h = seg_h[si];
         pc_uint last = ((pc_ulong)ii + 1u == m) ? 1u : 0u;
         pc_real ts = sa + (pc_real)ii * h;
         pc_real t_next = (last != 0u) ? sb : sa + (pc_real)(ii + 1u) * h;
-        pc_real hh = h * PC_HALF;
-        pc_real h6 = h / PC_SIX;
         pc_uint bad;
         budget -= 1u;
         pc_rhs(ts, y, par, k);
@@ -257,6 +270,8 @@ PC_FN void pc_member(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
                 ii = 0u;
                 if (si == ns) {
                     st = PC_OK;
+                } else {
+                    PC_SEG_LOAD(si);
                 }
             }
             if (st == PC_RUNNING && accepted >= max_steps) {

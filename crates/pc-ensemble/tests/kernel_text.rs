@@ -96,6 +96,26 @@ fn the_step_scratch_is_private_to_the_thread() {
 }
 
 #[test]
+fn the_rk4_segment_constants_are_loaded_once_per_segment() {
+    for d in [Dialect::C, Dialect::Cuda, Dialect::OpenCl, Dialect::Msl] {
+        let s = if d == Dialect::Msl {
+            Scalar::F32
+        } else {
+            Scalar::F64
+        };
+        let text = source(OSC, Integrator::Rk4, s, d);
+        // `h / 6` is one division, written once, in the segment loader.
+        assert_eq!(text.matches("/ PC_SIX").count(), 1, "{d:?}");
+        let body = text.find("while (budget").expect("step loop");
+        let first_stage = text.find("pc_rhs(ts, y").expect("first stage");
+        let head = &text[body..first_stage];
+        for load in ["seg_h[", "seg_a[", "seg_b[", "segm[", "/ PC_SIX"] {
+            assert!(!head.contains(load), "{d:?}: {load} is read every step");
+        }
+    }
+}
+
+#[test]
 fn the_dp5_tables_live_in_constant_memory() {
     let text = source(VDP, Integrator::Dp5, Scalar::F64, Dialect::Cuda);
     assert!(text.contains("#define PC_CONSTANT __constant__"));
