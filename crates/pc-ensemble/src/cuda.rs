@@ -22,7 +22,7 @@
 
 use std::ffi::{CString, c_char};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
@@ -33,12 +33,12 @@ use cudarc::driver::{
 use cudarc::nvrtc::{self, CompileError, CompileOptions, Ptx, compile_ptx_with_opts, sys as nsys};
 use pc_codegen::kernel::{Dialect, Scalar};
 
-use crate::abi::{Packed, integrator_of, pack};
+use crate::abi::{Packed, integrator_of, pack_in};
 use crate::device::{Backend, BackendState, DeviceInfo};
 use crate::gpu::{drive, guard, kernel_err};
 use crate::job::{EnsembleError, EnsembleResult, Job, Label, Precision, validate};
 use crate::kept::{Kept, Lru};
-use crate::kernel::{Integrator, kernel_source, private_reals};
+use crate::kernel::{Integrator, Layout, kernel_source_in, private_reals};
 use crate::real::Real;
 use crate::tape::Tape;
 
@@ -82,32 +82,81 @@ fn drv(step: &'static str) -> impl Fn(DriverError) -> EnsembleError {
     }
 }
 
-/// CUDA caps the local memory of one thread at 512 KB, and the private arrays of the kernel
-/// live there.
-const LOCAL_LIMIT_KB: usize = 512;
-/// The private arrays at which a failed launch gets the note below: half of the cap.
-const SCRATCH_NOTE_FROM: usize = 256 * 1024;
+/// The private arrays of one thread, in bytes, at which the kernel keeps them in global
+/// memory instead. CUDA caps the local memory of a thread at 512 KB and a kernel needs a
+/// little more than its arrays, so the private layout fails to launch somewhere between 440
+/// and 480 KB (spike S4 and the P36 measurements on the RTX 5060). Half of the cap leaves a
+/// margin for models that need more.
+const GLOBAL_SCRATCH_FROM: usize = 256 * 1024;
 
-/// What to add to a launch error when the private arrays of one thread are large. The kernel
-/// needs a little more local memory than the arrays, so a launch can fail below the cap.
-fn scratch_note(n: usize, integrator: Integrator, real_bytes: usize) -> Option<String> {
+/// The scratch layout for a model of `n` states: private arrays below [`GLOBAL_SCRATCH_FROM`]
+/// bytes per thread, global scratch from there on.
+pub fn layout_for(n: usize, integrator: Integrator, real_bytes: usize) -> Layout {
+    pick(None, n, integrator, real_bytes)
+}
+
+/// [`layout_for`], or `forced` when it is set.
+fn pick(forced: Option<Layout>, n: usize, integrator: Integrator, real_bytes: usize) -> Layout {
+    if let Some(layout) = forced {
+        return layout;
+    }
     let bytes = private_reals(n, integrator).saturating_mul(real_bytes);
-    if bytes < SCRATCH_NOTE_FROM {
+    if bytes >= GLOBAL_SCRATCH_FROM {
+        Layout::Global
+    } else {
+        Layout::Private
+    }
+}
+
+/// The layout a test or a bench forces for every run in this process: 0 for none, 1 for
+/// private, 2 for global.
+static FORCED: AtomicU8 = AtomicU8::new(0);
+
+/// Forces the scratch layout of every CUDA run in this process, or lifts the force with
+/// `None`. The A/B bench and the device test use it to run both layouts on one model. It is
+/// not part of the API.
+#[doc(hidden)]
+pub fn force_layout(layout: Option<Layout>) {
+    let code = match layout {
+        None => 0,
+        Some(Layout::Private) => 1,
+        Some(Layout::Global) => 2,
+    };
+    FORCED.store(code, Ordering::SeqCst);
+}
+
+fn forced_layout() -> Option<Layout> {
+    match FORCED.load(Ordering::SeqCst) {
+        1 => Some(Layout::Private),
+        2 => Some(Layout::Global),
+        _ => None,
+    }
+}
+
+/// What to add to an allocation error when the work buffer is large because the scratch of
+/// the steps lives in it: `members` slices of `work_len` values.
+fn global_note(
+    layout: Layout,
+    members: usize,
+    work_len: usize,
+    real_bytes: usize,
+) -> Option<String> {
+    if layout == Layout::Private {
         return None;
     }
+    let bytes = members.saturating_mul(work_len).saturating_mul(real_bytes);
     Some(format!(
-        "the private arrays of this kernel take about {} KB per thread for {n} states and CUDA \
-caps local memory at {LOCAL_LIMIT_KB} KB per thread (the kernel needs a little more than the \
-arrays), so a model this large can fail to launch; run it on the cpu backend",
+        "the step arrays of this kernel live in global memory, which takes {} KB for {members} \
+members; run fewer members at a time or use the cpu backend",
         bytes.div_ceil(1024)
     ))
 }
 
-/// The mapper for the launch call: [`drv`], plus `note` after the text of an error that the
-/// size of the kernel can explain. A sticky error comes from an earlier fault and a timeout
+/// The mapper for a driver call: [`drv`], plus `note` after the text of an error that the
+/// size of the buffers can explain. A sticky error comes from an earlier fault and a timeout
 /// from the watchdog, so neither gets it.
-fn launch_err(note: Option<String>) -> impl Fn(DriverError) -> EnsembleError {
-    let base = drv("launch");
+fn step_err(step: &'static str, note: Option<String>) -> impl Fn(DriverError) -> EnsembleError {
+    let base = drv(step);
     move |e| {
         let sticky = STICKY.contains(&(e.0 as u32));
         match (base(e), &note) {
@@ -448,7 +497,7 @@ fn compile_image(src: &str, p: &Probe, cc: (i32, i32)) -> Result<Ptx, EnsembleEr
 }
 
 /// Compiles the kernel for the virtual architecture `arch`, for example `compute_80`, and
-/// returns the PTX text.
+/// returns the PTX text. The scratch of a step is private to the thread.
 ///
 /// It needs NVRTC but no driver and no device, so a machine with only a CUDA toolkit can
 /// check that the kernel compiles. A missing NVRTC is [`EnsembleError::GpuUnavailable`] and
@@ -459,8 +508,20 @@ pub fn compile_ptx_text(
     scalar: Scalar,
     arch: &str,
 ) -> Result<String, EnsembleError> {
+    compile_ptx_text_in(tape, integrator, scalar, Layout::Private, arch)
+}
+
+/// [`compile_ptx_text`] with the scratch of a step in the given layout.
+pub fn compile_ptx_text_in(
+    tape: &Tape,
+    integrator: Integrator,
+    scalar: Scalar,
+    layout: Layout,
+    arch: &str,
+) -> Result<String, EnsembleError> {
     ensure_nvrtc().map_err(EnsembleError::GpuUnavailable)?;
-    let src = kernel_source(tape, integrator, scalar, Dialect::Cuda).map_err(kernel_err)?;
+    let src =
+        kernel_source_in(tape, integrator, scalar, Dialect::Cuda, layout).map_err(kernel_err)?;
     let opts = CompileOptions {
         options: options(arch),
         ..Default::default()
@@ -501,8 +562,14 @@ pub fn run_cuda(
         Precision::Single => Scalar::F32,
         Precision::Double => Scalar::F64,
     };
-    let src = kernel_source(&tape, integrator_of(job.method), scalar, Dialect::Cuda)
-        .map_err(kernel_err)?;
+    let integrator = integrator_of(job.method);
+    let real_bytes = match job.precision {
+        Precision::Single => size_of::<f32>(),
+        Precision::Double => size_of::<f64>(),
+    };
+    let layout = pick(forced_layout(), tape.n, integrator, real_bytes);
+    let src =
+        kernel_source_in(&tape, integrator, scalar, Dialect::Cuda, layout).map_err(kernel_err)?;
     // The entry this run used, so that a failure removes that one and not a newer one.
     let mut used: Option<Arc<Entry>> = None;
     let ran = guard(|| {
@@ -516,7 +583,7 @@ pub fn run_cuda(
             }))
         })?;
         let entry = used.insert(entry);
-        session(entry, device, p, job, &checked, &tape, &src, cancel)
+        session(entry, device, p, job, &checked, &tape, &src, layout, cancel)
     })
     .unwrap_or_else(|msg| Err(EnsembleError::GpuLaunch(format!("panic in cudarc: {msg}"))));
     if matches!(
@@ -576,6 +643,7 @@ fn session(
     checked: &crate::job::Checked,
     tape: &Tape,
     src: &str,
+    layout: Layout,
     cancel: &AtomicBool,
 ) -> Result<EnsembleResult, EnsembleError> {
     let ctx = &entry.ctx;
@@ -599,28 +667,20 @@ fn session(
         driver: device.driver.clone(),
         precision: job.precision,
     };
-    let note = scratch_note(
-        tape.n,
-        integrator_of(job.method),
-        match job.precision {
-            Precision::Single => size_of::<f32>(),
-            Precision::Double => size_of::<f64>(),
-        },
-    );
     let ran = match job.precision {
         Precision::Single => launch_all(
             ctx,
             &function,
-            pack::<f32>(job, checked, tape),
-            note,
+            pack_in::<f32>(job, checked, tape, layout),
+            layout,
             cancel,
         )
         .and_then(|packed| packed.finish(label)),
         Precision::Double => launch_all(
             ctx,
             &function,
-            pack::<f64>(job, checked, tape),
-            note,
+            pack_in::<f64>(job, checked, tape, layout),
+            layout,
             cancel,
         )
         .and_then(|packed| packed.finish(label)),
@@ -640,7 +700,7 @@ fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
     ctx: &Arc<CudaContext>,
     function: &CudaFunction,
     mut packed: Packed<T>,
-    note: Option<String>,
+    layout: Layout,
     cancel: &AtomicBool,
 ) -> Result<Packed<T>, EnsembleError> {
     let stream = ctx.default_stream();
@@ -658,9 +718,10 @@ fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
         .map_err(drv("copy par to device"))?;
     // `work` starts as zeros: clear it on the device, which skips the upload of a buffer that
     // is the largest of the run (`work_len(n, integrator)` values per member).
+    let work_note = global_note(layout, packed.members, packed.work_len, size_of::<T>());
     let mut work = stream
         .alloc_zeros::<T>(packed.work.len())
-        .map_err(drv("allocate work on the device"))?;
+        .map_err(step_err("allocate work on the device", work_note))?;
     let mut out = stream
         .clone_htod(packed.out.as_slice())
         .map_err(drv("copy out to device"))?;
@@ -691,7 +752,7 @@ fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
     let pstride = packed.pstride as u64;
     let max_steps = packed.max_steps;
 
-    let launch_error = launch_err(note);
+    let launch_error = drv("launch");
     drive(&mut packed.ctl, members as usize, cancel, |steps, ctl| {
         let started = Instant::now();
         #[cfg(feature = "fault-injection")]
@@ -834,41 +895,86 @@ mod tests {
     }
 
     #[test]
-    fn the_scratch_note_appears_from_256_kb_of_private_arrays() {
+    fn the_layout_is_global_from_256_kb_of_private_arrays() {
         // RK4 holds 7 n reals per thread, Dormand-Prince 10 n.
-        let kb = |n: usize, i: Integrator, size: usize| scratch_note(n, i, size);
-        assert_eq!(kb(40, Integrator::Dp5, 8), None);
-        assert_eq!(kb(3276, Integrator::Dp5, 8), None, "262080 bytes");
-        assert!(kb(3277, Integrator::Dp5, 8).is_some(), "262160 bytes");
-        assert_eq!(kb(9362, Integrator::Rk4, 4), None, "262136 bytes");
-        assert!(kb(9363, Integrator::Rk4, 4).is_some(), "262164 bytes");
-        assert_eq!(kb(0, Integrator::Rk4, 8), None);
-        let note = kb(6000, Integrator::Dp5, 8).expect("480000 bytes");
-        for want in ["469 KB", "6000 states", "512 KB", "cpu"] {
-            assert!(note.contains(want), "{want} in {note}");
-        }
-        assert!(!note.contains("restart"), "{note}");
+        let at = |n: usize, i: Integrator, size: usize| layout_for(n, i, size);
+        assert_eq!(at(40, Integrator::Dp5, 8), Layout::Private);
+        assert_eq!(
+            at(3276, Integrator::Dp5, 8),
+            Layout::Private,
+            "262080 bytes"
+        );
+        assert_eq!(at(3277, Integrator::Dp5, 8), Layout::Global, "262160 bytes");
+        assert_eq!(
+            at(4681, Integrator::Rk4, 8),
+            Layout::Private,
+            "262136 bytes"
+        );
+        assert_eq!(at(4682, Integrator::Rk4, 8), Layout::Global, "262192 bytes");
+        assert_eq!(
+            at(6553, Integrator::Dp5, 4),
+            Layout::Private,
+            "262120 bytes"
+        );
+        assert_eq!(at(6554, Integrator::Dp5, 4), Layout::Global, "262160 bytes");
+        assert_eq!(
+            at(9362, Integrator::Rk4, 4),
+            Layout::Private,
+            "262136 bytes"
+        );
+        assert_eq!(at(9363, Integrator::Rk4, 4), Layout::Global, "262164 bytes");
+        assert_eq!(at(0, Integrator::Rk4, 8), Layout::Private);
         // A huge n must not overflow the size.
-        assert!(kb(usize::MAX / 2, Integrator::Dp5, 8).is_some());
+        assert_eq!(at(usize::MAX / 2, Integrator::Dp5, 8), Layout::Global);
     }
 
     #[test]
-    fn a_launch_error_carries_the_scratch_note_only_when_it_can_be_the_cause() {
+    fn a_forced_layout_wins_over_the_size() {
+        let (n, i, size) = (40, Integrator::Dp5, 8);
+        assert_eq!(pick(None, n, i, size), Layout::Private);
+        assert_eq!(pick(Some(Layout::Global), n, i, size), Layout::Global);
+        assert_eq!(pick(Some(Layout::Private), 6000, i, size), Layout::Private);
+        assert_eq!(pick(None, 6000, i, size), Layout::Global);
+    }
+
+    #[test]
+    fn the_forced_layout_round_trips() {
+        // Only this test touches the setting, and it puts it back.
+        for want in [Some(Layout::Global), Some(Layout::Private), None] {
+            force_layout(want);
+            assert_eq!(forced_layout(), want);
+        }
+    }
+
+    #[test]
+    fn the_global_scratch_note_names_the_size_and_the_way_out() {
+        // The private layout needs no note: its work buffer is small.
+        assert_eq!(global_note(Layout::Private, 16, 321, 8), None);
+        // 4 members of 12 n + 3 = 483 doubles each.
+        let note = global_note(Layout::Global, 4, 483, 8).expect("global");
+        for want in ["4 members", "16 KB", "fewer members", "cpu"] {
+            assert!(note.contains(want), "{want} in {note}");
+        }
+        assert!(!note.contains("restart"), "{note}");
+        // A size past the address range must not overflow.
+        assert!(global_note(Layout::Global, usize::MAX, usize::MAX, 8).is_some());
+    }
+
+    #[test]
+    fn a_driver_error_carries_the_note_only_when_it_can_be_the_cause() {
         use dsys::CUresult::*;
         let note = Some("NOTE".to_string());
-        let plain = |code| match launch_err(None)(DriverError(code)) {
+        let plain = |code| match step_err("allocate", None)(DriverError(code)) {
             EnsembleError::GpuLaunch(m) => m,
             other => panic!("{other:?}"),
         };
-        let noted = |code| launch_err(note.clone())(DriverError(code));
-        // The failures seen with too much local memory get the note after the driver text.
-        for code in [CUDA_ERROR_INVALID_VALUE, CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES] {
-            let EnsembleError::GpuLaunch(m) = noted(code) else {
-                panic!("a launch error");
-            };
-            assert_eq!(m, format!("{}; NOTE", plain(code)));
-            assert!(!m.contains("restart"), "{m}");
-        }
+        let noted = |code| step_err("allocate", note.clone())(DriverError(code));
+        // An allocation that does not fit gets the note after the driver text.
+        let EnsembleError::GpuLaunch(m) = noted(CUDA_ERROR_OUT_OF_MEMORY) else {
+            panic!("a launch error");
+        };
+        assert_eq!(m, format!("{}; NOTE", plain(CUDA_ERROR_OUT_OF_MEMORY)));
+        assert!(!m.contains("restart"), "{m}");
         // A sticky error came from an earlier fault and keeps its own text.
         for code in [CUDA_ERROR_ILLEGAL_ADDRESS, CUDA_ERROR_LAUNCH_FAILED] {
             let EnsembleError::GpuLaunch(m) = noted(code) else {

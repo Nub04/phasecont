@@ -12,6 +12,12 @@
 //!
 //! Every dialect has an entry point: C loops over the members, the others run one thread or
 //! work item per member. Metal has no double, so its kernels exist for `f32` only.
+//!
+//! The scratch of a step (`y`, `y1`, `yt` and the stage vectors) lives in one of two places,
+//! chosen by [`Layout`]. The private layout keeps it in arrays of the thread. The global
+//! layout keeps it in the member's slice of `work`, behind the words a launch hands on, for
+//! the models whose arrays do not fit in the local memory of a CUDA thread. Only the four
+//! declarations differ, so both layouts run the same operations in the same order.
 
 use pc_codegen::kernel::{Dialect, KernelError, Scalar, emit_rhs, float_literal, prelude};
 
@@ -41,6 +47,28 @@ pub fn work_len(n: usize, integrator: Integrator) -> usize {
     }
 }
 
+/// Where the scratch of a step lives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layout {
+    /// Arrays of the thread: registers or local memory.
+    Private,
+    /// The member's slice of `work`, after the words a launch hands on. `t` stays first.
+    Global,
+}
+
+impl Layout {
+    /// Values per member in the `work` buffer under this layout.
+    ///
+    /// The global layout adds the private arrays to what a launch hands on: `8n + 1` for RK4
+    /// and `12n + 3` for Dormand-Prince.
+    pub fn work_len(self, n: usize, integrator: Integrator) -> usize {
+        match self {
+            Layout::Private => work_len(n, integrator),
+            Layout::Global => work_len(n, integrator).saturating_add(private_reals(n, integrator)),
+        }
+    }
+}
+
 /// Reals that one thread of the RK4 or Dormand-Prince kernel holds in private arrays: the
 /// state, the trial state, a second trial state and the stage vectors (4 for RK4, 7 for
 /// Dormand-Prince). A test reads the declarations in the kernel text and checks this count.
@@ -51,15 +79,34 @@ pub fn private_reals(n: usize, integrator: Integrator) -> usize {
     }
 }
 
-/// The kernel text for `tape`, or the reason the dialect or model cannot be lowered.
+/// The kernel text for `tape` with private scratch, or the reason the dialect or model cannot
+/// be lowered.
 pub fn kernel_source(
     tape: &Tape,
     integrator: Integrator,
     scalar: Scalar,
     dialect: Dialect,
 ) -> Result<String, KernelError> {
+    kernel_source_in(tape, integrator, scalar, dialect, Layout::Private)
+}
+
+/// The kernel text for `tape` with the scratch in `layout`. The global layout exists for the C
+/// and CUDA dialects: the others qualify private and global pointers differently, and their
+/// scratch limits are a build error the host reports before a launch.
+pub fn kernel_source_in(
+    tape: &Tape,
+    integrator: Integrator,
+    scalar: Scalar,
+    dialect: Dialect,
+    layout: Layout,
+) -> Result<String, KernelError> {
     // The prelude comes first so that a dialect without the scalar reports that first.
     let mut s = prelude(dialect, scalar)?;
+    if layout == Layout::Global && !matches!(dialect, Dialect::C | Dialect::Cuda) {
+        return Err(KernelError::Unsupported(format!(
+            "the global scratch layout is not available in {dialect:?}"
+        )));
+    }
     let entry = match dialect {
         Dialect::C => ENTRY_C,
         Dialect::Cuda => ENTRY_CUDA,
@@ -69,8 +116,14 @@ pub fn kernel_source(
     s.push_str(&format!("#define PC_N {}u\n", tape.n));
     s.push_str(&format!(
         "#define PC_WL {}u\n",
-        work_len(tape.n, integrator)
+        layout.work_len(tape.n, integrator)
     ));
+    if layout == Layout::Global {
+        s.push_str(&format!(
+            "#define PC_PERSIST {}u\n",
+            work_len(tape.n, integrator)
+        ));
+    }
     s.push_str(&format!("#define PC_CTL {CTL}u\n"));
     s.push_str(STATUS);
     s.push_str(&match scalar {
@@ -86,15 +139,34 @@ pub fn kernel_source(
     )?);
     s.push_str(BAD_STATE);
     match integrator {
-        Integrator::Rk4 => s.push_str(RK4),
+        Integrator::Rk4 => s.push_str(&RK4.replace(ARRAYS, arrays(integrator, layout))),
         Integrator::Dp5 => {
             s.push_str(DP5_HELPERS);
-            s.push_str(DP5);
+            s.push_str(&DP5.replace(ARRAYS, arrays(integrator, layout)));
         }
     }
     s.push_str(entry);
     Ok(s)
 }
+
+/// The line of a template that the declarations of the scratch replace.
+const ARRAYS: &str = "    /*PC_ARRAYS*/\n";
+
+/// The declarations of `y`, `y1`, `yt` and the stage vectors `k`. The global ones point into
+/// `w` behind the `PC_PERSIST` words, one array after the other.
+fn arrays(integrator: Integrator, layout: Layout) -> &'static str {
+    match (layout, integrator) {
+        (Layout::Private, Integrator::Rk4) => {
+            "    pc_real y[PC_N];\n    pc_real y1[PC_N];\n    pc_real yt[PC_N];\n    pc_real k[4u * PC_N];\n"
+        }
+        (Layout::Private, Integrator::Dp5) => {
+            "    pc_real y[PC_N];\n    pc_real y1[PC_N];\n    pc_real yt[PC_N];\n    pc_real k[7u * PC_N];\n"
+        }
+        (Layout::Global, _) => GLOBAL_ARRAYS,
+    }
+}
+
+const GLOBAL_ARRAYS: &str = "    PC_GLOBAL pc_real *y = w + PC_PERSIST;\n    PC_GLOBAL pc_real *y1 = y + PC_N;\n    PC_GLOBAL pc_real *yt = y1 + PC_N;\n    PC_GLOBAL pc_real *k = yt + PC_N;\n";
 
 fn def(out: &mut String, name: &str, lit: &str) {
     out.push_str("#define PC_");
@@ -214,10 +286,7 @@ PC_FN void pc_member(PC_IN pc_real *PC_RESTRICT rc, PC_IN pc_ulong *PC_RESTRICT 
                      PC_GLOBAL pc_uint *PC_RESTRICT c, pc_ulong budget, pc_uint max_steps,
                      pc_uint ns)
 {
-    pc_real y[PC_N];
-    pc_real y1[PC_N];
-    pc_real yt[PC_N];
-    pc_real k[4u * PC_N];
+    /*PC_ARRAYS*/
     PC_IN pc_real *seg_a = rc + 5u + ns;
     PC_IN pc_real *seg_b = rc + 5u + 2u * ns;
     PC_IN pc_real *seg_h = rc + 5u + 3u * ns;
@@ -423,10 +492,7 @@ PC_FN void pc_member(PC_IN pc_real *PC_RESTRICT rc, PC_IN pc_ulong *PC_RESTRICT 
                      PC_GLOBAL pc_uint *PC_RESTRICT c, pc_ulong budget, pc_uint max_steps,
                      pc_uint ns)
 {
-    pc_real y[PC_N];
-    pc_real y1[PC_N];
-    pc_real yt[PC_N];
-    pc_real k[7u * PC_N];
+    /*PC_ARRAYS*/
     PC_IN pc_real *times = rc + 5u;
     pc_real lim = rc[1];
     pc_real rtol = rc[2];

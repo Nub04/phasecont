@@ -49,6 +49,22 @@ pub const VDP: &str = "par mu=1.5\nx'=v\nv'=mu*(1-x*x)*v-x\ndone\n";
 /// A model with several transcendental functions.
 pub const MIXED: &str = "par a=0.7\nx'=sin(x)*exp(-0.1*x*x)+a*cos(t)\ny'=tanh(x-y)-0.2*y\ndone\n";
 
+/// Lorenz-96 with `n` states, our own text. It uses only `+ - *`, so the kernel and the CPU
+/// agree bit for bit whatever the math functions do.
+pub fn lorenz96(n: usize) -> String {
+    let mut s = String::from("par f=8\n");
+    for i in 0..n {
+        s.push_str(&format!(
+            "x{i}'=(x{}-x{})*x{}-x{i}+f\n",
+            (i + 1) % n,
+            (i + n - 2) % n,
+            (i + n - 1) % n
+        ));
+    }
+    s.push_str("done\n");
+    s
+}
+
 pub const NO_CANCEL: fn() -> AtomicBool = || AtomicBool::new(false);
 
 /// A job with no bound, a generous step limit and the final state as output.

@@ -8,7 +8,9 @@ mod common;
 use common::*;
 use pc_codegen::kernel::{Dialect, KernelError, Scalar};
 use pc_ensemble::Tape;
-use pc_ensemble::kernel::{Integrator, kernel_source};
+use pc_ensemble::kernel::{
+    Integrator, Layout, kernel_source, kernel_source_in, private_reals, work_len,
+};
 
 fn source(src: &str, integrator: Integrator, scalar: Scalar, dialect: Dialect) -> String {
     let tape = Tape::build(&build_model(src)).expect("tape");
@@ -434,4 +436,132 @@ fn the_private_size_formula_matches_the_arrays_in_the_kernel_text() {
     }
     assert_eq!(private_reals(10, Integrator::Rk4), 70);
     assert_eq!(private_reals(10, Integrator::Dp5), 100);
+}
+
+fn global(src: &str, integrator: Integrator, scalar: Scalar, dialect: Dialect) -> String {
+    let tape = Tape::build(&build_model(src)).expect("tape");
+    kernel_source_in(&tape, integrator, scalar, dialect, Layout::Global).expect("global kernel")
+}
+
+const GLOBAL_DIALECTS: [Dialect; 2] = [Dialect::C, Dialect::Cuda];
+
+#[test]
+fn the_private_text_is_what_kernel_source_gives() {
+    let tape = Tape::build(&build_model(VDP)).expect("tape");
+    for (i, s) in BOTH {
+        for d in [Dialect::C, Dialect::Cuda, Dialect::OpenCl] {
+            let a = kernel_source(&tape, i, s, d).unwrap();
+            let b = kernel_source_in(&tape, i, s, d, Layout::Private).unwrap();
+            assert_eq!(a, b, "{i:?} {s:?} {d:?}");
+            assert!(!a.contains("PC_PERSIST"), "{i:?} {s:?} {d:?}");
+        }
+    }
+}
+
+#[test]
+fn the_global_text_keeps_the_scratch_in_the_work_slice() {
+    let tape = Tape::build(&build_model(VDP)).expect("tape");
+    let n = tape.n;
+    for (i, s) in BOTH {
+        for d in GLOBAL_DIALECTS {
+            let text = global(VDP, i, s, d);
+            // The persist words come first, the scratch after them, so `t` stays at offset 0.
+            assert!(
+                text.contains(&format!("#define PC_PERSIST {}u\n", work_len(n, i))),
+                "{i:?} {s:?} {d:?}"
+            );
+            assert!(
+                text.contains(&format!(
+                    "#define PC_WL {}u\n",
+                    Layout::Global.work_len(n, i)
+                )),
+                "{i:?} {s:?} {d:?}"
+            );
+            for decl in [
+                "PC_GLOBAL pc_real *y = w + PC_PERSIST;",
+                "PC_GLOBAL pc_real *y1 = y + PC_N;",
+                "PC_GLOBAL pc_real *yt = y1 + PC_N;",
+                "PC_GLOBAL pc_real *k = yt + PC_N;",
+            ] {
+                assert!(text.contains(decl), "{i:?} {s:?} {d:?}: {decl}");
+            }
+            assert_eq!(declared_private_reals(&text), 0, "{i:?} {s:?} {d:?}");
+            // Every use of the scratch still goes through the same loads and stores.
+            assert!(text.contains("w[0] = t;"), "{i:?} {s:?} {d:?}");
+        }
+    }
+}
+
+#[test]
+fn the_global_text_differs_from_the_private_text_only_in_the_array_lines() {
+    // Turn the global text back into the private text. If the two layouts shared nothing but
+    // these lines, the operations and their order are the same and so are the bits.
+    let tape = Tape::build(&build_model(VDP)).expect("tape");
+    let n = tape.n;
+    for (i, s) in BOTH {
+        for d in GLOBAL_DIALECTS {
+            let private = source(VDP, i, s, d);
+            let mut back = global(VDP, i, s, d);
+            back = back.replace(&format!("#define PC_PERSIST {}u\n", work_len(n, i)), "");
+            back = back.replace(
+                &format!("#define PC_WL {}u\n", Layout::Global.work_len(n, i)),
+                &format!("#define PC_WL {}u\n", work_len(n, i)),
+            );
+            let k = match i {
+                Integrator::Rk4 => "4u",
+                Integrator::Dp5 => "7u",
+            };
+            for (from, to) in [
+                (
+                    "PC_GLOBAL pc_real *y = w + PC_PERSIST;",
+                    "pc_real y[PC_N];".to_string(),
+                ),
+                (
+                    "PC_GLOBAL pc_real *y1 = y + PC_N;",
+                    "pc_real y1[PC_N];".to_string(),
+                ),
+                (
+                    "PC_GLOBAL pc_real *yt = y1 + PC_N;",
+                    "pc_real yt[PC_N];".to_string(),
+                ),
+                (
+                    "PC_GLOBAL pc_real *k = yt + PC_N;",
+                    format!("pc_real k[{k} * PC_N];"),
+                ),
+            ] {
+                assert_eq!(back.matches(from).count(), 1, "{i:?} {s:?} {d:?}: {from}");
+                back = back.replace(from, &to);
+            }
+            assert_eq!(back, private, "{i:?} {s:?} {d:?}");
+        }
+    }
+}
+
+#[test]
+fn the_global_layout_is_for_cuda_and_c_only() {
+    let tape = Tape::build(&build_model(VDP)).expect("tape");
+    for i in SINGLE {
+        for d in [Dialect::OpenCl, Dialect::Msl] {
+            let e = kernel_source_in(&tape, i, Scalar::F32, d, Layout::Global).unwrap_err();
+            assert!(
+                matches!(e, KernelError::Unsupported(_)),
+                "{i:?} {d:?}: {e:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_global_size_formula_counts_the_arrays_the_text_points_to() {
+    // The scratch behind the four pointers is `private_reals`, in units of the state size.
+    for n in [1, 2, 40, 6000] {
+        assert_eq!(Layout::Global.work_len(n, Integrator::Rk4), 8 * n + 1);
+        assert_eq!(Layout::Global.work_len(n, Integrator::Dp5), 12 * n + 3);
+        for i in SINGLE {
+            assert_eq!(
+                Layout::Global.work_len(n, i),
+                work_len(n, i) + private_reals(n, i)
+            );
+        }
+    }
 }

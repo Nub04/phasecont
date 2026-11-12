@@ -8,8 +8,8 @@ mod common;
 
 use common::*;
 use pc_codegen::kernel::Scalar;
-use pc_ensemble::cuda::compile_ptx_text;
-use pc_ensemble::kernel::Integrator;
+use pc_ensemble::cuda::{compile_ptx_text, compile_ptx_text_in};
+use pc_ensemble::kernel::{Integrator, Layout};
 use pc_ensemble::{EnsembleError, Tape};
 
 const VARIANTS: [(Integrator, Scalar); 4] = [
@@ -103,4 +103,74 @@ fn an_unknown_architecture_is_a_compile_error() {
         Err(EnsembleError::GpuUnavailable(why)) => skip_gpu("nvrtc", &why),
         other => panic!("expected GpuCompile, got {other:?}"),
     }
+}
+
+/// Like [`ptx`], for the kernel that keeps the step arrays in global memory.
+fn global_ptx(src: &str, i: Integrator, s: Scalar, arch: &str) -> Option<String> {
+    let tape = Tape::build(&build_model(src)).expect("tape");
+    match compile_ptx_text_in(&tape, i, s, Layout::Global, arch) {
+        Ok(text) => Some(text),
+        Err(EnsembleError::GpuUnavailable(why)) => {
+            skip_gpu("nvrtc", &why);
+            None
+        }
+        Err(e) => panic!("global {arch} {i:?} {s:?}: {e}"),
+    }
+}
+
+/// The size in bytes of the biggest `__local_depot` the PTX declares: the local memory of
+/// one thread.
+fn local_bytes(ptx: &str) -> usize {
+    ptx.lines()
+        .filter(|l| l.contains(".local") && l.contains("__local_depot"))
+        .filter_map(|l| {
+            let open = l.rfind('[')?;
+            let close = l.rfind(']')?;
+            l[open + 1..close].parse::<usize>().ok()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+#[test]
+fn the_global_kernel_compiles_for_every_variant_and_edge_architecture() {
+    for src in [DECAY, VDP, OSC, MIXED] {
+        for (i, s) in VARIANTS {
+            for arch in EDGE_ARCHS {
+                let Some(text) = global_ptx(src, i, s, arch) else {
+                    return;
+                };
+                assert!(text.contains(".entry pc_ens"), "{arch} {i:?} {s:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_global_kernel_keeps_the_step_arrays_out_of_local_memory() {
+    // 300 states of Lorenz-96 in double precision need 24 KB of private arrays under
+    // Dormand-Prince. The global layout must not hold them in local memory.
+    let src = lorenz96(300);
+    let Some(private) = ptx(&src, Integrator::Dp5, Scalar::F64, "compute_80") else {
+        return;
+    };
+    let global = global_ptx(&src, Integrator::Dp5, Scalar::F64, "compute_80").expect("global");
+    assert!(
+        local_bytes(&private) >= 24_000,
+        "the private text should hold its arrays in local memory: {} bytes",
+        local_bytes(&private)
+    );
+    assert!(
+        local_bytes(&global) < 8 * 1024,
+        "the global text still has {} bytes of local memory",
+        local_bytes(&global)
+    );
+}
+
+#[test]
+fn the_global_ptx_targets_the_requested_architecture_too() {
+    let Some(text) = global_ptx(VDP, Integrator::Rk4, Scalar::F64, "compute_80") else {
+        return;
+    };
+    assert!(text.contains(".target sm_80"));
 }

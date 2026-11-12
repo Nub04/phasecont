@@ -12,20 +12,23 @@
 //! * `segm`, `ns` counts: steps of each RK4 segment, zero for the adaptive method.
 //! * `x0`, `members * n` states and `par`, the parameters (one set shared by every member,
 //!   or `members * n_p` values with `pstride = n_p`).
-//! * `work`, `work_len(n, integrator)` values per member, `out`, `ns * n` values per member
+//! * `work`, `work_len(n, integrator)` values per member (more under the global scratch
+//!   layout, see below), `out`, `ns * n` values per member
 //!   that start as NaN, and `ctl`, [`CTL`] words per member.
 //!
 //! Control words of a member: status, started, accepted, rejected, next sample, step in the
 //! segment, reject flag and NaN-error flag.
 //!
 //! `work` holds only what a launch hands to the next one. The scratch of a step (the trial
-//! state and the stage vectors) is private to the thread and does not appear in it. The
+//! state and the stage vectors) is private to the thread and does not appear in it, except
+//! under [`Layout::Global`], where the same scratch follows those words in the member's
+//! slice (`Layout::work_len` values) and the words a launch hands on stay where they are. The
 //! member's time `t` is the first value in both layouts, then for RK4 the state `y`; for DP5
 //! the step size `h`, the step error memory `facold`, the state `y` and the first stage `k0`
 //! (the last stage of the previous step).
 
 use crate::job::{Checked, EnsembleError, EnsembleResult, Job, Label, Method, Params, Status};
-use crate::kernel::{CTL, Integrator, work_len};
+use crate::kernel::{CTL, Integrator, Layout};
 use crate::real::Real;
 use crate::tape::Tape;
 use crate::traj::{Ctx, Kind};
@@ -43,7 +46,8 @@ pub struct Packed<T: Real> {
     /// Distance in `par` between the parameters of two members: 0 when shared.
     pub pstride: usize,
     pub work: Vec<T>,
-    /// Values per member in `work`: [`work_len`] of the integrator the run uses.
+    /// Values per member in `work`: [`work_len`] of the integrator the run uses, or
+    /// [`Layout::work_len`] when the scratch is global.
     pub work_len: usize,
     pub out: Vec<T>,
     pub ctl: Vec<u32>,
@@ -52,8 +56,14 @@ pub struct Packed<T: Real> {
     pub times: Vec<f64>,
 }
 
-/// Rounds `job` to `T` and lays it out for a kernel. The job must have passed `validate`.
+/// Rounds `job` to `T` and lays it out for a kernel with private scratch. The job must have
+/// passed `validate`.
 pub fn pack<T: Real>(job: &Job, checked: &Checked, tape: &Tape) -> Packed<T> {
+    pack_in(job, checked, tape, Layout::Private)
+}
+
+/// [`pack`] with the `work` buffer sized for the scratch layout the kernel was built with.
+pub fn pack_in<T: Real>(job: &Job, checked: &Checked, tape: &Tape, layout: Layout) -> Packed<T> {
     let ctx = Ctx::<T>::new(job, checked, tape);
     let (n, members, ns) = (checked.n, job.members, ctx.times.len());
     let zeros = |len: usize| vec![T::ZERO; len];
@@ -95,7 +105,7 @@ pub fn pack<T: Real>(job: &Job, checked: &Checked, tape: &Tape) -> Packed<T> {
         par.push(T::ZERO);
     }
 
-    let wl = work_len(n, integrator_of(job.method));
+    let wl = layout.work_len(n, integrator_of(job.method));
     let mut ctl = vec![0u32; members * CTL];
     for m in 0..members {
         ctl[m * CTL] = u32::from(Status::Running.code());
@@ -190,6 +200,7 @@ pub fn integrator_of(method: Method) -> Integrator {
 mod tests {
     use super::*;
     use crate::job::Precision;
+    use crate::kernel::work_len;
 
     /// Two members of one state, two output times, `ctl` and `work` as a device would leave them.
     fn finished(codes: [Status; 2], t_reached: [f64; 2]) -> Packed<f64> {

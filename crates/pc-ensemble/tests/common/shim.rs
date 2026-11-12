@@ -9,9 +9,9 @@ use std::process::Command;
 
 use libloading::{Library, Symbol};
 use pc_codegen::kernel::{Dialect, Scalar};
-use pc_ensemble::abi::pack;
+use pc_ensemble::abi::pack_in;
 use pc_ensemble::job::{Job, Label, Method, Precision, validate};
-use pc_ensemble::kernel::{Integrator, kernel_source};
+use pc_ensemble::kernel::{Integrator, Layout, kernel_source_in};
 use pc_ensemble::real::Real;
 use pc_ensemble::{EnsembleResult, Tape};
 
@@ -113,6 +113,7 @@ fn table<T: Real>() -> Tbl<T> {
 pub struct Shim {
     _dir: Dir,
     lib: Library,
+    layout: Layout,
     pub source: String,
 }
 
@@ -135,6 +136,11 @@ impl Shim {
     /// Builds the kernel for the model, method and precision of `job`. `None` after a loud
     /// skip when there is no C compiler.
     pub fn new(tag: &str, job: &Job) -> Option<Shim> {
+        Shim::new_in(tag, job, Layout::Private)
+    }
+
+    /// Like [`Shim::new`], with the scratch of a step in the given layout.
+    pub fn new_in(tag: &str, job: &Job, layout: Layout) -> Option<Shim> {
         let Some(cc) = compiler() else {
             assert!(
                 std::env::var_os("PC_REQUIRE_CC").is_none(),
@@ -152,7 +158,8 @@ impl Shim {
             Precision::Single => Scalar::F32,
             Precision::Double => Scalar::F64,
         };
-        let source = kernel_source(&tape, integrator, scalar, Dialect::C).expect("kernel source");
+        let source =
+            kernel_source_in(&tape, integrator, scalar, Dialect::C, layout).expect("kernel source");
         let dir = Dir::new(tag);
         let src = dir.0.join("k.c");
         let so = dir.0.join("k.so");
@@ -175,6 +182,7 @@ impl Shim {
         Some(Shim {
             _dir: dir,
             lib,
+            layout,
             source,
         })
     }
@@ -190,7 +198,7 @@ impl Shim {
     fn run_as<T: Real>(&self, job: &Job, steps: u64) -> EnsembleResult {
         let checked = validate(job).expect("validate");
         let tape = Tape::build(job.model).expect("tape");
-        let mut p = pack::<T>(job, &checked, &tape);
+        let mut p = pack_in::<T>(job, &checked, &tape, self.layout);
         let tbl = table::<T>();
         // SAFETY: both symbols are defined by the text built in `new`, with these types.
         let (init, ens): (Symbol<unsafe extern "C" fn(*const Tbl<T>)>, Symbol<Ens<T>>) = unsafe {
@@ -263,7 +271,12 @@ pub fn assert_same(what: &str, want: &EnsembleResult, got: &EnsembleResult) {
 /// Compares the CPU backend with the kernel for several launch sizes. Returns the CPU
 /// result, or `None` after a loud skip.
 pub fn check(what: &str, job: &Job) -> Option<EnsembleResult> {
-    let shim = Shim::new(what, job)?;
+    check_in(what, job, Layout::Private)
+}
+
+/// [`check`] with the scratch of a step in the given layout.
+pub fn check_in(what: &str, job: &Job, layout: Layout) -> Option<EnsembleResult> {
+    let shim = Shim::new_in(what, job, layout)?;
     let want = super::run(job);
     for steps in [1, 7, 64, u64::MAX] {
         let got = shim.run(job, steps);
