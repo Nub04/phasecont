@@ -1,8 +1,8 @@
 //! The Metal kernel through clang's C++ front end, with a stand-in for the Metal headers.
 //!
 //! MSL is C++14 or C++17 with address spaces and attributes. The shim below defines
-//! `metal_stdlib` so that `clang++ -fsyntax-only` parses the kernel text: `device` vanishes,
-//! `constant` becomes `const`, and `metal::precise` forwards to `<cmath>`. That catches a wrong
+//! `metal_stdlib` so that `clang++ -fsyntax-only` parses the kernel text: `device` and
+//! `thread` vanish, `constant` becomes `const`, and `metal::precise` forwards to `<cmath>`. That catches a wrong
 //! type, a missing function, a bad pointer conversion or a typo in the template. It does not
 //! check what only Metal's compiler knows (address-space rules, the `[[buffer]]` attributes,
 //! the pragmas), so it shows nothing about whether a Mac accepts the text. A machine without
@@ -40,6 +40,7 @@ using std::atan2; using std::pow; using std::fmod; using std::sqrt;
 using std::fabs; using std::floor; using std::ceil; using std::isfinite;
 }
 #define device
+#define thread
 #define constant const
 #define kernel
 "#;

@@ -10,14 +10,20 @@
 //! * `segm`, `ns` counts: steps of each RK4 segment, zero for the adaptive method.
 //! * `x0`, `members * n` states and `par`, the parameters (one set shared by every member,
 //!   or `members * n_p` values with `pstride = n_p`).
-//! * `work`, `work_len(n)` values per member, `out`, `ns * n` values per member that start
-//!   as NaN, and `ctl`, [`CTL`] words per member.
+//! * `work`, `work_len(n, integrator)` values per member, `out`, `ns * n` values per member
+//!   that start as NaN, and `ctl`, [`CTL`] words per member.
 //!
 //! Control words of a member: status, started, accepted, rejected, next sample, step in the
 //! segment, reject flag and NaN-error flag.
+//!
+//! `work` holds only what a launch hands to the next one. The scratch of a step (the trial
+//! state and the stage vectors) is private to the thread and does not appear in it. The
+//! member's time `t` is the first value in both layouts, then for RK4 the state `y`; for DP5
+//! the step size `h`, the step error memory `facold`, the state `y` and the first stage `k0`
+//! (the last stage of the previous step).
 
 use crate::job::{Checked, EnsembleError, EnsembleResult, Job, Label, Method, Params, Status};
-use crate::kernel::{CTL, work_len};
+use crate::kernel::{CTL, Integrator, work_len};
 use crate::real::Real;
 use crate::tape::Tape;
 use crate::traj::{Ctx, Kind};
@@ -35,6 +41,8 @@ pub struct Packed<T: Real> {
     /// Distance in `par` between the parameters of two members: 0 when shared.
     pub pstride: usize,
     pub work: Vec<T>,
+    /// Values per member in `work`: [`work_len`] of the integrator the run uses.
+    pub work_len: usize,
     pub out: Vec<T>,
     pub ctl: Vec<u32>,
     pub max_steps: u32,
@@ -85,6 +93,7 @@ pub fn pack<T: Real>(job: &Job, checked: &Checked, tape: &Tape) -> Packed<T> {
         par.push(T::ZERO);
     }
 
+    let wl = work_len(n, integrator_of(job.method));
     let mut ctl = vec![0u32; members * CTL];
     for m in 0..members {
         ctl[m * CTL] = u32::from(Status::Running.code());
@@ -98,7 +107,8 @@ pub fn pack<T: Real>(job: &Job, checked: &Checked, tape: &Tape) -> Packed<T> {
         x0: job.x0.iter().map(|&v| T::from_f64(v)).collect(),
         par,
         pstride,
-        work: zeros(members * work_len(n)),
+        work: zeros(members * wl),
+        work_len: wl,
         out: vec![T::NAN; members * ns * n],
         ctl,
         max_steps: job.max_steps,
@@ -129,7 +139,7 @@ impl<T: Real> Packed<T> {
 
     /// Turns the buffers of a finished run into a result.
     pub fn finish(self, label: Label) -> Result<EnsembleResult, EnsembleError> {
-        let wl = work_len(self.n);
+        let wl = self.work_len;
         let t_end = *self.times.last().expect("a job has at least one sample");
         let mut status = Vec::with_capacity(self.members);
         for m in 0..self.members {
@@ -148,7 +158,7 @@ impl<T: Real> Packed<T> {
                 if status[m] == Status::Ok {
                     t_end
                 } else {
-                    self.work[m * wl + 10 * self.n].to_f64()
+                    self.work[m * wl].to_f64()
                 }
             })
             .collect();
@@ -167,10 +177,10 @@ impl<T: Real> Packed<T> {
 }
 
 /// The integrator a job asks for.
-pub fn integrator_of(method: Method) -> crate::kernel::Integrator {
+pub fn integrator_of(method: Method) -> Integrator {
     match method {
-        Method::Rk4 { .. } => crate::kernel::Integrator::Rk4,
-        Method::Dp5 { .. } => crate::kernel::Integrator::Dp5,
+        Method::Rk4 { .. } => Integrator::Rk4,
+        Method::Dp5 { .. } => Integrator::Dp5,
     }
 }
 
@@ -182,12 +192,12 @@ mod tests {
     /// Two members of one state, two output times, `ctl` and `work` as a device would leave them.
     fn finished(codes: [Status; 2], t_reached: [f64; 2]) -> Packed<f64> {
         let (n, members) = (1, 2);
-        let wl = work_len(n);
+        let wl = work_len(n, Integrator::Rk4);
         let mut ctl = vec![0u32; members * CTL];
         let mut work = vec![0.0; members * wl];
         for m in 0..members {
             ctl[m * CTL] = u32::from(codes[m].code());
-            work[m * wl + 10 * n] = t_reached[m];
+            work[m * wl] = t_reached[m];
         }
         Packed {
             n,
@@ -199,6 +209,7 @@ mod tests {
             par: vec![0.0],
             pstride: 0,
             work,
+            work_len: wl,
             out: vec![1.0; members * 2 * n],
             ctl,
             max_steps: 100,
@@ -213,6 +224,15 @@ mod tests {
             driver: String::new(),
             precision: Precision::Double,
         }
+    }
+
+    #[test]
+    fn the_work_buffer_holds_only_what_a_launch_hands_on() {
+        // RK4: t and y. DP5: t, h, facold, y and the first stage.
+        assert_eq!(work_len(2, Integrator::Rk4), 3);
+        assert_eq!(work_len(2, Integrator::Dp5), 7);
+        assert_eq!(work_len(40, Integrator::Rk4), 41);
+        assert_eq!(work_len(40, Integrator::Dp5), 83);
     }
 
     #[test]

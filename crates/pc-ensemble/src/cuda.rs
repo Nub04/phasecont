@@ -599,7 +599,7 @@ fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
         .clone_htod(packed.par.as_slice())
         .map_err(drv("copy par to device"))?;
     // `work` starts as zeros: clear it on the device, which skips the upload of a buffer that
-    // is the largest of the run (`work_len(n)` values per member).
+    // is the largest of the run (`work_len(n, integrator)` values per member).
     let mut work = stream
         .alloc_zeros::<T>(packed.work.len())
         .map_err(drv("allocate work on the device"))?;

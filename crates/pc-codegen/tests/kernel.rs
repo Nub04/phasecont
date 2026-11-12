@@ -265,8 +265,35 @@ fn the_other_dialects_name_their_address_spaces() {
     assert!(ms.contains("metal_stdlib") && ms.contains("device"));
 }
 
+#[test]
+fn private_memory_has_a_qualifier_in_every_dialect() {
+    // Per-thread scratch is private by default in C, CUDA C and OpenCL C, and `thread` in Metal.
+    for (d, s) in [
+        (Dialect::C, Scalar::F64),
+        (Dialect::Cuda, Scalar::F64),
+        (Dialect::OpenCl, Scalar::F64),
+    ] {
+        let p = prelude(d, s).unwrap();
+        assert!(p.contains("#define PC_PRIV\n"), "{d:?}");
+    }
+    let ms = prelude(Dialect::Msl, Scalar::F32).unwrap();
+    assert!(ms.contains("#define PC_PRIV thread\n"));
+}
+
 fn n(i: u32) -> NodeId {
     NodeId(i)
+}
+
+#[test]
+fn the_rhs_takes_its_state_and_output_in_private_memory() {
+    let ops = [Op::Var(0)];
+    let t = emit_rhs(&ops, &[0], 0, Scalar::F64, "rhs").unwrap();
+    assert!(
+        t.contains(
+            "PC_FN void rhs(pc_real t, PC_PRIV const pc_real *x, PC_IN pc_real *p, PC_PRIV pc_real *out)"
+        ),
+        "{t}"
+    );
 }
 
 #[test]

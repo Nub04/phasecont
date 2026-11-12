@@ -64,8 +64,35 @@ fn the_scalar_type_follows_the_precision() {
 fn the_model_sizes_are_macros() {
     let text = source(OSC, Integrator::Rk4, Scalar::F64, Dialect::Cuda);
     assert!(text.contains("#define PC_N 2u"));
-    assert!(text.contains("#define PC_WL 23u"));
+    // RK4 keeps `t` and `y` between launches, so n + 1 values.
+    assert!(text.contains("#define PC_WL 3u"));
     assert!(text.contains("#define PC_CTL 8u"));
+    // DP5 also keeps `h`, `facold` and the first stage, so 2n + 3.
+    let text = source(OSC, Integrator::Dp5, Scalar::F64, Dialect::Cuda);
+    assert!(text.contains("#define PC_WL 7u"));
+}
+
+#[test]
+fn the_step_scratch_is_private_to_the_thread() {
+    for d in [Dialect::C, Dialect::Cuda, Dialect::OpenCl] {
+        let rk4 = source(OSC, Integrator::Rk4, Scalar::F64, d);
+        for decl in [
+            "pc_real y[PC_N];",
+            "pc_real y1[PC_N];",
+            "pc_real yt[PC_N];",
+            "pc_real k[4u * PC_N];",
+        ] {
+            assert!(rk4.contains(decl), "{d:?} rk4 {decl}");
+        }
+        let dp5 = source(OSC, Integrator::Dp5, Scalar::F64, d);
+        assert!(dp5.contains("pc_real k[7u * PC_N];"), "{d:?} dp5");
+        // The global buffer only holds what a launch hands to the next one.
+        assert!(!dp5.contains("w + PC_N"), "{d:?} dp5 keeps scratch in w");
+        assert!(
+            !dp5.contains("w + 3u * PC_N"),
+            "{d:?} dp5 keeps scratch in w"
+        );
+    }
 }
 
 #[test]

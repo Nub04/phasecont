@@ -29,9 +29,16 @@ pub enum Integrator {
     Dp5,
 }
 
-/// Workspace values per member: `y`, `y1`, `yt`, seven stages, then `t`, `h` and `facold`.
-pub fn work_len(n: usize) -> usize {
-    10 * n + 3
+/// Values per member in the `work` buffer: what a launch hands to the next one.
+///
+/// RK4 keeps `t`, then `y`. DP5 keeps `t`, `h` and `facold`, then `y` and the first stage `k0`,
+/// which is the last stage of the previous step. The trial state and the other stages are
+/// private to the thread and live only inside a launch.
+pub fn work_len(n: usize, integrator: Integrator) -> usize {
+    match integrator {
+        Integrator::Rk4 => n + 1,
+        Integrator::Dp5 => 2 * n + 3,
+    }
 }
 
 /// The kernel text for `tape`, or the reason the dialect or model cannot be lowered.
@@ -50,7 +57,10 @@ pub fn kernel_source(
         Dialect::Msl => ENTRY_MSL,
     };
     s.push_str(&format!("#define PC_N {}u\n", tape.n));
-    s.push_str(&format!("#define PC_WL {}u\n", work_len(tape.n)));
+    s.push_str(&format!(
+        "#define PC_WL {}u\n",
+        work_len(tape.n, integrator)
+    ));
     s.push_str(&format!("#define PC_CTL {CTL}u\n"));
     s.push_str(STATUS);
     s.push_str(&match scalar {
@@ -145,7 +155,7 @@ const STATUS: &str = r#"
 /// Returns `PC_NONFINITE` or `PC_BOUNDS` when the new state is unusable, `PC_RUNNING` when
 /// it is fine. A non-finite value wins over the bound, as on the CPU.
 const BAD_STATE: &str = r#"
-PC_FN pc_uint pc_bad_state(PC_GLOBAL pc_real *y1, pc_real bounds)
+PC_FN pc_uint pc_bad_state(PC_PRIV pc_real *y1, pc_real bounds)
 {
     pc_uint i;
     for (i = 0u; i < PC_N; i++) {
@@ -168,10 +178,10 @@ PC_FN void pc_member(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
                      PC_IN pc_real *par, PC_GLOBAL pc_real *w, PC_GLOBAL pc_real *out,
                      PC_GLOBAL pc_uint *c, pc_ulong budget, pc_uint max_steps, pc_uint ns)
 {
-    PC_GLOBAL pc_real *y = w;
-    PC_GLOBAL pc_real *y1 = w + PC_N;
-    PC_GLOBAL pc_real *yt = w + 2u * PC_N;
-    PC_GLOBAL pc_real *k = w + 3u * PC_N;
+    pc_real y[PC_N];
+    pc_real y1[PC_N];
+    pc_real yt[PC_N];
+    pc_real k[4u * PC_N];
     PC_IN pc_real *seg_a = rc + 5u + ns;
     PC_IN pc_real *seg_b = rc + 5u + 2u * ns;
     PC_IN pc_real *seg_h = rc + 5u + 3u * ns;
@@ -180,7 +190,7 @@ PC_FN void pc_member(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
     pc_uint accepted = c[2];
     pc_uint si = c[4];
     pc_uint ii = c[5];
-    pc_real t = w[10u * PC_N];
+    pc_real t;
     pc_uint i;
 
     if (st != PC_RUNNING) {
@@ -191,6 +201,11 @@ PC_FN void pc_member(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
         t = rc[0];
         for (i = 0u; i < PC_N; i++) {
             y[i] = x0[i];
+        }
+    } else {
+        t = w[0];
+        for (i = 0u; i < PC_N; i++) {
+            y[i] = w[1u + i];
         }
     }
     while (budget > 0u && st == PC_RUNNING) {
@@ -249,7 +264,10 @@ PC_FN void pc_member(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
             }
         }
     }
-    w[10u * PC_N] = t;
+    w[0] = t;
+    for (i = 0u; i < PC_N; i++) {
+        w[1u + i] = y[i];
+    }
     c[0] = st;
     c[2] = accepted;
     c[4] = si;
@@ -275,7 +293,7 @@ PC_FN pc_real pc_clamp(pc_real x, pc_real lo, pc_real hi)
 }
 
 PC_FN pc_real pc_hinit(pc_real t0, pc_real rtol, pc_real atol, pc_real hmax,
-                       PC_GLOBAL pc_real *y, PC_GLOBAL pc_real *yt, PC_GLOBAL pc_real *k,
+                       PC_PRIV pc_real *y, PC_PRIV pc_real *yt, PC_PRIV pc_real *k,
                        PC_IN pc_real *par)
 {
     pc_uint i;
@@ -314,8 +332,8 @@ PC_FN pc_real pc_hinit(pc_real t0, pc_real rtol, pc_real atol, pc_real hmax,
     return pc_fmin2(pc_fmin2(PC_C100 * pc_fabs(h), h1), hmax);
 }
 
-PC_FN pc_real pc_dp5_step(PC_GLOBAL pc_real *y, PC_GLOBAL pc_real *y1, PC_GLOBAL pc_real *yt,
-                          PC_GLOBAL pc_real *k, PC_IN pc_real *par, pc_real t, pc_real h,
+PC_FN pc_real pc_dp5_step(PC_PRIV pc_real *y, PC_PRIV pc_real *y1, PC_PRIV pc_real *yt,
+                          PC_PRIV pc_real *k, PC_IN pc_real *par, pc_real t, pc_real h,
                           pc_real t_end, pc_real rtol, pc_real atol)
 {
     pc_uint s;
@@ -364,10 +382,10 @@ PC_FN void pc_member(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
                      PC_IN pc_real *par, PC_GLOBAL pc_real *w, PC_GLOBAL pc_real *out,
                      PC_GLOBAL pc_uint *c, pc_ulong budget, pc_uint max_steps, pc_uint ns)
 {
-    PC_GLOBAL pc_real *y = w;
-    PC_GLOBAL pc_real *y1 = w + PC_N;
-    PC_GLOBAL pc_real *yt = w + 2u * PC_N;
-    PC_GLOBAL pc_real *k = w + 3u * PC_N;
+    pc_real y[PC_N];
+    pc_real y1[PC_N];
+    pc_real yt[PC_N];
+    pc_real k[7u * PC_N];
     PC_IN pc_real *times = rc + 5u;
     pc_real bounds = rc[1];
     pc_real rtol = rc[2];
@@ -379,18 +397,30 @@ PC_FN void pc_member(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
     pc_uint si = c[4];
     pc_uint reject = c[6];
     pc_uint nan_err = c[7];
-    pc_real t = w[10u * PC_N];
-    pc_real h = w[10u * PC_N + 1u];
-    pc_real facold = w[10u * PC_N + 2u];
+    pc_real t;
+    pc_real h;
+    pc_real facold;
     pc_uint i;
 
     (void)segm;
     if (st != PC_RUNNING) {
         return;
     }
-    if (c[1] == 0u) {
+    if (c[1] != 0u) {
+        t = w[0];
+        h = w[1];
+        facold = w[2];
+        for (i = 0u; i < PC_N; i++) {
+            y[i] = w[3u + i];
+        }
+        for (i = 0u; i < PC_N; i++) {
+            k[i] = w[3u + PC_N + i];
+        }
+    } else {
         c[1] = 1u;
         t = rc[0];
+        h = PC_ZERO;
+        facold = PC_ZERO;
         for (i = 0u; i < PC_N; i++) {
             y[i] = x0[i];
         }
@@ -481,9 +511,15 @@ PC_FN void pc_member(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
             }
         }
     }
-    w[10u * PC_N] = t;
-    w[10u * PC_N + 1u] = h;
-    w[10u * PC_N + 2u] = facold;
+    w[0] = t;
+    w[1] = h;
+    w[2] = facold;
+    for (i = 0u; i < PC_N; i++) {
+        w[3u + i] = y[i];
+    }
+    for (i = 0u; i < PC_N; i++) {
+        w[3u + PC_N + i] = k[i];
+    }
     c[0] = st;
     c[2] = accepted;
     c[3] = rejected;
