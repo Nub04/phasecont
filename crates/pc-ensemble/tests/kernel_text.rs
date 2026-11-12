@@ -116,6 +116,32 @@ fn the_rk4_segment_constants_are_loaded_once_per_segment() {
 }
 
 #[test]
+fn only_an_accepted_dp5_step_takes_the_facold_power() {
+    for (s, d) in [
+        (Scalar::F64, Dialect::C),
+        (Scalar::F64, Dialect::Cuda),
+        (Scalar::F64, Dialect::OpenCl),
+        (Scalar::F32, Dialect::Msl),
+    ] {
+        let text = source(OSC, Integrator::Dp5, s, d);
+        // One use, written once, and after the accepted branch has passed the state check.
+        assert_eq!(text.matches("pc_pow(facold").count(), 1, "{d:?}");
+        let step = text.find("pc_dp5_step(y, y1").expect("the step call");
+        let power = text.find("pc_pow(facold").expect("the facold power");
+        let accept = step + text[step..].find("if (err <= PC_ONE)").expect("accept");
+        let checked = accept + text[accept..].find("pc_bad_state(y1, lim)").expect("check");
+        let reject = checked + text[checked..].find("} else {").expect("reject branch");
+        assert!(
+            checked < power && power < reject,
+            "{d:?}: the power must sit inside the accepted branch"
+        );
+        // The error power that both outcomes need stays where it was, before the branch.
+        let fac11 = text.find("fac11 = pc_pow(err").expect("fac11");
+        assert!(step < fac11 && fac11 < accept, "{d:?}");
+    }
+}
+
+#[test]
 fn the_state_check_is_one_pass_with_the_two_pass_check_behind_it() {
     for (i, s) in BOTH {
         for d in [Dialect::C, Dialect::Cuda, Dialect::OpenCl] {

@@ -488,11 +488,11 @@ PC_FN void pc_member(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
             t_end = (landing != 0u) ? s : t + h;
             err = pc_dp5_step(y, y1, yt, k, par, t, h, t_end, rtol, atol);
             fac11 = pc_pow(err, PC_EXPO1);
-            fac = pc_clamp(fac11 / pc_pow(facold, PC_BETA) / PC_SAFE, PC_INV_FAC2, PC_INV_FAC1);
-            hnew = h / fac;
             if (err <= PC_ONE) {
                 st = pc_bad_state(y1, lim);
                 if (st == PC_RUNNING) {
+                    fac = pc_clamp(fac11 / pc_pow(facold, PC_BETA) / PC_SAFE, PC_INV_FAC2, PC_INV_FAC1);
+                    hnew = h / fac;
                     facold = pc_fmax2(err, PC_FACOLD_MIN);
                     accepted += 1u;
                     t = t_end;
