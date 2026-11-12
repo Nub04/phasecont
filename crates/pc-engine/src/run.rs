@@ -242,7 +242,19 @@ impl crate::model::ModelEval for PanicEval {
     }
 }
 
-/// Follows one branch and stores the result as branch `idx`. Returns the branch.
+/// Stores the finished `branch` as branch `idx` in place of the points that were streamed, and
+/// returns why it stopped. The branch moves in, and the streamed points are freed after the lock
+/// is released, so a poll never waits for the free.
+fn store_branch(shared: &Shared, idx: usize, branch: Branch) -> StopReason {
+    let stop = branch.stop.clone();
+    let streamed = std::mem::replace(&mut shared.lock().branches[idx], branch);
+    drop(streamed);
+    stop
+}
+
+/// Follows one branch and returns it. A branch that ends with an error stays in the run state
+/// as streamed, with the error as its stop; the caller stores a finished one with
+/// [`store_branch`].
 fn follow(
     shared: &Shared,
     model: &mut dyn crate::model::ModelEval,
@@ -278,10 +290,9 @@ fn follow(
             integrate(model, &ivp, opts, &shared.cancel, on_point)
         }
     };
-    match &b {
-        Ok(branch) => shared.lock().branches[idx] = branch.clone(),
-        // Keep the streamed points and say that the branch did not finish.
-        Err(e) => shared.lock().branches[idx].stop = StopReason::Error(e.clone()),
+    // Keep the streamed points of a branch that failed and say that it did not finish.
+    if let Err(e) = &b {
+        shared.lock().branches[idx].stop = StopReason::Error(e.clone());
     }
     b
 }
@@ -333,11 +344,15 @@ fn body(shared: &Shared, spec: RunSpec) -> RunState {
         Err(e) => return finish(shared, Err(e)),
     };
     let Some(name) = &spec.switch_at else {
-        return finish(shared, Ok(&first));
+        let stop = store_branch(shared, 0, first);
+        return finish_stop(shared, Ok(&stop));
     };
     if shared.cancel.load(Ordering::Relaxed) || first.stop == StopReason::Cancelled {
-        return finish(shared, Ok(&first));
+        let stop = store_branch(shared, 0, first);
+        return finish_stop(shared, Ok(&stop));
     }
+    // Only a run that switches keeps a copy: it needs the branch to find the special point.
+    store_branch(shared, 0, first.clone());
     let Some(k) = special_index(&first, name) else {
         return finish(
             shared,
@@ -351,7 +366,10 @@ fn body(shared: &Shared, spec: RunSpec) -> RunState {
         Err(e) => return finish(shared, Err(e)),
     };
     match follow(shared, model.as_mut(), &RunKind::Ep, &next, &spec.opts, 1) {
-        Ok(b) => finish(shared, Ok(&b)),
+        Ok(b) => {
+            let stop = store_branch(shared, 1, b);
+            finish_stop(shared, Ok(&stop))
+        }
         Err(e) => finish(shared, Err(e)),
     }
 }
@@ -366,9 +384,8 @@ fn body_dde(shared: &Shared, spec: RunSpec, roots: RootOptions) -> RunState {
     shared.lock().branches.push(placeholder());
     match dde_continue_equilibrium(&mut model, &spec.setup, &roots, &spec.opts, &shared.cancel) {
         Ok(b) => {
-            let branch = dde_branch(b);
-            shared.lock().branches[0] = branch.clone();
-            finish(shared, Ok(&branch))
+            let stop = store_branch(shared, 0, dde_branch(b));
+            finish_stop(shared, Ok(&stop))
         }
         Err(e) => {
             shared.lock().branches[0].stop = match &e {
@@ -462,10 +479,12 @@ fn body_dde_cycle(shared: &Shared, spec: RunSpec) -> RunState {
     let first = match run {
         Ok(b) => {
             let branch = dde_cycle_branch(&b);
-            shared.lock().branches[0] = branch.clone();
             if !switching {
-                return finish(shared, Ok(&branch));
+                let stop = store_branch(shared, 0, branch);
+                return finish_stop(shared, Ok(&stop));
             }
+            // A run that switches keeps a copy to find the special point.
+            store_branch(shared, 0, branch.clone());
             (b, branch)
         }
         Err(e) => {
@@ -514,9 +533,8 @@ fn body_dde_cycle(shared: &Shared, spec: RunSpec) -> RunState {
         &shared.cancel,
     ) {
         Ok(b) => {
-            let branch = dde_cycle_branch(&b);
-            shared.lock().branches[1] = branch.clone();
-            finish(shared, Ok(&branch))
+            let stop = store_branch(shared, 1, dde_cycle_branch(&b));
+            finish_stop(shared, Ok(&stop))
         }
         Err(e) => {
             shared.lock().branches[1].stop = match &e {
@@ -594,9 +612,8 @@ fn body_dde_hopf(
     };
     match dde_continue_hopf_with(&mut model, &setup, &spec.opts, &shared.cancel, &extras) {
         Ok(b) => {
-            let branch = dde_hopf_branch(b);
-            shared.lock().branches[0] = branch.clone();
-            finish(shared, Ok(&branch))
+            let stop = store_branch(shared, 0, dde_hopf_branch(b));
+            finish_stop(shared, Ok(&stop))
         }
         Err(e) => {
             shared.lock().branches[0].stop = match &e {
@@ -725,10 +742,15 @@ fn dde_branch(b: DdeBranch) -> Branch {
 
 /// Final state from the result of the last branch (R15c).
 fn finish(shared: &Shared, r: Result<&Branch, EngineError>) -> RunState {
+    finish_stop(shared, r.map(|b| &b.stop))
+}
+
+/// [`finish`] for a branch that is already stored: only its stop reason matters.
+fn finish_stop(shared: &Shared, r: Result<&StopReason, EngineError>) -> RunState {
     let cancelled = shared.cancel.load(Ordering::Relaxed);
     match r {
         _ if cancelled => RunState::Cancelled,
-        Ok(b) if b.stop == StopReason::Cancelled => RunState::Cancelled,
+        Ok(stop) if *stop == StopReason::Cancelled => RunState::Cancelled,
         Ok(_) => RunState::Done,
         Err(EngineError::Cancelled) => RunState::Cancelled,
         Err(e) => RunState::Failed(e),
@@ -1063,6 +1085,81 @@ mod tests {
         );
         sh.cancel.store(true, Ordering::Relaxed);
         assert_eq!(finish(&sh, Err(other)), RunState::Cancelled);
+    }
+
+    fn bare_point(alpha: f64) -> Point {
+        Point {
+            u: vec![alpha, 2.0 * alpha],
+            alpha,
+            tangent: vec![0.0, 0.0, 1.0],
+            eigenvalues: Vec::new(),
+            tests: [0.0; 3],
+            codim2: Vec::new(),
+            h: 0.1,
+            newton_iters: 2,
+            mesh: Vec::new(),
+        }
+    }
+
+    fn empty_shared() -> Shared {
+        Shared {
+            inner: Mutex::new(Inner {
+                branches: Vec::new(),
+                state: RunState::Running,
+            }),
+            cancel: AtomicBool::new(false),
+        }
+    }
+
+    #[test]
+    fn the_finished_branch_moves_into_the_run_state() {
+        let sh = empty_shared();
+        // Two streamed points, then a finished branch with three.
+        let mut streamed = placeholder();
+        streamed.points = vec![bare_point(1.0), bare_point(2.0)];
+        sh.lock().branches.push(streamed);
+        let mut done = placeholder();
+        done.points = (0..3).map(|k| bare_point(f64::from(k))).collect();
+        done.stop = StopReason::Bounds;
+        done.warnings = vec!["w".into()];
+        let (ptr, expected) = (done.points.as_ptr(), done.clone());
+        let stop = store_branch(&sh, 0, done);
+        assert_eq!(stop, StopReason::Bounds);
+        let g = sh.lock();
+        // The same allocation, so nothing was copied, and the same content.
+        assert_eq!(g.branches[0].points.as_ptr(), ptr);
+        assert_eq!(g.branches[0], expected);
+    }
+
+    #[test]
+    fn storing_a_branch_leaves_the_other_branches_alone() {
+        let sh = empty_shared();
+        for k in 0..2 {
+            let mut b = placeholder();
+            b.points = vec![bare_point(f64::from(k))];
+            sh.lock().branches.push(b);
+        }
+        let before = sh.lock().branches[0].clone();
+        let mut done = placeholder();
+        done.points = vec![bare_point(7.0), bare_point(8.0)];
+        done.stop = StopReason::End;
+        store_branch(&sh, 1, done);
+        let g = sh.lock();
+        assert_eq!(g.branches[0], before);
+        assert_eq!(g.branches[1].points.len(), 2);
+        assert_eq!(g.branches[1].stop, StopReason::End);
+    }
+
+    #[test]
+    fn finish_stop_agrees_with_finish() {
+        let sh = empty_shared();
+        let mut b = placeholder();
+        for stop in [StopReason::End, StopReason::Cancelled, StopReason::Bounds] {
+            b.stop = stop.clone();
+            assert_eq!(finish_stop(&sh, Ok(&stop)), finish(&sh, Ok(&b)));
+        }
+        sh.cancel.store(true, Ordering::Relaxed);
+        assert_eq!(finish_stop(&sh, Ok(&StopReason::End)), finish(&sh, Ok(&b)));
     }
 
     #[test]
