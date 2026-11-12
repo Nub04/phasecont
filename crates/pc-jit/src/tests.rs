@@ -847,6 +847,34 @@ mod compiled {
     }
 
     #[test]
+    fn the_plain_kinds_keep_their_own_function_in_any_request_order() {
+        let (x, p) = ([0.4, 0.3], [1.3, 0.7, 0.0]);
+        let plain = [
+            (EntryKind::F, 2),
+            (EntryKind::Aux, 1),
+            (EntryKind::JacU, 4),
+            (EntryKind::JacP, 4),
+        ];
+        let run = |cm: &mut CompiledModel, order: &[usize]| {
+            let mut got = vec![Vec::new(); plain.len()];
+            for &i in order {
+                let mut out = vec![0.0; plain[i].1];
+                cm.call(&plain[i].0, &x, &p, &[], &mut out).expect("call");
+                got[i] = out.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+            }
+            got
+        };
+        let (mut a, _) = setup(SIMPLE);
+        let (mut b, _) = setup(SIMPLE);
+        let forward = run(&mut a, &[0, 1, 2, 3]);
+        let backward = run(&mut b, &[3, 2, 1, 0]);
+        assert_eq!(forward, backward);
+        // A repeat after all four are cached gives the same bits again.
+        assert_eq!(run(&mut b, &[2, 0, 3, 1]), forward);
+        assert_eq!(b.sets.len(), 4);
+    }
+
+    #[test]
     fn dropping_the_model_frees_every_module() {
         let before = module::FREED.with(|c| c.get());
         let (mut cm, _) = setup(SIMPLE);

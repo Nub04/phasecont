@@ -110,7 +110,7 @@ $A$ and $f_\alpha$ come from first-order symbolic differentiation. Orders 2 to 5
 
 ## 4. JIT and AOT (pc-jit, pc-codegen)
 
-**Entry points.** Lower each needed DAG to Cranelift IR as an `extern "C"` function. A typical signature is `fn(x: *const f64, p: *const f64, out: *mut f64)`. Directional entries take extra vector pointers. Matrix outputs such as the Jacobian are written column major.
+**Entry points.** Lower each needed DAG to Cranelift IR as an `extern "C"` function. A typical signature is `fn(x: *const f64, p: *const f64, out: *mut f64)`. Directional entries take extra vector pointers. Matrix outputs such as the Jacobian are written column major. `CompiledModel` compiles a kind on its first request and keeps the function and its output length. The four plain kinds (`F`, `Aux`, `JacU`, `JacP`) are found by index, and only the directional kinds go through a hash map, so a call in an inner loop does not hash. The functions are the same, so the output bits do not change.
 
 **Code generation flags.** Set `is_pic` only on x86_64 and set `use_colocated_libcalls` to false, as `JITBuilder::new` does. Set `enable_probestack` to true and `probestack_strategy` to `inline`. Cranelift leaves stack probes off by default, Windows needs them for frames over 4096 bytes, and the default `outline` strategy calls `__cranelift_probestack`, which `pckern` does not provide.
 

@@ -41,8 +41,22 @@ impl PartialEq for EntryFn {
 pub struct CompiledModel {
     pub(crate) ir: IrModel,
     pub(crate) sets: Vec<JitEntries>,
-    /// The function and the output length of each compiled kind.
-    cache: HashMap<EntryKind, (EntryFn, usize)>,
+    /// The function and the output length of F, Aux, JacU and JacP, by [`plain_slot`]. A
+    /// model evaluates these in its inner loops, so they are found by index.
+    plain: [Option<(EntryFn, usize)>; 4],
+    /// The same for each directional kind.
+    dirs: HashMap<EntryKind, (EntryFn, usize)>,
+}
+
+/// Index of a plain kind in `CompiledModel::plain`, `None` for a directional kind.
+fn plain_slot(kind: &EntryKind) -> Option<usize> {
+    match kind {
+        EntryKind::F => Some(0),
+        EntryKind::Aux => Some(1),
+        EntryKind::JacU => Some(2),
+        EntryKind::JacP => Some(3),
+        EntryKind::Dir(_) => None,
+    }
 }
 
 impl CompiledModel {
@@ -50,7 +64,8 @@ impl CompiledModel {
         CompiledModel {
             ir,
             sets: Vec::new(),
-            cache: HashMap::new(),
+            plain: [None; 4],
+            dirs: HashMap::new(),
         }
     }
 
@@ -68,7 +83,12 @@ impl CompiledModel {
     }
 
     fn entry_with_len(&mut self, kind: &EntryKind) -> Result<(EntryFn, usize), JitError> {
-        if let Some(&hit) = self.cache.get(kind) {
+        let slot = plain_slot(kind);
+        let cached = match slot {
+            Some(i) => self.plain[i],
+            None => self.dirs.get(kind).copied(),
+        };
+        if let Some(hit) = cached {
             return Ok(hit);
         }
         let e = self.ir.entry(kind).map_err(JitError::Ir)?;
@@ -82,7 +102,12 @@ impl CompiledModel {
         };
         let hit = (f, e.outputs.len());
         self.sets.push(set);
-        self.cache.insert(kind.clone(), hit);
+        match slot {
+            Some(i) => self.plain[i] = Some(hit),
+            None => {
+                self.dirs.insert(kind.clone(), hit);
+            }
+        }
         Ok(hit)
     }
 
