@@ -137,6 +137,14 @@ pub struct CycleProblem<'a> {
     /// The x and mesh that `blocks` were assembled at, when the last assembly finished.
     /// `assemble` returns at once for the same bits.
     assembled: Option<(Vec<f64>, Vec<f64>)>,
+    /// The condenser holds the condensed intervals of the current `blocks`: set by a
+    /// bordered solve or a monodromy that finished, cleared by every other use of the
+    /// condenser and by every assembly that writes the blocks. The condensed interval
+    /// columns do not depend on the right-hand side or the border rows.
+    condensed: bool,
+    /// Interval condensations that `monodromy` ran.
+    #[cfg(test)]
+    condense_runs: usize,
     /// Accepted points between mesh adaptations, 0 for none (`Options::mesh_adapt`).
     pub(crate) adapt_every: usize,
     /// Accepted points since the last adaptation, and whether the mesh already moved at
@@ -318,6 +326,9 @@ impl<'a> CycleProblem<'a> {
             jac_u: vec![0.0; n * n],
             jac_p: vec![0.0; n * n_p],
             assembled: None,
+            condensed: false,
+            #[cfg(test)]
+            condense_runs: 0,
             adapt_every: 0,
             since: 0,
             adapted_here: false,
@@ -440,6 +451,7 @@ impl<'a> CycleProblem<'a> {
             return Ok(());
         }
         // A failed assembly leaves the blocks half written.
+        self.condensed = false;
         let mut keep = self.assembled.take().unwrap_or_default();
         for j in 0..self.ntst {
             let h = self.mesh[j + 1] - self.mesh[j];
@@ -532,7 +544,14 @@ impl<'a> CycleProblem<'a> {
             bc: &self.bc,
             border: &self.border,
         };
-        self.condenser.condense_intervals(&sys, self.parallel)?;
+        if !self.condensed {
+            #[cfg(test)]
+            {
+                self.condense_runs += 1;
+            }
+            self.condenser.condense_intervals(&sys, self.parallel)?;
+            self.condensed = true;
+        }
         Ok(self.condenser.monodromy()?)
     }
 
@@ -720,6 +739,7 @@ impl<'a> CycleProblem<'a> {
             bc: &bc,
             border: &border,
         };
+        self.condensed = false;
         self.condenser.solve(&sys, &rhs, &mut sol, self.parallel)?;
         sol.truncate(ext);
         Ok((sol, re))
@@ -894,7 +914,9 @@ impl Problem for CycleProblem<'_> {
             bc: &self.bc,
             border: &self.border,
         };
+        self.condensed = false;
         self.condenser.solve(&sys, rhs, sol, self.parallel)?;
+        self.condensed = true;
         Ok(f64::NAN)
     }
 }
@@ -1108,6 +1130,109 @@ mod tests {
         fresh.set_mesh(mesh, &x[..k]);
         fresh.jacobian(&x, &mut []).unwrap();
         assert_eq!(bits(p.blocks()), bits(fresh.blocks()));
+    }
+
+    /// A border row and a right-hand side that are not special to the problem.
+    fn border_and_rhs(dim: usize) -> (Vec<f64>, Vec<f64>) {
+        let at = |i: usize, a: usize| ((i * a + 3) % 11) as f64 - 5.0;
+        (
+            (0..dim).map(|i| at(i, 7)).collect(),
+            (0..dim).map(|i| at(i, 5)).collect(),
+        )
+    }
+
+    /// The monodromy matrix of a problem that never solved or condensed anything.
+    fn fresh_monodromy(setup: &CycleSetup, x: &[f64]) -> Vec<f64> {
+        let (mut model, _) = counting_model();
+        let mut fresh = CycleProblem::new(&mut model, setup).unwrap();
+        fresh.state_jacobian(x).unwrap().unwrap()
+    }
+
+    #[test]
+    fn the_monodromy_after_a_bordered_solve_at_the_same_x_condenses_nothing_more() {
+        let (mut model, _) = counting_model();
+        let (setup, x) = setup_and_x();
+        let mut p = CycleProblem::new(&mut model, &setup).unwrap();
+        let dim = p.dim();
+        let (border, rhs) = border_and_rhs(dim);
+        let mut sol = vec![0.0; dim];
+        p.jacobian(&x, &mut []).unwrap();
+        p.bordered_solve(&[], &border, &rhs, &mut sol).unwrap();
+        let runs = p.condense_runs;
+        let kept = p.state_jacobian(&x).unwrap().unwrap();
+        assert_eq!(p.condense_runs, runs, "the intervals were condensed twice");
+        assert_eq!(bits(&kept), bits(&fresh_monodromy(&setup, &x)));
+        // The monodromy leaves its own condensation for the next one.
+        let again = p.state_jacobian(&x).unwrap().unwrap();
+        assert_eq!(p.condense_runs, runs);
+        assert_eq!(bits(&again), bits(&kept));
+    }
+
+    #[test]
+    fn a_solve_at_another_x_leaves_no_intervals_for_the_monodromy() {
+        let (mut model, _) = counting_model();
+        let (setup, x) = setup_and_x();
+        let mut p = CycleProblem::new(&mut model, &setup).unwrap();
+        let dim = p.dim();
+        let (border, rhs) = border_and_rhs(dim);
+        let mut sol = vec![0.0; dim];
+        p.jacobian(&x, &mut []).unwrap();
+        p.bordered_solve(&[], &border, &rhs, &mut sol).unwrap();
+        let mut y = x.clone();
+        y[1] += 1e-3;
+        p.jacobian(&y, &mut []).unwrap();
+        let runs = p.condense_runs;
+        let at_y = p.state_jacobian(&y).unwrap().unwrap();
+        assert_eq!(p.condense_runs, runs + 1, "stale intervals were reused");
+        assert_eq!(bits(&at_y), bits(&fresh_monodromy(&setup, &y)));
+        // Back at x: its blocks are gone, so its intervals are too.
+        let at_x = p.state_jacobian(&x).unwrap().unwrap();
+        assert_eq!(p.condense_runs, runs + 2);
+        assert_eq!(bits(&at_x), bits(&fresh_monodromy(&setup, &x)));
+    }
+
+    #[test]
+    fn a_new_mesh_leaves_no_intervals_for_the_monodromy() {
+        let (mut model, _) = counting_model();
+        let (setup, x) = setup_and_x();
+        let mut p = CycleProblem::new(&mut model, &setup).unwrap();
+        let dim = p.dim();
+        let (border, rhs) = border_and_rhs(dim);
+        let mut sol = vec![0.0; dim];
+        p.jacobian(&x, &mut []).unwrap();
+        p.bordered_solve(&[], &border, &rhs, &mut sol).unwrap();
+        let mut mesh: Vec<f64> = (0..=NTST).map(|j| j as f64 / NTST as f64).collect();
+        mesh[2] = 0.45;
+        let k = p.profile_len();
+        p.set_mesh(mesh.clone(), &x[..k]);
+        let runs = p.condense_runs;
+        let on_mesh = p.state_jacobian(&x).unwrap().unwrap();
+        assert_eq!(p.condense_runs, runs + 1);
+
+        let (mut model, _) = counting_model();
+        let mut fresh = CycleProblem::new(&mut model, &setup).unwrap();
+        fresh.set_mesh(mesh, &x[..k]);
+        let direct = fresh.state_jacobian(&x).unwrap().unwrap();
+        assert_eq!(bits(&on_mesh), bits(&direct));
+    }
+
+    #[test]
+    fn a_failed_solve_leaves_no_intervals_for_the_monodromy() {
+        let (mut model, _) = counting_model();
+        let (setup, x) = setup_and_x();
+        let mut p = CycleProblem::new(&mut model, &setup).unwrap();
+        let dim = p.dim();
+        let (border, rhs) = border_and_rhs(dim);
+        let mut sol = vec![0.0; dim];
+        p.jacobian(&x, &mut []).unwrap();
+        p.bordered_solve(&[], &border, &rhs, &mut sol).unwrap();
+        let mut bad = rhs.clone();
+        bad[0] = f64::NAN;
+        assert!(p.bordered_solve(&[], &border, &bad, &mut sol).is_err());
+        let runs = p.condense_runs;
+        let after = p.state_jacobian(&x).unwrap().unwrap();
+        assert_eq!(p.condense_runs, runs + 1);
+        assert_eq!(bits(&after), bits(&fresh_monodromy(&setup, &x)));
     }
 
     #[test]
