@@ -134,6 +134,9 @@ pub struct CycleProblem<'a> {
     f: Vec<f64>,
     jac_u: Vec<f64>,
     jac_p: Vec<f64>,
+    /// The x and mesh that `blocks` were assembled at, when the last assembly finished.
+    /// `assemble` returns at once for the same bits.
+    assembled: Option<(Vec<f64>, Vec<f64>)>,
     /// Accepted points between mesh adaptations, 0 for none (`Options::mesh_adapt`).
     pub(crate) adapt_every: usize,
     /// Accepted points since the last adaptation, and whether the mesh already moved at
@@ -314,6 +317,7 @@ impl<'a> CycleProblem<'a> {
             f: vec![0.0; n],
             jac_u: vec![0.0; n * n],
             jac_p: vec![0.0; n * n_p],
+            assembled: None,
             adapt_every: 0,
             since: 0,
             adapted_here: false,
@@ -416,12 +420,27 @@ impl<'a> CycleProblem<'a> {
     }
 
     /// Assembles the collocation blocks at x.
+    ///
+    /// The blocks depend on x and the mesh only, so a second call with the same bits of
+    /// both keeps them. A step of the continuation assembles its accepted point twice,
+    /// once for the tangent and once for the Floquet multipliers.
     pub(crate) fn assemble(&mut self, x: &[f64]) -> Result<(), EngineError> {
         let (n, m) = (self.model.n(), self.basis.m());
         let nm = n * m;
         let tcol = n * (m + 1);
         let size = nm * (tcol + self.k());
         let period = self.read_extras(x);
+        let same_bits = |a: &[f64], b: &[f64]| {
+            a.len() == b.len() && a.iter().zip(b).all(|(u, v)| u.to_bits() == v.to_bits())
+        };
+        if let Some((ax, am)) = &self.assembled
+            && same_bits(ax, x)
+            && same_bits(am, &self.mesh)
+        {
+            return Ok(());
+        }
+        // A failed assembly leaves the blocks half written.
+        let mut keep = self.assembled.take().unwrap_or_default();
         for j in 0..self.ntst {
             let h = self.mesh[j + 1] - self.mesh[j];
             let base = &x[j * nm..j * nm + tcol];
@@ -454,6 +473,11 @@ impl<'a> CycleProblem<'a> {
                 }
             }
         }
+        keep.0.clear();
+        keep.0.extend_from_slice(x);
+        keep.1.clear();
+        keep.1.extend_from_slice(&self.mesh);
+        self.assembled = Some(keep);
         Ok(())
     }
 
@@ -942,4 +966,162 @@ pub fn periodic_orbit(
         iters: opts.max_newton,
         residual: res,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Evaluator, build};
+    use pc_ode::{FsLoader, SourceMap, load};
+    use std::cell::Cell;
+    use std::f64::consts::PI;
+    use std::path::Path;
+    use std::rc::Rc;
+
+    /// Forwards to a model and counts the entry calls.
+    struct Counting {
+        inner: Box<dyn ModelEval>,
+        calls: Rc<Cell<usize>>,
+    }
+
+    impl ModelEval for Counting {
+        fn n(&self) -> usize {
+            self.inner.n()
+        }
+        fn n_p(&self) -> usize {
+            self.inner.n_p()
+        }
+        fn eval(
+            &mut self,
+            kind: &EntryKind,
+            x: &[f64],
+            p: &[f64],
+            v: &[f64],
+            out: &mut [f64],
+        ) -> Result<(), EngineError> {
+            self.calls.set(self.calls.get() + 1);
+            self.inner.eval(kind, x, p, v, out)
+        }
+    }
+
+    const NTST: usize = 4;
+    const NCOL: usize = 3;
+    /// F, F_u and F_p at each of the N m collocation points.
+    const PER_ASSEMBLY: usize = 3 * NTST * NCOL;
+
+    fn counting_model() -> (Counting, Rc<Cell<usize>>) {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/models/hopf_c.ode");
+        let mut map = SourceMap::new();
+        let mut loader = FsLoader::new();
+        let top = loader.load_top(&mut map, &path).unwrap();
+        let loaded = load(top, &mut map, &mut loader);
+        let inner = build(&loaded.expanded, &loaded.info, Evaluator::Jit).unwrap();
+        let calls = Rc::new(Cell::new(0));
+        (
+            Counting {
+                inner,
+                calls: calls.clone(),
+            },
+            calls,
+        )
+    }
+
+    /// A generic point near the circle of radius 0.7, with the setup of a problem on it.
+    fn setup_and_x() -> (CycleSetup, Vec<f64>) {
+        let nm = NTST * NCOL;
+        let profile: Vec<f64> = (0..=nm)
+            .flat_map(|k| {
+                let th = 2.0 * PI * k as f64 / nm as f64;
+                let r = 0.7 + 0.1 * (3.0 * th).sin();
+                [r * th.cos(), r * th.sin()]
+            })
+            .collect();
+        let setup = CycleSetup::new(0, vec![0.4, -1.0], NTST, NCOL, profile, 6.1);
+        let mut x = setup.profile.clone();
+        x.push(setup.period);
+        x.push(setup.params[setup.free]);
+        (setup, x)
+    }
+
+    fn bits(v: &[f64]) -> Vec<u64> {
+        v.iter().map(|a| a.to_bits()).collect()
+    }
+
+    #[test]
+    fn the_monodromy_after_the_jacobian_at_the_same_x_runs_no_model_entry() {
+        let (mut model, calls) = counting_model();
+        let (setup, x) = setup_and_x();
+        let mut p = CycleProblem::new(&mut model, &setup).unwrap();
+        p.jacobian(&x, &mut []).unwrap();
+        assert_eq!(calls.get(), PER_ASSEMBLY);
+        let cached = p.state_jacobian(&x).unwrap().unwrap();
+        assert_eq!(
+            calls.get(),
+            PER_ASSEMBLY,
+            "the blocks at x were assembled twice"
+        );
+
+        // The same matrix, bit for bit, as from a problem that never assembled before.
+        let (mut fresh_model, _) = counting_model();
+        let mut fresh = CycleProblem::new(&mut fresh_model, &setup).unwrap();
+        let direct = fresh.state_jacobian(&x).unwrap().unwrap();
+        assert_eq!(bits(&cached), bits(&direct));
+    }
+
+    #[test]
+    fn another_x_assembles_again() {
+        let (mut model, calls) = counting_model();
+        let (setup, x) = setup_and_x();
+        let mut p = CycleProblem::new(&mut model, &setup).unwrap();
+        p.jacobian(&x, &mut []).unwrap();
+        // One bit in the profile, in the period and in the parameter each.
+        for i in [0, x.len() - 2, x.len() - 1] {
+            let before = calls.get();
+            let mut y = x.clone();
+            y[i] = f64::from_bits(y[i].to_bits() + 1);
+            p.jacobian(&y, &mut []).unwrap();
+            assert_eq!(calls.get(), before + PER_ASSEMBLY, "unknown {i}");
+            // And back: the blocks of x are gone, so x assembles again.
+            let before = calls.get();
+            p.jacobian(&x, &mut []).unwrap();
+            assert_eq!(calls.get(), before + PER_ASSEMBLY, "unknown {i}, back");
+        }
+    }
+
+    #[test]
+    fn a_new_mesh_assembles_again_and_gives_the_blocks_of_that_mesh() {
+        let (mut model, calls) = counting_model();
+        let (setup, x) = setup_and_x();
+        let mut p = CycleProblem::new(&mut model, &setup).unwrap();
+        p.jacobian(&x, &mut []).unwrap();
+        let mut mesh: Vec<f64> = (0..=NTST).map(|j| j as f64 / NTST as f64).collect();
+        mesh[1] = 0.2;
+        mesh[3] = 0.8;
+        let k = p.profile_len();
+        p.set_mesh(mesh.clone(), &x[..k]);
+        let before = calls.get();
+        p.jacobian(&x, &mut []).unwrap();
+        assert_eq!(calls.get(), before + PER_ASSEMBLY);
+
+        let (mut fresh_model, _) = counting_model();
+        let mut fresh = CycleProblem::new(&mut fresh_model, &setup).unwrap();
+        fresh.set_mesh(mesh, &x[..k]);
+        fresh.jacobian(&x, &mut []).unwrap();
+        assert_eq!(bits(p.blocks()), bits(fresh.blocks()));
+    }
+
+    #[test]
+    fn a_failed_assembly_leaves_nothing_to_reuse() {
+        let (mut model, calls) = counting_model();
+        let (setup, x) = setup_and_x();
+        let mut p = CycleProblem::new(&mut model, &setup).unwrap();
+        p.jacobian(&x, &mut []).unwrap();
+        // A NaN in the profile makes the model refuse its output part way through.
+        let mut bad = x.clone();
+        bad[0] = f64::NAN;
+        assert!(p.jacobian(&bad, &mut []).is_err());
+        let before = calls.get();
+        p.jacobian(&x, &mut []).unwrap();
+        assert_eq!(calls.get(), before + PER_ASSEMBLY);
+    }
 }
