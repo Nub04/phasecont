@@ -198,9 +198,11 @@ const RK4: &str = r#"
         h6 = h / PC_SIX; \
     } while (0)
 
-PC_FN void pc_member(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
-                     PC_IN pc_real *par, PC_GLOBAL pc_real *w, PC_GLOBAL pc_real *out,
-                     PC_GLOBAL pc_uint *c, pc_ulong budget, pc_uint max_steps, pc_uint ns)
+PC_FN void pc_member(PC_IN pc_real *PC_RESTRICT rc, PC_IN pc_ulong *PC_RESTRICT segm,
+                     PC_IN pc_real *PC_RESTRICT x0, PC_IN pc_real *PC_RESTRICT par,
+                     PC_GLOBAL pc_real *PC_RESTRICT w, PC_GLOBAL pc_real *PC_RESTRICT out,
+                     PC_GLOBAL pc_uint *PC_RESTRICT c, pc_ulong budget, pc_uint max_steps,
+                     pc_uint ns)
 {
     pc_real y[PC_N];
     pc_real y1[PC_N];
@@ -405,9 +407,11 @@ PC_FN pc_real pc_dp5_step(PC_PRIV pc_real *y, PC_PRIV pc_real *y1, PC_PRIV pc_re
 "#;
 
 const DP5: &str = r#"
-PC_FN void pc_member(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
-                     PC_IN pc_real *par, PC_GLOBAL pc_real *w, PC_GLOBAL pc_real *out,
-                     PC_GLOBAL pc_uint *c, pc_ulong budget, pc_uint max_steps, pc_uint ns)
+PC_FN void pc_member(PC_IN pc_real *PC_RESTRICT rc, PC_IN pc_ulong *PC_RESTRICT segm,
+                     PC_IN pc_real *PC_RESTRICT x0, PC_IN pc_real *PC_RESTRICT par,
+                     PC_GLOBAL pc_real *PC_RESTRICT w, PC_GLOBAL pc_real *PC_RESTRICT out,
+                     PC_GLOBAL pc_uint *PC_RESTRICT c, pc_ulong budget, pc_uint max_steps,
+                     pc_uint ns)
 {
     pc_real y[PC_N];
     pc_real y1[PC_N];
@@ -558,9 +562,10 @@ PC_FN void pc_member(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
 "#;
 
 const ENTRY_C: &str = r#"
-void pc_ens(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0, PC_IN pc_real *par,
-            PC_GLOBAL pc_real *work, PC_GLOBAL pc_real *out, PC_GLOBAL pc_uint *ctl,
-            pc_ulong members, pc_ulong steps, pc_uint max_steps, pc_uint ns, pc_ulong pstride)
+void pc_ens(PC_IN pc_real *PC_RESTRICT rc, PC_IN pc_ulong *PC_RESTRICT segm,
+            PC_IN pc_real *PC_RESTRICT x0, PC_IN pc_real *PC_RESTRICT par,
+            PC_GLOBAL pc_real *PC_RESTRICT work, PC_GLOBAL pc_real *PC_RESTRICT out,
+            PC_GLOBAL pc_uint *PC_RESTRICT ctl, pc_ulong members, pc_ulong steps, pc_uint max_steps, pc_uint ns, pc_ulong pstride)
 {
     pc_ulong m;
     for (m = 0u; m < members; m++) {
@@ -573,10 +578,12 @@ void pc_ens(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0, PC_IN pc
 /// One thread per member. The grid may hold more threads than members, so the guard comes
 /// first. `extern "C"` keeps the name that the host looks up.
 const ENTRY_CUDA: &str = r#"
-extern "C" __global__ void pc_ens(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
-                                  PC_IN pc_real *par, PC_GLOBAL pc_real *work,
-                                  PC_GLOBAL pc_real *out, PC_GLOBAL pc_uint *ctl,
-                                  pc_ulong members, pc_ulong steps, pc_uint max_steps,
+extern "C" __global__ void pc_ens(PC_IN pc_real *PC_RESTRICT rc,
+                                  PC_IN pc_ulong *PC_RESTRICT segm,
+                                  PC_IN pc_real *PC_RESTRICT x0, PC_IN pc_real *PC_RESTRICT par,
+                                  PC_GLOBAL pc_real *PC_RESTRICT work,
+                                  PC_GLOBAL pc_real *PC_RESTRICT out,
+                                  PC_GLOBAL pc_uint *PC_RESTRICT ctl, pc_ulong members, pc_ulong steps, pc_uint max_steps,
                                   pc_uint ns, pc_ulong pstride)
 {
     pc_ulong m = (pc_ulong)blockIdx.x * blockDim.x + threadIdx.x;
@@ -591,10 +598,10 @@ extern "C" __global__ void pc_ens(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN
 /// One work item per member, as in the CUDA entry. The global size is rounded up to a whole
 /// work group, so the guard comes first.
 const ENTRY_OPENCL: &str = r#"
-__kernel void pc_ens(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
-                     PC_IN pc_real *par, PC_GLOBAL pc_real *work,
-                     PC_GLOBAL pc_real *out, PC_GLOBAL pc_uint *ctl,
-                     pc_ulong members, pc_ulong steps, pc_uint max_steps,
+__kernel void pc_ens(PC_IN pc_real *PC_RESTRICT rc, PC_IN pc_ulong *PC_RESTRICT segm,
+                     PC_IN pc_real *PC_RESTRICT x0, PC_IN pc_real *PC_RESTRICT par,
+                     PC_GLOBAL pc_real *PC_RESTRICT work, PC_GLOBAL pc_real *PC_RESTRICT out,
+                     PC_GLOBAL pc_uint *PC_RESTRICT ctl, pc_ulong members, pc_ulong steps, pc_uint max_steps,
                      pc_uint ns, pc_ulong pstride)
 {
     pc_ulong m = (pc_ulong)get_global_id(0);
@@ -611,10 +618,13 @@ __kernel void pc_ens(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
 /// `steps`, `max_steps`, `ns` and `pstride` at 7 to 11. The grid is rounded up to a whole
 /// threadgroup, so the guard comes first.
 const ENTRY_MSL: &str = r#"
-kernel void pc_ens(PC_IN pc_real *rc [[buffer(0)]], PC_IN pc_ulong *segm [[buffer(1)]],
-                   PC_IN pc_real *x0 [[buffer(2)]], PC_IN pc_real *par [[buffer(3)]],
-                   PC_GLOBAL pc_real *work [[buffer(4)]], PC_GLOBAL pc_real *out [[buffer(5)]],
-                   PC_GLOBAL pc_uint *ctl [[buffer(6)]],
+kernel void pc_ens(PC_IN pc_real *PC_RESTRICT rc [[buffer(0)]],
+                   PC_IN pc_ulong *PC_RESTRICT segm [[buffer(1)]],
+                   PC_IN pc_real *PC_RESTRICT x0 [[buffer(2)]],
+                   PC_IN pc_real *PC_RESTRICT par [[buffer(3)]],
+                   PC_GLOBAL pc_real *PC_RESTRICT work [[buffer(4)]],
+                   PC_GLOBAL pc_real *PC_RESTRICT out [[buffer(5)]],
+                   PC_GLOBAL pc_uint *PC_RESTRICT ctl [[buffer(6)]],
                    constant pc_ulong &members [[buffer(7)]],
                    constant pc_ulong &steps [[buffer(8)]],
                    constant pc_uint &max_steps [[buffer(9)]],

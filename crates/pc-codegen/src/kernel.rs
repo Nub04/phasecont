@@ -163,7 +163,7 @@ pub fn prelude(d: Dialect, s: Scalar) -> Result<String, KernelError> {
             let _ = writeln!(t, "typedef {real} pc_real;");
             t.push_str("typedef unsigned int pc_uint;\ntypedef unsigned long long pc_ulong;\n");
             t.push_str(
-                "#define PC_FN static inline\n#define PC_GLOBAL\n#define PC_PRIV\n#define PC_IN const\n#define PC_CONSTANT static const\n",
+                "#define PC_FN static inline\n#define PC_GLOBAL\n#define PC_PRIV\n#define PC_IN const\n#define PC_RESTRICT\n#define PC_CONSTANT static const\n",
             );
             let _ = writeln!(t, "#define PC_INF ((pc_real)INFINITY)");
             let _ = writeln!(t, "#define PC_NAN ((pc_real)NAN)");
@@ -203,7 +203,7 @@ pub fn prelude(d: Dialect, s: Scalar) -> Result<String, KernelError> {
             let _ = writeln!(t, "typedef {real} pc_real;");
             t.push_str("typedef uint pc_uint;\ntypedef ulong pc_ulong;\n");
             t.push_str(
-                "#define PC_FN\n#define PC_GLOBAL __global\n#define PC_PRIV\n#define PC_IN __global const\n#define PC_CONSTANT __constant\n",
+                "#define PC_FN\n#define PC_GLOBAL __global\n#define PC_PRIV\n#define PC_IN __global const\n#define PC_RESTRICT restrict\n#define PC_CONSTANT __constant\n",
             );
             t.push_str("#define PC_INF ((pc_real)INFINITY)\n#define PC_NAN ((pc_real)NAN)\n");
             let _ = writeln!(
@@ -216,7 +216,7 @@ pub fn prelude(d: Dialect, s: Scalar) -> Result<String, KernelError> {
             let _ = writeln!(t, "typedef {real} pc_real;");
             t.push_str("typedef unsigned int pc_uint;\ntypedef unsigned long long pc_ulong;\n");
             t.push_str(
-                "#define PC_FN __device__\n#define PC_GLOBAL\n#define PC_PRIV\n#define PC_IN const\n#define PC_CONSTANT __constant__\n",
+                "#define PC_FN __device__\n#define PC_GLOBAL\n#define PC_PRIV\n#define PC_IN const\n#define PC_RESTRICT __restrict__\n#define PC_CONSTANT __constant__\n",
             );
             if f32_ {
                 t.push_str(
@@ -243,7 +243,7 @@ pub fn prelude(d: Dialect, s: Scalar) -> Result<String, KernelError> {
             t.push_str("#pragma METAL fp math_mode(safe)\n#pragma METAL fp contract(off)\n");
             t.push_str("typedef float pc_real;\ntypedef uint pc_uint;\ntypedef ulong pc_ulong;\n");
             t.push_str(
-                "#define PC_FN inline\n#define PC_GLOBAL device\n#define PC_PRIV thread\n#define PC_IN device const\n#define PC_CONSTANT constant\n",
+                "#define PC_FN inline\n#define PC_GLOBAL device\n#define PC_PRIV thread\n#define PC_IN device const\n#define PC_RESTRICT\n#define PC_CONSTANT constant\n",
             );
             t.push_str("#define PC_INF INFINITY\n#define PC_NAN NAN\n");
             t.push_str(

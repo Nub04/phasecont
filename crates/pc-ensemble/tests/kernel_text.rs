@@ -199,6 +199,43 @@ fn the_bound_the_kernel_reads_is_capped_at_the_largest_finite_value() {
 }
 
 #[test]
+fn every_kernel_buffer_pointer_is_restrict_qualified() {
+    // Seven buffers in the entry and the same seven in `pc_member`, in every dialect and for
+    // both integrators. The scalars that follow them take no qualifier.
+    for dialect in [Dialect::Cuda, Dialect::OpenCl, Dialect::C] {
+        for (i, s) in BOTH {
+            let text = source(VDP, i, s, dialect);
+            assert_eq!(
+                text.matches("*PC_RESTRICT ").count(),
+                14,
+                "{dialect:?} {i:?} {s:?}"
+            );
+            for name in ["rc", "segm", "x0", "par", "out"] {
+                let want = format!("*PC_RESTRICT {name}");
+                assert_eq!(text.matches(&want).count(), 2, "{name} {dialect:?}");
+            }
+            for name in ["work", "ctl", "w", "c"] {
+                let want = format!("*PC_RESTRICT {name},");
+                assert_eq!(text.matches(&want).count(), 1, "{name} {dialect:?}");
+            }
+            assert!(!text.contains("PC_RESTRICT pc_ulong members"));
+        }
+    }
+}
+
+#[test]
+fn the_restrict_keyword_reaches_only_the_gpu_dialects() {
+    let cuda = source(VDP, Integrator::Rk4, Scalar::F32, Dialect::Cuda);
+    assert!(cuda.contains("#define PC_RESTRICT __restrict__"));
+    let cl = source(VDP, Integrator::Rk4, Scalar::F32, Dialect::OpenCl);
+    assert!(cl.contains("#define PC_RESTRICT restrict"));
+    let c = source(VDP, Integrator::Rk4, Scalar::F32, Dialect::C);
+    assert!(c.contains("#define PC_RESTRICT\n"));
+    let msl = source(VDP, Integrator::Rk4, Scalar::F32, Dialect::Msl);
+    assert!(msl.contains("#define PC_RESTRICT\n"));
+}
+
+#[test]
 fn the_dp5_tables_live_in_constant_memory() {
     let text = source(VDP, Integrator::Dp5, Scalar::F64, Dialect::Cuda);
     assert!(text.contains("#define PC_CONSTANT __constant__"));

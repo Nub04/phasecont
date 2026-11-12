@@ -280,6 +280,29 @@ fn private_memory_has_a_qualifier_in_every_dialect() {
     assert!(ms.contains("#define PC_PRIV thread\n"));
 }
 
+#[test]
+fn the_restrict_qualifier_is_a_keyword_only_where_the_compiler_uses_it() {
+    // The kernel buffers never alias. CUDA C and OpenCL C get the keyword; the C shim and
+    // Metal define the macro empty, so the text stays valid and the shim tests are unchanged.
+    for (d, s, def) in [
+        (Dialect::C, Scalar::F64, "#define PC_RESTRICT\n"),
+        (
+            Dialect::Cuda,
+            Scalar::F64,
+            "#define PC_RESTRICT __restrict__\n",
+        ),
+        (
+            Dialect::OpenCl,
+            Scalar::F64,
+            "#define PC_RESTRICT restrict\n",
+        ),
+        (Dialect::Msl, Scalar::F32, "#define PC_RESTRICT\n"),
+    ] {
+        let p = prelude(d, s).unwrap();
+        assert!(p.contains(def), "{d:?}");
+    }
+}
+
 fn n(i: u32) -> NodeId {
     NodeId(i)
 }
