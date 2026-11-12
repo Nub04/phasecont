@@ -38,7 +38,7 @@ use crate::device::{Backend, BackendState, DeviceInfo};
 use crate::gpu::{drive, guard, kernel_err};
 use crate::job::{EnsembleError, EnsembleResult, Job, Label, Precision, validate};
 use crate::kept::{Kept, Lru};
-use crate::kernel::{Integrator, kernel_source};
+use crate::kernel::{Integrator, kernel_source, private_reals};
 use crate::real::Real;
 use crate::tape::Tape;
 
@@ -78,6 +78,43 @@ fn drv(step: &'static str) -> impl Fn(DriverError) -> EnsembleError {
             EnsembleError::GpuTimeout(text)
         } else {
             EnsembleError::GpuLaunch(text)
+        }
+    }
+}
+
+/// CUDA caps the local memory of one thread at 512 KB, and the private arrays of the kernel
+/// live there.
+const LOCAL_LIMIT_KB: usize = 512;
+/// The private arrays at which a failed launch gets the note below: half of the cap.
+const SCRATCH_NOTE_FROM: usize = 256 * 1024;
+
+/// What to add to a launch error when the private arrays of one thread are large. The kernel
+/// needs a little more local memory than the arrays, so a launch can fail below the cap.
+fn scratch_note(n: usize, integrator: Integrator, real_bytes: usize) -> Option<String> {
+    let bytes = private_reals(n, integrator).saturating_mul(real_bytes);
+    if bytes < SCRATCH_NOTE_FROM {
+        return None;
+    }
+    Some(format!(
+        "the private arrays of this kernel take about {} KB per thread for {n} states and CUDA \
+caps local memory at {LOCAL_LIMIT_KB} KB per thread (the kernel needs a little more than the \
+arrays), so a model this large can fail to launch; run it on the cpu backend",
+        bytes.div_ceil(1024)
+    ))
+}
+
+/// The mapper for the launch call: [`drv`], plus `note` after the text of an error that the
+/// size of the kernel can explain. A sticky error comes from an earlier fault and a timeout
+/// from the watchdog, so neither gets it.
+fn launch_err(note: Option<String>) -> impl Fn(DriverError) -> EnsembleError {
+    let base = drv("launch");
+    move |e| {
+        let sticky = STICKY.contains(&(e.0 as u32));
+        match (base(e), &note) {
+            (EnsembleError::GpuLaunch(m), Some(n)) if !sticky => {
+                EnsembleError::GpuLaunch(format!("{m}; {n}"))
+            }
+            (other, _) => other,
         }
     }
 }
@@ -562,11 +599,31 @@ fn session(
         driver: device.driver.clone(),
         precision: job.precision,
     };
+    let note = scratch_note(
+        tape.n,
+        integrator_of(job.method),
+        match job.precision {
+            Precision::Single => size_of::<f32>(),
+            Precision::Double => size_of::<f64>(),
+        },
+    );
     let ran = match job.precision {
-        Precision::Single => launch_all(ctx, &function, pack::<f32>(job, checked, tape), cancel)
-            .and_then(|packed| packed.finish(label)),
-        Precision::Double => launch_all(ctx, &function, pack::<f64>(job, checked, tape), cancel)
-            .and_then(|packed| packed.finish(label)),
+        Precision::Single => launch_all(
+            ctx,
+            &function,
+            pack::<f32>(job, checked, tape),
+            note,
+            cancel,
+        )
+        .and_then(|packed| packed.finish(label)),
+        Precision::Double => launch_all(
+            ctx,
+            &function,
+            pack::<f64>(job, checked, tape),
+            note,
+            cancel,
+        )
+        .and_then(|packed| packed.finish(label)),
     };
     // cudarc's Drop code stores its errors in the context. Take them here and charge them to
     // this run, or the next run on the device would see them.
@@ -583,6 +640,7 @@ fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
     ctx: &Arc<CudaContext>,
     function: &CudaFunction,
     mut packed: Packed<T>,
+    note: Option<String>,
     cancel: &AtomicBool,
 ) -> Result<Packed<T>, EnsembleError> {
     let stream = ctx.default_stream();
@@ -633,6 +691,7 @@ fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
     let pstride = packed.pstride as u64;
     let max_steps = packed.max_steps;
 
+    let launch_error = launch_err(note);
     drive(&mut packed.ctl, members as usize, cancel, |steps, ctl| {
         let started = Instant::now();
         #[cfg(feature = "fault-injection")]
@@ -656,7 +715,7 @@ fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
             // SAFETY: the arguments follow the signature of `pc_ens` in order and type, the
             // buffers have the sizes `crate::abi` documents, and the kernel returns early
             // for a thread past the last member.
-            unsafe { b.launch(cfg) }.map_err(drv("launch"))?;
+            unsafe { b.launch(cfg) }.map_err(&launch_error)?;
         }
         stream.synchronize().map_err(drv("synchronize"))?;
         let took = started.elapsed();
@@ -772,6 +831,58 @@ mod tests {
             };
             assert!(!m.contains("restart"), "{m}");
         }
+    }
+
+    #[test]
+    fn the_scratch_note_appears_from_256_kb_of_private_arrays() {
+        // RK4 holds 7 n reals per thread, Dormand-Prince 10 n.
+        let kb = |n: usize, i: Integrator, size: usize| scratch_note(n, i, size);
+        assert_eq!(kb(40, Integrator::Dp5, 8), None);
+        assert_eq!(kb(3276, Integrator::Dp5, 8), None, "262080 bytes");
+        assert!(kb(3277, Integrator::Dp5, 8).is_some(), "262160 bytes");
+        assert_eq!(kb(9362, Integrator::Rk4, 4), None, "262136 bytes");
+        assert!(kb(9363, Integrator::Rk4, 4).is_some(), "262164 bytes");
+        assert_eq!(kb(0, Integrator::Rk4, 8), None);
+        let note = kb(6000, Integrator::Dp5, 8).expect("480000 bytes");
+        for want in ["469 KB", "6000 states", "512 KB", "cpu"] {
+            assert!(note.contains(want), "{want} in {note}");
+        }
+        assert!(!note.contains("restart"), "{note}");
+        // A huge n must not overflow the size.
+        assert!(kb(usize::MAX / 2, Integrator::Dp5, 8).is_some());
+    }
+
+    #[test]
+    fn a_launch_error_carries_the_scratch_note_only_when_it_can_be_the_cause() {
+        use dsys::CUresult::*;
+        let note = Some("NOTE".to_string());
+        let plain = |code| match launch_err(None)(DriverError(code)) {
+            EnsembleError::GpuLaunch(m) => m,
+            other => panic!("{other:?}"),
+        };
+        let noted = |code| launch_err(note.clone())(DriverError(code));
+        // The failures seen with too much local memory get the note after the driver text.
+        for code in [CUDA_ERROR_INVALID_VALUE, CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES] {
+            let EnsembleError::GpuLaunch(m) = noted(code) else {
+                panic!("a launch error");
+            };
+            assert_eq!(m, format!("{}; NOTE", plain(code)));
+            assert!(!m.contains("restart"), "{m}");
+        }
+        // A sticky error came from an earlier fault and keeps its own text.
+        for code in [CUDA_ERROR_ILLEGAL_ADDRESS, CUDA_ERROR_LAUNCH_FAILED] {
+            let EnsembleError::GpuLaunch(m) = noted(code) else {
+                panic!("a launch error");
+            };
+            assert_eq!(m, plain(code));
+            assert!(!m.contains("NOTE"), "{m}");
+        }
+        // A watchdog stop stays a timeout without the note.
+        let timeout = noted(CUDA_ERROR_LAUNCH_TIMEOUT);
+        assert!(
+            matches!(&timeout, EnsembleError::GpuTimeout(m) if !m.contains("NOTE")),
+            "{timeout:?}"
+        );
     }
 
     #[test]

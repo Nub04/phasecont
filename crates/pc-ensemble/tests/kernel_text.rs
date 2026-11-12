@@ -400,3 +400,38 @@ fn msl_has_no_double_whatever_the_integrator() {
         assert_eq!(e, KernelError::NoDouble, "{i:?}");
     }
 }
+
+/// The reals that a kernel declares as private arrays inside `pc_member`, per state.
+fn declared_private_reals(text: &str) -> usize {
+    let member = &text[text.find("PC_FN void pc_member(").expect("pc_member")..];
+    member
+        .lines()
+        .take_while(|l| !l.contains("PC_IN pc_real *seg_a") && !l.contains("PC_IN pc_real *times"))
+        .filter_map(|l| {
+            let l = l.trim();
+            let (_, rest) = l.strip_prefix("pc_real ")?.split_once('[')?;
+            let size = rest.strip_suffix("];")?;
+            Some(match size {
+                "PC_N" => 1,
+                other => other
+                    .strip_suffix("u * PC_N")
+                    .and_then(|k| k.parse().ok())
+                    .unwrap_or_else(|| panic!("unreadable array size {other:?}")),
+            })
+        })
+        .sum()
+}
+
+#[test]
+fn the_private_size_formula_matches_the_arrays_in_the_kernel_text() {
+    use pc_ensemble::kernel::private_reals;
+    for (i, s) in BOTH {
+        let text = source(VDP, i, s, Dialect::Cuda);
+        let per_state = declared_private_reals(&text);
+        assert!(per_state > 0, "{i:?} {s:?}: no private arrays found");
+        let n = Tape::build(&build_model(VDP)).expect("tape").n;
+        assert_eq!(private_reals(n, i), per_state * n, "{i:?} {s:?}");
+    }
+    assert_eq!(private_reals(10, Integrator::Rk4), 70);
+    assert_eq!(private_reals(10, Integrator::Dp5), 100);
+}

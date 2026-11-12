@@ -41,6 +41,16 @@ pub fn work_len(n: usize, integrator: Integrator) -> usize {
     }
 }
 
+/// Reals that one thread of the RK4 or Dormand-Prince kernel holds in private arrays: the
+/// state, the trial state, a second trial state and the stage vectors (4 for RK4, 7 for
+/// Dormand-Prince). A test reads the declarations in the kernel text and checks this count.
+pub fn private_reals(n: usize, integrator: Integrator) -> usize {
+    match integrator {
+        Integrator::Rk4 => n.saturating_mul(7),
+        Integrator::Dp5 => n.saturating_mul(10),
+    }
+}
+
 /// The kernel text for `tape`, or the reason the dialect or model cannot be lowered.
 pub fn kernel_source(
     tape: &Tape,
