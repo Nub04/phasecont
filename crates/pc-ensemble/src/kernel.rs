@@ -154,17 +154,29 @@ const STATUS: &str = r#"
 
 /// Returns `PC_NONFINITE` or `PC_BOUNDS` when the new state is unusable, `PC_RUNNING` when
 /// it is fine. A non-finite value wins over the bound, as on the CPU.
+///
+/// `lim` is the bound capped at the largest finite value (see `abi.rs`), so `|y| <= lim` is
+/// false for NaN and infinity as well as for a state past the bound. One pass without an
+/// early exit ORs that test over the state. Only when it fails does the slow path look again,
+/// so that NONFINITE still comes before BOUNDS.
 const BAD_STATE: &str = r#"
-PC_FN pc_uint pc_bad_state(PC_PRIV pc_real *y1, pc_real bounds)
+PC_FN pc_uint pc_bad_state(PC_PRIV pc_real *y1, pc_real lim)
 {
     pc_uint i;
+    pc_uint bad = 0u;
+    for (i = 0u; i < PC_N; i++) {
+        bad |= (pc_fabs(y1[i]) <= lim) ? 0u : 1u;
+    }
+    if (bad == 0u) {
+        return PC_RUNNING;
+    }
     for (i = 0u; i < PC_N; i++) {
         if (!pc_isfinite(y1[i])) {
             return PC_NONFINITE;
         }
     }
     for (i = 0u; i < PC_N; i++) {
-        if (pc_fabs(y1[i]) > bounds) {
+        if (pc_fabs(y1[i]) > lim) {
             return PC_BOUNDS;
         }
     }
@@ -197,7 +209,7 @@ PC_FN void pc_member(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
     PC_IN pc_real *seg_a = rc + 5u + ns;
     PC_IN pc_real *seg_b = rc + 5u + 2u * ns;
     PC_IN pc_real *seg_h = rc + 5u + 3u * ns;
-    pc_real bounds = rc[1];
+    pc_real lim = rc[1];
     pc_uint st = c[0];
     pc_uint accepted = c[2];
     pc_uint si = c[4];
@@ -252,7 +264,7 @@ PC_FN void pc_member(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
             sum = sum + k[3u * PC_N + i];
             y1[i] = y[i] + h6 * sum;
         }
-        bad = pc_bad_state(y1, bounds);
+        bad = pc_bad_state(y1, lim);
         if (bad != PC_RUNNING) {
             st = bad;
         } else {
@@ -402,7 +414,7 @@ PC_FN void pc_member(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
     pc_real yt[PC_N];
     pc_real k[7u * PC_N];
     PC_IN pc_real *times = rc + 5u;
-    pc_real bounds = rc[1];
+    pc_real lim = rc[1];
     pc_real rtol = rc[2];
     pc_real atol = rc[3];
     pc_real hmax = rc[4];
@@ -479,7 +491,7 @@ PC_FN void pc_member(PC_IN pc_real *rc, PC_IN pc_ulong *segm, PC_IN pc_real *x0,
             fac = pc_clamp(fac11 / pc_pow(facold, PC_BETA) / PC_SAFE, PC_INV_FAC2, PC_INV_FAC1);
             hnew = h / fac;
             if (err <= PC_ONE) {
-                st = pc_bad_state(y1, bounds);
+                st = pc_bad_state(y1, lim);
                 if (st == PC_RUNNING) {
                     facold = pc_fmax2(err, PC_FACOLD_MIN);
                     accepted += 1u;

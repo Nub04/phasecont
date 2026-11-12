@@ -116,6 +116,63 @@ fn the_rk4_segment_constants_are_loaded_once_per_segment() {
 }
 
 #[test]
+fn the_state_check_is_one_pass_with_the_two_pass_check_behind_it() {
+    for (i, s) in BOTH {
+        for d in [Dialect::C, Dialect::Cuda, Dialect::OpenCl] {
+            let text = source(OSC, i, s, d);
+            let start = text.find("pc_uint pc_bad_state(").expect("pc_bad_state");
+            let end = start + text[start..].find("\n}\n").expect("end of pc_bad_state");
+            let body = &text[start..end];
+            // The first loop is the fused test, and it has no early exit.
+            let fused = body.find("pc_fabs(y1[i]) <= lim").expect("fused test");
+            let first_return = body.find("return").expect("a return");
+            assert!(
+                fused < first_return,
+                "{i:?} {s:?} {d:?}: the fused test comes first"
+            );
+            // The failure paths keep NONFINITE ahead of BOUNDS.
+            let nonfinite = body.find("PC_NONFINITE").expect("nonfinite");
+            let bounds = body.find("PC_BOUNDS").expect("bounds");
+            assert!(nonfinite < bounds, "{i:?} {s:?} {d:?}");
+        }
+    }
+}
+
+#[test]
+fn the_bound_the_kernel_reads_is_capped_at_the_largest_finite_value() {
+    use pc_ensemble::abi::pack;
+    use pc_ensemble::job::validate;
+    use pc_ensemble::{Method, Precision};
+    let m = build_model(OSC);
+    let tape = Tape::build(&m).expect("tape");
+    for (bounds, want64, want32) in [
+        (f64::INFINITY, f64::MAX, f32::MAX),
+        (1e300, 1e300, f32::MAX),
+        (50.0, 50.0, 50.0),
+    ] {
+        let mut j = job(
+            &m,
+            1,
+            &[1.0, 0.0],
+            &[],
+            1.0,
+            Method::Rk4 { dt: 0.1 },
+            Precision::Double,
+        );
+        j.bounds = bounds;
+        let checked = validate(&j).expect("validate");
+        assert_eq!(
+            pack::<f64>(&j, &checked, &tape).rc[1].to_bits(),
+            want64.to_bits()
+        );
+        assert_eq!(
+            pack::<f32>(&j, &checked, &tape).rc[1].to_bits(),
+            want32.to_bits()
+        );
+    }
+}
+
+#[test]
 fn the_dp5_tables_live_in_constant_memory() {
     let text = source(VDP, Integrator::Dp5, Scalar::F64, Dialect::Cuda);
     assert!(text.contains("#define PC_CONSTANT __constant__"));

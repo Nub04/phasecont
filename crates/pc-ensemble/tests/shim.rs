@@ -170,6 +170,36 @@ fn the_bound_matches_the_cpu() {
 }
 
 #[test]
+fn an_overflow_matches_the_cpu_under_a_bound_that_cannot_catch_it() {
+    // The state reaches infinity, which no finite bound sees. It must end NONFINITE, and
+    // with an infinite bound or one above the largest finite value the fused test has to
+    // catch it all the same.
+    let m = build_model("x'=x*x*x*x\ndone\n");
+    for p in BOTH {
+        for method in methods(p) {
+            for (label, bounds) in [("inf", f64::INFINITY), ("1e300", 1e300)] {
+                let mut j = job(&m, 2, &[1e10, 0.1], &[], 1.0, method, p);
+                j.bounds = bounds;
+                let what = tag(&format!("overflow-{label}"), p, method);
+                let Some(r) = check(&what, &j) else {
+                    return;
+                };
+                // RK4 steps into infinity and stops there. DP5 may end NonFinite or, once it has
+                // shrunk the step until it underflows, StepTooSmall, depending on the precision.
+                // `check` has already shown that the CPU ends the same way, so the member only
+                // has to end with one of those and the quiet member must stay Ok.
+                let ok_ends: &[Status] = match method {
+                    Method::Rk4 { .. } => &[Status::NonFinite],
+                    Method::Dp5 { .. } => &[Status::NonFinite, Status::StepTooSmall],
+                };
+                assert!(ok_ends.contains(&r.status[0]), "{what}: {:?}", r.status[0]);
+                assert_eq!(r.status[1], Status::Ok, "{what}");
+            }
+        }
+    }
+}
+
+#[test]
 fn the_step_limit_matches_the_cpu() {
     let m = build_model(DECAY);
     for p in BOTH {

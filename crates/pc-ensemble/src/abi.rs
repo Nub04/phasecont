@@ -6,7 +6,9 @@
 //!
 //! * `rc`, `5 + 4 * ns` values: `t0`, the bound, `rtol`, `atol`, `hmax`, then the `ns` output
 //!   times and, for RK4, the start, end and length of each segment. The slots of the method
-//!   a job does not use are zero.
+//!   a job does not use are zero. The bound is capped at the largest finite value of the
+//!   scalar type, so an infinite bound reads as that value and `|y| <= bound` fails for NaN and
+//!   for infinity alike.
 //! * `segm`, `ns` counts: steps of each RK4 segment, zero for the adaptive method.
 //! * `x0`, `members * n` states and `par`, the parameters (one set shared by every member,
 //!   or `members * n_p` values with `pstride = n_p`).
@@ -76,7 +78,7 @@ pub fn pack<T: Real>(job: &Job, checked: &Checked, tape: &Tape) -> Packed<T> {
             vec![0; ns],
         ),
     };
-    let mut rc = vec![ctx.t0, ctx.bounds, rtol, atol, hmax];
+    let mut rc = vec![ctx.t0, ctx.lim, rtol, atol, hmax];
     rc.extend_from_slice(&ctx.times);
     rc.extend(seg_a);
     rc.extend(seg_b);
