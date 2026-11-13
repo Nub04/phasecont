@@ -9,13 +9,14 @@
 use std::any::Any;
 use std::mem::ManuallyDrop;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::Duration;
 
 use pc_codegen::kernel::KernelError;
 
 use crate::abi::ctl_done;
 use crate::job::EnsembleError;
+use crate::kernel::{Integrator, Layout, private_reals};
 
 /// How long one launch should take.
 pub const TARGET: Duration = Duration::from_millis(100);
@@ -192,6 +193,67 @@ pub fn check_alloc(
         )));
     }
     Ok(())
+}
+
+/// The private arrays of one work-item, in bytes, at which the kernel keeps them in global
+/// memory instead. CUDA caps the local memory of a thread at 512 KB and a kernel needs a
+/// little more than its arrays, so the private layout fails to launch somewhere between 440
+/// and 480 KB (spike S4 and the P36 measurements on the RTX 5060). The Arc 140T OpenCL driver
+/// fails above about 256 KB. Half of the CUDA cap is the point for both, and it leaves a margin
+/// for models that need more.
+pub const GLOBAL_SCRATCH_FROM: usize = 256 * 1024;
+
+/// The scratch layout of a backend that cannot ask the device for its free memory or its
+/// resident threads (OpenCL and Metal): `Global` when the private arrays of one work-item take
+/// [`GLOBAL_SCRATCH_FROM`] bytes or more, `Private` otherwise. `forced` wins when it is set.
+pub fn layout_by_size(
+    forced: Option<Layout>,
+    n: usize,
+    integrator: Integrator,
+    real_bytes: usize,
+) -> Layout {
+    if let Some(layout) = forced {
+        return layout;
+    }
+    if private_reals(n, integrator).saturating_mul(real_bytes) >= GLOBAL_SCRATCH_FROM {
+        Layout::Global
+    } else {
+        Layout::Private
+    }
+}
+
+/// A layout that a test or a bench forces for every run of one backend in this process. It is
+/// not part of the API.
+pub struct ForcedLayout(AtomicU8);
+
+impl ForcedLayout {
+    pub const fn new() -> Self {
+        ForcedLayout(AtomicU8::new(0))
+    }
+
+    /// Forces `layout` for every later run, or lifts the force with `None`.
+    pub fn set(&self, layout: Option<Layout>) {
+        let code = match layout {
+            None => 0,
+            Some(Layout::Private) => 1,
+            Some(Layout::Global) => 2,
+        };
+        self.0.store(code, Ordering::SeqCst);
+    }
+
+    pub fn get(&self) -> Option<Layout> {
+        match self.0.load(Ordering::SeqCst) {
+            1 => Some(Layout::Private),
+            2 => Some(Layout::Global),
+            _ => None,
+        }
+    }
+}
+
+impl Default for ForcedLayout {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -485,5 +547,45 @@ mod tests {
         .unwrap_err();
         assert_eq!(e, EnsembleError::GpuTimeout("watchdog".into()));
         assert_eq!(ctl, words(2, Status::Running, 2));
+    }
+
+    #[test]
+    fn the_size_rule_is_global_from_256_kib_of_private_arrays() {
+        let at = |n: usize, size: usize| layout_by_size(None, n, Integrator::Rk4, size);
+        // RK4 has 7n private reals.
+        assert_eq!(at(4681, 8), Layout::Private, "262136 bytes");
+        assert_eq!(at(4682, 8), Layout::Global, "262192 bytes");
+        assert_eq!(at(9362, 4), Layout::Private, "262136 bytes");
+        assert_eq!(at(9363, 4), Layout::Global, "262164 bytes");
+        assert_eq!(at(0, 8), Layout::Private);
+        assert_eq!(at(usize::MAX / 2, 8), Layout::Global);
+        // Dormand-Prince has 10n: the size rule alone, with no timing point of its own.
+        let dp5 = |n: usize, size: usize| layout_by_size(None, n, Integrator::Dp5, size);
+        assert_eq!(dp5(3276, 8), Layout::Private, "262080 bytes");
+        assert_eq!(dp5(3277, 8), Layout::Global, "262160 bytes");
+        assert_eq!(dp5(6553, 4), Layout::Private, "262120 bytes");
+        assert_eq!(dp5(6554, 4), Layout::Global, "262160 bytes");
+    }
+
+    #[test]
+    fn a_forced_layout_beats_the_size_rule_both_ways() {
+        let small = |f| layout_by_size(f, 2, Integrator::Rk4, 8);
+        let large = |f| layout_by_size(f, 100_000, Integrator::Dp5, 8);
+        assert_eq!(small(Some(Layout::Global)), Layout::Global);
+        assert_eq!(large(Some(Layout::Private)), Layout::Private);
+        assert_eq!(small(None), Layout::Private);
+        assert_eq!(large(None), Layout::Global);
+    }
+
+    #[test]
+    fn a_forced_layout_switch_round_trips_and_lifts() {
+        let f = ForcedLayout::new();
+        assert_eq!(f.get(), None);
+        f.set(Some(Layout::Global));
+        assert_eq!(f.get(), Some(Layout::Global));
+        f.set(Some(Layout::Private));
+        assert_eq!(f.get(), Some(Layout::Private));
+        f.set(None);
+        assert_eq!(f.get(), None);
     }
 }

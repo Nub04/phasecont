@@ -36,7 +36,7 @@ use pc_codegen::kernel::{Dialect, Scalar};
 use crate::abi::{Packed, integrator_of, pack_in};
 use crate::batch::{members_per_batch, run_batched};
 use crate::device::{Backend, BackendState, DeviceInfo};
-use crate::gpu::{drive, guard, kernel_err};
+use crate::gpu::{GLOBAL_SCRATCH_FROM, drive, guard, kernel_err};
 use crate::job::{EnsembleError, EnsembleResult, Job, Label, Precision, validate};
 use crate::kept::{Kept, Lru};
 use crate::kernel::{Integrator, Layout, kernel_source_in, private_reals};
@@ -82,13 +82,6 @@ fn drv(step: &'static str) -> impl Fn(DriverError) -> EnsembleError {
         }
     }
 }
-
-/// The private arrays of one thread, in bytes, at which the kernel keeps them in global
-/// memory instead. CUDA caps the local memory of a thread at 512 KB and a kernel needs a
-/// little more than its arrays, so the private layout fails to launch somewhere between 440
-/// and 480 KB (spike S4 and the P36 measurements on the RTX 5060). Half of the cap leaves a
-/// margin for models that need more.
-const GLOBAL_SCRATCH_FROM: usize = 256 * 1024;
 
 /// The private reals of one Dormand-Prince thread from which the global layout is faster, on
 /// both precisions. Measured on the RTX 5060 with 2048 members of Lorenz-96 (`cuda_layout_time`,

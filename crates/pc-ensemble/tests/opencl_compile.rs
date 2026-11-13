@@ -15,7 +15,7 @@ use std::process::Command;
 use common::*;
 use pc_codegen::kernel::{Dialect, Scalar};
 use pc_ensemble::Tape;
-use pc_ensemble::kernel::{Integrator, kernel_source};
+use pc_ensemble::kernel::{Integrator, Layout, kernel_source_in};
 
 const VARIANTS: [(Integrator, Scalar); 4] = [
     (Integrator::Rk4, Scalar::F32),
@@ -65,8 +65,12 @@ fn clang_has_fp64() -> bool {
 }
 
 fn kernel(model: &str, i: Integrator, s: Scalar) -> String {
+    kernel_in(model, i, s, Layout::Private)
+}
+
+fn kernel_in(model: &str, i: Integrator, s: Scalar, layout: Layout) -> String {
     let tape = Tape::build(&build_model(model)).expect("tape");
-    kernel_source(&tape, i, s, Dialect::OpenCl).expect("kernel source")
+    kernel_source_in(&tape, i, s, Dialect::OpenCl, layout).expect("kernel source")
 }
 
 #[test]
@@ -81,15 +85,19 @@ fn every_model_and_variant_parses_as_opencl_c() {
                 );
                 continue;
             }
-            let src = kernel(model, i, s);
-            match check(&src, &format!("m{n}-{i:?}-{s:?}")) {
-                Ok(Some(())) => {}
-                Ok(None) => {
-                    skip_gpu("clang-opencl", "clang is not installed (set PC_CLANG)");
-                    return;
-                }
-                Err(log) => {
-                    panic!("model {n} {i:?} {s:?} does not parse:\n{log}\n--- source ---\n{src}")
+            // The global layout passes `__global` scratch to the same helpers, which OpenCL
+            // C 1.2 only accepts when they declare the parameters `__global` too.
+            for layout in [Layout::Private, Layout::Global] {
+                let src = kernel_in(model, i, s, layout);
+                match check(&src, &format!("m{n}-{i:?}-{s:?}-{layout:?}")) {
+                    Ok(Some(())) => {}
+                    Ok(None) => {
+                        skip_gpu("clang-opencl", "clang is not installed (set PC_CLANG)");
+                        return;
+                    }
+                    Err(log) => panic!(
+                        "model {n} {i:?} {s:?} {layout:?} does not parse:\n{log}\n--- source ---\n{src}"
+                    ),
                 }
             }
         }

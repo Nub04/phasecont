@@ -281,6 +281,27 @@ fn private_memory_has_a_qualifier_in_every_dialect() {
 }
 
 #[test]
+fn the_scratch_qualifier_starts_as_the_private_one_in_every_dialect() {
+    // `PC_SCR` qualifies the pointers of scratch arrays that a function receives. A kernel
+    // that moves the scratch to global memory redefines it as `PC_GLOBAL`; OpenCL C 1.2 and
+    // Metal have no generic address space, so one parameter type cannot take both.
+    for (d, s) in [
+        (Dialect::C, Scalar::F64),
+        (Dialect::Cuda, Scalar::F64),
+        (Dialect::OpenCl, Scalar::F64),
+        (Dialect::Msl, Scalar::F32),
+    ] {
+        let p = prelude(d, s).unwrap();
+        let at = |m: &str| p.find(m).unwrap_or_else(|| panic!("{d:?}: {m}"));
+        assert!(
+            at("#define PC_SCR PC_PRIV\n") > at("#define PC_PRIV"),
+            "{d:?}"
+        );
+        assert_eq!(p.matches("#define PC_SCR").count(), 1, "{d:?}");
+    }
+}
+
+#[test]
 fn the_restrict_qualifier_is_a_keyword_only_where_the_compiler_uses_it() {
     // The kernel buffers never alias. CUDA C and OpenCL C get the keyword; the C shim and
     // Metal define the macro empty, so the text stays valid and the shim tests are unchanged.
@@ -308,12 +329,12 @@ fn n(i: u32) -> NodeId {
 }
 
 #[test]
-fn the_rhs_takes_its_state_and_output_in_private_memory() {
+fn the_rhs_takes_its_state_and_output_in_the_scratch_space() {
     let ops = [Op::Var(0)];
     let t = emit_rhs(&ops, &[0], 0, Scalar::F64, "rhs").unwrap();
     assert!(
         t.contains(
-            "PC_FN void rhs(pc_real t, PC_PRIV const pc_real *x, PC_IN pc_real *p, PC_PRIV pc_real *out)"
+            "PC_FN void rhs(pc_real t, PC_SCR const pc_real *x, PC_IN pc_real *p, PC_SCR pc_real *out)"
         ),
         "{t}"
     );

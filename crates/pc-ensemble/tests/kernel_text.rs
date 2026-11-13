@@ -443,7 +443,15 @@ fn global(src: &str, integrator: Integrator, scalar: Scalar, dialect: Dialect) -
     kernel_source_in(&tape, integrator, scalar, dialect, Layout::Global).expect("global kernel")
 }
 
-const GLOBAL_DIALECTS: [Dialect; 2] = [Dialect::C, Dialect::Cuda];
+const GLOBAL_DIALECTS: [Dialect; 4] = [Dialect::C, Dialect::Cuda, Dialect::OpenCl, Dialect::Msl];
+
+/// The scalars a dialect can run: Metal has no double.
+fn has(d: Dialect, s: Scalar) -> bool {
+    !(d == Dialect::Msl && s == Scalar::F64)
+}
+
+/// What a global-layout text adds after the prelude: the scratch qualifier becomes global.
+const SCR_GLOBAL: &str = "#undef PC_SCR\n#define PC_SCR PC_GLOBAL\n";
 
 #[test]
 fn the_private_text_is_what_kernel_source_gives() {
@@ -464,6 +472,9 @@ fn the_global_text_keeps_the_scratch_in_the_work_slice() {
     let n = tape.n;
     for (i, s) in BOTH {
         for d in GLOBAL_DIALECTS {
+            if !has(d, s) {
+                continue;
+            }
             let text = global(VDP, i, s, d);
             // The persist words come first, the scratch after them, so `t` stays at offset 0.
             assert!(
@@ -488,6 +499,15 @@ fn the_global_text_keeps_the_scratch_in_the_work_slice() {
             assert_eq!(declared_private_reals(&text), 0, "{i:?} {s:?} {d:?}");
             // Every use of the scratch still goes through the same loads and stores.
             assert!(text.contains("w[0] = t;"), "{i:?} {s:?} {d:?}");
+            // The scratch qualifier turns global before the first function that takes scratch.
+            let at = text.find(SCR_GLOBAL).expect("the qualifier switch");
+            assert_eq!(text.matches(SCR_GLOBAL).count(), 1, "{i:?} {s:?} {d:?}");
+            assert!(
+                at < text.find("PC_FN void pc_rhs(").unwrap(),
+                "{i:?} {s:?} {d:?}"
+            );
+            let private = source(VDP, i, s, d);
+            assert!(!private.contains("#undef PC_SCR"), "{i:?} {s:?} {d:?}");
         }
     }
 }
@@ -500,8 +520,13 @@ fn the_global_text_differs_from_the_private_text_only_in_the_array_lines() {
     let n = tape.n;
     for (i, s) in BOTH {
         for d in GLOBAL_DIALECTS {
+            if !has(d, s) {
+                continue;
+            }
             let private = source(VDP, i, s, d);
             let mut back = global(VDP, i, s, d);
+            assert_eq!(back.matches(SCR_GLOBAL).count(), 1, "{i:?} {s:?} {d:?}");
+            back = back.replace(SCR_GLOBAL, "");
             back = back.replace(&format!("#define PC_PERSIST {}u\n", work_len(n, i)), "");
             back = back.replace(
                 &format!("#define PC_WL {}u\n", Layout::Global.work_len(n, i)),
@@ -538,17 +563,45 @@ fn the_global_text_differs_from_the_private_text_only_in_the_array_lines() {
 }
 
 #[test]
-fn the_global_layout_is_for_cuda_and_c_only() {
+fn the_global_layout_exists_in_every_dialect() {
     let tape = Tape::build(&build_model(VDP)).expect("tape");
     for i in SINGLE {
-        for d in [Dialect::OpenCl, Dialect::Msl] {
-            let e = kernel_source_in(&tape, i, Scalar::F32, d, Layout::Global).unwrap_err();
-            assert!(
-                matches!(e, KernelError::Unsupported(_)),
-                "{i:?} {d:?}: {e:?}"
-            );
+        for d in GLOBAL_DIALECTS {
+            let text = kernel_source_in(&tape, i, Scalar::F32, d, Layout::Global)
+                .unwrap_or_else(|e| panic!("{i:?} {d:?}: {e:?}"));
+            assert!(text.contains(SCR_GLOBAL), "{i:?} {d:?}");
         }
     }
+}
+
+#[test]
+fn every_function_that_takes_scratch_uses_the_scratch_qualifier() {
+    // OpenCL C 1.2 and Metal have no generic address space, so a function that takes scratch
+    // arrays must name them with `PC_SCR` and never with `PC_PRIV`. The only `PC_PRIV` left
+    // after the prelude is the one that `PC_SCR` starts from.
+    let tape = Tape::build(&build_model(VDP)).expect("tape");
+    for (i, s) in BOTH {
+        for d in GLOBAL_DIALECTS {
+            if !has(d, s) {
+                continue;
+            }
+            let prelude = pc_codegen::kernel::prelude(d, s).unwrap();
+            for layout in [Layout::Private, Layout::Global] {
+                let text = kernel_source_in(&tape, i, s, d, layout).unwrap();
+                assert_eq!(
+                    text.matches("PC_PRIV").count(),
+                    prelude.matches("PC_PRIV").count(),
+                    "{i:?} {s:?} {d:?} {layout:?}"
+                );
+            }
+        }
+    }
+    let rk4 = source(VDP, Integrator::Rk4, Scalar::F64, Dialect::OpenCl);
+    assert!(rk4.contains("pc_bad_state(PC_SCR pc_real *y1, pc_real lim)"));
+    let dp5 = source(VDP, Integrator::Dp5, Scalar::F64, Dialect::OpenCl);
+    assert!(dp5.contains("pc_bad_state(PC_SCR pc_real *y1, pc_real lim)"));
+    assert!(dp5.contains("PC_SCR pc_real *y, PC_SCR pc_real *yt, PC_SCR pc_real *k"));
+    assert!(dp5.contains("pc_dp5_step(PC_SCR pc_real *y, PC_SCR pc_real *y1, PC_SCR pc_real *yt,"));
 }
 
 #[test]

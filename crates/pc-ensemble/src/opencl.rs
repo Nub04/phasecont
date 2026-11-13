@@ -38,13 +38,15 @@ use opencl3::program::Program;
 use opencl3::types::{CL_BLOCKING, cl_device_id, cl_mem, cl_uint, cl_ulong};
 use pc_codegen::kernel::{Dialect, Scalar};
 
-use crate::abi::{Packed, integrator_of, pack};
+use crate::abi::{Packed, integrator_of, pack_in};
 use crate::batch::{half_budget, members_per_batch, run_batched};
 use crate::device::{Backend, BackendState, DeviceInfo};
-use crate::gpu::{Quiet, check_alloc, drive, global_size, guard, kernel_err};
+use crate::gpu::{
+    ForcedLayout, Quiet, check_alloc, drive, global_size, guard, kernel_err, layout_by_size,
+};
 use crate::job::{Checked, EnsembleError, EnsembleResult, Job, Label, Precision, validate};
 use crate::kept::{Kept, Lru};
-use crate::kernel::{kernel_source, work_len};
+use crate::kernel::{Layout, kernel_source_in};
 use crate::real::Real;
 use crate::tape::Tape;
 
@@ -287,8 +289,16 @@ pub fn run_opencl(
         Precision::Single => Scalar::F32,
         Precision::Double => Scalar::F64,
     };
-    let src = kernel_source(&tape, integrator_of(job.method), scalar, Dialect::OpenCl)
-        .map_err(kernel_err)?;
+    // OpenCL has no query for the free memory or the resident work-items, so the layout
+    // follows the size of the model only (SPEC 13).
+    let integrator = integrator_of(job.method);
+    let real_bytes = match job.precision {
+        Precision::Single => size_of::<f32>(),
+        Precision::Double => size_of::<f64>(),
+    };
+    let layout = layout_by_size(forced_layout(), checked.n, integrator, real_bytes);
+    let src =
+        kernel_source_in(&tape, integrator, scalar, Dialect::OpenCl, layout).map_err(kernel_err)?;
     if src.contains('\0') {
         return Err(EnsembleError::Unsupported(
             "the generated kernel contains a NUL character".into(),
@@ -306,7 +316,13 @@ pub fn run_opencl(
         let shared = SHARED.get_or_make(device.index, || make_shared(handle))?;
         let shared = used.insert(shared);
         session(
-            shared, handle, info, label, job, &checked, &tape, &src, cancel,
+            shared,
+            handle,
+            info,
+            label,
+            job,
+            (&checked, &tape, &src, layout),
+            cancel,
         )
     })
     .unwrap_or_else(|msg| Err(EnsembleError::GpuLaunch(format!("panic in opencl3: {msg}"))));
@@ -332,6 +348,21 @@ struct Shared {
     programs: Lru<ProgramKey, Arc<Quiet<Program>>>,
     queue: Quiet<CommandQueue>,
     ctx: Quiet<Context>,
+}
+
+/// The layout that a test or a bench forces for every OpenCL run in this process.
+static FORCED: ForcedLayout = ForcedLayout::new();
+
+/// Forces the scratch layout of every OpenCL run in this process, or lifts the force with
+/// `None`. The device test and the A/B bench use it to run both layouts on one model. It is
+/// not part of the API.
+#[doc(hidden)]
+pub fn force_layout(layout: Option<Layout>) {
+    FORCED.set(layout);
+}
+
+fn forced_layout() -> Option<Layout> {
+    FORCED.get()
 }
 
 /// The kernel text, the build options and the precision of a built program.
@@ -373,16 +404,13 @@ fn make_shared(handle: Handle) -> Result<Arc<Shared>, EnsembleError> {
     }))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn session(
     shared: &Shared,
     handle: Handle,
     info: &DeviceInfo,
     label: Label,
     job: &Job,
-    checked: &Checked,
-    tape: &Tape,
-    src: &str,
+    (checked, tape, src, layout): (&Checked, &Tape, &str, Layout),
     cancel: &AtomicBool,
 ) -> Result<EnsembleResult, EnsembleError> {
     let id = handle.id as cl_device_id;
@@ -412,7 +440,7 @@ fn session(
             Precision::Single => size_of::<f32>(),
             Precision::Double => size_of::<f64>(),
         },
-        work_len(checked.n, integrator_of(job.method)),
+        layout.work_len(checked.n, integrator_of(job.method)),
     );
     let size = members_per_batch(
         job,
@@ -428,7 +456,7 @@ fn session(
             queue,
             &kernel,
             (group, handle.max_alloc, memory),
-            pack::<f32>(sub, checked, tape),
+            pack_in::<f32>(sub, checked, tape, layout),
             cancel,
         )
         .and_then(|packed| packed.finish(label.clone())),
@@ -437,7 +465,7 @@ fn session(
             queue,
             &kernel,
             (group, handle.max_alloc, memory),
-            pack::<f64>(sub, checked, tape),
+            pack_in::<f64>(sub, checked, tape, layout),
             cancel,
         )
         .and_then(|packed| packed.finish(label.clone())),

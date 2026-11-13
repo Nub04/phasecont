@@ -90,9 +90,10 @@ pub fn kernel_source(
     kernel_source_in(tape, integrator, scalar, dialect, Layout::Private)
 }
 
-/// The kernel text for `tape` with the scratch in `layout`. The global layout exists for the C
-/// and CUDA dialects: the others qualify private and global pointers differently, and their
-/// scratch limits are a build error the host reports before a launch.
+/// The kernel text for `tape` with the scratch in `layout`. Under the global layout the
+/// prelude's `PC_SCR` is redefined as `PC_GLOBAL` before the first function that takes
+/// scratch, so the same text serves all four dialects, including OpenCL C 1.2 and Metal,
+/// which cannot pass a global pointer where a private one is declared.
 pub fn kernel_source_in(
     tape: &Tape,
     integrator: Integrator,
@@ -102,11 +103,6 @@ pub fn kernel_source_in(
 ) -> Result<String, KernelError> {
     // The prelude comes first so that a dialect without the scalar reports that first.
     let mut s = prelude(dialect, scalar)?;
-    if layout == Layout::Global && !matches!(dialect, Dialect::C | Dialect::Cuda) {
-        return Err(KernelError::Unsupported(format!(
-            "the global scratch layout is not available in {dialect:?}"
-        )));
-    }
     let entry = match dialect {
         Dialect::C => ENTRY_C,
         Dialect::Cuda => ENTRY_CUDA,
@@ -125,6 +121,9 @@ pub fn kernel_source_in(
         ));
     }
     s.push_str(&format!("#define PC_CTL {CTL}u\n"));
+    if layout == Layout::Global {
+        s.push_str("#undef PC_SCR\n#define PC_SCR PC_GLOBAL\n");
+    }
     s.push_str(STATUS);
     s.push_str(&match scalar {
         Scalar::F32 => consts::<f32>(integrator, scalar),
@@ -242,7 +241,7 @@ const STATUS: &str = r#"
 /// early exit ORs that test over the state. Only when it fails does the slow path look again,
 /// so that NONFINITE still comes before BOUNDS.
 const BAD_STATE: &str = r#"
-PC_FN pc_uint pc_bad_state(PC_PRIV pc_real *y1, pc_real lim)
+PC_FN pc_uint pc_bad_state(PC_SCR pc_real *y1, pc_real lim)
 {
     pc_uint i;
     pc_uint bad = 0u;
@@ -401,7 +400,7 @@ PC_FN pc_real pc_clamp(pc_real x, pc_real lo, pc_real hi)
 }
 
 PC_FN pc_real pc_hinit(pc_real t0, pc_real rtol, pc_real atol, pc_real hmax,
-                       PC_PRIV pc_real *y, PC_PRIV pc_real *yt, PC_PRIV pc_real *k,
+                       PC_SCR pc_real *y, PC_SCR pc_real *yt, PC_SCR pc_real *k,
                        PC_IN pc_real *par)
 {
     pc_uint i;
@@ -440,8 +439,8 @@ PC_FN pc_real pc_hinit(pc_real t0, pc_real rtol, pc_real atol, pc_real hmax,
     return pc_fmin2(pc_fmin2(PC_C100 * pc_fabs(h), h1), hmax);
 }
 
-PC_FN pc_real pc_dp5_step(PC_PRIV pc_real *y, PC_PRIV pc_real *y1, PC_PRIV pc_real *yt,
-                          PC_PRIV pc_real *k, PC_IN pc_real *par, pc_real t, pc_real h,
+PC_FN pc_real pc_dp5_step(PC_SCR pc_real *y, PC_SCR pc_real *y1, PC_SCR pc_real *yt,
+                          PC_SCR pc_real *k, PC_IN pc_real *par, pc_real t, pc_real h,
                           pc_real t_end, pc_real rtol, pc_real atol)
 {
     pc_uint s;

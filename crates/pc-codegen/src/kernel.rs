@@ -252,6 +252,10 @@ pub fn prelude(d: Dialect, s: Scalar) -> Result<String, KernelError> {
             math_names(&mut t, "", true);
         }
     }
+    // The qualifier of the scratch arrays that a function receives. It starts as the private
+    // one. A kernel that keeps its scratch in global memory redefines it as `PC_GLOBAL`:
+    // OpenCL C 1.2 and Metal have no generic address space, so a function cannot take both.
+    t.push_str("#define PC_SCR PC_PRIV\n");
     Ok(t)
 }
 
@@ -314,9 +318,10 @@ fn fn1_name(f: Fn1) -> &'static str {
 /// The right-hand side `out[k] = f_k(t, x, p)` as the function `name`.
 ///
 /// `ops` and `outputs` are a tape: each op reads the slots before it. A parameter index equal
-/// to `n_p` is the time `t`. The function takes `(pc_real t, PC_PRIV const pc_real *x, PC_IN
-/// pc_real *p, PC_PRIV pc_real *out)`: the state and the output are arrays of the calling
-/// thread, the parameters are in the device's read-only memory.
+/// to `n_p` is the time `t`. The function takes `(pc_real t, PC_SCR const pc_real *x, PC_IN
+/// pc_real *p, PC_SCR pc_real *out)`: the state and the output are scratch arrays of the
+/// calling thread, private by default and global when the kernel redefines `PC_SCR`, and the
+/// parameters are in the device's read-only memory.
 pub fn emit_rhs(
     ops: &[Op],
     outputs: &[u32],
@@ -338,7 +343,7 @@ pub fn emit_rhs(
     let mut b = String::new();
     let _ = writeln!(
         b,
-        "PC_FN void {name}(pc_real t, PC_PRIV const pc_real *x, PC_IN pc_real *p, PC_PRIV pc_real *out) {{"
+        "PC_FN void {name}(pc_real t, PC_SCR const pc_real *x, PC_IN pc_real *p, PC_SCR pc_real *out) {{"
     );
     b.push_str("    (void)t;\n    (void)x;\n    (void)p;\n");
     for (i, op) in ops.iter().enumerate() {

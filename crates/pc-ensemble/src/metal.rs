@@ -23,12 +23,28 @@
 
 use std::time::Duration;
 
+use crate::gpu::ForcedLayout;
 use crate::job::EnsembleError;
+use crate::kernel::Layout;
 
 /// The name of the kernel entry point.
 pub(crate) const ENTRY: &str = "pc_ens";
 /// Threads per threadgroup, unless the kernel allows fewer.
 pub(crate) const GROUP: usize = 64;
+
+/// The layout that a test or a bench forces for every Metal run in this process.
+static FORCED: ForcedLayout = ForcedLayout::new();
+
+/// Forces the scratch layout of every Metal run in this process, or lifts the force with
+/// `None`. It is not part of the API.
+#[doc(hidden)]
+pub fn force_layout(layout: Option<Layout>) {
+    FORCED.set(layout);
+}
+
+pub(crate) fn forced_layout() -> Option<Layout> {
+    FORCED.get()
+}
 
 /// `MTLCommandBufferErrorTimeout`.
 const CODE_TIMEOUT: isize = 2;
@@ -122,6 +138,17 @@ mod tests {
         assert_eq!(group_for(1024, 0), 64);
         // A width that does not divide the group size rounds down to a multiple.
         assert_eq!(group_for(1024, 24), 48);
+    }
+
+    #[test]
+    fn the_layout_force_switch_round_trips() {
+        assert_eq!(forced_layout(), None);
+        force_layout(Some(Layout::Global));
+        assert_eq!(forced_layout(), Some(Layout::Global));
+        force_layout(Some(Layout::Private));
+        assert_eq!(forced_layout(), Some(Layout::Private));
+        force_layout(None);
+        assert_eq!(forced_layout(), None);
     }
 
     #[test]

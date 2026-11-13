@@ -16,13 +16,13 @@ use objc2_metal::{
 };
 use pc_codegen::kernel::{Dialect, Scalar};
 
-use super::{ENTRY, command_error, group_for};
-use crate::abi::{Packed, integrator_of, pack};
+use super::{ENTRY, command_error, forced_layout, group_for};
+use crate::abi::{Packed, integrator_of, pack_in};
 use crate::batch::{half_budget, members_per_batch, run_batched};
 use crate::device::{Backend, BackendState, DeviceInfo};
-use crate::gpu::{check_alloc, drive, global_size, guard, kernel_err};
+use crate::gpu::{check_alloc, drive, global_size, guard, kernel_err, layout_by_size};
 use crate::job::{Checked, EnsembleError, EnsembleResult, Job, Label, Precision, validate};
-use crate::kernel::{kernel_source, work_len};
+use crate::kernel::{Layout, kernel_source_in};
 use crate::tape::Tape;
 
 type Dev = ProtocolObject<dyn MTLDevice>;
@@ -154,7 +154,11 @@ pub fn run_metal(
         )));
     }
     let tape = Tape::build(job.model)?;
-    let src = kernel_source(&tape, integrator_of(job.method), Scalar::F32, Dialect::Msl)
+    // Metal has no query for the free memory or the resident threads either, so the layout
+    // follows the size of the model only (SPEC 13).
+    let integrator = integrator_of(job.method);
+    let layout = layout_by_size(forced_layout(), checked.n, integrator, size_of::<f32>());
+    let src = kernel_source_in(&tape, integrator, Scalar::F32, Dialect::Msl, layout)
         .map_err(kernel_err)?;
     let label = Label {
         backend: Backend::Metal.name().into(),
@@ -162,13 +166,21 @@ pub fn run_metal(
         driver: info.driver.clone(),
         precision: job.precision,
     };
-    guard(|| session(handle, info, label, job, &checked, &tape, &src, cancel)).unwrap_or_else(
-        |msg| {
-            Err(EnsembleError::GpuLaunch(format!(
-                "panic in Metal host code: {msg}"
-            )))
-        },
-    )
+    guard(|| {
+        session(
+            handle,
+            info,
+            label,
+            job,
+            (&checked, &tape, &src, layout),
+            cancel,
+        )
+    })
+    .unwrap_or_else(|msg| {
+        Err(EnsembleError::GpuLaunch(format!(
+            "panic in Metal host code: {msg}"
+        )))
+    })
 }
 
 /// The device with registry id `id`, if the system still lists it.
@@ -200,15 +212,12 @@ fn compile(dev: &Dev, src: &str) -> Result<Retained<Pipeline>, EnsembleError> {
         .map_err(|e| EnsembleError::GpuCompile(error_text(&e)))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn session(
     handle: Handle,
     info: &DeviceInfo,
     label: Label,
     job: &Job,
-    checked: &Checked,
-    tape: &Tape,
-    src: &str,
+    (checked, tape, src, layout): (&Checked, &Tape, &str, Layout),
     cancel: &AtomicBool,
 ) -> Result<EnsembleResult, EnsembleError> {
     autoreleasepool(|_| {
@@ -227,7 +236,7 @@ fn session(
         let size = members_per_batch(
             job,
             checked.times.len(),
-            work_len(checked.n, integrator_of(job.method)),
+            layout.work_len(checked.n, integrator_of(job.method)),
             size_of::<f32>(),
             info.memory_bytes.map(half_budget),
             handle.max_alloc,
@@ -238,7 +247,7 @@ fn session(
                 &queue,
                 &pipeline,
                 (group, handle.max_alloc, info.memory_bytes),
-                pack::<f32>(sub, checked, tape),
+                pack_in::<f32>(sub, checked, tape, layout),
                 cancel,
             )
             .and_then(|packed| packed.finish(label.clone()))

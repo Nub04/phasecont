@@ -19,7 +19,7 @@ use std::process::Command;
 use common::*;
 use pc_codegen::kernel::{Dialect, Scalar};
 use pc_ensemble::Tape;
-use pc_ensemble::kernel::{Integrator, kernel_source};
+use pc_ensemble::kernel::{Integrator, Layout, kernel_source_in};
 
 const VARIANTS: [Integrator; 2] = [Integrator::Rk4, Integrator::Dp5];
 
@@ -87,24 +87,33 @@ fn dump(src: &str, name: &str) {
 }
 
 fn kernel(model: &str, i: Integrator) -> String {
+    kernel_in(model, i, Layout::Private)
+}
+
+fn kernel_in(model: &str, i: Integrator, layout: Layout) -> String {
     let tape = Tape::build(&build_model(model)).expect("tape");
-    kernel_source(&tape, i, Scalar::F32, Dialect::Msl).expect("kernel source")
+    kernel_source_in(&tape, i, Scalar::F32, Dialect::Msl, layout).expect("kernel source")
 }
 
 #[test]
 fn every_model_and_integrator_parses_as_cpp_with_the_shim() {
     for (n, model) in [DECAY, VDP, OSC, MIXED].into_iter().enumerate() {
         for i in VARIANTS {
-            let src = kernel(model, i);
-            dump(&src, &format!("m{n}-{i:?}"));
-            match check(&src, &format!("m{n}-{i:?}")) {
-                Ok(Some(())) => {}
-                Ok(None) => {
-                    skip_gpu("clang-msl", "clang++ is not installed (set PC_CLANGXX)");
-                    return;
-                }
-                Err(log) => {
-                    panic!("model {n} {i:?} does not parse:\n{log}\n--- source ---\n{src}")
+            // Both layouts are dumped, so the hosted macOS job compiles the global one with
+            // Metal itself: the shim here removes the address spaces and cannot check them.
+            for layout in [Layout::Private, Layout::Global] {
+                let src = kernel_in(model, i, layout);
+                let name = format!("m{n}-{i:?}-{layout:?}");
+                dump(&src, &name);
+                match check(&src, &name) {
+                    Ok(Some(())) => {}
+                    Ok(None) => {
+                        skip_gpu("clang-msl", "clang++ is not installed (set PC_CLANGXX)");
+                        return;
+                    }
+                    Err(log) => panic!(
+                        "model {n} {i:?} {layout:?} does not parse:\n{log}\n--- source ---\n{src}"
+                    ),
                 }
             }
         }

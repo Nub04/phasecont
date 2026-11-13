@@ -65,6 +65,17 @@ pub fn lorenz96(n: usize) -> String {
     s
 }
 
+/// A ring of `n` states, `x_i' = x_{i+1} - x_i`, with no parameter. It has two operations per
+/// state, so it is the lightest model whose private step arrays reach a given size.
+pub fn ring(n: usize) -> String {
+    let mut s = String::new();
+    for i in 0..n {
+        s.push_str(&format!("x{i}'=x{}-x{i}\n", (i + 1) % n));
+    }
+    s.push_str("done\n");
+    s
+}
+
 pub const NO_CANCEL: fn() -> AtomicBool = || AtomicBool::new(false);
 
 /// A job with no bound, a generous step limit and the final state as output.
