@@ -1,6 +1,7 @@
 //! CPU and GPU ensemble integrators.
 
 pub mod abi;
+pub mod batch;
 pub mod cpu;
 pub mod cuda;
 pub mod device;
