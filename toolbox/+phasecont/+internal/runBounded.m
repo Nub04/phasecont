@@ -51,7 +51,6 @@ if ~usejava("jvm")
 end
 
 outFile = string(tempname(tempdir)) + ".txt";
-removeOut = onCleanup(@() deleteFile(outFile));
 try
     list = java.util.ArrayList();
     list.add(char(resolveProgram(argv(1))));
@@ -69,10 +68,13 @@ catch err
             "Java could not start ""%s"" (%s), so the time limit cannot be enforced.", ...
             argv(1), firstLine(err.message));
     end
+    deleteFile(outFile);
     r = runUnbounded(r, argv, folder);
     return
 end
-stopProc = onCleanup(@() stopTree(proc));
+% One handler, so that after Ctrl-C the program stops before its output file
+% is deleted. Two handlers ran in the other order and left the file behind.
+release = onCleanup(@() releaseRun(proc, outFile));
 try
     proc.getOutputStream().close();     % no input is coming
 catch
@@ -198,6 +200,16 @@ if isfile(file)
         text = "";
     end
 end
+end
+
+function releaseRun(proc, file)
+stopTree(proc);
+try
+    proc.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
+catch
+    % The delete below warns if the program still holds the file.
+end
+deleteFile(file);
 end
 
 function deleteFile(file)

@@ -64,6 +64,18 @@ classdef RunBoundedTest < matlab.unittest.TestCase
                 "phasecont:latex:noTimeout");
         end
 
+        function everyExitLeavesNoOutputFileInTheTempFolder(testCase)
+            % The output file is deleted after the program stops, on a normal
+            % end, on a timeout and when the program cannot start.
+            before = string({dir(fullfile(tempdir, "tp*.txt")).name});
+            phasecont.internal.runBounded(["whoami"], string(tempdir), Inf);
+            phasecont.internal.runBounded(RunBoundedTest.sleeper(60), ...
+                string(tempdir), 1);
+            RunBoundedTest.tryRun("pc-no-such-program-xyz", Inf);
+            after = string({dir(fullfile(tempdir, "tp*.txt")).name});
+            testCase.verifyEmpty(setdiff(after, before));
+        end
+
         function aCmdWrapperOnThePathStartsOnWindows(testCase)
             testCase.assumeTrue(ispc, "Only Windows needs the lookup");
             folder = string(tempname(tempdir));
