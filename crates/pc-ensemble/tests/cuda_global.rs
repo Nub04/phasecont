@@ -14,7 +14,7 @@ use pc_ensemble::device::{Backend, BackendState, find_device, list_devices};
 use pc_ensemble::kernel::{Integrator, Layout};
 use pc_ensemble::run::run_on;
 use pc_ensemble::selftest::{Selected, run_selftest};
-use pc_ensemble::{Precision, Status};
+use pc_ensemble::{Method, Precision, Status};
 
 /// Puts the layout choice back to the size rule, also when a test panics.
 struct Reset;
@@ -64,28 +64,81 @@ fn the_global_layout_runs_on_a_cuda_device() {
     }
     force_layout(None);
 
-    // A model whose private arrays are over the launch limit (480 KB in double under
-    // Dormand-Prince): the size rule must pick the global layout, and the result must match
-    // the CPU bit for bit.
     if !device.fp64 {
-        eprintln!("SKIPPED: the big-n run needs double precision");
+        eprintln!("SKIPPED: the big-n runs need double precision");
         return;
     }
+
+    // The same job under the size rule (global) and under a forced private layout, at sizes
+    // where private still launches: the two must agree bit for bit in the state, the status
+    // and the step counts. Fixed-step RK4 uses only `+ - *`, so it must also match the CPU bit
+    // for bit. Dormand-Prince takes powers for its step size, and the CUDA `pow` is not
+    // promised to match the CPU's, so against the CPU it only has to agree to a tolerance.
+    let rk4 = Method::Rk4 { dt: 0.001 };
+    for (name, n, integrator, method) in [
+        ("rk4", 5000, Integrator::Rk4, rk4),
+        ("dp5", 3500, Integrator::Dp5, DP5_STD),
+    ] {
+        assert_eq!(
+            layout_for(n, integrator, 8),
+            Layout::Global,
+            "{name} n = {n}"
+        );
+        let (j_x0, m) = (big_x0(n, 4), build_model(&lorenz96(n)));
+        let j = job(&m, 4, &j_x0, &[8.0], 0.02, method, Precision::Double);
+        let want = run(&j);
+        let global = run_on(&device, &j, &AtomicBool::new(false)).expect("the global run");
+        force_layout(Some(Layout::Private));
+        let private = run_on(&device, &j, &AtomicBool::new(false)).expect("the private run");
+        force_layout(None);
+        assert_eq!(global.label.backend, "cuda");
+        assert_eq!(bits(&global.states), bits(&private.states), "{name} states");
+        assert_eq!(global.status, private.status, "{name} status");
+        assert_eq!(global.accepted, private.accepted, "{name} accepted");
+        assert_eq!(global.rejected, private.rejected, "{name} rejected");
+        assert!(want.status.iter().all(|s| *s == Status::Ok));
+        assert_eq!(want.status, global.status, "{name} status against the CPU");
+        if integrator == Integrator::Rk4 {
+            assert_eq!(
+                bits(&want.states),
+                bits(&global.states),
+                "{name} states against the CPU"
+            );
+        } else {
+            close(&want.states, &global.states, 1e-7, name);
+        }
+    }
+
+    // A model whose private arrays are over the launch limit (480 KB in double under
+    // Dormand-Prince): the size rule must pick the global layout, and the run must finish
+    // with the same status as the CPU and a state that agrees to the tolerance.
     let n = 6000;
     assert_eq!(layout_for(n, Integrator::Dp5, 8), Layout::Global);
-    let src = lorenz96(n);
-    let m = build_model(&src);
-    let members = 4;
-    let x0: Vec<f64> = (0..members * n)
-        .map(|k| 8.0 + 0.01 * ((k % n) as f64) + 0.1 * (k / n) as f64)
-        .collect();
-    let j = job(&m, members, &x0, &[8.0], 0.02, DP5_STD, Precision::Double);
+    let m = build_model(&lorenz96(n));
+    let x0 = big_x0(n, 4);
+    let j = job(&m, 4, &x0, &[8.0], 0.02, DP5_STD, Precision::Double);
     let want = run(&j);
     assert!(want.status.iter().all(|s| *s == Status::Ok));
     let got = run_on(&device, &j, &AtomicBool::new(false)).expect("the big-n run on the device");
     assert_eq!(got.label.backend, "cuda");
-    assert_eq!(bits(&want.states), bits(&got.states), "states");
     assert_eq!(want.status, got.status, "status");
-    assert_eq!(want.accepted, got.accepted, "accepted");
-    assert_eq!(want.rejected, got.rejected, "rejected");
+    close(&want.states, &got.states, 1e-7, "dp5 n = 6000");
+}
+
+/// Initial states of `members` members of an `n`-state model.
+fn big_x0(n: usize, members: usize) -> Vec<f64> {
+    (0..members * n)
+        .map(|k| 8.0 + 0.01 * ((k % n) as f64) + 0.1 * (k / n) as f64)
+        .collect()
+}
+
+/// Every value of `got` is within `rel` of `want`, relative to `1 + |want|`.
+fn close(want: &[f64], got: &[f64], rel: f64, what: &str) {
+    assert_eq!(want.len(), got.len(), "{what}: length");
+    for (k, (w, g)) in want.iter().zip(got).enumerate() {
+        assert!(
+            (w - g).abs() <= rel * (1.0 + w.abs()),
+            "{what}: value {k} is {g:e} on the device and {w:e} on the CPU"
+        );
+    }
 }
