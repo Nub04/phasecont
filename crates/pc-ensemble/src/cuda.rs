@@ -22,7 +22,7 @@
 
 use std::ffi::{CString, c_char};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
@@ -90,6 +90,22 @@ fn drv(step: &'static str) -> impl Fn(DriverError) -> EnsembleError {
 /// margin for models that need more.
 const GLOBAL_SCRATCH_FROM: usize = 256 * 1024;
 
+/// The private reals of one Dormand-Prince thread from which the global layout is faster, on
+/// both precisions. Measured on the RTX 5060 with 2048 members of Lorenz-96 (`cuda_layout_time`,
+/// SPEC 13): the private layout wins up to 3200 reals (1.1x with doubles, 1.2x with singles) and
+/// the global layout wins from 3350 (1.75x and 1.3x), and 3300 sits between them. RK4 has no
+/// such point: its global layout is slower until the memory rule below applies.
+const DP5_GLOBAL_FROM_REALS: usize = 3300;
+
+/// The share of the free memory that the driver's local-memory reserve of the private layout
+/// may take: 3/4. The driver reserves local memory for every resident thread, whatever the
+/// member count, and a reserve that nears the free memory makes the private layout 2 to 3 times
+/// slower than the global one. The change came at a reserve of 0.85 to 1.0 times the free
+/// memory with about 7.5, 5.0 and 2.8 GB free, and the private layout was still 1.4 times
+/// faster at 0.75. A reserve above the point costs far more than one below it, so the share
+/// keeps a margin under the measured point.
+const PRIVATE_RESERVE_SHARE: (u128, u128) = (3, 4);
+
 /// The part of the free device memory that the buffers of one batch may take: 60%. The rest
 /// is for the driver (local memory of the launch, the context) and for other processes that
 /// allocate while this one runs. The fraction is a margin, not a tuned value.
@@ -97,23 +113,87 @@ fn budget_of(free: u64) -> u64 {
     free / 10 * 6
 }
 
-/// The scratch layout for a model of `n` states: private arrays below [`GLOBAL_SCRATCH_FROM`]
-/// bytes per thread, global scratch from there on.
-pub fn layout_for(n: usize, integrator: Integrator, real_bytes: usize) -> Layout {
-    pick(None, n, integrator, real_bytes)
+/// What a device gives the layout rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Capacity {
+    /// The threads the device keeps resident: multiprocessors times the most threads of one.
+    pub resident_threads: u64,
+    /// The free device memory of a context that holds no local memory yet: what is free now
+    /// plus `held_bytes`. It does not change when a private run reserves its local memory, so
+    /// the layout of one job does not flip between calls.
+    pub free_bytes: u64,
+    /// The local-memory reserve that this context already holds from earlier private runs.
+    /// The driver keeps it until the context is destroyed.
+    pub held_bytes: u64,
+}
+
+impl Capacity {
+    /// The capacity from the free memory now and the reserve the context holds.
+    pub fn new(resident_threads: u64, free_now: u64, held_bytes: u64) -> Capacity {
+        Capacity {
+            resident_threads,
+            free_bytes: free_now.saturating_add(held_bytes),
+            held_bytes,
+        }
+    }
+}
+
+/// The local-memory reserve of a private run: `bytes` of private arrays for every resident
+/// thread.
+fn reserve_of(bytes: usize, capacity: &Capacity) -> u64 {
+    (bytes as u64).saturating_mul(capacity.resident_threads)
+}
+
+/// The scratch layout for a model of `n` states. The private layout needs all of these:
+/// - below [`GLOBAL_SCRATCH_FROM`] bytes of private arrays per thread,
+/// - below [`DP5_GLOBAL_FROM_REALS`] reals per thread with Dormand-Prince,
+/// - a local-memory reserve within [`PRIVATE_RESERVE_SHARE`] of the free memory.
+///
+/// Otherwise the scratch lives in global memory.
+pub fn layout_for(
+    n: usize,
+    integrator: Integrator,
+    real_bytes: usize,
+    capacity: Capacity,
+) -> Layout {
+    pick(None, n, integrator, real_bytes, capacity)
 }
 
 /// [`layout_for`], or `forced` when it is set.
-fn pick(forced: Option<Layout>, n: usize, integrator: Integrator, real_bytes: usize) -> Layout {
+fn pick(
+    forced: Option<Layout>,
+    n: usize,
+    integrator: Integrator,
+    real_bytes: usize,
+    capacity: Capacity,
+) -> Layout {
     if let Some(layout) = forced {
         return layout;
     }
-    let bytes = private_reals(n, integrator).saturating_mul(real_bytes);
-    if bytes >= GLOBAL_SCRATCH_FROM {
+    let reals = private_reals(n, integrator);
+    let bytes = reals.saturating_mul(real_bytes);
+    let (num, den) = PRIVATE_RESERVE_SHARE;
+    let fits =
+        u128::from(reserve_of(bytes, &capacity)) * den <= u128::from(capacity.free_bytes) * num;
+    let dp5_large = integrator == Integrator::Dp5 && reals >= DP5_GLOBAL_FROM_REALS;
+    if bytes >= GLOBAL_SCRATCH_FROM || dp5_large || !fits {
         Layout::Global
     } else {
         Layout::Private
     }
+}
+
+/// The device memory left for the buffers of the batches under `layout`: the free memory less
+/// the local-memory reserve. A context that already holds a reserve at least as large has that
+/// part out of the free memory already.
+fn buffer_room(layout: Layout, private_bytes: usize, capacity: &Capacity) -> u64 {
+    let reserve = match layout {
+        Layout::Private => reserve_of(private_bytes, capacity),
+        Layout::Global => 0,
+    };
+    capacity
+        .free_bytes
+        .saturating_sub(reserve.max(capacity.held_bytes))
 }
 
 /// The layout a test or a bench forces for every run in this process: 0 for none, 1 for
@@ -576,9 +656,6 @@ pub fn run_cuda(
         Precision::Single => size_of::<f32>(),
         Precision::Double => size_of::<f64>(),
     };
-    let layout = pick(forced_layout(), tape.n, integrator, real_bytes);
-    let src =
-        kernel_source_in(&tape, integrator, scalar, Dialect::Cuda, layout).map_err(kernel_err)?;
     // The entry this run used, so that a failure removes that one and not a newer one.
     let mut used: Option<Arc<Entry>> = None;
     let ran = guard(|| {
@@ -589,10 +666,22 @@ pub fn run_cuda(
             Ok(Arc::new(Entry {
                 kernels: Lru::new(KERNELS_KEPT),
                 ctx,
+                held: AtomicU64::new(0),
             }))
         })?;
         let entry = used.insert(entry);
-        session(entry, device, p, job, &checked, &tape, &src, layout, cancel)
+        // The layout depends on the device (its resident threads and its free memory), so it
+        // is picked here, where the context exists, and it decides the kernel text.
+        let capacity = capacity_of(entry)?;
+        let layout = pick(forced_layout(), tape.n, integrator, real_bytes, capacity);
+        let src = kernel_source_in(&tape, integrator, scalar, Dialect::Cuda, layout)
+            .map_err(kernel_err)?;
+        let run = Run {
+            layout,
+            capacity,
+            src: &src,
+        };
+        session(entry, device, p, job, &checked, &tape, &run, cancel)
     })
     .unwrap_or_else(|msg| Err(EnsembleError::GpuLaunch(format!("panic in cudarc: {msg}"))));
     if matches!(
@@ -616,6 +705,36 @@ struct Entry {
     // holds the context.
     kernels: Lru<KernelKey, CudaFunction>,
     ctx: Arc<CudaContext>,
+    /// The largest local-memory reserve that a private run asked of this context. The driver
+    /// keeps the memory until the context is destroyed, so the free memory read later is lower
+    /// by this much and the layout rule adds it back.
+    held: AtomicU64,
+}
+
+/// The layout of one run, the capacity it was picked from and the kernel text it gives.
+struct Run<'a> {
+    layout: Layout,
+    capacity: Capacity,
+    src: &'a str,
+}
+
+/// The resident threads and the free memory of the device behind `entry`.
+fn capacity_of(entry: &Entry) -> Result<Capacity, EnsembleError> {
+    use cudarc::driver::sys::CUdevice_attribute as Attr;
+    let ctx = &entry.ctx;
+    let attribute = |a: Attr| {
+        ctx.attribute(a)
+            .map(|v| u64::try_from(v).unwrap_or(0))
+            .map_err(drv("query the device"))
+    };
+    let multiprocessors = attribute(Attr::CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT)?;
+    let per_multiprocessor = attribute(Attr::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR)?;
+    let (free, _) = ctx.mem_get_info().map_err(drv("query the free memory"))?;
+    Ok(Capacity::new(
+        multiprocessors.saturating_mul(per_multiprocessor),
+        free as u64,
+        entry.held.load(Ordering::SeqCst),
+    ))
 }
 
 /// The kernel text, the compute capability and the precision of a compiled kernel.
@@ -651,10 +770,14 @@ fn session(
     job: &Job,
     checked: &crate::job::Checked,
     tape: &Tape,
-    src: &str,
-    layout: Layout,
+    run: &Run,
     cancel: &AtomicBool,
 ) -> Result<EnsembleResult, EnsembleError> {
+    let Run {
+        layout,
+        capacity,
+        src,
+    } = *run;
     let ctx = &entry.ctx;
     let cc = ctx
         .compute_capability()
@@ -676,22 +799,28 @@ fn session(
         driver: device.driver.clone(),
         precision: job.precision,
     };
-    // The free memory now bounds the members of one batch. The buffers are the only memory
-    // counted, so the driver's reserve of local memory for the private layout is not.
-    let (free, _) = ctx.mem_get_info().map_err(drv("query the free memory"))?;
+    // The free memory bounds the members of one batch. The private layout takes its local
+    // memory first: the driver reserves it for every resident thread, whatever the batch size.
     let real_bytes = match job.precision {
         Precision::Single => size_of::<f32>(),
         Precision::Double => size_of::<f64>(),
     };
-    let work_len = layout.work_len(checked.n, integrator_of(job.method));
+    let integrator = integrator_of(job.method);
+    let private_bytes = private_reals(checked.n, integrator).saturating_mul(real_bytes);
+    let work_len = layout.work_len(checked.n, integrator);
     let size = members_per_batch(
         job,
         checked.times.len(),
         work_len,
         real_bytes,
-        Some(budget_of(free as u64)),
+        Some(budget_of(buffer_room(layout, private_bytes, &capacity))),
         0,
     )?;
+    if layout == Layout::Private {
+        entry
+            .held
+            .fetch_max(reserve_of(private_bytes, &capacity), Ordering::SeqCst);
+    }
     let ran = run_batched(job, size, cancel, |sub| match job.precision {
         Precision::Single => launch_all(
             ctx,
@@ -919,47 +1048,105 @@ mod tests {
         }
     }
 
+    /// A device with room for anything: the size rules alone decide.
+    const ROOMY: Capacity = Capacity {
+        resident_threads: 1,
+        free_bytes: u64::MAX,
+        held_bytes: 0,
+    };
+
     #[test]
     fn the_layout_is_global_from_256_kb_of_private_arrays() {
-        // RK4 holds 7 n reals per thread, Dormand-Prince 10 n.
-        let at = |n: usize, i: Integrator, size: usize| layout_for(n, i, size);
-        assert_eq!(at(40, Integrator::Dp5, 8), Layout::Private);
-        assert_eq!(
-            at(3276, Integrator::Dp5, 8),
-            Layout::Private,
-            "262080 bytes"
-        );
-        assert_eq!(at(3277, Integrator::Dp5, 8), Layout::Global, "262160 bytes");
-        assert_eq!(
-            at(4681, Integrator::Rk4, 8),
-            Layout::Private,
-            "262136 bytes"
-        );
-        assert_eq!(at(4682, Integrator::Rk4, 8), Layout::Global, "262192 bytes");
-        assert_eq!(
-            at(6553, Integrator::Dp5, 4),
-            Layout::Private,
-            "262120 bytes"
-        );
-        assert_eq!(at(6554, Integrator::Dp5, 4), Layout::Global, "262160 bytes");
-        assert_eq!(
-            at(9362, Integrator::Rk4, 4),
-            Layout::Private,
-            "262136 bytes"
-        );
-        assert_eq!(at(9363, Integrator::Rk4, 4), Layout::Global, "262164 bytes");
-        assert_eq!(at(0, Integrator::Rk4, 8), Layout::Private);
+        // RK4 holds 7 n reals per thread.
+        let at = |n: usize, size: usize| layout_for(n, Integrator::Rk4, size, ROOMY);
+        assert_eq!(at(4681, 8), Layout::Private, "262136 bytes");
+        assert_eq!(at(4682, 8), Layout::Global, "262192 bytes");
+        assert_eq!(at(9362, 4), Layout::Private, "262136 bytes");
+        assert_eq!(at(9363, 4), Layout::Global, "262164 bytes");
+        assert_eq!(at(0, 8), Layout::Private);
         // A huge n must not overflow the size.
-        assert_eq!(at(usize::MAX / 2, Integrator::Dp5, 8), Layout::Global);
+        assert_eq!(at(usize::MAX / 2, 8), Layout::Global);
+        let dp5 = layout_for(usize::MAX / 2, Integrator::Dp5, 8, ROOMY);
+        assert_eq!(dp5, Layout::Global);
     }
 
     #[test]
-    fn a_forced_layout_wins_over_the_size() {
+    fn dormand_prince_is_global_from_3300_private_reals_at_any_precision() {
+        // 10 n reals per thread, so 3300 reals are 330 states.
+        for size in [4, 8] {
+            let at = |n: usize| layout_for(n, Integrator::Dp5, size, ROOMY);
+            assert_eq!(at(40), Layout::Private);
+            assert_eq!(at(329), Layout::Private, "3290 reals");
+            assert_eq!(at(330), Layout::Global, "3300 reals");
+            assert_eq!(at(400), Layout::Global);
+        }
+        // RK4 with as many reals (470 states) stays private.
+        assert_eq!(layout_for(470, Integrator::Rk4, 8, ROOMY), Layout::Private);
+    }
+
+    /// Resident threads and free memory that make the numbers small: an RK4 model of 10 states
+    /// with doubles keeps 70 reals, 560 bytes, per thread, so 1000 threads reserve 560000.
+    fn small(free: u64) -> Capacity {
+        Capacity::new(1000, free, 0)
+    }
+
+    #[test]
+    fn the_layout_is_private_while_the_reserve_is_within_three_quarters_of_the_free_memory() {
+        let at = |free: u64| layout_for(10, Integrator::Rk4, 8, small(free));
+        // 560000 * 4 <= free * 3 from free = 746667.
+        assert_eq!(at(746_666), Layout::Global);
+        assert_eq!(at(746_667), Layout::Private);
+        assert_eq!(at(u64::MAX), Layout::Private);
+        assert_eq!(at(0), Layout::Global);
+        // No model needs a reserve when it has no states, and nothing overflows.
+        assert_eq!(layout_for(0, Integrator::Rk4, 8, small(0)), Layout::Private);
+        let wide = Capacity::new(u64::MAX, u64::MAX, u64::MAX);
+        assert_eq!(layout_for(10, Integrator::Rk4, 8, wide), Layout::Global);
+    }
+
+    #[test]
+    fn the_layout_does_not_change_after_the_context_holds_its_reserve() {
+        // A private run takes 560000 bytes from the free memory and the context keeps them.
+        let before = Capacity::new(1000, 800_000, 0);
+        let after = Capacity::new(1000, 800_000 - 560_000, 560_000);
+        assert_eq!(before.free_bytes, after.free_bytes);
+        let at = |c: Capacity| layout_for(10, Integrator::Rk4, 8, c);
+        assert_eq!(at(before), Layout::Private);
+        assert_eq!(at(after), Layout::Private);
+        // A held reserve is added to the free memory only once.
+        assert_eq!(Capacity::new(1, u64::MAX, 5).free_bytes, u64::MAX);
+    }
+
+    #[test]
+    fn the_buffers_get_the_free_memory_less_the_reserve_of_the_private_layout() {
+        let c = small(1_000_000);
+        assert_eq!(buffer_room(Layout::Global, 560, &c), 1_000_000);
+        assert_eq!(buffer_room(Layout::Private, 560, &c), 440_000);
+        // A reserve larger than the free memory leaves nothing.
+        assert_eq!(buffer_room(Layout::Private, 5600, &c), 0);
+        // The context already holds 560000: the free memory is net of it, so a run that needs
+        // no more takes nothing more, and a run that needs 1000 more bytes per thread takes
+        // the difference.
+        let held = Capacity::new(1000, 440_000, 560_000);
+        assert_eq!(buffer_room(Layout::Private, 560, &held), 440_000);
+        assert_eq!(buffer_room(Layout::Global, 560, &held), 440_000);
+        assert_eq!(buffer_room(Layout::Private, 700, &held), 300_000);
+    }
+
+    #[test]
+    fn a_forced_layout_wins_over_the_size_and_the_memory() {
         let (n, i, size) = (40, Integrator::Dp5, 8);
-        assert_eq!(pick(None, n, i, size), Layout::Private);
-        assert_eq!(pick(Some(Layout::Global), n, i, size), Layout::Global);
-        assert_eq!(pick(Some(Layout::Private), 6000, i, size), Layout::Private);
-        assert_eq!(pick(None, 6000, i, size), Layout::Global);
+        assert_eq!(pick(None, n, i, size, ROOMY), Layout::Private);
+        assert_eq!(pick(None, n, i, size, small(0)), Layout::Global);
+        assert_eq!(
+            pick(Some(Layout::Global), n, i, size, ROOMY),
+            Layout::Global
+        );
+        assert_eq!(
+            pick(Some(Layout::Private), 6000, i, size, small(0)),
+            Layout::Private
+        );
+        assert_eq!(pick(None, 6000, i, size, ROOMY), Layout::Global);
     }
 
     #[test]

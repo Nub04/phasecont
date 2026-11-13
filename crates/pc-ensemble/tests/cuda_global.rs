@@ -9,12 +9,19 @@ mod common;
 use std::sync::atomic::AtomicBool;
 
 use common::*;
-use pc_ensemble::cuda::{force_layout, layout_for};
+use pc_ensemble::cuda::{Capacity, force_layout, layout_for};
 use pc_ensemble::device::{Backend, BackendState, find_device, list_devices};
 use pc_ensemble::kernel::{Integrator, Layout};
 use pc_ensemble::run::run_on;
 use pc_ensemble::selftest::{Selected, run_selftest};
 use pc_ensemble::{Method, Precision, Status};
+
+/// A device with room for anything, so that the size rules alone pick the layout.
+const ROOMY: Capacity = Capacity {
+    resident_threads: 1,
+    free_bytes: u64::MAX,
+    held_bytes: 0,
+};
 
 /// Puts the layout choice back to the size rule, also when a test panics.
 struct Reset;
@@ -80,7 +87,7 @@ fn the_global_layout_runs_on_a_cuda_device() {
         ("dp5", 3500, Integrator::Dp5, DP5_STD),
     ] {
         assert_eq!(
-            layout_for(n, integrator, 8),
+            layout_for(n, integrator, 8, ROOMY),
             Layout::Global,
             "{name} n = {n}"
         );
@@ -113,7 +120,7 @@ fn the_global_layout_runs_on_a_cuda_device() {
     // Dormand-Prince): the size rule must pick the global layout, and the run must finish
     // with the same status as the CPU and a state that agrees to the tolerance.
     let n = 6000;
-    assert_eq!(layout_for(n, Integrator::Dp5, 8), Layout::Global);
+    assert_eq!(layout_for(n, Integrator::Dp5, 8, ROOMY), Layout::Global);
     let m = build_model(&lorenz96(n));
     let x0 = big_x0(n, 4);
     let j = job(&m, 4, &x0, &[8.0], 0.02, DP5_STD, Precision::Double);
