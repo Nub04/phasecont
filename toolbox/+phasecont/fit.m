@@ -1,7 +1,7 @@
 function r = fit(m, x0, P, t, Y, options)
 %FIT Fit model parameters to trajectory data (Levenberg-Marquardt).
 %   R = phasecont.fit(M, X0, P, T, Y, Fit = "a", Observe = "x", T0 = 0, ...
-%       Dt = 0.01, FdStep = 1e-7, Tau = 1e-3, GradTol = 1e-8, ...
+%       Dt = 0.01, FdStep = 1e-7, FdScale = 1, Tau = 1e-3, GradTol = 1e-8, ...
 %       StepTol = 1e-8, MaxIter = 200) changes the parameters named in Fit
 %   until the model, started from X0 at time T0, matches the data Y at the
 %   times T. It returns a phasecont.FitResult.
@@ -26,20 +26,29 @@ function r = fit(m, x0, P, t, Y, options)
 %     Dt         step of Runge-Kutta 4, or
 %     Rtol, Atol tolerances of Dormand-Prince 5(4), as in phasecont.ensemble
 %     FdStep     relative step of the forward difference: column j of the
-%                Jacobian uses FdStep*abs(q_j), or FdStep^2 when q_j = 0.
-%                Nielsen et al. use 1e-7 in their examples.
-%     Tau        start damping, mu = Tau*max(diag(J'*J)). They give 1e-6 for
+%                Jacobian uses FdStep*max(abs(q_j), s_j). Nielsen et al. use
+%                1e-7 in their examples.
+%     FdScale    s_j, the size of parameter j below which the step stops
+%                shrinking, as TypicalX does in the MathWorks optimizers. A
+%                positive finite scalar, or one value per fitted parameter in
+%                the order of Fit. Choose a value near the smallest size of
+%                the parameter that the model can tell apart.
+%     Tau       start damping, mu = Tau*max(diag(J'*J)). They give 1e-6 for
 %                a good start and 1e-3 or 1 otherwise.
 %     GradTol    stop when max(abs(J'*f)) <= GradTol
 %     StepTol    stop when norm(h) <= StepTol*(norm(q) + StepTol)
 %     MaxIter    most trial steps
-%   Reaching MaxIter is not an error; R.Converged is false then. FdStep must
-%   be large enough to move every fitted parameter: a step that leaves q_j
-%   unchanged in double precision raises phasecont:fit:badOption.
+%   Reaching MaxIter is not an error; R.Converged is false then. FdStep and
+%   FdScale must be large enough to move every fitted parameter: a step that
+%   leaves q_j unchanged in double precision raises phasecont:fit:badOption.
+%
+%   One option is optional:
+%     MaxSteps   most steps of one member, passed to phasecont.ensemble,
+%                whose limit is 100000 when MaxSteps is not given
 %
 %   A trial point that does not finish is a rejected step. A start point
 %   that does not finish raises phasecont:fit:startFailed, and so does a
-%   start that needs more steps than ensemble allows (100000 per member). A
+%   start that needs more steps than MaxSteps allows. A
 %   perturbed point that does not finish, at the start or at an accepted
 %   trial point, raises phasecont:fit:jacobianFailed. A parameter whose
 %   Jacobian column is exactly zero raises phasecont:fit:unidentifiable; this
@@ -61,17 +70,21 @@ arguments
     options.Rtol = []
     options.Atol = []
     options.FdStep = []
+    options.FdScale = []
     options.Tau = []
     options.GradTol = []
     options.StepTol = []
     options.MaxIter = []
+    options.MaxSteps = []
 end
 
 % A missing required option is reported first, then a bad value. Dt, Rtol and
 % Atol are checked by ensemble on the first call.
-required = ["Fit" "Observe" "T0" "FdStep" "Tau" "GradTol" "StepTol" "MaxIter"];
+required = ["Fit" "Observe" "T0" "FdStep" "FdScale" "Tau" "GradTol" "StepTol" ...
+    "MaxIter"];
 ids = ["missingFit" "missingObserve" "missingTime" "missingFdStep" ...
-    "missingTau" "missingGradTol" "missingStepTol" "missingMaxIter"];
+    "missingFdScale" "missingTau" "missingGradTol" "missingStepTol" ...
+    "missingMaxIter"];
 for k = 1:numel(required)
     if isempty(options.(required(k)))
         error("phasecont:fit:" + ids(k), ...
@@ -118,6 +131,15 @@ fitIdx = fitIdx(:);
 obsIdx = obsIdx(:);
 nf = numel(fitIdx);
 nObs = numel(obsIdx);
+fdScale = options.FdScale;
+if ~(isnumeric(fdScale) && isreal(fdScale) && isvector(fdScale) ...
+        && (isscalar(fdScale) || numel(fdScale) == nf) ...
+        && all(isfinite(fdScale)) && all(fdScale > 0))
+    error("phasecont:fit:badOption", ...
+        "FdScale must be a positive finite number or a vector of %d of them, one per name in Fit.", ...
+        nf);
+end
+fdScale = double(fdScale(:)) .* ones(nf, 1);
 
 if ~(isnumeric(x0) && isreal(x0) && isvector(x0) && numel(x0) == n && all(isfinite(x0)))
     error("phasecont:model:badStart", ...
@@ -148,7 +170,7 @@ end
 Y = double(Y);
 
 ctx = struct("m", m, "x0", x0, "p0", p0, "fitIdx", fitIdx, "obsIdx", obsIdx, ...
-    "fdStep", fdStep, "tspan", [t0; t].', "nTimes", nTimes, "Y", Y, ...
+    "fdStep", fdStep, "fdScale", fdScale, "tspan", [t0; t].', "nTimes", nTimes, "Y", Y, ...
     "method", {methodArgs(options)}, "fitNames", fitNames);
 
 % The warning for members that stop is expected here: a trial point may
@@ -161,9 +183,13 @@ restore = onCleanup(@() warning(saved)); %#ok<NASGU>
 q = p0(fitIdx);
 ev = evaluate(ctx, q);
 if ~ev.ok0
+    hint = "";
+    if ev.status(1) == "maxSteps"
+        hint = " Raise MaxSteps if the model needs more steps.";
+    end
     error("phasecont:fit:startFailed", ...
-        "The model did not reach the last data time from the start values (status ""%s"").", ...
-        ev.status(1));
+        "The model did not reach the last data time from the start values (status ""%s"").%s", ...
+        ev.status(1), hint);
 end
 requireJacobian(ctx, ev);
 f = ev.resid;
@@ -271,7 +297,7 @@ function c = methodArgs(options)
 % The step method options of ensemble, as given. Their rules are checked
 % by ensemble.
 c = {};
-for name = ["Dt" "Rtol" "Atol"]
+for name = ["Dt" "Rtol" "Atol" "MaxSteps"]
     if ~isempty(options.(name))
         c = [c, {char(name), options.(name)}]; %#ok<AGROW>
     end
@@ -283,8 +309,7 @@ function ev = evaluate(ctx, q)
 % parameter j moved by a forward-difference step. Returns the residual at q
 % and, when every member finished, the Jacobian.
 nf = numel(q);
-eta = ctx.fdStep * abs(q);
-eta(q == 0) = ctx.fdStep ^ 2;
+eta = ctx.fdStep * max(abs(q), ctx.fdScale);
 pq = ctx.p0;
 pq(ctx.fitIdx) = q;
 pm = repmat(pq, 1, nf + 1);
@@ -293,7 +318,7 @@ for j = 1:nf
     eta(j) = moved - q(j);            % the step that was actually taken
     if ~(isfinite(eta(j)) && eta(j) ~= 0)
         error("phasecont:fit:badOption", ...
-            "FdStep = %g does not move parameter ""%s"" (value %g). Use a larger FdStep.", ...
+            "FdStep = %g does not move parameter ""%s"" (value %g). Use a larger FdStep or FdScale.", ...
             ctx.fdStep, ctx.fitNames(j), q(j));
     end
     pm(ctx.fitIdx(j), j + 1) = moved;

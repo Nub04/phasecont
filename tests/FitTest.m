@@ -26,6 +26,7 @@ classdef FitTest < matlab.unittest.TestCase
             "Observe", struct("Name", "Observe", "Id", "missingObserve"), ...
             "T0", struct("Name", "T0", "Id", "missingTime"), ...
             "FdStep", struct("Name", "FdStep", "Id", "missingFdStep"), ...
+            "FdScale", struct("Name", "FdScale", "Id", "missingFdScale"), ...
             "Tau", struct("Name", "Tau", "Id", "missingTau"), ...
             "GradTol", struct("Name", "GradTol", "Id", "missingGradTol"), ...
             "StepTol", struct("Name", "StepTol", "Id", "missingStepTol"), ...
@@ -46,7 +47,14 @@ classdef FitTest < matlab.unittest.TestCase
             "T0NaN", {{"T0", NaN}}, ...
             "T0Text", {{"T0", "0"}}, ...
             "T0Vector", {{"T0", [0 1]}}, ...
-            "FdStepTooSmallToMoveTheParameter", {{"FdStep", 1e-17}})
+            "FdStepTooSmallToMoveTheParameter", {{"FdStep", 1e-17}}, ...
+            "FdScaleZero", {{"FdScale", 0}}, ...
+            "FdScaleNegative", {{"FdScale", -1}}, ...
+            "FdScaleNaN", {{"FdScale", NaN}}, ...
+            "FdScaleInf", {{"FdScale", Inf}}, ...
+            "FdScaleText", {{"FdScale", "one"}}, ...
+            "FdScaleTooLong", {{"FdScale", [1 1]}}, ...
+            "FdScaleComplex", {{"FdScale", 1 + 1i}})
         Method = struct( ...
             "Rk4", {{"Dt", 0.01}}, ...
             "Dp5", {{"Rtol", 1e-8, "Atol", 1e-10}})
@@ -82,7 +90,7 @@ classdef FitTest < matlab.unittest.TestCase
             end
             drop = string(drop);
             s = struct("Fit", "a", "Observe", "x", "T0", 0, "Dt", 0.01, ...
-                "FdStep", 1e-7, "Tau", 1e-3, "GradTol", 1e-10, ...
+                "FdStep", 1e-7, "FdScale", 1, "Tau", 1e-3, "GradTol", 1e-10, ...
                 "StepTol", 1e-10, "MaxIter", 100);
             names = string(fieldnames(over))';
             for k = 1:numel(names)
@@ -291,16 +299,75 @@ classdef FitTest < matlab.unittest.TestCase
             testCase.verifyEqual(r.Fitted - Y, r.Residual, "AbsTol", 1e-12);
         end
 
-        function aZeroStartUsesTheSquaredForwardStep(testCase)
-            % q = 0 takes eta = FdStep^2. Here J is exactly t, so the first
-            % damping is Tau * sum(t.^2).
-            m = testCase.model(testCase.Line);
+        function aZeroStartStepsByFdStepTimesFdScale(testCase)
+            % At q = 0 the step is FdStep*FdScale. With FdStep = 0.1 the
+            % forward difference of x = exp(-a t) at a = 0 is
+            % (exp(-eta t) - 1)/eta, so the first damping
+            % Tau*sum(J.^2) tells which step was taken.
+            m = testCase.model(testCase.Decay);
             t = (0.5:0.5:3)';
-            Y = 2*t;
-            c = testCase.options([], struct("Fit", "b", "Tau", 1e-3));
-            r = phasecont.fit(m, 0, 0, t, Y, c{:});
-            testCase.verifyEqual(r.History.Mu(1), 1e-3 * sum(t.^2), "RelTol", 1e-6);
-            testCase.verifyEqual(r.Estimate, 2, "AbsTol", 1e-8);
+            Y = exp(-0.5*t);
+            for scale = [1 2]
+                eta = 0.1 * scale;
+                c = testCase.options([], struct("FdStep", 0.1, "FdScale", scale));
+                r = phasecont.fit(m, 1, 0, t, Y, c{:});
+                J = (exp(-eta*t) - 1) / eta;
+                testCase.verifyEqual(r.History.Mu(1), 1e-3 * sum(J.^2), "RelTol", 1e-6);
+            end
+        end
+
+        function aTinyParameterGetsTheFdScaleFloor(testCase)
+            % x = exp(-a t) with a = 1e-12 stays near 1. A step of
+            % FdStep*abs(a) = 1e-19 cannot change a state of size 1 (the
+            % rounding unit there is 1e-16), so the column of J was exactly
+            % zero. With FdScale = 1 the step is 1e-7.
+            m = testCase.model(testCase.Decay);
+            t = (0.5:0.5:3)';
+            a = 1e-12;
+            Y = testCase.ensembleData(m, 1, a, t, {"Dt", 0.01});
+            c = testCase.options([], struct("FdScale", 1));
+            r = phasecont.fit(m, 1, a, t, Y, c{:});
+            testCase.verifyEqual(r.Iterations, 0);
+            testCase.verifyEqual(r.Stop, "gradient");
+            exact = -t .* exp(-a*t);
+            testCase.verifyLessThanOrEqual( ...
+                max(abs(r.Jacobian - exact) ./ abs(exact)), 1e-5);
+        end
+
+        function aFdScaleSmallerThanTheParameterChangesNothing(testCase)
+            % max(abs(q), s) = abs(q) when s <= abs(q), so the Jacobian is
+            % the one of FdStep*abs(q), bit for bit.
+            m = testCase.model(testCase.Decay);
+            t = (0.5:0.5:3)';
+            Y = exp(-1.3*t);
+            c1 = testCase.options([], struct("FdScale", 1e-3));
+            c2 = testCase.options([], struct("FdScale", 1e-9));
+            r1 = phasecont.fit(m, 1, [], t, Y, c1{:});
+            r2 = phasecont.fit(m, 1, [], t, Y, c2{:});
+            testCase.verifyEqual(r1.Jacobian, r2.Jacobian);
+            testCase.verifyEqual(r1.Estimate, r2.Estimate);
+        end
+
+        function aFdScaleVectorFollowsTheOrderOfFit(testCase)
+            % Fit = ["c" "a"] while the model lists a before c. a = 1e-12
+            % needs the scale 1 and c = 1 does not. If the vector were read
+            % in the order of the model, a would get 1e-12 and its column
+            % would be zero.
+            m = testCase.model(testCase.Hidden);
+            t = (0.5:0.5:3)';
+            a = 1e-12;
+            res = phasecont.ensemble(m, [1; 1], [a; 1], [0; t]', ...
+                "Backend", "cpu", "Precision", "double", "Dt", 0.01);
+            Y = reshape(res.States(:, :, 1), 2, numel(t)).';
+            c = testCase.options([], struct("Fit", ["c" "a"], ...
+                "Observe", ["x" "y"], "FdScale", [1e-12 1]));
+            r = phasecont.fit(m, [1 1], [a; 1], t, Y, c{:});
+            testCase.verifyEqual(r.Fit, ["c" "a"]);
+            testCase.verifyEqual(r.Iterations, 0);
+            exactA = [-t .* exp(-a*t); zeros(numel(t), 1)];
+            exactC = [zeros(numel(t), 1); -t .* exp(-t)];
+            testCase.verifyEqual(r.Jacobian(:, 2), exactA, "RelTol", 1e-5, "AbsTol", 1e-12);
+            testCase.verifyEqual(r.Jacobian(:, 1), exactC, "RelTol", 1e-5, "AbsTol", 1e-12);
         end
 
         function aLargeStepToleranceStopsAtTheStart(testCase)
@@ -528,7 +595,41 @@ classdef FitTest < matlab.unittest.TestCase
             catch err
                 testCase.verifyEqual(string(err.identifier), "phasecont:fit:startFailed");
                 testCase.verifyTrue(contains(err.message, "maxSteps"));
+                testCase.verifyTrue(contains(err.message, "MaxSteps"));
             end
+        end
+
+        function maxStepsLetsALongSpanFinish(testCase)
+            % The same span as above needs 200000 steps. MaxSteps = 300000
+            % lets it finish, and the fit finds the rate that made the data.
+            m = testCase.model(testCase.Decay);
+            t = [1000; 2000];
+            Y = reshape(phasecont.ensemble(m, 1, 2e-4, [0; t]', ...
+                "Backend", "cpu", "Precision", "double", "Dt", 0.01, ...
+                "MaxSteps", 300000).States, numel(t), 1);
+            over = struct("FdScale", 1e-4, "GradTol", 1e-6, "StepTol", 1e-8, ...
+                "MaxSteps", 300000);
+            c = testCase.options([], over);
+            r = phasecont.fit(m, 1, 1e-4, t, Y, c{:});
+            testCase.verifyEqual(r.Estimate, 2e-4, "AbsTol", 1e-8);
+            testCase.verifyTrue(r.Converged);
+        end
+
+        function aBadMaxStepsIsRefusedByEnsemble(testCase)
+            % fit passes MaxSteps on unchanged, so the errors are those of
+            % ensemble: badOption for a value, MATLAB's own argument
+            % validation for a size.
+            m = testCase.model(testCase.Decay);
+            t = (0.5:0.5:3)';
+            Y = exp(-1.3*t);
+            for bad = {0, 2.5, -1, NaN}
+                c = testCase.options([], struct("MaxSteps", bad{1}));
+                testCase.verifyError(@() phasecont.fit(m, 1, [], t, Y, c{:}), ...
+                    "phasecont:ensemble:badOption");
+            end
+            c = testCase.options([], struct("MaxSteps", [1 2]));
+            testCase.verifyError(@() phasecont.fit(m, 1, [], t, Y, c{:}), ...
+                "MATLAB:validation:IncompatibleSize");
         end
 
         function aPerturbedPointPastThePoleAtAnAcceptedStepIsRefused(testCase)
@@ -536,7 +637,8 @@ classdef FitTest < matlab.unittest.TestCase
             % first step is accepted at about 0.44, and the point one
             % forward-difference step above it is past the pole.
             m = testCase.model(testCase.Blow);
-            c = testCase.options([], struct("Fit", "c", "FdStep", 0.2, "Tau", 1e-6));
+            c = testCase.options([], struct("Fit", "c", "FdStep", 0.2, ...
+                "FdScale", 0.01, "Tau", 1e-6));
             testCase.verifyError( ...
                 @() phasecont.fit(m, 1, 0.38, 2, 10, c{:}), ...
                 "phasecont:fit:jacobianFailed");
