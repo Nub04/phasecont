@@ -279,6 +279,19 @@ classdef FitTest < matlab.unittest.TestCase
             testCase.verifyEqual(r.Iterations, 1);
         end
 
+        function aStartAtTheOptimumStopsWithoutAStep(testCase)
+            m = testCase.model(testCase.TwoPar);
+            ts = (0.5:0.5:4)';
+            Y = testCase.ensembleData(m, 0, [1.5; 0.7], ts, {"Dt", 0.01});
+            c = testCase.options([], struct("Fit", ["a" "b"]));
+            r = phasecont.fit(m, 0, struct("a", 1.5, "b", 0.7), ts, Y, c{:});
+            testCase.verifyEqual(r.Iterations, 0);
+            testCase.verifyEqual(r.Stop, "gradient");
+            testCase.verifyTrue(r.Converged);
+            testCase.verifyEmpty(r.History);
+            testCase.verifyEqual(r.Estimate, [1.5; 0.7]);
+        end
+
         % ---- members that do not finish ----
 
         function aStartPointThatBlowsUpIsRefused(testCase)
