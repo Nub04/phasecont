@@ -34,6 +34,7 @@ use cudarc::nvrtc::{self, CompileError, CompileOptions, Ptx, compile_ptx_with_op
 use pc_codegen::kernel::{Dialect, Scalar};
 
 use crate::abi::{Packed, integrator_of, pack_in};
+use crate::batch::{members_per_batch, run_batched};
 use crate::device::{Backend, BackendState, DeviceInfo};
 use crate::gpu::{drive, guard, kernel_err};
 use crate::job::{EnsembleError, EnsembleResult, Job, Label, Precision, validate};
@@ -89,6 +90,13 @@ fn drv(step: &'static str) -> impl Fn(DriverError) -> EnsembleError {
 /// margin for models that need more.
 const GLOBAL_SCRATCH_FROM: usize = 256 * 1024;
 
+/// The part of the free device memory that the buffers of one batch may take: 60%. The rest
+/// is for the driver (local memory of the launch, the context) and for other processes that
+/// allocate while this one runs. The fraction is a margin, not a tuned value.
+fn budget_of(free: u64) -> u64 {
+    free / 10 * 6
+}
+
 /// The scratch layout for a model of `n` states: private arrays below [`GLOBAL_SCRATCH_FROM`]
 /// bytes per thread, global scratch from there on.
 pub fn layout_for(n: usize, integrator: Integrator, real_bytes: usize) -> Layout {
@@ -134,7 +142,8 @@ fn forced_layout() -> Option<Layout> {
 }
 
 /// What to add to an allocation error when the work buffer is large because the scratch of
-/// the steps lives in it: `members` slices of `work_len` values.
+/// the steps lives in it: `members` slices of `work_len` values. `members` is the size of
+/// the batch that failed, since the run already splits the job to fit the free memory.
 fn global_note(
     layout: Layout,
     members: usize,
@@ -147,7 +156,7 @@ fn global_note(
     let bytes = members.saturating_mul(work_len).saturating_mul(real_bytes);
     Some(format!(
         "the step arrays of this kernel live in global memory, which takes {} KB for {members} \
-members; run fewer members at a time or use the cpu backend",
+members of this batch; use the cpu backend or a smaller model",
         bytes.div_ceil(1024)
     ))
 }
@@ -667,24 +676,40 @@ fn session(
         driver: device.driver.clone(),
         precision: job.precision,
     };
-    let ran = match job.precision {
+    // The free memory now bounds the members of one batch. The buffers are the only memory
+    // counted, so the driver's reserve of local memory for the private layout is not.
+    let (free, _) = ctx.mem_get_info().map_err(drv("query the free memory"))?;
+    let real_bytes = match job.precision {
+        Precision::Single => size_of::<f32>(),
+        Precision::Double => size_of::<f64>(),
+    };
+    let work_len = layout.work_len(checked.n, integrator_of(job.method));
+    let size = members_per_batch(
+        job,
+        checked.times.len(),
+        work_len,
+        real_bytes,
+        Some(budget_of(free as u64)),
+        0,
+    )?;
+    let ran = run_batched(job, size, cancel, |sub| match job.precision {
         Precision::Single => launch_all(
             ctx,
             &function,
-            pack_in::<f32>(job, checked, tape, layout),
+            pack_in::<f32>(sub, checked, tape, layout),
             layout,
             cancel,
         )
-        .and_then(|packed| packed.finish(label)),
+        .and_then(|packed| packed.finish(label.clone())),
         Precision::Double => launch_all(
             ctx,
             &function,
-            pack_in::<f64>(job, checked, tape, layout),
+            pack_in::<f64>(sub, checked, tape, layout),
             layout,
             cancel,
         )
-        .and_then(|packed| packed.finish(label)),
-    };
+        .and_then(|packed| packed.finish(label.clone())),
+    });
     // cudarc's Drop code stores its errors in the context. Take them here and charge them to
     // this run, or the next run on the device would see them.
     let leftover = ctx.check_err();
@@ -947,12 +972,20 @@ mod tests {
     }
 
     #[test]
+    fn the_budget_is_sixty_percent_of_the_free_memory() {
+        assert_eq!(budget_of(0), 0);
+        assert_eq!(budget_of(100), 60);
+        assert_eq!(budget_of(8 << 30), (8u64 << 30) / 10 * 6);
+        assert!(budget_of(u64::MAX) < u64::MAX);
+    }
+
+    #[test]
     fn the_global_scratch_note_names_the_size_and_the_way_out() {
         // The private layout needs no note: its work buffer is small.
         assert_eq!(global_note(Layout::Private, 16, 321, 8), None);
         // 4 members of 12 n + 3 = 483 doubles each.
         let note = global_note(Layout::Global, 4, 483, 8).expect("global");
-        for want in ["4 members", "16 KB", "fewer members", "cpu"] {
+        for want in ["4 members", "16 KB", "this batch", "smaller model", "cpu"] {
             assert!(note.contains(want), "{want} in {note}");
         }
         assert!(!note.contains("restart"), "{note}");

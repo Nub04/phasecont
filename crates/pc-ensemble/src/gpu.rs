@@ -178,7 +178,8 @@ pub fn check_alloc(
     {
         return Err(EnsembleError::BadJob(format!(
             "the {name} buffer needs {bytes} bytes and the device allows {max_alloc} in one \
-             buffer: run fewer members at a time"
+             buffer; the run is already split into batches, so use the cpu backend or a smaller \
+             model"
         )));
     }
     let total: u64 = buffers.iter().map(|(_, b)| *b).sum();
@@ -186,8 +187,8 @@ pub fn check_alloc(
         && total > mem
     {
         return Err(EnsembleError::BadJob(format!(
-            "the run needs {total} bytes on the device, which has {mem}: run fewer members at a \
-             time"
+            "the run needs {total} bytes on the device, which has {mem}; the run is already split \
+             into batches, so use the cpu backend or a smaller model"
         )));
     }
     Ok(())

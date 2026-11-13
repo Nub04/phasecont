@@ -39,11 +39,12 @@ use opencl3::types::{CL_BLOCKING, cl_device_id, cl_mem, cl_uint, cl_ulong};
 use pc_codegen::kernel::{Dialect, Scalar};
 
 use crate::abi::{Packed, integrator_of, pack};
+use crate::batch::{half_budget, members_per_batch, run_batched};
 use crate::device::{Backend, BackendState, DeviceInfo};
 use crate::gpu::{Quiet, check_alloc, drive, global_size, guard, kernel_err};
 use crate::job::{Checked, EnsembleError, EnsembleResult, Job, Label, Precision, validate};
 use crate::kept::{Kept, Lru};
-use crate::kernel::kernel_source;
+use crate::kernel::{kernel_source, work_len};
 use crate::real::Real;
 use crate::tape::Tape;
 
@@ -404,26 +405,43 @@ fn session(
         .map_err(cl("kernel work group size"))?
         .clamp(1, GROUP);
     let memory = info.memory_bytes;
-    match job.precision {
+    // OpenCL has no free-memory query, so the budget is a fraction of the device memory.
+    // `max_alloc` limits each buffer of a batch.
+    let (real_bytes, work_len) = (
+        match job.precision {
+            Precision::Single => size_of::<f32>(),
+            Precision::Double => size_of::<f64>(),
+        },
+        work_len(checked.n, integrator_of(job.method)),
+    );
+    let size = members_per_batch(
+        job,
+        checked.times.len(),
+        work_len,
+        real_bytes,
+        memory.map(half_budget),
+        handle.max_alloc,
+    )?;
+    run_batched(job, size, cancel, |sub| match job.precision {
         Precision::Single => launch_all(
             ctx,
             queue,
             &kernel,
             (group, handle.max_alloc, memory),
-            pack::<f32>(job, checked, tape),
+            pack::<f32>(sub, checked, tape),
             cancel,
         )
-        .and_then(|packed| packed.finish(label)),
+        .and_then(|packed| packed.finish(label.clone())),
         Precision::Double => launch_all(
             ctx,
             queue,
             &kernel,
             (group, handle.max_alloc, memory),
-            pack::<f64>(job, checked, tape),
+            pack::<f64>(sub, checked, tape),
             cancel,
         )
-        .and_then(|packed| packed.finish(label)),
-    }
+        .and_then(|packed| packed.finish(label.clone())),
+    })
 }
 
 /// Creates a device buffer for `data` and copies `data` into it.

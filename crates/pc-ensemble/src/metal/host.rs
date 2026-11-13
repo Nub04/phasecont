@@ -18,10 +18,11 @@ use pc_codegen::kernel::{Dialect, Scalar};
 
 use super::{ENTRY, command_error, group_for};
 use crate::abi::{Packed, integrator_of, pack};
+use crate::batch::{half_budget, members_per_batch, run_batched};
 use crate::device::{Backend, BackendState, DeviceInfo};
 use crate::gpu::{check_alloc, drive, global_size, guard, kernel_err};
 use crate::job::{Checked, EnsembleError, EnsembleResult, Job, Label, Precision, validate};
-use crate::kernel::kernel_source;
+use crate::kernel::{kernel_source, work_len};
 use crate::tape::Tape;
 
 type Dev = ProtocolObject<dyn MTLDevice>;
@@ -222,15 +223,26 @@ fn session(
             pipeline.maxTotalThreadsPerThreadgroup(),
             pipeline.threadExecutionWidth(),
         );
-        launch_all(
-            &dev,
-            &queue,
-            &pipeline,
-            (group, handle.max_alloc, info.memory_bytes),
-            pack::<f32>(job, checked, tape),
-            cancel,
-        )
-        .and_then(|packed| packed.finish(label))
+        // Metal has no free-memory query here either: half of the device memory is the budget.
+        let size = members_per_batch(
+            job,
+            checked.times.len(),
+            work_len(checked.n, integrator_of(job.method)),
+            size_of::<f32>(),
+            info.memory_bytes.map(half_budget),
+            handle.max_alloc,
+        )?;
+        run_batched(job, size, cancel, |sub| {
+            launch_all(
+                &dev,
+                &queue,
+                &pipeline,
+                (group, handle.max_alloc, info.memory_bytes),
+                pack::<f32>(sub, checked, tape),
+                cancel,
+            )
+            .and_then(|packed| packed.finish(label.clone()))
+        })
     })
 }
 
