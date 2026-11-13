@@ -15,6 +15,8 @@ classdef FitTest < matlab.unittest.TestCase
             "init x=1" + newline + "done" + newline
         Hidden = "par a=1, c=1" + newline + "x'=-a*x" + newline + ...
             "y'=-c*y" + newline + "init x=1,y=1" + newline + "done" + newline
+        Ramp = "par b=1" + newline + "x'=b*t" + newline + ...
+            "init x=0" + newline + "done" + newline
         MemberStopped = "phasecont:ensemble:memberStopped"
     end
 
@@ -36,7 +38,15 @@ classdef FitTest < matlab.unittest.TestCase
             "StepTolText", {{"StepTol", "small"}}, ...
             "MaxIterZero", {{"MaxIter", 0}}, ...
             "MaxIterFraction", {{"MaxIter", 2.5}}, ...
-            "MaxIterVector", {{"MaxIter", [10 20]}})
+            "MaxIterVector", {{"MaxIter", [10 20]}}, ...
+            "MaxIterNaN", {{"MaxIter", NaN}}, ...
+            "MaxIterNegative", {{"MaxIter", -3}}, ...
+            "TauZero", {{"Tau", 0}}, ...
+            "StepTolNegative", {{"StepTol", -1e-8}}, ...
+            "T0NaN", {{"T0", NaN}}, ...
+            "T0Text", {{"T0", "0"}}, ...
+            "T0Vector", {{"T0", [0 1]}}, ...
+            "FdStepTooSmallToMoveTheParameter", {{"FdStep", 1e-17}})
         Method = struct( ...
             "Rk4", {{"Dt", 0.01}}, ...
             "Dp5", {{"Rtol", 1e-8, "Atol", 1e-10}})
@@ -82,6 +92,22 @@ classdef FitTest < matlab.unittest.TestCase
                 s = rmfield(s, drop(k));
             end
             c = namedargs2cell(s);
+        end
+
+        function verifyDampingLaw(testCase, h)
+            % Replays the update of mu and nu (Algorithm 3.16) over the
+            % rows of History, so a change of the law is seen.
+            nu = 2;
+            for k = 1:height(h) - 1
+                if h.Accepted(k)
+                    expected = h.Mu(k) * max(1/3, 1 - (2*h.Rho(k) - 1)^3);
+                    nu = 2;
+                else
+                    expected = h.Mu(k) * nu;
+                    nu = 2 * nu;
+                end
+                testCase.verifyEqual(h.Mu(k+1), expected, "RelTol", 1e-12);
+            end
         end
 
         function Y = ensembleData(~, m, x0, p, ts, method)
@@ -175,8 +201,48 @@ classdef FitTest < matlab.unittest.TestCase
             testCase.verifyError(@() phasecont.fit(m, 1, [], t, Y, c{:}), ...
                 "phasecont:fit:badFit");
             c = testCase.options([], struct("Observe", ["x" "x"]));
-            testCase.verifyError(@() phasecont.fit(m, 1, [], [t t], [Y Y], c{:}), ...
+            testCase.verifyError(@() phasecont.fit(m, 1, [], t, [Y Y], c{:}), ...
                 "phasecont:fit:badObserve");
+        end
+
+        function namesMustBeNonemptyText(testCase)
+            m = testCase.model(testCase.Decay);
+            t = (1:3)';
+            Y = exp(-1.3*t);
+            c = testCase.options([], struct("Fit", ""));
+            testCase.verifyError(@() phasecont.fit(m, 1, [], t, Y, c{:}), ...
+                "phasecont:fit:badFit");
+            c = testCase.options([], struct("Fit", 5));
+            testCase.verifyError(@() phasecont.fit(m, 1, [], t, Y, c{:}), ...
+                "phasecont:fit:badFit");
+            c = testCase.options([], struct("Observe", 5));
+            testCase.verifyError(@() phasecont.fit(m, 1, [], t, Y, c{:}), ...
+                "phasecont:fit:badObserve");
+        end
+
+        function theStartStateMustBeOneFiniteVector(testCase)
+            m = testCase.model(testCase.Rotation);
+            t = (1:3)';
+            Y = cos(t);
+            c = testCase.options([], struct("Fit", "w"));
+            for bad = {1, [1; NaN], [1 0; 0 1], "ab", true(2, 1)}
+                testCase.verifyError( ...
+                    @() phasecont.fit(m, bad{1}, [], t, Y, c{:}), ...
+                    "phasecont:model:badStart");
+            end
+        end
+
+        function theParametersMustFitTheModel(testCase)
+            m = testCase.model(testCase.TwoPar);
+            t = (1:3)';
+            Y = t;
+            c = testCase.options();
+            testCase.verifyError( ...
+                @() phasecont.fit(m, 0, [1; 2; 3], t, Y, c{:}), ...
+                "phasecont:model:badParameter");
+            testCase.verifyError( ...
+                @() phasecont.fit(m, 0, struct("zz", 1), t, Y, c{:}), ...
+                "phasecont:model:unknownParameter");
         end
 
         % ---- the algorithm ----
@@ -196,6 +262,81 @@ classdef FitTest < matlab.unittest.TestCase
             testCase.verifyEqual(r.Estimate, closedForm, "AbsTol", 1e-6);
             testCase.verifyTrue(r.Converged);
             testCase.verifyTrue(any(r.Stop == ["gradient" "step"]));
+            % History: the last row holds the cost and gradient that the
+            % result reports, and Iterations is the row count.
+            h = r.History;
+            testCase.verifyEqual(r.Iterations, height(h));
+            testCase.verifyEqual(h.Cost(end), r.Cost);
+            testCase.verifyEqual(h.GradNorm(end), r.GradNorm);
+            testCase.verifyEqual(h.Iter, (1:height(h))');
+        end
+
+        function theResultMatchesAnIndependentComputation(testCase)
+            % x' = b, x(0) = 0 has x(t) = b t, so the model, the residual,
+            % the cost and the Jacobian at the estimate have closed forms.
+            m = testCase.model(testCase.Line);
+            t = (0.5:0.5:3)';
+            noise = [0.1; -0.05; 0.02; 0.07; -0.03; 0.04];
+            Y = 2*t + noise;
+            c = testCase.options([], struct("Fit", "b"));
+            r = phasecont.fit(m, 0, [], t, Y, c{:});
+            b = sum(t .* Y) / sum(t.^2);
+            testCase.verifyEqual(r.Estimate, b, "AbsTol", 1e-8);
+            testCase.verifyEqual(r.Fitted, b*t, "AbsTol", 1e-8);
+            testCase.verifyEqual(r.Residual, b*t - Y, "AbsTol", 1e-8);
+            testCase.verifyEqual(r.Cost, 0.5*sum((b*t - Y).^2), "RelTol", 1e-8);
+            testCase.verifyEqual(r.Jacobian, t, "AbsTol", 1e-6);
+            testCase.verifyEqual(r.GradNorm, ...
+                norm(r.Jacobian' * r.Residual(:), Inf), "AbsTol", 1e-12);
+            testCase.verifyEqual(r.Fitted - Y, r.Residual, "AbsTol", 1e-12);
+        end
+
+        function aZeroStartUsesTheSquaredForwardStep(testCase)
+            % q = 0 takes eta = FdStep^2. Here J is exactly t, so the first
+            % damping is Tau * sum(t.^2).
+            m = testCase.model(testCase.Line);
+            t = (0.5:0.5:3)';
+            Y = 2*t;
+            c = testCase.options([], struct("Fit", "b", "Tau", 1e-3));
+            r = phasecont.fit(m, 0, 0, t, Y, c{:});
+            testCase.verifyEqual(r.History.Mu(1), 1e-3 * sum(t.^2), "RelTol", 1e-6);
+            testCase.verifyEqual(r.Estimate, 2, "AbsTol", 1e-8);
+        end
+
+        function aLargeStepToleranceStopsAtTheStart(testCase)
+            m = testCase.model(testCase.Decay);
+            t = (0.5:0.5:3)';
+            c = testCase.options([], struct("StepTol", 10));
+            r = phasecont.fit(m, 1, [], t, exp(-1.3*t), c{:});
+            testCase.verifyEqual(r.Stop, "step");
+            testCase.verifyTrue(r.Converged);
+            testCase.verifyEqual(r.Iterations, 0);
+            testCase.verifyEmpty(r.History);
+            testCase.verifyEqual(r.Estimate, 1);
+        end
+
+        function aHugeMaxIterNeedsNoMemoryOfItsOwn(testCase)
+            m = testCase.model(testCase.Line);
+            t = (0.5:0.5:3)';
+            c = testCase.options([], struct("Fit", "b", "MaxIter", 1e9));
+            r = phasecont.fit(m, 0, [], t, 2*t, c{:});
+            testCase.verifyTrue(r.Converged);
+            testCase.verifyLessThan(r.Iterations, 10);
+        end
+
+        function aFdStepThatDoesNotMoveTheParameterIsRefused(testCase)
+            % q = 1 and 1 + 1e-17 is 1 in double precision.
+            m = testCase.model(testCase.Decay);
+            t = (0.5:0.5:3)';
+            c = testCase.options([], struct("FdStep", 1e-17));
+            try
+                phasecont.fit(m, 1, [], t, exp(-1.3*t), c{:});
+                testCase.verifyFail("fit did not raise badOption");
+            catch err
+                testCase.verifyEqual(string(err.identifier), "phasecont:fit:badOption");
+                testCase.verifyTrue(contains(err.message, "FdStep"));
+                testCase.verifyTrue(contains(err.message, """a"""));
+            end
         end
 
         function theJacobianMatchesTheClosedFormSensitivity(testCase, Method)
@@ -224,6 +365,32 @@ classdef FitTest < matlab.unittest.TestCase
             testCase.verifyTrue(r.Converged);
             testCase.verifyEqual(r.Parameters.a, r.Estimate(1));
             testCase.verifyEqual(r.Parameters.b, r.Estimate(2));
+            testCase.verifyDampingLaw(r.History);
+        end
+
+        function aFitOrderThatIsNotTheModelOrderKeepsEveryColumnInPlace(testCase)
+            % x' = -a x + b, x(0) = 0 has x = (b/a)(1 - exp(-a t)).
+            m = testCase.model(testCase.TwoPar);
+            ts = (0.5:0.5:4)';
+            Y = testCase.ensembleData(m, 0, [1.5; 0.7], ts, {"Dt", 0.01});
+            % Fit b alone, with a fixed at its true value.
+            c = testCase.options([], struct("Fit", "b"));
+            r = phasecont.fit(m, 0, [1.5; 2], ts, Y, c{:});
+            testCase.verifyEqual(r.Estimate, 0.7, "AbsTol", 1e-6);
+            testCase.verifyEqual(r.P, [1.5; 0.7], "AbsTol", 1e-6);
+            % Fit b first, then a.
+            c = testCase.options([], struct("Fit", ["b" "a"]));
+            r = phasecont.fit(m, 0, [1.2; 0.9], ts, Y, c{:});
+            testCase.verifyEqual(r.Estimate, [0.7; 1.5], "AbsTol", 1e-6);
+            testCase.verifyEqual(r.P, [1.5; 0.7], "AbsTol", 1e-6);
+            testCase.verifyEqual(r.Parameters.a, r.Estimate(2));
+            testCase.verifyEqual(r.Parameters.b, r.Estimate(1));
+            b = r.Estimate(1);
+            a = r.Estimate(2);
+            e = exp(-a*ts);
+            dB = (1 - e) / a;
+            dA = b * (-(1 - e) / a^2 + ts .* e / a);
+            testCase.verifyEqual(r.Jacobian, [dB dA], "RelTol", 1e-4, "AbsTol", 1e-6);
         end
 
         function theClosedFormDecayIsFoundAtAFineStep(testCase)
@@ -242,6 +409,16 @@ classdef FitTest < matlab.unittest.TestCase
             testCase.verifyEqual(r.Estimate, 1.3, "AbsTol", 1e-6);
         end
 
+        function theStartTimeIsTheTimeOfTheModel(testCase)
+            % x' = b t from x(1) = 0.5 gives x(t) = 0.5 + b (t^2 - 1)/2.
+            m = testCase.model(testCase.Ramp);
+            t = (1.5:0.5:3)';
+            Y = 0.5 + 3 * (t.^2 - 1) / 2;
+            c = testCase.options([], struct("Fit", "b", "T0", 1));
+            r = phasecont.fit(m, 0.5, [], t, Y, c{:});
+            testCase.verifyEqual(r.Estimate, 3, "AbsTol", 1e-6);
+        end
+
         function twoObservedVariablesKeepTheirOrder(testCase)
             m = testCase.model(testCase.Rotation);
             t = (0.5:0.5:3)';
@@ -252,6 +429,20 @@ classdef FitTest < matlab.unittest.TestCase
             testCase.verifySize(r.Fitted, [6 2]);
             testCase.verifySize(r.Residual, [6 2]);
             testCase.verifyEqual(r.Residual, r.Fitted - Y, "AbsTol", 1e-12);
+        end
+
+        function anObservedOrderThatIsNotTheModelOrderKeepsItsColumns(testCase)
+            m = testCase.model(testCase.Rotation);
+            t = (0.5:0.5:3)';
+            x = cos(1.2*t);
+            y = -sin(1.2*t);
+            c = testCase.options([], struct("Fit", "w", "Observe", "y"));
+            r = phasecont.fit(m, [1; 0], [], t, y, c{:});
+            testCase.verifyEqual(r.Estimate, 1.2, "AbsTol", 1e-6);
+            c = testCase.options([], struct("Fit", "w", "Observe", ["y" "x"]));
+            r = phasecont.fit(m, [1; 0], [], t, [y x], c{:});
+            testCase.verifyEqual(r.Estimate, 1.2, "AbsTol", 1e-6);
+            testCase.verifyEqual(r.Fitted, [y x], "AbsTol", 1e-5);
         end
 
         function aSubsetFitLeavesTheOthersUntouched(testCase)
@@ -315,6 +506,40 @@ classdef FitTest < matlab.unittest.TestCase
             testCase.verifyTrue(any(~h.Accepted & isnan(h.Rho)));
             testCase.verifyEqual(r.Estimate, 0.45, "AbsTol", 1e-6);
             testCase.verifyTrue(r.Converged);
+            testCase.verifyDampingLaw(h);
+            % A rejected step leaves the iterate, so its cost and gradient
+            % are those of the row before.
+            for k = find(~h.Accepted(:))'
+                if k > 1
+                    testCase.verifyEqual(h.Cost(k), h.Cost(k-1));
+                    testCase.verifyEqual(h.GradNorm(k), h.GradNorm(k-1));
+                end
+            end
+        end
+
+        function aStartThatNeedsMoreStepsThanEnsembleAllowsIsRefused(testCase)
+            % ensemble stops a trajectory after 100000 steps. Here Dt = 0.01
+            % and the last time is 2000.
+            m = testCase.model(testCase.Decay);
+            c = testCase.options();
+            try
+                phasecont.fit(m, 1, [], 2000, 0, c{:});
+                testCase.verifyFail("fit did not raise startFailed");
+            catch err
+                testCase.verifyEqual(string(err.identifier), "phasecont:fit:startFailed");
+                testCase.verifyTrue(contains(err.message, "maxSteps"));
+            end
+        end
+
+        function aPerturbedPointPastThePoleAtAnAcceptedStepIsRefused(testCase)
+            % x(2) = 1/(1 - 2 c) has its pole at c = 0.5. From c = 0.38 the
+            % first step is accepted at about 0.44, and the point one
+            % forward-difference step above it is past the pole.
+            m = testCase.model(testCase.Blow);
+            c = testCase.options([], struct("Fit", "c", "FdStep", 0.2, "Tau", 1e-6));
+            testCase.verifyError( ...
+                @() phasecont.fit(m, 1, 0.38, 2, 10, c{:}), ...
+                "phasecont:fit:jacobianFailed");
         end
 
         function aPerturbedPointThatBlowsUpAtTheStartIsRefused(testCase)
@@ -364,6 +589,8 @@ classdef FitTest < matlab.unittest.TestCase
         end
 
         function aFitIssuesNoWarningOfItsOwn(testCase)
+            saved = warning("query", testCase.MemberStopped);
+            testCase.addTeardown(@() warning(saved));
             warning("on", testCase.MemberStopped);
             m = testCase.model(testCase.Blow);
             t = (0.5:0.5:2)';

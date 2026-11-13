@@ -33,13 +33,17 @@ function r = fit(m, x0, P, t, Y, options)
 %     GradTol    stop when max(abs(J'*f)) <= GradTol
 %     StepTol    stop when norm(h) <= StepTol*(norm(q) + StepTol)
 %     MaxIter    most trial steps
-%   Reaching MaxIter is not an error; R.Converged is false then.
+%   Reaching MaxIter is not an error; R.Converged is false then. FdStep must
+%   be large enough to move every fitted parameter: a step that leaves q_j
+%   unchanged in double precision raises phasecont:fit:badOption.
 %
 %   A trial point that does not finish is a rejected step. A start point
-%   that does not finish raises phasecont:fit:startFailed. A perturbed point
-%   that does not finish at an accepted trial point raises
-%   phasecont:fit:jacobianFailed. A parameter that does not change the
-%   observed data raises phasecont:fit:unidentifiable. The warning
+%   that does not finish raises phasecont:fit:startFailed, and so does a
+%   start that needs more steps than ensemble allows (100000 per member). A
+%   perturbed point that does not finish, at the start or at an accepted
+%   trial point, raises phasecont:fit:jacobianFailed. A parameter whose
+%   Jacobian column is exactly zero raises phasecont:fit:unidentifiable; this
+%   is reliable with Dt and is not guaranteed with Rtol and Atol. The warning
 %   phasecont:ensemble:memberStopped is off while the fit runs. Ctrl+C
 %   cancels the run.
 %
@@ -63,7 +67,8 @@ arguments
     options.MaxIter = []
 end
 
-% Required choices first, so a missing one is reported before anything else.
+% A missing required option is reported first, then a bad value. Dt, Rtol and
+% Atol are checked by ensemble on the first call.
 required = ["Fit" "Observe" "T0" "FdStep" "Tau" "GradTol" "StepTol" "MaxIter"];
 ids = ["missingFit" "missingObserve" "missingTime" "missingFdStep" ...
     "missingTau" "missingGradTol" "missingStepTol" "missingMaxIter"];
@@ -114,7 +119,7 @@ obsIdx = obsIdx(:);
 nf = numel(fitIdx);
 nObs = numel(obsIdx);
 
-if ~(isnumeric(x0) && isreal(x0) && numel(x0) == n && all(isfinite(x0), "all"))
+if ~(isnumeric(x0) && isreal(x0) && isvector(x0) && numel(x0) == n && all(isfinite(x0)))
     error("phasecont:model:badStart", ...
         "X0 must be one finite real start state with %d values.", n);
 end
@@ -162,6 +167,7 @@ if ~ev.ok0
 end
 requireJacobian(ctx, ev);
 f = ev.resid;
+model = ev.model;
 J = ev.J;
 cost = 0.5 * (f' * f);
 g = J' * f;
@@ -174,7 +180,8 @@ if done
     stop = "gradient";
 end
 
-hist = nan(maxIter, 7);   % Iter Cost GradNorm StepNorm Mu Rho Accepted
+cap = min(maxIter, 64);   % History rows grow by doubling, up to MaxIter
+hist = nan(cap, 7);       % Iter Cost GradNorm StepNorm Mu Rho Accepted
 iter = 0;
 while ~done && iter < maxIter
     h = [J; sqrt(mu) * eye(nf)] \ [-f; zeros(nf, 1)];
@@ -200,6 +207,7 @@ while ~done && iter < maxIter
         requireJacobian(ctx, trial);
         q = qNew;
         f = fNew;
+        model = trial.model;
         J = trial.J;
         cost = costNew;
         g = J' * f;
@@ -213,6 +221,10 @@ while ~done && iter < maxIter
     else
         mu = mu * nu;
         nu = 2 * nu;
+    end
+    if iter > cap
+        cap = min(maxIter, 2 * cap);
+        hist(cap, 1) = NaN;
     end
     hist(iter, :) = [iter cost gradNorm stepNorm muUsed rho accept];
 end
@@ -231,10 +243,9 @@ params = struct();
 for k = 1:nf
     params.(fitNames(k)) = q(k);
 end
-fitted = Y + reshape(f, nTimes, nObs);
 r = phasecont.FitResult(struct("Fit", fitNames, "Observe", obsNames, ...
     "Times", t, "Estimate", q, "P", pAll, "Parameters", params, ...
-    "Fitted", fitted, "Residual", reshape(f, nTimes, nObs), ...
+    "Fitted", model, "Residual", reshape(f, nTimes, nObs), ...
     "Cost", cost, "GradNorm", gradNorm, "Jacobian", J, ...
     "Iterations", iter, "Converged", stop ~= "maxIter", "Stop", stop, ...
     "History", history));
@@ -280,18 +291,24 @@ pm = repmat(pq, 1, nf + 1);
 for j = 1:nf
     moved = q(j) + eta(j);
     eta(j) = moved - q(j);            % the step that was actually taken
+    if ~(isfinite(eta(j)) && eta(j) ~= 0)
+        error("phasecont:fit:badOption", ...
+            "FdStep = %g does not move parameter ""%s"" (value %g). Use a larger FdStep.", ...
+            ctx.fdStep, ctx.fitNames(j), q(j));
+    end
     pm(ctx.fitIdx(j), j + 1) = moved;
 end
 res = phasecont.ensemble(ctx.m, repmat(ctx.x0, 1, nf + 1), pm, ctx.tspan, ...
     "Backend", "cpu", "Precision", "double", ctx.method{:});
 ev = struct("status", res.Status, "ok0", res.Status(1) == "ok", ...
-    "okJ", res.Status(2:end) == "ok", "resid", [], "J", []);
+    "okJ", res.Status(2:end) == "ok", "resid", [], "model", [], "J", []);
 if ~ev.ok0
     return
 end
 nTimes = ctx.nTimes;
 nObs = numel(ctx.obsIdx);
 model0 = observed(res, 1, ctx.obsIdx, nTimes, nObs);
+ev.model = model0;
 ev.resid = reshape(model0 - ctx.Y, [], 1);
 J = zeros(numel(model0), nf);
 for j = 1:nf
