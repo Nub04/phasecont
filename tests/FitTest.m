@@ -368,6 +368,33 @@ classdef FitTest < matlab.unittest.TestCase
             exactC = [zeros(numel(t), 1); -t .* exp(-t)];
             testCase.verifyEqual(r.Jacobian(:, 2), exactA, "RelTol", 1e-5, "AbsTol", 1e-12);
             testCase.verifyEqual(r.Jacobian(:, 1), exactC, "RelTol", 1e-5, "AbsTol", 1e-12);
+            % The same values swapped give a the scale 1e-12, a step of
+            % 1e-19 and a zero column. A scalar read of the vector would
+            % treat both orders alike.
+            c = testCase.options([], struct("Fit", ["c" "a"], ...
+                "Observe", ["x" "y"], "FdScale", [1 1e-12]));
+            try
+                phasecont.fit(m, [1 1], [a; 1], t, Y, c{:});
+                testCase.verifyFail("fit did not raise unidentifiable");
+            catch err
+                testCase.verifyEqual(string(err.identifier), ...
+                    "phasecont:fit:unidentifiable");
+                testCase.verifyTrue(contains(err.message, """a"""));
+            end
+        end
+
+        function aFdScaleVectorIsCheckedEntryByEntry(testCase)
+            % Two fitted parameters; one bad entry, a wrong length or a
+            % matrix is refused before the model runs.
+            m = testCase.model(testCase.TwoPar);
+            t = (0.5:0.5:3)';
+            Y = 2*(1 - exp(-t));
+            for bad = {[1 0], [1 NaN], [1 -1], [1 Inf], [1 1 1], ones(2)}
+                c = testCase.options([], struct("Fit", ["a" "b"], ...
+                    "FdScale", bad{1}));
+                testCase.verifyError(@() phasecont.fit(m, 0, [], t, Y, c{:}), ...
+                    "phasecont:fit:badOption");
+            end
         end
 
         function aLargeStepToleranceStopsAtTheStart(testCase)
@@ -404,6 +431,26 @@ classdef FitTest < matlab.unittest.TestCase
                 testCase.verifyTrue(contains(err.message, "FdStep"));
                 testCase.verifyTrue(contains(err.message, """a"""));
             end
+        end
+
+        function theJacobianDividesByTheRealizedStep(testCase)
+            % At a = 1 the step 1e-15 is taken as (1 + 1e-15) - 1, about
+            % 1.11e-15. Dividing by 1e-15 instead would be 11% off. The
+            % data is the model at a = 1, so the fit stops at the start and
+            % its Jacobian is the one of the start point.
+            m = testCase.model(testCase.Decay);
+            t = (0.5:0.5:3)';
+            h = 1e-15;
+            taken = (1 + h) - 1;
+            testCase.assertGreaterThan(abs(taken - h) / h, 0.05);
+            res = phasecont.ensemble(m, [1 1], [1 1 + h], [0; t]', ...
+                "Backend", "cpu", "Precision", "double", "Dt", 0.01);
+            X = reshape(res.States, numel(t), 2);
+            c = testCase.options([], struct("FdStep", h, "FdScale", 1));
+            r = phasecont.fit(m, 1, 1, t, X(:, 1), c{:});
+            testCase.assertEqual(r.Iterations, 0);
+            testCase.verifyEqual(r.Jacobian, (X(:, 2) - X(:, 1)) / taken, ...
+                "RelTol", 1e-12);
         end
 
         function theJacobianMatchesTheClosedFormSensitivity(testCase, Method)
@@ -613,16 +660,35 @@ classdef FitTest < matlab.unittest.TestCase
             r = phasecont.fit(m, 1, 1e-4, t, Y, c{:});
             testCase.verifyEqual(r.Estimate, 2e-4, "AbsTol", 1e-8);
             testCase.verifyTrue(r.Converged);
+            % Without MaxSteps, or with an empty one, the limit is the
+            % 100000 of ensemble and the start does not finish.
+            for drop = [true false]
+                if drop
+                    c = testCase.options([], rmfield(over, "MaxSteps"));
+                else
+                    over.MaxSteps = [];
+                    c = testCase.options([], over);
+                end
+                try
+                    phasecont.fit(m, 1, 1e-4, t, Y, c{:});
+                    testCase.verifyFail("fit did not raise startFailed");
+                catch err
+                    testCase.verifyEqual(string(err.identifier), ...
+                        "phasecont:fit:startFailed");
+                    testCase.verifyTrue(contains(err.message, "maxSteps"));
+                    testCase.verifyTrue(contains(err.message, "MaxSteps"));
+                end
+            end
         end
 
         function aBadMaxStepsIsRefusedByEnsemble(testCase)
-            % fit passes MaxSteps on unchanged, so the errors are those of
-            % ensemble: badOption for a value, MATLAB's own argument
-            % validation for a size.
+            % fit passes a given MaxSteps on unchanged, so the errors are
+            % those of ensemble: badOption for a value, MATLAB's own
+            % argument validation for a size.
             m = testCase.model(testCase.Decay);
             t = (0.5:0.5:3)';
             Y = exp(-1.3*t);
-            for bad = {0, 2.5, -1, NaN}
+            for bad = {0, 2.5, -1, NaN, Inf, 2^32}
                 c = testCase.options([], struct("MaxSteps", bad{1}));
                 testCase.verifyError(@() phasecont.fit(m, 1, [], t, Y, c{:}), ...
                     "phasecont:ensemble:badOption");
@@ -637,11 +703,50 @@ classdef FitTest < matlab.unittest.TestCase
             % first step is accepted at about 0.44, and the point one
             % forward-difference step above it is past the pole.
             m = testCase.model(testCase.Blow);
-            c = testCase.options([], struct("Fit", "c", "FdStep", 0.2, ...
-                "FdScale", 0.01, "Tau", 1e-6));
+            over = struct("Fit", "c", "FdStep", 0.2, "FdScale", 0.01, ...
+                "Tau", 1e-6);
+            % The Jacobian at the start is defined: a huge GradTol stops
+            % there without an error.
+            stop = over;
+            stop.GradTol = 1e10;
+            c = testCase.options([], stop);
+            r = phasecont.fit(m, 1, 0.38, 2, 10, c{:});
+            testCase.assertEqual(r.Iterations, 0);
+            testCase.assertEqual(r.Stop, "gradient");
+            c = testCase.options([], over);
             testCase.verifyError( ...
                 @() phasecont.fit(m, 1, 0.38, 2, 10, c{:}), ...
                 "phasecont:fit:jacobianFailed");
+        end
+
+        function aPerturbedPointAtTheStepLimitNamesMaxSteps(testCase)
+            % The rotation x' = w y, y' = -w x needs about twice the
+            % Dormand-Prince steps at w = 2 as at w = 1. With FdStep = 1
+            % the perturbed point of w = 1 is w = 2, so a MaxSteps between
+            % the two counts stops only the perturbed point.
+            saved = warning("off", testCase.MemberStopped);
+            testCase.addTeardown(@() warning(saved));
+            m = testCase.model(testCase.Rotation);
+            tol = {"Rtol", 1e-8, "Atol", 1e-10};
+            probe = phasecont.ensemble(m, [1 1; 0 0], [1 2], [0 10], ...
+                "Backend", "cpu", "Precision", "double", tol{:});
+            testCase.assertEqual(probe.Status, ["ok"; "ok"]);
+            limit = floor(mean(probe.Accepted));
+            check = phasecont.ensemble(m, [1 1; 0 0], [1 2], [0 10], ...
+                "Backend", "cpu", "Precision", "double", tol{:}, ...
+                "MaxSteps", limit);
+            testCase.assertEqual(check.Status, ["ok"; "maxSteps"]);
+            c = testCase.options("Dt", struct("Fit", "w", "FdStep", 1, ...
+                "Rtol", 1e-8, "Atol", 1e-10, "MaxSteps", limit));
+            try
+                phasecont.fit(m, [1 0], 1, 10, cos(10), c{:});
+                testCase.verifyFail("fit did not raise jacobianFailed");
+            catch err
+                testCase.verifyEqual(string(err.identifier), ...
+                    "phasecont:fit:jacobianFailed");
+                testCase.verifyTrue(contains(err.message, "maxSteps"));
+                testCase.verifyTrue(contains(err.message, "MaxSteps"));
+            end
         end
 
         function aPerturbedPointThatBlowsUpAtTheStartIsRefused(testCase)

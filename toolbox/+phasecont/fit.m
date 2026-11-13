@@ -44,13 +44,15 @@ function r = fit(m, x0, P, t, Y, options)
 %
 %   One option is optional:
 %     MaxSteps   most steps of one member, passed to phasecont.ensemble,
-%                whose limit is 100000 when MaxSteps is not given
+%                whose limit is 100000 when MaxSteps is not given or is
+%                empty, as for Dt, Rtol and Atol
 %
 %   A trial point that does not finish is a rejected step. A start point
 %   that does not finish raises phasecont:fit:startFailed, and so does a
 %   start that needs more steps than MaxSteps allows. A
 %   perturbed point that does not finish, at the start or at an accepted
-%   trial point, raises phasecont:fit:jacobianFailed. A parameter whose
+%   trial point, raises phasecont:fit:jacobianFailed. Both messages name
+%   MaxSteps when the member stopped at the step limit. A parameter whose
 %   Jacobian column is exactly zero raises phasecont:fit:unidentifiable; this
 %   is reliable with Dt and is not guaranteed with Rtol and Atol. The warning
 %   phasecont:ensemble:memberStopped is off while the fit runs. Ctrl+C
@@ -183,13 +185,9 @@ restore = onCleanup(@() warning(saved)); %#ok<NASGU>
 q = p0(fitIdx);
 ev = evaluate(ctx, q);
 if ~ev.ok0
-    hint = "";
-    if ev.status(1) == "maxSteps"
-        hint = " Raise MaxSteps if the model needs more steps.";
-    end
     error("phasecont:fit:startFailed", ...
         "The model did not reach the last data time from the start values (status ""%s"").%s", ...
-        ev.status(1), hint);
+        ev.status(1), stepsHint(ev.status(1)));
 end
 requireJacobian(ctx, ev);
 f = ev.resid;
@@ -356,13 +354,21 @@ function requireJacobian(ctx, ev)
 bad = find(~ev.okJ, 1);
 if ~isempty(bad)
     error("phasecont:fit:jacobianFailed", ...
-        "The perturbed point of parameter ""%s"" did not finish (status ""%s""), so the Jacobian is not defined here.", ...
-        ctx.fitNames(bad), ev.status(bad + 1));
+        "The perturbed point of parameter ""%s"" did not finish (status ""%s""), so the Jacobian is not defined here.%s", ...
+        ctx.fitNames(bad), ev.status(bad + 1), stepsHint(ev.status(bad + 1)));
 end
 flat = find(~any(ev.J, 1), 1);
 if ~isempty(flat)
     error("phasecont:fit:unidentifiable", ...
         "The observed data does not depend on parameter ""%s"": its Jacobian column is exactly zero.", ...
         ctx.fitNames(flat));
+end
+end
+
+function hint = stepsHint(status)
+% Added to the message of a member that stopped at the step limit.
+hint = "";
+if status == "maxSteps"
+    hint = " Raise MaxSteps if the model needs more steps.";
 end
 end
