@@ -2,8 +2,9 @@ classdef EnsembleTest < matlab.unittest.TestCase
     % Tests phasecont.ensemble, EnsembleResult, gpuDevices and gpuSelfTest.
     % The CPU tests run on any machine that has the pckern binary. A GPU
     % test with no device of its backend prints SKIPPED and is filtered.
-    % Set PC_REQUIRE_GPU=cuda,opencl to turn such a skip into a failure, so
-    % a green run cannot hide that no GPU ran.
+    % Set PC_REQUIRE_GPU=cuda,opencl (or metal on a Mac) to turn such a skip
+    % into a failure, so a green run cannot hide that no GPU ran. Metal has
+    % no double type, so its double precision cases are always filtered.
 
     properties (Constant)
         Rotation = "x'=y" + newline + "y'=-x" + newline + ...
@@ -16,7 +17,7 @@ classdef EnsembleTest < matlab.unittest.TestCase
     end
 
     properties (TestParameter)
-        GpuBackend = {"cuda", "opencl"}
+        GpuBackend = {"cuda", "opencl", "metal"}
         GpuPrecision = {"single", "double"}
     end
 
@@ -41,6 +42,11 @@ classdef EnsembleTest < matlab.unittest.TestCase
         function skipUnlessDevice(testCase, backend, precision)
             % Filters the test when the machine has no such device, or
             % fails it when PC_REQUIRE_GPU names the backend.
+            if backend == "metal" && precision == "double"
+                % The engine refuses double precision on Metal, required or not.
+                fprintf("SKIPPED: Metal has no double precision\n");
+                testCase.assumeFail("Metal has no double precision");
+            end
             devs = phasecont.gpuDevices();
             rows = devs(devs.Backend == backend, :);
             if precision == "double"

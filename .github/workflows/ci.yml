@@ -363,6 +363,10 @@ jobs:
           release: R2026b
       - name: Run buildtool cargo mex test package
         uses: matlab-actions/run-build@cf54c2229a74d57eb4e6ba1bbebd45793d37797e # v3.4.0
+        env:
+          # On macOS, a missing Metal device fails the Metal cases of
+          # EnsembleTest instead of filtering them.
+          PC_REQUIRE_GPU: ${{ runner.os == 'macOS' && 'metal' || '' }}
         with:
           tasks: cargo mex test package
       - name: List the symbols that the AOT libraries export
