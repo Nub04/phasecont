@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Resolve every symbol of each Linux binary with the dynamic linker, the way
+# the MEX gateway's dlopen(RTLD_NOW) does, and fail when a library, a symbol
+# or a symbol version is missing. The release workflow runs it inside a Rocky
+# Linux 8 container (glibc 2.28, the oldest Linux that R2026b supports) on the
+# release binaries, so a binary that needs a newer glibc fails before it ships.
+#
+# Usage:
+#   scripts/check-ldd [--allow LIB]... FILE...
+#
+# --allow LIB names a library that is expected to be missing where the check
+# runs, such as libmx.so for the MEX file outside MATLAB. Its "not found" line
+# is not an error, and neither are undefined symbols, since those come from the
+# missing library. A missing symbol version is an error in every case.
+set -euo pipefail
+
+allow=()
+files=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --allow)
+      [[ $# -ge 2 ]] || { echo "check-ldd: --allow needs a library name" >&2; exit 2; }
+      allow+=("$2")
+      shift 2
+      ;;
+    *)
+      files+=("$1")
+      shift
+      ;;
+  esac
+done
+if [[ ${#files[@]} -eq 0 ]]; then
+  echo "usage: scripts/check-ldd [--allow LIB]... FILE..." >&2
+  exit 2
+fi
+
+status=0
+for f in "${files[@]}"; do
+  if [[ ! -f "$f" ]]; then
+    echo "check-ldd: no such file: $f" >&2
+    status=1
+    continue
+  fi
+  # ldd needs a path with a slash, or it searches the library path.
+  case "$f" in */*) path="$f" ;; *) path="./$f" ;; esac
+  out="$(ldd -r "$path" 2>&1 || true)"
+  bad=()
+  missing_allowed=0
+  while IFS= read -r line; do
+    if [[ "$line" == *"version \`"*"' not found"* ]]; then
+      bad+=("$line")
+    elif [[ "$line" == *"=> not found"* ]]; then
+      lib="${line#"${line%%[![:space:]]*}"}"
+      lib="${lib%% *}"
+      ok=0
+      for a in "${allow[@]+"${allow[@]}"}"; do
+        if [[ "$lib" == "$a" ]]; then
+          ok=1
+        fi
+      done
+      if [[ $ok -eq 1 ]]; then
+        missing_allowed=1
+      else
+        bad+=("$line")
+      fi
+    elif [[ "$line" == *"undefined symbol:"* ]]; then
+      bad+=("$line")
+    elif [[ "$line" == *"not a dynamic executable"* ]]; then
+      bad+=("$line")
+    fi
+  done <<< "$out"
+  # Undefined symbols are expected when an allowed library is missing.
+  if [[ $missing_allowed -eq 1 ]]; then
+    kept=()
+    for line in "${bad[@]+"${bad[@]}"}"; do
+      if [[ "$line" != *"undefined symbol:"* ]]; then
+        kept+=("$line")
+      fi
+    done
+    bad=("${kept[@]+"${kept[@]}"}")
+  fi
+  if [[ ${#bad[@]} -gt 0 ]]; then
+    echo "check-ldd: $f does not load here:" >&2
+    printf '  %s\n' "${bad[@]}" >&2
+    status=1
+  else
+    note=""
+    if [[ $missing_allowed -eq 1 ]]; then
+      note=", apart from the allowed missing libraries"
+    fi
+    echo "check-ldd: $f resolves every symbol$note ($(ldd --version | head -n 1))"
+  fi
+done
+exit "$status"
