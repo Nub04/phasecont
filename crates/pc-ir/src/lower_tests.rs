@@ -82,6 +82,28 @@ fn refuses_unsupported_statement() {
 }
 
 #[test]
+fn refuses_shift_and_del_shft_by_name() {
+    for (src, call, msg) in [
+        (
+            "x'=-x+shift(x,1)\ndone\n",
+            "shift(x,1)",
+            "`shift` is not supported",
+        ),
+        (
+            "x'=-x+del_shft(x,2,1)\ndone\n",
+            "del_shft(x,2,1)",
+            "`del_shft` is not supported",
+        ),
+    ] {
+        let e = errs(src);
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert_eq!(e[0].kind, K::Unsupported);
+        assert_eq!(&src[e[0].span.start..e[0].span.end], call);
+        assert!(e[0].to_string().contains(msg), "{}", e[0]);
+    }
+}
+
+#[test]
 fn refuses_bad_tables() {
     for hdr in ["1 0 1", "3 1 1", "3 2 1", "2000000 0 1", "3 0 1e999"] {
         let src = format!("x'=-x\ntable h % {hdr} t\ndone\n");

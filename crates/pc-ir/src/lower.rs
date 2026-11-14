@@ -12,7 +12,7 @@ use crate::dag::{Cmp, Dag, Fn1, Fn2, MAX_NODES, NodeId, Op};
 use crate::delays::{self, DelaySlot, Names, SlotKey};
 use crate::error::{IrError, IrErrorKind};
 use crate::eval::eval;
-use pc_ode::builtins::builtin;
+use pc_ode::builtins::{Status, builtin};
 use pc_ode::{
     BinaryOp, DUMMY_SPAN, Entry, Expr, Ident, Model, ModelInfo, ModelKind, Span, Stmt, StmtKind,
     UnaryOp, Unsupported, Value,
@@ -377,6 +377,14 @@ impl<'e, 'a> Lw<'e, 'a> {
                 return self.dag.konst(f64::NAN);
             }
             return self.delay(args, span);
+        }
+        if matches!(b.status, Status::Shift | Status::DelShft) {
+            // ODE0055/ODE0056 warned already; name the function here too.
+            return self.fail(
+                IrErrorKind::Unsupported,
+                span,
+                format!("`{}` is not supported", name.text),
+            );
         }
         if b.arity != Some(args.len()) {
             return self.fail(
