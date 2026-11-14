@@ -842,6 +842,86 @@ P36 (branch `perf-ensemble`, from `main` at 6e3b7b9, HEAD 19568cd when this was 
 - OpenCL and Metal Global layout (step 4 of the memory work, SPEC §13, 2026-11-13). The kernel text has `PC_SCR`, the qualifier of the scratch pointers: `PC_PRIV` in the prelude, `PC_GLOBAL` under `Layout::Global`, because OpenCL C 1.2 and MSL have no generic address space. `kernel_source_in` takes a layout for every dialect, `opencl::force_layout` and `metal::force_layout` force one, and both hosts pick it with `gpu::layout_by_size` (256 KiB of step arrays, size only, no free-memory query). Timed with `tests/opencl_layout_time.rs` (ignored): on the RTX 5060 through OpenCL `Private` fails with `CL_OUT_OF_RESOURCES` between 437 and 468 KiB and `Global` ran to 546 KiB; below the failure `Private` is up to 1.33 times faster in single precision and level to mixed in double, the bits equal in every case. On the Arc 140T `Private` is faster wherever both compile, and both layouts fail to compile from 4600 states in double and 9000 in single (292320 and 292288 bytes of scratch against 262144 at n = 4600). The cause is the compiler, not the layout: the straight-line right-hand side keeps every `x[k]` load live and the Intel compiler spills them (317888 bytes at n = 5000 for a ring and for Lorenz-96, in either layout), so the 256 KiB rule never picks the slower layout there. The cap stays: a launch that runs out of resources has no safe retry, and a cap near 440 KiB would sit within 7% of the failure. Checked: `PC_REQUIRE_GPU=opencl ./opencl_global.exe` (Windows build of `tests/opencl_global.rs`) passed on both devices (238 s): the self-test under a forced `Global` in single and double, Lorenz-96 at n = 40 with RK4 and Dormand-Prince in both precisions, `Private` against `Global` with the same bits, and `Global` in batches of 1 and 7 with the same bits, a 2000-state ring under a forced `Global` equal to the CPU, and a 5000-state ring that the size rule runs in `Global`: on the RTX 5060 equal to the CPU, on the Arc 140T failing the same way in both layouts (the test accepts that only when `Private` hits the same scratch error). `cuda_global` and `cuda_batch` pass again after the text change (`PC_REQUIRE_GPU=cuda cargo test --release -p pc-ensemble --test cuda_global --test cuda_batch`, 2 passed). Metal is type-checked only (`cargo clippy -Zbuild-std ... --target aarch64-apple-darwin`) and its text goes through the macOS CI check. Step 5 (Windows and MATLAB, 2026-11-13, tree at 50d1a44): `scripts/build-pckern win64 /mnt/c/Users/nuken/phasecont-stage/bin/win64` and `cargo build --release --target x86_64-pc-windows-gnu -p pc-cli` (CLI copied to `phasecont-stage/cli`) both exit 0. The MEX was not rebuilt, since the gateway last changed in 06d7582, before the staged `pckern.mexw64` of 2026-11-08. `pc-cli gpu selftest` exits 0 for CUDA and OpenCL on the RTX 5060 and OpenCL on the Arc 140T, single and double (six runs). `phasecont.gpuSelfTest` through MATLAB has `Pass` true for the same six cases. `scripts/matlab-win "setenv('PATH',[getenv('PATH') ';C:\Users\nuken\bin']); buildtool test"` gave 646 total, 640 passed, 0 failed, 6 incomplete (all filtered by assumption, the same counts as 2026-11-10), 212 s of testing. Not done: fewer live values in the kernel's right-hand side to move the Arc limit (a separate change, results would not change), Metal on a device.
 - Open: (1) the two weak tests named in the review pass; (2) owner call on the global-scratch kernel: the memory cost in the band between 256 and about 450 KiB, where `Global` needs about 6 times the device memory per member for DP5, which batching now bounds by the free memory (a job of any size runs, in more batches); also that the run downloads the whole work buffer for members that did not finish `ok`; (3) the Metal kernel text is type-checked only.
 
+## Roadmap (2026-11-13)
+
+This section comes from a read-only audit of 2026-11-13 (launch gaps, hardware coverage, optimization headroom and parity with XPPAUT) and from the owner's answers that day. Launch here means a release of the work after v1.0.0 to GitHub Releases, and later File Exchange and the Add-On Explorer.
+
+### Owner answers of 2026-11-13
+
+- Map models (M1, see below): full map support. That means iteration, fixed points from F(x) - x = 0, multipliers, and the fold, period-doubling and Neimark-Sacker bifurcations of fixed points. It is a new problem class and gets its own phase with a plan. The plan also says what the launch does with maps if that phase is not done by then.
+- `@` options in `simulate` (M3): warn and name them. `simulate` warns once with `phasecont:simulate:ignoredOption` and lists every `@` option it does not apply. Results do not change. The README says which `@` options PhaseCont reads.
+
+### M1: map models run as ODEs (confirmed, in v1.0.0 too)
+
+`crates/pc-ir/src/lower.rs` lowers `x(t+1)=...` like `x'=...`, and no engine code reads `IrModel.kind`. A MATLAB check on 2026-11-13 (logistic map, r = 3, x(0) = 0.5, `simulate` on [0 5]) returned 51 points at non-integer times (0, 0.0093, 0.051, ...) with x rising smoothly from 0.5 to 1.0, which is the ODE x' = r x (1 - x), not the iteration 0.5, 0.75, 0.5625, .... `equilibrium` from 0.5 stopped with `phasecont:engine:numeric` (singular matrix), because it solves F(x) = 0 instead of F(x) = x. The same lowering is in the v1.0.0 tag, so the release notes of the next version must say that map models gave wrong results before. `language.md` marks the map statement "full" and SPEC section 2 says "parse, simulate"; both change with the map phase.
+
+### Before the launch
+
+Owner:
+
+1. The go-ahead to push `main` (87 commits ahead of `origin/main` at f816e7e on 2026-11-13).
+2. The version (1.1.0 or 2.0.0) and the scope, including whether `phasecont.fit` ships (branch `fit-ensemble`, waiting for the API sign-off).
+3. Whether the launch waits for map support or ships with a refusal of map models.
+4. The File Exchange route (a GitHub-linked entry; whether one that ships MEX and DLL files is accepted, and whether it shows in the Add-On Explorer, is not confirmed with MathWorks).
+
+Assistant, on branch `launch-prep` unless noted:
+
+1. The M3 warning, with a test.
+2. The README: the feature list (homoclinic curves, delay equations, cycle normal forms, `MeshAdapt`, ensembles, LaTeX, and `fit` if it ships) and a section on what the `.ode` reader refuses (stochastic, `global`, DAE, Volterra, BVP, `sum`, `shift`, `special`, `export`, file tables, `#include` from MATLAB) (M2).
+3. The package Summary and Description in `scripts/packageToolbox.m`, which still describe v0.3.
+4. A CHANGELOG draft: the map note, the NaN padding of v1.0.0 LPC, PD and NS session rows, the rule to close MATLAB before an upgrade, the GPU devices that ran, and the options that default to off (`Lyapunov`, `InclinationFlips`).
+5. Metal in the MATLAB ensemble tests: add `"metal"` to the `GpuBackend` parameter of `tests/EnsembleTest.m` and set `PC_REQUIRE_GPU=metal` on the macOS MATLAB leg.
+6. A load check of the glnxa64 binaries in a Rocky Linux 8 container (glibc 2.28) in CI.
+7. After the push: CI on the release commit, the binaries restaged, the full MATLAB suite on that commit, a `release.yml` dry run, then the tag.
+
+### Hardware coverage and how to test what has not run
+
+| Path | State | How to test |
+|---|---|---|
+| CPU engine, JIT, AOT, CPU ensemble on win64 | ran on this laptop (suite 646 total, 640 passed, 0 failed, 6 incomplete on `main` at 50d1a44) | rerun at the release commit |
+| glnxa64 and maca64 | hosted runners only (Ubuntu 24.04; macOS 15 and 26 VMs) | Rocky 8 container load check; a real Mac install by the owner or a tester |
+| CUDA on the RTX 5060 | ran (Windows MATLAB, CLI, and the Rust tests in WSL) | none needed |
+| OpenCL on the RTX 5060 and the Arc 140T | ran | none needed |
+| OpenCL on AMD | never | `scripts/gpu-report` and the `gpu-report` issue form for testers; a rented AMD GPU (AMD Developer Cloud lists an MI300X at $2.59 per hour) running `pc-cli gpu selftest` |
+| Metal | only on the hosted runner's paravirtual device, before the P36 layouts; never on Apple hardware, never through MATLAB | the `gpu-macos` job after the push (it runs the P36 kernels on the paravirtual device), the EnsembleTest change above, then a tester with an M-series Mac (AWS EC2 Mac has a 24 hour minimum) |
+| Low-end machines (8 GB RAM, integrated GPU only) | never measured; the nearest data point is the 3-core, 7 GB hosted macOS runner (612 tests, 0 failed, 929 s) | a run on such a laptop by a tester |
+
+### Optimizations: done, dropped, next
+
+Done (all keep the bits): private scratch on the GPU (RK4 single 100k members on the RTX 5060 69.7 to 7.7 ms), the JIT for double precision on the CPU (513 to 258 ms), skipped readback, device fills, `restrict`, the hoisted segment constants, the one-pass NaN and bounds check, global scratch with the layout rule by timing, member batching, and the CPU-only ensemble that no longer loads the GPU driver stack (first call +312 MB to +20 MB).
+
+Dropped by measurement: DP5 member compaction against warp divergence (1.058x against a 1.1x gate), block sizes 128 and 256 (within 3% of 64), progress counters in the control block, and the launch-ramp warm start.
+
+Gates passed only by owner decision: G1 on DP5 (1.00x against 1.2x) and the Arc Lorenz-96 n = 40 single row (0.43x against a 5% regression limit). One SPEC row is not met: the P36 row of SPEC section 14 asks for `vdp-rk4` at 100000 members on the CPU to run at least 1.3 times faster in both precisions. Double went from 513 to 258 ms (1.99x, from the JIT), but single went from 564 ms to 521 to 565 ms (about 1.0x).
+
+Roofline for RK4 at 100k members: RTX 5060 at 6 to 13% of its FP32 peak in single and 54 to 114% of FP64 in double, Arc 140T at about 15% in single, CPU at 1 to 4% of its vector peak.
+
+Next, ranked by expected gain, all bit-exact:
+
+1. A single-precision JIT on the CPU (estimate 2x, and it would meet the 1.3x row).
+2. Several members per thread and SIMD across members on the CPU (estimate 3x to 6x, a week or more).
+3. The Arc live-value spill in the emitted right-hand side (Lorenz-96 n = 40 back to about 330 ms at 10k, and a higher state cap).
+4. A profile of RK4 on the RTX 5060 with Nsight Compute (needs an install approval) to find the missing FP32 time.
+5. Several devices at once (estimate 1.5x to 1.6x; adds a device list, so it needs an API decision).
+
+Owner decisions: the FMA or fast-math tier (changes results) and the single-precision half of the P36 1.3x row.
+
+### Against XPPAUT
+
+Integration speed (own models, wall time, `pc-cli` against XPPAUT `qualrk` and `cvode`): Morris-Lecar T = 30000, 74 ms against 108 and 107 ms; a 40-cell chain (80 states), 71 ms against 485 and 700 ms; a 200-cell chain (400 states), 74 ms against 262 and 3655 ms. XPPAUT starts 2 ms faster. Ensembles, continuation and interactive latency were not compared.
+
+PhaseCont is ahead in continuation (two-parameter curves with codim-2 labels and normal forms, homoclinic curves, delay equations), GPU ensembles, the JIT and AOT paths, and LaTeX output. An XPP user still cannot switch for stochastic, event, DAE, Volterra, BVP and file-table models, maps (M1), other integrators (only Dormand-Prince), Poincare maps, Lyapunov exponents, phase response curves and averaging, the data browser, range integration, and a migration guide.
+
+### After the launch
+
+1. Full map support (M1), as its own phase.
+2. A migration guide from XPPAUT and a getting-started page, with one delay or homoclinic example.
+3. More integrators (a stiff method and fixed-step methods, so `@ meth` can be honored), then Poincare sections and Lyapunov exponents.
+4. Event models (`global`), then stochastic models.
+5. The CPU speed items above.
+6. An unload or copy-on-load fix so an upgrade does not fail while MATLAB holds `pckern.dll`.
+7. The VS Code Marketplace listing (needs the owner's publisher account).
+
 ## Next
 
 - Self-approved plan for 2026-11-07 to 2026-11-09 07:00. The owner said on 2026-11-07 "get as much done by 7am monday if u make a plan analyze and approve it", and the plan was reviewed before it started. The self-approval covers Rust-only work with no push, no install, no new dependency, no C ABI change, no change to the public MATLAB API and no result-changing default. Order: (1) the first-point zero of codim-2 tests, on `engine-first-point-zero` (SPEC section 8a, first-point rule); (2) E9a step 1, the characteristic roots of a delay equation with a `dde-roots` CLI subcommand, done on `dde-roots` (see P15 under In progress). Left for the owner: E8b parts 1 to 3 (a new label, row layout and JSON changes, and the formula check against Champneys, Kuznetsov and Sandstede 1996), the later steps of E9a, any push, any install, and any threshold that adds or drops labels on existing curves. Superseded in part on 2026-11-07: the owner then said "push install and do everything", which approves the push of `main`, installs as the work needs them, E8b and the later steps of E9a. Each of those still gets a SPEC section and a check of its formulas against the references (rule 9), and a change of the C ABI or of a public MATLAB signature is checked against this approval and recorded.
