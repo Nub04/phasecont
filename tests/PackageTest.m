@@ -597,13 +597,13 @@ classdef PackageTest < matlab.unittest.TestCase
             summary = tagText(core, "dc:description");
             description = tagText(addon, "description");
             testCase.verifyEqual(summary, ...
-                "Equilibrium continuation and bifurcation detection for XPP .ode models.");
+                "Phase planes, continuation and bifurcation analysis of XPP .ode models.");
             testCase.verifySubstring(description, ...
                 "This package runs on Windows, Linux and macOS on Apple silicon.");
             for text = [summary, description]
                 testCase.verifyNotEmpty(char(text));
                 testCase.verifyEmpty(regexpi(text, ...
-                    'phase[- ]plane|limit cycle|maci64|intel', "once"));
+                    'maci64|intel|matcont|\<maps?\>', "once"));
                 testCase.verifyTrue(all(double(char(text)) < 128), ...
                     "text must be ASCII (no em dashes): " + text);
             end
