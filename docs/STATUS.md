@@ -855,6 +855,15 @@ This section comes from a read-only audit of 2026-11-13 (launch gaps, hardware c
 
 `crates/pc-ir/src/lower.rs` lowers `x(t+1)=...` like `x'=...`. Only the ensemble reads `IrModel.kind` (`crates/pc-ensemble/src/job.rs`), and it refuses a map with `phasecont:engine:unsupportedModel`; `simulate`, `equilibrium` and `continuation` run the map as an ODE. A MATLAB check on 2026-11-13 (logistic map, r = 3, x(0) = 0.5, `simulate` on [0 5]) returned 51 points at non-integer times (0, 0.0093, 0.051, ...) with x rising smoothly from 0.5 to 1.0, which is the ODE x' = r x (1 - x), not the iteration 0.5, 0.75, 0.5625, .... `equilibrium` from 0.5 stopped with `phasecont:engine:numeric` (singular matrix), because it solves F(x) = 0 instead of F(x) = x. The same lowering is in the v1.0.0 tag, so the release notes of the next version must say that map models gave wrong results before. `language.md` marks the map statement "full" and SPEC section 2 says "parse, simulate"; both change with the map phase.
 
+### Map support phase (plan approved 2026-11-14)
+
+Branch `map-support` from `launch-prep` (a8d5590), unpushed. The plan was approved with its ten decisions as recommended. Each slice adds its SPEC section and acceptance tests before any code.
+
+0. Refuse maps until they work. `run_start` and `model_equilibrium` refuse a map with `phasecont:engine:unsupportedModel`, `pc-cli cont` refuses it too, `model_info` gains a `"map"` key, the phase-plane app refuses a map with `phasecont:app:mapModel`, and `@ meth=discrete` makes `x'=f` a map, as in XPPAUT. `rhs`, `jacobian` and the C emitter stay allowed. This slice ships in the next release whether or not the later slices are done (owner decision 1 of the plan).
+1. Iterate a map: `Model.IsMap`, `simulate(m, x0, [n0 n1])` with integer iterates, an internal `"ITER"` problem type.
+2. Fixed points from G = F - x, multipliers in `Eigenvalues`, LP, BP, PD and NS on a one-parameter branch with 4 test columns, and the LP, PD and NS coefficients from Govaerts, Khoshsiar Ghaziani, Kuznetsov and Meijer (2007), Table 2.3.
+3. to 8. Each needs its own approval: two-parameter curves of fixed points, their codim-2 labels, period-k points, a map mode in the phase-plane app, an ensemble map method, and the remaining docs.
+
 ### Before the launch
 
 Owner:
@@ -914,7 +923,7 @@ PhaseCont is ahead in continuation (two-parameter curves with codim-2 labels and
 
 ### After the launch
 
-1. Full map support (M1), as its own phase.
+1. Full map support (M1), as its own phase (see "Map support phase" above; slice 0 is meant for the launch).
 2. A migration guide from XPPAUT and a getting-started page, with one delay or homoclinic example.
 3. More integrators (a stiff method and fixed-step methods, so `@ meth` can be honored), then Poincare sections and Lyapunov exponents.
 4. Event models (`global`), then stochastic models.
