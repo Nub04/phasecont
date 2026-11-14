@@ -9,12 +9,22 @@ PhaseCont (working name) is a MATLAB toolbox for phase-plane and bifurcation ana
 - Find equilibria with Newton's method (`phasecont.equilibrium`).
 - Continue equilibria in one parameter and detect fold (LP), branch point (BP) and Hopf (H) points, with their normal form coefficients (`phasecont.continuation`).
 - Continue limit cycles from a Hopf point by orthogonal collocation and detect folds (LPC), period doublings (PD) and Neimark-Sacker (NS) points from the Floquet multipliers.
-- Continue LP, H, LPC, PD and NS points in two parameters, and detect the codim-2 points on LP and H curves (CP, BT, ZH, GH, HH).
+- Continue LP, H, LPC, PD and NS points in two parameters, and detect their codim-2 points: CP, BT, ZH, GH and HH on LP and H curves, LPPD, LPNS, CPC and R1 on LPC curves, LPPD, PDNS, GPD and R2 on PD curves, and R1 to R4, LPNS, PDNS and CH on NS curves.
+- Continue curves of orbits homoclinic to a saddle in two parameters, from a long-period orbit of a cycle branch or from a given orbit, and detect the codim-2 points NSA, BLS, BLU, NSF, NDS, NDU, TLS, TLU, ZES, ZEU, OFS and OFU (`Type = "HOM"`). The inclination flips IFS and IFU need `InclinationFlips = true`, because they cost an adjoint solve at every point.
+- Move the collocation mesh of cycles and homoclinic orbits every k steps (`MeshAdapt = k`). The default is 3 for ODE models and 0 for delay cycles.
+- Continue the equilibria of a delay model, one that calls `delay(x, tau)`, with the characteristic roots counted at every point (`Roots`), and detect LP, BP and H points. Follow the Hopf curves of a delay model in two parameters with their BT and ZH points, GH points with `Lyapunov = true` and HH points with `Roots`. `Coefficients = true` adds the zero-Hopf and Hopf-Hopf normal form coefficients.
+- Continue the cycles that branch off a Hopf point of a delay model, with their Floquet multipliers (`Floquet`) and their LPC, PD and NS points. `Detect = "BPC"` labels the branch points of the discretized cycle problem, and `Switch = "BPC1"` follows the branch that leaves one.
+- Integrate many trajectories of one model at once, for a grid of start states or parameter sets, on the CPU or on a GPU through CUDA, OpenCL or Metal (`phasecont.ensemble`). `Precision` has no default. Single-precision results are labeled as such, and `refine` runs a member again in double precision on the CPU. `phasecont.gpuDevices` lists the devices, and `phasecont.gpuSelfTest` checks one against exact solutions.
+- Write a branch as a pgfplots figure and its special points as a booktabs table, compile the document with `latexmk`, or edit it in the LaTeX studio app (`phasecont.latex`, `phasecont.app.LatexStudio`).
 - Save a model and its results to a session file, load it again, and replay every run to check the result (`phasecont.Session`, `phasecont.session.replay`).
 - Explore a model in the phase-plane app, with direction field, nullclines, trajectories and equilibria (`phasecont.app.PhasePlane`).
 - Build a model from equation text, a table, a MATLAB function handle, a MATLAB function file or an SBML file, with no `.ode` file (`phasecont.Model.fromEquations`, `fromTable`, `fromFunction`, `fromFile`), or type it into the model editor (`phasecont.app.ModelEditor`).
 
-Users never need a compiler. The engine ships as a prebuilt library, and models are compiled to native code inside the MATLAB process.
+`Lyapunov`, `Coefficients` and `Floquet` (delay models), `InclinationFlips` (homoclinic curves) and `Detect = "BPC"` (delay cycles) are off unless you pass them, because each one adds work at every point. `help phasecont.continuation` describes them.
+
+Users never need a compiler. The engine ships as a prebuilt library, and models are compiled to native code inside the MATLAB process. When `mex` finds a C compiler, `phasecont.config("Codegen", "aot")` builds new models as C libraries instead. If that build or its load fails, the model runs on the JIT and a `phasecont:aot:*` warning says so.
+
+The `.ode` reader refuses some XPPAUT constructs, and delay models run only in `continuation`. [What the `.ode` reader refuses](#what-the-ode-reader-refuses) lists them.
 
 ## Requirements
 
@@ -69,7 +79,7 @@ lp = br.points("LP");                              % the fold at a = 0, x = 0
 lp.Data.coefficient                                % the normal form coefficient, 1
 ```
 
-`continuation` blocks while it runs and polls the engine, first after 1 ms and then at growing intervals up to 50 ms. Ctrl+C cancels the run and frees it. It returns a `phasecont.Branch` that holds copies of the data, so it stays valid after the model is deleted. `Type` selects the problem: `"EP"` (the default), `"LC"` from a Hopf point, and `"LP"`, `"H"`, `"LPC"`, `"PD"` or `"NS"` with two free parameters. `help phasecont.continuation` lists the options.
+`continuation` blocks while it runs and polls the engine, first after 1 ms and then at growing intervals up to 50 ms. Ctrl+C cancels the run and frees it. It returns a `phasecont.Branch` that holds copies of the data, so it stays valid after the model is deleted. `Type` selects the problem: `"EP"` (the default), `"LC"` from a Hopf point, and `"LP"`, `"H"`, `"LPC"`, `"PD"`, `"NS"` or `"HOM"` with two free parameters. `help phasecont.continuation` lists the options.
 
 ## `@` options
 
@@ -80,6 +90,34 @@ PhaseCont reads only a few of the `@` options in an `.ode` file, and only in the
 - `total` fills in the integration length T.
 
 The app names `meth`, `dt` and `bound` in its notes and does not use them, since it always integrates with the Dormand-Prince 5(4) pair. `simulate`, `equilibrium`, `continuation` and `ensemble` read no `@` options. The first `simulate` call on a model that sets any of them warns once with the ID `phasecont:simulate:ignoredOption` and names them, and the result is the same as without them. Set the solver with the `RelTol`, `AbsTol`, `MaxSteps` and `Hmax` options of `simulate` instead.
+
+## What the `.ode` reader refuses
+
+`phasecont.Model` refuses a model that uses any of the constructs below. The error has the ID `phasecont:engine:model`, and its message quotes the statement or names the function.
+
+| Construct | Used in XPPAUT for |
+|---|---|
+| `wiener`, `markov`, `ran`, `normal`, `poisson` | noise and random numbers (the message says the model is for simulation only) |
+| `global` | events that reset the state during a run (also "for simulation only") |
+| `0=...`, `solv` | differential-algebraic equations |
+| `volt`, `int{...}` | Volterra integral equations |
+| `bndry`, `hom_bcs` | boundary value problems |
+| `sum(...)of(...)` | sums over an index |
+| `shift`, `del_shft` | variables picked by their position in the list |
+| `special`, `export`, `only`, `options` | network functions, values passed to a DLL, output selection and option files |
+| `table` read from a file | tabulated data; a table given by a formula (`table h % 51 0 1 t^2`) works |
+
+The reader also stops with an error on these files:
+
+- A file whose first line starts with a number is in the old XPPAUT format. Convert it to the current format.
+- A file that has both ODE lines (`x'=`) and map lines (`x(t+1)=`).
+- A file with `#include`. MATLAB passes the model to the engine as text, so the included file cannot be found. Paste its lines into the model instead.
+
+Some lines load and do nothing. Active comments (lines that start with `"`) give the warning `phasecont:model:parseWarning`, and `set` blocks are ignored with no warning.
+
+A delay model, one that calls `delay(x, tau)`, loads and runs in `continuation` (equilibria, Hopf curves and cycles from a Hopf point). `simulate`, `equilibrium` and `ensemble` refuse it with the error `phasecont:engine:badArg`.
+
+Maps (`x(t+1)=...`) load, but this version does not iterate them. `simulate`, `equilibrium` and `continuation` treat the right-hand side as an ODE, so their results are wrong for a map. `ensemble` refuses a map with `phasecont:engine:unsupportedModel`. Support for maps is planned.
 
 ## Models without an `.ode` file
 
@@ -124,7 +162,7 @@ app = phasecont.app.ModelEditor;
 
 An ensemble runs many trajectories of one model at once, for a grid of start states or parameter sets. It does not speed up a single run or a continuation. Those stay on the CPU in double precision.
 
-The ensemble engine has backends for the CPU, for CUDA (NVIDIA, through NVRTC), for OpenCL (NVIDIA, AMD and Intel) and for Metal (Apple GPUs, single precision only). The CUDA and OpenCL backends have run on an NVIDIA RTX 5060 (2026-11-07), and the OpenCL backend on an Intel Arc 140T (2026-11-08, again on 2026-11-10 through MATLAB and the command line tool). The self-test below passed on both in single and double precision. No AMD or Apple device has run, and the Metal host code has been type-checked for macOS but never run, so a run on one of those is the first real check. Run these in order:
+The ensemble engine has backends for the CPU, for CUDA (NVIDIA, through NVRTC), for OpenCL (NVIDIA, AMD and Intel) and for Metal (Apple GPUs, single precision only). The CUDA and OpenCL backends have run on an NVIDIA RTX 5060 (2026-11-07), and the OpenCL backend on an Intel Arc 140T (2026-11-08, again on 2026-11-10 through MATLAB and the command line tool). The self-test below passed on both in single and double precision. No AMD device has run. The Metal backend has run only on the virtual GPU of GitHub's hosted macOS runners, never on Apple hardware, so a run on an AMD card or a Mac is the first real check. Run these in order:
 
 1. List what the engine finds:
 
