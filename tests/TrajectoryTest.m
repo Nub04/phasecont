@@ -11,6 +11,10 @@ classdef TrajectoryTest < matlab.unittest.TestCase
         Forced = "x'=-x+sin(t)" + newline + "init x=0" + newline + ...
             "done" + newline
         Blow = "x'=x^2" + newline + "init x=1" + newline + "done" + newline
+        % Decay with @ options that simulate does not read.
+        DecayOpts = "par a=1" + newline + "x'=-a*x" + newline + ...
+            "init x=1" + newline + "@ meth=stiff, dt=0.05, total=20" + ...
+            newline + "@ xp=x" + newline + "done" + newline
     end
 
     properties
@@ -275,6 +279,53 @@ classdef TrajectoryTest < matlab.unittest.TestCase
                 "phasecont:model:badOption");
             testCase.verifyError(@() bad([1 0], [0 1], Hmax = 0), ...
                 "phasecont:model:badOption");
+        end
+
+        function atOptionsAreNamedInOneWarning(testCase)
+            m = testCase.model(testCase.DecayOpts);
+            testCase.verifyWarning(@() phasecont.simulate(m, 1, [0 1]), ...
+                "phasecont:simulate:ignoredOption");
+            m2 = testCase.model(testCase.DecayOpts);
+            lastwarn("");
+            [~] = evalc("phasecont.simulate(m2, 1, [0 1]);");
+            [msg, id] = lastwarn;
+            testCase.verifyEqual(string(id), "phasecont:simulate:ignoredOption");
+            for name = ["meth" "dt" "total" "xp"]
+                testCase.verifySubstring(string(msg), name);
+            end
+        end
+
+        function theOptionWarningComesOncePerModel(testCase)
+            m = testCase.model(testCase.DecayOpts);
+            testCase.verifyWarning(@() phasecont.simulate(m, 1, [0 1]), ...
+                "phasecont:simulate:ignoredOption");
+            testCase.verifyWarningFree(@() phasecont.simulate(m, 1, [0 2]));
+        end
+
+        function atOptionsDoNotChangeTheResult(testCase)
+            plain = testCase.model(testCase.Decay);
+            opts = testCase.model(testCase.DecayOpts);
+            a = phasecont.simulate(plain, 1, [0 3]);
+            b = testCase.verifyWarning(@() phasecont.simulate(opts, 1, [0 3]), ...
+                "phasecont:simulate:ignoredOption");
+            testCase.verifyEqual(b.T, a.T);
+            testCase.verifyEqual(b.X, a.X);
+        end
+
+        function aModelWithoutOptionsSimulatesQuietly(testCase)
+            m = testCase.model(testCase.Decay);
+            testCase.verifyWarningFree(@() phasecont.simulate(m, 1, [0 1]));
+        end
+
+        function aSilencedOptionWarningIsNotUsedUp(testCase)
+            m = testCase.model(testCase.DecayOpts);
+            s = warning("off", "phasecont:simulate:ignoredOption");
+            restore = onCleanup(@() warning(s));
+            testCase.verifyWarningFree(@() phasecont.simulate(m, 1, [0 1]));
+            warning(s);
+            testCase.verifyWarning(@() phasecont.simulate(m, 1, [0 1]), ...
+                "phasecont:simulate:ignoredOption");
+            clear restore
         end
 
         function aPointOfAnotherModelIsRefused(testCase)

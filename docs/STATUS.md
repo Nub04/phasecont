@@ -866,7 +866,7 @@ Owner:
 
 Assistant, on branch `launch-prep` unless noted:
 
-1. The M3 warning, with a test.
+1. The M3 warning, with a test. Done on 2026-11-13. `simulate` warns once per `Model` object (a hidden notice flag on the handle, so a loop over one model warns once) and names every `@` option the model sets. A warning that is turned off does not use up the notice, so the next call after it is turned back on still warns. The phase-plane app turns the warning off around its own runs, since its notes already name the ignored options; its list now also holds `bound`, the name in `crates/pc-ode/src/options.rs` (it held only `bounds`, which that list does not have). Session replay calls the run loop directly and does not warn. The README has an "`@` options" section. Tests: five in `tests/TrajectoryTest.m` and one more check in `tests/AppTest.m`; `scripts/matlab-win --run runm3.m` (both files) gave 59 total, 59 passed, 0 failed.
 2. The README: the feature list (homoclinic curves, delay equations, cycle normal forms, `MeshAdapt`, ensembles, LaTeX, and `fit` if it ships) and a section on what the `.ode` reader refuses (stochastic, `global`, DAE, Volterra, BVP, `sum`, `shift`, `special`, `export`, file tables, `#include` from MATLAB) (M2).
 3. The package Summary and Description in `scripts/packageToolbox.m`, which still describe v0.3.
 4. A CHANGELOG draft: the map note, the NaN padding of v1.0.0 LPC, PD and NS session rows, the rule to close MATLAB before an upgrade, the GPU devices that ran, and the options that default to off (`Lyapunov`, `InclinationFlips`).

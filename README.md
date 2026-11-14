@@ -71,6 +71,16 @@ lp.Data.coefficient                                % the normal form coefficient
 
 `continuation` blocks while it runs and polls the engine, first after 1 ms and then at growing intervals up to 50 ms. Ctrl+C cancels the run and frees it. It returns a `phasecont.Branch` that holds copies of the data, so it stays valid after the model is deleted. `Type` selects the problem: `"EP"` (the default), `"LC"` from a Hopf point, and `"LP"`, `"H"`, `"LPC"`, `"PD"` or `"NS"` with two free parameters. `help phasecont.continuation` lists the options.
 
+## `@` options
+
+PhaseCont reads only a few of the `@` options in an `.ode` file, and only in the phase-plane app:
+
+- `xp` and `yp` pick the variables on the two axes.
+- `xlo`, `xhi`, `ylo` and `yhi` set the window.
+- `total` fills in the integration length T.
+
+The app names `meth`, `dt` and `bound` in its notes and does not use them, since it always integrates with the Dormand-Prince 5(4) pair. `simulate`, `equilibrium`, `continuation` and `ensemble` read no `@` options. The first `simulate` call on a model that sets any of them warns once with the ID `phasecont:simulate:ignoredOption` and names them, and the result is the same as without them. Set the solver with the `RelTol`, `AbsTol`, `MaxSteps` and `Hmax` options of `simulate` instead.
+
 ## Models without an `.ode` file
 
 Every route below writes `.ode` text and builds the model from it, so sessions, continuation and the phase-plane app work the same way. Nothing is defaulted: a missing initial value or parameter value raises an error that names it.

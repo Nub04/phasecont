@@ -66,6 +66,8 @@ classdef Model < handle
 
     properties (Hidden, Transient, SetAccess = private)
         Id (1,1) uint64 = uint64(0)
+        % Notices lists the one-time notices already given for this model.
+        Notices (1,:) string = strings(1,0)
     end
 
     methods
@@ -224,6 +226,15 @@ classdef Model < handle
 
         function info = engineInfo(obj)
             info = jsondecode(pckern("model_info", obj.Id));
+        end
+
+        function tf = firstNotice(obj, key)
+            % True the first time KEY is asked for on this model and false
+            % after that, so a warning can be given once per model.
+            tf = ~any(obj.Notices == key);
+            if tf
+                obj.Notices(end+1) = key;
+            end
         end
     end
 

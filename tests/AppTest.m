@@ -107,10 +107,11 @@ classdef AppTest < matlab.unittest.TestCase
         end
 
         function unusedMethodOptionsAreNamed(testCase)
-            text = "@ meth=rungekutta, dt=0.1, total=5" + newline + testCase.Rotation;
+            text = "@ meth=rungekutta, dt=0.1, total=5, bound=100" + newline + testCase.Rotation;
             app = testCase.makeApp(text);
             testCase.verifyTrue(any(contains(app.Notes, "Dormand-Prince")));
             testCase.verifyTrue(any(contains(app.Notes, "meth")));
+            testCase.verifyTrue(any(contains(app.Notes, "bound")));
             testCase.verifyEqual(app.T, 5);
         end
 

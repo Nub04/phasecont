@@ -23,6 +23,12 @@ function tr = simulate(m, x0, tspan, options)
 %     MaxSteps  most accepted steps, a positive integer (default 100000)
 %     Hmax      largest step length, positive; Inf means no cap (default)
 %
+%   simulate reads none of the model's @ options (meth, dt, total, bound
+%   and the others), so they do not change the result. The first simulate
+%   call on a model that sets any of them warns with the ID
+%   phasecont:simulate:ignoredOption and names them all. While that warning
+%   is turned off, the one notice is kept for a later call.
+%
 %   TR.Stop is "End" when the run reached T1. When it stops for another
 %   reason ("MaxSteps", "StepTooSmall" or "Error", for example because the
 %   solution blows up), simulate warns with the ID
@@ -46,6 +52,7 @@ if ~(isnumeric(tspan) && isreal(tspan) && numel(tspan) == 2 ...
 end
 tspan = double(tspan(:)).';
 [u0, p] = startValues(m, x0, options.Params);
+warnIgnoredOptions(m);
 
 parts = strings(1, 0);
 parts(end+1) = numberOption("rtol", options.RelTol, "RelTol", false);
@@ -90,6 +97,24 @@ if stop ~= "End"
         "The run stopped at t = %.6g with reason ""%s"" before t = %.6g.", ...
         tr.T(end), stop, tspan(2));
 end
+end
+
+function warnIgnoredOptions(m)
+% Name the @ options of the model, once per model. A warning that is turned
+% off does not use up the notice.
+id = "phasecont:simulate:ignoredOption";
+names = string(fieldnames(m.Options)).';
+if isempty(names)
+    return
+end
+s = warning("query", id);
+if string(s.state) == "off" || ~m.firstNotice(id)
+    return
+end
+warning(id, "The model sets @ %s. simulate reads no @ options: it " + ...
+    "integrates over TSPAN with Dormand-Prince 5(4), set only by RelTol, " + ...
+    "AbsTol, MaxSteps and Hmax. This warning comes once per model.", ...
+    strjoin(names, ", "));
 end
 
 function [u0, p] = startValues(m, start, params)

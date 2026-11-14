@@ -24,7 +24,7 @@ classdef PhasePlane < handle
     %                 Init +/- max(1, |Init|)
     %   @ total       the integration length T. Without it the T field is
     %                 empty and a click asks for T instead of integrating.
-    %   @ meth, dt, bounds
+    %   @ meth, dt, bound
     %                 not used. The app integrates with the Dormand-Prince
     %                 5(4) pair and a note says so.
     % The view range only changes the display. Each integration uses
@@ -166,7 +166,10 @@ classdef PhasePlane < handle
                     spans = {[0 T], [0 -T]};
             end
             x0 = app.startState(x, y);
-            ws = warning("off", "phasecont:simulate:stoppedEarly");
+            % The notes name the ignored @ options and the status line the
+            % early stops, so simulate stays quiet here.
+            ws = [warning("off", "phasecont:simulate:stoppedEarly"), ...
+                warning("off", "phasecont:simulate:ignoredOption")];
             restore = onCleanup(@() warning(ws));
             runs = cell(1, numel(spans));
             for k = 1:numel(spans)
@@ -440,7 +443,7 @@ classdef PhasePlane < handle
                     notes(end+1, 1) = "@ total = " + o.total + " is not a positive number; enter T.";
                 end
             end
-            ignored = intersect(["meth" "dt" "bounds"], string(fieldnames(o)).');
+            ignored = intersect(["meth" "dt" "bound" "bounds"], string(fieldnames(o)).');
             if ~isempty(ignored)
                 notes(end+1, 1) = "The model sets @ " + strjoin(ignored, ", ") ...
                     + ". The app integrates with Dormand-Prince 5(4) and ignores them.";
