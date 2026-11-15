@@ -16,7 +16,7 @@ use lsp_types::{
 };
 use pc_ode::builtins::{BUILTINS, Builtin, builtin};
 use pc_ode::options::{NAMES, NUMBERED};
-use pc_ode::{FileId, Span, StateKind, Symbol, SymbolKind};
+use pc_ode::{FileId, ModelKind, Span, StateKind, Symbol, SymbolKind};
 
 use crate::analysis::Analysis;
 use crate::convert::LineIndex;
@@ -67,8 +67,14 @@ fn plural(n: usize) -> String {
     }
 }
 
-fn describe(kind: SymbolKind) -> String {
+/// What a declared name is, for hover, completion and the document symbols.
+/// A state declared as `x'=...` in a map (`@ meth=discrete`, SPEC 8t) is a map
+/// variable, since the model iterates it.
+fn describe(a: &Analysis, kind: SymbolKind) -> String {
     match kind {
+        SymbolKind::State(StateKind::Ode) if a.loaded.info.kind == ModelKind::Map => {
+            "map variable".to_string()
+        }
         SymbolKind::State(StateKind::Ode) => "ODE variable".to_string(),
         SymbolKind::State(StateKind::Map) => "map variable".to_string(),
         SymbolKind::State(StateKind::Markov) => "Markov variable".to_string(),
@@ -137,7 +143,7 @@ pub fn hover(a: &Analysis, file: FileId, pos: Position) -> Option<Hover> {
     let (text, start, end) = word_in(a, file, pos)?;
     let word = &text[start..end];
     let value = if let Some(symbol) = symbol_of(a, word) {
-        format!("`{}`: {}", symbol.name.text, describe(symbol.kind))
+        format!("`{}`: {}", symbol.name.text, describe(a, symbol.kind))
     } else {
         let b = builtin(&word.to_ascii_lowercase())?;
         format!("`{}`: {}", b.name, describe_builtin(b))
@@ -177,7 +183,7 @@ pub fn completion(a: &Analysis, file: FileId, pos: Position) -> Vec<CompletionIt
     items.extend(a.loaded.info.symbols.iter().map(|s| CompletionItem {
         label: s.name.text.clone(),
         kind: Some(completion_kind(s.kind)),
-        detail: Some(describe(s.kind)),
+        detail: Some(describe(a, s.kind)),
         ..CompletionItem::default()
     }));
     items
@@ -212,7 +218,7 @@ pub fn document_symbols(a: &Analysis, file: FileId) -> Vec<DocumentSymbol> {
             let range = span_range(a, s.name.span)?;
             Some(DocumentSymbol {
                 name: s.name.text.clone(),
-                detail: Some(describe(s.kind)),
+                detail: Some(describe(a, s.kind)),
                 kind: symbol_kind(s.kind),
                 tags: None,
                 deprecated: None,

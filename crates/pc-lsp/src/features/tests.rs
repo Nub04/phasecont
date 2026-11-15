@@ -250,3 +250,28 @@ fn diagnostics_without_a_fix_or_from_another_source_give_no_action() {
     let bad = serde_json::json!({ "fix": { "range": 3 } });
     assert!(code_actions(&uri, &[diagnostic_with(Some(bad), "phasecont")]).is_empty());
 }
+
+/// A state of a map is a map variable, whether the file writes `x(t+1)=...`
+/// or `x'=...` with `@ meth=discrete` (SPEC 8t). Hover, completion and the
+/// document symbols all use the same text.
+#[test]
+fn a_state_of_a_map_is_described_as_a_map_variable() {
+    let ode = "par r=2\nx'=r*x*(1-x)\ndone\n";
+    let map = "par r=2\nx(t+1)=r*x*(1-x)\ndone\n";
+    let discrete = "par r=2\nx'=r*x*(1-x)\n@ meth=discrete\ndone\n";
+    for (text, want) in [
+        (ode, "ODE variable"),
+        (map, "map variable"),
+        (discrete, "map variable"),
+    ] {
+        let a = analysis(text);
+        let hover = hover_text(&a, pos_of(text, "r*x", 0, 2)).unwrap();
+        assert_eq!(hover, format!("`x`: {want}"), "{text}");
+        let symbols = document_symbols(&a, a.top);
+        let x = symbols.iter().find(|s| s.name == "x").unwrap();
+        assert_eq!(x.detail.as_deref(), Some(want), "{text}");
+        let items = completion(&a, a.top, pos_of(text, "r*x", 0, 2));
+        let x = items.iter().find(|i| i.label == "x").unwrap();
+        assert_eq!(x.detail.as_deref(), Some(want), "{text}");
+    }
+}
