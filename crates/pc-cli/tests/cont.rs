@@ -557,3 +557,30 @@ fn inclination_flips_on_a_non_hom_run_is_an_error() {
         stderr(&o)
     );
 }
+
+/// A map is refused after the model loads (SPEC 8t, test 7).
+#[test]
+fn a_map_model_is_refused_with_exit_one() {
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pc-ode/tests/corpus");
+    let discrete = scratch().join("logistic_discrete.ode");
+    std::fs::write(
+        &discrete,
+        "par r=2\ninit x=0.2\nx'=r*x*(1-x)\n@ meth=discrete\ndone\n",
+    )
+    .unwrap();
+    let path = scratch().join("map_ep.json");
+    std::fs::write(&path, r#"{"type":"EP","free":"r","u0":[0.5]}"#).unwrap();
+    for file in [corpus.join("logistic_map.ode"), discrete] {
+        let o = run(
+            &scratch(),
+            &["cont", file.to_str().unwrap(), path.to_str().unwrap()],
+        );
+        assert_eq!(code(&o), 1, "{}", stderr(&o));
+        assert!(stdout(&o).is_empty(), "stdout: {}", stdout(&o));
+        assert!(
+            stderr(&o).contains(pckern::error::MAP_MODEL),
+            "{}",
+            stderr(&o)
+        );
+    }
+}

@@ -244,6 +244,9 @@ pub unsafe extern "C" fn run_start(
         let out_run = unsafe { out_ptr(out_run, "run") }?;
         *out_run = 0;
         let h = model_handle(model)?;
+        // A map is refused before anything else, so a malformed problem and a handle that was
+        // not compiled get the same error (SPEC 8t).
+        h.not_map()?;
         let evaluator = h.evaluator().ok_or_else(|| bad_arg(NOT_COMPILED))?;
         let text = unsafe { str_arg(problem_json, "problem_json") }?;
         let v: Value = serde_json::from_str(text)
@@ -385,6 +388,7 @@ pub unsafe extern "C" fn model_info(model: u64, out_json: *mut *mut c_char) -> i
             "n": h.n(),
             "n_p": h.n_p(),
             "delay": h.delay,
+            "map": h.map,
             "variables": names.states,
             "parameters": names.parameters,
             "values": names.par_values,
@@ -448,6 +452,7 @@ pub unsafe extern "C" fn model_equilibrium(
     barrier(|| {
         let h = model_handle(model)?;
         h.ode_only()?;
+        h.not_map()?;
         let n = h.n();
         if !h.names.autonomous {
             return Err(Error::NonAutonomous(EngineError::NonAutonomous.to_string()));

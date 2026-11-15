@@ -18,10 +18,10 @@ use pc_engine::{
 use pc_ensemble::job::{NATIVE_FRAME_LIMIT, NativeRhs};
 use pc_ir::{Entry, EntryKind, IrModel};
 use pc_jit::JitEntries;
-use pc_ode::{Model, ModelInfo};
+use pc_ode::{Model, ModelInfo, ModelKind};
 
 use crate::barrier::guarded;
-use crate::error::{Error, Result, bad_arg};
+use crate::error::{Error, MAP_MODEL, Result, bad_arg};
 use crate::registry::Handle;
 
 /// Stack of the model thread. Cranelift and the lowering recurse deeply.
@@ -96,6 +96,9 @@ pub(crate) struct ModelHandle {
     pub names: Names,
     /// True for a model with `delay(...)` calls (SPEC 8s). Only an "EP" run takes one.
     pub delay: bool,
+    /// True for a map (`x(t+1)=...`, or an ODE file with `@ meth=discrete`; SPEC 8t). No run
+    /// takes one yet. A delay model is never a map, since lowering refuses a delay in a map.
+    pub map: bool,
     /// The compiled `F` of the ensemble workers, from the first double-precision CPU run.
     /// The outer `None` means not tried yet, the inner one that the model has none (a delay
     /// model, an `F` with a frame over [`NATIVE_FRAME_LIMIT`], or a compile error). The code
@@ -133,6 +136,7 @@ impl ModelHandle {
         let max_frame = Arc::new(AtomicU32::new(0));
         let evaluator = Arc::new(Mutex::new(None));
         let delay = !ir.delays.is_empty();
+        let map = info.kind == ModelKind::Map;
         let ir = Arc::new(ir);
         let ctx = Context {
             model: model.clone(),
@@ -156,6 +160,7 @@ impl ModelHandle {
             ir,
             names,
             delay,
+            map,
             native: Mutex::new(None),
             evaluator,
             c_file: Mutex::new(None),
@@ -202,6 +207,14 @@ impl ModelHandle {
     pub fn ode_only(&self) -> Result<()> {
         if self.delay {
             return Err(bad_arg(DELAY_MODEL));
+        }
+        Ok(())
+    }
+
+    /// The error for an entry that computes a result a map does not have yet (SPEC 8t).
+    pub fn not_map(&self) -> Result<()> {
+        if self.map {
+            return Err(Error::UnsupportedModel(MAP_MODEL.into()));
         }
         Ok(())
     }

@@ -442,3 +442,40 @@ fn an_rk4_interval_with_too_many_steps_is_refused() {
     j.output = Output::Samples(vec![1.0, 2.0]);
     assert!(validate(&j).is_ok());
 }
+
+/// A map is not an ODE system, whether it is written `x(t+1)=...` or `x'=...` with
+/// `@ meth=discrete` (SPEC 8t). The same file without the option still runs.
+#[test]
+fn a_map_is_refused_in_both_spellings() {
+    for src in [
+        "par r=2\nx(t+1)=r*x*(1-x)\ndone\n",
+        "par r=2\nx'=r*x*(1-x)\n@ meth=discrete\ndone\n",
+    ] {
+        let m = build_model(src);
+        let j = job(
+            &m,
+            1,
+            &[0.5],
+            &[2.0],
+            1.0,
+            Method::Rk4 { dt: 0.1 },
+            Precision::Double,
+        );
+        assert_eq!(
+            run_err(&j),
+            EnsembleError::Unsupported("the model is not an ODE system".into()),
+            "{src}"
+        );
+    }
+    let m = build_model("par r=2\nx'=r*x*(1-x)\ndone\n");
+    let j = job(
+        &m,
+        1,
+        &[0.5],
+        &[2.0],
+        1.0,
+        Method::Rk4 { dt: 0.1 },
+        Precision::Double,
+    );
+    assert!(run_cpu(&j, u64::MAX, &NO_CANCEL()).is_ok());
+}

@@ -11,6 +11,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use pc_engine::{EngineError, Evaluator, Point, Run, RunState, SpecialPoint, StopReason};
+use pckern::error::MAP_MODEL;
 use pckern::json::problem::{Mode, parse_problem};
 use serde_json::{Value, json};
 
@@ -50,6 +51,11 @@ pub fn cont(file: &Path, problem_file: &Path, fallback: bool) -> ExitCode {
         Ok(p) => p,
         Err(code) => return code,
     };
+    // No run takes a map yet (SPEC 8t). A refused model exits 1, as `CONT_HELP` says.
+    if loaded.info.kind == pc_ode::ModelKind::Map {
+        to_stderr(&format!("pc-cli: {}: {MAP_MODEL}\n", file.display()));
+        return ExitCode::from(1);
+    }
     let problem = match parse_problem(&value, &ir, Mode::Cli) {
         Ok(p) => p,
         Err(msg) => {
