@@ -2043,12 +2043,12 @@ Owner approval: the owner chose full map support on 2026-11-13 and approved the 
 - Its first character, lowercased, decides:
   - an empty value, or one of a b c e g m q r s y 2 5 8 v: no change and no diagnostic. These are the integrators of XPPAUT 8.0 (v is the Volterra method, which crashes XPPAUT on a plain ODE).
   - d: when every equation of the file is an ODE, the file is a map (`ModelKind::Map`), with warning ODE0074 "`<entry>` makes XPPAUT 8.0 iterate this file as a map, so PhaseCont reads it as a map", where `<entry>` is the entry as written, such as `meth=discrete`.
-  - any other character: the file stays an ODE, with warning ODE0074 "XPPAUT 8.0 iterates this file as a map for `<entry>`, but PhaseCont integrates it as an ODE; write `x(t+1)=...` for a map". This is a PhaseCont choice (probe `meth-ode45`) and waits for the owner's sign-off in `docs/STATUS.md`: a typo such as `meth=ode45` should not turn an ODE into a map.
+  - any other character: the file stays an ODE, with warning ODE0074 "XPPAUT 8.0 iterates this file as a map for `<entry>`, but PhaseCont integrates it as an ODE; write `x(t+1)=...` for a map". This is a PhaseCont choice (probe `meth-ode45`), accepted by the owner on 2026-11-14: a typo such as `meth=ode45` should not turn an ODE into a map.
 - A file of `x(t+1)=...` equations is a map whatever `meth` says, and gets no ODE0074 (probe `map-meth-euler`). A file that mixes ODEs and maps keeps its error ODE0052 and gets no ODE0074.
 - A delay model with a `meth` value that starts with d is a map, so its `delay(...)` calls are errors at load, as in any map (Section 8d).
 - The option list that `simulate` uses for its `ignoredOption` warning, and the `.ode` writer, both read a new flag `spaced` on each `@` entry that the parser sets, instead of looking at the text. The writer prints a spaced entry as `name = value`, so a round trip keeps the entry ignored and cannot turn an ODE into a map.
 
-XPPAUT also takes keys such as `totalx` as `total` (probe `opt-prefix-total`). PhaseCont still reports `totalx` as an unknown option (ODE0024). That mismatch is open in `docs/STATUS.md`.
+XPPAUT also takes keys such as `totalx` as `total` (probe `opt-prefix-total`). Since 2026-11-14 `is_known_option` follows that rule for the names it was measured on (`bound`, `dt`, `dtmin`, `meth`, `njmp`, `t0`, `toler`, `total`, `trans`, listed in `options::PREFIX_NAMES`), so `totalx` gets no ODE0024. A shorter key such as `tot` and a longer key of any other name, such as `xlox`, still get ODE0024 (probe `opt-prefix-short`).
 
 **Entries that refuse a map.** The refusal is `Error::UnsupportedModel` with the text "the model is a map (`x(t+1)=...` or `@ meth=discrete`), and PhaseCont does not iterate maps or find their fixed points yet; evaluating the right-hand side works", which the gateway raises as `phasecont:engine:unsupportedModel`.
 

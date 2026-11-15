@@ -867,7 +867,7 @@ Branch `map-support` from `launch-prep` (a8d5590), unpushed. The plan was approv
 Slice 0 state (2026-11-14, SPEC section 8t, commits c83e749 to the session replay test on `map-support`, unpushed):
 
 - Built. `run_start` refuses a map for every problem type before it parses the problem, `model_equilibrium` refuses it next to its `ode_only` check, and both return `UnsupportedModel` (code 13, `phasecont:engine:unsupportedModel`) with the text in `pckern::error::MAP_MODEL`. `model_info` has the key `"map"`. `pc-cli cont` refuses a map after the model loads. `PhasePlane` refuses a map with `phasecont:app:mapModel`, also from a session file. `Model.rhs`, `jacobian`, `emit_c`, `import` and `latex_render` still work on a map.
-- `@ meth`. The value is the last unspaced `@` entry whose key starts with `meth`, ignoring case. A value that starts with `d` makes an ODE file a map with warning ODE0074; an empty value or an XPPAUT integrator letter changes nothing; any other first letter keeps the ODE with ODE0074. Ten XPPAUT 8.0 probes back this (`references/xpp-probes/meth-*.ode`, `map-meth-euler.ode`, `opt-prefix-total.ode`). `XPPAUT=/usr/local/sbin/xppaut references/xpp-probes/run.sh` gave 174 probes, 348 PASS and "all checks passed".
+- `@ meth`. The value is the last unspaced `@` entry whose key starts with `meth`, ignoring case. A value that starts with `d` makes an ODE file a map with warning ODE0074; an empty value or an XPPAUT integrator letter changes nothing; any other first letter keeps the ODE with ODE0074. Ten XPPAUT 8.0 probes back this (`references/xpp-probes/meth-*.ode`, `map-meth-euler.ode`, `opt-prefix-total.ode`). `XPPAUT=/usr/local/sbin/xppaut references/xpp-probes/run.sh` gave 174 probes, 348 PASS and "all checks passed" (177 probes and 354 PASS after the three `opt-prefix` probes below).
 - Ruling: `pc-cli cont` exits with 1 on a map, not with the bad-problem code 2 that the plan named, because `CONT_HELP` already gives 1 for a refused model. SPEC 8t says 1.
 - Ruling: `simulate` now gives its `ignoredOption` warning after the run returns instead of before it starts, so a `meth=discrete` file gets the refusal without a warning that its `meth` option is ignored. A run that fails gets no warning. The CHANGELOG says so.
 - `ensemble` now refuses an ODE file with `@ meth=discrete`, which it integrated before.
@@ -877,11 +877,11 @@ Slice 0 state (2026-11-14, SPEC section 8t, commits c83e749 to the session repla
 - `crates/pc-ode/docs/language.md`: the Map row now says what SPEC section 2 says. The rest of that file's map text waits for slice 8.
 - Review: a code review of the slice found no correctness bug. Its one fix, the ODE row of the SPEC section 2 table, is 0c18123. Gap: `phasePlaneRefusesAMapFromASessionFile` does not check that the app deletes the model it loaded from the session, since no call reports the live handles.
 
-Open items of the map phase:
+Items of the map phase that were open after slice 0, settled on 2026-11-14 (the owner said to go ahead with the recommendations):
 
-1. Owner sign-off: a `meth` value that starts with a letter XPPAUT does not list as an integrator, such as `meth=ode45`, keeps the file an ODE with ODE0074, while XPPAUT 8.0 iterates it as a map (probe `meth-ode45`). The alternative is to follow XPPAUT and make it a map.
-2. XPPAUT takes an `@` key such as `totalx` as `total` (probe `opt-prefix-total`), and PhaseCont reports it as unknown (ODE0024). Open: match XPPAUT's prefix rule for every option, or keep the exact names.
-3. The language server hover still calls a state of a `meth=discrete` file an ODE variable.
+1. `meth=ode45` and any other value whose first letter XPPAUT does not list as an integrator keep the file an ODE with ODE0074, while XPPAUT 8.0 iterates it as a map (probe `meth-ode45`). Decided: keep the ODE. SPEC 8t says so.
+2. Option prefixes. XPPAUT 8.0 takes a key that starts with a full option name as that option, and the longer name wins. Probes on 2026-11-14 showed this for `dt`, `dtmin`, `t0`, `trans`, `njmp`, `total`, `bound`, `toler` and `meth`; `tot` sets nothing. `options::PREFIX_NAMES` holds those nine names, and `is_known_option` gives no ODE0024 for a key that starts with one of them. Every other name stays exact until a probe shows the rule for it. New probes `opt-prefix-dt`, `opt-prefix-t0` and `opt-prefix-short`; `opt-prefix-total` now matches.
+3. The language server calls a state of a map, also of a `meth=discrete` file, a map variable in hover, completion and the document symbols (853ea00).
 
 ### Before the launch
 
