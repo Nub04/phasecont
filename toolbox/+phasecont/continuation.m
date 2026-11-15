@@ -474,25 +474,21 @@ if type == "EP" && isDelay
     parts(end+1) = """detect"":{""lp"":" + lower(string(any(detect == "LP"))) + ...
         ",""bp"":" + lower(string(any(detect == "BP"))) + "}";
 elseif type == "EP" && m.IsMap
-    % A map has PD and NS tests in place of the H test (SPEC 8v). An "H"
-    % entry goes to the engine, which refuses it.
+    % A map has PD and NS tests in place of the H test (SPEC 8v), so "H"
+    % is refused here like any other entry outside the four.
     if isa(options.Detect, "missing")
         detect = ["LP" "BP" "PD" "NS"];
     else
         detect = string(options.Detect);
     end
-    if ~all(ismember(detect, ["LP" "BP" "PD" "NS" "H"]))
+    if ~all(ismember(detect, ["LP" "BP" "PD" "NS"]))
         error("phasecont:model:badOption", ...
             "Detect entries for a map must be among ""LP"", ""BP"", ""PD"" and ""NS"".");
-    end
-    hKey = "";
-    if any(detect == "H")
-        hKey = ",""h"":true";
     end
     parts(end+1) = """detect"":{""lp"":" + lower(string(any(detect == "LP"))) + ...
         ",""bp"":" + lower(string(any(detect == "BP"))) + ...
         ",""pd"":" + lower(string(any(detect == "PD"))) + ...
-        ",""ns"":" + lower(string(any(detect == "NS"))) + hKey + "}";
+        ",""ns"":" + lower(string(any(detect == "NS"))) + "}";
 elseif type == "EP"
     if isa(options.Detect, "missing")
         detect = ["LP" "BP" "H"];

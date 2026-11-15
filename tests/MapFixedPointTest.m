@@ -208,6 +208,15 @@ classdef MapFixedPointTest < matlab.unittest.TestCase
                 Free = "r", Detect = "LC"), "phasecont:model:badOption");
         end
 
+        function detectHOnAMapIsRefused(testCase)
+            m = testCase.model(testCase.Logistic);
+            eq = phasecont.equilibrium(m, 0.5);
+            for detect = {"H", ["LP" "H"]}
+                testCase.verifyError(@() phasecont.continuation(m, eq, ...
+                    Free = "r", Detect = detect{1}), "phasecont:model:badOption");
+            end
+        end
+
         function curvesFromAMapPointAreRefused(testCase)
             % The Henon branch from a = 0.2 has an LP at a = -(1-b)^2/4 below
             % and a PD at a = 3(1-b)^2/4 above. A curve from either point is
