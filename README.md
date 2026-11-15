@@ -89,7 +89,7 @@ PhaseCont reads only a few of the `@` options in an `.ode` file, and only in the
 - `xlo`, `xhi`, `ylo` and `yhi` set the window.
 - `total` fills in the integration length T.
 
-The app names `meth`, `dt` and `bound` in its notes and does not use them, since it always integrates with the Dormand-Prince 5(4) pair. `simulate`, `equilibrium`, `continuation` and `ensemble` read no `@` options. The first `simulate` call on a model that sets any of them warns once with the ID `phasecont:simulate:ignoredOption` and names them, and the result is the same as without them. The one exception is a `meth` value that starts with `d`, such as `meth=discrete`, which makes the model a map (see below). Set the solver with the `RelTol`, `AbsTol`, `MaxSteps` and `Hmax` options of `simulate` instead.
+The app names `meth`, `dt` and `bound` in its notes and does not use them, since it always integrates with the Dormand-Prince 5(4) pair. `simulate`, `equilibrium`, `continuation` and `ensemble` read no `@` options. The first `simulate` call on a model that sets any of them warns once with the ID `phasecont:simulate:ignoredOption` and names them, and the result is the same as without them. The one exception is a `meth` value that starts with `d`, such as `meth=discrete`, which makes the model a map (see below) and gives no warning. Set the solver with the `RelTol`, `AbsTol`, `MaxSteps` and `Hmax` options of `simulate` instead.
 
 ## What the `.ode` reader refuses
 
@@ -117,7 +117,22 @@ Some lines load and do nothing. Active comments (lines that start with `"`) give
 
 A delay model, one that calls `delay(x, tau)`, loads and runs in `continuation` (equilibria, Hopf curves and cycles from a Hopf point). `simulate`, `equilibrium` and `ensemble` refuse it with the error `phasecont:engine:badArg`.
 
-Maps load, but this version does not iterate them. A map is a file of `x(t+1)=...` lines, or of `x'=...` lines with `@ meth=discrete`, which XPPAUT also iterates as a map. `simulate`, `equilibrium`, `continuation`, `ensemble` and session replay refuse a map with the error `phasecont:engine:unsupportedModel`, and `phasecont.app.PhasePlane` refuses it with `phasecont:app:mapModel`. `Model.rhs` still evaluates the right-hand side of a map. Support for maps is planned.
+A map is a file of `x(t+1)=...` lines, or of `x'=...` lines with `@ meth=discrete`, which XPPAUT also iterates as a map. `Model.IsMap` is true for a map, and `simulate` iterates it. Save this as `logistic.ode`:
+
+```
+par r=2.5
+x(t+1)=r*x*(1-x)
+init x=0.1
+done
+```
+
+```matlab
+m  = phasecont.Model("logistic.ode");
+tr = phasecont.simulate(m, 0.1, [0 50]);   % rows for n = 0, 1, ..., 50
+plot(tr)                                    % the iterates, drawn as dots
+```
+
+For a map, `TSPAN` is `[n0 n1]`, two integers with `n0 < n1`, and `t` inside the right-hand side is the iterate index n. One run gives at most 1000000 iterates. `RelTol`, `AbsTol`, `MaxSteps` and `Hmax` do not apply and raise `phasecont:simulate:mapOption`. A value that is not finite stops the run early with a warning and keeps the iterates up to that point. Sessions save and replay these runs. `equilibrium`, `continuation`, `ensemble` and replay of other runs on a map still refuse it with the error `phasecont:engine:unsupportedModel`, and `phasecont.app.PhasePlane` refuses it with `phasecont:app:mapModel`. `Model.rhs` evaluates the right-hand side of a map. Fixed points and their continuation are planned.
 
 ## Models without an `.ode` file
 
