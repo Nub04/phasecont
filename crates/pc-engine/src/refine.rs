@@ -661,6 +661,8 @@ pub fn refine_special(
     cancel: &AtomicBool,
 ) -> Result<Option<Refined>, EngineError> {
     let n = model.n();
+    // On the residual of a map the stored eigenvalues are the multipliers, those of G_u + I.
+    let shift = model.map_residual();
     let (u, alpha) = (&sp.point.u, sp.point.alpha);
     let (z, log, omega) = match sp.label.as_str() {
         "LP" => {
@@ -702,7 +704,12 @@ pub fn refine_special(
     let alpha_new = z[n];
     let mut ctx = Ctx::new(model, params, free)?;
     ctx.set_alpha(alpha_new);
-    let a = ctx.jac_u(&u_new)?;
+    let mut a = ctx.jac_u(&u_new)?;
+    if shift {
+        for i in 0..n {
+            a[i + n * i] += 1.0;
+        }
+    }
     let eigenvalues = eigenvalues(&a, n)?;
     Ok(Some(Refined {
         u: u_new,

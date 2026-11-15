@@ -1,0 +1,7 @@
+# Flip normal form map: the fixed point (0, 0) has the multipliers -(1 + a) and lam,
+# so it has PD at a = 0 with b = s (SPEC section 8v, test 4).
+par a=-0.1, s=0.7, lam=0.5, m=0.3
+x(t+1)=-(1+a)*x+s*x^3
+y(t+1)=lam*y+m*x^2
+init x=0, y=0
+done

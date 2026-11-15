@@ -1,0 +1,8 @@
+# NS normal form map (x, y) -> (1 + a + s (x^2 + y^2)) R(th) (x, y): NS at a = 0 with
+# theta = th and d = 2 s (SPEC section 8v, test 5).
+par a=-0.1, s=-0.4, th=1.1
+g=1+a+s*(x^2+y^2)
+x(t+1)=g*(cos(th)*x-sin(th)*y)
+y(t+1)=g*(sin(th)*x+cos(th)*y)
+init x=0, y=0
+done

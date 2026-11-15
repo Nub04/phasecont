@@ -1,0 +1,12 @@
+# The flip map of map_flip.ode conjugated by
+# (x, y) -> (x (1 + k2 (y + k1 x^2)), y + k1 x^2) (SPEC section 8v, test 4).
+par a=-0.1, s=0.7, lam=0.5, m=0.3, k1=0.8, k2=-0.6
+xa=x/(1+k2*y)
+ya=y-k1*xa^2
+xo=-(1+a)*xa+s*xa^3
+yo=lam*ya+m*xa^2
+yb=yo+k1*xo^2
+x(t+1)=xo*(1+k2*yb)
+y(t+1)=yb
+init x=0, y=0
+done

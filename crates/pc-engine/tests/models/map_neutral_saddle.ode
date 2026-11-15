@@ -1,0 +1,7 @@
+# The fixed point (0, 0) has the real multipliers 2 + al and 0.5, whose product passes
+# 1 at al = 0: a neutral saddle, not an NS point (SPEC section 8v, test 8).
+par al=-0.2
+x(t+1)=(2+al)*x+x^2
+y(t+1)=0.5*y+x*y
+init x=0, y=0
+done

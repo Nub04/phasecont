@@ -33,6 +33,7 @@ use crate::hopfcurve::continue_hopf_curve;
 use crate::iterate::{IterSetup, iterate};
 use crate::ivp::{IvpOptions, IvpSetup, integrate};
 use crate::lpcurve::continue_lp_curve;
+use crate::mapfix::MapAsRoot;
 use crate::model::{Evaluator, build, build_allowing_t, build_dde};
 use crate::panic::{clear_last_panic, install_hook, mark_worker, payload_message, take_last_panic};
 use crate::switch::{special_index, switch_bp};
@@ -319,6 +320,17 @@ fn body(shared: &Shared, spec: RunSpec) -> RunState {
             )),
         );
     }
+    // A fixed point problem of a map runs on `G = F - x` (SPEC section 8v); every problem
+    // other than EP and ITER would read `F` as a vector field.
+    let map = spec.info.kind == pc_ode::ModelKind::Map;
+    if map && !matches!(spec.kind, RunKind::Ep | RunKind::Iter { .. }) {
+        return finish(
+            shared,
+            Err(EngineError::BadProblem(
+                "a map runs only an equilibrium run or an iteration".into(),
+            )),
+        );
+    }
     match spec.kind {
         RunKind::DdeEq(roots) => return body_dde(shared, spec, roots),
         RunKind::DdeHopf {
@@ -345,14 +357,14 @@ fn body(shared: &Shared, spec: RunSpec) -> RunState {
         None => model,
     };
     let mut model = model;
-    let first = match follow(
-        shared,
-        model.as_mut(),
-        &spec.kind,
-        &spec.setup,
-        &spec.opts,
-        0,
-    ) {
+    let mut fixed;
+    let model: &mut dyn crate::model::ModelEval = if map && matches!(spec.kind, RunKind::Ep) {
+        fixed = MapAsRoot::new(model.as_mut());
+        &mut fixed
+    } else {
+        model.as_mut()
+    };
+    let first = match follow(shared, &mut *model, &spec.kind, &spec.setup, &spec.opts, 0) {
         Ok(b) => b,
         Err(e) => return finish(shared, Err(e)),
     };
@@ -374,11 +386,11 @@ fn body(shared: &Shared, spec: RunSpec) -> RunState {
             ))),
         );
     };
-    let next = match switch_bp(model.as_mut(), &spec.setup, &first, k, &spec.opts) {
+    let next = match switch_bp(&mut *model, &spec.setup, &first, k, &spec.opts) {
         Ok(s) => s,
         Err(e) => return finish(shared, Err(e)),
     };
-    match follow(shared, model.as_mut(), &RunKind::Ep, &next, &spec.opts, 1) {
+    match follow(shared, &mut *model, &RunKind::Ep, &next, &spec.opts, 1) {
         Ok(b) => {
             let stop = store_branch(shared, 1, b);
             finish_stop(shared, Ok(&stop))

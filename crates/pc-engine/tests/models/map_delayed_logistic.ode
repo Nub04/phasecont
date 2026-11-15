@@ -1,0 +1,7 @@
+# Delayed logistic map (x, y) -> (r x (1 - y), x): NS at r = 2 on the fixed point
+# (1 - 1/r, 1 - 1/r) (SPEC section 8v, test 7).
+par r=1.8
+x(t+1)=r*x*(1-y)
+y(t+1)=x
+init x=0.4444444444444444, y=0.4444444444444444
+done

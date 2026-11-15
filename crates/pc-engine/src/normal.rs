@@ -2,6 +2,7 @@
 //!
 //! * LP: the quadratic coefficient `a = (1/2) p^T B(q, q)` of `w' = beta + a w^2`.
 //! * H: the first Lyapunov coefficient `l1`.
+//! * PD and NS of a fixed point of a map: `b` and `d` (SPEC section 8v).
 //!
 //! `B` and `C` are the second and third derivatives of `f` in `u`, taken from the `Dir`
 //! entries of the model, so there are no finite differences. The coefficients depend on
@@ -13,12 +14,13 @@
 //! Elements of Applied Bifurcation Theory (2004), p. 180, through Kuehn, arXiv:1201.6595,
 //! eq. (9).
 
-use crate::branch::{Extras, SpecialPoint};
+use crate::branch::{Branch, Extras, SpecialPoint};
+use crate::cycle::nearest_pair;
 use crate::error::EngineError;
 use crate::model::ModelEval;
 use pc_ir::complex::dir_complex;
 use pc_ir::{EntryKind, Slot};
-use pc_linalg::{Lu, eigvec, null_left, null_right, solve_shifted};
+use pc_linalg::{Lu, eigenvalues, eigvec, null_left, null_right, solve_shifted};
 
 /// Normalization string stored with an LP coefficient.
 pub const LP_NORMALIZATION: &str = "|q|=1, p'q=1, p'F_alpha>0";
@@ -156,7 +158,13 @@ pub fn fold_coefficient(
 /// `+-i omega`: `A q = i omega q`, `A^T p = -i omega p`, `<q,q> = 1`, `<p,q> = 1` with
 /// `<x,y> = conj(x)^T y`. Returned as `(q, p)`, each as (real part, imaginary part).
 pub fn hopf_eigenvectors(a: &[f64], n: usize, omega: f64) -> Result<(Cv, Cv), EngineError> {
-    let q = eigvec(a, n, (0.0, omega))?;
+    pair_eigenvectors(a, n, (0.0, omega))
+}
+
+/// Right and left eigenvectors of `a` for the eigenvalue nearest `lambda` and its conjugate:
+/// `A q = lambda q`, `A^T p = conj(lambda) p`, `<q,q> = 1`, `<p,q> = 1`.
+fn pair_eigenvectors(a: &[f64], n: usize, lambda: (f64, f64)) -> Result<(Cv, Cv), EngineError> {
+    let q = eigvec(a, n, lambda)?;
     // Normalize explicitly to <q,q> = 1 instead of relying on eigvec.
     let nq = q.0.iter().chain(&q.1).map(|v| v * v).sum::<f64>().sqrt();
     if !(nq.is_finite() && nq > 0.0) {
@@ -172,7 +180,7 @@ pub fn hopf_eigenvectors(a: &[f64], n: usize, omega: f64) -> Result<(Cv, Cv), En
             at_mat[i + n * j] = a[j + n * i];
         }
     }
-    let p0 = eigvec(&at_mat, n, (0.0, -omega))?;
+    let p0 = eigvec(&at_mat, n, (lambda.0, -lambda.1))?;
     let (dr, di) = herm(&p0, &q);
     let d2 = dr * dr + di * di;
     if !(d2.is_finite() && d2 > 0.0) {
@@ -747,6 +755,183 @@ pub fn special_coefficient(
             Ok(Some((l1, H_NORMALIZATION)))
         }
         _ => Ok(None),
+    }
+}
+
+/// Normalization string stored with the PD coefficient of a fixed point of a map.
+pub const MAP_PD_NORMALIZATION: &str = "|q|=1, p'q=1";
+
+/// `A = F_x = G_x + I` from the Jacobian `gx` of the residual `G = F - x` of a map.
+fn map_jacobian(gx: &[f64], n: usize) -> Vec<f64> {
+    let mut a = gx.to_vec();
+    for i in 0..n {
+        a[i + n * i] += 1.0;
+    }
+    a
+}
+
+/// Flip coefficient `b` of the normal form `w -> -w + b w^3` at a PD point of a map, with
+/// `at` on the residual `G = F - x`.
+///
+/// Govaerts, Khoshsiar Ghaziani, Kuznetsov and Meijer, SIAM J. Sci. Comput. 29 (2007),
+/// Table 2.3, with `A q = -q`, `A^T p = -p`, `|q| = 1` and `p^T q = 1`:
+///
+/// ```text
+/// h = (I - A)^-1 B(q,q) = -G_x^-1 B(q,q),   b = (1/6) p^T [C(q,q,q) + 3 B(q,h)]
+/// ```
+///
+/// `b` does not change when `q` and `p` change sign together.
+pub(crate) fn map_flip_at(at: &mut At) -> Result<f64, EngineError> {
+    let n = at.n;
+    let gx = at.jac_u()?;
+    let mut a_plus = map_jacobian(&gx, n);
+    for i in 0..n {
+        a_plus[i + n * i] += 1.0;
+    }
+    let q = first(null_right(&a_plus, n, n, 1)?)?;
+    let nq = dot(&q, &q).sqrt();
+    if !(nq.is_finite() && nq > 0.0) {
+        return Err(EngineError::Singular("null vector has zero norm".into()));
+    }
+    let q: Vec<f64> = q.iter().map(|v| v / nq).collect();
+    let mut p = first(null_left(&a_plus, n, n, 1)?)?;
+    let pq = dot(&p, &q);
+    if pq == 0.0 || !pq.is_finite() {
+        return Err(EngineError::Singular(
+            "left and right null vectors are orthogonal".into(),
+        ));
+    }
+    p.iter_mut().for_each(|x| *x /= pq);
+    let qv: Cv = (q, vec![0.0; n]);
+    let bqq = at.form(&[&qv, &qv])?;
+    let lu = Lu::new(&gx, n)?;
+    let h = lin(&[((-1.0, 0.0), &inv_real(&lu, &bqq)?)]);
+    let c = at.form(&[&qv, &qv, &qv])?;
+    let bqh = at.form(&[&qv, &h])?;
+    let b = (dot(&p, &c.0) + 3.0 * dot(&p, &bqh.0)) / 6.0;
+    if b.is_finite() {
+        Ok(b)
+    } else {
+        Err(EngineError::NotFinite("flip coefficient".into()))
+    }
+}
+
+/// The Neimark-Sacker coefficients of a fixed point of a map.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct MapNs {
+    /// Argument of the critical multiplier with positive imaginary part, in (0, pi).
+    pub theta: f64,
+    /// `c1` as (re, im).
+    pub c1: (f64, f64),
+    /// `d = Re(e^{-i theta} c1)`.
+    pub d: f64,
+    /// `Im(e^{-i theta} c1)`.
+    pub d_im: f64,
+}
+
+/// Neimark-Sacker coefficients at an NS point of a map, with `at` on the residual
+/// `G = F - x`.
+///
+/// Govaerts, Khoshsiar Ghaziani, Kuznetsov and Meijer (2007), Table 2.3, normal form
+/// `w -> e^{i theta} w (1 + d |w|^2)`, with `A q = e^{i theta} q`, `A^T p = e^{-i theta} p`,
+/// `<q,q> = 1` and `<p,q> = 1`:
+///
+/// ```text
+/// h11 = (I - A)^-1 B(q,cq) = -G_x^-1 B(q,cq)
+/// h20 = (e^{2 i theta} I - A)^-1 B(q,q)
+/// c1  = (1/2) <p, C(q,q,cq) + 2 B(q,h11) + B(cq,h20)>,   d = Re(e^{-i theta} c1)
+/// ```
+///
+/// The critical pair is the pair of multipliers whose product is nearest to 1. The strong
+/// resonances 1:1, 1:2 and 1:3 are errors, since a solve above is singular there.
+pub(crate) fn map_ns_at(at: &mut At) -> Result<MapNs, EngineError> {
+    let n = at.n;
+    let gx = at.jac_u()?;
+    let a = map_jacobian(&gx, n);
+    let mu = eigenvalues(&a, n)?;
+    let (i, j) = nearest_pair(&mu)
+        .ok_or_else(|| EngineError::Singular("fewer than two multipliers".into()))?;
+    let m = if mu[i].1 > 0.0 { mu[i] } else { mu[j] };
+    if m.1.is_nan() || m.1 <= 0.0 {
+        return Err(EngineError::Singular(
+            "the critical pair of multipliers is not complex".into(),
+        ));
+    }
+    let theta = m.1.atan2(m.0);
+    let pi = std::f64::consts::PI;
+    if theta < 1e-6 || pi - theta < 1e-6 || (theta - 2.0 * pi / 3.0).abs() < 1e-6 {
+        return Err(EngineError::Singular(
+            "the multipliers are at a strong resonance (1:1, 1:2 or 1:3)".into(),
+        ));
+    }
+    let (q, p) = pair_eigenvectors(&a, n, m)?;
+    let qc = conj(&q);
+    let lu = Lu::new(&gx, n)?;
+    let h11 = lin(&[((-1.0, 0.0), &inv_real(&lu, &at.form(&[&q, &qc])?)?)]);
+    let bqq = at.form(&[&q, &q])?;
+    let (t2c, t2s) = ((2.0 * theta).cos(), (2.0 * theta).sin());
+    // (e^{2 i theta} I - A)^-1 = -(A - e^{2 i theta} I)^-1.
+    let (h20r, h20i) = solve_shifted(&a, n, (t2c, t2s), &bqq.0, &bqq.1)?;
+    let h20: Cv = (
+        h20r.iter().map(|x| -x).collect(),
+        h20i.iter().map(|x| -x).collect(),
+    );
+    let c = at.form(&[&q, &q, &qc])?;
+    let t1 = at.form(&[&q, &h11])?;
+    let t2 = at.form(&[&qc, &h20])?;
+    let g = herm(
+        &p,
+        &lin(&[((1.0, 0.0), &c), ((2.0, 0.0), &t1), ((1.0, 0.0), &t2)]),
+    );
+    let c1 = (0.5 * g.0, 0.5 * g.1);
+    let (ct, st) = (theta.cos(), theta.sin());
+    let d = ct * c1.0 + st * c1.1;
+    let d_im = ct * c1.1 - st * c1.0;
+    if [c1.0, c1.1, d, d_im].iter().all(|v| v.is_finite()) {
+        Ok(MapNs { theta, c1, d, d_im })
+    } else {
+        Err(EngineError::NotFinite("Neimark-Sacker coefficient".into()))
+    }
+}
+
+/// Gives every PD and NS special point of the fixed point branch `branch` of a map its
+/// normal form coefficients, with `model` the residual `G = F - x`. PD gets `b` in
+/// `coefficient`; NS gets `d` in `coefficient`, `Im(e^{-i theta} c1)` in `coefficient2` and
+/// `theta` in `values`. A point whose coefficient cannot be computed keeps its label and
+/// empty extras and adds a warning.
+pub(crate) fn attach_map_coefficients(
+    model: &mut dyn ModelEval,
+    params: &[f64],
+    free: usize,
+    branch: &mut Branch,
+) {
+    for sp in branch.specials.iter_mut() {
+        if sp.label != "PD" && sp.label != "NS" {
+            continue;
+        }
+        let (u, alpha) = (&sp.point.u, sp.point.alpha);
+        let result = at_point(&mut *model, params, free, u, alpha).and_then(|(_, mut at)| {
+            if sp.label == "PD" {
+                let b = map_flip_at(&mut at)?;
+                Ok((b, None, MAP_PD_NORMALIZATION, Vec::new()))
+            } else {
+                let ns = map_ns_at(&mut at)?;
+                let values = vec![("theta".to_string(), ns.theta)];
+                Ok((ns.d, Some(ns.d_im), H_NORMALIZATION, values))
+            }
+        });
+        match result {
+            Ok((c, c2, norm, values)) => {
+                sp.extras.coefficient = Some(c);
+                sp.extras.coefficient2 = c2;
+                sp.extras.normalization = Some(norm.to_string());
+                sp.extras.values = values;
+            }
+            Err(e) => branch.warnings.push(format!(
+                "{} point at alpha = {}: no normal form coefficient: {e}",
+                sp.label, sp.point.alpha
+            )),
+        }
     }
 }
 

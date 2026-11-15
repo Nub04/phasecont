@@ -32,12 +32,13 @@ pub struct Point {
 /// Extra data stored with a special point.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Extras {
-    /// Normal form coefficient: a for LP, l1 for H, c for CP, a for BT, l2 for GH, and on a
-    /// cycle branch b for LPC, c for PD and Re d for NS.
+    /// Normal form coefficient: a for LP, l1 for H, c for CP, a for BT, l2 for GH, on a
+    /// cycle branch b for LPC, c for PD and Re d for NS, and on a fixed point branch of a
+    /// map b for PD and d for NS.
     pub coefficient: Option<f64>,
     /// Second normal form coefficient: b of a Bogdanov-Takens point (`coefficient` is a), c
     /// of a zero-Hopf point (`coefficient` is b), Im d of a torus bifurcation (`coefficient` is
-    /// Re d).
+    /// Re d), and `Im(e^{-i theta} c1)` of an NS point of a map (`coefficient` is d).
     pub coefficient2: Option<f64>,
     /// Frequency of a Hopf point.
     pub omega: Option<f64>,
@@ -45,7 +46,8 @@ pub struct Extras {
     pub normalization: Option<String>,
     /// Further named coefficients: `re_d`, `im_d` and `e` of a zero-Hopf point, and the real
     /// parts `re_p12`, `re_p21` and `re_p22` and the second frequency `omega2` of a double-Hopf
-    /// point (`coefficient` is `re_p11` and `omega` is the larger frequency).
+    /// point (`coefficient` is `re_p11` and `omega` is the larger frequency), and the argument
+    /// `theta` of the critical multiplier of an NS point of a map.
     pub values: Vec<(String, f64)>,
     /// Whether Newton on the defining system succeeded.
     pub refined: bool,
@@ -114,6 +116,10 @@ pub struct Options {
     pub detect_lp: bool,
     pub detect_bp: bool,
     pub detect_h: bool,
+    /// The PD and NS tests of a fixed point branch of a map (SPEC section 8v). Other
+    /// problems ignore them.
+    pub detect_pd: bool,
+    pub detect_ns: bool,
     /// Iterations of the root search that locates a special point or a bound.
     pub max_locate: usize,
     /// Tolerance of that search and of the refinement Newton.
@@ -138,6 +144,8 @@ impl Default for Options {
             detect_lp: true,
             detect_bp: true,
             detect_h: true,
+            detect_pd: true,
+            detect_ns: true,
             max_locate: 30,
             tol_refine: 1e-12,
             mesh_adapt: 3,

@@ -1,0 +1,18 @@
+# NS normal form map in (x, y) next to a stable rotation 0.95 e^(1.6 i) in (z, w),
+# conjugated by near-identity shears (SPEC section 8v, tests 1 and 6).
+par a=0, s=-0.4, th=1.1, rho=0.95, om=1.6, k=0.9, m=0.3
+xa = x - k*z^2
+za = z - m*xa^2
+g = 1 + a + s*(xa^2 + y^2)
+xn = g*(cos(th)*xa - sin(th)*y)
+yn = g*(sin(th)*xa + cos(th)*y)
+zn = rho*(cos(om)*za - sin(om)*w)
+wn = rho*(sin(om)*za + cos(om)*w)
+zo = zn + m*xn^2
+x(t+1) = xn + k*zo^2
+y(t+1) = yn
+z(t+1) = zo
+w(t+1) = wn
+aux rad=x^2+y^2
+init x=0, y=0, z=0, w=0
+done

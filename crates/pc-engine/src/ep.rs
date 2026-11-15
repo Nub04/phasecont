@@ -1,8 +1,10 @@
 //! Equilibrium branches: the EP problem over a model.
 
 use crate::branch::{Branch, Options, Point, StopReason};
+use crate::cycle::{nearest_pair_is_complex, pair_product, shifted_product};
 use crate::error::EngineError;
 use crate::model::ModelEval;
+use crate::normal::attach_map_coefficients;
 use crate::palc::run_branch;
 use crate::problem::Problem;
 use crate::refine::refine_specials;
@@ -42,6 +44,10 @@ impl EpSetup {
 }
 
 /// F(u, alpha) = 0 with x = (u, alpha), alpha being parameter `free`.
+///
+/// On the residual `G = F - x` of a map (`ModelEval::map_residual`, SPEC section 8v) the
+/// state matrix is `G_u + I = F_u`, so the stored eigenvalues are the multipliers, and the
+/// two codim-2 slots hold `psi_PD = prod (mu_i + 1)` and `psi_NS = prod_{i<j} (mu_i mu_j - 1)`.
 pub struct EpProblem<'a> {
     model: &'a mut dyn ModelEval,
     free: usize,
@@ -49,7 +55,13 @@ pub struct EpProblem<'a> {
     p: Vec<f64>,
     jac_u: Vec<f64>,
     jac_p: Vec<f64>,
+    map: bool,
+    detect_pd: bool,
+    detect_ns: bool,
 }
+
+/// Names of the codim-2 tests of a fixed point branch of a map.
+const MAP_LABELS: [&str; 2] = ["PD", "NS"];
 
 impl<'a> EpProblem<'a> {
     /// Checks the setup against the model.
@@ -61,12 +73,16 @@ impl<'a> EpProblem<'a> {
         let mut p = setup.params.clone();
         p.push(0.0);
         let (n, n_p) = (model.n(), model.n_p());
+        let map = model.map_residual();
         Ok(EpProblem {
             model,
             free: setup.free,
             p,
             jac_u: vec![0.0; n * n],
             jac_p: vec![0.0; n * n_p],
+            map,
+            detect_pd: true,
+            detect_ns: true,
         })
     }
 }
@@ -128,7 +144,50 @@ impl Problem for EpProblem<'_> {
         self.p[self.free] = x[n];
         self.model
             .eval(&EntryKind::JacU, &x[..n], &self.p, &[], &mut self.jac_u)?;
-        Ok(Some(self.jac_u.clone()))
+        let mut a = self.jac_u.clone();
+        if self.map {
+            for i in 0..n {
+                a[i + n * i] += 1.0;
+            }
+        }
+        Ok(Some(a))
+    }
+
+    fn codim2_labels(&self) -> &'static [&'static str] {
+        if self.map { &MAP_LABELS } else { &[] }
+    }
+
+    fn codim2_tests(
+        &mut self,
+        _x: &[f64],
+        _tangent: &[f64],
+        eigs: &[(f64, f64)],
+    ) -> Result<Vec<f64>, EngineError> {
+        if !self.map {
+            return Ok(Vec::new());
+        }
+        let have = !eigs.is_empty();
+        let pd = if self.detect_pd && have {
+            shifted_product(eigs, 1.0)
+        } else {
+            f64::NAN
+        };
+        let ns = if self.detect_ns && have {
+            pair_product(eigs)
+        } else {
+            f64::NAN
+        };
+        Ok(vec![pd, ns])
+    }
+
+    /// A zero of `psi_NS` is an NS point only when the pair with product closest to 1 is
+    /// complex; a real pair with product 1 is a neutral saddle and gets no label.
+    fn codim2_label(&self, i: usize, eigs: &[(f64, f64)]) -> Option<&'static str> {
+        match i {
+            0 => Some("PD"),
+            1 => nearest_pair_is_complex(eigs).then_some("NS"),
+            _ => None,
+        }
     }
 }
 
@@ -174,7 +233,9 @@ pub fn equilibrium(
 
 /// Continues the equilibrium found from `setup.u0` along parameter `setup.free`. Each LP,
 /// BP and H found on the way is refined with its defining system afterwards (see
-/// `refine_specials`).
+/// `refine_specials`). On the residual of a map (SPEC section 8v) the H test is off, PD and
+/// NS follow `Options::detect_pd` and `Options::detect_ns`, and the PD and NS points get
+/// their normal form coefficients without refinement.
 pub fn continue_ep(
     model: &mut dyn ModelEval,
     setup: &EpSetup,
@@ -200,7 +261,15 @@ pub fn continue_ep(
     start.u0 = u.clone();
     let mut x = u;
     x.push(setup.params[setup.free]);
+    let map = model.map_residual();
+    let map_opts = Options {
+        detect_h: false,
+        ..opts.clone()
+    };
+    let opts = if map { &map_opts } else { opts };
     let mut problem = EpProblem::new(model, &start)?;
+    problem.detect_pd = opts.detect_pd;
+    problem.detect_ns = opts.detect_ns;
     let mut tangent0 = setup.tangent0.clone();
     if tangent0.is_some() || special {
         let mut f = vec![0.0; x.len() - 1];
@@ -230,6 +299,9 @@ pub fn continue_ep(
     drop(problem);
     if branch.stop != StopReason::Cancelled {
         refine_specials(model, &setup.params, setup.free, opts, cancel, &mut branch);
+        if map {
+            attach_map_coefficients(model, &setup.params, setup.free, &mut branch);
+        }
     }
     Ok(branch)
 }

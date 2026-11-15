@@ -76,10 +76,9 @@ pub(crate) fn pair_product(mu: &[(f64, f64)]) -> f64 {
     (0..k.unsigned_abs().min(3)).fold(prod.0, |r, _| r * unit)
 }
 
-/// Whether the pair of `mu` whose product is closest to 1 is a complex pair. The pair
-/// product also vanishes when two real multipliers have product 1, a neutral saddle cycle,
-/// and only a complex pair makes its zero an NS point.
-pub(crate) fn nearest_pair_is_complex(mu: &[(f64, f64)]) -> bool {
+/// The indices `(a, b)`, `a < b`, of the pair of `mu` whose product is closest to 1, the
+/// first such pair on a tie; `None` for fewer than two multipliers.
+pub(crate) fn nearest_pair(mu: &[(f64, f64)]) -> Option<(usize, usize)> {
     let mut best: Option<(f64, usize, usize)> = None;
     for a in 0..mu.len() {
         for b in a + 1..mu.len() {
@@ -90,7 +89,14 @@ pub(crate) fn nearest_pair_is_complex(mu: &[(f64, f64)]) -> bool {
             }
         }
     }
-    let Some((_, a, b)) = best else {
+    best.map(|(_, a, b)| (a, b))
+}
+
+/// Whether the pair of `mu` whose product is closest to 1 is a complex pair. The pair
+/// product also vanishes when two real multipliers have product 1, a neutral saddle cycle,
+/// and only a complex pair makes its zero an NS point.
+pub(crate) fn nearest_pair_is_complex(mu: &[(f64, f64)]) -> bool {
+    let Some((a, b)) = nearest_pair(mu) else {
         return false;
     };
     let (p, q) = (mu[a], mu[b]);

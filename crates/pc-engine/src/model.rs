@@ -23,6 +23,11 @@ pub trait ModelEval {
         v: &[f64],
         out: &mut [f64],
     ) -> Result<(), EngineError>;
+    /// True when `F` is the residual `F - x` of a map (see `MapAsRoot`), so that a fixed
+    /// point solver reads the multipliers from `JacU + I`.
+    fn map_residual(&self) -> bool {
+        false
+    }
 }
 
 pub(crate) fn check_finite(kind: &EntryKind, out: &[f64]) -> Result<(), EngineError> {

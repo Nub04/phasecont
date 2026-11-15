@@ -19,6 +19,7 @@ mod iterate;
 mod ivp;
 mod locate;
 mod lpcurve;
+mod mapfix;
 mod model;
 mod normal;
 mod palc;
@@ -71,6 +72,7 @@ pub use hopfcurve::{HOPF_CURVE_LABELS, HopfCurveProblem, continue_hopf_curve};
 pub use iterate::{IterSetup, iterate};
 pub use ivp::{IvpOptions, IvpSetup, integrate};
 pub use lpcurve::{LP_CURVE_LABELS, LpCurveProblem, continue_lp_curve};
+pub use mapfix::MapAsRoot;
 pub use model::{DdeModel, Evaluator, ModelEval, build, build_allowing_t, build_dde, check_tables};
 pub use normal::{
     GH_NORMALIZATION, H_NORMALIZATION, LP_NORMALIZATION, first_lyapunov, fold_coefficient,

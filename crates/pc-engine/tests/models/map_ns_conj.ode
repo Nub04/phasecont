@@ -1,0 +1,11 @@
+# The NS map of map_ns.ode conjugated by (x, y) -> (x + k y^2, y) (SPEC section 8v,
+# test 5).
+par a=-0.1, s=-0.4, th=1.1, k=0.9
+xa=x-k*y^2
+g=1+a+s*(xa^2+y^2)
+xo=g*(cos(th)*xa-sin(th)*y)
+yo=g*(sin(th)*xa+cos(th)*y)
+x(t+1)=xo+k*yo^2
+y(t+1)=yo
+init x=0, y=0
+done
