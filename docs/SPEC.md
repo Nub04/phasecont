@@ -37,7 +37,7 @@ Parsing rules:
 | Construct | Example | v1 status |
 |---|---|---|
 | ODE | `x'=...`, `dx/dt=...` | full |
-| Map | `x(t+1)=...`, or `x'=...` with `@ meth=discrete` | parse and evaluate; simulation, equilibria and continuation refuse maps until they are supported (Section 8t) |
+| Map | `x(t+1)=...`, or `x'=...` with `@ meth=discrete` | parse, evaluate and iterate (Section 8u); equilibria and continuation refuse maps until they are supported (Section 8t) |
 | Initial data | `init x=1,y=2`, `x(0)=1` | full |
 | Parameters | `par a=1,b=2` | full |
 | Numbers, derived parameters | `number c=3`, `!d=a*b` | full |
@@ -2083,6 +2083,59 @@ The handle has a flag `map`, set from `ModelKind::Map` when the model loads, and
 7. Rust, `pc-cli`: `cont` on `logistic_map.ode` and on the `meth=discrete` file with a valid `EP` problem exits with code 1, prints the refusal text on stderr and prints nothing on stdout.
 8. MATLAB, `tests/MapRefusalTest.m`: on `logistic_map`-style and Hénon-style models written in the test, and on an ODE file with `@ meth=discrete`, `simulate`, `equilibrium` and `continuation` raise `phasecont:engine:unsupportedModel`, `Model.rhs` returns F(x), and `PhasePlane` on the two-variable map raises `phasecont:app:mapModel`, also when it opens the map from a session file, and then no handle that the session load made is still alive. `phasecont.session.replay` of a session whose model is the logistic map, with an equilibrium record and a trajectory record, gives `Pass = false` for both runs and warns `phasecont:session:runFailed` with the refusal text, for `x(t+1)=...` and for `@ meth=discrete`. `simulate` on the `meth=discrete` file gives no warning. An ODE model with `@ meth=rungekutta` still simulates and warns `ignoredOption`.
 9. `cargo test` and the full MATLAB suite stay green (0 failed).
+
+## 8u. Maps, slice 1: iterate a map
+
+Slice 1 lifts the slice 0 refusal (Section 8t) for one call: `simulate` on a map iterates it. `equilibrium`, `continuation`, PhasePlane and `ensemble` still refuse a map. Slice 2 adds fixed points and their multipliers.
+
+Owner approval: the owner approved the map plan on 2026-11-14 with decision 2 (`simulate(m, x0, [n0 n1])` with integers iterates a map) and decision 3 (`Model.IsMap`), and said go for this slice on 2026-11-14. The C ABI keeps its function signatures and `abi_version` stays 1. The new problem type `"ITER"` is internal JSON, like `"IVP"`.
+
+**The iteration.** For a map x(k+1) = F(x(k), p, t), a run from n0 to n1 computes
+- x(n0) = x0 and x(k+1) = F(x(k), p, t = k) for k = n0, ..., n1 - 1, in `f64` with one call of the compiled F per iterate.
+- n1 - n0 + 1 rows. Row k holds [k, x(k)], in the row layout of an IVP run (Section 10), so a `Trajectory` and a `RunRecord` need no new fields.
+- Inside F, `t` is the iterate index k, as in XPPAUT 8.0 (probe `map-t-index`): `x(t+1)=x+t` from x0 = 0 over [0 4] gives 0, 0, 1, 3, 6. Over [5 9] it gives 0, 5, 11, 18, 26, the values XPPAUT gives with `@ t0=5` (probe `map-t0`).
+- PhaseCont does not read `dt`, `t0`, `total`, `trans` or `njmp` for a map. XPPAUT ignores `dt` for a map (probe `map-dt`) and accepts a `t0` that is not an integer (probe `map-t0-frac`). PhaseCont takes integer iterates only, so those two probes are PhaseCont choices.
+- A value of F that is NaN or infinite ends the run with stop `"Error"`, and the rows up to the last finite iterate are kept, as in an IVP run. The run checks for a cancel before each iterate and stops with `"Cancelled"`. A run that reaches n1 stops with `"End"`.
+- Each engine point has `alpha` = k, `u` = x(k) and `h` = 1, with `h` = 0 for the start, as the IVP start has.
+
+**Problem JSON.** `{"type":"ITER","tspan":[n0,n1]}`, parsed by `parse_iter` next to `parse_ivp`.
+- `tspan` holds two JSON numbers with integer values (5 and 5.0 both count), each of magnitude at most 2^53, with n1 > n0. The errors are "tspan: missing", "tspan: expected two integers of magnitude at most 2^53" and "tspan: the second iterate must be greater than the first".
+- One run makes at most 1000000 iterates (n1 - n0). A longer span is "tspan: at most 1000000 iterates in one run, got N; split the run into shorter ones". The bound keeps the rows of a run within a few hundred megabytes for small models.
+- `options` is refused ("options: not allowed for type ITER; a map has no tolerances or step limits"), and so is every key that `parse_ivp` refuses, with the same texts. In `Mode::Abi` the keys `u0` and `params` are refused as for an IVP. In `Mode::Cli` they work as for an IVP, with u0 defaulting to the `init` values.
+- ITER on a model that is not a map is `BadProblem` "type ITER: the model is not a map; integrate an ODE with type IVP". On a delay model `run_start` gives the delay refusal first, since ITER joins the run types that a delay model refuses.
+- ITER skips the check that refuses a model that reads `t` (`NonAutonomous`), since `t` is the iterate index.
+- The engine names the run kind `"ITER"`, has no labels and uses the stride n + 1, like an IVP run.
+
+**Entries.** This table replaces the rows of the Section 8t table that change.
+
+| Entry | Map model |
+|---|---|
+| `run_start` | `"ITER"` runs. Every other `type`, and a problem that is not JSON, is refused before the problem is parsed further, with the text below. A handle that was not compiled gets the refusal for every other type, and the error of an uncompiled handle for ITER |
+| `pc-cli cont` | an ITER problem runs and prints its rows. Every other type is refused as before, with exit code 1 |
+| `pc-cli session` | an ITER record replays. Every other record fails as before |
+| `model_equilibrium`, `ens_start` | refused, as in Section 8t |
+
+The refusal text becomes "the model is a map (`x(t+1)=...` or `@ meth=discrete`); PhaseCont iterates a map (simulate, problem type ITER) but does not find its fixed points or continue them yet". It still contains "the model is a map", which the slice 0 tests look for.
+
+**MATLAB.**
+- `Model.IsMap` is a read-only logical, true when `model_info` reports `"map": true`. It is set the same way as `IsDelay`.
+- `simulate(m, x0, [n0 n1])` on a map iterates it. TSPAN must hold two integers with n0 < n1 and magnitude at most `flintmax`, else `phasecont:model:badOption` "For a map, TSPAN must be [n0 n1], two integers with n0 < n1.". `Params` works as for an ODE.
+- `RelTol`, `AbsTol`, `MaxSteps` and `Hmax` do not apply to a map. Each one the caller passes raises `phasecont:simulate:mapOption`, for example "RelTol does not apply to a map: simulate iterates a map from n0 to n1.". MATLAB checks TSPAN first, then the options, both before the engine runs. The engine's bound on the iterate count reaches MATLAB as `phasecont:engine:badProblem`.
+- The result is a `Trajectory` with T = (n0:n1)', one row of X per iterate, TSpan = [n0 n1] and Stop as above. The record has Type `"ITER"` and the problem JSON above.
+- When the run stops early, `simulate` warns `phasecont:simulate:stoppedEarly` with "The run stopped at n = %d with reason "%s" before n = %d.".
+- The `ignoredOption` warning on a map names every `@` option except a key that starts with `meth` (in any case) whose value starts with d or D, since that entry is what makes the file a map. Its text is "The model sets @ %s. simulate reads no @ options of a map: it iterates the map from n0 to n1 of TSPAN. This warning comes once per model.". When no option is left to name there is no warning. The once-per-model rule is the same as for an ODE.
+- `Trajectory.plot` of a map run draws the points as markers (`.`) with no line between them, with the x label "n" when it plots one variable against the index. The line keeps the Tag `"pc-trajectory"`, and the start marker is unchanged. A hidden, read-only flag `Map` on the Trajectory, set by `simulate` and by `Session` from the record Type `"ITER"`, selects this style.
+- A session saved with an ITER run loads it as a map trajectory, and `phasecont.session.replay` reruns it through `run_start`. An IVP record of a map from a 1.0.0 session still fails replay, since an IVP on a map is still refused.
+
+**What this slice does not do.** It does not solve F(x) = x, compute multipliers, continue fixed points, draw a map in PhasePlane, run a map in `ensemble` or iterate F^k.
+
+**Acceptance tests (slice 1).** Every model is our own. These tests replace Section 8t tests 5 and 7 where those name `"IVP"` on a map; the rest of those tests stands.
+1. Rust, `pc-engine` `iterate`: the logistic map `x(t+1)=r*x*(1-x)` with r = 2.5 from x0 = 0.1 over [0 50] equals, bit for bit at every row, a loop in the test that computes `x = r*x*(1-x)`. `x(t+1)=x+t` from 0 gives 0, 0, 1, 3, 6 over [0 4] and 0, 5, 11, 18, 26 over [5 9], exactly, with alpha = k. The Hénon map of `henon_map.ode` (a = 1.4, b = 0.3) from (0, 0) over [0 100] equals a loop in the test that computes (1 - a*x*x + y, b*x), bit for bit. `x(t+1)=x*x` from 10 over [0 20] stops with `Error` after the row of 1e256 (9 rows). A cancel set before the start is `Err(Cancelled)`. A wrong x0 length, a wrong params length and a non-finite x0 are `BadProblem`.
+2. Rust, `pc-ffi` `parse_problem`: ITER is accepted with [0,4] and with [0.0,4.0], and has the name `"ITER"` and no labels. These are refused with the texts above: no tspan, one value, three values, a string, 0.5, 2^53 + 2, n1 = n0, n1 < n0, 1000001 iterates, an `options` key, each key that `parse_ivp` refuses, and ITER on an ODE model. `Mode::Abi` refuses `u0` and `params`.
+3. Rust, `pc-ffi` `run_start`: on a map handle, ITER runs and `run_copy` returns rows [k, x(k)] with stride n + 1 equal to test 1. The model `x(t+1)=x+t` runs, so ITER skips the `NonAutonomous` check. Every other type, and a problem that is not JSON, gives `UnsupportedModel` with the new text and creates no run. ITER on an ODE handle is `BadProblem`. ITER on a map handle that was not compiled gives the error of an uncompiled handle. `model_equilibrium` on a map handle is still `UnsupportedModel`.
+4. Rust, `pc-cli`: `cont` on `logistic_map.ode` with an ITER problem exits with code 0 and prints its rows; with an EP problem it exits with code 1 and prints the refusal, as in Section 8t. `session replay` of a session with an ITER record on the logistic map passes. The replay of an IVP record on a map still fails with the refusal text.
+5. MATLAB, `tests/MapIterateTest.m`: `IsMap` is true for the four map models of `MapRefusalTest` and false for an ODE and a delay model. `simulate` on the logistic map equals a MATLAB loop bit for bit, `x(t+1)=x+t` gives the values of test 1 with T = (n0:n1)', and the Hénon map equals a MATLAB loop bit for bit. Each bad TSPAN ([0 1.5], [3 3], [4 2], [0 Inf], [0 2*flintmax], one value) raises `phasecont:model:badOption`. Each of `RelTol`, `AbsTol`, `MaxSteps` and `Hmax` raises `phasecont:simulate:mapOption`. [0 1000001] raises `phasecont:engine:badProblem`. `x(t+1)=x*x` from 10 warns `stoppedEarly` with "n = 8" and keeps 9 rows. A map with `@ total=10` warns `ignoredOption` naming `total`, a file with `@ meth=discrete` alone gives no warning, and one with `@ meth=discrete, total=5` names `total` only. `plot` draws a line object with LineStyle `"none"` and Marker `"."`. A session round trip keeps T, X and the marker style, and replay of the ITER record passes. In `MapRefusalTest`, `equilibrium` and `continuation` on a map are still refused, and simulate on a map no longer is.
+6. `cargo test` and the full MATLAB suite stay green (0 failed).
 
 ## 9. Acceptance tests
 
