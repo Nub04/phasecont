@@ -843,7 +843,10 @@ pub(crate) struct MapNs {
 /// ```
 ///
 /// The critical pair is the pair of multipliers whose product is nearest to 1. The strong
-/// resonances 1:1, 1:2 and 1:3 are errors, since a solve above is singular there.
+/// resonances 1:1, 1:2 and 1:3 are errors. At 1:1 and 1:3 a solve above is singular: `I - A`
+/// at theta = 0, and `e^{2 i theta} I - A`, which has the eigenvalue `conj(mu)`, at
+/// theta = 2 pi / 3. At 1:2 no solve is singular; the pair is then a double multiplier -1,
+/// not a complex pair, and the guard refuses it.
 pub(crate) fn map_ns_at(at: &mut At) -> Result<MapNs, EngineError> {
     let n = at.n;
     let gx = at.jac_u()?;
