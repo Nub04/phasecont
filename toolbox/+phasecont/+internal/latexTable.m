@@ -6,17 +6,19 @@ function spec = latexTable(br)
 %
 %   The columns are the free parameters of BR. For a branch of
 %   equilibria, and for an LP or H curve, the state variables at the
-%   special point follow. A branch of cycles and a curve of cycles have no
-%   single state at a point, so they get no state columns. A row label is
-%   the point label with a running number per label, such as "H1" and
-%   "H2". The type is the name of the point label, or the label itself when
-%   this function has no name for it.
+%   special point follow; so do they for a PD or NS curve of fixed points
+%   of a map, which has no mesh (NTST is NaN). A branch of cycles and a
+%   curve of cycles have no single state at a point, so they get no state
+%   columns. A row label is the point label with a running number per
+%   label, such as "H1" and "H2". The type is the name of the point label,
+%   or the label itself when this function has no name for it.
 arguments
     br (1,1) phasecont.Branch
 end
 
 n = size(br.U, 2);
-withStates = any(br.Type == ["EP" "LP" "H"]);
+withStates = any(br.Type == ["EP" "LP" "H"]) ...
+    || (any(br.Type == ["PD" "NS"]) && isnan(br.NTST));
 columns = br.Free;
 if withStates
     if isempty(br.Model)

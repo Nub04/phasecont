@@ -63,6 +63,16 @@ function br = rows2branch(m, free, p, n, points, specials, branchStatus, kind, g
 % All have NaN for missing values. The function makes no
 % engine calls.
 %
+% A column of an LP or PD curve of fixed points of a map (kind "LP" or
+% "PD" with M.IsMap and an empty GRID) is [a2, x(1..n), a1, mu_re(1..n),
+% mu_im(1..n), h, newton_iters], and a column of an NS curve of a map is
+% [a2, x(1..n), a1, kappa, mu_re(1..n), mu_im(1..n), h, newton_iters]. The
+% Branch has the multipliers as Eigenvalues, N-by-0 Tests and Codim2, no
+% Codim2Labels, Stable false and, on the NS curve, Kappa. A map LP curve
+% that v1.0.0 stored ran as an ODE LP curve of F and has the width 3n + 7
+% of that layout, and a map PD or NS curve that v1.0.0 stored is a curve of
+% cycles with a GRID. Both load in the layout they were stored in.
+%
 % Rows of an LPC, PD or NS curve that a v1.0.0 session stored are narrower:
 % they lack the codim-2 tests added later (CPC and R1, GPD and R2, CH). The
 % function pads them with NaN after the old tests and builds the branch as
@@ -94,8 +104,25 @@ if kind == "DDELC" || (kind == "LC" && ~isempty(m) && m.IsDelay)
     return
 end
 isMap = kind == "EP" && ~isempty(m) && m.IsMap;
+% An LP, PD or NS curve of fixed points of a map (SPEC 8w) has no mesh. A map
+% PD or NS curve that v1.0.0 stored is a curve of cycles with a GRID, and a
+% v1.0.0 map LP curve has the width 3n + 7 of an ODE LP curve, so both load
+% in the layouts they were stored in.
+mapCurve = any(kind == ["LP" "PD" "NS"]) && ~isempty(m) && m.IsMap && isempty(grid);
+if mapCurve && kind == "LP" && size(points, 1) == 3*n + 7 ...
+        && size(specials, 1) == 3*n + 7
+    mapCurve = false;
+end
+layout = kind;
+if mapCurve
+    layout = "MAP";
+end
 nmesh = 0;
-switch kind
+switch layout
+    case "MAP"
+        block = n + 1 + (kind == "NS");
+        labels = strings(1, 0);
+        extra = 0;
     case "EP"
         block = n;
         labels = strings(1, 0);
@@ -139,7 +166,7 @@ switch kind
 end
 % A HOM orbit is not periodic, but its row shares the orbit, T and mesh
 % layout of a cycle row.
-isCycle = any(kind == ["LC" "LPC" "PD" "NS" "HOM"]);
+isCycle = ~mapCurve && any(kind == ["LC" "LPC" "PD" "NS" "HOM"]);
 isCurve = ~(kind == "EP" || kind == "LC");
 % Length of the orbit in a cycle row.
 np = 0;
@@ -176,7 +203,16 @@ end
 npts = size(alpha, 1);
 tests = tail;
 codim2 = zeros(npts, 0);
-switch kind
+switch layout
+    case "MAP"
+        u = s(:, 1:n);
+        alpha = [s(:, n+1) alpha];
+        if kind == "NS"
+            kappa = s(:, n+2);
+        end
+        tests = zeros(npts, 0);
+        codim2 = tail;
+        stable = false(npts, 1);
     case "EP"
         u = s;
         if isMap
@@ -260,7 +296,9 @@ for k = 1:numel(info)
         data.ntst = ntst;
         data.ncol = ncol;
     end
-    if kind == "NS"
+    if kind == "NS" && mapCurve
+        data.kappa = sk(n+2);
+    elseif kind == "NS"
         data.kappa = sk(np+3);
     end
     if kind == "HOM"

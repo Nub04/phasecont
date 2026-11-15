@@ -3,7 +3,10 @@ classdef Branch < handle
     % (Type "EP"), a curve of fold points ("LP") or Hopf points ("H"), a
     % branch of periodic orbits ("LC"), a curve of fold ("LPC"),
     % period-doubling ("PD") or Neimark-Sacker ("NS") points of cycles, or
-    % a curve of orbits homoclinic to a saddle ("HOM").
+    % a curve of orbits homoclinic to a saddle ("HOM"). On a map (Model.IsMap
+    % true), "EP" is a branch of fixed points and "LP", "PD" and "NS" are
+    % curves of fixed points with a multiplier at 1, a multiplier at -1 or a
+    % pair of multipliers on the unit circle.
     %
     %   br = phasecont.continuation(m, eq, Free = "r")
     %   h  = br.points("H")     % special points with label H
@@ -40,9 +43,11 @@ classdef Branch < handle
     %   U            states, N-by-n (on a curve, the state at each point of
     %                it); for "LC", "LPC", "PD", "NS" and "HOM", the orbit at
     %                the NTST*NCOL+1 base points, point-major,
-    %                N-by-n(NTST*NCOL+1) (see cycle)
+    %                N-by-n(NTST*NCOL+1) (see cycle); the fixed point, N-by-n,
+    %                on a curve of a map
     %   Eigenvalues  N-by-n complex; the multipliers of the fixed points for
-    %                "EP" of a map; the Floquet multipliers for "LC",
+    %                "EP", "LP", "PD" and "NS" of a map; the Floquet
+    %                multipliers for "LC",
     %                "LPC", "PD" and "NS"; for "HOM", the eigenvalues of the
     %                Jacobian at the saddle X0; N-by-0 for a delay model,
     %                except the leading Floquet multipliers of a delay "LC"
@@ -62,7 +67,7 @@ classdef Branch < handle
     %                psi_PD psi_NS] for "LC" (N-by-0 for a delay "LC"); N-by-0
     %                on a curve
     %   Codim2       codim-2 test values at each point of a curve, N-by-k
-    %                (N-by-0 for Type "EP" and "LC")
+    %                (N-by-0 for Type "EP" and "LC" and for a curve of a map)
     %   Codim2Labels the k labels of the columns of Codim2: ["CP" "BT" "ZH"]
     %                for "LP", ["GH" "BT" "ZH" "HH"] for "H" (columns l1 and hh,
     %                ["GH" "HH"], for "H" of a delay model), ["LPPD" "LPNS"
@@ -70,13 +75,14 @@ classdef Branch < handle
     %                "PD", ["R1" "R2" "R3" "R4" "LPNS" "PDNS" "CH"] for "NS",
     %                ["NSA" "BLS" "BLU" "NSF" "NDS" "NDU" "TLS" "TLU" "ZES"
     %                "ZEU" "OFS" "OFU" "IFS" "IFU"] for "HOM" (the last two
-    %                columns are NaN unless InclinationFlips was true)
+    %                columns are NaN unless InclinationFlips was true); none
+    %                for a curve of a map
     %   Period       period of the orbit at each point, N-by-1 (cycles
     %                only); for "HOM", the fixed truncation time T
     %   X0           the saddle at each point, N-by-n ("HOM" only)
     %   Kappa        cos(theta) of the critical multipliers exp(+-i theta)
-    %                at each point, N-by-1 ("NS"); the square of the Hopf
-    %                frequency for "H" of a delay model
+    %                at each point, N-by-1 ("NS" of cycles or of a map); the
+    %                square of the Hopf frequency for "H" of a delay model
     %   Mesh         mesh points from 0 to 1 at each point, N-by-(NTST+1)
     %                (cycles and "HOM"); the mesh moves when the run adapts it
     %   NTST NCOL    mesh intervals and collocation points of a run of cycles
@@ -183,7 +189,11 @@ classdef Branch < handle
                 error("phasecont:model:badBranch", ...
                     "cycle works on one Branch at a time; call it per element.");
             end
-            if ~br.isCycleType()
+            if ~br.isCycleType() && any(br.Type == ["PD" "NS"])
+                error("phasecont:model:badBranch", ...
+                    "cycle needs a Branch with orbits; this ""%s"" curve of fixed points of a map has none.", ...
+                    br.Type);
+            elseif ~br.isCycleType()
                 error("phasecont:model:badBranch", ...
                     "cycle needs a Branch of Type ""LC"", ""LPC"", ""PD"", ""NS"" or ""HOM"", not ""%s"".", ...
                     br.Type);
@@ -355,8 +365,10 @@ classdef Branch < handle
 
         function tf = isCycleType(br)
             % True for a branch whose points hold an orbit on a mesh: cycles
-            % and HOM orbits.
-            tf = any(br.Type == ["LC" "LPC" "PD" "NS" "HOM"]);
+            % and HOM orbits. A PD or NS curve of a map has no mesh, and NTST
+            % is NaN on it, which also works for a Branch without a Model.
+            tf = any(br.Type == ["LC" "LPC" "HOM"]) ...
+                || (any(br.Type == ["PD" "NS"]) && ~isnan(br.NTST));
         end
     end
 end
