@@ -1,0 +1,6 @@
+# Henon map in AUTO's form (x, y) -> (y, a - b x - y^2), SPEC section 8w test 3.
+par a=0.69, b=1
+x(t+1)=y
+y(t+1)=a-b*x-y^2
+init x=0.3, y=0.3
+done

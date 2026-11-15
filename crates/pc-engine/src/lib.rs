@@ -19,6 +19,7 @@ mod iterate;
 mod ivp;
 mod locate;
 mod lpcurve;
+mod mapcurve;
 mod mapfix;
 mod model;
 mod normal;
@@ -72,6 +73,10 @@ pub use hopfcurve::{HOPF_CURVE_LABELS, HopfCurveProblem, continue_hopf_curve};
 pub use iterate::{IterSetup, iterate};
 pub use ivp::{IvpOptions, IvpSetup, integrate};
 pub use lpcurve::{LP_CURVE_LABELS, LpCurveProblem, continue_lp_curve};
+pub use mapcurve::{
+    MapLpPdProblem, MapNsProblem, START_RESIDUAL_MAX as MAP_CURVE_START_RESIDUAL_MAX,
+    continue_map_lp_curve, continue_map_ns_curve, continue_map_pd_curve,
+};
 pub use mapfix::MapAsRoot;
 pub use model::{DdeModel, Evaluator, ModelEval, build, build_allowing_t, build_dde, check_tables};
 pub use normal::{

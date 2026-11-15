@@ -33,6 +33,7 @@ use crate::hopfcurve::continue_hopf_curve;
 use crate::iterate::{IterSetup, iterate};
 use crate::ivp::{IvpOptions, IvpSetup, integrate};
 use crate::lpcurve::continue_lp_curve;
+use crate::mapcurve::{continue_map_lp_curve, continue_map_ns_curve, continue_map_pd_curve};
 use crate::mapfix::MapAsRoot;
 use crate::model::{Evaluator, build, build_allowing_t, build_dde};
 use crate::panic::{clear_last_panic, install_hook, mark_worker, payload_message, take_last_panic};
@@ -99,6 +100,13 @@ pub enum RunKind {
     /// Iteration of a map from iterate `n[0]` to iterate `n[1]` (SPEC section 8u), from
     /// the state `setup.u0` with the parameters `setup.params`. The map may depend on t.
     Iter { n: [i64; 2] },
+    /// The LP curve of fixed points of a map through an LP point, in two parameters (SPEC
+    /// section 8w). It runs on the map itself, not on `MapAsRoot`.
+    MapLpCurve(CurveSetup),
+    /// The PD curve of fixed points of a map through a PD point, in two parameters.
+    MapPdCurve(CurveSetup),
+    /// The NS curve of fixed points of a map through an NS point, in two parameters.
+    MapNsCurve(CurveSetup),
 }
 
 /// What to run. The worker lowers and compiles the model on its own thread.
@@ -303,6 +311,9 @@ fn follow(
             };
             iterate(model, &it, &shared.cancel, on_point)
         }
+        RunKind::MapLpCurve(cs) => continue_map_lp_curve(model, cs, opts, &shared.cancel, on_point),
+        RunKind::MapPdCurve(cs) => continue_map_pd_curve(model, cs, opts, &shared.cancel, on_point),
+        RunKind::MapNsCurve(cs) => continue_map_ns_curve(model, cs, opts, &shared.cancel, on_point),
     };
     // Keep the streamed points of a branch that failed and say that it did not finish.
     if let Err(e) = &b {
@@ -320,14 +331,28 @@ fn body(shared: &Shared, spec: RunSpec) -> RunState {
             )),
         );
     }
-    // A fixed point problem of a map runs on `G = F - x` (SPEC section 8v); every problem
-    // other than EP and ITER would read `F` as a vector field.
+    // A fixed point problem of a map runs on `G = F - x` (SPEC section 8v) and the curves of
+    // fixed points on `F` itself (SPEC section 8w); every other problem would read `F` as a
+    // vector field.
     let map = spec.info.kind == pc_ode::ModelKind::Map;
-    if map && !matches!(spec.kind, RunKind::Ep | RunKind::Iter { .. }) {
+    let map_curve = matches!(
+        spec.kind,
+        RunKind::MapLpCurve(_) | RunKind::MapPdCurve(_) | RunKind::MapNsCurve(_)
+    );
+    if map && !(map_curve || matches!(spec.kind, RunKind::Ep | RunKind::Iter { .. })) {
         return finish(
             shared,
             Err(EngineError::BadProblem(
-                "a map runs only an equilibrium run or an iteration".into(),
+                "a map runs only an equilibrium run, an iteration or a curve of fixed points"
+                    .into(),
+            )),
+        );
+    }
+    if !map && map_curve {
+        return finish(
+            shared,
+            Err(EngineError::BadProblem(
+                "a curve of fixed points of a map needs a map".into(),
             )),
         );
     }

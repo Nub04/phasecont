@@ -57,7 +57,7 @@ pub const HOPF_CURVE_LABELS: [&str; 4] = ["GH", "BT", "ZH", "HH"];
 const REAL_TOL: f64 = 1e-8;
 
 /// `a b` for n by n column-major matrices.
-fn matmul(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
+pub(crate) fn matmul(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
     let mut c = vec![0.0; n * n];
     for j in 0..n {
         for k in 0..n {
@@ -71,7 +71,7 @@ fn matmul(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
 }
 
 /// `a v` for an n by n column-major `a`.
-fn matvec(a: &[f64], n: usize, v: &[f64]) -> Vec<f64> {
+pub(crate) fn matvec(a: &[f64], n: usize, v: &[f64]) -> Vec<f64> {
     let mut out = vec![0.0; n];
     for (j, vj) in v.iter().enumerate() {
         for i in 0..n {
@@ -82,7 +82,7 @@ fn matvec(a: &[f64], n: usize, v: &[f64]) -> Vec<f64> {
 }
 
 /// `aᵀ v` for an n by n column-major `a`.
-fn matvec_t(a: &[f64], n: usize, v: &[f64]) -> Vec<f64> {
+pub(crate) fn matvec_t(a: &[f64], n: usize, v: &[f64]) -> Vec<f64> {
     (0..n).map(|j| dot(&a[n * j..n * (j + 1)], v)).collect()
 }
 
@@ -96,23 +96,23 @@ fn m_matrix(a: &[f64], n: usize, kappa: f64) -> Vec<f64> {
 }
 
 /// Orthonormalizes the two columns of the n by 2 column-major `c` (Gram-Schmidt), keeping the
-/// first column's direction.
-fn orthonormalize(c: &[f64], n: usize) -> Result<Vec<f64>, EngineError> {
+/// first column's direction. `curve` names the curve in the error texts.
+pub(crate) fn orthonormalize(c: &[f64], n: usize, curve: &str) -> Result<Vec<f64>, EngineError> {
     let (c0, c1) = (&c[..n], &c[n..]);
     let n0 = norm(c0);
     if !(n0.is_finite() && n0 > 0.0) {
-        return Err(EngineError::Singular(
-            "the border vectors of the Hopf curve".into(),
-        ));
+        return Err(EngineError::Singular(format!(
+            "the border vectors of the {curve} curve"
+        )));
     }
     let v0: Vec<f64> = c0.iter().map(|x| x / n0).collect();
     let d = dot(&v0, c1);
     let r: Vec<f64> = c1.iter().zip(&v0).map(|(x, y)| x - d * y).collect();
     let n1 = norm(&r);
     if !(n1.is_finite() && n1 > 0.0) {
-        return Err(EngineError::Singular(
-            "the border vectors of the Hopf curve are parallel".into(),
-        ));
+        return Err(EngineError::Singular(format!(
+            "the border vectors of the {curve} curve are parallel"
+        )));
     }
     let mut out = v0;
     out.extend(r.iter().map(|x| x / n1));
@@ -418,8 +418,8 @@ impl Problem for HopfCurveProblem<'_> {
         // New borders from the solution of the bordered systems at this point.
         let a = self.m.jac_u(u)?;
         let (xs, ys) = self.solves(&m_matrix(&a, n, kappa))?;
-        self.v_b = orthonormalize(&xs, n)?;
-        self.w_b = orthonormalize(&ys, n)?;
+        self.v_b = orthonormalize(&xs, n, "Hopf")?;
+        self.w_b = orthonormalize(&ys, n, "Hopf")?;
         Ok(vec![gh, kappa, zh, hh])
     }
 
@@ -532,8 +532,8 @@ mod tests {
 
     #[test]
     fn orthonormalize_keeps_the_first_direction() {
-        let v = orthonormalize(&[3.0, 0.0, 1.0, 2.0], 2).unwrap();
+        let v = orthonormalize(&[3.0, 0.0, 1.0, 2.0], 2, "Hopf").unwrap();
         assert_eq!(v, vec![1.0, 0.0, 0.0, 1.0]);
-        assert!(orthonormalize(&[1.0, 0.0, 2.0, 0.0], 2).is_err());
+        assert!(orthonormalize(&[1.0, 0.0, 2.0, 0.0], 2, "Hopf").is_err());
     }
 }

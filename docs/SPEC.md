@@ -2246,7 +2246,7 @@ Four rulings of this slice are recorded in `docs/STATUS.md`:
 
 **First tangent.** As in Section 6, the first tangent is the unit null vector of the curve Jacobian with its first component above 10^-8 in size positive, and `Options::direction` -1 reverses it.
 
-**Points.** On a map curve `Point.u` is the unknown without its last entry, that is (x, a1) on the LP and PD curves and (x, a1, κ) on the NS curve, `Point.alpha` is a2, and `Options::bounds` bound a2. Every point stores the multipliers, the eigenvalues of A. `Point.tests` and `Point.codim2` are empty, and the branch has no specials.
+**Points.** On a map curve `Point.u` is the unknown without its last entry, that is (x, a1) on the LP and PD curves and (x, a1, κ) on the NS curve, `Point.alpha` is a2, and `Options::bounds` bound a2. Every point stores the multipliers, the eigenvalues of A. `Point.tests` are NaN, `Point.codim2` is empty, and the branch has no specials.
 
 **Where the formulas come from.** The defining systems are equations 2.4 to 2.9 of Govaerts, Khoshsiar Ghaziani, Kuznetsov and Meijer (2007), and the border update follows their description on p. 2650. The gradients s_z and S_z follow from differentiating the bordered systems; they are not printed in the paper and are checked against finite differences (test 1). These are PhaseCont choices: the first column of S as the two equations, as for the Hopf curve of Section 6 (the paper picks the two entries of S by their conditioning), the start value κ0, the start correction and its bound, and the sign rule of the first tangent.
 
