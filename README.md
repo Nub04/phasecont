@@ -89,7 +89,7 @@ PhaseCont reads only a few of the `@` options in an `.ode` file, and only in the
 - `xlo`, `xhi`, `ylo` and `yhi` set the window.
 - `total` fills in the integration length T.
 
-The app names `meth`, `dt` and `bound` in its notes and does not use them, since it always integrates with the Dormand-Prince 5(4) pair. `simulate`, `equilibrium`, `continuation` and `ensemble` read no `@` options. The first `simulate` call on a model that sets any of them warns once with the ID `phasecont:simulate:ignoredOption` and names them, and the result is the same as without them. Set the solver with the `RelTol`, `AbsTol`, `MaxSteps` and `Hmax` options of `simulate` instead.
+The app names `meth`, `dt` and `bound` in its notes and does not use them, since it always integrates with the Dormand-Prince 5(4) pair. `simulate`, `equilibrium`, `continuation` and `ensemble` read no `@` options. The first `simulate` call on a model that sets any of them warns once with the ID `phasecont:simulate:ignoredOption` and names them, and the result is the same as without them. The one exception is a `meth` value that starts with `d`, such as `meth=discrete`, which makes the model a map (see below). Set the solver with the `RelTol`, `AbsTol`, `MaxSteps` and `Hmax` options of `simulate` instead.
 
 ## What the `.ode` reader refuses
 
@@ -117,7 +117,7 @@ Some lines load and do nothing. Active comments (lines that start with `"`) give
 
 A delay model, one that calls `delay(x, tau)`, loads and runs in `continuation` (equilibria, Hopf curves and cycles from a Hopf point). `simulate`, `equilibrium` and `ensemble` refuse it with the error `phasecont:engine:badArg`.
 
-Maps (`x(t+1)=...`) load, but this version does not iterate them. `simulate`, `equilibrium` and `continuation` treat the right-hand side as an ODE, so their results are wrong for a map. `ensemble` refuses a map with `phasecont:engine:unsupportedModel`. Support for maps is planned.
+Maps load, but this version does not iterate them. A map is a file of `x(t+1)=...` lines, or of `x'=...` lines with `@ meth=discrete`, which XPPAUT also iterates as a map. `simulate`, `equilibrium`, `continuation`, `ensemble` and session replay refuse a map with the error `phasecont:engine:unsupportedModel`, and `phasecont.app.PhasePlane` refuses it with `phasecont:app:mapModel`. `Model.rhs` still evaluates the right-hand side of a map. Support for maps is planned.
 
 ## Models without an `.ode` file
 

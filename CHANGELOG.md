@@ -20,7 +20,9 @@ The version number of this release is not chosen yet. The toolbox still reports 
 
 ### Changed
 
-- `simulate` warns once per model with `phasecont:simulate:ignoredOption` and names the `@` options of the model, such as `meth` and `dt`, since it uses none of them. The results do not change.
+- `simulate` warns once per model with `phasecont:simulate:ignoredOption` and names the `@` options of the model, such as `meth` and `dt`, since it uses none of them. The results do not change. The warning comes after the run, so a run that fails gives no warning.
+- Maps are refused. `simulate`, `equilibrium`, `continuation` and session replay raise `phasecont:engine:unsupportedModel` on a map, and `phasecont.app.PhasePlane` raises `phasecont:app:mapModel`. In 1.0.0 they treated the right-hand side of a map as an ODE and returned wrong results. `Model.rhs` still evaluates the right-hand side.
+- A file of `x'=...` lines with `@ meth=discrete` (any `meth` value that starts with `d`) is now a map, as in XPPAUT, and is refused like one. In 1.0.0 it was integrated as an ODE, and `ensemble` integrated it too.
 - `continuation`, `simulate` and session replay check for the result more often in the first few milliseconds, so short runs return in about 5 ms instead of about 50 ms. The results do not change.
 - Rows of LPC, PD and NS curves have more `Tests` columns, one per new codim-2 test. Code that reads these columns by position needs the new widths.
 - `shift` and `del_shft` are now refused with a message that names the function, instead of an error about the number of arguments.
@@ -28,12 +30,13 @@ The version number of this release is not chosen yet. The toolbox still reports 
 ### Compatibility
 
 - Session files saved by 1.0.0 still load. Their LPC, PD and NS rows get NaN in the new test columns. Replaying such a run reports that the row layout changed.
+- A session saved by 1.0.0 with a run on a map loads with its stored rows, which are wrong. Replaying that run fails with `phasecont:session:runFailed`.
 - The engine library and the MEX gateway must come from the same release. A new gateway refuses an old library, which can happen only after a partial upgrade.
 - As in 1.0.0, close every MATLAB session that used PhaseCont before you install a new version, or the install fails with "Permission denied".
 
 ### Known limits
 
-- Maps (`x(t+1)=...`) are not iterated. `simulate`, `equilibrium` and `continuation` treat the right-hand side as an ODE, so their results for a map are wrong. This was also true in 1.0.0. `ensemble` refuses a map. Support for maps is planned.
+- Maps (`x(t+1)=...`, or `x'=...` with `@ meth=discrete`) are not iterated, and every run on a map is refused. Support for maps is planned.
 - Delay models run only in `continuation`. `simulate`, `equilibrium` and `ensemble` refuse them.
 - The `.ode` reader refuses noise, `global`, differential-algebraic and Volterra equations, boundary value problems, `sum`, `shift`, `special`, `export`, tables read from a file and `#include`. The README lists them.
 - `simulate` integrates only with the Dormand-Prince 5(4) pair.
