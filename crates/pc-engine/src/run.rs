@@ -30,6 +30,7 @@ use crate::dde::{
 use crate::ep::{EpSetup, continue_ep};
 use crate::error::EngineError;
 use crate::hopfcurve::continue_hopf_curve;
+use crate::iterate::{IterSetup, iterate};
 use crate::ivp::{IvpOptions, IvpSetup, integrate};
 use crate::lpcurve::continue_lp_curve;
 use crate::model::{Evaluator, build, build_allowing_t, build_dde};
@@ -94,6 +95,9 @@ pub enum RunKind {
     /// An initial value run over `tspan` from the state `setup.u0` with the parameters
     /// `setup.params`. The model may depend on t.
     Ivp { tspan: [f64; 2], opts: IvpOptions },
+    /// Iteration of a map from iterate `n[0]` to iterate `n[1]` (SPEC section 8u), from
+    /// the state `setup.u0` with the parameters `setup.params`. The map may depend on t.
+    Iter { n: [i64; 2] },
 }
 
 /// What to run. The worker lowers and compiles the model on its own thread.
@@ -289,6 +293,15 @@ fn follow(
             };
             integrate(model, &ivp, opts, &shared.cancel, on_point)
         }
+        RunKind::Iter { n } => {
+            let it = IterSetup {
+                x0: setup.u0.clone(),
+                params: setup.params.clone(),
+                n0: n[0],
+                n1: n[1],
+            };
+            iterate(model, &it, &shared.cancel, on_point)
+        }
     };
     // Keep the streamed points of a branch that failed and say that it did not finish.
     if let Err(e) = &b {
@@ -316,8 +329,8 @@ fn body(shared: &Shared, spec: RunSpec) -> RunState {
         RunKind::DdeCycle { .. } => return body_dde_cycle(shared, spec),
         _ => {}
     }
-    // Only an initial value run may depend on t.
-    let built = if matches!(spec.kind, RunKind::Ivp { .. }) {
+    // Only an initial value run and an iteration may depend on t.
+    let built = if matches!(spec.kind, RunKind::Ivp { .. } | RunKind::Iter { .. }) {
         build_allowing_t(&spec.model, &spec.info, spec.evaluator)
     } else {
         build(&spec.model, &spec.info, spec.evaluator)

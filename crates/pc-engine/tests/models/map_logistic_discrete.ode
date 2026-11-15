@@ -1,0 +1,6 @@
+# The logistic map written as x'=f with @ meth=discrete.
+par r=2.5
+x'=r*x*(1-x)
+init x=0.1
+@ meth=discrete
+done

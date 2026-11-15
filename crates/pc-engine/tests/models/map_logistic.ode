@@ -1,0 +1,5 @@
+# Logistic map x -> r x (1 - x), SPEC section 8u test 1.
+par r=2.5
+x(t+1)=r*x*(1-x)
+init x=0.1
+done

@@ -1,0 +1,4 @@
+# x(k+1) = x(k) + k: t inside F is the number of the iterate mapped from.
+x(t+1)=x+t
+init x=0
+done

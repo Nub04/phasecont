@@ -15,6 +15,7 @@ mod dde;
 mod ep;
 mod error;
 mod hopfcurve;
+mod iterate;
 mod ivp;
 mod locate;
 mod lpcurve;
@@ -67,6 +68,7 @@ pub use dde::{
 pub use ep::{EpProblem, EpSetup, continue_ep, equilibrium};
 pub use error::EngineError;
 pub use hopfcurve::{HOPF_CURVE_LABELS, HopfCurveProblem, continue_hopf_curve};
+pub use iterate::{IterSetup, iterate};
 pub use ivp::{IvpOptions, IvpSetup, integrate};
 pub use lpcurve::{LP_CURVE_LABELS, LpCurveProblem, continue_lp_curve};
 pub use model::{DdeModel, Evaluator, ModelEval, build, build_allowing_t, build_dde, check_tables};

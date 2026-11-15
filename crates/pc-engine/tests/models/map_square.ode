@@ -1,0 +1,4 @@
+# x -> x^2, which overflows to infinity after 10^256 from 10.
+x(t+1)=x*x
+init x=10
+done
