@@ -254,10 +254,12 @@ classdef MapFixedPointTest < matlab.unittest.TestCase
             end
         end
 
-        function curvesFromAMapPointAreRefused(testCase)
+        function curvesFromAMapPointRunOrAreRefused(testCase)
             % The Henon branch from a = 0.2 has an LP at a = -(1-b)^2/4 below
-            % and a PD at a = 3(1-b)^2/4 above. A curve from either point is
-            % refused with a phasecont: error.
+            % and a PD at a = 3(1-b)^2/4 above. The LP curve runs from the LP
+            % point and the PD curve from the PD point (see MapCurveTest). An
+            % LC run, an LP curve from the PD point and an NS curve from
+            % either point are refused by the engine.
             b = 0.3;
             m = testCase.model(testCase.Henon);
             x = (-(1 - b) + sqrt((1 - b)^2 + 0.8)) / 0.4;
@@ -275,21 +277,22 @@ classdef MapFixedPointTest < matlab.unittest.TestCase
             testCase.assertSize(lp, [1 1]);
             testCase.verifyEqual(pd.P(up.FreeIndex), 3*(1 - b)^2/4, AbsTol = 1e-8);
             testCase.verifyEqual(lp.P(down.FreeIndex), -(1 - b)^2/4, AbsTol = 1e-8);
-            for start = {lp, pd}
-                for type = ["LP" "PD" "NS" "LC"]
-                    try
-                        phasecont.continuation(m, start{1}, Type = type, ...
-                            Free = ["a" "b"], MaxSteps = 3);
-                    catch err
-                        fprintf("Type %s from %s: %s\n", type, start{1}.Label, ...
-                            err.identifier);
-                        testCase.verifyTrue(startsWith(string(err.identifier), ...
-                            "phasecont:"), string(err.identifier));
-                        continue
-                    end
-                    testCase.verifyFail("Type " + type + " from a map " + ...
-                        start{1}.Label + " point ran");
-                end
+            free = ["a" "b"];
+            lpc = phasecont.continuation(m, lp, Type = "LP", Free = free, MaxSteps = 3);
+            testCase.verifyEqual(lpc.Type, "LP");
+            pdc = phasecont.continuation(m, pd, Type = "PD", Free = free, MaxSteps = 3);
+            testCase.verifyEqual(pdc.Type, "PD");
+            refused = {lp, "LC", "phasecont:engine:unsupportedModel"; ...
+                pd, "LC", "phasecont:engine:unsupportedModel"; ...
+                pd, "LP", "phasecont:engine:badProblem"; ...
+                lp, "NS", "phasecont:engine:badProblem"; ...
+                pd, "NS", "phasecont:engine:badProblem"};
+            for k = 1:size(refused, 1)
+                start = refused{k, 1};
+                type = refused{k, 2};
+                testCase.verifyError(@() phasecont.continuation(m, start, ...
+                    Type = type, Free = free, MaxSteps = 3), refused{k, 3}, ...
+                    type + " from " + start.Label);
             end
         end
 

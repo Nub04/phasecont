@@ -65,8 +65,19 @@ function br = continuation(m, start, options)
 %   psi_BP psi_PD psi_NS], N-by-4, and BR.Specials the LP, BP, PD and NS
 %   points with their normal form coefficients in Data.coefficient (and
 %   Data.coefficient2 and the angle theta of the critical multipliers in
-%   Data.values for NS). Switch = "BP1" works as for an ODE. Type must be
-%   "EP"; the engine refuses curves and cycles of a map.
+%   Data.values for NS). Switch = "BP1" works as for an ODE.
+%
+%   C = phasecont.continuation(M, PT, Type = "LP", Free = ["a" "b"]) on a
+%   map follows the curve of fixed points with a multiplier at 1 through
+%   PT, an LP point of a fixed point branch (or a state vector and Params
+%   that are one). Type = "PD" does the same for a PD point, a multiplier at
+%   -1, and Type = "NS" for an NS point, a pair of multipliers exp(+-i*theta)
+%   on the unit circle. C.U holds the fixed point, C.Alpha [a b] and
+%   C.Eigenvalues the multipliers; an NS curve also has C.Kappa, which is
+%   cos(theta). These curves do not detect codim-2 points yet: C.Tests and
+%   C.Codim2 are N-by-0 and C.Specials is empty. Detect, Switch, Var, NTST,
+%   NCOL and MeshAdapt do not apply. Type = "H", "LC", "LPC" or "HOM" on a
+%   map raises phasecont:engine:unsupportedModel.
 %
 %   BR = phasecont.continuation(M, X0, Free = "r", Roots = struct(N = 30,
 %   ReMin = -0.5)) follows the equilibria of a delay model, one whose
@@ -237,6 +248,14 @@ if ~isscalar(type) || ~ismember(type, ["EP" "LP" "H" "LC" "LPC" "PD" "NS" "HOM"]
     error("phasecont:model:badOption", ...
         "Type must be ""EP"", ""LP"", ""H"", ""LC"", ""LPC"", ""PD"", ""NS"" or ""HOM"".");
 end
+isMap = m.IsMap;
+if isMap && ismember(type, ["H" "LC" "LPC" "HOM"])
+    % The engine refuses these on a map (SPEC 8w). The minimal problem goes
+    % to run_start so that the refusal and its text come from the engine.
+    refuseOnMap(m, type);
+end
+% On a map, "LP", "PD" and "NS" are curves of fixed points (SPEC 8w).
+isMapCurve = isMap && ismember(type, ["LP" "PD" "NS"]);
 isDelay = m.IsDelay;
 if isDelay && type ~= "EP" && type ~= "H" && type ~= "LC"
     error("phasecont:model:badOption", ...
@@ -326,9 +345,9 @@ if isDelayCycle
 end
 isCycle = type == "LC";
 % A curve of cycles has two free parameters like an LP or H curve.
-isCycleCurve = type == "LPC" || type == "PD" || type == "NS";
+isCycleCurve = ~isMapCurve && (type == "LPC" || type == "PD" || type == "NS");
 isHom = type == "HOM";
-isCurve = type == "LP" || type == "H" || isCycleCurve || isHom;
+isCurve = type == "LP" || type == "H" || isCycleCurve || isHom || isMapCurve;
 flips = false;
 if ~isempty(options.InclinationFlips)
     if ~isHom
@@ -343,6 +362,10 @@ if ~isempty(options.InclinationFlips)
 end
 meshAdapt = options.MeshAdapt;
 if ~isempty(meshAdapt)
+    if isMapCurve
+        error("phasecont:model:badOption", ...
+            "MeshAdapt does not apply to a curve of fixed points of a map.");
+    end
     if ~(isCycle || isCycleCurve || isHom)
         error("phasecont:model:badOption", ...
             "MeshAdapt applies to Type = ""LC"", ""LPC"", ""PD"", ""NS"" or ""HOM"" only.");
@@ -370,6 +393,9 @@ if isCycle
     end
     grid = [countOption(options.NTST, "NTST", type), ...
         countOption(options.NCOL, "NCOL", type)];
+elseif isMapCurve && (~isempty(options.NTST) || ~isempty(options.NCOL))
+    error("phasecont:model:badOption", ...
+        "NTST and NCOL do not apply to a curve of fixed points of a map.");
 elseif ~isCycleCurve && ~isHom && (~isempty(options.NTST) || ~isempty(options.NCOL))
     error("phasecont:model:badOption", ...
         "NTST and NCOL apply to Type = ""LC"", ""LPC"", ""PD"", ""NS"" and ""HOM"" only.");
@@ -1034,4 +1060,15 @@ if isfield(status, "warnings") && ~isempty(status.warnings)
     old = old(:);
 end
 status.warnings = [old; text];
+end
+
+function refuseOnMap(m, type)
+% Sends the problem {"type": TYPE} on the map M to the engine, which refuses
+% it with phasecont:engine:unsupportedModel before it reads any other key.
+problem = "{""type"":""" + type + """}";
+phasecont.internal.runLoop(m, problem, zeros(numel(m.Variables), 1), ...
+    m.ParameterValues);
+% Not reached while the engine refuses the type.
+error("phasecont:model:badOption", ...
+    "Type ""%s"" does not apply to a map.", type);
 end

@@ -1,8 +1,9 @@
 classdef MapRefusalTest < matlab.unittest.TestCase
     % Tests slice 0 of map support (SPEC section 8t, test 8, as amended by
-    % sections 8u and 8v): simulate on a map runs (it iterates the map, see
-    % MapIterateTest), equilibrium and continuation with Type "EP" run (see
-    % MapFixedPointTest), an LP curve of a map is refused by the engine with
+    % sections 8u, 8v and 8w): simulate on a map runs (it iterates the map,
+    % see MapIterateTest), equilibrium and continuation with Type "EP" run
+    % (see MapFixedPointTest), the LP, PD and NS curves of fixed points run
+    % (see MapCurveTest), a Hopf curve of a map is refused by the engine with
     % phasecont:engine:unsupportedModel, PhasePlane refuses a map with
     % phasecont:app:mapModel, and the
     % right-hand side of a map still evaluates. A map is written as
@@ -22,7 +23,7 @@ classdef MapRefusalTest < matlab.unittest.TestCase
         HenonDiscrete = "par a=1.4, b=0.3" + newline + "init x=0, y=0" + newline + ...
             "x'=1-a*x^2+y" + newline + "y'=b*x" + newline + ...
             "@ meth=discrete" + newline + "done" + newline
-        % The logistic map with a second parameter s, so that an LP curve
+        % The logistic map with a second parameter s, so that a Hopf curve
         % passes the toolbox check of two Free names and reaches the engine.
         LogisticTwo = "par r=2, s=0" + newline + "init x=0.2" + newline + ...
             "x(t+1)=r*x*(1-x)+s" + newline + "done" + newline
@@ -75,7 +76,7 @@ classdef MapRefusalTest < matlab.unittest.TestCase
 
         function verifyCurvesAreRefused(testCase, m, x0, free)
             % simulate iterates the map M, equilibrium and continuation with
-            % Type "EP" run on it, and the engine refuses an LP curve from
+            % Type "EP" run on it, and the engine refuses a Hopf curve from
             % the fixed point. FREE names two parameters, so the toolbox
             % check of the Free count passes and the refusal comes from
             % run_start.
@@ -87,7 +88,7 @@ classdef MapRefusalTest < matlab.unittest.TestCase
             br = phasecont.continuation(m, pt, Free = free(1), MaxSteps = 3);
             testCase.verifySize(br.Tests, [size(br.Alpha, 1) 4]);
             testCase.verifyErrorText( ...
-                @() phasecont.continuation(m, pt, Type = "LP", Free = free), ...
+                @() phasecont.continuation(m, pt, Type = "H", Free = free), ...
                 "phasecont:engine:unsupportedModel", testCase.Refusal);
         end
     end
