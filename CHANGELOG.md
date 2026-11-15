@@ -17,13 +17,14 @@ The version number of this release is not chosen yet. The toolbox still reports 
 - Models without a `.ode` file: `Model.fromEquations`, `Model.fromTable`, `Model.fromFunction` and `Model.fromFile`, which also reads SBML. The model editor app is `phasecont.app.ModelEditor`.
 - LaTeX output: `phasecont.latex.pgfplots`, `phasecont.latex.figureFromBranch`, `phasecont.latex.specialTable` and `phasecont.latex.build`, which runs `latexmk`. `build` has no time limit unless you pass `Timeout`. The LaTeX editor app is `phasecont.app.LatexStudio`.
 - Iteration of maps: `simulate(m, x0, [n0 n1])` on a map iterates it from n0 to n1, and `plot` draws the iterates as dots. `Model.IsMap` tells a map from an ODE. Sessions save and replay these runs.
+- Fixed points of maps: `equilibrium` on a map solves F(x) = x and returns the multipliers in `Eigenvalues`, and `continuation` with Type `"EP"` follows the fixed points in one parameter with LP, BP, PD and NS labels and their normal form coefficients. On a map, `Tests` has the four columns `[LP BP PD NS]`, `Detect` takes a subset of `["LP" "BP" "PD" "NS"]`, `Stable` is true where every multiplier has modulus below 1, and an NS point has its angle in `Data.values.theta`. Sessions save and replay these runs.
 - A language server (`pc-lsp`) and a VS Code extension for `.ode` files. The extension is built as a `.vsix` file and is not on the Marketplace.
 
 ### Changed
 
 - `simulate` warns once per model with `phasecont:simulate:ignoredOption` and names the `@` options of the model, such as `meth` and `dt`, since it uses none of them. The results do not change. The warning comes after the run, so a run that fails gives no warning.
-- `simulate` iterates a map instead of integrating its right-hand side as an ODE, which gave wrong results in 1.0.0. `equilibrium`, `continuation` and replay of runs other than iterations now raise `phasecont:engine:unsupportedModel` on a map, and `phasecont.app.PhasePlane` raises `phasecont:app:mapModel`. In 1.0.0 they also treated the right-hand side of a map as an ODE. `Model.rhs` still evaluates the right-hand side.
-- A file of `x'=...` lines with `@ meth=discrete` (any `meth` value that starts with `d`) is now a map, as in XPPAUT, so `simulate` iterates it and the other calls refuse it. In 1.0.0 it was integrated as an ODE, and `ensemble` integrated it too.
+- `simulate` iterates a map, and `equilibrium` and `continuation` with Type `"EP"` compute its fixed points and their multipliers. In 1.0.0 they treated the right-hand side of a map as an ODE and gave wrong results. Other types of `continuation` on a map now raise a `phasecont:` error, `ensemble` raises `phasecont:engine:unsupportedModel`, and `phasecont.app.PhasePlane` raises `phasecont:app:mapModel`. `Model.rhs` still evaluates the right-hand side.
+- A file of `x'=...` lines with `@ meth=discrete` (any `meth` value that starts with `d`) is now a map, as in XPPAUT, so it runs as a map in every call above. In 1.0.0 it was integrated as an ODE, and `ensemble` integrated it too.
 - `continuation`, `simulate` and session replay check for the result more often in the first few milliseconds, so short runs return in about 5 ms instead of about 50 ms. The results do not change.
 - Rows of LPC, PD and NS curves have more `Tests` columns, one per new codim-2 test. Code that reads these columns by position needs the new widths.
 - `shift` and `del_shft` are now refused with a message that names the function, instead of an error about the number of arguments.
@@ -31,13 +32,13 @@ The version number of this release is not chosen yet. The toolbox still reports 
 ### Compatibility
 
 - Session files saved by 1.0.0 still load. Their LPC, PD and NS rows get NaN in the new test columns. Replaying such a run reports that the row layout changed.
-- A session saved by 1.0.0 with a run on a map loads with its stored rows, which are wrong. Replaying that run fails with `phasecont:session:runFailed`, since 1.0.0 saved it as an integration, not an iteration.
+- A session saved by 1.0.0 with a run on a map loads with its stored rows, which are wrong. An EP branch of a map from such a file gets NaN in its PD and NS columns, since 1.0.0 stored an H test there. Replaying any of these runs gives `Pass = false`, since 1.0.0 treated the map as an ODE. A run that the engine refuses, such as an integration of a map or an EP branch that asks for the H test, also warns with `phasecont:session:runFailed`.
 - The engine library and the MEX gateway must come from the same release. A new gateway refuses an old library, which can happen only after a partial upgrade.
 - As in 1.0.0, close every MATLAB session that used PhaseCont before you install a new version, or the install fails with "Permission denied".
 
 ### Known limits
 
-- Maps (`x(t+1)=...`, or `x'=...` with `@ meth=discrete`) run only in `simulate`. `equilibrium`, `continuation`, `ensemble` and `PhasePlane` refuse them. Fixed points and their continuation are planned.
+- Maps (`x(t+1)=...`, or `x'=...` with `@ meth=discrete`) run only in `simulate`, `equilibrium` and `continuation` with Type `"EP"`. Other types of `continuation`, `ensemble` and `PhasePlane` refuse them. Curves of fixed points in two parameters and period-k points are planned.
 - Delay models run only in `continuation`. `simulate`, `equilibrium` and `ensemble` refuse them.
 - The `.ode` reader refuses noise, `global`, differential-algebraic and Volterra equations, boundary value problems, `sum`, `shift`, `special`, `export`, tables read from a file and `#include`. The README lists them.
 - `simulate` integrates only with the Dormand-Prince 5(4) pair.

@@ -132,7 +132,17 @@ tr = phasecont.simulate(m, 0.1, [0 50]);   % rows for n = 0, 1, ..., 50
 plot(tr)                                    % the iterates, drawn as dots
 ```
 
-For a map, `TSPAN` is `[n0 n1]`, two integers with `n0 < n1`, and `t` inside the right-hand side is the iterate index n. One run gives at most 1000000 iterates. `RelTol`, `AbsTol`, `MaxSteps` and `Hmax` do not apply and raise `phasecont:simulate:mapOption`. A value that is not finite stops the run early with a warning and keeps the iterates up to that point. Sessions save and replay these runs. `equilibrium`, `continuation`, `ensemble` and replay of other runs on a map still refuse it with the error `phasecont:engine:unsupportedModel`, and `phasecont.app.PhasePlane` refuses it with `phasecont:app:mapModel`. `Model.rhs` evaluates the right-hand side of a map. Fixed points and their continuation are planned.
+For a map, `TSPAN` is `[n0 n1]`, two integers with `n0 < n1`, and `t` inside the right-hand side is the iterate index n. One run gives at most 1000000 iterates. `RelTol`, `AbsTol`, `MaxSteps` and `Hmax` do not apply and raise `phasecont:simulate:mapOption`. A value that is not finite stops the run early with a warning and keeps the iterates up to that point.
+
+`equilibrium` on a map solves F(x) = x, and `Eigenvalues` holds the multipliers, the eigenvalues of the Jacobian of F. The fixed point is stable when every multiplier has modulus below 1. `continuation` with Type `"EP"` follows the fixed points in one parameter:
+
+```matlab
+eq = phasecont.equilibrium(m, 0.6);                % x = 0.6, multiplier -0.5
+br = phasecont.continuation(m, eq, Free = "r", Direction = 1, Bounds = [2 3.5]);
+br.points("PD")                                    % r = 3, x = 2/3
+```
+
+On a map, `Tests` has the four columns `[LP BP PD NS]`, `Stable` is true where every multiplier has modulus below 1, and `Detect` takes a subset of `["LP" "BP" "PD" "NS"]`, all four by default. `Data.coefficient` holds the fold coefficient at an LP point, the period-doubling coefficient b at a PD point (b > 0 is supercritical) and the Neimark-Sacker coefficient d at an NS point (d < 0 is supercritical). An NS point also has the angle θ of its multipliers e^{±iθ} in `Data.values.theta`. Sessions save and replay iterations and branches of fixed points. Other types of `continuation` on a map raise a `phasecont:` error, `ensemble` refuses a map with `phasecont:engine:unsupportedModel`, and `phasecont.app.PhasePlane` refuses it with `phasecont:app:mapModel`. `Model.rhs` evaluates the right-hand side of a map. Curves of fixed points in two parameters and period-k points are planned.
 
 ## Models without an `.ode` file
 
