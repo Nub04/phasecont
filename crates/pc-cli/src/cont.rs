@@ -51,8 +51,8 @@ pub fn cont(file: &Path, problem_file: &Path, fallback: bool) -> ExitCode {
         Ok(p) => p,
         Err(code) => return code,
     };
-    // No run takes a map yet (SPEC 8t). A refused model exits 1, as `CONT_HELP` says.
-    if loaded.info.kind == pc_ode::ModelKind::Map {
+    // A map takes only ITER (SPEC 8u). A refused model exits 1, as `CONT_HELP` says.
+    if loaded.info.kind == pc_ode::ModelKind::Map && value["type"] != "ITER" {
         to_stderr(&format!("pc-cli: {}: {MAP_MODEL}\n", file.display()));
         return ExitCode::from(1);
     }

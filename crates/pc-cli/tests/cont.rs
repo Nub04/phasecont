@@ -584,3 +584,37 @@ fn a_map_model_is_refused_with_exit_one() {
         );
     }
 }
+
+/// A map runs an ITER problem and prints its rows (SPEC 8u, test 4).
+#[test]
+fn a_map_runs_an_iter_problem() {
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pc-ode/tests/corpus");
+    let path = scratch().join("map_iter.json");
+    std::fs::write(
+        &path,
+        r#"{"type":"ITER","tspan":[0,5],"params":{"r":2.5},"u0":[0.1]}"#,
+    )
+    .unwrap();
+    let o = run(
+        &scratch(),
+        &[
+            "cont",
+            corpus.join("logistic_map.ode").to_str().unwrap(),
+            path.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+    let points = v["branches"][0]["points"].as_array().unwrap();
+    let mut x = 0.1_f64;
+    let mut want = vec![(0.0, x)];
+    for k in 1..=5 {
+        x = (2.5 * x) * (1.0 - x);
+        want.push((f64::from(k), x));
+    }
+    let got: Vec<(f64, f64)> = points
+        .iter()
+        .map(|p| (p["alpha"].as_f64().unwrap(), p["u"][0].as_f64().unwrap()))
+        .collect();
+    assert_eq!(got, want);
+}

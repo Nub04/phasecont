@@ -121,7 +121,8 @@ impl Block {
 pub enum Kind {
     /// A branch or curve through `run_start`.
     Continuation,
-    /// An initial value run through `run_start`, problem type `IVP`.
+    /// An initial value run through `run_start`, problem type `IVP`, or the iteration of a map,
+    /// problem type `ITER`.
     Simulate,
     /// A Newton solve through `model_equilibrium`.
     Equilibrium,
@@ -160,7 +161,7 @@ pub struct RunRec {
     pub problem: String,
     /// The final status JSON of a run, as the engine wrote it. Empty for an equilibrium.
     pub status: String,
-    /// "EP", "LP", "H", "LC", "LPC", "PD", "NS", "HOM" or "IVP"; empty for an equilibrium.
+    /// "EP", "LP", "H", "LC", "LPC", "PD", "NS", "HOM", "IVP" or "ITER"; empty for an equilibrium.
     pub ty: String,
     /// The free parameter names.
     pub free: Vec<String>,

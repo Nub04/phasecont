@@ -357,10 +357,12 @@ The problem file is a JSON object:
             two parameters, \"LC\" periodic orbits, \"LPC\", \"PD\" or \"NS\" a
             curve of fold, period-doubling or Neimark-Sacker points of cycles in
             two parameters, \"HOM\" a curve of orbits homoclinic to a saddle in
-            two parameters (required)
+            two parameters, \"IVP\" an integration of an ODE, \"ITER\" an
+            iteration of a map (x(t+1)=... or @ meth=discrete), the only type a
+            map takes (required)
   free      name of the continuation parameter, or [a1, a2] for LP, H, LPC, PD,
             NS and HOM, with a1 the parameter of the branch the start point is on
-            (required)
+            (required; IVP and ITER refuse it)
   u0        starting state (default: the model's init): one number per state,
             on an LP or H curve the point there, for LC \"hopf\" the equilibrium
             at the Hopf point, for LC \"orbit\" or \"pd\", for LPC, PD and NS and
@@ -387,6 +389,11 @@ LPC, PD and NS only:
   ncol      collocation points per interval m of the curve, 2 to 7 (required)
   mesh      the mesh of the orbit in u0, from 0 to 1, rising (required); the
             orbit is regridded when it differs from the N and m of the curve
+
+IVP and ITER only:
+  tspan     for IVP [t0, t1], the time span; for ITER [n0, n1], the first and
+            last iterate, integers with n0 < n1 and at most 1000000 iterates
+            (required). ITER refuses options
 
 HOM only:
   ntst      number of mesh intervals N of the curve, at least 1 (required)
