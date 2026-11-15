@@ -36,7 +36,7 @@ Parsing rules:
 
 | Construct | Example | v1 status |
 |---|---|---|
-| ODE | `x'=...`, `dx/dt=...` | full |
+| Map | `x(t+1)=...`, or `x'=...` with `@ meth=discrete` | parse and evaluate; simulation, equilibria and continuation refuse maps until they are supported (Section 8t) |
 | Map | `x(t+1)=...` | parse, simulate; continuation of maps later |
 | Initial data | `init x=1,y=2`, `x(0)=1` | full |
 | Parameters | `par a=1,b=2` | full |
@@ -2031,6 +2031,57 @@ Slice 5 gives the delay cycle run of slice 4 three things the engine already has
 8. MATLAB, `tests/DelayBranchTest.m`: `OSCZ` through `continuation` with `Detect="BPC"` gives a `Branch` that equals the engine rows within $10^{-12}$ relative and has the `BPC` special at `Index` 98, which is the engine index 97 plus 1 (96 with `MeshAdapt=3`, engine index 95). The same with `Switch="BPC1"` and `SwitchDirection` 1 and $-1$ gives a 1-by-2 array whose second branch has the invariants of test 3. `MeshAdapt=3` gives per-point meshes in `Branch.Mesh` and in the special's `Data.mesh`. `Switch` without `SwitchDirection`, `SwitchDirection` without `Switch`, `Switch` without `Detect="BPC"`, `Switch` with `MeshAdapt`, a `Detect` entry other than `"BPC"` and a `MeshAdapt` that is negative or not an integer are errors with a `phasecont:` identifier. The branch survives `Session` save and load.
 9. `Rows2BranchTest`: a hand-made delay `LC` row set with adapt (grid of 4 entries, `BPC` special) maps to `Branch.Mesh` and `Data.mesh` as above, and `delayCycleGrid` rejects 2 and 5 entries.
 10. Tests 3 and 6 of slice 4 hold except that `switch`, `options.mesh_adapt`, `Detect`, `MeshAdapt` and `Switch` leave their refusal lists, which tests 5 and 8 of this slice replace. `cargo test`, the ODE MATLAB tests, `pc-cli dde-cycle` and the tests of slices 1 to 4 stay green, and the rows of a run without `bpc`, `switch` and `mesh_adapt` are those of slice 4 to the last bit.
+
+## 8t. Maps, slice 0: refuse maps until they work
+
+A model written with `x(t+1)=...` is a map (Section 2). Before this slice no numerical entry read the model kind. `pc_ir::lower` lowers `x(t+1)=f` like `x'=f`, so `simulate` integrated F as a vector field, `equilibrium` solved F(x) = 0 instead of F(x) = x, and `continuation` tested eigenvalues against the imaginary axis instead of the unit circle. Every result for a map was wrong, and this was also true in 1.0.0. Slice 0 refuses maps in every entry that computes such a result. Later slices lift the refusal one entry at a time as they make it correct: slice 1 iterates a map, slice 2 computes fixed points, multipliers and the labels LP, PD and NS on a one-parameter branch.
+
+Owner approval: the owner chose full map support on 2026-11-13 and approved the plan with slice 0 first on 2026-11-14. The C ABI keeps its function signatures and `abi_version` stays 1. The only new key is `"map"` in `model_info`, which is internal JSON like `"delay"` (Section 8s).
+
+**The `meth` option.** XPPAUT 8.0 iterates a file of `x'=...` equations as a map when its `meth` option names the discrete method (probes `meth-*` in `references/xpp-probes/`, measured 2026-11-14). XPPAUT picks the method from the first character of the value, ignoring case, and takes any key that starts with `meth` as `meth`. PhaseCont reads the option this way:
+- The `meth` value is the value of the last `@` entry, in file order and across `@` lines, whose key starts with `meth` (ignoring case) and that has no blank around `=`. An entry with a blank is ignored with ODE0025, as before, since XPPAUT ignores it too (probe `meth-spaced`). The keys `meth`, `METH`, `method` and `methx` all count, and `is_known_option` accepts every key that starts with `meth`.
+- Its first character, lowercased, decides:
+  - an empty value, or one of a b c e g m q r s y 2 5 8 v: no change and no diagnostic. These are the integrators of XPPAUT 8.0 (v is the Volterra method, which crashes XPPAUT on a plain ODE).
+  - d: when every equation of the file is an ODE, the file is a map (`ModelKind::Map`), with warning ODE0074 "`<entry>` makes XPPAUT 8.0 iterate this file as a map, so PhaseCont reads it as a map", where `<entry>` is the entry as written, such as `meth=discrete`.
+  - any other character: the file stays an ODE, with warning ODE0074 "XPPAUT 8.0 iterates this file as a map for `<entry>`, but PhaseCont integrates it as an ODE; write `x(t+1)=...` for a map". This is a PhaseCont choice (probe `meth-ode45`) and waits for the owner's sign-off in `docs/STATUS.md`: a typo such as `meth=ode45` should not turn an ODE into a map.
+- A file of `x(t+1)=...` equations is a map whatever `meth` says, and gets no ODE0074 (probe `map-meth-euler`). A file that mixes ODEs and maps keeps its error ODE0052 and gets no ODE0074.
+- A delay model with a `meth` value that starts with d is a map, so its `delay(...)` calls are errors at load, as in any map (Section 8d).
+- The option list that `simulate` uses for its `ignoredOption` warning, and the `.ode` writer, both read a new flag `spaced` on each `@` entry that the parser sets, instead of looking at the text. The writer prints a spaced entry as `name = value`, so a round trip keeps the entry ignored and cannot turn an ODE into a map.
+
+XPPAUT also takes keys such as `totalx` as `total` (probe `opt-prefix-total`). PhaseCont still reports `totalx` as an unknown option (ODE0024). That mismatch is open in `docs/STATUS.md`.
+
+**Entries that refuse a map.** The refusal is `Error::UnsupportedModel` with the text "the model is a map (`x(t+1)=...` or `@ meth=discrete`), and PhaseCont does not iterate maps or find their fixed points yet; evaluating the right-hand side works", which the gateway raises as `phasecont:engine:unsupportedModel`.
+
+| Entry | Map model |
+|---|---|
+| `model_from_ode`, `model_compile` (JIT, AOT and `emit_c`), `model_info`, `model_rhs`, `model_rhs_t` (and the gateway command `model_rhs_batch`, which loops over them), `import`, `latex_render` | allowed: F(x) is a valid thing to evaluate |
+| `run_start`, every `type` | refused before the problem is parsed, so a malformed problem and a handle that was not compiled get the same error, and no run is created |
+| `model_equilibrium` | refused, next to its `ode_only` check |
+| `ens_start` | refused as before, by `pc_ensemble::job::validate` ("the model is not an ODE system"); its `ode_only` check refuses delay models only |
+| `pc-cli cont` | refused after the model loads, with the text on stderr and exit code 2 |
+| `pc-cli session` | each record fails through `run_start` or `model_equilibrium` |
+| `pc-cli parse`, `ir`, `check-derivs`, `emit-c`, `latex` | allowed |
+
+The handle has a flag `map`, set from `ModelKind::Map` when the model loads, and `model_info` reports it as the key `"map"` (`true` or `false`). A delay model is never a map.
+
+**MATLAB.** No public property is added in this slice; slice 1 adds `Model.IsMap`.
+- `simulate`, `equilibrium`, `continuation` and `session.replay` on a map raise `phasecont:engine:unsupportedModel` from the engine. `ensemble` refuses a map as before. `Model.rhs` works and returns F(x).
+- `phasecont.app.PhasePlane` on a map raises `phasecont:app:mapModel` before it builds the window, with the text "PhasePlane draws ODE models, and this model is a map.". It reads `"map"` from `model_info` and checks it before the check for two variables. When PhasePlane loaded the model from a session file, it deletes the model first, as for the two-variable check.
+- In the toolbox, only `Model.rhs` calls `model_rhs` and `model_rhs_batch`, and only PhasePlane calls `Model.rhs`. So no other public function treats F as a vector field, and no other entry needs a refusal in this slice.
+- A session saved by 1.0.0 with a map run loads with its stored rows, since loading never recomputes. Replaying such a run gives `Pass = false` with `phasecont:session:runFailed`.
+
+**What this slice does not do.** It does not iterate a map, solve F(x) = x or compute multipliers. The language server hover still calls a state of a `meth=discrete` file an ODE variable.
+
+**Acceptance tests (slice 0).** Every model is our own.
+1. Rust, `pc-ode`: on `x'=r*x*(1-x)`, the entries `meth=discrete`, `meth=d`, `METH=Discrete` and `method=discrete` give `ModelKind::Map` and one ODE0074 warning that names the entry. `meth=ode45` gives `ModelKind::Ode` and ODE0074. `meth=rungekutta` and `meth=stiff` give `ModelKind::Ode` and no diagnostic. `meth = discrete` gives `ModelKind::Ode` and ODE0025 only. `meth=discrete` followed by `meth=euler` on a later `@` line gives `ModelKind::Ode` and no ODE0074. A map file with `meth=euler` or `meth=ode45` gives `ModelKind::Map` and no ODE0074. A mixed file with `meth=discrete` gives ODE0052 and no ODE0074. A delay model with `meth=discrete` fails to lower with the error of a delay call in a map.
+2. Rust, `pc-ode`: the writer prints a spaced entry as `meth = discrete`, and the written file parses to the same kind and the same diagnostic codes. The round-trip tests stay green. `is_known_option` accepts `method` and `methx`, and `other_names_are_unknown` no longer lists `method`.
+3. Probes: `cargo test -p pc-cli --test probes` passes, and `XPPAUT=/usr/local/sbin/xppaut references/xpp-probes/run.sh` passes both halves of every probe, including the ten of this slice.
+4. Rust, `pc-ffi`: the values of `model_rhs` and `model_rhs_t` and the `emit_c` text of the logistic file with and without `@ meth=discrete` are equal, bit for bit and byte for byte.
+5. Rust, `pc-ffi`: `model_info` reports `"map": true` for `logistic_map.ode` and for the `meth=discrete` file, and `"map": false` for an ODE model and a delay model. On both map handles `run_start` with each of `"EP"`, `"LP"`, `"H"`, `"LC"`, `"LPC"`, `"PD"`, `"NS"`, `"HOM"` and `"IVP"`, with a problem that is not JSON, and on a handle that was not compiled, is `UnsupportedModel` with the text above, creates no run and does not panic. `model_equilibrium` on a map handle is the same error. The ODE tests stay green.
+6. Rust, `pc-ensemble`: `validate` refuses the `meth=discrete` file with `Unsupported`.
+7. Rust, `pc-cli`: `cont` on `logistic_map.ode` with a valid `EP` problem exits with code 2 and prints the refusal text on stderr.
+8. MATLAB, `tests/MapRefusalTest.m`: on `logistic_map`-style and Hénon-style models written in the test, and on an ODE file with `@ meth=discrete`, `simulate`, `equilibrium` and `continuation` raise `phasecont:engine:unsupportedModel`, `Model.rhs` returns F(x), and `PhasePlane` on the two-variable map raises `phasecont:app:mapModel`. An ODE model with `@ meth=rungekutta` still simulates.
+9. `cargo test` and the full MATLAB suite stay green (0 failed).
 
 ## 9. Acceptance tests
 
