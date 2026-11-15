@@ -51,6 +51,9 @@ classdef Model < handle
         % IsDelay is true when the equations use delay(...). The engine runs
         % such a model with the JIT only, and only through the delay entries.
         IsDelay (1,1) logical = false
+        % IsMap is true for a map, written x(t+1)=... or with @ meth=discrete.
+        % simulate iterates a map; equilibrium and continuation refuse it.
+        IsMap (1,1) logical = false
         % SourceSha256 is the SHA-256 of the exact source text, as 64 lower-case
         % hex digits. A saved session stores it to check that a replay runs
         % the same model.
@@ -526,6 +529,7 @@ classdef Model < handle
             obj.AotInfo = aot;
             obj.Autonomous = logical(info.autonomous);
             obj.IsDelay = isDelay;
+            obj.IsMap = isfield(info, "map") && logical(info.map);
             obj.SourceSha256 = string(info.source_sha256);
             obj.Options = phasecont.Model.toOptions(info.options);
             obj.Diagnostics = entries;

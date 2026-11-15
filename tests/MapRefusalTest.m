@@ -1,9 +1,11 @@
 classdef MapRefusalTest < matlab.unittest.TestCase
-    % Tests slice 0 of map support (SPEC section 8t, test 8): every run on a
-    % map is refused with phasecont:engine:unsupportedModel, PhasePlane
-    % refuses a map with phasecont:app:mapModel, and the right-hand side of
-    % a map still evaluates. A map is written as x(t+1)=... or as x'=...
-    % with @ meth=discrete. Every model is written here.
+    % Tests slice 0 of map support (SPEC section 8t, test 8, as amended by
+    % section 8u): equilibrium and continuation on a map are refused with
+    % phasecont:engine:unsupportedModel, simulate on a map runs (it iterates
+    % the map, see MapIterateTest), PhasePlane refuses a map with
+    % phasecont:app:mapModel, and the right-hand side of a map still
+    % evaluates. A map is written as x(t+1)=... or as x'=... with
+    % @ meth=discrete. Every model is written here.
 
     properties (Constant)
         Logistic = "par r=2" + newline + "init x=0.2" + newline + ...
@@ -62,22 +64,13 @@ classdef MapRefusalTest < matlab.unittest.TestCase
             testCase.verifyFail("no error was raised, expected " + id);
         end
 
-        function simulateRefused(testCase, m)
-            % simulate on the map M raises the engine refusal.
-            try
-                phasecont.simulate(m, 0.5, [0 1]);
-            catch err
-                testCase.verifyEqual(string(err.identifier), ...
-                    "phasecont:engine:unsupportedModel");
-                return
-            end
-            testCase.verifyFail("simulate ran on a map");
-        end
-
-        function verifyRunsRefused(testCase, m, x0, free)
+        function verifyOnlySimulateRuns(testCase, m, x0, free)
+            % equilibrium and continuation on the map M are refused, and
+            % simulate iterates it.
             id = "phasecont:engine:unsupportedModel";
-            testCase.verifyErrorText(@() phasecont.simulate(m, x0, [0 1]), ...
-                id, testCase.Refusal);
+            tr = phasecont.simulate(m, x0, [0 1]);
+            testCase.verifyEqual(tr.T, [0; 1]);
+            testCase.verifyEqual(tr.Stop, "End");
             testCase.verifyErrorText(@() phasecont.equilibrium(m, x0), ...
                 id, testCase.Refusal);
             testCase.verifyErrorText( ...
@@ -97,26 +90,19 @@ classdef MapRefusalTest < matlab.unittest.TestCase
             testCase.verifyFalse(info.map);
         end
 
-        function everyRunOnTheLogisticMapIsRefused(testCase)
-            testCase.verifyRunsRefused(testCase.model(testCase.Logistic), 0.5, "r");
+        function onlySimulateRunsOnTheLogisticMap(testCase)
+            testCase.verifyOnlySimulateRuns(testCase.model(testCase.Logistic), 0.5, "r");
         end
 
-        function everyRunOnTheHenonMapIsRefused(testCase)
-            testCase.verifyRunsRefused(testCase.model(testCase.Henon), [0.5 0.1], "a");
+        function onlySimulateRunsOnTheHenonMap(testCase)
+            testCase.verifyOnlySimulateRuns(testCase.model(testCase.Henon), [0.5 0.1], "a");
         end
 
-        function everyRunWithMethDiscreteIsRefused(testCase)
-            testCase.verifyRunsRefused( ...
+        function onlySimulateRunsWithMethDiscrete(testCase)
+            testCase.verifyOnlySimulateRuns( ...
                 testCase.model(testCase.LogisticDiscrete), 0.5, "r");
-            testCase.verifyRunsRefused( ...
+            testCase.verifyOnlySimulateRuns( ...
                 testCase.model(testCase.HenonDiscrete), [0.5 0.1], "a");
-        end
-
-        function aRefusedMapGetsNoIgnoredOptionWarning(testCase)
-            % simulate warns about ignored @ options only after a run, so the
-            % meth=discrete file gets the refusal and no warning.
-            m = testCase.model(testCase.LogisticDiscrete);
-            testCase.verifyWarningFree(@() testCase.simulateRefused(m));
         end
 
         function theRightHandSideOfAMapStillEvaluates(testCase)

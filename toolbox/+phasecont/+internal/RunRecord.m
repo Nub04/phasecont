@@ -16,7 +16,8 @@ classdef RunRecord < handle
     %   P          parameter vector of the run
     %   ModelSha   SHA-256 of the model source, 64 hex digits
     %   Type       "EP", "LP", "H", "LC", "LPC", "PD", "NS" or "HOM"; "IVP"
-    %              for a trajectory; "" for an equilibrium
+    %              for a trajectory; "ITER" for the iterates of a map; ""
+    %              for an equilibrium
     %   Free       free parameter name or names, as passed to rows2branch
     %   Grid       [NTST NCOL] of a run of cycles or a HOM curve, else []
     %   N          number of states

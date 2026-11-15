@@ -1,5 +1,6 @@
 classdef Trajectory < handle
-    % A computed solution of an initial value problem.
+    % A computed solution of an initial value problem, or the iterates of
+    % a map.
     %
     %   tr = phasecont.simulate(m, [0.1 0.2], [0 50])
     %   plot(tr)                  % phase plane of the first two variables
@@ -8,13 +9,15 @@ classdef Trajectory < handle
     %
     % A Trajectory holds copied data and no engine handle, so it stays
     % valid after the Model is deleted. Rows are time points: N points give
-    % N-by-n arrays.
+    % N-by-n arrays. For a map, rows are iterates.
     %
     % Properties
-    %   T         time at each accepted step, N-by-1, with the start time first
+    %   T         time at each accepted step, N-by-1, with the start time
+    %             first; for a map, the iterate index n0, ..., n1
     %   X         states, N-by-n
     %   X0        start state, n-by-1
-    %   TSpan     [t0 t1] as given; t1 < t0 integrates backward
+    %   TSpan     [t0 t1] as given; t1 < t0 integrates backward; [n0 n1]
+    %             for a map
     %   P         parameter vector of the run
     %   Stop      why the run stopped: "End" when it reached t1, else
     %             "MaxSteps", "StepTooSmall", "Cancelled" or "Error"
@@ -39,6 +42,9 @@ classdef Trajectory < handle
     properties (SetAccess = private, Hidden)
         % The run that produced the trajectory. A session stores the run.
         Record phasecont.internal.RunRecord {mustBeScalarOrEmpty} = phasecont.internal.RunRecord.empty
+        % True for the iterates of a map (record Type "ITER"): plot draws
+        % them as dots with no line between them.
+        Map (1,1) logical = false
     end
 
     methods (Hidden)
@@ -69,7 +75,8 @@ classdef Trajectory < handle
             % a line with Tag "pc-trajectory" and a marker at its start
             % (Tag "pc-start"). Without Parent the plot uses newplot, so
             % hold on is respected. H holds the lines and markers as a
-            % column vector.
+            % column vector. The iterates of a map are drawn as dots with
+            % no line between them, against "n" for one variable.
             arguments
                 tr phasecont.Trajectory
                 options.Var = []
@@ -109,7 +116,11 @@ classdef Trajectory < handle
             if isscalar(idx)
                 x = tr.T;
                 y = tr.X(:, idx);
-                xlab = "t";
+                if tr.Map
+                    xlab = "n";
+                else
+                    xlab = "t";
+                end
                 ylab = tr.variableName(idx);
             else
                 x = tr.X(:, idx(1));
@@ -120,7 +131,11 @@ classdef Trajectory < handle
             wasHeld = ishold(ax);
             hold(ax, "on");
             color = nextColor(ax);
-            line = plot(ax, x, y, "-", Color = color, Tag = "pc-trajectory");
+            style = "-";
+            if tr.Map
+                style = ".";
+            end
+            line = plot(ax, x, y, style, Color = color, Tag = "pc-trajectory");
             mark = plot(ax, x(1), y(1), "o", Color = color, ...
                 MarkerFaceColor = color, MarkerSize = 5, Tag = "pc-start");
             if ~wasHeld

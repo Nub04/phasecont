@@ -5,7 +5,7 @@ function r = replay(file, options)
 %   result with the stored one. R is a 1-by-K struct array, one entry per
 %   run, with the fields
 %     Kind         "continuation", "simulate" or "equilibrium"
-%     Type         "EP", "LC", "IVP" and so on; "" for an equilibrium
+%     Type         "EP", "LC", "IVP", "ITER" and so on; "" for an equilibrium
 %     Rows         struct with Stored and New, the number of points of each
 %                  branch in the file and in the rerun
 %     Identical    true when every number matches bit for bit and the
