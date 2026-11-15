@@ -36,8 +36,8 @@ Parsing rules:
 
 | Construct | Example | v1 status |
 |---|---|---|
+| ODE | `x'=...`, `dx/dt=...` | full |
 | Map | `x(t+1)=...`, or `x'=...` with `@ meth=discrete` | parse and evaluate; simulation, equilibria and continuation refuse maps until they are supported (Section 8t) |
-| Map | `x(t+1)=...` | parse, simulate; continuation of maps later |
 | Initial data | `init x=1,y=2`, `x(0)=1` | full |
 | Parameters | `par a=1,b=2` | full |
 | Numbers, derived parameters | `number c=3`, `!d=a*b` | full |
