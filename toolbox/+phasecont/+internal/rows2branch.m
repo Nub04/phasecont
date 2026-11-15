@@ -34,6 +34,11 @@ function br = rows2branch(m, free, p, n, points, specials, branchStatus, kind, g
 % newton_iters]. A HOM column is [a2, orbit, T, x0(1..n), a1,
 % mesh(1..NTST+1), eig_re(1..n), eig_im(1..n), codim2(1..12), h,
 % newton_iters], with the eigenvalues of the Jacobian at the saddle x0.
+% An equilibrium column of a map (kind "EP" with M.IsMap) is [alpha,
+% u(1..n), mu_re(1..n), mu_im(1..n), psi_LP, psi_BP, psi_PD, psi_NS, h,
+% newton_iters], with the multipliers of the fixed point in place of the
+% eigenvalues. The Branch has the four tests and Stable where every
+% multiplier has modulus below 1.
 % A delay equilibrium column (a delay model, kind "EP" with M.IsDelay, or
 % the explicit kind "DDE") is [alpha, u(1..n), count] with the number of
 % characteristic roots in the right half plane stored as a double. It has no
@@ -81,12 +86,13 @@ if kind == "DDELC" || (kind == "LC" && ~isempty(m) && m.IsDelay)
     br = delayCycleBranch(m, free, p, n, points, specials, branchStatus, grid);
     return
 end
+isMap = kind == "EP" && ~isempty(m) && m.IsMap;
 nmesh = 0;
 switch kind
     case "EP"
         block = n;
         labels = strings(1, 0);
-        extra = 3;
+        extra = 3 + isMap;
     case "LP"
         block = n + 1;
         labels = ["CP" "BT" "ZH"];
@@ -158,7 +164,11 @@ codim2 = zeros(npts, 0);
 switch kind
     case "EP"
         u = s;
-        stable = all(real(ev) < 0, 2);
+        if isMap
+            stable = all(abs(ev) < 1, 2);
+        else
+            stable = all(real(ev) < 0, 2);
+        end
     case "LC"
         u = s(:, 1:np);
         period = s(:, np+1);

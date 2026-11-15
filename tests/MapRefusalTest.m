@@ -1,11 +1,12 @@
 classdef MapRefusalTest < matlab.unittest.TestCase
     % Tests slice 0 of map support (SPEC section 8t, test 8, as amended by
-    % section 8u): equilibrium and continuation on a map are refused with
-    % phasecont:engine:unsupportedModel, simulate on a map runs (it iterates
-    % the map, see MapIterateTest), PhasePlane refuses a map with
-    % phasecont:app:mapModel, and the right-hand side of a map still
-    % evaluates. A map is written as x(t+1)=... or as x'=... with
-    % @ meth=discrete. Every model is written here.
+    % sections 8u and 8v): simulate on a map runs (it iterates the map, see
+    % MapIterateTest), equilibrium and continuation with Type "EP" run (see
+    % MapFixedPointTest), a curve of a map is refused with a phasecont:
+    % error, PhasePlane refuses a map with phasecont:app:mapModel, and the
+    % right-hand side of a map still evaluates. A map is written as
+    % x(t+1)=... or as x'=... with @ meth=discrete. Every model is written
+    % here.
 
     properties (Constant)
         Logistic = "par r=2" + newline + "init x=0.2" + newline + ...
@@ -64,18 +65,25 @@ classdef MapRefusalTest < matlab.unittest.TestCase
             testCase.verifyFail("no error was raised, expected " + id);
         end
 
-        function verifyOnlySimulateRuns(testCase, m, x0, free)
-            % equilibrium and continuation on the map M are refused, and
-            % simulate iterates it.
-            id = "phasecont:engine:unsupportedModel";
+        function verifyCurvesAreRefused(testCase, m, x0, free)
+            % simulate iterates the map M, equilibrium and continuation with
+            % Type "EP" run on it, and an LP curve from the fixed point is
+            % refused with a phasecont: error.
             tr = phasecont.simulate(m, x0, [0 1]);
             testCase.verifyEqual(tr.T, [0; 1]);
             testCase.verifyEqual(tr.Stop, "End");
-            testCase.verifyErrorText(@() phasecont.equilibrium(m, x0), ...
-                id, testCase.Refusal);
-            testCase.verifyErrorText( ...
-                @() phasecont.continuation(m, x0, Free = free), ...
-                id, testCase.Refusal);
+            pt = phasecont.equilibrium(m, x0);
+            testCase.verifyEqual(pt.Label, "EP");
+            br = phasecont.continuation(m, pt, Free = free(1), MaxSteps = 3);
+            testCase.verifySize(br.Tests, [size(br.Alpha, 1) 4]);
+            try
+                phasecont.continuation(m, pt, Type = "LP", Free = free);
+            catch err
+                testCase.verifyTrue(startsWith(string(err.identifier), "phasecont:"), ...
+                    string(err.identifier));
+                return
+            end
+            testCase.verifyFail("an LP curve of a map ran");
         end
     end
 
@@ -90,19 +98,20 @@ classdef MapRefusalTest < matlab.unittest.TestCase
             testCase.verifyFalse(info.map);
         end
 
-        function onlySimulateRunsOnTheLogisticMap(testCase)
-            testCase.verifyOnlySimulateRuns(testCase.model(testCase.Logistic), 0.5, "r");
+        function curvesOfTheLogisticMapAreRefused(testCase)
+            testCase.verifyCurvesAreRefused(testCase.model(testCase.Logistic), 0.5, "r");
         end
 
-        function onlySimulateRunsOnTheHenonMap(testCase)
-            testCase.verifyOnlySimulateRuns(testCase.model(testCase.Henon), [0.5 0.1], "a");
+        function curvesOfTheHenonMapAreRefused(testCase)
+            testCase.verifyCurvesAreRefused(testCase.model(testCase.Henon), ...
+                [0.5 0.1], ["a" "b"]);
         end
 
-        function onlySimulateRunsWithMethDiscrete(testCase)
-            testCase.verifyOnlySimulateRuns( ...
+        function curvesAreRefusedWithMethDiscrete(testCase)
+            testCase.verifyCurvesAreRefused( ...
                 testCase.model(testCase.LogisticDiscrete), 0.5, "r");
-            testCase.verifyOnlySimulateRuns( ...
-                testCase.model(testCase.HenonDiscrete), [0.5 0.1], "a");
+            testCase.verifyCurvesAreRefused( ...
+                testCase.model(testCase.HenonDiscrete), [0.5 0.1], ["a" "b"]);
         end
 
         function theRightHandSideOfAMapStillEvaluates(testCase)
@@ -154,6 +163,10 @@ classdef MapRefusalTest < matlab.unittest.TestCase
             % A 1.0.0 session can hold runs on a map. Here the runs come
             % from the same right-hand side written as an ODE, and the file
             % then gets the map source and its hash, as such a session had.
+            % Since SPEC 8v the equilibrium record runs and fails on the
+            % comparison (the fixed point 1/2 is not the stored root 1 of F),
+            % with no warning, and the trajectory record fails with the
+            % refusal warning.
             ode = testCase.model("par r=2" + newline + "init x=0.2" + newline + ...
                 "x'=r*x*(1-x)" + newline + "done" + newline);
             eq = phasecont.equilibrium(ode, 0.9);

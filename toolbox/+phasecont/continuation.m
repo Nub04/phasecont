@@ -58,6 +58,16 @@ function br = continuation(m, start, options)
 %   IFU. Their columns of C.Codim2 are NaN otherwise.
 %   Detect, Switch and Var do not apply.
 %
+%   BR = phasecont.continuation(M, X0, Free = "r") on a map (M.IsMap is
+%   true) follows a branch of fixed points F(x) = x. BR.Eigenvalues holds
+%   the multipliers, the eigenvalues of the Jacobian of F, and BR.Stable is
+%   true where every multiplier has modulus below 1. BR.Tests holds [psi_LP
+%   psi_BP psi_PD psi_NS], N-by-4, and BR.Specials the LP, BP, PD and NS
+%   points with their normal form coefficients in Data.coefficient (and
+%   Data.coefficient2 and the angle theta of the critical multipliers in
+%   Data.values for NS). Switch = "BP1" works as for an ODE. Type must be
+%   "EP"; the engine refuses curves and cycles of a map.
+%
 %   BR = phasecont.continuation(M, X0, Free = "r", Roots = struct(N = 30,
 %   ReMin = -0.5)) follows the equilibria of a delay model, one whose
 %   equations call delay(x, tau). Type is "EP", "H" or "LC" for it. N is the
@@ -139,7 +149,9 @@ function br = continuation(m, start, options)
 %     MaxNewton  most Newton iterations per step
 %     Detect     labels to detect, a subset of ["LP" "BP" "H"] (default all);
 %                Type "EP" only; ["LP" "BP"] only, and the default, for a
-%                delay model; "BPC" only, and off by default, for a delay "LC"
+%                delay model; a subset of ["LP" "BP" "PD" "NS"] (default
+%                all) for a map; "BPC" only, and off by default, for a delay
+%                "LC"
 %     Switch     special point to switch at, like "BP1"; Type "EP", or "LC" of a
 %                delay model (like "BPC1", with SwitchDirection and Detect =
 %                "BPC")
@@ -461,6 +473,26 @@ if type == "EP" && isDelay
     end
     parts(end+1) = """detect"":{""lp"":" + lower(string(any(detect == "LP"))) + ...
         ",""bp"":" + lower(string(any(detect == "BP"))) + "}";
+elseif type == "EP" && m.IsMap
+    % A map has PD and NS tests in place of the H test (SPEC 8v). An "H"
+    % entry goes to the engine, which refuses it.
+    if isa(options.Detect, "missing")
+        detect = ["LP" "BP" "PD" "NS"];
+    else
+        detect = string(options.Detect);
+    end
+    if ~all(ismember(detect, ["LP" "BP" "PD" "NS" "H"]))
+        error("phasecont:model:badOption", ...
+            "Detect entries for a map must be among ""LP"", ""BP"", ""PD"" and ""NS"".");
+    end
+    hKey = "";
+    if any(detect == "H")
+        hKey = ",""h"":true";
+    end
+    parts(end+1) = """detect"":{""lp"":" + lower(string(any(detect == "LP"))) + ...
+        ",""bp"":" + lower(string(any(detect == "BP"))) + ...
+        ",""pd"":" + lower(string(any(detect == "PD"))) + ...
+        ",""ns"":" + lower(string(any(detect == "NS"))) + hKey + "}";
 elseif type == "EP"
     if isa(options.Detect, "missing")
         detect = ["LP" "BP" "H"];

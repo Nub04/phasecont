@@ -41,13 +41,15 @@ classdef Branch < handle
     %                it); for "LC", "LPC", "PD", "NS" and "HOM", the orbit at
     %                the NTST*NCOL+1 base points, point-major,
     %                N-by-n(NTST*NCOL+1) (see cycle)
-    %   Eigenvalues  N-by-n complex; the Floquet multipliers for "LC",
+    %   Eigenvalues  N-by-n complex; the multipliers of the fixed points for
+    %                "EP" of a map; the Floquet multipliers for "LC",
     %                "LPC", "PD" and "NS"; for "HOM", the eigenvalues of the
     %                Jacobian at the saddle X0; N-by-0 for a delay model,
     %                except the leading Floquet multipliers of a delay "LC"
     %                run that asked for them with Floquet (N-by-Count)
     %   Stable       true where all eigenvalues have negative real part; for
-    %                "LC", where all multipliers except the one closest to 1
+    %                "EP" of a map, where all multipliers have modulus below
+    %                1; for "LC", where all multipliers except the one closest to 1
     %                have modulus below 1; false everywhere on a curve, whose
     %                points are never hyperbolic; for a delay model, true
     %                where RootCount is 0; false everywhere on a delay "LC"
@@ -55,7 +57,8 @@ classdef Branch < handle
     %   RootCount    for a delay model, the number of characteristic roots
     %                with positive real part at each point, N-by-1; empty
     %                for an ODE model and for a delay "LC" branch
-    %   Tests        [psi_LP psi_BP psi_H] at each point, N-by-3; [psi_LPC
+    %   Tests        [psi_LP psi_BP psi_H] at each point, N-by-3; [psi_LP
+    %                psi_BP psi_PD psi_NS], N-by-4, for "EP" of a map; [psi_LPC
     %                psi_PD psi_NS] for "LC" (N-by-0 for a delay "LC"); N-by-0
     %                on a curve
     %   Codim2       codim-2 test values at each point of a curve, N-by-k

@@ -4,6 +4,10 @@ function pt = equilibrium(m, x0, options)
 %   at the parameter values of the model and returns a phasecont.Point with
 %   Label "EP", its eigenvalues and the parameters used.
 %
+%   On a map (M.IsMap is true) it solves F(x, p) = x for a fixed point, and
+%   PT.Eigenvalues holds the multipliers, the eigenvalues of the Jacobian of
+%   F. The fixed point is stable when every multiplier has modulus below 1.
+%
 %   Name-value options
 %     Params   struct or numeric vector of parameter values; a struct changes
 %              only the fields it names (default M.ParameterValues)
