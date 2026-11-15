@@ -43,7 +43,7 @@ P1 (the numbers below were measured on 2026-10-23 at the head of the branch):
 
 - `crates/pc-ode` has these modules: `span`, `diag`, `lexer`, `ast`, `options`, `builtins`, `parser` (expressions and statements), `include`, `expand` (pseudo-arrays and array blocks), `check` (name resolution and model checks) and `writer`. `crates/pc-ode/docs/language.md` is the language reference.
 - `pc-cli parse FILE` parses a model, prints each diagnostic with its source line, then a model summary, and has a `--json` flag.
-- 73 diagnostic codes, ODE0001 to ODE0073. Counted with `grep -E "^\| ODE[0-9]{4}" crates/pc-ode/docs/language.md | wc -l`. Each code has an invalid file in `crates/pc-ode/tests/invalid/` (72 files without the `_b` suffix, plus ODE0018, which is built in `invalid.rs`).
+- 74 diagnostic codes, ODE0001 to ODE0074 (ODE0074 added by slice 0 of map support on 2026-11-14). Counted with `grep -E "^\| ODE[0-9]{4}" crates/pc-ode/docs/language.md | wc -l`. Each code has an invalid file in `crates/pc-ode/tests/invalid/` (73 files without the `_b` suffix, plus ODE0018, which is built in `invalid.rs`).
 - 409 tests pass in `cargo test`: 18 unit tests and 16 + 3 integration tests in `pc-cli`; 307 unit tests, 13 corpus, 5 invalid-file, 9 limit and 38 round-trip tests in `pc-ode`. `PROPTEST_CASES=10000 cargo test -p pc-ode --release round_trip` passes with 11 round-trip tests.
 - 21 corpus models in `crates/pc-ode/tests/corpus/`, each with a golden file. All 21 parse with `target/debug/pc-cli parse` without a failure. `crates/pc-ode/tests/README.md` holds the coverage matrix; every test and file it names exists.
 - 162 XPPAUT 8.0 probe files in `references/xpp-probes/` at P1 acceptance (164 after the P2 probes `fn-mod-more` and `table-range`, with 328 PASS lines). `references/xpp-probes/run.sh` runs each through XPPAUT and `pc-cli`, gives 324 PASS lines and no FAIL, and ends with "all checks passed". The probes back the grammar rulings in SPEC section 2 and `language.md`.
@@ -864,13 +864,30 @@ Branch `map-support` from `launch-prep` (a8d5590), unpushed. The plan was approv
 2. Fixed points from G = F - x, multipliers in `Eigenvalues`, LP, BP, PD and NS on a one-parameter branch with 4 test columns, and the LP, PD and NS coefficients from Govaerts, Khoshsiar Ghaziani, Kuznetsov and Meijer (2007), Table 2.3.
 3. to 8. Each needs its own approval: two-parameter curves of fixed points, their codim-2 labels, period-k points, a map mode in the phase-plane app, an ensemble map method, and the remaining docs.
 
+Slice 0 state (2026-11-14, SPEC section 8t, commits c83e749 to 0c18123 on `map-support`, unpushed):
+
+- Built. `run_start` refuses a map for every problem type before it parses the problem, `model_equilibrium` refuses it next to its `ode_only` check, and both return `UnsupportedModel` (code 13, `phasecont:engine:unsupportedModel`) with the text in `pckern::error::MAP_MODEL`. `model_info` has the key `"map"`. `pc-cli cont` refuses a map after the model loads. `PhasePlane` refuses a map with `phasecont:app:mapModel`, also from a session file. `Model.rhs`, `jacobian`, `emit_c`, `import` and `latex_render` still work on a map.
+- `@ meth`. The value is the last unspaced `@` entry whose key starts with `meth`, ignoring case. A value that starts with `d` makes an ODE file a map with warning ODE0074; an empty value or an XPPAUT integrator letter changes nothing; any other first letter keeps the ODE with ODE0074. Ten XPPAUT 8.0 probes back this (`references/xpp-probes/meth-*.ode`, `map-meth-euler.ode`, `opt-prefix-total.ode`). `XPPAUT=/usr/local/sbin/xppaut references/xpp-probes/run.sh` gave 174 probes, 348 PASS and "all checks passed".
+- Ruling: `pc-cli cont` exits with 1 on a map, not with the bad-problem code 2 that the plan named, because `CONT_HELP` already gives 1 for a refused model. SPEC 8t says 1.
+- Ruling: `simulate` now gives its `ignoredOption` warning after the run returns instead of before it starts, so a `meth=discrete` file gets the refusal without a warning that its `meth` option is ignored. A run that fails gets no warning. The CHANGELOG says so.
+- `ensemble` now refuses an ODE file with `@ meth=discrete`, which it integrated before.
+- Rust checks: `cargo fmt --check` ok, `cargo clippy --all-targets -- -D warnings` ok, `CUDA_VISIBLE_DEVICES="" cargo test` 2288 passed, 0 failed, 13 ignored, `cargo deny check` ok.
+- MATLAB: `scripts/matlab-win "setenv('PATH',[getenv('PATH') ';C:\Users\nuken\bin']); buildtool test"` gave 664 total, 655 passed, 0 failed, 9 incomplete. The 9 new `MapRefusalTest` cases pass. The incompletes are the 6 of the baseline plus the 3 Metal cases that launch-prep added (44fa560), which find no Metal device on Windows.
+- Review: a code review of the slice found no correctness bug. Its one fix, the ODE row of the SPEC section 2 table, is 0c18123. Gap: `phasePlaneRefusesAMapFromASessionFile` does not check that the app deletes the model it loaded from the session, since no call reports the live handles.
+
+Open items of the map phase:
+
+1. Owner sign-off: a `meth` value that starts with a letter XPPAUT does not list as an integrator, such as `meth=ode45`, keeps the file an ODE with ODE0074, while XPPAUT 8.0 iterates it as a map (probe `meth-ode45`). The alternative is to follow XPPAUT and make it a map.
+2. XPPAUT takes an `@` key such as `totalx` as `total` (probe `opt-prefix-total`), and PhaseCont reports it as unknown (ODE0024). Open: match XPPAUT's prefix rule for every option, or keep the exact names.
+3. The language server hover still calls a state of a `meth=discrete` file an ODE variable.
+
 ### Before the launch
 
 Owner:
 
 1. The go-ahead to push `main` (87 commits ahead of `origin/main` at f816e7e on 2026-11-13).
 2. The version (1.1.0 or 2.0.0) and the scope, including whether `phasecont.fit` ships (branch `fit-ensemble`, waiting for the API sign-off).
-3. Whether the launch waits for map support or ships with a refusal of map models.
+3. Decided 2026-11-14 (map plan, decision 1): the launch ships slice 0, which refuses map models, whether or not the later map slices are done.
 4. The File Exchange route (a GitHub-linked entry; whether one that ships MEX and DLL files is accepted, and whether it shows in the Add-On Explorer, is not confirmed with MathWorks).
 
 Assistant, on branch `launch-prep` unless noted:
