@@ -66,7 +66,14 @@ function br = rows2branch(m, free, p, n, points, specials, branchStatus, kind, g
 % Rows of an LPC, PD or NS curve that a v1.0.0 session stored are narrower:
 % they lack the codim-2 tests added later (CPC and R1, GPD and R2, CH). The
 % function pads them with NaN after the old tests and builds the branch as
-% usual, so the new tests read NaN there. No other width is accepted.
+% usual, so the new tests read NaN there.
+%
+% Rows of an EP branch of a map that a v1.0.0 session stored have width
+% 3n + 6: that engine treated the map as an ODE, so the eigenvalues belong to
+% the wrong system and the third test is an H test where the PD test goes.
+% The function loads them as stored: the third test becomes NaN and a column
+% of NaN is added as the fourth test. Nothing is recomputed. No other width
+% is accepted.
 if nargin < 8
     kind = "EP";
 end
@@ -150,6 +157,14 @@ if ~isnan(oldTests) && oldTests < extra ...
     at = 1 + block + nmesh + 2*n + oldTests;
     points = padRows(points, at, extra - oldTests);
     specials = padRows(specials, at, extra - oldTests);
+end
+if isMap && size(points, 1) == stride - 1 && size(specials, 1) == stride - 1
+    % A map EP branch saved by v1.0.0, with the H test where PD goes.
+    at = 1 + block + 2*n + 3;
+    points(at, :) = NaN;
+    specials(at, :) = NaN;
+    points = padRows(points, at, 1);
+    specials = padRows(specials, at, 1);
 end
 if size(points, 1) ~= stride || size(specials, 1) ~= stride
     error("phasecont:model:badRows", ...

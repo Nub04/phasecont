@@ -278,5 +278,69 @@ classdef MapFixedPointTest < matlab.unittest.TestCase
             testCase.verifySize(r, [1 1]);
             testCase.verifyTrue(r.Pass);
         end
+
+        function aVersion1SessionOfAMapLoadsAsStored(testCase)
+            % v1.0.0 stored a map EP branch with rows of width 3n + 6 and an
+            % H test where the PD test goes, and its problem asked for h.
+            % Such a file is made here from a branch of this version by
+            % removing the NS row and asking for h.
+            m = testCase.model(testCase.Logistic);
+            eq = phasecont.equilibrium(m, 0.6, Params = struct(r = 2.5));
+            br = phasecont.continuation(m, eq, Free = "r", Direction = 1, ...
+                Hmax = 0.05, MaxSteps = 1000, Bounds = [2 3.5]);
+            file = fullfile(testCase.Dir, "logistic.pcsession.json");
+            save(phasecont.Session(m, {br}), file);
+            S = phasecont.internal.sessionCodec.readFile(file);
+            testCase.assertSize(S.Records, [1 1]);
+            rec = S.Records{1};
+            n = 1;
+            ns = 1 + n + 2*n + 4;
+            testCase.assertEqual(rec.Stride, 3*n + 7);
+            points = rec.Points;
+            specials = rec.Specials;
+            for b = 1:numel(points)
+                points{b}(ns, :) = [];
+                specials{b}(ns, :) = [];
+            end
+            json = strrep(rec.Json, """stride"":" + rec.Stride, ...
+                """stride"":" + (rec.Stride - 1));
+            testCase.assertNotEqual(json, rec.Json);
+            problem = regexprep(rec.Problem, """detect"":\{[^}]*\}", ...
+                """detect"":{""lp"":true,""bp"":true,""h"":true}");
+            testCase.assertNotEqual(problem, rec.Problem);
+            f = struct("Kind", rec.Kind, "Problem", problem, "U0", rec.U0, ...
+                "P", rec.P, "ModelSha", rec.ModelSha, "Type", rec.Type, ...
+                "Free", rec.Free, "Grid", rec.Grid, "N", rec.N, "Json", json, ...
+                "Points", {points}, "Specials", {specials}, ...
+                "Stride", rec.Stride - 1);
+            S.Records{1} = phasecont.internal.RunRecord(f);
+            header = struct("Created", "2026-11-14T00:00:00Z", ...
+                "EngineName", "pckern", "EngineVersion", "1.0.0", ...
+                "Platform", string(computer("arch")), "Matlab", "2026b");
+            model = struct("Name", "logistic.ode", "Source", m.Source, ...
+                "Sha256", m.SourceSha256, "Evaluator", "jit");
+            old = fullfile(testCase.Dir, "logistic_v1.pcsession.json");
+            phasecont.internal.sessionCodec.writeFile(old, header, model, ...
+                S.Records, S.Items);
+
+            back = phasecont.Session.load(old);
+            testCase.addTeardown(@() delete(back.Model));
+            got = back.Items{1};
+            testCase.verifySize(got.Tests, [size(br.Alpha, 1) 4]);
+            testCase.verifyEqual(got.Tests(:, 1:2), br.Tests(:, 1:2));
+            testCase.verifyTrue(all(isnan(got.Tests(:, 3:4)), "all"));
+            testCase.verifyEqual(got.Alpha, br.Alpha);
+            testCase.verifyEqual(got.U, br.U);
+            testCase.verifyEqual(got.Eigenvalues, br.Eigenvalues);
+
+            testCase.applyFixture(matlab.unittest.fixtures.SuppressedWarningsFixture( ...
+                "phasecont:session:runFailed"));
+            lastwarn("");
+            r = phasecont.session.replay(old);
+            [~, id] = lastwarn;
+            testCase.verifyEqual(string(id), "phasecont:session:runFailed");
+            testCase.verifySize(r, [1 1]);
+            testCase.verifyFalse(r.Pass);
+        end
     end
 end
