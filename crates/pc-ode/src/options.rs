@@ -145,11 +145,21 @@ pub const NUMBERED: &[(&str, u8, u8)] = &[
     ("shi", 1, 3),
 ];
 
-/// True when `key`, a lower-case option name, is a documented option.
-/// XPPAUT 8.0 takes any key that starts with `meth` as `meth`, such as
-/// `method` (probe `meth-method`), so those are known too.
+/// Option names that XPPAUT 8.0 also reads at the start of a longer key.
+/// Measured on 2026-11-14 (probes `opt-prefix-*` and `meth-method`): `totalx`
+/// sets `total`, `dtx` sets `dt`, `t0x` sets `t0`, `method` sets `meth`, and
+/// `transx`, `njmpx`, `boundx`, `tolerx` and `dtminx` act like `trans`,
+/// `njmp`, `bound`, `toler` and `dtmin`. A shorter key such as `tot` or `met`
+/// sets nothing. The other names in [`NAMES`] are matched exactly, since no
+/// probe has shown the prefix rule for them.
+pub const PREFIX_NAMES: &[&str] = &[
+    "bound", "dt", "dtmin", "meth", "njmp", "t0", "toler", "total", "trans",
+];
+
+/// True when `key`, a lower-case option name, is a documented option, or a
+/// key that starts with one of [`PREFIX_NAMES`].
 pub fn is_known_option(key: &str) -> bool {
-    if NAMES.contains(&key) || key.starts_with("meth") {
+    if NAMES.contains(&key) || PREFIX_NAMES.iter().any(|n| key.starts_with(n)) {
         return true;
     }
     NUMBERED.iter().any(|&(root, lo, hi)| {
@@ -185,7 +195,23 @@ mod tests {
 
     #[test]
     fn other_names_are_unknown() {
-        for key in ["totl", "met", "jac", "eps", "foo", "totalx"] {
+        for key in ["totl", "tot", "tota", "met", "jac", "eps", "foo", "d", "t"] {
+            assert!(!is_known_option(key), "{key}");
+        }
+    }
+
+    #[test]
+    fn keys_that_start_with_a_measured_name_are_known() {
+        for key in [
+            "totalx", "dtx", "dtt", "dtminx", "t0x", "transx", "njmpx", "boundx", "tolerx",
+        ] {
+            assert!(is_known_option(key), "{key}");
+        }
+    }
+
+    #[test]
+    fn longer_keys_of_names_that_were_not_measured_stay_unknown() {
+        for key in ["xlox", "seedx", "ntstx", "atolerx", "maxstorx", "colormapx"] {
             assert!(!is_known_option(key), "{key}");
         }
     }

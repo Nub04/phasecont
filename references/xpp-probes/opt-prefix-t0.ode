@@ -1,0 +1,8 @@
+# opt-prefix-t0: Does a key that starts with t0, such as t0x, set t0?
+# xpp: t@1=5
+# pc: ok
+# ruling: matches: a key that starts with t0 is t0 (crates/pc-ode/docs/language.md, Lists)
+x'=0
+x(0)=3
+aux v=x
+@ t0x=5,dt=0.5,total=1

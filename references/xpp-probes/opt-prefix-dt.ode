@@ -1,0 +1,8 @@
+# opt-prefix-dt: Does a key that starts with dt, such as dtx, set dt?
+# xpp: t@2=0.5
+# pc: ok
+# ruling: matches: a key that starts with dt is dt (crates/pc-ode/docs/language.md, Lists)
+x'=0
+x(0)=3
+aux v=x
+@ dtx=0.5,total=1

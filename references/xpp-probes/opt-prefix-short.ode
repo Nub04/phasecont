@@ -1,0 +1,8 @@
+# opt-prefix-short: Does tot, a key shorter than total, set total?
+# xpp: t@21=20
+# pc: ODE0024
+# ruling: matches: tot sets nothing in XPPAUT, so total stays 20, and PhaseCont reports tot as unknown
+x'=0
+x(0)=3
+aux v=x
+@ tot=2,dt=1

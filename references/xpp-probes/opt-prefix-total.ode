@@ -1,7 +1,7 @@
 # opt-prefix-total: Does a key that starts with total, such as totalx, set total?
 # xpp: t@3=2
-# pc: ODE0024
-# ruling: mismatch: PhaseCont reports totalx as unknown (docs/STATUS.md, open questions)
+# pc: ok
+# ruling: matches: a key that starts with total is total (crates/pc-ode/docs/language.md, Lists)
 x'=0
 x(0)=3
 aux v=x
