@@ -151,6 +151,51 @@ classdef MapRefusalTest < matlab.unittest.TestCase
             testCase.verifyError( ...
                 @() phasecont.app.PhasePlane(file, Visible = "off"), ...
                 "phasecont:app:mapModel");
+            % PhasePlane frees the model it built from the file. Handle ids
+            % count up in steps of 2, so every id between m and a model made
+            % after the refusal must be unknown to the engine.
+            after = testCase.model(testCase.Henon);
+            ids = m.Id + uint64(2):uint64(2):after.Id - uint64(2);
+            testCase.verifyNotEmpty(ids, "the session load made no handle");
+            for id = ids
+                testCase.verifyError(@() pckern("model_info", id), ...
+                    "phasecont:engine:badHandle", ...
+                    sprintf("handle %d is still alive", id));
+            end
+        end
+
+        function replayOfAMapSessionFailsEveryRun(testCase)
+            % A 1.0.0 session can hold runs on a map. Here the runs come
+            % from the same right-hand side written as an ODE, and the file
+            % then gets the map source and its hash, as such a session had.
+            ode = testCase.model("par r=2" + newline + "init x=0.2" + newline + ...
+                "x'=r*x*(1-x)" + newline + "done" + newline);
+            eq = phasecont.equilibrium(ode, 0.9);
+            tr = phasecont.simulate(ode, 0.2, [0 5]);
+            file = fullfile(testCase.Dir, "logistic_ode.pcsession.json");
+            save(phasecont.Session(ode, {eq, tr}), file);
+            S = phasecont.internal.sessionCodec.readFile(file);
+            header = struct("Created", "2026-11-14T00:00:00Z", ...
+                "EngineName", "pckern", "EngineVersion", "1.0.0", ...
+                "Platform", string(computer("arch")), "Matlab", "2026b");
+            testCase.applyFixture(matlab.unittest.fixtures.SuppressedWarningsFixture( ...
+                "phasecont:session:runFailed"));
+            for text = [testCase.Logistic testCase.LogisticDiscrete]
+                map = testCase.model(text);
+                model = struct("Name", "logistic.ode", "Source", map.Source, ...
+                    "Sha256", map.SourceSha256, "Evaluator", "jit");
+                changed = fullfile(testCase.Dir, "logistic_map.pcsession.json");
+                phasecont.internal.sessionCodec.writeFile(changed, header, ...
+                    model, S.Records, S.Items);
+                lastwarn("");
+                r = phasecont.session.replay(changed);
+                [msg, id] = lastwarn;
+                testCase.verifyEqual(string(id), "phasecont:session:runFailed");
+                testCase.verifySubstring(string(msg), testCase.Refusal);
+                testCase.verifySize(r, [1 2]);
+                testCase.verifyEqual([r.Kind], ["equilibrium" "simulate"]);
+                testCase.verifyFalse(any([r.Pass]), text);
+            end
         end
 
         function anOdeWithAnotherMethStillSimulates(testCase)
