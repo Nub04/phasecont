@@ -2218,6 +2218,81 @@ The refusal text becomes "the model is a map (`x(t+1)=...` or `@ meth=discrete`)
 11. MATLAB, `tests/EquilibriumTest.m`: on the Lorenz model the origin has Stable false at r = 28 and true at r = 0.5, where its eigenvalues are $-\beta$ and the roots of $\lambda^2 + (\sigma + 1)\lambda + \sigma(1 - r)$, all negative.
 12. `cargo test` and the full MATLAB suite stay green (0 failed).
 
+## 8w. Maps, slice 3: LP, PD and NS curves of fixed points
+
+Slice 3 lifts the refusal of Section 8v for three more problem types: on a map, `continuation` with Type `"LP"`, `"PD"` or `"NS"` follows the curve of fixed points with a multiplier 1, a multiplier -1 or a pair of multipliers e^{±iθ} in two parameters. The curves carry no codim-2 labels yet (slice 4). Cycles of a map, period-k points, PhasePlane and `ensemble` still refuse a map.
+
+Owner approval: the owner approved slices 3 to 8 of the map plan on 2026-11-15 with decision 5: the type strings `"LP"`, `"PD"` and `"NS"` are shared with the ODE curves, and the toolbox and the engine dispatch on the model kind. The C ABI keeps its function signatures and `abi_version` stays 1.
+
+Four rulings of this slice are recorded in `docs/STATUS.md`:
+- (a) The engine has three new run kinds, `RunKind::MapLpCurve`, `MapPdCurve` and `MapNsCurve`, each with a `CurveSetup`, in the new module `pc-engine/src/mapcurve.rs`. They run on the compiled map itself, not on the adapter `MapAsRoot` of Section 8v, since their rows hold the multipliers of F. The row layouts below are not final: slice 4 appends the codim-2 test columns.
+- (b) The curves have no codim-2 labels in this slice, and their run kinds are named `"LP"`, `"PD"` and `"NS"`.
+- (c) MATLAB dispatches on `Model.IsMap`: on a map these types are curves of fixed points, and on an ODE `"PD"` and `"NS"` stay the cycle curves of Section 8.
+- (d) The LP curve of a map uses the defining system of the PD curve with the shift -1, not the ODE LP curve of Section 6 on G = F - x. The map plan said the LP curve "reuses the existing fold curve". This ruling departs from it for two reasons: one code path keeps the multipliers of F in the rows of all three curves, and the codim-2 tests of the ODE LP curve (CP, BT, ZH) do not fit a map, whose LP curve has CP, R1, LPPD and LPNS (slice 4).
+
+**Defining systems.** Let A = F_x(x, α) with α = (a1, a2) the two free parameters, and let A_z be the derivative of A along a component z of the unknowns.
+- LP and PD. With σ = -1 for LP and σ = +1 for PD, and borders v_bor and w_bor in R^n, solve
+  [A + σI, w_bor; v_borᵀ, 0] (v; s) = (0; 1).
+  The curve is F(x, α) - x = 0 and s = 0, which are n + 1 equations in the n + 2 unknowns (x, a1, a2). s vanishes exactly where A + σI is singular, that is where A has the multiplier 1 (LP) or -1 (PD). Its derivative is s_z = -wᵀ A_z v, with w from the adjoint system [Aᵀ + σI, v_bor; w_borᵀ, 0] (w; s) = (0; 1).
+- NS. With M = A² - 2κA + I and n-by-2 borders V_bor and W_bor, solve
+  [M, W_bor; V_borᵀ, 0] (X; S) = (0; I_2).
+  The curve is F - x = 0, S_11 = 0 and S_21 = 0, which are n + 2 equations in the n + 3 unknowns (x, a1, κ, a2). On the real eigenplane E of a pair r e^{±iθ} of A with 0 < θ < π, M restricted to E is aI + bJ with J the rotation by 90 degrees, a = r² cos 2θ - 2κ r cos θ + 1 and b = 2r sin θ (r cos θ - κ). So a = b = 0 exactly when r = 1 and κ = cos θ, and as for the Hopf curve of Section 6 the first column of S vanishes exactly there. The gradient is S_z[i,1] = -Y_iᵀ M_z X_1, with Y from the adjoint system [Mᵀ, V_bor; W_borᵀ, 0] (Y; H) = (0; I_2). For z in (x, a1, a2), M_z = A_z A + A A_z - 2κ A_z, so S_z[i,1] = -(Y_iᵀ A_z (A X_1 - 2κ X_1) + (Aᵀ Y_i)ᵀ A_z X_1). For κ, M_κ = -2A and S_κ[i,1] = 2 Y_iᵀ A X_1.
+- The rows of F - x in the curve Jacobian are A - I in the state columns, F_α in the parameter columns, and 0 in the κ column of the NS curve. A_z v is the second directional derivative of F along v and the unit vector of z, from the `Dir` entries.
+- For n = 2, M vanishes at every point of the NS curve: by the Cayley-Hamilton theorem M = (tr A - 2κ)A + (1 - det A)I, and both factors are 0 there. The bordered matrix stays regular while V_bor and W_bor have rank 2, S = 0 on the curve, and the gradient above is still the derivative of S.
+
+**Borders.** At the start, v_bor and w_bor are the right and left singular vectors of A + σI for its smallest singular value, and V_bor and W_bor are the right and left singular vectors of M for its two smallest singular values. At an LP or PD point these span the null spaces of A + σI and Aᵀ + σI, and at an NS point the null spaces of M and Mᵀ, which have dimension 2 there. Each evaluation of the test functions at an accepted point replaces the borders: v_bor by v/|v| and w_bor by w/|w|, and V_bor and W_bor by orthonormal bases of the columns of X and Y. The zero sets of s and S do not depend on the borders.
+
+**Start.** The start is the state, a1 and a2 of a point, in practice a special point of a map EP branch. The NS curve also needs κ: it starts at κ0 = Re μ of the critical pair of Section 8v (the pair whose product is nearest to 1). An NS start whose critical pair is real is refused, and so is an NS curve of a map with one variable. The curves of Section 6 refuse a start whose residual is above `tol_f`. A map curve instead accepts a start whose largest residual is at most `START_RESIDUAL_MAX` = 10^-6 and corrects it with the corrector of the continuation (`palc::correct`) at fixed a2, before it computes the first tangent. The reason is that Section 8v locates PD and NS points to 10^-10 in alpha when refined and 10^-8 when not, without `refine_special`, so their residual on the curve system can be above `tol_f`. The bound 10^-6 is a PhaseCont value that waits for the owner's sign-off (`docs/STATUS.md`).
+
+**First tangent.** As in Section 6, the first tangent is the unit null vector of the curve Jacobian with its first component above 10^-8 in size positive, and `Options::direction` -1 reverses it.
+
+**Points.** On a map curve `Point.u` is the unknown without its last entry, that is (x, a1) on the LP and PD curves and (x, a1, κ) on the NS curve, `Point.alpha` is a2, and `Options::bounds` bound a2. Every point stores the multipliers, the eigenvalues of A. `Point.tests` and `Point.codim2` are empty, and the branch has no specials.
+
+**Where the formulas come from.** The defining systems are equations 2.4 to 2.9 of Govaerts, Khoshsiar Ghaziani, Kuznetsov and Meijer (2007), and the border update follows their description on p. 2650. The gradients s_z and S_z follow from differentiating the bordered systems; they are not printed in the paper and are checked against finite differences (test 1). These are PhaseCont choices: the first column of S as the two equations, as for the Hopf curve of Section 6 (the paper picks the two entries of S by their conditioning), the start value κ0, the start correction and its bound, and the sign rule of the first tangent.
+
+**Neutral saddles.** The NS system has solutions with a real pair of multipliers whose product is 1, with |κ| ≥ 1. A curve that reaches |κ| = 1 passes the 1:1 or 1:2 resonance and goes on as a curve of neutral saddles. This slice does not label those points; slice 4 adds R1 and R2.
+
+**Problem JSON.** A problem with `type` `"LP"`, `"PD"` or `"NS"` on a map, with two names in `free` and none of the cycle keys `ntst`, `ncol` and `mesh`, is a map curve. It takes the keys of the LP curve problem of Section 10 (`u0`, `p`, `free`, `options`).
+- The engine names the run kinds `"LP"`, `"PD"` and `"NS"` and lists no codim-2 labels in `status_json`.
+- The LP and PD rows have the stride 3n + 4 and the layout `[a2, x(1..n), a1, mu_re(1..n), mu_im(1..n), h, newton_iters]`. The NS rows have the stride 3n + 5 and the layout `[a2, x(1..n), a1, kappa, mu_re(1..n), mu_im(1..n), h, newton_iters]`.
+- `options.detect` is refused with "options.detect: a curve of fixed points of a map takes no detect". `switch`, `start_is_special` and `options.mesh_adapt` are refused with the texts that refuse them on every other curve.
+- One name in `free` is "free: expected two parameter names".
+- A map that reads `t` is `NonAutonomous`, as in Section 8v.
+- The start refusals are `BadProblem`: "the start is not near the PD curve: the residual is R; start from a PD point of a map EP branch" when the residual is NaN or above the bound, "the start did not converge onto the PD curve in N Newton iterations; start from a PD point of a map EP branch" when the correction fails, with LP or NS in place of PD on those curves, "the start has no complex pair of multipliers near the unit circle; start the NS curve from an NS point of a map EP branch", and "an NS curve of a map needs at least two variables". A cancelled correction stops the run as a cancelled corrector does.
+- The engine refuses the three map curve kinds on an ODE (`BadProblem`).
+
+**Entries.** This table replaces the rows of the Section 8v table that change. One function, `map_type_runs` in `pc-ffi/src/json/problem.rs`, decides which problems run on a map, and both `run_start` and `pc-cli cont` call it, so they agree.
+
+| Entry | Map model |
+|---|---|
+| `run_start` | `"ITER"` and `"EP"` run, and so do `"LP"`, `"PD"` and `"NS"` without cycle keys. Every other problem, a `"PD"` or `"NS"` problem with a cycle key and a problem that is not JSON are refused before the problem is parsed further, with the text below |
+| `pc-cli cont` | the problems that run in `run_start` run and print their rows. Every other problem is refused with exit code 1 |
+| `pc-cli session` | ITER, EP, equilibrium, and LP, PD and NS curve records replay. Every other record fails |
+
+The refusal text becomes "the model is a map (`x(t+1)=...` or `@ meth=discrete`); PhaseCont iterates a map, continues its fixed points in one parameter (types ITER and EP) and follows their LP, PD and NS curves in two parameters, but does not follow cycles of a map yet". It still contains "the model is a map".
+
+**MATLAB.**
+- `phasecont.continuation(m, start, Type = "LP", Free = [a1 a2])` on a map follows the LP curve of fixed points, and Types `"PD"` and `"NS"` follow the PD and NS curves. They take the start and the options of the ODE LP curve: Detect, Switch, Var, NTST, NCOL and MeshAdapt are refused as on that curve.
+- The Branch has Kind `"LP"`, `"PD"` or `"NS"`, U the fixed point, Alpha the two parameters, Eigenvalues the multipliers, Tests N-by-0, Codim2 N-by-0, no Specials and Stable false at every point, since a multiplier lies on the unit circle. The NS branch has Kappa, cos θ of the critical multipliers e^{±iθ}, as on an NS curve of cycles.
+- `Branch.isCycleType`, `internal.rows2branch`, `internal.latexTable` and `latex.figureFromBranch` treat these branches as curves of fixed points, not of cycles. On an ODE, `"PD"` and `"NS"` keep their meaning.
+- Type `"H"`, `"LC"`, `"LPC"` and `"HOM"` on a map raise `phasecont:engine:unsupportedModel`, as does a map PD or NS problem with a mesh.
+- A map LP curve saved by 1.0.0 was run as an ODE LP curve on F and has rows of width 3n + 7. `rows2branch` loads it as stored, in the layout of an ODE LP curve. Its replay runs the map LP curve or is refused, so it gives `Pass = false`. A map PD or NS curve saved by 1.0.0 is a cycle curve with a mesh. It loads as stored, and its replay is refused with `Pass = false`.
+- The help texts of `continuation` and `Branch` say what the fields hold for a map curve.
+
+**What this slice does not do.** It does not label codim-2 points on the map curves, compute their normal form coefficients, follow period-k points or cycles of a map, draw a map in PhasePlane or run a map in `ensemble`.
+
+**Acceptance tests (slice 3).** Every model is our own. They amend Sections 8t, 8u and 8v. Tests 5 and 7 of Section 8t and tests 3 and 4 of Section 8u, as Section 8v amended them, expect the refusal text of this section and use type `"H"` where they used `"LP"`, and the uncompiled-handle check uses `"H"`. In the type list of test 5 of Section 8t, `"LP"`, `"PD"` and `"NS"` without a cycle key now run on a map (test 7 below), and with a cycle key they stay refused. In test 8 of Section 8t, the curve from a map point with two free parameters that is refused is an H curve. In test 9 of Section 8v, every other type means every type but ITER, EP and the three map curves of this section. In test 10 of Section 8v, Types `"LP"` and `"PD"` from a map point run, Types `"H"` and `"LC"` raise `phasecont:engine:unsupportedModel`, an LP curve from a PD point raises `phasecont:engine:badProblem` with "not near", and an NS curve from a point with a real pair raises `phasecont:engine:badProblem`. The rest of those tests stands. Points are checked to 10^-8 in a1, a2 and x, multipliers to 10^-8, and each test computes the expected multipliers in the test.
+1. Rust, `pc-engine` `mapcurve`: on `map_ns4.ode` at a generic point off the curves, the Jacobian of each of the three systems, with the borders held fixed, equals central finite differences of its residual to a relative 10^-6.
+2. Rust, `pc-engine`: the Hénon map `x(t+1)=1-a*x^2+y`, `y(t+1)=b*x` with free [a, b] from b = 0.3. The LP curve is a = -(1 - b)²/4, x = 2/(1 - b), y = bx, with the multipliers 1 and -b. The PD curve is a = 3(1 - b)²/4, x = 2/(3(1 - b)), y = bx, with the multipliers -1 and b. Both are checked at every point with b in [0.1, 0.6], the default direction is increasing b, and direction -1 gives decreasing b.
+3. Rust, `pc-engine`: the map `x(t+1)=y`, `y(t+1)=a-b*x-y^2` (`map_henon_auto.ode`) with free [b, a] from b = 1, x = y = 0.3, a = 0.69. The NS curve is b = 1, x = y = -1 + √(1 + a), κ = -y, with the multipliers e^{±iθ}, cos θ = κ, checked at every point with a in [-0.5, 2.5]. Here n = 2, so M = 0 along the curve. The default direction is increasing a.
+4. Rust, `pc-engine`: `map_ns4.ode` with free [a, th] from th = 1.1. The NS curve is a = 0 at the origin with κ = cos(th), and the second pair of multipliers stays 0.95 e^{±1.6i}. Checked at every point with th in [0.5, 2.5], in the default direction (decreasing th, since κ is the first component of the tangent that moves) and with direction -1.
+5. Rust, `pc-engine`: each curve of tests 2 to 4 also starts from its point as stored by a map EP run through it, and from that point with a1 moved by 10^-8, and gives the same curve. The test prints the start residuals.
+6. Rust, `pc-engine` and `pc-ffi`: an NS start at the real pair of the map of test 3 at b = 1, x = y = 1.5, a = 5.25 is refused with the text above, a regular point is refused with "not near" (the Hénon map at a = 0.2, b = 0.3 for LP and PD, and the map of test 3 at b = 0.5, a = 0.69, where the multipliers are a complex pair of modulus √0.5, for NS), an NS curve of the logistic map is refused, a map curve kind on an ODE is `BadProblem`, `options.detect` is refused, a PD or NS problem with `ntst` is `UnsupportedModel`, and one free name is `BadProblem`.
+7. Rust, `pc-ffi`: on a map handle the three curves run with the names `"LP"`, `"PD"` and `"NS"`, the strides 3n + 4, 3n + 4 and 3n + 5 and no codim-2 labels, and give rows equal to those of `pc-cli cont` on the same problems.
+8. Rust, `pc-cli`: a session with a map EP branch and a map PD curve replays and passes.
+9. MATLAB, `tests/MapCurveTest.m`: from the LP and PD points of a map EP branch of the Hénon map in a, `continuation` with Type `"LP"` and `"PD"` and Free `["a" "b"]` follows the closed forms of test 2. From the NS point of a map EP branch of the map of test 3 in b, Type `"NS"` with Free `["b" "a"]` follows test 3 and has Kappa = -y. The branches have Tests and Codim2 N-by-0, no Specials, Stable false and Eigenvalues the multipliers. A session round trip keeps them and replay passes. An NS curve from the PD point raises `phasecont:engine:badProblem`. Detect on a map curve raises the existing error. A 1.0.0 session with a map LP curve of width 3n + 7 loads, and its replay gives `Pass = false`.
+10. `cargo test` and the full MATLAB suite stay green (0 failed).
+
 ## 9. Acceptance tests
 
 Exact tests (no oracle needed):
