@@ -478,6 +478,44 @@ fn test5_ns_normal_form_and_conjugate_have_d_equal_2s() {
 }
 
 #[test]
+fn test8_ns_at_the_1_3_resonance_keeps_its_label_and_has_no_coefficient() {
+    // map_ns with th = 2 pi / 3: the NS point at a = 0 has the multipliers e^{+-2 pi i / 3},
+    // so the h2000 solve is singular and the point gets a warning instead of coefficients.
+    // With th 1e-3 away the guard does not apply, and d = 2s as in test 5.
+    let th3 = 2.0 * PI / 3.0;
+    for ev in &BOTH {
+        for (th, resonant) in [(th3, true), (th3 + 1e-3, false)] {
+            let setup = EpSetup::new(0, vec![-0.1, -0.4, th], vec![0.0, 0.0]);
+            let opts = Options {
+                bounds: (f64::NEG_INFINITY, 0.1),
+                ..Options::default()
+            };
+            let br = map_branch("map_ns", ev, &setup, &opts);
+            let ns = only(&br.specials, "NS");
+            at(ns, 0.0, &[0.0, 0.0]);
+            assert_eq!(br.specials.len(), 1, "{:?}", labels(&br.specials));
+            if resonant {
+                assert!(ns.extras.coefficient.is_none());
+                assert!(ns.extras.coefficient2.is_none());
+                assert!(ns.extras.values.is_empty(), "{:?}", ns.extras.values);
+                assert_eq!(br.warnings.len(), 1, "{:?}", br.warnings);
+                let w = &br.warnings[0];
+                assert!(w.starts_with("NS point at alpha = "), "{w}");
+                assert!(w.contains("no normal form coefficient"), "{w}");
+                assert!(
+                    w.contains("the multipliers are at a strong resonance (1:1, 1:2 or 1:3)"),
+                    "{w}"
+                );
+            } else {
+                assert!(br.warnings.is_empty(), "{:?}", br.warnings);
+                close(theta(ns), th, 1e-8, "theta");
+                rel(ns.extras.coefficient.unwrap(), -0.8, 1e-7, "d");
+            }
+        }
+    }
+}
+
+#[test]
 fn test6_ns4_takes_theta_from_the_pair_nearest_the_unit_circle() {
     for ev in &BOTH {
         let params = vec![-0.1, -0.4, 1.1, 0.95, 1.6, 0.9, 0.3];
