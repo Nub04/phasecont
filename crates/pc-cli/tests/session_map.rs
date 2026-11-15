@@ -1,7 +1,8 @@
-//! Replay of a session on a map model (SPEC sections 8t and 8u). A 1.0.0 session can hold map
-//! runs with the rows the old engine computed. Replay goes through `model_equilibrium` and
-//! `run_start`. Both refuse an equilibrium or an IVP run on a map, so those records fail and
-//! name the refusal, while an ITER record replays.
+//! Replay of a session on a map model (SPEC sections 8t, 8u and 8v). A 1.0.0 session can hold
+//! map runs with the rows the old engine computed. Replay goes through `model_equilibrium` and
+//! `run_start`. Since SPEC 8v `model_equilibrium` solves F(x) = x on a map, so a stored
+//! equilibrium record with the old value fails on the comparison. An IVP record is still refused
+//! and names the refusal, while an ITER record replays.
 
 mod common;
 
@@ -19,7 +20,7 @@ const EQ_OPTS: &str = r#"{"max_newton":50,"tol_x":1e-10,"tol_f":1e-10}"#;
 const IVP_PROBLEM: &str =
     r#"{"type":"IVP","tspan":[0.0,5.0],"options":{"rtol":1e-8,"atol":1e-10,"max_steps":1000}}"#;
 const ITER_PROBLEM: &str = r#"{"type":"ITER","tspan":[0,5]}"#;
-/// Part of the refusal text of SPEC 8t, kept in SPEC 8u.
+/// Part of the refusal text of SPEC 8t, kept in SPEC 8u and 8v.
 const REFUSAL: &str = "the model is a map";
 
 fn scratch() -> PathBuf {
@@ -29,7 +30,9 @@ fn scratch() -> PathBuf {
 }
 
 /// A session with an equilibrium record and a trajectory record on `source`. The stored
-/// values are placeholders, since replay is refused before it compares anything.
+/// equilibrium is the root of F that the 1.0.0 engine found, x = 0 with eigenvalue 2. The
+/// fixed point from 0.5 at r = 2 is x = 1/2 with multiplier 0, so the comparison fails. The
+/// IVP values are placeholders, since replay refuses the IVP before it compares anything.
 fn map_session(source: &str) -> Session {
     let eq = RunRec {
         kind: Kind::Equilibrium,
@@ -120,7 +123,7 @@ fn session(source: &str, runs: Vec<RunRec>, items: Vec<Item>) -> Session {
 }
 
 #[test]
-fn replay_of_a_map_session_fails_every_run_with_the_refusal() {
+fn replay_of_a_map_session_fails_every_run() {
     for (tag, source) in [("map", LOGISTIC_MAP), ("discrete", LOGISTIC_DISCRETE)] {
         let file = scratch().join(format!("{tag}.pcsession.json"));
         std::fs::write(&file, map_session(source).to_text()).unwrap();
@@ -131,12 +134,19 @@ fn replay_of_a_map_session_fails_every_run_with_the_refusal() {
         assert_eq!(report["pass"], false, "{tag}: {report}");
         let runs = report["runs"].as_array().unwrap();
         assert_eq!(runs.len(), 2, "{tag}: {report}");
-        for r in runs {
-            assert_eq!(r["pass"], false, "{tag}: {r}");
-            let msg = r["message"].as_str().unwrap();
-            assert!(msg.starts_with("replay failed: "), "{tag}: {msg}");
-            assert!(msg.contains(REFUSAL), "{tag}: {msg}");
-        }
+        // The equilibrium record runs and differs from the stored root of F.
+        let eq = &runs[0];
+        assert_eq!(eq["pass"], false, "{tag}: {eq}");
+        let msg = eq["message"].as_str().unwrap();
+        assert!(!msg.starts_with("replay failed: "), "{tag}: {msg}");
+        assert!(!msg.contains(REFUSAL), "{tag}: {msg}");
+        assert!(msg.contains("exceeds tol"), "{tag}: {msg}");
+        // The IVP record is refused.
+        let ivp = &runs[1];
+        assert_eq!(ivp["pass"], false, "{tag}: {ivp}");
+        let msg = ivp["message"].as_str().unwrap();
+        assert!(msg.starts_with("replay failed: "), "{tag}: {msg}");
+        assert!(msg.contains(REFUSAL), "{tag}: {msg}");
     }
 }
 

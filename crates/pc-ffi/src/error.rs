@@ -20,11 +20,11 @@ pub const PC_ERR_GPU_LAUNCH: i32 = 11;
 pub const PC_ERR_GPU_TIMEOUT: i32 = 12;
 pub const PC_ERR_UNSUPPORTED_MODEL: i32 = 13;
 
-/// The refusal of every run but ITER and of `model_equilibrium` on a map (SPEC 8t, 8u).
-/// `pc-cli cont` prints the same text.
+/// The refusal of every run but ITER and EP on a map (SPEC 8t, 8u, 8v). `pc-cli cont` prints
+/// the same text.
 pub const MAP_MODEL: &str = "the model is a map (`x(t+1)=...` or `@ meth=discrete`); \
-     PhaseCont iterates a map (simulate, problem type ITER) but does not find its fixed points \
-     or continue them yet";
+     PhaseCont iterates a map and continues its fixed points in one parameter (types ITER and \
+     EP) but does not follow curves or cycles of a map yet";
 
 /// A failure that an export turns into an error code and a `last_error` text.
 #[derive(Debug, Clone, PartialEq)]

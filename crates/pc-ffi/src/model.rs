@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 
 use pc_engine::{
-    EpSetup, Evaluator, ModelEval, Options, build_allowing_t, build_dde, check_tables,
+    EpSetup, Evaluator, MapAsRoot, ModelEval, Options, build_allowing_t, build_dde, check_tables,
     engine_kinds, entry_symbol, equilibrium,
 };
 use pc_ensemble::job::{NATIVE_FRAME_LIMIT, NativeRhs};
@@ -96,8 +96,9 @@ pub(crate) struct ModelHandle {
     pub names: Names,
     /// True for a model with `delay(...)` calls (SPEC 8s). Only an "EP" run takes one.
     pub delay: bool,
-    /// True for a map (`x(t+1)=...`, or an ODE file with `@ meth=discrete`; SPEC 8t). No run
-    /// takes one yet. A delay model is never a map, since lowering refuses a delay in a map.
+    /// True for a map (`x(t+1)=...`, or an ODE file with `@ meth=discrete`; SPEC 8t). Only
+    /// ITER and EP runs and `model_equilibrium` take one (SPEC 8u, 8v). A delay model is never
+    /// a map, since lowering refuses a delay in a map.
     pub map: bool,
     /// The compiled `F` of the ensemble workers, from the first double-precision CPU run.
     /// The outer `None` means not tried yet, the inner one that the model has none (a delay
@@ -211,7 +212,7 @@ impl ModelHandle {
         Ok(())
     }
 
-    /// The error for an entry that computes a result a map does not have yet (SPEC 8t).
+    /// The error for an entry that computes a result a map does not have yet (SPEC 8t, 8v).
     pub fn not_map(&self) -> Result<()> {
         if self.map {
             return Err(Error::UnsupportedModel(MAP_MODEL.into()));
@@ -446,7 +447,13 @@ fn handle(
         }
         Request::Equilibrium { setup, opts } => {
             let ev = compiled(ev)?;
-            let u = equilibrium(ev, &setup, &opts)?;
+            // A map solves G = F - x = 0, and the eigenvalues of F_x at the fixed point are
+            // its multipliers (SPEC 8v).
+            let u = if ctx.info.kind == ModelKind::Map {
+                equilibrium(&mut MapAsRoot::new(&mut *ev), &setup, &opts)?
+            } else {
+                equilibrium(ev, &setup, &opts)?
+            };
             let n = ev.n();
             let mut p = setup.params.clone();
             p.push(0.0);

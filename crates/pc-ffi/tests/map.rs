@@ -1,5 +1,5 @@
-//! Map models through the table from `pc_api_v1()` (SPEC section 8t, tests 4 and 5, and
-//! section 8u, test 3).
+//! Map models through the table from `pc_api_v1()` (SPEC section 8t, tests 4 and 5, section
+//! 8u, test 3, and section 8v, test 9).
 
 use std::ffi::{CStr, CString, c_char};
 use std::path::{Path, PathBuf};
@@ -9,12 +9,13 @@ use std::time::{Duration, Instant};
 use pckern::{PcApiV1, pc_api_v1};
 use serde_json::Value;
 
-/// The refusal text of SPEC 8u.
+/// The refusal text of SPEC 8v.
 const MAP_MODEL: &str = "the model is a map (`x(t+1)=...` or `@ meth=discrete`); \
-     PhaseCont iterates a map (simulate, problem type ITER) but does not find its fixed points \
-     or continue them yet";
+     PhaseCont iterates a map and continues its fixed points in one parameter (types ITER and \
+     EP) but does not follow curves or cycles of a map yet";
 const UNSUPPORTED_MODEL: i32 = 13;
 const BAD_PROBLEM: i32 = 6;
+const NON_AUTONOMOUS: i32 = 7;
 const NOT_COMPILED: &str = "model is not compiled; call model_compile first";
 
 /// The logistic map, as in `crates/pc-ode/tests/corpus/logistic_map.ode`.
@@ -28,6 +29,10 @@ const TIMED_DISCRETE: &str = "par r=2\nx'=r*x*(1-x)+t\n@ meth=discrete\ndone\n";
 const HUTCH: &str = "par r=1.3, tau=1\nx'=r*x*(1-delay(x,tau))\ndone\n";
 /// A map that reads `t`: from x(0) = 0 it gives 0, 0, 1, 3, 6.
 const SHIFT: &str = "init x=0\nx(t+1)=x+t\ndone\n";
+/// The same map with a parameter, so that an EP problem parses and reaches the check for t.
+const SHIFT_P: &str = "par a=1\ninit x=0\nx(t+1)=a*x+t\ndone\n";
+/// The Henon map, as in `crates/pc-ode/tests/corpus/henon_map.ode`.
+const HENON: &str = include_str!("../../pc-ode/tests/corpus/henon_map.ode");
 /// A map that overflows at its ninth iterate from 10.
 const SQUARE: &str = "init x=10\nx(t+1)=x*x\ndone\n";
 
@@ -149,12 +154,37 @@ fn wait(run: &Id) -> Value {
 
 /// Every row of branch 0 of a finished run, as `stride` values a row.
 fn rows(run: &Id, st: &Value) -> Vec<f64> {
+    branch_rows(run, st, 0)
+}
+
+/// Every row of branch `b` of a finished run, as `stride` values a row.
+fn branch_rows(run: &Id, st: &Value, b: usize) -> Vec<f64> {
+    copy_rows(run, st, b, 0)
+}
+
+/// The rows of branch `b` (`what` 0) or of its special points (`what` 1).
+fn copy_rows(run: &Id, st: &Value, b: usize, what: u32) -> Vec<f64> {
     let stride = st["stride"].as_u64().unwrap() as usize;
-    let count = st["branches"][0]["points"].as_u64().unwrap() as usize;
+    let jb = &st["branches"][b];
+    let count = if what == 0 {
+        jb["points"].as_u64().unwrap() as usize
+    } else {
+        jb["specials"].as_array().unwrap().len()
+    };
     let mut buf = vec![f64::NAN; count * stride];
     let mut got = 0usize;
-    let rc =
-        unsafe { (api().run_copy)(run.0, 0, 0, 0, count, buf.as_mut_ptr(), buf.len(), &mut got) };
+    let rc = unsafe {
+        (api().run_copy)(
+            run.0,
+            b as u32,
+            what,
+            0,
+            count,
+            buf.as_mut_ptr(),
+            buf.len(),
+            &mut got,
+        )
+    };
     assert_eq!((rc, got), (0, count), "{}", last_error());
     buf
 }
@@ -175,14 +205,21 @@ fn bits(v: &[f64]) -> Vec<u64> {
 }
 
 fn equilibrium(m: &Id, x: &[f64], p: &[f64]) -> i32 {
+    solve(m, x, p).0
+}
+
+/// Calls `model_equilibrium` and returns the code, the point and the eigenvalues as
+/// (re, im) pairs.
+fn solve(m: &Id, x: &[f64], p: &[f64]) -> (i32, Vec<f64>, Vec<(f64, f64)>) {
     let opts = CString::new("{}").unwrap();
-    let mut u = vec![0.0; x.len()];
-    let mut eig = vec![0.0; 2 * x.len()];
-    unsafe {
+    let n = x.len();
+    let mut u = vec![f64::NAN; n];
+    let mut eig = vec![f64::NAN; 2 * n];
+    let rc = unsafe {
         (api().model_equilibrium)(
             m.0,
             x.as_ptr(),
-            x.len(),
+            n,
             p.as_ptr(),
             p.len(),
             opts.as_ptr(),
@@ -191,7 +228,16 @@ fn equilibrium(m: &Id, x: &[f64], p: &[f64]) -> i32 {
             eig.as_mut_ptr(),
             eig.len(),
         )
-    }
+    };
+    let pairs = (0..n).map(|i| (eig[i], eig[n + i])).collect();
+    (rc, u, pairs)
+}
+
+fn close(got: f64, want: f64, tol: f64, what: &str) {
+    assert!(
+        (got - want).abs() <= tol,
+        "{what}: got {got:e}, want {want:e}"
+    );
 }
 
 fn rhs(m: &Id, x: f64, p: f64) -> f64 {
@@ -235,7 +281,7 @@ fn every_run_type_is_refused_on_a_map_handle() {
         let m = compiled(text);
         let n_p = info(&m)["n_p"].as_u64().unwrap() as usize;
         let p = vec![2.0; n_p];
-        for ty in ["EP", "LP", "H", "LC", "LPC", "PD", "NS", "HOM", "IVP"] {
+        for ty in ["LP", "H", "LC", "LPC", "PD", "NS", "HOM", "IVP"] {
             let json = format!(r#"{{"type":"{ty}","free":"r"}}"#);
             let (rc, run) = start_with(&m, &json, &[0.5], &p);
             assert_eq!(rc, UNSUPPORTED_MODEL, "{ty}: {}", last_error());
@@ -254,7 +300,7 @@ fn every_run_type_is_refused_on_a_map_handle() {
 fn a_map_handle_that_was_not_compiled_gets_the_map_error() {
     for text in [LOGISTIC_MAP, LOGISTIC_DISCRETE] {
         let m = parse(text);
-        let (rc, run) = start_with(&m, r#"{"type":"EP","free":"r"}"#, &[0.5], &[2.0]);
+        let (rc, run) = start_with(&m, r#"{"type":"LP","free":"r"}"#, &[0.5], &[2.0]);
         assert_eq!(rc, UNSUPPORTED_MODEL, "{}", last_error());
         assert_eq!(run, 0);
         assert_eq!(last_error(), MAP_MODEL);
@@ -332,16 +378,154 @@ fn iter_on_a_map_handle_that_was_not_compiled_gets_the_uncompiled_error() {
         let (rc, run) = start_with(&m, r#"{"type":"ITER","tspan":[0,4]}"#, &[0.5], &[2.0]);
         assert_eq!((rc, run), (2, 0), "{}", last_error());
         assert_eq!(last_error(), NOT_COMPILED);
+        // EP is taken on a map too (SPEC 8v), so it gets the same error.
+        let (rc, run) = start_with(&m, r#"{"type":"EP","free":"r"}"#, &[0.5], &[2.0]);
+        assert_eq!((rc, run), (2, 0), "{}", last_error());
+        assert_eq!(last_error(), NOT_COMPILED);
     }
 }
 
 #[test]
-fn model_equilibrium_is_refused_on_a_map_handle() {
+fn model_equilibrium_finds_the_fixed_point_of_the_logistic_map() {
+    // x -> r x (1 - x) at r = 2 has the fixed point x = 1/2 with multiplier r (1 - 2x) = 0.
     for text in [LOGISTIC_MAP, LOGISTIC_DISCRETE] {
         let m = compiled(text);
-        assert_eq!(equilibrium(&m, &[0.5], &[2.0]), UNSUPPORTED_MODEL);
-        assert_eq!(last_error(), MAP_MODEL);
+        let (rc, u, eig) = solve(&m, &[0.9], &[2.0]);
+        assert_eq!(rc, 0, "{}", last_error());
+        close(u[0], 0.5, 1e-12, "x");
+        close(eig[0].0, 0.0, 1e-10, "multiplier re");
+        assert_eq!(eig[0].1, 0.0, "multiplier im");
     }
+}
+
+#[test]
+fn model_equilibrium_finds_the_fixed_point_of_the_henon_map() {
+    // (x, y) -> (1 - a x^2 + y, b x) has the fixed point a x^2 + (1 - b) x - 1 = 0, y = b x.
+    // The Jacobian [[-2 a x, 1], [b, 0]] has the multipliers -a x +- sqrt(a^2 x^2 + b).
+    let (a, b) = (1.4_f64, 0.3_f64);
+    let x = (-(1.0 - b) + ((1.0 - b).powi(2) + 4.0 * a).sqrt()) / (2.0 * a);
+    let y = b * x;
+    let root = (a * a * x * x + b).sqrt();
+    let mut want = [-a * x - root, -a * x + root];
+    want.sort_by(f64::total_cmp);
+    let m = compiled(HENON);
+    let (rc, u, eig) = solve(&m, &[0.6, 0.2], &[a, b]);
+    assert_eq!(rc, 0, "{}", last_error());
+    close(u[0], x, 1e-12, "x");
+    close(u[1], y, 1e-12, "y");
+    // The order of the eigenvalues is not part of the contract.
+    let mut got: Vec<f64> = eig.iter().map(|e| e.0).collect();
+    got.sort_by(f64::total_cmp);
+    for (i, (&g, &w)) in got.iter().zip(&want).enumerate() {
+        close(g, w, 1e-10, &format!("multiplier {i}"));
+    }
+    for e in &eig {
+        assert_eq!(e.1, 0.0, "multiplier im: {eig:?}");
+    }
+}
+
+#[test]
+fn model_equilibrium_refuses_a_map_that_reads_t() {
+    let m = compiled(SHIFT);
+    assert_eq!(
+        equilibrium(&m, &[0.0], &[]),
+        NON_AUTONOMOUS,
+        "{}",
+        last_error()
+    );
+}
+
+#[test]
+fn an_ep_run_on_the_logistic_map_gives_rows_with_four_tests() {
+    // Branch 0 is x = 0 with multiplier r, so psi_PD = det(F_x + I) = r + 1. The BP at r = 1
+    // switches to x = 1 - 1/r with multiplier 2 - r, which has a PD at r = 3, x = 2/3 with
+    // b = 9 (SPEC 8v, test 2).
+    for text in [LOGISTIC_MAP, LOGISTIC_DISCRETE] {
+        let m = compiled(text);
+        let json = r#"{"type":"EP","free":"r","options":{"bounds":[0,4]},"switch":"BP1"}"#;
+        let (rc, run) = start_with(&m, json, &[0.0], &[0.5]);
+        assert_eq!(rc, 0, "{}", last_error());
+        let run = Id(run);
+        let st = wait(&run);
+        assert_eq!(st["state"], "done", "{st}");
+        assert_eq!(st["kind"], "EP");
+        assert_eq!(st["n"], 1);
+        assert_eq!(st["stride"], 10);
+        assert_eq!(st["codim2_labels"], serde_json::json!([]));
+        let branches = st["branches"].as_array().unwrap();
+        assert_eq!(branches.len(), 2, "{st}");
+        // [alpha, x, mu_re, mu_im, psi_LP, psi_BP, psi_PD, psi_NS, h, newton_iters]
+        let v = rows(&run, &st);
+        assert!(v.len() / 10 > 5, "{st}");
+        for row in v.chunks(10) {
+            let r = row[0];
+            close(row[1], 0.0, 1e-10, "x = 0 branch");
+            close(row[2], r, 1e-10, "multiplier");
+            assert_eq!(row[3], 0.0, "multiplier im");
+            close(row[6], r + 1.0, 1e-10, "psi_PD");
+            assert!(row[7].is_nan(), "psi_NS of a 1-D map: {row:?}");
+        }
+        // The refined row of each special point comes from `run_copy` with `what` 1.
+        let labels = |b: usize| -> Vec<String> {
+            branches[b]["specials"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s["label"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        let l0 = labels(0);
+        let k = l0.iter().position(|l| l == "BP").expect("BP on branch 0");
+        assert_eq!(l0.iter().filter(|l| *l == "BP").count(), 1, "{st}");
+        let s0 = copy_rows(&run, &st, 0, 1);
+        close(s0[k * 10], 1.0, 1e-8, "BP alpha");
+        close(s0[k * 10 + 1], 0.0, 1e-10, "BP x");
+        let v1 = branch_rows(&run, &st, 1);
+        for row in v1.chunks(10) {
+            close(row[1], 1.0 - 1.0 / row[0], 1e-9, "x = 1 - 1/r branch");
+            close(row[2], 2.0 - row[0], 1e-8, "multiplier 2 - r");
+        }
+        let l1 = labels(1);
+        let k = l1.iter().position(|l| l == "PD").expect("PD on branch 1");
+        assert_eq!(l1.iter().filter(|l| *l == "PD").count(), 1, "{st}");
+        let s1 = copy_rows(&run, &st, 1, 1);
+        close(s1[k * 10], 3.0, 1e-8, "PD alpha");
+        close(s1[k * 10 + 1], 2.0 / 3.0, 1e-8, "PD x");
+        let pd = &branches[1]["specials"][k];
+        let coef = pd["coefficient"].as_f64().unwrap();
+        close(coef, 9.0, 9e-7, "PD b");
+        assert_eq!(pd["normalization"], "|q|=1, p'q=1");
+    }
+}
+
+#[test]
+fn detect_h_on_a_map_and_detect_pd_on_an_ode_are_bad_problems() {
+    let m = compiled(LOGISTIC_MAP);
+    let json = r#"{"type":"EP","free":"r","options":{"detect":{"h":true}}}"#;
+    let (rc, run) = start_with(&m, json, &[0.0], &[0.5]);
+    assert_eq!((rc, run), (BAD_PROBLEM, 0), "{}", last_error());
+    assert_eq!(
+        last_error(),
+        "options.detect.h: a map has no Hopf points; detect pd and ns"
+    );
+    let m = compiled(LOGISTIC_ODE);
+    for key in ["pd", "ns"] {
+        let json = format!(r#"{{"type":"EP","free":"r","options":{{"detect":{{"{key}":true}}}}}}"#);
+        let (rc, run) = start_with(&m, &json, &[0.0], &[0.5]);
+        assert_eq!((rc, run), (BAD_PROBLEM, 0), "{key}: {}", last_error());
+        assert_eq!(
+            last_error(),
+            format!("options.detect.{key}: only an EP run of a map detects PD and NS")
+        );
+    }
+}
+
+#[test]
+fn an_ep_run_on_a_map_that_reads_t_is_refused() {
+    let m = compiled(SHIFT_P);
+    let (rc, run) = start_with(&m, r#"{"type":"EP","free":"a"}"#, &[0.0], &[0.5]);
+    assert_eq!((rc, run), (NON_AUTONOMOUS, 0), "{}", last_error());
+    assert_eq!(last_error(), "the model depends on t");
 }
 
 #[test]

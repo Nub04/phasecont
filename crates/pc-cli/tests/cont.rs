@@ -558,7 +558,8 @@ fn inclination_flips_on_a_non_hom_run_is_an_error() {
     );
 }
 
-/// A map is refused after the model loads (SPEC 8t, test 7).
+/// A map is refused after the model loads for every type but ITER and EP (SPEC 8t, test 7,
+/// and SPEC 8v).
 #[test]
 fn a_map_model_is_refused_with_exit_one() {
     let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pc-ode/tests/corpus");
@@ -568,8 +569,8 @@ fn a_map_model_is_refused_with_exit_one() {
         "par r=2\ninit x=0.2\nx'=r*x*(1-x)\n@ meth=discrete\ndone\n",
     )
     .unwrap();
-    let path = scratch().join("map_ep.json");
-    std::fs::write(&path, r#"{"type":"EP","free":"r","u0":[0.5]}"#).unwrap();
+    let path = scratch().join("map_lp.json");
+    std::fs::write(&path, r#"{"type":"LP","free":"r","u0":[0.5]}"#).unwrap();
     for file in [corpus.join("logistic_map.ode"), discrete] {
         let o = run(
             &scratch(),
@@ -617,4 +618,76 @@ fn a_map_runs_an_iter_problem() {
         .map(|p| (p["alpha"].as_f64().unwrap(), p["u"][0].as_f64().unwrap()))
         .collect();
     assert_eq!(got, want);
+}
+
+/// A map runs an EP problem: the BP of the logistic map at r = 1, the switch to
+/// x = 1 - 1/r and the PD at r = 3 with b = 9. The points equal the rows that the API
+/// table gives for the same problem, bit for bit (SPEC 8v, test 9).
+#[test]
+fn a_map_runs_an_ep_problem_and_matches_the_api() {
+    use pc_cli::session::{Engine, Evaluator};
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pc-ode/tests/corpus");
+    let source = corpus.join("logistic_map.ode");
+    let body = r#""type":"EP","free":"r","options":{"bounds":[0,4]},"switch":"BP1""#;
+    let path = scratch().join("map_ep.json");
+    std::fs::write(
+        &path,
+        format!(r#"{{{body},"params":{{"r":0.5}},"u0":[0.0]}}"#),
+    )
+    .unwrap();
+    let o = run(
+        &scratch(),
+        &["cont", source.to_str().unwrap(), path.to_str().unwrap()],
+    );
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+    let branches = v["branches"].as_array().unwrap();
+    assert_eq!(branches.len(), 2, "{v}");
+    let bp = specials(&v, 0, "BP");
+    assert_eq!(bp.len(), 1, "{v}");
+    near(num(&bp[0]["alpha"]), 1.0, "BP alpha");
+    let pd = specials(&v, 1, "PD");
+    assert_eq!(pd.len(), 1, "{v}");
+    near(num(&pd[0]["alpha"]), 3.0, "PD alpha");
+    near(num(&pd[0]["u"][0]), 2.0 / 3.0, "PD x");
+    let b = num(&pd[0]["coefficient"]);
+    assert!((b - 9.0).abs() <= 9e-7, "PD b: got {b:e}");
+    assert!(stderr(&o).contains("PD  index"), "{}", stderr(&o));
+
+    let engine = Engine::load().unwrap();
+    let text = std::fs::read_to_string(&source).unwrap();
+    let m = engine.model(&text, Evaluator::Jit).unwrap();
+    let got = m.run(&format!("{{{body}}}"), &[0.0], &[0.5]).unwrap();
+    assert_eq!(got.rows.len(), branches.len());
+    // A NaN prints as null, and serde_json prints the shortest text that reads back to
+    // the same bits.
+    let f = |x: &Value| x.as_f64().unwrap_or(f64::NAN);
+    for (b, (block, jb)) in got.rows.iter().zip(branches).enumerate() {
+        let points = jb["points"].as_array().unwrap();
+        assert_eq!(block.rows(), points.len(), "branch {b}");
+        assert_eq!(block.cols(), 10, "branch {b}");
+        for (r, (row, p)) in block.data().chunks(10).zip(points).enumerate() {
+            assert_eq!(p["tests"].as_array().unwrap().len(), 3, "{p}");
+            assert!(p["tests"][2].is_null(), "{p}");
+            assert_eq!(p["codim2"].as_array().unwrap().len(), 2, "{p}");
+            assert!(p["codim2"][1].is_null(), "psi_NS of a 1-D map: {p}");
+            let want = [
+                f(&p["alpha"]),
+                f(&p["u"][0]),
+                f(&p["eigenvalues"][0][0]),
+                f(&p["eigenvalues"][0][1]),
+                f(&p["tests"][0]),
+                f(&p["tests"][1]),
+                f(&p["codim2"][0]),
+                f(&p["codim2"][1]),
+                f(&p["h"]),
+                f(&p["newton_iters"]),
+            ];
+            let same = row
+                .iter()
+                .zip(&want)
+                .all(|(a, w)| a.to_bits() == w.to_bits() || (a.is_nan() && w.is_nan()));
+            assert!(same, "branch {b} row {r}: api {row:?}, cont {want:?}");
+        }
+    }
 }

@@ -358,8 +358,8 @@ The problem file is a JSON object:
             curve of fold, period-doubling or Neimark-Sacker points of cycles in
             two parameters, \"HOM\" a curve of orbits homoclinic to a saddle in
             two parameters, \"IVP\" an integration of an ODE, \"ITER\" an
-            iteration of a map (x(t+1)=... or @ meth=discrete), the only type a
-            map takes (required)
+            iteration of a map (x(t+1)=... or @ meth=discrete); a map takes ITER
+            and EP, where EP follows its fixed points (required)
   free      name of the continuation parameter, or [a1, a2] for LP, H, LPC, PD,
             NS and HOM, with a1 the parameter of the branch the start point is on
             (required; IVP and ITER refuse it)
@@ -371,7 +371,8 @@ The problem file is a JSON object:
             (required for those)
   params    object of parameter values by name (default: the model's values)
   options   h0, hmin, hmax, max_steps, tol_x, tol_f, max_newton, direction,
-            bounds [lo, hi], detect {lp, bp, h} (EP, LP and H only),
+            bounds [lo, hi], detect {lp, bp, h} (EP, LP and H only; on a
+            map EP takes {lp, bp, pd, ns}),
             mesh_adapt (cycles and HOM only: adapt the mesh every that many
             steps, 0 never); engine defaults for the rest
   switch    EP only: name of a special point of the first branch, for example

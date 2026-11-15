@@ -21,7 +21,9 @@ impl Handle for RunHandle {
 /// Values per row.
 ///
 /// An equilibrium row is `[alpha, u(n), eig_re(n), eig_im(n), psi_LP, psi_BP, psi_H, h,
-/// newton_iters]`. A curve row is `[a2, x(n), a1, kappa (Hopf only), eig_re(n), eig_im(n),
+/// newton_iters]`, and a fixed point row of a map is `[alpha, u(n), mu_re(n), mu_im(n),
+/// psi_LP, psi_BP, psi_PD, psi_NS, h, newton_iters]` with the multipliers mu (SPEC 8v). A
+/// curve row is `[a2, x(n), a1, kappa (Hopf only), eig_re(n), eig_im(n),
 /// codim2(k), h, newton_iters]`, with `k` the number of codim-2 labels of the kind. A cycle
 /// row on N intervals of m points is `[alpha, u(n (N m + 1)), T, mesh(N + 1), mult_re(n),
 /// mult_im(n), psi_LPC, psi_PD, psi_NS, h, newton_iters]`, with the orbit point-major. A
@@ -39,6 +41,8 @@ impl Handle for RunHandle {
 pub(crate) fn stride(kind: Kind, n: usize) -> usize {
     match kind {
         Kind::Ep => 3 * n + 6,
+        // [alpha, u(n), mu_re(n), mu_im(n), psi_LP, psi_BP, psi_PD, psi_NS, h, iters]
+        Kind::MapEp => 3 * n + 7,
         // [alpha, u(n), root count]
         Kind::DdeEp => n + 2,
         // [alpha2, x(n), alpha1, kappa, l1, hh]
@@ -123,9 +127,13 @@ pub(crate) fn pack_row(kind: Kind, p: &Point, n: usize, out: &mut [f64]) {
     // The state block: `n` values, plus a1 (and kappa) on a curve, or the orbit, T and
     // what follows T on a curve of cycles or a HOM curve.
     let (block, mesh) = match kind {
-        Kind::Ep | Kind::DdeEp | Kind::DdeHopf | Kind::DdeLc { .. } | Kind::Ivp | Kind::Iter => {
-            (n, 0)
-        }
+        Kind::Ep
+        | Kind::MapEp
+        | Kind::DdeEp
+        | Kind::DdeHopf
+        | Kind::DdeLc { .. }
+        | Kind::Ivp
+        | Kind::Iter => (n, 0),
         Kind::Lp => (n + 1, 0),
         Kind::Hopf => (n + 2, 0),
         Kind::Lc { ntst, ncol }
@@ -156,6 +164,15 @@ pub(crate) fn pack_row(kind: Kind, p: &Point, n: usize, out: &mut [f64]) {
         Kind::Ep => {
             out[t..t + 3].copy_from_slice(&p.tests);
             t + 3
+        }
+        // The engine keeps psi_LP and psi_BP in `tests` (the third slot is NaN) and psi_PD
+        // and psi_NS in `codim2` (SPEC 8v).
+        Kind::MapEp => {
+            out[t] = p.tests[0];
+            out[t + 1] = p.tests[1];
+            out[t + 2] = p.codim2.first().copied().unwrap_or(nan);
+            out[t + 3] = p.codim2.get(1).copied().unwrap_or(nan);
+            t + 4
         }
         _ => {
             let k = kind.labels().len();
@@ -295,6 +312,33 @@ mod tests {
         assert_eq!(row[0], 0.5);
         assert!(row[1..7].iter().all(|x| x.is_nan()));
         assert_eq!(&row[7..], [10.0, 11.0, 12.0, 0.125, 3.0]);
+    }
+
+    #[test]
+    fn a_map_row_has_four_tests() {
+        // [alpha, u(2), mu_re(2), mu_im(2), psi_LP, psi_BP, psi_PD, psi_NS, h, newton_iters]
+        let mut p = point();
+        p.tests = [10.0, 11.0, f64::NAN];
+        p.codim2 = vec![13.0, 14.0];
+        assert_eq!(stride(Kind::MapEp, 2), 13);
+        let mut row = vec![0.0; 13];
+        pack_row(Kind::MapEp, &p, 2, &mut row);
+        assert_eq!(&row[..4], [0.5, 1.0, 2.0, -1.0]);
+        assert!(row[4].is_nan());
+        assert_eq!(row[5], 0.25);
+        assert!(row[6].is_nan());
+        assert_eq!(&row[7..], [10.0, 11.0, 13.0, 14.0, 0.125, 3.0]);
+        // A 1-D map has no NS test, and a point without codim-2 values gets NaN.
+        p.codim2 = vec![13.0, f64::NAN];
+        pack_row(Kind::MapEp, &p, 2, &mut row);
+        assert_eq!(row[9], 13.0);
+        assert!(row[10].is_nan());
+        p.codim2.clear();
+        pack_row(Kind::MapEp, &p, 2, &mut row);
+        assert!(row[9].is_nan() && row[10].is_nan());
+        assert_eq!(&row[7..9], [10.0, 11.0]);
+        assert_eq!(&row[11..], [0.125, 3.0]);
+        assert_eq!(Kind::MapEp.name(), "EP");
     }
 
     #[test]

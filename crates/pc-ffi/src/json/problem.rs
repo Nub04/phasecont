@@ -5,6 +5,7 @@
 //! where the state and the parameters come as buffers and the keys `u0` and `params`
 //! are errors.
 
+use crate::error::MAP_MODEL;
 use pc_engine::{
     CYCLE_LABELS, CurveSetup, CycleCurveStart, CycleSetup, CycleStart, EpSetup, Evaluator,
     HOM_CURVE_LABELS, HOPF_CURVE_LABELS, HomStart, HomStartKind, HopfStart, IvpOptions,
@@ -25,6 +26,9 @@ use serde_json::{Map, Value};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Ep,
+    /// The fixed point branch of a map (SPEC 8v). It reads as `"EP"` in the JSON, and its rows
+    /// carry the four tests `[LP BP PD NS]`.
+    MapEp,
     /// The equilibrium branch of a delay equation (SPEC 8s). It reads as `"EP"` in the JSON.
     DdeEp,
     /// The Hopf curve of a delay equilibrium (SPEC 8s, slice 2). It reads as `"H"` in the JSON.
@@ -76,7 +80,7 @@ impl Kind {
     /// The `type` string of the problem JSON.
     pub fn name(self) -> &'static str {
         match self {
-            Kind::Ep | Kind::DdeEp => "EP",
+            Kind::Ep | Kind::MapEp | Kind::DdeEp => "EP",
             Kind::Lp => "LP",
             Kind::Hopf | Kind::DdeHopf => "H",
             Kind::Lc { .. } | Kind::DdeLc { .. } => "LC",
@@ -94,7 +98,7 @@ impl Kind {
     /// curve. Empty for an equilibrium branch.
     pub fn labels(self) -> &'static [&'static str] {
         match self {
-            Kind::Ep | Kind::DdeEp | Kind::Ivp | Kind::Iter => &[],
+            Kind::Ep | Kind::MapEp | Kind::DdeEp | Kind::Ivp | Kind::Iter => &[],
             Kind::Lp => &LP_CURVE_LABELS,
             Kind::Hopf => &HOPF_CURVE_LABELS,
             Kind::DdeHopf => &DDE_HOPF_LABELS,
@@ -541,8 +545,15 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
     )?;
     // A delay model has hidden delay slots after its user parameters (SPEC 8s).
     let delay = !ir.delays.is_empty();
+    let map = ir.kind == ModelKind::Map;
     let kind = match top.get("type") {
         None => return Err("type: missing".into()),
+        // A map takes only EP and ITER (SPEC 8v). At the C ABI and in `pc-cli cont` the gate
+        // in front of the parser has refused the other types already.
+        Some(Value::String(s)) if map && s == "EP" && !delay => Kind::MapEp,
+        Some(Value::String(s)) if map && s != "ITER" => {
+            return Err(format!("type: {MAP_MODEL}"));
+        }
         // A delay equation takes no other run, whatever its other keys say (SPEC 8s).
         Some(Value::String(s))
             if delay && matches!(s.as_str(), "LP" | "LPC" | "PD" | "NS" | "HOM") =>
@@ -612,7 +623,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
     let curve_of_cycles = matches!(kind, Kind::Lpc { .. } | Kind::Pd { .. } | Kind::Ns { .. });
     let one_free = matches!(
         kind,
-        Kind::Ep | Kind::DdeEp | Kind::Lc { .. } | Kind::DdeLc { .. }
+        Kind::Ep | Kind::MapEp | Kind::DdeEp | Kind::Lc { .. } | Kind::DdeLc { .. }
     );
     let (free, curve_free) = match (one_free, top.get("free")) {
         (_, None) => return Err("free: missing".into()),
@@ -741,16 +752,28 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         _ => kind,
     };
     let has_option = |key: &str| top.get("options").is_some_and(|o| o.get(key).is_some());
-    if kind == Kind::DdeEp
-        && top
-            .get("options")
+    let detect_has = |key: &str| {
+        top.get("options")
             .and_then(|o| o.get("detect"))
             .and_then(Value::as_object)
-            .is_some_and(|d| d.contains_key("h"))
-    {
+            .is_some_and(|d| d.contains_key(key))
+    };
+    if kind == Kind::DdeEp && detect_has("h") {
         return Err(
             "options.detect.h: Hopf points come from the root count, not from detect".into(),
         );
+    }
+    // The PD and NS tests belong to the fixed points of a map, which have no Hopf test
+    // (SPEC 8v).
+    if kind == Kind::MapEp && detect_has("h") {
+        return Err("options.detect.h: a map has no Hopf points; detect pd and ns".into());
+    }
+    if kind != Kind::MapEp
+        && let Some(key) = ["pd", "ns"].into_iter().find(|k| detect_has(k))
+    {
+        return Err(format!(
+            "options.detect.{key}: only an EP run of a map detects PD and NS"
+        ));
     }
     match kind {
         Kind::Lc { .. } if has_option("detect") => {
@@ -817,7 +840,10 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         return Err("inclination_flips: only a HOM run takes this key".into());
     }
 
-    if !matches!(kind, Kind::Ep | Kind::DdeEp | Kind::DdeLc { .. }) {
+    if !matches!(
+        kind,
+        Kind::Ep | Kind::MapEp | Kind::DdeEp | Kind::DdeLc { .. }
+    ) {
         if switch.is_some() {
             return Err("switch: only an EP run can switch branches".into());
         }
@@ -1437,7 +1463,7 @@ pub fn parse_options(v: &Value) -> Result<Options, String> {
             }
             "detect" => {
                 let d = object(val, &path)?;
-                only_keys(d, &["lp", "bp", "h"], &path)?;
+                only_keys(d, &["lp", "bp", "h", "pd", "ns"], &path)?;
                 for (k, flag) in d {
                     let p = format!("{path}.{k}");
                     let b = flag
@@ -1446,6 +1472,8 @@ pub fn parse_options(v: &Value) -> Result<Options, String> {
                     match k.as_str() {
                         "lp" => o.detect_lp = b,
                         "bp" => o.detect_bp = b,
+                        "pd" => o.detect_pd = b,
+                        "ns" => o.detect_ns = b,
                         _ => o.detect_h = b,
                     }
                 }
@@ -2483,6 +2511,57 @@ mod tests {
             parse_problem(&v, &ir, Mode::Abi).unwrap_err(),
             "tspan: only an IVP or ITER run takes this key"
         );
+    }
+
+    #[test]
+    fn an_ep_problem_on_a_map_reads_pd_and_ns() {
+        let ir = map_model();
+        let p = parse_problem(&json!({"type": "EP", "free": "r"}), &ir, Mode::Abi).unwrap();
+        assert_eq!(p.kind, Kind::MapEp);
+        assert_eq!(p.kind.name(), "EP");
+        assert!(p.kind.labels().is_empty());
+        assert!(matches!(p.run_kind(), RunKind::Ep));
+        assert!(p.opts.detect_pd && p.opts.detect_ns);
+        let v = json!({
+            "type": "EP", "free": "r",
+            "options": {"detect": {"lp": true, "bp": false, "pd": false, "ns": true}},
+        });
+        let p = parse_problem(&v, &ir, Mode::Abi).unwrap();
+        assert!(p.opts.detect_lp && !p.opts.detect_bp);
+        assert!(!p.opts.detect_pd && p.opts.detect_ns);
+        // A map has no Hopf test, whatever the flag says.
+        for flag in [true, false] {
+            let v = json!({"type": "EP", "free": "r", "options": {"detect": {"h": flag}}});
+            assert_eq!(
+                parse_problem(&v, &ir, Mode::Abi).unwrap_err(),
+                "options.detect.h: a map has no Hopf points; detect pd and ns"
+            );
+        }
+        // Every other type is refused on a map with the text of SPEC 8v.
+        for ty in ["LP", "H", "LC", "LPC", "PD", "NS", "HOM", "IVP"] {
+            let v = json!({"type": ty, "free": "r"});
+            assert_eq!(
+                parse_problem(&v, &ir, Mode::Abi).unwrap_err(),
+                format!("type: {MAP_MODEL}"),
+                "type {ty}"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_pd_and_ns_are_refused_off_a_map() {
+        let ir = model();
+        for key in ["pd", "ns"] {
+            for flag in [true, false] {
+                let v = with("options", json!({"detect": {key: flag}}));
+                assert_eq!(
+                    parse_problem(&v, &ir, Mode::Abi).unwrap_err(),
+                    format!("options.detect.{key}: only an EP run of a map detects PD and NS")
+                );
+            }
+        }
+        let p = parse_problem(&base(), &ir, Mode::Abi).unwrap();
+        assert_eq!(p.kind, Kind::Ep);
     }
 
     /// A scalar delay model.

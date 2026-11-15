@@ -244,14 +244,15 @@ pub unsafe extern "C" fn run_start(
         let out_run = unsafe { out_ptr(out_run, "run") }?;
         *out_run = 0;
         let h = model_handle(model)?;
-        // A map takes only ITER. Every other type, and a problem that is not JSON, is refused
-        // before anything else, so a handle that was not compiled gets the same error (SPEC 8u).
+        // A map takes only ITER and EP. Every other type, and a problem that is not JSON, is
+        // refused before anything else, so a handle that was not compiled gets the same error
+        // (SPEC 8u, 8v).
         if h.map {
-            let iter = unsafe { str_arg(problem_json, "problem_json") }
+            let taken = unsafe { str_arg(problem_json, "problem_json") }
                 .ok()
                 .and_then(|t| serde_json::from_str::<Value>(t).ok())
-                .is_some_and(|v| v["type"] == "ITER");
-            if !iter {
+                .is_some_and(|v| v["type"] == "ITER" || v["type"] == "EP");
+            if !taken {
                 h.not_map()?;
             }
         }
@@ -461,7 +462,6 @@ pub unsafe extern "C" fn model_equilibrium(
     barrier(|| {
         let h = model_handle(model)?;
         h.ode_only()?;
-        h.not_map()?;
         let n = h.n();
         if !h.names.autonomous {
             return Err(Error::NonAutonomous(EngineError::NonAutonomous.to_string()));
