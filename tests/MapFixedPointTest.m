@@ -96,11 +96,13 @@ classdef MapFixedPointTest < matlab.unittest.TestCase
             testCase.verifyEqual(real(pt.Eigenvalues(:)), 0, AbsTol = 1e-8);
             testCase.verifyEqual(imag(pt.Eigenvalues(:)), 0);
             testCase.verifyTrue(all(abs(pt.Eigenvalues) < 1));
+            testCase.verifyEqual(pt.Stable, true);
             % At r = 3.5 the fixed point 1 - 1/r has multiplier -1.5.
             pt = phasecont.equilibrium(m, 0.7, Params = struct(r = 3.5));
             testCase.verifyEqual(pt.U(:), 1 - 1/3.5, AbsTol = 1e-8);
             testCase.verifyEqual(real(pt.Eigenvalues(:)), 2 - 3.5, AbsTol = 1e-8);
             testCase.verifyFalse(all(abs(pt.Eigenvalues) < 1));
+            testCase.verifyEqual(pt.Stable, false);
         end
 
         function equilibriumOfTheHenonMap(testCase)
@@ -116,11 +118,46 @@ classdef MapFixedPointTest < matlab.unittest.TestCase
             testCase.verifyEqual(imag(pt.Eigenvalues(:)), [0; 0], AbsTol = 1e-12);
             % One multiplier is below -1, so the fixed point is unstable.
             testCase.verifyFalse(all(abs(pt.Eigenvalues) < 1));
+            testCase.verifyEqual(pt.Stable, false);
             % At a = 0.2 both multipliers lie inside the unit circle.
             pt = phasecont.equilibrium(m, [1 0.3], Params = struct(a = 0.2, b = b));
             mu = testCase.henonMultipliers(0.2, b);
             testCase.verifyEqual(sort(real(pt.Eigenvalues(:))), mu, AbsTol = 1e-8);
             testCase.verifyTrue(all(abs(pt.Eigenvalues) < 1));
+            testCase.verifyEqual(pt.Stable, true);
+        end
+
+        function stableIsEmptyWhereItDecidesNothing(testCase)
+            % At a special point a multiplier lies on the unit circle, so
+            % Stable is empty there. A Point without a Model, and an EP
+            % Point without eigenvalues, have nothing to test.
+            br = testCase.delayedBranch();
+            testCase.assertNotEmpty(br.Specials);
+            for k = 1:numel(br.Specials)
+                testCase.verifyEqual(br.Specials(k).Stable, false(0, 1), ...
+                    "special " + br.Specials(k).Label);
+            end
+            testCase.verifyEqual(phasecont.Point(Eigenvalues = 0.5).Stable, false(0, 1));
+            testCase.verifyEqual(phasecont.Point(Model = br.Model).Stable, false(0, 1));
+            pt = phasecont.Point(Eigenvalues = 0.5, Label = "PD", Model = br.Model);
+            testCase.verifyEqual(pt.Stable, false(0, 1));
+            pt = phasecont.Point(Eigenvalues = [0.5; -1.5], Model = br.Model);
+            testCase.verifyEqual(pt.Stable, false);
+        end
+
+        function aSessionKeepsTheStabilityOfAFixedPoint(testCase)
+            % Stable is not stored, so the loaded Point computes it again
+            % from the stored multipliers.
+            m = testCase.model(testCase.Logistic);
+            pts = {phasecont.equilibrium(m, 0.9), ...
+                phasecont.equilibrium(m, 0.7, Params = struct(r = 3.5))};
+            file = fullfile(testCase.Dir, "fixed.pcsession.json");
+            save(phasecont.Session(m, pts), file);
+            back = phasecont.Session.load(file);
+            testCase.addTeardown(@() delete(back.Model));
+            testCase.assertNumElements(back.Items, 2);
+            testCase.verifyEqual(back.Items{1}.Stable, true);
+            testCase.verifyEqual(back.Items{2}.Stable, false);
         end
 
         function logisticBranchHasBpThenPdWithB9(testCase)

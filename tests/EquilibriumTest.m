@@ -68,6 +68,18 @@ classdef EquilibriumTest < matlab.unittest.TestCase
             testCase.verifySize(pt.Eigenvalues, [3 1]);
         end
 
+        function stableFromTheEigenvalues(testCase, Evaluator)
+            % The origin of the Lorenz model has the eigenvalues -b and the
+            % roots of l^2 + (s + 1) l + s (1 - r): one is positive at r = 28
+            % and all are negative at r = 0.5 (SPEC 8v, test 11).
+            m = testCase.model(testCase.Lorenz, Evaluator);
+            pt = phasecont.equilibrium(m, [0.1 0.1 0.1]);
+            testCase.verifyEqual(pt.Stable, false);
+            pt = phasecont.equilibrium(m, [0.1 0.1 0.1], Params = struct(r = 0.5));
+            testCase.verifyTrue(all(real(pt.Eigenvalues) < 0));
+            testCase.verifyEqual(pt.Stable, true);
+        end
+
         function paramsChangeOnlyTheNamedOne(testCase)
             m = testCase.model(testCase.Lorenz, "jit");
             pt = phasecont.equilibrium(m, [0.1 0.1 0.1], Params = struct(b = 2));
