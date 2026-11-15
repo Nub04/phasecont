@@ -108,6 +108,16 @@ classdef PhasePlane < handle
                 error("phasecont:app:badSource", ...
                     "PhasePlane takes a phasecont.Model or the name of a session file.");
             end
+            % No map is drawn yet (SPEC 8t): its states are iterates, not a
+            % vector field.
+            info = m.engineInfo();
+            if info.map
+                if owns
+                    delete(m);
+                end
+                error("phasecont:app:mapModel", ...
+                    "PhasePlane draws ODE models, and this model is a map.");
+            end
             if numel(m.Variables) < 2
                 if owns
                     delete(m);

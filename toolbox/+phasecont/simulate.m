@@ -24,8 +24,11 @@ function tr = simulate(m, x0, tspan, options)
 %     Hmax      largest step length, positive; Inf means no cap (default)
 %
 %   simulate reads none of the model's @ options (meth, dt, total, bound
-%   and the others), so they do not change the result. The first simulate
-%   call on a model that sets any of them warns with the ID
+%   and the others), so they do not change the result. The one exception
+%   is a meth value that starts with d, such as meth=discrete: it makes the
+%   model a map, as in XPPAUT, and simulate refuses a map with the ID
+%   phasecont:engine:unsupportedModel. The first simulate call that runs on
+%   a model that sets any @ option warns with the ID
 %   phasecont:simulate:ignoredOption and names them all. While that warning
 %   is turned off, the one notice is kept for a later call.
 %
@@ -52,7 +55,6 @@ if ~(isnumeric(tspan) && isreal(tspan) && numel(tspan) == 2 ...
 end
 tspan = double(tspan(:)).';
 [u0, p] = startValues(m, x0, options.Params);
-warnIgnoredOptions(m);
 
 parts = strings(1, 0);
 parts(end+1) = numberOption("rtol", options.RelTol, "RelTol", false);
@@ -74,6 +76,9 @@ problem = "{""type"":""IVP"",""tspan"":[" + num2json(tspan(1)) + "," ...
 
 n = numel(m.Variables);
 out = phasecont.internal.runLoop(m, problem, u0, p);
+% After the run, so that a map, which the engine refuses, gets no warning
+% that its options were ignored.
+warnIgnoredOptions(m);
 st = out.Status;
 rows = out.Points{1};
 record = phasecont.internal.RunRecord(struct( ...
