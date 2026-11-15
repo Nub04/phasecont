@@ -1208,7 +1208,7 @@ fn parse_iter(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Prob
     if n[1] <= n[0] {
         return Err("tspan: the second iterate must be greater than the first".into());
     }
-    // Both ends are within 2^53, so the difference does not overflow.
+    // iterate_number keeps both ends within 2^53, so the difference does not overflow.
     let count = n[1] - n[0];
     if count > MAX_ITERATES {
         return Err(format!(
@@ -1270,7 +1270,7 @@ fn iterate_number(v: &Value) -> Option<i64> {
             x as i64
         }
     };
-    (k.abs() <= LIMIT).then_some(k)
+    (-LIMIT..=LIMIT).contains(&k).then_some(k)
 }
 
 /// Reads `ntst` and `ncol` of a problem of cycles and makes its kind with `make`.
@@ -2378,6 +2378,8 @@ mod tests {
         let bad = TSPAN_ITER;
         // 2^53 + 1 as a token; serde_json reads it exactly as an integer.
         let above: Value = serde_json::from_str("[0, 9007199254740993]").unwrap();
+        // i64::MIN has no absolute value in i64, so it must not slip past the bound.
+        let lowest: Value = serde_json::from_str("[-9223372036854775808, 0]").unwrap();
         let cases = [
             (no_tspan, "tspan: missing".to_owned()),
             (iter(json!([0])), bad.into()),
@@ -2386,6 +2388,7 @@ mod tests {
             (iter(json!([0, 0.5])), bad.into()),
             (iter(json!([0, "4"])), bad.into()),
             (iter(above), bad.into()),
+            (iter(lowest), bad.into()),
             (iter(json!([0.0, 9007199254740994.0])), bad.into()),
             (
                 iter(json!([3, 3])),
