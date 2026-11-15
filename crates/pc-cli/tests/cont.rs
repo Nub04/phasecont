@@ -558,8 +558,8 @@ fn inclination_flips_on_a_non_hom_run_is_an_error() {
     );
 }
 
-/// A map is refused after the model loads for every type but ITER and EP (SPEC 8t, test 7,
-/// and SPEC 8v).
+/// A map is refused after the model loads for every type but ITER, EP and the LP, PD and NS
+/// curves (SPEC 8t, test 7, and SPEC 8w).
 #[test]
 fn a_map_model_is_refused_with_exit_one() {
     let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pc-ode/tests/corpus");
@@ -570,7 +570,7 @@ fn a_map_model_is_refused_with_exit_one() {
     )
     .unwrap();
     let path = scratch().join("map_lp.json");
-    std::fs::write(&path, r#"{"type":"LP","free":"r","u0":[0.5]}"#).unwrap();
+    std::fs::write(&path, r#"{"type":"H","free":"r","u0":[0.5]}"#).unwrap();
     for file in [corpus.join("logistic_map.ode"), discrete] {
         let o = run(
             &scratch(),
@@ -689,5 +689,77 @@ fn a_map_runs_an_ep_problem_and_matches_the_api() {
                 .all(|(a, w)| a.to_bits() == w.to_bits() || (a.is_nan() && w.is_nan()));
             assert!(same, "branch {b} row {r}: api {row:?}, cont {want:?}");
         }
+    }
+}
+
+/// A map runs a PD curve of fixed points: the Henon map's PD curve is a = 3 (1 - b)^2 / 4 with
+/// x = 2 / (3 (1 - b)). The points equal the rows that the API table gives for the same
+/// problem, bit for bit (SPEC 8w, test 8).
+#[test]
+fn a_map_runs_a_pd_curve_and_matches_the_api() {
+    use pc_cli::session::{Engine, Evaluator};
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pc-ode/tests/corpus");
+    let source = corpus.join("henon_map.ode");
+    let (b0, a0) = (0.3_f64, 3.0 * 0.49 / 4.0);
+    let x0 = 2.0 / (3.0 * (1.0 - b0));
+    let body = r#""type":"PD","free":["a","b"],"options":{"bounds":[0.1,0.6]}"#;
+    let path = scratch().join("map_pd.json");
+    std::fs::write(
+        &path,
+        format!(
+            r#"{{{body},"params":{{"a":{a0:?},"b":{b0:?}}},"u0":[{x0:?},{:?}]}}"#,
+            b0 * x0
+        ),
+    )
+    .unwrap();
+    let o = run(
+        &scratch(),
+        &["cont", source.to_str().unwrap(), path.to_str().unwrap()],
+    );
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+    let branches = v["branches"].as_array().unwrap();
+    assert_eq!(branches.len(), 1, "{v}");
+    let points = branches[0]["points"].as_array().unwrap();
+    assert!(points.len() > 5, "{v}");
+    for p in points {
+        let b = num(&p["alpha"]);
+        let x = 2.0 / (3.0 * (1.0 - b));
+        assert_eq!(p["u"].as_array().unwrap().len(), 3, "{p}");
+        assert!((num(&p["u"][0]) - x).abs() <= 1e-8, "x at b = {b}: {p}");
+        assert!((num(&p["u"][1]) - b * x).abs() <= 1e-8, "y at b = {b}: {p}");
+        let a = 3.0 * (1.0 - b).powi(2) / 4.0;
+        assert!((num(&p["u"][2]) - a).abs() <= 1e-8, "a at b = {b}: {p}");
+    }
+
+    let engine = Engine::load().unwrap();
+    let text = std::fs::read_to_string(&source).unwrap();
+    let m = engine.model(&text, Evaluator::Jit).unwrap();
+    let got = m
+        .run(&format!("{{{body}}}"), &[x0, b0 * x0], &[a0, b0])
+        .unwrap();
+    assert_eq!(got.rows.len(), 1);
+    let block = &got.rows[0];
+    assert_eq!(block.rows(), points.len());
+    assert_eq!(block.cols(), 10);
+    let f = |x: &Value| x.as_f64().unwrap_or(f64::NAN);
+    for (r, (row, p)) in block.data().chunks(10).zip(points).enumerate() {
+        let want = [
+            f(&p["alpha"]),
+            f(&p["u"][0]),
+            f(&p["u"][1]),
+            f(&p["u"][2]),
+            f(&p["eigenvalues"][0][0]),
+            f(&p["eigenvalues"][1][0]),
+            f(&p["eigenvalues"][0][1]),
+            f(&p["eigenvalues"][1][1]),
+            f(&p["h"]),
+            f(&p["newton_iters"]),
+        ];
+        let same = row
+            .iter()
+            .zip(&want)
+            .all(|(a, w)| a.to_bits() == w.to_bits() || (a.is_nan() && w.is_nan()));
+        assert!(same, "row {r}: api {row:?}, cont {want:?}");
     }
 }

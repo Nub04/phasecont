@@ -12,7 +12,7 @@ use std::process::ExitCode;
 
 use pc_engine::{EngineError, Evaluator, Point, Run, RunState, SpecialPoint, StopReason};
 use pckern::error::MAP_MODEL;
-use pckern::json::problem::{Mode, parse_problem};
+use pckern::json::problem::{Mode, map_type_runs, parse_problem};
 use serde_json::{Value, json};
 
 use crate::ircmd::{Prepared, prepare};
@@ -51,12 +51,9 @@ pub fn cont(file: &Path, problem_file: &Path, fallback: bool) -> ExitCode {
         Ok(p) => p,
         Err(code) => return code,
     };
-    // A map takes only ITER and EP (SPEC 8u, 8v). A refused model exits 1, as `CONT_HELP`
-    // says.
-    if loaded.info.kind == pc_ode::ModelKind::Map
-        && value["type"] != "ITER"
-        && value["type"] != "EP"
-    {
+    // A map takes the problems that `map_type_runs` accepts, as `run_start` does (SPEC 8u,
+    // 8v, 8w). A refused model exits 1, as `CONT_HELP` says.
+    if loaded.info.kind == pc_ode::ModelKind::Map && !map_type_runs(&value) {
         to_stderr(&format!("pc-cli: {}: {MAP_MODEL}\n", file.display()));
         return ExitCode::from(1);
     }

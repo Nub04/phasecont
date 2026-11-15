@@ -9,10 +9,11 @@ use std::time::{Duration, Instant};
 use pckern::{PcApiV1, pc_api_v1};
 use serde_json::Value;
 
-/// The refusal text of SPEC 8v.
+/// The refusal text of SPEC 8w.
 const MAP_MODEL: &str = "the model is a map (`x(t+1)=...` or `@ meth=discrete`); \
-     PhaseCont iterates a map and continues its fixed points in one parameter (types ITER and \
-     EP) but does not follow curves or cycles of a map yet";
+     PhaseCont iterates a map, continues its fixed points in one parameter (types ITER and \
+     EP) and follows their LP, PD and NS curves in two parameters, but does not follow cycles \
+     of a map yet";
 const UNSUPPORTED_MODEL: i32 = 13;
 const BAD_PROBLEM: i32 = 6;
 const NON_AUTONOMOUS: i32 = 7;
@@ -275,18 +276,28 @@ fn model_info_reports_map_for_both_kinds_of_map() {
     }
 }
 
+/// Every type but ITER, EP and the three map curves is refused, and so are LP, PD and NS
+/// with a cycle key (SPEC 8w).
 #[test]
-fn every_run_type_is_refused_on_a_map_handle() {
+fn every_other_run_type_is_refused_on_a_map_handle() {
     for text in [LOGISTIC_MAP, LOGISTIC_DISCRETE] {
         let m = compiled(text);
         let n_p = info(&m)["n_p"].as_u64().unwrap() as usize;
         let p = vec![2.0; n_p];
-        for ty in ["LP", "H", "LC", "LPC", "PD", "NS", "HOM", "IVP"] {
-            let json = format!(r#"{{"type":"{ty}","free":"r"}}"#);
-            let (rc, run) = start_with(&m, &json, &[0.5], &p);
-            assert_eq!(rc, UNSUPPORTED_MODEL, "{ty}: {}", last_error());
-            assert_eq!(run, 0, "{ty}");
-            assert_eq!(last_error(), MAP_MODEL, "{ty}");
+        let mut problems: Vec<String> = ["H", "LC", "LPC", "HOM", "IVP"]
+            .iter()
+            .map(|ty| format!(r#"{{"type":"{ty}","free":"r"}}"#))
+            .collect();
+        for ty in ["LP", "PD", "NS"] {
+            for key in [r#""ntst":20"#, r#""ncol":4"#, r#""mesh":[0,1]"#] {
+                problems.push(format!(r#"{{"type":"{ty}","free":["r","r"],{key}}}"#));
+            }
+        }
+        for json in &problems {
+            let (rc, run) = start_with(&m, json, &[0.5], &p);
+            assert_eq!(rc, UNSUPPORTED_MODEL, "{json}: {}", last_error());
+            assert_eq!(run, 0, "{json}");
+            assert_eq!(last_error(), MAP_MODEL, "{json}");
         }
         // A problem that is not JSON gets the same error, since the map is refused first.
         let (rc, run) = start_with(&m, "not json", &[0.5], &p);
@@ -300,7 +311,7 @@ fn every_run_type_is_refused_on_a_map_handle() {
 fn a_map_handle_that_was_not_compiled_gets_the_map_error() {
     for text in [LOGISTIC_MAP, LOGISTIC_DISCRETE] {
         let m = parse(text);
-        let (rc, run) = start_with(&m, r#"{"type":"LP","free":"r"}"#, &[0.5], &[2.0]);
+        let (rc, run) = start_with(&m, r#"{"type":"H","free":"r"}"#, &[0.5], &[2.0]);
         assert_eq!(rc, UNSUPPORTED_MODEL, "{}", last_error());
         assert_eq!(run, 0);
         assert_eq!(last_error(), MAP_MODEL);
@@ -559,4 +570,244 @@ fn meth_discrete_does_not_change_the_emitted_c() {
     let map = emitted(&parse(LOGISTIC_DISCRETE), &b.0);
     assert!(!ode.is_empty());
     assert_eq!(ode, map);
+}
+
+/// AUTO's form of the Henon map, (x, y) -> (y, a - b x - y^2) (SPEC 8w, test 3).
+const HENON_AUTO: &str = include_str!("../../pc-engine/tests/models/map_henon_auto.ode");
+/// A 1-D map with two parameters, for the NS refusal.
+const LOGISTIC_2P: &str = "par r=2.5, c=0\ninit x=0.5\nx(t+1)=r*x*(1-x)+c\ndone\n";
+/// A map that reads `t`, with two parameters.
+const SHIFT_2P: &str = "par a=1, c=0\ninit x=0\nx(t+1)=a*x+c+t\ndone\n";
+
+fn poll_raw(run: u64) -> (i32, Option<Value>) {
+    let mut s: *mut c_char = ptr::null_mut();
+    let rc = unsafe { (api().run_poll)(run, &mut s) };
+    (
+        rc,
+        take_string(s).map(|t| serde_json::from_str(&t).unwrap()),
+    )
+}
+
+/// Starts a run that the parser accepts and returns the poll code and the error text of the
+/// failed run.
+fn failed_run(m: &Id, json: &str, u0: &[f64], p: &[f64]) -> (i32, String) {
+    let (rc, run) = start_with(m, json, u0, p);
+    assert_eq!(rc, 0, "{json}: {}", last_error());
+    let run = Id(run);
+    let t0 = Instant::now();
+    loop {
+        let (rc, v) = poll_raw(run.0);
+        if rc != 0 {
+            return (rc, last_error());
+        }
+        let v = v.unwrap();
+        assert_eq!(v["state"], "running", "{json}: {v}");
+        assert!(t0.elapsed() < Duration::from_secs(60), "run did not finish");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// Eigenvalues of the 2x2 matrix [[a, b], [c, d]].
+fn eig2(a: f64, b: f64, c: f64, d: f64) -> [(f64, f64); 2] {
+    let (h, det) = ((a + d) / 2.0, a * d - b * c);
+    let disc = h * h - det;
+    if disc >= 0.0 {
+        [(h + disc.sqrt(), 0.0), (h - disc.sqrt(), 0.0)]
+    } else {
+        [(h, (-disc).sqrt()), (h, -(-disc).sqrt())]
+    }
+}
+
+/// Every expected multiplier has a match among the (mu_re, mu_im) columns within `tol`.
+fn has_multipliers(re: &[f64], im: &[f64], want: &[(f64, f64)], tol: f64, what: &str) {
+    for w in want {
+        assert!(
+            re.iter()
+                .zip(im)
+                .any(|(r, i)| (r - w.0).abs() <= tol && (i - w.1).abs() <= tol),
+            "{what}: no multiplier near {w:?} in {re:?} + i {im:?}"
+        );
+    }
+}
+
+/// Runs `json` on `m` and returns the finished status and the rows of its one branch.
+fn curve_run(m: &Id, json: &str, u0: &[f64], p: &[f64]) -> (Value, Vec<f64>) {
+    let (rc, run) = start_with(m, json, u0, p);
+    assert_eq!(rc, 0, "{json}: {}", last_error());
+    let run = Id(run);
+    let st = wait(&run);
+    assert_eq!(st["state"], "done", "{json}: {st}");
+    let branches = st["branches"].as_array().unwrap();
+    assert_eq!(branches.len(), 1, "{json}: {st}");
+    assert_eq!(
+        branches[0]["specials"],
+        serde_json::json!([]),
+        "{json}: {st}"
+    );
+    assert_eq!(st["codim2_labels"], serde_json::json!([]), "{json}");
+    let v = rows(&run, &st);
+    (st, v)
+}
+
+/// Henon (x, y) -> (1 - a x^2 + y, b x) with free [a, b]: the LP curve is
+/// a = -(1 - b)^2 / 4 with x = 2 / (1 - b) and the multipliers 1 and -b, and the PD curve is
+/// a = 3 (1 - b)^2 / 4 with x = 2 / (3 (1 - b)) and the multipliers -1 and b. A row is
+/// [b, x, y, a, mu_re(2), mu_im(2), h, iters] (SPEC 8w, test 6).
+#[test]
+fn lp_and_pd_curves_of_the_henon_map_follow_the_closed_form() {
+    let m = compiled(HENON);
+    let b0 = 0.3;
+    for (ty, sigma) in [("LP", -1.0), ("PD", 1.0)] {
+        let (a0, x0) = if sigma < 0.0 {
+            (-(1.0_f64 - b0).powi(2) / 4.0, 2.0 / (1.0 - b0))
+        } else {
+            (3.0 * (1.0_f64 - b0).powi(2) / 4.0, 2.0 / (3.0 * (1.0 - b0)))
+        };
+        let json =
+            format!(r#"{{"type":"{ty}","free":["a","b"],"options":{{"bounds":[0.1,0.6]}}}}"#);
+        let (st, v) = curve_run(&m, &json, &[x0, b0 * x0], &[a0, b0]);
+        assert_eq!(st["kind"], ty);
+        assert_eq!(st["n"], 2);
+        assert_eq!(st["stride"], 10);
+        assert!(v.len() / 10 > 5, "{ty}: {st}");
+        for row in v.chunks(10) {
+            let b = row[0];
+            let (a, x) = if sigma < 0.0 {
+                (-(1.0 - b).powi(2) / 4.0, 2.0 / (1.0 - b))
+            } else {
+                (3.0 * (1.0 - b).powi(2) / 4.0, 2.0 / (3.0 * (1.0 - b)))
+            };
+            let what = format!("{ty} at b = {b}");
+            close(row[1], x, 1e-8, &format!("{what}: x"));
+            close(row[2], b * x, 1e-8, &format!("{what}: y"));
+            close(row[3], a, 1e-8, &format!("{what}: a"));
+            let (re, im) = (&row[4..6], &row[6..8]);
+            has_multipliers(re, im, &eig2(-2.0 * a * x, 1.0, b, 0.0), 1e-8, &what);
+            has_multipliers(re, im, &[(-sigma, 0.0), (sigma * b, 0.0)], 1e-7, &what);
+            assert!(row[8] >= 0.0 && row[9] >= 0.0, "{what}: {row:?}");
+        }
+        // The default direction is increasing b, to the bound 0.6.
+        let last = v[v.len() - 10];
+        assert!(last > 0.55, "{ty}: ends at b = {last}");
+    }
+}
+
+/// AUTO's Henon form with free [b, a]: the NS curve is b = 1 with x = y = -1 + sqrt(1 + a),
+/// kappa = -y and the multipliers kappa +- i sqrt(1 - kappa^2). A row is
+/// [a, x, y, b, kappa, mu_re(2), mu_im(2), h, iters] (SPEC 8w, test 6).
+#[test]
+fn the_ns_curve_of_the_auto_henon_map_is_b_equal_1() {
+    let m = compiled(HENON_AUTO);
+    let json = r#"{"type":"NS","free":["b","a"],"options":{"bounds":[-0.5,2.5]}}"#;
+    let (st, v) = curve_run(&m, json, &[0.3, 0.3], &[0.69, 1.0]);
+    assert_eq!(st["kind"], "NS");
+    assert_eq!(st["n"], 2);
+    assert_eq!(st["stride"], 11);
+    assert!(v.len() / 11 > 5, "{st}");
+    for row in v.chunks(11) {
+        let a = row[0];
+        let y = -1.0 + (1.0 + a).sqrt();
+        let what = format!("NS at a = {a}");
+        close(row[1], y, 1e-8, &format!("{what}: x"));
+        close(row[2], y, 1e-8, &format!("{what}: y"));
+        close(row[3], 1.0, 1e-8, &format!("{what}: b"));
+        close(row[4], -y, 1e-8, &format!("{what}: kappa"));
+        let s = (1.0 - y * y).sqrt();
+        let (re, im) = (&row[5..7], &row[7..9]);
+        has_multipliers(re, im, &eig2(0.0, 1.0, -1.0, -2.0 * y), 1e-8, &what);
+        has_multipliers(re, im, &[(-y, s), (-y, -s)], 1e-8, &what);
+        assert!(row[9] >= 0.0 && row[10] >= 0.0, "{what}: {row:?}");
+    }
+    let last = v[v.len() - 11];
+    assert!(last > 2.45, "NS: ends at a = {last}");
+}
+
+/// The refusals of SPEC 8w, test 7: the parser refuses detect, one free name, switch and
+/// start_is_special, and the engine refuses a start off the curve, an NS start with a real
+/// pair, and an NS curve of a 1-D map.
+#[test]
+fn map_curves_refuse_bad_problems_and_bad_starts() {
+    let m = compiled(HENON);
+    let (x, y) = (2.0 / 0.7, 0.3 * 2.0 / 0.7);
+    for ty in ["LP", "PD", "NS"] {
+        let bad = [
+            (
+                format!(
+                    r#"{{"type":"{ty}","free":["a","b"],"options":{{"detect":{{"lp":true}}}}}}"#
+                ),
+                "options.detect: a curve of fixed points of a map takes no detect",
+            ),
+            (
+                format!(r#"{{"type":"{ty}","free":"a"}}"#),
+                "free: expected two parameter names",
+            ),
+            (
+                format!(r#"{{"type":"{ty}","free":["a","b"],"switch":"BP1"}}"#),
+                "switch: only an EP run can switch branches",
+            ),
+            (
+                format!(r#"{{"type":"{ty}","free":["a","b"],"start_is_special":true}}"#),
+                "start_is_special: only an EP run starts at a special point",
+            ),
+        ];
+        for (json, want) in &bad {
+            let (rc, run) = start_with(&m, json, &[x, y], &[-0.1225, 0.3]);
+            assert_eq!((rc, run), (BAD_PROBLEM, 0), "{json}: {}", last_error());
+            assert!(last_error().contains(want), "{json}: {}", last_error());
+        }
+    }
+    // Henon at a = 0.2, b = 0.3 on its fixed point is on none of the three curves.
+    let p = [0.2, 0.3];
+    let (x0, y0) = {
+        let x = (-(0.7_f64) + (0.49_f64 + 0.8).sqrt()) / 0.4;
+        (x, 0.3 * x)
+    };
+    for ty in ["LP", "PD"] {
+        let json = format!(r#"{{"type":"{ty}","free":["a","b"]}}"#);
+        let (rc, err) = failed_run(&m, &json, &[x0, y0], &p);
+        assert_eq!(rc, BAD_PROBLEM, "{ty}: {err}");
+        assert!(
+            err.starts_with(&format!(
+                "bad problem: the start is not near the {ty} curve: the residual is "
+            )),
+            "{ty}: {err}"
+        );
+    }
+    let ma = compiled(HENON_AUTO);
+    let json = r#"{"type":"NS","free":["b","a"]}"#;
+    // b = 0.5: the complex pair has modulus sqrt(0.5), off the unit circle.
+    let (rc, err) = failed_run(&ma, json, &[0.3, 0.3], &[0.69, 0.5]);
+    assert_eq!(rc, BAD_PROBLEM, "{err}");
+    assert!(
+        err.starts_with("bad problem: the start is not near the NS curve: the residual is "),
+        "{err}"
+    );
+    // b = 1, x = y = 1.5, a = 5.25: F_x = [[0, 1], [-1, -3]] has the real pair
+    // (-3 +- sqrt 5) / 2 with product 1.
+    let (rc, err) = failed_run(&ma, json, &[1.5, 1.5], &[5.25, 1.0]);
+    assert_eq!(rc, BAD_PROBLEM, "{err}");
+    assert_eq!(
+        err,
+        "bad problem: the start has no complex pair of multipliers near the unit circle; start \
+         the NS curve from an NS point of a map EP branch"
+    );
+    let m1 = compiled(LOGISTIC_2P);
+    let json = r#"{"type":"NS","free":["r","c"]}"#;
+    let (rc, err) = failed_run(&m1, json, &[0.6], &[2.5, 0.0]);
+    assert_eq!(rc, BAD_PROBLEM, "{err}");
+    assert_eq!(
+        err,
+        "bad problem: an NS curve of a map needs at least two variables"
+    );
+}
+
+#[test]
+fn a_map_curve_on_a_map_that_reads_t_is_refused() {
+    let m = compiled(SHIFT_2P);
+    for ty in ["LP", "PD", "NS"] {
+        let json = format!(r#"{{"type":"{ty}","free":["a","c"]}}"#);
+        let (rc, run) = start_with(&m, &json, &[0.0], &[0.5, 0.0]);
+        assert_eq!((rc, run), (NON_AUTONOMOUS, 0), "{ty}: {}", last_error());
+        assert_eq!(last_error(), "the model depends on t");
+    }
 }

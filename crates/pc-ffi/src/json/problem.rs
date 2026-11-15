@@ -67,6 +67,15 @@ pub enum Kind {
     },
     Ivp,
     Iter,
+    /// The LP curve of fixed points of a map in two parameters (SPEC 8w). It reads as `"LP"`
+    /// in the JSON.
+    MapLp,
+    /// The PD curve of fixed points of a map in two parameters (SPEC 8w). It reads as `"PD"`
+    /// in the JSON, without a cycle key.
+    MapPd,
+    /// The NS curve of fixed points of a map in two parameters (SPEC 8w). It reads as `"NS"`
+    /// in the JSON, without a cycle key.
+    MapNs,
 }
 
 /// The two test columns of a delay Hopf run: the first Lyapunov coefficient and the Hopf-Hopf
@@ -81,12 +90,12 @@ impl Kind {
     pub fn name(self) -> &'static str {
         match self {
             Kind::Ep | Kind::MapEp | Kind::DdeEp => "EP",
-            Kind::Lp => "LP",
+            Kind::Lp | Kind::MapLp => "LP",
             Kind::Hopf | Kind::DdeHopf => "H",
             Kind::Lc { .. } | Kind::DdeLc { .. } => "LC",
             Kind::Lpc { .. } => "LPC",
-            Kind::Pd { .. } => "PD",
-            Kind::Ns { .. } => "NS",
+            Kind::Pd { .. } | Kind::MapPd => "PD",
+            Kind::Ns { .. } | Kind::MapNs => "NS",
             Kind::Hom { .. } => "HOM",
             Kind::Ivp => "IVP",
             Kind::Iter => "ITER",
@@ -98,7 +107,14 @@ impl Kind {
     /// curve. Empty for an equilibrium branch.
     pub fn labels(self) -> &'static [&'static str] {
         match self {
-            Kind::Ep | Kind::MapEp | Kind::DdeEp | Kind::Ivp | Kind::Iter => &[],
+            Kind::Ep
+            | Kind::MapEp
+            | Kind::DdeEp
+            | Kind::Ivp
+            | Kind::Iter
+            | Kind::MapLp
+            | Kind::MapPd
+            | Kind::MapNs => &[],
             Kind::Lp => &LP_CURVE_LABELS,
             Kind::Hopf => &HOPF_CURVE_LABELS,
             Kind::DdeHopf => &DDE_HOPF_LABELS,
@@ -159,6 +175,23 @@ pub enum CycleFrom {
 
 /// Keys that only a run of cycles takes.
 const CYCLE_KEYS: [&str; 3] = ["ntst", "ncol", "mesh"];
+
+/// Whether the problem `v` runs on a map (SPEC 8w): types `"ITER"` and `"EP"`, and `"LP"`,
+/// `"PD"` and `"NS"` without a cycle key. `run_start` and `pc-cli cont` refuse every other
+/// problem on a map with `MAP_MODEL` before they parse it, so both agree.
+pub fn map_type_runs(v: &Value) -> bool {
+    match v.get("type").and_then(Value::as_str) {
+        Some("ITER" | "EP") => true,
+        Some("LP" | "PD" | "NS") => !has_cycle_key(v),
+        _ => false,
+    }
+}
+
+/// Whether the problem object `v` has one of the keys that only a run of cycles takes.
+fn has_cycle_key(v: &Value) -> bool {
+    v.as_object()
+        .is_some_and(|o| CYCLE_KEYS.iter().any(|k| o.contains_key(*k)))
+}
 
 /// Values in one row of a run of cycles or a HOM curve of `kind` with `n` states, or
 /// `None` when that overflows or `kind` has no mesh: `n (N m + 1) + N + 2 n` plus 8 for
@@ -271,6 +304,9 @@ impl Problem {
             (Kind::Iter, ..) if let Some(n) = self.iter => RunKind::Iter { n },
             (Kind::Lp, Some(free), _) => RunKind::LpCurve(curve(free)),
             (Kind::Hopf, Some(free), _) => RunKind::HopfCurve(curve(free)),
+            (Kind::MapLp, Some(free), _) => RunKind::MapLpCurve(curve(free)),
+            (Kind::MapPd, Some(free), _) => RunKind::MapPdCurve(curve(free)),
+            (Kind::MapNs, Some(free), _) => RunKind::MapNsCurve(curve(free)),
             (Kind::Lc { ntst, ncol }, _, Some(from)) => {
                 RunKind::Cycle(self.cycle_start(ntst, ncol, from))
             }
@@ -548,9 +584,13 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
     let map = ir.kind == ModelKind::Map;
     let kind = match top.get("type") {
         None => return Err("type: missing".into()),
-        // A map takes only EP and ITER (SPEC 8v). At the C ABI and in `pc-cli cont` the gate
-        // in front of the parser has refused the other types already.
+        // A map takes EP and ITER (SPEC 8v), and LP, PD and NS without a cycle key (SPEC 8w).
+        // At the C ABI and in `pc-cli cont` the gate `map_type_runs` in front of the parser has
+        // refused the other problems already.
         Some(Value::String(s)) if map && s == "EP" && !delay => Kind::MapEp,
+        Some(Value::String(s)) if map && !delay && map_type_runs(v) && s == "LP" => Kind::MapLp,
+        Some(Value::String(s)) if map && !delay && map_type_runs(v) && s == "PD" => Kind::MapPd,
+        Some(Value::String(s)) if map && !delay && map_type_runs(v) && s == "NS" => Kind::MapNs,
         Some(Value::String(s)) if map && s != "ITER" => {
             return Err(format!("type: {MAP_MODEL}"));
         }
@@ -758,6 +798,10 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
             .and_then(Value::as_object)
             .is_some_and(|d| d.contains_key(key))
     };
+    // A curve of fixed points of a map has no tests to switch on or off (SPEC 8w).
+    if matches!(kind, Kind::MapLp | Kind::MapPd | Kind::MapNs) && has_option("detect") {
+        return Err("options.detect: a curve of fixed points of a map takes no detect".into());
+    }
     if kind == Kind::DdeEp && detect_has("h") {
         return Err(
             "options.detect.h: Hopf points come from the root count, not from detect".into(),
@@ -2537,14 +2581,102 @@ mod tests {
                 "options.detect.h: a map has no Hopf points; detect pd and ns"
             );
         }
-        // Every other type is refused on a map with the text of SPEC 8v.
-        for ty in ["LP", "H", "LC", "LPC", "PD", "NS", "HOM", "IVP"] {
-            let v = json!({"type": ty, "free": "r"});
+        // Every other type is refused on a map with the text of SPEC 8w, and so are LP, PD
+        // and NS with a key of a run of cycles.
+        let mut refused: Vec<Value> = ["H", "LC", "LPC", "HOM", "IVP"]
+            .iter()
+            .map(|ty| json!({"type": ty, "free": "r"}))
+            .collect();
+        for ty in ["LP", "PD", "NS"] {
+            for key in CYCLE_KEYS {
+                let mut v = json!({"type": ty, "free": ["r", "r"]});
+                v[key] = json!(4);
+                refused.push(v);
+            }
+        }
+        for v in refused {
+            assert!(!map_type_runs(&v), "{v}");
             assert_eq!(
                 parse_problem(&v, &ir, Mode::Abi).unwrap_err(),
                 format!("type: {MAP_MODEL}"),
-                "type {ty}"
+                "{v}"
             );
+        }
+    }
+
+    /// The Henon map with two parameters.
+    fn henon_model() -> IrModel {
+        let mut map = SourceMap::new();
+        let top = map.add(
+            "t.ode",
+            "par a=1.4, b=0.3\ninit x=0, y=0\nx(t+1)=1-a*x^2+y\ny(t+1)=b*x\ndone\n",
+        );
+        let loaded = load(top, &mut map, &mut MapLoader::new());
+        pc_ir::lower(&loaded.expanded, &loaded.info).expect("the map lowers")
+    }
+
+    #[test]
+    fn lp_pd_and_ns_on_a_map_are_curves_of_fixed_points() {
+        let ir = henon_model();
+        assert_eq!(ir.kind, ModelKind::Map);
+        for (ty, kind) in [
+            ("LP", Kind::MapLp),
+            ("PD", Kind::MapPd),
+            ("NS", Kind::MapNs),
+        ] {
+            let v = json!({"type": ty, "free": ["b", "a"]});
+            assert!(map_type_runs(&v), "{ty}");
+            let p = parse_problem(&v, &ir, Mode::Abi).unwrap();
+            assert_eq!(p.kind, kind, "{ty}");
+            assert_eq!(kind.name(), ty);
+            assert!(kind.labels().is_empty(), "{ty}");
+            assert_eq!(p.curve_free, Some([1, 0]), "{ty}");
+            assert!(p.switch.is_none() && p.cycle.is_none(), "{ty}");
+            let free = match (kind, p.run_kind()) {
+                (Kind::MapLp, RunKind::MapLpCurve(c))
+                | (Kind::MapPd, RunKind::MapPdCurve(c))
+                | (Kind::MapNs, RunKind::MapNsCurve(c)) => c.free,
+                (_, other) => panic!("{ty}: {other:?}"),
+            };
+            assert_eq!(free, [1, 0], "{ty}");
+            let cases = [
+                (
+                    json!({"type": ty, "free": ["a", "b"], "options": {"detect": {"lp": false}}}),
+                    "options.detect: a curve of fixed points of a map takes no detect",
+                ),
+                (
+                    json!({"type": ty, "free": "a"}),
+                    "free: expected two parameter names",
+                ),
+                (
+                    json!({"type": ty, "free": ["a", "b"], "switch": "BP1"}),
+                    "switch: only an EP run can switch branches",
+                ),
+                (
+                    json!({"type": ty, "free": ["a", "b"], "start_is_special": true}),
+                    "start_is_special: only an EP run starts at a special point",
+                ),
+            ];
+            for (v, msg) in cases {
+                assert_eq!(parse_problem(&v, &ir, Mode::Abi).unwrap_err(), msg, "{v}");
+            }
+        }
+        // ITER and EP run on a map, and so do the curves without a cycle key; a cycle key
+        // on any other type does not matter, since those types are refused anyway.
+        for v in [
+            json!({"type": "ITER"}),
+            json!({"type": "EP", "ntst": 4}),
+            json!({"type": "LP"}),
+        ] {
+            assert!(map_type_runs(&v), "{v}");
+        }
+        for v in [
+            json!({}),
+            json!({"type": 1}),
+            json!({"type": "H"}),
+            json!("LP"),
+        ] {
+            assert!(!map_type_runs(&v), "{v}");
         }
     }
 

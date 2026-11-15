@@ -18,7 +18,7 @@ use crate::barrier::{
 use crate::ensemble::{self, EnsHandle};
 use crate::error::{Error, Result, bad_arg};
 use crate::import;
-use crate::json::problem::{Kind, Mode, parse_options, parse_problem};
+use crate::json::problem::{Kind, Mode, map_type_runs, parse_options, parse_problem};
 use crate::latex;
 use crate::model::{Build, DELAY_MODEL, ModelHandle, NOT_COMPILED};
 use crate::parse::{MAX_MODEL_TEXT, parse_model};
@@ -244,14 +244,14 @@ pub unsafe extern "C" fn run_start(
         let out_run = unsafe { out_ptr(out_run, "run") }?;
         *out_run = 0;
         let h = model_handle(model)?;
-        // A map takes only ITER and EP. Every other type, and a problem that is not JSON, is
-        // refused before anything else, so a handle that was not compiled gets the same error
-        // (SPEC 8u, 8v).
+        // A map takes ITER and EP, and LP, PD and NS without a cycle key. Every other
+        // problem, and a problem that is not JSON, is refused before anything else, so a handle
+        // that was not compiled gets the same error (SPEC 8u, 8v, 8w).
         if h.map {
             let taken = unsafe { str_arg(problem_json, "problem_json") }
                 .ok()
                 .and_then(|t| serde_json::from_str::<Value>(t).ok())
-                .is_some_and(|v| v["type"] == "ITER" || v["type"] == "EP");
+                .is_some_and(|v| map_type_runs(&v));
             if !taken {
                 h.not_map()?;
             }
