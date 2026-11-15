@@ -242,7 +242,14 @@ pub fn continue_lp_curve(
     let x = setup.start();
     let mut f = vec![0.0; x.len() - 1];
     problem.residual(&x, &mut f)?;
-    let res = f.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+    // f64::max drops NaN, so the fold keeps a NaN entry by hand.
+    let res = f.iter().fold(0.0_f64, |m, v| {
+        if m.is_nan() || v.is_nan() {
+            f64::NAN
+        } else {
+            m.max(v.abs())
+        }
+    });
     if res.is_nan() || res > opts.tol_f {
         return Err(EngineError::BadProblem(format!(
             "the start is not on the LP curve: the residual is {res:e}; start from a refined \
