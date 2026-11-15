@@ -50,7 +50,7 @@ The first word of a line decides what the line is.
 | Form | Example | Meaning | Status |
 |---|---|---|---|
 | ODE | `x'=-x`, `dx/dt=-x` | state equation | full |
-| Map | `x(t+1)=r*x*(1-x)` | discrete map | full |
+| Map | `x(t+1)=r*x*(1-x)`, or `x'=...` with `@ meth=discrete` | discrete map | parse and evaluate; simulation, equilibria and continuation refuse maps until they are supported (SPEC section 8t) |
 | Initial value | `x(0)=1`, `init x=1,y=2` | initial data | full |
 | Parameter | `par a=1,b=2` | parameters | full |
 | Number | `number c=3` | constant | full |
