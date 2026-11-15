@@ -134,7 +134,7 @@ plot(tr)                                    % the iterates, drawn as dots
 
 For a map, `TSPAN` is `[n0 n1]`, two integers with `n0 < n1`, and `t` inside the right-hand side is the iterate index n. One run gives at most 1000000 iterates. `RelTol`, `AbsTol`, `MaxSteps` and `Hmax` do not apply and raise `phasecont:simulate:mapOption`. A value that is not finite stops the run early with a warning and keeps the iterates up to that point.
 
-`equilibrium` on a map solves F(x) = x, and `Eigenvalues` holds the multipliers, the eigenvalues of the Jacobian of F. The fixed point is stable when every multiplier has modulus below 1. `continuation` with Type `"EP"` follows the fixed points in one parameter:
+`equilibrium` on a map solves F(x) = x, and `Eigenvalues` holds the multipliers, the eigenvalues of the Jacobian of F. The `Stable` property of the Point is true when every multiplier has modulus below 1. `continuation` with Type `"EP"` follows the fixed points in one parameter:
 
 ```matlab
 eq = phasecont.equilibrium(m, 0.6);                % x = 0.6, multiplier -0.5

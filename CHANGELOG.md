@@ -18,6 +18,7 @@ The version number of this release is not chosen yet. The toolbox still reports 
 - LaTeX output: `phasecont.latex.pgfplots`, `phasecont.latex.figureFromBranch`, `phasecont.latex.specialTable` and `phasecont.latex.build`, which runs `latexmk`. `build` has no time limit unless you pass `Timeout`. The LaTeX editor app is `phasecont.app.LatexStudio`.
 - Iteration of maps: `simulate(m, x0, [n0 n1])` on a map iterates it from n0 to n1, and `plot` draws the iterates as dots. `Model.IsMap` tells a map from an ODE. Sessions save and replay these runs.
 - Fixed points of maps: `equilibrium` on a map solves F(x) = x and returns the multipliers in `Eigenvalues`, and `continuation` with Type `"EP"` follows the fixed points in one parameter with LP, BP, PD and NS labels and their normal form coefficients. On a map, `Tests` has the four columns `[LP BP PD NS]`, `Detect` takes a subset of `["LP" "BP" "PD" "NS"]`, `Stable` is true where every multiplier has modulus below 1, and an NS point has its angle in `Data.values.theta`. Sessions save and replay these runs.
+- `Point.Stable`: an `"EP"` Point from `equilibrium` or a session says whether the equilibrium or the fixed point is stable, from its eigenvalues or multipliers. It is empty at a special point such as LP, PD or H, where the linear test decides nothing. It is not stored, so session files do not change.
 - A language server (`pc-lsp`) and a VS Code extension for `.ode` files. The extension is built as a `.vsix` file and is not on the Marketplace.
 
 ### Changed

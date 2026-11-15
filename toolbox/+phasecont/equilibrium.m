@@ -2,11 +2,12 @@ function pt = equilibrium(m, x0, options)
 %EQUILIBRIUM Find an equilibrium of a model by Newton's method.
 %   PT = phasecont.equilibrium(M, X0) solves f(x, p) = 0 from the guess X0
 %   at the parameter values of the model and returns a phasecont.Point with
-%   Label "EP", its eigenvalues and the parameters used.
+%   Label "EP", its eigenvalues and the parameters used. PT.Stable is true
+%   when every eigenvalue has negative real part.
 %
 %   On a map (M.IsMap is true) it solves F(x, p) = x for a fixed point, and
 %   PT.Eigenvalues holds the multipliers, the eigenvalues of the Jacobian of
-%   F. The fixed point is stable when every multiplier has modulus below 1.
+%   F. PT.Stable is true when every multiplier has modulus below 1.
 %
 %   Name-value options
 %     Params   struct or numeric vector of parameter values; a struct changes
