@@ -87,6 +87,7 @@ Each row of the table and each rule in section 2 of `docs/SPEC.md` is mapped to 
 |---|---|
 | ODE (`x'=`, `dx/dt=`) | `src/parser/stmt/tests.rs::formulas`, `src/parser/stmt/tests.rs::ddt_needs_a_letter_after_d_and_no_index`, `corpus/lorenz.ode`, `corpus/abbreviations.ode` |
 | Map (`x(t+1)=`) | `src/check/tests.rs::model_kind`, `round_trip.rs::map_statements_round_trip`, `corpus.rs::model_kinds_match_the_equations`, `corpus/henon_map.ode`, `corpus/logistic_map.ode`, `invalid/ode0052.ode` |
+| `@ meth` and the model kind: a value that starts with `d` makes an ODE file a map, the last entry decides, a spaced entry is ignored | `src/check/tests.rs::meth_with_d_makes_an_ode_file_a_map`, `src/check/tests.rs::meth_with_another_letter_keeps_an_ode_and_warns`, `src/check/tests.rs::meth_naming_an_integrator_changes_nothing`, `src/check/tests.rs::the_last_meth_entry_decides`, `src/check/tests.rs::a_spaced_meth_entry_is_ignored`, `src/check/tests.rs::meth_does_not_touch_a_map_a_mixed_file_or_a_file_without_equations`, `round_trip.rs::a_spaced_option_stays_spaced`, `invalid/ode0074.ode`, `invalid/ode0074_b.ode` |
 | Initial data (`init`, `x(0)=`) | `src/check/tests.rs::initial_values`, `corpus/fitzhugh_nagumo.ode`, `corpus/chain_range.ode`, `invalid/ode0044.ode`, `invalid/ode0045.ode` |
 | Parameters (`par`) | `src/parser/stmt/tests.rs::entry_lists`, `corpus/lorenz.ode`, `invalid/ode0041.ode` |
 | Numbers and derived parameters (`number`, `!d=`) | `src/check/tests.rs::derived_parameters`, `corpus/abbreviations.ode`, `invalid/ode0053.ode` |

@@ -140,6 +140,7 @@ fn raw(name: &str, value: &str) -> RawAssign {
         value: value.to_string(),
         value_span: DUMMY_SPAN,
         span: DUMMY_SPAN,
+        spaced: false,
     }
 }
 

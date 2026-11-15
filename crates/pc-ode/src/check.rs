@@ -27,7 +27,7 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::{Expr, Ident, MarkovLine, Model, StmtKind, UnaryOp, Unsupported};
 use crate::builtins::{Status, builtin};
 use crate::diag::{Code, Diagnostic, MAX_DIAGNOSTICS, Sink, with_summary};
-use crate::parser::expr::PORTABILITY;
+use crate::parser::expr::{PORTABILITY, clip};
 use crate::parser::stmt::UNSUPPORTED_SUM_OF;
 use crate::span::{FileId, Span};
 
@@ -72,6 +72,8 @@ pub const UNSUPPORTED_DEL_SHFT: Code = Code(56);
 pub const MAYBE_UNDEFINED: Code = Code(57);
 /// A `global` assignment to a name that is not a state or a parameter.
 pub const BAD_TARGET: Code = Code(58);
+/// An ODE file whose `meth` option makes XPPAUT 8.0 iterate it as a map.
+pub const METH_MAP: Code = Code(74);
 
 /// Longest name XPPAUT 8.0 keeps whole.
 const XPP_NAME_LEN: usize = 10;
@@ -124,6 +126,8 @@ pub struct Symbol {
 pub struct ModelInfo {
     /// `Ode` or `Map` after the first ODE or map statement, `None` when
     /// there is neither. A mixed file is reported and keeps the first kind.
+    /// An ODE file whose `meth` option starts with `d` (`@ meth=discrete`) is
+    /// a `Map`, as XPP iterates it (ODE0074, SPEC 8t).
     pub kind: ModelKind,
     /// False when the model calls a non-smooth builtin, uses `if`, a
     /// comparison, `&`, `|` or `not`, or has a table.
@@ -216,6 +220,7 @@ pub(crate) fn check_counted(model: &Model) -> (ModelInfo, Vec<Diagnostic>, usize
     let mut c = Checker::new(model);
     c.declare_all();
     c.at(None);
+    c.check_meth();
     c.check_inits();
     c.at(None);
     c.resolve_all();
@@ -482,6 +487,53 @@ impl<'a> Checker<'a> {
             }
             Some(_) => {}
         }
+    }
+
+    /// The `meth` option of an ODE file (SPEC 8t). XPPAUT 8.0 reads the
+    /// method from the first character of the value of the last `meth`
+    /// entry, ignoring case, and iterates the file as a map for any
+    /// character that is not one of its integrators. A `d` (the discrete
+    /// method) makes the file a map here too. Any other character keeps the
+    /// ODE, with a warning, so that a typo does not turn an ODE into a map.
+    /// A map, a mixed file and a file without equations are left alone.
+    fn check_meth(&mut self) {
+        if self.mixed || !matches!(self.kind, Some((ModelKind::Ode, _))) {
+            return;
+        }
+        let model = self.model;
+        let last = model
+            .statements
+            .iter()
+            .filter_map(|s| match &s.kind {
+                StmtKind::Options { entries } => Some(entries),
+                _ => None,
+            })
+            .flatten()
+            .rfind(|e| !e.spaced && e.name.key.starts_with("meth"));
+        let Some(entry) = last else {
+            return;
+        };
+        let first = entry.value.chars().next().map(|c| c.to_ascii_lowercase());
+        const INTEGRATORS: &str = "abcegmqrsy258v";
+        let written = clip(&format!("{}={}", entry.name.text, entry.value));
+        let message = match first {
+            None => return,
+            Some(c) if INTEGRATORS.contains(c) => return,
+            Some('d') => {
+                if let Some(kind) = self.kind.as_mut() {
+                    kind.0 = ModelKind::Map;
+                }
+                format!(
+                    "`{written}` makes XPPAUT 8.0 iterate this file as a map, so PhaseCont \
+                     reads it as a map"
+                )
+            }
+            Some(_) => format!(
+                "XPPAUT 8.0 iterates this file as a map for `{written}`, but PhaseCont \
+                 integrates it as an ODE; write `x(t+1)=...` for a map"
+            ),
+        };
+        self.report(METH_MAP, entry.span, message, Vec::new());
     }
 
     /// Pass A: the symbol table, the model kind and the statement flags.

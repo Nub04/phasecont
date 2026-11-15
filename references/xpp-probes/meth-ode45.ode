@@ -1,0 +1,9 @@
+# meth-ode45: What does a meth value that names no XPPAUT method do?
+# xpp: v@2=0.22499999
+# pc: ODE0074
+# ruling: PhaseCont integrates the file as an ODE and warns (language.md, Options)
+x'=r*x*(1-x)
+par r=2.5
+init x=0.1
+aux v=x
+@ meth=ode45,total=2

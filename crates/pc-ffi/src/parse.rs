@@ -75,17 +75,15 @@ fn first_error(v: &Value) -> String {
 
 /// The `@` options as (lower-case name, value) pairs in the order the names first appear, with the
 /// last value winning. XPPAUT 8.0 ignores an option that has a blank around `=`, so the parser
-/// warns about it and this list leaves it out. Unknown names stay. The ABI parses one text, so
-/// every span points into `text`.
-fn option_pairs(model: &pc_ode::Model, text: &str) -> Vec<(String, String)> {
+/// warns about it, marks it `spaced`, and this list leaves it out. Unknown names stay.
+fn option_pairs(model: &pc_ode::Model) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     for stmt in &model.statements {
         let pc_ode::StmtKind::Options { entries } = &stmt.kind else {
             continue;
         };
         for e in entries {
-            let gap = text.get(e.name.span.end..e.value_span.start).unwrap_or("");
-            if gap.contains([' ', '\t']) {
+            if e.spaced {
                 continue;
             }
             match out.iter_mut().find(|(k, _)| *k == e.name.key) {
@@ -126,7 +124,7 @@ fn parse_inline(text: &str) -> Outcome {
                     par_values: ir.par_values[..n_user].to_vec(),
                     autonomous: ir.autonomous,
                     source_sha256: sha256_hex(text.as_bytes()),
-                    options: option_pairs(&loaded.expanded, text),
+                    options: option_pairs(&loaded.expanded),
                 },
                 ir,
                 model: loaded.expanded,

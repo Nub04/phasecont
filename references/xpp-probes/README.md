@@ -2,7 +2,7 @@
 
 This directory holds our own small `.ode` models, each of which asks XPPAUT 8.0 one question about its input language: how it ranks operators, where it accepts a prefix minus, what it does with blanks, which builtins exist, what a statement keyword really matches. The answers are the measured values below. They are the evidence behind the rules in `crates/pc-ode/docs/language.md`, and `run.sh` re-measures them whenever XPPAUT is installed. The files are written from scratch. None of them comes from the XPPAUT distribution or its manual.
 
-Measurements: 2026-10-23, `xppaut -version` prints `XPPAUT Version 8.0`, installed at `/usr/local/sbin/xppaut`. XPPAUT computes in double precision but writes its output file with float32 precision, so every measured value carries about seven significant digits (`0.15` is written as `0.15000001`). The runner compares with a relative tolerance of 1e-6.
+Measurements: 2026-10-23 (the `meth-*`, `map-meth-euler` and `opt-prefix-total` probes on 2026-11-14), `xppaut -version` prints `XPPAUT Version 8.0`, installed at `/usr/local/sbin/xppaut`. XPPAUT computes in double precision but writes its output file with float32 precision, so every measured value carries about seven significant digits (`0.15` is written as `0.15000001`). The runner compares with a relative tolerance of 1e-6.
 
 ## How to run
 
@@ -132,8 +132,17 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `list-init-blank` | Do blanks separate init entries? | `init x=1 y=2` | 21 | no diagnostic; computes 21 | matches |
 | `list-number-blank` | Do blanks separate number entries? | `number a=1 b=2` | 21 | no diagnostic; computes 21 | matches |
 | `log-neg` | What is log(-1)? | `log(-1)` | nan | no diagnostic; computes nan | matches |
+| `map-meth-euler` | Does meth=euler change how a map file runs? | `x(t+1)=r*x*(1-x)`, `@ meth=euler,total=2` | v@2=0.22499999 (iterated) | no diagnostic | matches |
 | `markov-extra` | Is extra text after n ignored? | `markov z 2 1` | v@2=1 v@3=0 | ODE0020 error with a fix-it | PhaseCont choice |
 | `markov-rows` | Do the rows {0} {1} / {1} {0} flip a two-state markov variable every step? | `markov z 2` | v@2=1 v@3=0 | no diagnostic | matches |
+| `meth-d` | Does meth=d iterate an ODE file as a map? | `x'=r*x*(1-x)`, `@ meth=d,total=2` | v@2=0.22499999 (iterated) | ODE0074 warning; the file is a map | matches |
+| `meth-discrete` | Does meth=discrete iterate an ODE file as a map? | `x'=r*x*(1-x)`, `@ meth=discrete,total=2` | v@2=0.22499999 (iterated) | ODE0074 warning; the file is a map | matches |
+| `meth-last` | Does a later meth entry override an earlier one? | `@ meth=discrete,total=2`, then `@ meth=euler` | v@2=0.11125 (Euler) | no diagnostic | matches |
+| `meth-method` | Does the key method set meth? | `@ method=discrete,total=2` | v@2=0.22499999 (iterated) | ODE0074 warning; the file is a map | matches |
+| `meth-ode45` | What does a meth value that names no XPPAUT method do? | `@ meth=ode45,total=2` | v@2=0.22499999 (iterated) | ODE0074 warning; the file stays an ODE | PhaseCont choice |
+| `meth-rungekutta` | Does meth=rungekutta integrate? | `@ meth=rungekutta,total=2` | v@2=0.11182589 (integrated) | no diagnostic | matches |
+| `meth-spaced` | Is meth = discrete with blanks around = ignored? | `@ meth = discrete,total=2` | v@2=0.11182589 (integrated) | ODE0025 warning; the file stays an ODE | matches |
+| `meth-upper` | Is the meth key and value case-insensitive? | `@ METH=Discrete,total=2` | v@2=0.22499999 (iterated) | ODE0074 warning; the file is a map | matches |
 | `mixed-ode-map` | Is a file with an ODE and a map accepted? | `x'=0` with `y(t+1)=y/2` | 17 | ODE0052 error, ODEs and maps mixed | PhaseCont choice |
 | `name-10` | Is a 10-character name accepted? | `par abcdefghij=3` | 9 | no diagnostic; computes 9 | matches |
 | `name-11-collide-used` | Can two names that agree in 10 characters be used in a formula? | `aux v=abcdefghijk+abcdefghijl` | error (no output) | ODE0013 warning, XPPAUT 8.0 rejects this | PhaseCont choice |
@@ -152,6 +161,7 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `op-bang` | Is a bare ! accepted (!1)? | `!1` | error (no output) | ODE0007 error, not an operator | matches |
 | `op-ne` | Is != accepted (1!=2)? | `1!=2` | error (no output) | ODE0007 error, not an operator | matches |
 | `op-single-eq` | Is a single = inside a formula accepted (1=2)? | `1=2` | error (no output) | ODE0008 error, write `==` | matches |
+| `opt-prefix-total` | Does a key that starts with total, such as totalx, set total? | `@ totalx=2,dt=1` | t@3=2 | ODE0024 warning, unknown option | mismatch, see report |
 | `par-duplicate` | Is a duplicate par accepted? | `par a=1` then `par a=2` | error (no output) | ODE0041 error, duplicate name | matches |
 | `pow-neg-base` | What is (-2)^3? | `(-2)^3` | -8 | no diagnostic; computes -8 | matches |
 | `pow-neg-frac` | What is (-8)^(1/3)? | `(-8)^(1/3)` | nan | no diagnostic; computes nan | matches |
@@ -208,3 +218,4 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 - `name-11`, `name-11-collide`, `name-11-collide-used`. XPPAUT 8.0 accepts a declared name longer than 10 characters but cannot read it back in a formula: it stops with `illegal expression: K`, which shows it keeps only the first 10 characters when it parses a formula. Two declared names that agree in their first 10 characters did not collide in any form measured (both unused, both used in a formula, one alone, a fixed-quantity pair, and `abcdefghij` with `abcdefghijk`). Only using such a name in a formula fails. PhaseCont gives an ODE0013 warning for each long name and no note about names that share their first 10 characters, so the row `name-11-collide` matches.
 - `name-arg1-outside`. XPPAUT reads `arg1` as 0 outside a function. PhaseCont reports an error (ODE0050).
 - `if-lazy`, `div-by-zero`, `div-zero-zero`. Whether XPPAUT evaluates both branches of `if` cannot be seen from values. Division by zero is guarded in XPPAUT (`1/0` gives 4.4843049e14, `0/0` gives 0). P2 ruled: PhaseCont division follows IEEE (`1/0` is inf, `0/0` is NaN), and `if` evaluates both branches and selects one with the test `c != 0`. See `crates/pc-ode/docs/language.md`.
+- `meth-*`, `map-meth-euler`, `opt-prefix-total`. XPPAUT 8.0 picks the method from the first character of the `meth` value, ignoring case. On 2026-11-14 one probe per character a to z and 0 to 9 ran: the characters a b c e g m q r s y 2 5 8 integrate, v (Volterra) crashes XPPAUT on a plain ODE, and every other character iterates the file as a map. An empty value runs the default Runge-Kutta. The last `meth` entry wins, also across `@` lines. XPPAUT takes any key that starts with a full option name as that option, so `method` sets `meth` and `totalx` sets `total`, while a shorter key such as `met` sets nothing. PhaseCont follows the `meth` rule with one exception: only a value that starts with d makes the file a map, and any other value outside the integrator letters keeps the file an ODE with an ODE0074 warning (`meth-ode45`). PhaseCont reports `totalx` as unknown, which the row `opt-prefix-total` marks as a mismatch. The sweep files are not committed; `meth-d`, `meth-ode45` and `meth-rungekutta` keep three of them.

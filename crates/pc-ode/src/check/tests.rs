@@ -940,3 +940,125 @@ fn symbol_lookup() {
     assert_eq!(info.symbol("x").unwrap().stmt, 1);
     assert!(info.symbol("q").is_none());
 }
+
+/// The model of the `meth` tests, with `entries` on its `@` lines.
+fn logistic_with(lines: &[&str]) -> String {
+    let mut text = "par r=2\nx'=r*x*(1-x)\n".to_string();
+    for l in lines {
+        text.push_str("@ ");
+        text.push_str(l);
+        text.push('\n');
+    }
+    text
+}
+
+#[test]
+fn meth_with_d_makes_an_ode_file_a_map() {
+    for entry in [
+        "meth=discrete",
+        "meth=d",
+        "METH=Discrete",
+        "method=discrete",
+        "methx=dx",
+    ] {
+        let text = logistic_with(&[entry]);
+        let (info, diags) = run(&text);
+        assert_eq!(info.kind, ModelKind::Map, "{entry}");
+        assert_eq!(diags.len(), 1, "{entry}: {diags:#?}");
+        let d = &diags[0];
+        assert_eq!(d.code, METH_MAP, "{entry}");
+        assert_eq!(d.severity, Severity::Warning, "{entry}");
+        assert_eq!(d.span, nth(&text, entry, 0), "{entry}");
+        assert_eq!(
+            d.message,
+            format!(
+                "`{entry}` makes XPPAUT 8.0 iterate this file as a map, so PhaseCont reads it \
+                 as a map"
+            )
+        );
+    }
+}
+
+#[test]
+fn meth_with_another_letter_keeps_an_ode_and_warns() {
+    for entry in ["meth=ode45", "meth=xyz", "meth=1", "meth=Fe", "meth=/"] {
+        let text = logistic_with(&[entry]);
+        let (info, diags) = run(&text);
+        assert_eq!(info.kind, ModelKind::Ode, "{entry}");
+        assert_eq!(diags.len(), 1, "{entry}: {diags:#?}");
+        let d = &diags[0];
+        assert_eq!(d.code, METH_MAP, "{entry}");
+        assert_eq!(d.span, nth(&text, entry, 0), "{entry}");
+        assert_eq!(
+            d.message,
+            format!(
+                "XPPAUT 8.0 iterates this file as a map for `{entry}`, but PhaseCont integrates \
+                 it as an ODE; write `x(t+1)=...` for a map"
+            )
+        );
+    }
+}
+
+#[test]
+fn meth_naming_an_integrator_changes_nothing() {
+    for entry in [
+        "meth=adams",
+        "meth=backeul",
+        "meth=cvode",
+        "meth=euler",
+        "meth=gear",
+        "meth=modeuler",
+        "meth=qualrk",
+        "meth=rungekutta",
+        "meth=RungeKutta",
+        "meth=stiff",
+        "meth=ymp",
+        "meth=2rb",
+        "meth=5dp",
+        "meth=83",
+        "meth=volterra",
+    ] {
+        let text = logistic_with(&[entry]);
+        assert_eq!(info(&text).kind, ModelKind::Ode, "{entry}");
+    }
+}
+
+#[test]
+fn the_last_meth_entry_decides() {
+    let text = logistic_with(&["meth=discrete", "meth=euler"]);
+    assert_eq!(info(&text).kind, ModelKind::Ode);
+    let text = logistic_with(&["meth=euler, method=d"]);
+    let d = one(&text);
+    assert_eq!((d.code, d.span), (METH_MAP, nth(&text, "method=d", 0)));
+    assert_eq!(run(&text).0.kind, ModelKind::Map);
+    // A spaced entry is ignored, as XPPAUT 8.0 ignores it, so the entry
+    // before it still decides.
+    let text = logistic_with(&["meth=d", "meth = euler"]);
+    let d = one(&text);
+    assert_eq!((d.code, d.span), (METH_MAP, nth(&text, "meth=d", 0)));
+    assert_eq!(run(&text).0.kind, ModelKind::Map);
+}
+
+#[test]
+fn a_spaced_meth_entry_is_ignored() {
+    let text = logistic_with(&["meth = discrete"]);
+    let (model, parse_diags) = parse(&text, F);
+    let parse_codes: Vec<Code> = parse_diags.iter().map(|d| d.code).collect();
+    assert_eq!(parse_codes, vec![crate::parser::stmt::SPACED_OPTION]);
+    let (info, diags) = check(&model);
+    assert!(diags.is_empty(), "{diags:#?}");
+    assert_eq!(info.kind, ModelKind::Ode);
+}
+
+#[test]
+fn meth_does_not_touch_a_map_a_mixed_file_or_a_file_without_equations() {
+    for entry in ["meth=euler", "meth=ode45", "meth=discrete"] {
+        let text = format!("x(t+1)=x/2\n@ {entry}\n");
+        assert_eq!(info(&text).kind, ModelKind::Map, "{entry}");
+        let text = format!("x'=1\ny(t+1)=y\n@ {entry}\n");
+        assert_eq!(codes(&text), vec![MIXED_KIND], "{entry}");
+        assert_eq!(run(&text).0.kind, ModelKind::Ode, "{entry}");
+        let text = format!("par a=1\n@ {entry}\n");
+        assert_eq!(info(&text).kind, ModelKind::None, "{entry}");
+    }
+}

@@ -1,0 +1,8 @@
+# opt-prefix-total: Does a key that starts with total, such as totalx, set total?
+# xpp: t@3=2
+# pc: ODE0024
+# ruling: mismatch: PhaseCont reports totalx as unknown (docs/STATUS.md, open questions)
+x'=0
+x(0)=3
+aux v=x
+@ totalx=2,dt=1

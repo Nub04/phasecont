@@ -1,0 +1,9 @@
+# meth-upper: Is the meth key and its value read without regard to case?
+# xpp: v@2=0.22499999
+# pc: ODE0074
+# ruling: PhaseCont ignores case in both (language.md, Options)
+x'=r*x*(1-x)
+par r=2.5
+init x=0.1
+aux v=x
+@ METH=Discrete,total=2

@@ -181,6 +181,20 @@ fn refusals_name_the_call() {
 }
 
 #[test]
+fn meth_discrete_makes_a_delay_model_a_map() {
+    // SPEC 8t: `@ meth=discrete` makes an ODE file a map, and a map has no
+    // delay, so the delay call is refused as in `x(t+1)=delay(x,1)`.
+    let src = "par tau=1\nx'=-delay(x,tau)\n@ meth=discrete\ndone\n";
+    let l = loaded(src);
+    assert_eq!(l.info.kind, pc_ode::ModelKind::Map);
+    let e = dde_errs(src);
+    assert_eq!(e.len(), 1, "{e:?}");
+    assert_eq!(e[0].kind, K::Delay);
+    assert_eq!(&src[e[0].span.start..e[0].span.end], "delay(x,tau)");
+    assert!(e[0].message.contains("not allowed in a map"), "{e:?}");
+}
+
+#[test]
 fn a_model_without_a_delay_is_an_error_of_lower_dde() {
     let e = dde_errs("par r=1\nx'=-r*x\ndone\n");
     assert_eq!(e.len(), 1);

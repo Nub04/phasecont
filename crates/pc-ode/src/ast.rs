@@ -419,6 +419,10 @@ pub struct RawAssign {
     pub value: String,
     pub value_span: Span,
     pub span: Span,
+    /// True for an `@` entry with a blank or tab around `=`. XPPAUT 8.0
+    /// ignores such an entry, and the parser warns about it (ODE0025).
+    /// Always false in a `set` block.
+    pub spaced: bool,
 }
 
 impl RawAssign {
@@ -428,6 +432,7 @@ impl RawAssign {
             value: self.value.clone(),
             value_span: DUMMY_SPAN,
             span: DUMMY_SPAN,
+            spaced: self.spaced,
         }
     }
 }

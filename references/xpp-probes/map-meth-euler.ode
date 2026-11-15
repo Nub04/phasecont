@@ -1,0 +1,9 @@
+# map-meth-euler: Does a map with meth=euler still iterate?
+# xpp: v@2=0.22499999
+# pc: ok
+# ruling: a map is a map whatever meth says (language.md, Options)
+x(t+1)=r*x*(1-x)
+par r=2.5
+init x=0.1
+aux v=x
+@ meth=euler,total=2

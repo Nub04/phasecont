@@ -184,7 +184,16 @@ fn stmt(out: &mut String, s: &Stmt) {
         }
         StmtKind::Options { entries } => {
             out.push_str("@ ");
-            out.push_str(&raw_assigns(entries, ", "));
+            let entries: Vec<String> = entries
+                .iter()
+                .map(|a| {
+                    // A spaced entry stays spaced, so XPPAUT 8.0 and the reader
+                    // still ignore it after a round trip.
+                    let eq = if a.spaced { " = " } else { "=" };
+                    format!("{}{eq}{}", ident(&a.name), a.value)
+                })
+                .collect();
+            out.push_str(&entries.join(", "));
         }
         StmtKind::Include { path, .. } => {
             out.push_str("#include ");

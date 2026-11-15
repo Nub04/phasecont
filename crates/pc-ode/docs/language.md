@@ -80,6 +80,12 @@ Unsupported statements stay in the AST as raw text, so the writer reproduces the
 - In an `@` list XPPAUT 8.0 accepts blanks around `=` but does not apply the option (measured: `@ total = 1, dt = .5` ran with the default `dt`). PhaseCont reads the option and gives a warning that XPPAUT 8.0 ignores it, with a fix-it that removes the blanks.
 - `@` option names are all stored. An unknown name gives a warning (PhaseCont choice; XPPAUT ignores it silently). The AUTO options (`ntst`, `nmax`, `npr`, `dsmin`, `dsmax`, `ds`, `parmin`, `parmax`, `epsl`, `epsu`, `epss` and the rest the manual lists) are kept for P3 to use as defaults.
 
+### Options
+
+- **The `meth` key.** XPPAUT 8.0 takes any `@` key that starts with `meth`, ignoring case, as the method (measured: probe `meth-method`, where `method=discrete` iterates the file), so PhaseCont knows every such key and gives it no ODE0024. The last such entry decides, in file order across `@` lines (measured: probe `meth-last`). An entry with blanks around `=` does not count, since XPPAUT 8.0 ignores it (measured: probe `meth-spaced`).
+- **The `meth` value.** XPPAUT 8.0 reads only the first character of the value, ignoring case (measured: probe `meth-upper`). A value that starts with one of `a b c e g m q r s y 2 5 8 v` names an integrator, and an empty value keeps the default. PhaseCont gives no diagnostic for these and uses neither, since `simulate` integrates with the Dormand-Prince 5(4) pair.
+- **`meth` and maps.** XPPAUT 8.0 iterates an ODE file as a map for a value that starts with any other character (measured: probes `meth-discrete`, `meth-d`, `meth-ode45`). For a value that starts with `d`, the discrete method, PhaseCont reads the file as a map too, with warning ODE0074. For any other such value PhaseCont keeps the ODE and gives warning ODE0074, so that a typo does not turn an ODE into a map (PhaseCont choice). A map file stays a map whatever `meth` says (measured: probe `map-meth-euler`). A file that mixes ODEs and maps and a file with no equation get no ODE0074.
+
 ### Values
 
 - A value in a `par`, `number` or `init` list, and the right side of `x(0)=`, is a signed numeric literal. Inside an array template it may also be a bare index form (`x[j](0)=[j]`). Anything else is an error (measured: XPPAUT reads only a leading number, so `par a=1+1` gives 1 and `x(0)=t+2` gives 0).
@@ -409,3 +415,4 @@ Each pass (include, expand, check) keeps at most 10000 diagnostics (`MAX_DIAGNOS
 | ODE0071 | error | Array expansion would pass the copy limit or the work limit ([Arrays](#arrays)). |
 | ODE0072 | error | The included files add more than 100000 statements or 1 MiB of text in one load ([Includes](#includes)). |
 | ODE0073 | error | More than 10000 diagnostics in one pass or one load. The message gives the number not shown ([Diagnostic codes](#diagnostic-codes)). |
+| ODE0074 | warning | A `meth` option that makes XPPAUT 8.0 iterate an ODE file as a map. A value that starts with `d` makes the file a map; any other value keeps the ODE ([Options](#options)). |

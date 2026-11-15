@@ -1,0 +1,9 @@
+# meth-d: Does a meth value that is only d iterate the file as a map?
+# xpp: v@2=0.22499999
+# pc: ODE0074
+# ruling: a value whose first letter is d makes the file a map (language.md, Options)
+x'=r*x*(1-x)
+par r=2.5
+init x=0.1
+aux v=x
+@ meth=d,total=2

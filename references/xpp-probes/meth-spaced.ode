@@ -1,0 +1,9 @@
+# meth-spaced: Is meth = discrete with blanks around = ignored?
+# xpp: v@2=0.11182589
+# pc: ODE0025
+# ruling: the spaced option is not applied, so the file stays an ODE (language.md, Options)
+x'=r*x*(1-x)
+par r=2.5
+init x=0.1
+aux v=x
+@ meth = discrete,total=2

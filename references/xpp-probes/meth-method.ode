@@ -1,0 +1,9 @@
+# meth-method: Does a key that starts with meth, such as method, set the method?
+# xpp: v@2=0.22499999
+# pc: ODE0074
+# ruling: a key that starts with meth is the meth option (language.md, Options)
+x'=r*x*(1-x)
+par r=2.5
+init x=0.1
+aux v=x
+@ method=discrete,total=2

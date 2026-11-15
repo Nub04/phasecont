@@ -1,0 +1,8 @@
+# meth-rungekutta: Does meth=rungekutta integrate the file?
+# xpp: v@2=0.11182589
+# pc: ok
+x'=r*x*(1-x)
+par r=2.5
+init x=0.1
+aux v=x
+@ meth=rungekutta,total=2

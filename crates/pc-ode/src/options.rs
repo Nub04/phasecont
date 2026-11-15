@@ -146,8 +146,10 @@ pub const NUMBERED: &[(&str, u8, u8)] = &[
 ];
 
 /// True when `key`, a lower-case option name, is a documented option.
+/// XPPAUT 8.0 takes any key that starts with `meth` as `meth`, such as
+/// `method` (probe `meth-method`), so those are known too.
 pub fn is_known_option(key: &str) -> bool {
-    if NAMES.contains(&key) {
+    if NAMES.contains(&key) || key.starts_with("meth") {
         return true;
     }
     NUMBERED.iter().any(|&(root, lo, hi)| {
@@ -183,8 +185,15 @@ mod tests {
 
     #[test]
     fn other_names_are_unknown() {
-        for key in ["totl", "method", "jac", "eps", "foo"] {
+        for key in ["totl", "met", "jac", "eps", "foo", "totalx"] {
             assert!(!is_known_option(key), "{key}");
+        }
+    }
+
+    #[test]
+    fn keys_that_start_with_meth_are_known() {
+        for key in ["meth", "method", "methx", "methods"] {
+            assert!(is_known_option(key), "{key}");
         }
     }
 }

@@ -336,6 +336,11 @@ pub const CODES: &[(Code, Severity, &str)] = &[
         "included files add more statements or text than the limit",
     ),
     (Code(73), Severity::Error, "more diagnostics than the limit"),
+    (
+        Code(74),
+        Severity::Warning,
+        "`meth` option that makes XPPAUT 8.0 iterate an ODE file as a map",
+    ),
 ];
 
 #[cfg(test)]

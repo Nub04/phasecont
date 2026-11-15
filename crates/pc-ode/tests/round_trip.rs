@@ -521,6 +521,47 @@ fn a_leading_digit_gets_a_blank_line() {
 }
 
 #[test]
+fn a_spaced_option_stays_spaced() {
+    // SPEC 8t: XPPAUT 8.0 ignores an `@` entry with blanks around `=`, so
+    // `meth = discrete` leaves the file an ODE. The writer keeps the
+    // blanks, so the written file reads back with the same kind and the
+    // same diagnostics.
+    fn kind_and_codes(text: &str) -> (pc_ode::ModelKind, Vec<Code>) {
+        let (m, d1) = parse(text, FILE);
+        let (e, d2) = pc_ode::expand(&m);
+        let (info, d3) = pc_ode::check(&e);
+        let codes = d1.iter().chain(&d2).chain(&d3).map(|d| d.code).collect();
+        (info.kind, codes)
+    }
+    for (src, want, kind) in [
+        (
+            "x'=1\n@ meth = discrete\n",
+            "x'=1\n@ meth = discrete\n",
+            pc_ode::ModelKind::Ode,
+        ),
+        (
+            "x'=1\n@ meth=d, meth = euler\n",
+            "x'=1\n@ meth=d, meth = euler\n",
+            pc_ode::ModelKind::Map,
+        ),
+        (
+            "x'=1\n@ total\t=2,meth=discrete\n",
+            "x'=1\n@ total = 2, meth=discrete\n",
+            pc_ode::ModelKind::Map,
+        ),
+    ] {
+        let m = parse_ok(src);
+        let text = write(&m);
+        assert_eq!(text, want, "{src:?}");
+        let (back, _) = parse(&text, FILE);
+        assert_eq!(back.strip_spans(), m.strip_spans(), "{src:?}");
+        let before = kind_and_codes(src);
+        assert_eq!(before.0, kind, "{src:?}");
+        assert_eq!(kind_and_codes(&text), before, "{src:?}");
+    }
+}
+
+#[test]
 fn a_trailing_backslash_gets_a_blank() {
     // Review 1, finding 5: raw text that ends in `\` must not continue the
     // line.
@@ -792,6 +833,7 @@ fn hand_built_statements_round_trip() {
                 value: "stiff".to_string(),
                 value_span: DUMMY_SPAN,
                 span: DUMMY_SPAN,
+                spaced: false,
             }],
         }),
         stmt(StmtKind::Block {
@@ -1198,16 +1240,24 @@ fn trailing_comment() -> BoxedStrategy<Option<Comment>> {
     .boxed()
 }
 
+/// An entry of a `set` block, or of an `@` line when `spaced` may be true
+/// (a blank on each side of `=`, which the writer keeps).
 fn raw_assign(
     names: &'static [&'static str],
     values: &'static [&'static str],
+    spaced: BoxedStrategy<bool>,
 ) -> BoxedStrategy<RawAssign> {
-    (prop::sample::select(names), prop::sample::select(values))
-        .prop_map(|(n, v)| RawAssign {
+    (
+        prop::sample::select(names),
+        prop::sample::select(values),
+        spaced,
+    )
+        .prop_map(|(n, v, spaced)| RawAssign {
             name: ident(n),
             value: v.to_string(),
             value_span: DUMMY_SPAN,
             span: DUMMY_SPAN,
+            spaced,
         })
         .boxed()
 }
@@ -1437,7 +1487,7 @@ fn top_stmt(pool: &'static [&'static str]) -> BoxedStrategy<Stmt> {
             }
         ),
         1 => with_comment(
-            prop::collection::vec(raw_assign(OPTION_NAMES, RAW_VALUES), 1..4)
+            prop::collection::vec(raw_assign(OPTION_NAMES, RAW_VALUES, any::<bool>().boxed()), 1..4)
                 .prop_map(|entries| StmtKind::Options { entries })
                 .boxed()
         ),
@@ -1447,7 +1497,7 @@ fn top_stmt(pool: &'static [&'static str]) -> BoxedStrategy<Stmt> {
                 path_span: DUMMY_SPAN,
             })
         }),
-        1 => (pool_name(ctx), prop::collection::vec(raw_assign(pool, RAW_VALUES), 0..3))
+        1 => (pool_name(ctx), prop::collection::vec(raw_assign(pool, RAW_VALUES, Just(false).boxed()), 0..3))
             .prop_map(|(name, entries)| stmt(StmtKind::Set { name, entries })),
         1 => (
             prop::sample::select(vec![-1i8, 0, 1]),

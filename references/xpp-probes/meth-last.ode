@@ -1,0 +1,10 @@
+# meth-last: Does the last meth value win across @ lines?
+# xpp: v@2=0.11125
+# pc: ok
+# ruling: the last value is the one PhaseCont reads (language.md, Options)
+x'=r*x*(1-x)
+par r=2.5
+init x=0.1
+aux v=x
+@ meth=discrete,total=2
+@ meth=euler

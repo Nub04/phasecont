@@ -1333,6 +1333,7 @@ impl StmtParser<'_> {
                 value,
                 value_span,
                 span,
+                spaced: false,
             });
         }
     }
@@ -1541,7 +1542,8 @@ impl StmtParser<'_> {
             // sets `preceded_by_blank`, and XPPAUT 8.0 applies `dt=\<newline>.5`
             // (measured).
             let blank = |s: usize, e: usize| self.src(self.span(s, e)).contains([' ', '\t']);
-            if blank(name.span.end, eq.start) || blank(eq.end, value_span.start) {
+            let spaced = blank(name.span.end, eq.start) || blank(eq.end, value_span.start);
+            if spaced {
                 let gap = self.span(name.span.end, value_span.start);
                 let message = format!(
                     "XPPAUT 8.0 ignores option `{}` because of the blanks around `=`; write \
@@ -1569,6 +1571,7 @@ impl StmtParser<'_> {
                 value,
                 value_span,
                 span,
+                spaced,
             });
         }
         if entries.is_empty() && !bad {
