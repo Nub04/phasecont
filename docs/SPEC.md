@@ -2058,7 +2058,7 @@ XPPAUT also takes keys such as `totalx` as `total` (probe `opt-prefix-total`). P
 | `run_start`, every `type` | refused before the problem is parsed, so a malformed problem and a handle that was not compiled get the same error, and no run is created |
 | `model_equilibrium` | refused, next to its `ode_only` check |
 | `ens_start` | refused as before, by `pc_ensemble::job::validate` ("the model is not an ODE system"); its `ode_only` check refuses delay models only |
-| `pc-cli cont` | refused after the model loads, with the text on stderr and exit code 2 |
+| `pc-cli cont` | refused after the model loads, with the text on stderr and exit code 1, the code of a refused model in its help |
 | `pc-cli session` | each record fails through `run_start` or `model_equilibrium` |
 | `pc-cli parse`, `ir`, `check-derivs`, `emit-c`, `latex` | allowed |
 
@@ -2066,6 +2066,7 @@ The handle has a flag `map`, set from `ModelKind::Map` when the model loads, and
 
 **MATLAB.** No public property is added in this slice; slice 1 adds `Model.IsMap`.
 - `simulate`, `equilibrium`, `continuation` and `session.replay` on a map raise `phasecont:engine:unsupportedModel` from the engine. `ensemble` refuses a map as before. `Model.rhs` works and returns F(x).
+- `simulate` gives its `ignoredOption` warning after the run returns, not before it starts. A map with `@ meth=discrete` then gets the refusal alone, and not a warning that says its `meth` option does not change the result.
 - `phasecont.app.PhasePlane` on a map raises `phasecont:app:mapModel` before it builds the window, with the text "PhasePlane draws ODE models, and this model is a map.". It reads `"map"` from `model_info` and checks it before the check for two variables. When PhasePlane loaded the model from a session file, it deletes the model first, as for the two-variable check.
 - In the toolbox, only `Model.rhs` calls `model_rhs` and `model_rhs_batch`, and only PhasePlane calls `Model.rhs`. So no other public function treats F as a vector field, and no other entry needs a refusal in this slice.
 - A session saved by 1.0.0 with a map run loads with its stored rows, since loading never recomputes. Replaying such a run gives `Pass = false` with `phasecont:session:runFailed`.
@@ -2079,8 +2080,8 @@ The handle has a flag `map`, set from `ModelKind::Map` when the model loads, and
 4. Rust, `pc-ffi`: the values of `model_rhs` and `model_rhs_t` and the `emit_c` text of the logistic file with and without `@ meth=discrete` are equal, bit for bit and byte for byte.
 5. Rust, `pc-ffi`: `model_info` reports `"map": true` for `logistic_map.ode` and for the `meth=discrete` file, and `"map": false` for an ODE model and a delay model. On both map handles `run_start` with each of `"EP"`, `"LP"`, `"H"`, `"LC"`, `"LPC"`, `"PD"`, `"NS"`, `"HOM"` and `"IVP"`, with a problem that is not JSON, and on a handle that was not compiled, is `UnsupportedModel` with the text above, creates no run and does not panic. `model_equilibrium` on a map handle is the same error. The ODE tests stay green.
 6. Rust, `pc-ensemble`: `validate` refuses the `meth=discrete` file with `Unsupported`.
-7. Rust, `pc-cli`: `cont` on `logistic_map.ode` with a valid `EP` problem exits with code 2 and prints the refusal text on stderr.
-8. MATLAB, `tests/MapRefusalTest.m`: on `logistic_map`-style and Hénon-style models written in the test, and on an ODE file with `@ meth=discrete`, `simulate`, `equilibrium` and `continuation` raise `phasecont:engine:unsupportedModel`, `Model.rhs` returns F(x), and `PhasePlane` on the two-variable map raises `phasecont:app:mapModel`. An ODE model with `@ meth=rungekutta` still simulates.
+7. Rust, `pc-cli`: `cont` on `logistic_map.ode` and on the `meth=discrete` file with a valid `EP` problem exits with code 1, prints the refusal text on stderr and prints nothing on stdout.
+8. MATLAB, `tests/MapRefusalTest.m`: on `logistic_map`-style and Hénon-style models written in the test, and on an ODE file with `@ meth=discrete`, `simulate`, `equilibrium` and `continuation` raise `phasecont:engine:unsupportedModel`, `Model.rhs` returns F(x), and `PhasePlane` on the two-variable map raises `phasecont:app:mapModel`, also when it opens the map from a session file. `simulate` on the `meth=discrete` file gives no warning. An ODE model with `@ meth=rungekutta` still simulates and warns `ignoredOption`.
 9. `cargo test` and the full MATLAB suite stay green (0 failed).
 
 ## 9. Acceptance tests
