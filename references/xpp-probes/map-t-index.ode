@@ -1,0 +1,8 @@
+# map-t-index: Is t inside a map the iterate index, and is it the time column?
+# xpp: t@5=4 v@3=1 v@5=6
+# pc: ok
+# ruling: simulate on a map sets t to the iterate index k (SPEC 8u)
+x(t+1)=x+t
+init x=0
+aux v=x
+@ total=4

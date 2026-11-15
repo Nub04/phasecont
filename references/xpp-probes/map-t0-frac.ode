@@ -1,0 +1,8 @@
+# map-t0-frac: Does a map accept a t0 that is not an integer?
+# xpp: t@2=3.5 v@2=2.5 v@3=6
+# pc: ok
+# ruling: simulate on a map takes integer n0 and n1 only (SPEC 8u)
+x(t+1)=x+t
+init x=0
+aux v=x
+@ total=4,t0=2.5

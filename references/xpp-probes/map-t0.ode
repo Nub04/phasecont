@@ -1,0 +1,8 @@
+# map-t0: Does t0 shift the t that a map reads?
+# xpp: t@1=5 v@2=5 v@3=11
+# pc: ok
+# ruling: simulate on a map starts t at n0 of its tspan [n0 n1] (SPEC 8u)
+x(t+1)=x+t
+init x=0
+aux v=x
+@ total=4,t0=5
