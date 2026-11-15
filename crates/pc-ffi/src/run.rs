@@ -45,8 +45,8 @@ pub(crate) fn stride(kind: Kind, n: usize) -> usize {
         Kind::DdeHopf => n + 5,
         // [alpha, u(n (N m + 1)), T, h, iters, mu_re(c), mu_im(c), trivial_error]
         Kind::DdeLc { .. } => cycle_stride(kind, n).unwrap_or(usize::MAX),
-        // [t, x(n)]
-        Kind::Ivp => n + 1,
+        // [t, x(n)], or [k, x(n)] for an iteration run
+        Kind::Ivp | Kind::Iter => n + 1,
         Kind::Lp => 1 + (n + 1) + 2 * n + kind.labels().len() + 2,
         Kind::Hopf => 1 + (n + 2) + 2 * n + kind.labels().len() + 2,
         // The parser rejects sizes that overflow; MAX makes a copy fail rather than wrap.
@@ -109,11 +109,11 @@ pub(crate) fn pack_row(kind: Kind, p: &Point, n: usize, out: &mut [f64]) {
         }
         return;
     }
-    if matches!(kind, Kind::Ivp | Kind::DdeEp) {
+    if matches!(kind, Kind::Ivp | Kind::Iter | Kind::DdeEp) {
         for i in 0..n {
             out[1 + i] = p.u.get(i).copied().unwrap_or(nan);
         }
-        // The IVP row ends with the state. A delay equilibrium row adds the root count that the
+        // The IVP and ITER rows end with the state. A delay equilibrium row adds the root count that the
         // engine keeps in `tests[0]` (SPEC 8s).
         if kind == Kind::DdeEp {
             out[n + 1] = p.tests[0];
@@ -123,7 +123,9 @@ pub(crate) fn pack_row(kind: Kind, p: &Point, n: usize, out: &mut [f64]) {
     // The state block: `n` values, plus a1 (and kappa) on a curve, or the orbit, T and
     // what follows T on a curve of cycles or a HOM curve.
     let (block, mesh) = match kind {
-        Kind::Ep | Kind::DdeEp | Kind::DdeHopf | Kind::DdeLc { .. } | Kind::Ivp => (n, 0),
+        Kind::Ep | Kind::DdeEp | Kind::DdeHopf | Kind::DdeLc { .. } | Kind::Ivp | Kind::Iter => {
+            (n, 0)
+        }
         Kind::Lp => (n + 1, 0),
         Kind::Hopf => (n + 2, 0),
         Kind::Lc { ntst, ncol }

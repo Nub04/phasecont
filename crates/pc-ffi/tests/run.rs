@@ -853,7 +853,7 @@ fn bad_curve_problems_give_6_at_run_start() {
         ),
         (
             r#"{"type":"XX","free":"b1"}"#,
-            r#"type: expected "EP", "LP", "H", "LC", "LPC", "PD", "NS", "HOM" or "IVP""#,
+            r#"type: expected "EP", "LP", "H", "LC", "LPC", "PD", "NS", "HOM", "IVP" or "ITER""#,
         ),
     ];
     for (json, msg) in cases {

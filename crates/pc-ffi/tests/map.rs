@@ -1,16 +1,21 @@
-//! Map models through the table from `pc_api_v1()` (SPEC section 8t, tests 4 and 5).
+//! Map models through the table from `pc_api_v1()` (SPEC section 8t, tests 4 and 5, and
+//! section 8u, test 3).
 
 use std::ffi::{CStr, CString, c_char};
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::time::{Duration, Instant};
 
 use pckern::{PcApiV1, pc_api_v1};
 use serde_json::Value;
 
-/// The refusal text of SPEC 8t.
-const MAP_MODEL: &str = "the model is a map (`x(t+1)=...` or `@ meth=discrete`), and PhaseCont \
-     does not iterate maps or find their fixed points yet; evaluating the right-hand side works";
+/// The refusal text of SPEC 8u.
+const MAP_MODEL: &str = "the model is a map (`x(t+1)=...` or `@ meth=discrete`); \
+     PhaseCont iterates a map (simulate, problem type ITER) but does not find its fixed points \
+     or continue them yet";
 const UNSUPPORTED_MODEL: i32 = 13;
+const BAD_PROBLEM: i32 = 6;
+const NOT_COMPILED: &str = "model is not compiled; call model_compile first";
 
 /// The logistic map, as in `crates/pc-ode/tests/corpus/logistic_map.ode`.
 const LOGISTIC_MAP: &str = include_str!("../../pc-ode/tests/corpus/logistic_map.ode");
@@ -21,6 +26,10 @@ const LOGISTIC_DISCRETE: &str = "par r=2\ninit x=0.2\nx'=r*x*(1-x)\n@ meth=discr
 const TIMED_ODE: &str = "par r=2\nx'=r*x*(1-x)+t\ndone\n";
 const TIMED_DISCRETE: &str = "par r=2\nx'=r*x*(1-x)+t\n@ meth=discrete\ndone\n";
 const HUTCH: &str = "par r=1.3, tau=1\nx'=r*x*(1-delay(x,tau))\ndone\n";
+/// A map that reads `t`: from x(0) = 0 it gives 0, 0, 1, 3, 6.
+const SHIFT: &str = "init x=0\nx(t+1)=x+t\ndone\n";
+/// A map that overflows at its ninth iterate from 10.
+const SQUARE: &str = "init x=10\nx(t+1)=x*x\ndone\n";
 
 fn api() -> &'static PcApiV1 {
     let p = pc_api_v1();
@@ -118,6 +127,53 @@ fn start_with(m: &Id, json: &str, u0: &[f64], p: &[f64]) -> (i32, u64) {
     (rc, run)
 }
 
+fn poll(run: u64) -> Value {
+    let mut s: *mut c_char = ptr::null_mut();
+    let rc = unsafe { (api().run_poll)(run, &mut s) };
+    assert_eq!(rc, 0, "{}", last_error());
+    serde_json::from_str(&take_string(s).unwrap()).unwrap()
+}
+
+/// Polls every 2 ms until the state is not "running".
+fn wait(run: &Id) -> Value {
+    let t0 = Instant::now();
+    loop {
+        let v = poll(run.0);
+        if v["state"] != "running" {
+            return v;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(60), "run did not finish");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// Every row of branch 0 of a finished run, as `stride` values a row.
+fn rows(run: &Id, st: &Value) -> Vec<f64> {
+    let stride = st["stride"].as_u64().unwrap() as usize;
+    let count = st["branches"][0]["points"].as_u64().unwrap() as usize;
+    let mut buf = vec![f64::NAN; count * stride];
+    let mut got = 0usize;
+    let rc =
+        unsafe { (api().run_copy)(run.0, 0, 0, 0, count, buf.as_mut_ptr(), buf.len(), &mut got) };
+    assert_eq!((rc, got), (0, count), "{}", last_error());
+    buf
+}
+
+/// Starts ITER from `u0` over `n` and returns the finished status and the rows.
+fn iterate(m: &Id, n: [i64; 2], u0: &[f64], p: &[f64]) -> (Value, Vec<f64>) {
+    let json = format!(r#"{{"type":"ITER","tspan":[{},{}]}}"#, n[0], n[1]);
+    let (rc, run) = start_with(m, &json, u0, p);
+    assert_eq!(rc, 0, "{}", last_error());
+    let run = Id(run);
+    let st = wait(&run);
+    let v = rows(&run, &st);
+    (st, v)
+}
+
+fn bits(v: &[f64]) -> Vec<u64> {
+    v.iter().map(|x| x.to_bits()).collect()
+}
+
 fn equilibrium(m: &Id, x: &[f64], p: &[f64]) -> i32 {
     let opts = CString::new("{}").unwrap();
     let mut u = vec![0.0; x.len()];
@@ -202,6 +258,80 @@ fn a_map_handle_that_was_not_compiled_gets_the_map_error() {
         assert_eq!(rc, UNSUPPORTED_MODEL, "{}", last_error());
         assert_eq!(run, 0);
         assert_eq!(last_error(), MAP_MODEL);
+    }
+}
+
+#[test]
+fn iter_on_a_map_handle_matches_a_hand_loop_bit_for_bit() {
+    // The IR keeps the association of r*x*(1-x) as (r*x)*(1-x).
+    let r = 2.5;
+    let mut x = 0.1_f64;
+    let mut want = vec![0.0, x];
+    for k in 1..=50 {
+        x = (r * x) * (1.0 - x);
+        want.extend([f64::from(k), x]);
+    }
+    for text in [LOGISTIC_MAP, LOGISTIC_DISCRETE] {
+        let m = compiled(text);
+        let (st, v) = iterate(&m, [0, 50], &[0.1], &[r]);
+        assert_eq!(st["state"], "done", "{st}");
+        assert_eq!(st["kind"], "ITER");
+        assert_eq!(st["n"], 1);
+        assert_eq!(st["stride"], 2);
+        let b = &st["branches"][0];
+        assert_eq!(b["stop"], "End");
+        assert_eq!(b["points"], 51);
+        assert_eq!(b["specials"].as_array().unwrap().len(), 0);
+        assert_eq!(bits(&v), bits(&want), "{text}");
+    }
+}
+
+#[test]
+fn iter_skips_the_check_for_t_and_t_is_the_iterate_number() {
+    let m = compiled(SHIFT);
+    let (_, v) = iterate(&m, [0, 4], &[0.0], &[]);
+    assert_eq!(v, [0.0, 0.0, 1.0, 0.0, 2.0, 1.0, 3.0, 3.0, 4.0, 6.0]);
+    let (_, v) = iterate(&m, [5, 9], &[0.0], &[]);
+    assert_eq!(v, [5.0, 0.0, 6.0, 5.0, 7.0, 11.0, 8.0, 18.0, 9.0, 26.0]);
+}
+
+#[test]
+fn an_overflow_ends_an_iter_run_with_error_and_keeps_the_rows() {
+    let m = compiled(SQUARE);
+    let (st, v) = iterate(&m, [0, 20], &[10.0], &[]);
+    assert_eq!(st["state"], "done", "{st}");
+    assert_eq!(st["branches"][0]["stop"], "Error");
+    assert_eq!(st["branches"][0]["points"], 9);
+    let x8 = (0..8).fold(10.0_f64, |x, _| x * x);
+    assert_eq!(&v[16..], [8.0, x8]);
+}
+
+#[test]
+fn iter_is_refused_on_an_ode_and_on_a_delay_model() {
+    let m = compiled(LOGISTIC_ODE);
+    let (rc, run) = start_with(&m, r#"{"type":"ITER","tspan":[0,4]}"#, &[0.2], &[2.0]);
+    assert_eq!((rc, run), (BAD_PROBLEM, 0));
+    assert_eq!(
+        last_error(),
+        "type ITER: the model is not a map; integrate an ODE with type IVP"
+    );
+    // ITER joins the run types that a delay model refuses, so the delay text comes first.
+    let m = compiled(HUTCH);
+    let (rc, run) = start_with(&m, r#"{"type":"ITER","tspan":[0,4]}"#, &[0.5], &[1.3, 1.0]);
+    assert_eq!((rc, run), (2, 0), "{}", last_error());
+    assert_eq!(
+        last_error(),
+        "the model has delay terms, and this entry is for ODE models"
+    );
+}
+
+#[test]
+fn iter_on_a_map_handle_that_was_not_compiled_gets_the_uncompiled_error() {
+    for text in [LOGISTIC_MAP, LOGISTIC_DISCRETE] {
+        let m = parse(text);
+        let (rc, run) = start_with(&m, r#"{"type":"ITER","tspan":[0,4]}"#, &[0.5], &[2.0]);
+        assert_eq!((rc, run), (2, 0), "{}", last_error());
+        assert_eq!(last_error(), NOT_COMPILED);
     }
 }
 

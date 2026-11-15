@@ -244,9 +244,17 @@ pub unsafe extern "C" fn run_start(
         let out_run = unsafe { out_ptr(out_run, "run") }?;
         *out_run = 0;
         let h = model_handle(model)?;
-        // A map is refused before anything else, so a malformed problem and a handle that was
-        // not compiled get the same error (SPEC 8t).
-        h.not_map()?;
+        // A map takes only ITER. Every other type, and a problem that is not JSON, is refused
+        // before anything else, so a handle that was not compiled gets the same error (SPEC 8u).
+        if h.map {
+            let iter = unsafe { str_arg(problem_json, "problem_json") }
+                .ok()
+                .and_then(|t| serde_json::from_str::<Value>(t).ok())
+                .is_some_and(|v| v["type"] == "ITER");
+            if !iter {
+                h.not_map()?;
+            }
+        }
         let evaluator = h.evaluator().ok_or_else(|| bad_arg(NOT_COMPILED))?;
         let text = unsafe { str_arg(problem_json, "problem_json") }?;
         let v: Value = serde_json::from_str(text)
@@ -262,8 +270,9 @@ pub unsafe extern "C" fn run_start(
         expect_len("params", h.n_p(), np)?;
         problem.setup.u0 = unsafe { f64_arg(u0, nu, "u0") }?.to_vec();
         problem.setup.params = unsafe { f64_arg(p, np, "params") }?.to_vec();
-        // Only an IVP run takes the time from the integration.
-        if !h.names.autonomous && problem.kind != Kind::Ivp {
+        // Only an IVP run takes the time from the integration, and an ITER run takes the
+        // iterate number as t.
+        if !h.names.autonomous && !matches!(problem.kind, Kind::Ivp | Kind::Iter) {
             return Err(Error::NonAutonomous(EngineError::NonAutonomous.to_string()));
         }
         let kind = problem.kind;
@@ -281,7 +290,7 @@ pub unsafe extern "C" fn run_start(
 /// The run types that a delay model does not take: every `type` of the problem JSON but `"EP"`,
 /// `"H"` and `"LC"`.
 fn is_other_run_type(t: &str) -> bool {
-    matches!(t, "LP" | "LPC" | "PD" | "NS" | "HOM" | "IVP")
+    matches!(t, "LP" | "LPC" | "PD" | "NS" | "HOM" | "IVP" | "ITER")
 }
 
 fn run_handle(id: u64) -> Result<Arc<RunHandle>> {

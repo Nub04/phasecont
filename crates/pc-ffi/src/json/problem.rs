@@ -13,14 +13,15 @@ use pc_engine::{
 };
 use pc_engine::{DdeFloquetOptions, DdeHopfExtras, DdeMeshAdapt};
 use pc_ir::IrModel;
-use pc_ode::{Model, ModelInfo};
+use pc_ode::{Model, ModelInfo, ModelKind};
 use serde_json::{Map, Value};
 
 /// What a run follows: an equilibrium branch, the curve of fold (LP) or Hopf points of two
 /// parameters, a branch of periodic orbits (LC), or the curve of LPC, PD or NS points of
 /// cycles in two parameters, or the curve of orbits homoclinic to a saddle (HOM) in two
 /// parameters. Cycles and homoclinic orbits live on N mesh intervals of m collocation
-/// points. An initial value run (`Ivp`) integrates the model over a time span.
+/// points. An initial value run (`Ivp`) integrates the model over a time span, and an
+/// iteration run (`Iter`) iterates a map from one iterate to another (SPEC 8u).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Ep,
@@ -61,6 +62,7 @@ pub enum Kind {
         ncol: usize,
     },
     Ivp,
+    Iter,
 }
 
 /// The two test columns of a delay Hopf run: the first Lyapunov coefficient and the Hopf-Hopf
@@ -83,6 +85,7 @@ impl Kind {
             Kind::Ns { .. } => "NS",
             Kind::Hom { .. } => "HOM",
             Kind::Ivp => "IVP",
+            Kind::Iter => "ITER",
         }
     }
 
@@ -91,7 +94,7 @@ impl Kind {
     /// curve. Empty for an equilibrium branch.
     pub fn labels(self) -> &'static [&'static str] {
         match self {
-            Kind::Ep | Kind::DdeEp | Kind::Ivp => &[],
+            Kind::Ep | Kind::DdeEp | Kind::Ivp | Kind::Iter => &[],
             Kind::Lp => &LP_CURVE_LABELS,
             Kind::Hopf => &HOPF_CURVE_LABELS,
             Kind::DdeHopf => &DDE_HOPF_LABELS,
@@ -206,6 +209,9 @@ pub struct Problem {
     /// The time span and the solver options of an IVP run. The start state is `setup.u0` and
     /// the parameters are `setup.params`.
     pub ivp: Option<([f64; 2], IvpOptions)>,
+    /// The first and last iterate of an ITER run, `Some` exactly when `kind` is `Iter`. The
+    /// start state is `setup.u0` and the parameters are `setup.params`.
+    pub iter: Option<[i64; 2]>,
     /// Whether a HOM run computes the inclination flip tests IFS and IFU (SPEC §8b-3). The key
     /// `inclination_flips` sets it and it is off when the key is missing.
     pub inclination_flips: bool,
@@ -258,6 +264,7 @@ impl Problem {
                 tspan: *tspan,
                 opts: opts.clone(),
             },
+            (Kind::Iter, ..) if let Some(n) = self.iter => RunKind::Iter { n },
             (Kind::Lp, Some(free), _) => RunKind::LpCurve(curve(free)),
             (Kind::Hopf, Some(free), _) => RunKind::HopfCurve(curve(free)),
             (Kind::Lc { ntst, ncol }, _, Some(from)) => {
@@ -411,7 +418,10 @@ impl Problem {
                 spec.switch_at = self.switch;
                 spec
             }
-            RunKind::Ivp { .. } | RunKind::DdeEq(_) | RunKind::DdeHopf { .. } => {
+            RunKind::Ivp { .. }
+            | RunKind::Iter { .. }
+            | RunKind::DdeEq(_)
+            | RunKind::DdeHopf { .. } => {
                 let mut spec = RunSpec::new(model, info, evaluator, self.setup, self.opts);
                 spec.kind = kind;
                 spec
@@ -545,6 +555,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         Some(Value::String(s)) if s == "H" && delay => Kind::DdeHopf,
         Some(Value::String(s)) if s == "H" => Kind::Hopf,
         Some(Value::String(s)) if s == "IVP" => return parse_ivp(top, ir, mode),
+        Some(Value::String(s)) if s == "ITER" => return parse_iter(top, ir, mode),
         Some(Value::String(s)) if s == "LC" && delay => {
             cycle_size(top, ir.n(), |ntst, ncol| Kind::DdeLc {
                 ntst,
@@ -571,13 +582,13 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         Some(_) => {
             return Err(
                 "type: expected \"EP\", \"LP\", \"H\", \"LC\", \"LPC\", \"PD\", \
-                        \"NS\", \"HOM\" or \"IVP\""
+                        \"NS\", \"HOM\", \"IVP\" or \"ITER\""
                     .into(),
             );
         }
     };
     if top.contains_key("tspan") {
-        return Err("tspan: only an IVP run takes this key".into());
+        return Err("tspan: only an IVP or ITER run takes this key".into());
     }
     let roots = parse_roots(top, kind)?;
     let (omega, lyapunov, coefficients) = parse_hopf_keys(top, kind)?;
@@ -834,6 +845,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         curve_free,
         cycle,
         ivp: None,
+        iter: None,
         inclination_flips,
         roots,
         omega,
@@ -1052,11 +1064,9 @@ fn u0_values(v: &Value) -> Result<Vec<f64>, String> {
     }
 }
 
-/// An `IVP` problem: `tspan`, the solver options, and the start state and parameters.
-fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Problem, String> {
-    if !ir.delays.is_empty() {
-        return Err(DELAY_TYPE_REFUSAL.into());
-    }
+/// Refuses the keys of the runs that follow a branch, which an IVP run and an ITER run do not
+/// take.
+fn refuse_run_keys(top: &Map<String, Value>) -> Result<(), String> {
     if top.contains_key("free") {
         return Err("free: an IVP run has no free parameter".into());
     }
@@ -1085,6 +1095,15 @@ fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Probl
             return Err(format!("{key}: only a delay-equation run takes this key"));
         }
     }
+    Ok(())
+}
+
+/// An `IVP` problem: `tspan`, the solver options, and the start state and parameters.
+fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Problem, String> {
+    if !ir.delays.is_empty() {
+        return Err(DELAY_TYPE_REFUSAL.into());
+    }
+    refuse_run_keys(top)?;
     let tspan = match top.get("tspan") {
         None => return Err("tspan: missing".into()),
         Some(Value::Array(a)) if a.len() == 2 => {
@@ -1120,6 +1139,7 @@ fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Probl
         curve_free: None,
         cycle: None,
         ivp: Some((tspan, opts)),
+        iter: None,
         inclination_flips: false,
         roots: None,
         omega: None,
@@ -1155,6 +1175,102 @@ fn parse_ivp_options(v: &Value) -> Result<IvpOptions, String> {
         opts.hmax = positive(x, "options.hmax")?;
     }
     Ok(opts)
+}
+
+/// The most iterates in one ITER run (SPEC 8u).
+const MAX_ITERATES: i64 = 1_000_000;
+
+/// An `ITER` problem: `tspan` as the first and last iterate, and the start state and
+/// parameters. A map has no solver options (SPEC 8u).
+fn parse_iter(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Problem, String> {
+    if !ir.delays.is_empty() {
+        return Err(DELAY_TYPE_REFUSAL.into());
+    }
+    if ir.kind != ModelKind::Map {
+        return Err("type ITER: the model is not a map; integrate an ODE with type IVP".into());
+    }
+    refuse_run_keys(top)?;
+    if top.contains_key("options") {
+        return Err(
+            "options: not allowed for type ITER; a map has no tolerances or step limits".into(),
+        );
+    }
+    let n = match top.get("tspan") {
+        None => return Err("tspan: missing".into()),
+        Some(Value::Array(a)) if a.len() == 2 => {
+            match (iterate_number(&a[0]), iterate_number(&a[1])) {
+                (Some(n0), Some(n1)) => [n0, n1],
+                _ => return Err(TSPAN_ITER.into()),
+            }
+        }
+        Some(_) => return Err(TSPAN_ITER.into()),
+    };
+    if n[1] <= n[0] {
+        return Err("tspan: the second iterate must be greater than the first".into());
+    }
+    // Both ends are within 2^53, so the difference does not overflow.
+    let count = n[1] - n[0];
+    if count > MAX_ITERATES {
+        return Err(format!(
+            "tspan: at most {MAX_ITERATES} iterates in one run, got {count}; split the run \
+             into shorter ones"
+        ));
+    }
+    if mode == Mode::Abi {
+        if top.contains_key("u0") {
+            return Err("u0: not allowed here; pass the state as a buffer".into());
+        }
+        if top.contains_key("params") {
+            return Err("params: not allowed here; pass the parameters as a buffer".into());
+        }
+    }
+    let params = parse_params(top, ir)?;
+    let u0 = match top.get("u0") {
+        None => ir.init.clone(),
+        Some(v) => u0_values(v)?,
+    };
+    let problem = Problem {
+        setup: EpSetup::new(0, params, u0),
+        opts: Options::default(),
+        switch: None,
+        kind: Kind::Iter,
+        curve_free: None,
+        cycle: None,
+        ivp: None,
+        iter: Some(n),
+        inclination_flips: false,
+        roots: None,
+        omega: None,
+        lyapunov: false,
+        coefficients: false,
+        eps: None,
+        floquet: None,
+        bpc: false,
+        switch_direction: None,
+    };
+    if mode == Mode::Cli {
+        problem.check_u0_len(ir.n(), problem.setup.u0.len())?;
+    }
+    Ok(problem)
+}
+
+const TSPAN_ITER: &str = "tspan: expected two integers of magnitude at most 2^53";
+
+/// An iterate number: a JSON integer, or a number with an integer value, of magnitude at most
+/// 2^53. An integer token is read exactly, so 2^53 + 1 is refused and not rounded to 2^53.
+fn iterate_number(v: &Value) -> Option<i64> {
+    const LIMIT: i64 = 1 << 53;
+    let k = match v.as_i64() {
+        Some(k) => k,
+        None => {
+            let x = v.as_f64()?;
+            if x.fract() != 0.0 || x.abs() > LIMIT as f64 {
+                return None;
+            }
+            x as i64
+        }
+    };
+    (k.abs() <= LIMIT).then_some(k)
 }
 
 /// Reads `ntst` and `ncol` of a problem of cycles and makes its kind with `make`.
@@ -1436,7 +1552,7 @@ mod tests {
             ),
             (
                 json!({"type": "BP", "free": "a"}),
-                "type: expected \"EP\", \"LP\", \"H\", \"LC\", \"LPC\", \"PD\", \"NS\", \"HOM\" or \"IVP\"",
+                "type: expected \"EP\", \"LP\", \"H\", \"LC\", \"LPC\", \"PD\", \"NS\", \"HOM\", \"IVP\" or \"ITER\"",
             ),
         ];
         for (v, msg) in cases {
@@ -2200,6 +2316,172 @@ mod tests {
         assert!(msg.contains("\"IVP\""), "{msg}");
     }
 
+    /// The logistic map.
+    fn map_model() -> IrModel {
+        let mut map = SourceMap::new();
+        let top = map.add("t.ode", "par r=2.5\ninit x=0.1\nx(t+1)=r*x*(1-x)\ndone\n");
+        let loaded = load(top, &mut map, &mut MapLoader::new());
+        pc_ir::lower(&loaded.expanded, &loaded.info).expect("the map lowers")
+    }
+
+    fn iter(n: Value) -> Value {
+        json!({"type": "ITER", "tspan": n})
+    }
+
+    #[test]
+    fn an_iter_problem_takes_two_iterate_numbers() {
+        let ir = map_model();
+        assert_eq!(ir.kind, ModelKind::Map);
+        assert_eq!(Kind::Iter.name(), "ITER");
+        assert!(Kind::Iter.labels().is_empty());
+        let cases = [
+            (json!([0, 4]), [0, 4]),
+            (json!([0.0, 4.0]), [0, 4]),
+            (
+                json!([-9007199254740992_i64, -9007199254740991_i64]),
+                [-9007199254740992, -9007199254740991],
+            ),
+            (json!([7, 1_000_007]), [7, 1_000_007]),
+        ];
+        for (tspan, n) in cases {
+            let p = parse_problem(&iter(tspan.clone()), &ir, Mode::Abi).unwrap();
+            assert_eq!(p.kind, Kind::Iter, "{tspan}");
+            assert_eq!(p.iter, Some(n), "{tspan}");
+            assert!(p.ivp.is_none());
+            match p.run_kind() {
+                RunKind::Iter { n: got } => assert_eq!(got, n),
+                other => panic!("{other:?}"),
+            }
+        }
+        // The command line reads u0 and params, and u0 defaults to the initial values.
+        let p = parse_problem(&iter(json!([0, 4])), &ir, Mode::Cli).unwrap();
+        assert_eq!(p.setup.u0, vec![0.1]);
+        assert_eq!(p.setup.params, vec![2.5]);
+        let mut v = iter(json!([0, 4]));
+        v["u0"] = json!([0.3]);
+        v["params"] = json!({"r": 3.2});
+        let p = parse_problem(&v, &ir, Mode::Cli).unwrap();
+        assert_eq!(p.setup.u0, vec![0.3]);
+        assert_eq!(p.setup.params, vec![3.2]);
+    }
+
+    #[test]
+    fn an_iter_problem_is_refused_when_it_is_malformed() {
+        let ir = map_model();
+        let put = |k: &str, x: Value| {
+            let mut v = iter(json!([0, 4]));
+            v[k] = x;
+            v
+        };
+        let mut no_tspan = iter(json!([0, 4]));
+        no_tspan.as_object_mut().unwrap().remove("tspan");
+        let bad = TSPAN_ITER;
+        // 2^53 + 1 as a token; serde_json reads it exactly as an integer.
+        let above: Value = serde_json::from_str("[0, 9007199254740993]").unwrap();
+        let cases = [
+            (no_tspan, "tspan: missing".to_owned()),
+            (iter(json!([0])), bad.into()),
+            (iter(json!([0, 1, 2])), bad.into()),
+            (iter(json!("0 5")), bad.into()),
+            (iter(json!([0, 0.5])), bad.into()),
+            (iter(json!([0, "4"])), bad.into()),
+            (iter(above), bad.into()),
+            (iter(json!([0.0, 9007199254740994.0])), bad.into()),
+            (
+                iter(json!([3, 3])),
+                "tspan: the second iterate must be greater than the first".into(),
+            ),
+            (
+                iter(json!([4, 2])),
+                "tspan: the second iterate must be greater than the first".into(),
+            ),
+            (
+                iter(json!([0, 1_000_001])),
+                "tspan: at most 1000000 iterates in one run, got 1000001; \
+                 split the run into shorter ones"
+                    .into(),
+            ),
+            (
+                put("options", json!({})),
+                "options: not allowed for type ITER; a map has no tolerances or step limits".into(),
+            ),
+            (
+                put("free", json!("r")),
+                "free: an IVP run has no free parameter".into(),
+            ),
+            (
+                put("ntst", json!(4)),
+                "ntst: only an LC, LPC, PD, NS or HOM run takes this key".into(),
+            ),
+            (
+                put("start", json!(0)),
+                "start: only an LC or HOM run takes this key".into(),
+            ),
+            (
+                put("switch", json!("BP1")),
+                "switch: only an EP run can switch branches".into(),
+            ),
+            (
+                put("start_is_special", json!(true)),
+                "start_is_special: only an EP run starts at a special point".into(),
+            ),
+            (
+                put("inclination_flips", json!(true)),
+                "inclination_flips: only a HOM run takes this key".into(),
+            ),
+            (
+                put("roots", json!({})),
+                "roots: only a delay-equation run takes this key".into(),
+            ),
+            (
+                put("u0", json!([0.2])),
+                "u0: not allowed here; pass the state as a buffer".into(),
+            ),
+            (
+                put("params", json!({"r": 3.0})),
+                "params: not allowed here; pass the parameters as a buffer".into(),
+            ),
+        ];
+        for (v, msg) in cases {
+            assert_eq!(parse_problem(&v, &ir, Mode::Abi).unwrap_err(), msg, "{v}");
+        }
+        for key in ["omega", "lyapunov", "coefficients", "eps", "floquet"] {
+            assert_eq!(
+                parse_problem(&put(key, json!(1)), &ir, Mode::Abi).unwrap_err(),
+                format!("{key}: only a delay-equation run takes this key")
+            );
+        }
+        for key in CYCLE_KEYS {
+            assert!(
+                parse_problem(&put(key, json!(1)), &ir, Mode::Abi)
+                    .unwrap_err()
+                    .starts_with(&format!("{key}: only an LC")),
+                "{key}"
+            );
+        }
+        // The command line checks the length of u0.
+        let v = put("u0", json!([0.1, 0.2]));
+        assert_eq!(
+            parse_problem(&v, &ir, Mode::Cli).unwrap_err(),
+            "u0: expected 1 values, got 2"
+        );
+    }
+
+    #[test]
+    fn iter_on_an_ode_is_refused_and_tspan_belongs_to_ivp_and_iter() {
+        let ir = model();
+        assert_eq!(
+            parse_problem(&iter(json!([0, 4])), &ir, Mode::Abi).unwrap_err(),
+            "type ITER: the model is not a map; integrate an ODE with type IVP"
+        );
+        let mut v = base();
+        v["tspan"] = json!([0, 4]);
+        assert_eq!(
+            parse_problem(&v, &ir, Mode::Abi).unwrap_err(),
+            "tspan: only an IVP or ITER run takes this key"
+        );
+    }
+
     /// A scalar delay model.
     fn delay_model() -> IrModel {
         let mut map = SourceMap::new();
@@ -2212,7 +2494,7 @@ mod tests {
     fn a_delay_equation_takes_only_ep_h_and_lc() {
         let ir = delay_model();
         let text = "type: a delay equation takes only \"EP\", \"H\" or \"LC\"";
-        for ty in ["LP", "LPC", "PD", "NS", "HOM", "IVP"] {
+        for ty in ["LP", "LPC", "PD", "NS", "HOM", "IVP", "ITER"] {
             let v = json!({"type": ty, "free": "tau"});
             let msg = parse_problem(&v, &ir, Mode::Abi).unwrap_err();
             assert_eq!(msg, text, "type {ty}");
