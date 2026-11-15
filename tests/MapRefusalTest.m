@@ -2,8 +2,9 @@ classdef MapRefusalTest < matlab.unittest.TestCase
     % Tests slice 0 of map support (SPEC section 8t, test 8, as amended by
     % sections 8u and 8v): simulate on a map runs (it iterates the map, see
     % MapIterateTest), equilibrium and continuation with Type "EP" run (see
-    % MapFixedPointTest), a curve of a map is refused with a phasecont:
-    % error, PhasePlane refuses a map with phasecont:app:mapModel, and the
+    % MapFixedPointTest), an LP curve of a map is refused by the engine with
+    % phasecont:engine:unsupportedModel, PhasePlane refuses a map with
+    % phasecont:app:mapModel, and the
     % right-hand side of a map still evaluates. A map is written as
     % x(t+1)=... or as x'=... with @ meth=discrete. Every model is written
     % here.
@@ -21,6 +22,13 @@ classdef MapRefusalTest < matlab.unittest.TestCase
         HenonDiscrete = "par a=1.4, b=0.3" + newline + "init x=0, y=0" + newline + ...
             "x'=1-a*x^2+y" + newline + "y'=b*x" + newline + ...
             "@ meth=discrete" + newline + "done" + newline
+        % The logistic map with a second parameter s, so that an LP curve
+        % passes the toolbox check of two Free names and reaches the engine.
+        LogisticTwo = "par r=2, s=0" + newline + "init x=0.2" + newline + ...
+            "x(t+1)=r*x*(1-x)+s" + newline + "done" + newline
+        LogisticTwoDiscrete = "par r=2, s=0" + newline + "init x=0.2" + newline + ...
+            "x'=r*x*(1-x)+s" + newline + "@ meth=discrete" + newline + ...
+            "done" + newline
         % An ODE with a meth value that does not start with d stays an ODE.
         Decay = "par a=2" + newline + "init x=3" + newline + ...
             "x'=-a*x" + newline + "@ meth=rungekutta" + newline + ...
@@ -67,8 +75,10 @@ classdef MapRefusalTest < matlab.unittest.TestCase
 
         function verifyCurvesAreRefused(testCase, m, x0, free)
             % simulate iterates the map M, equilibrium and continuation with
-            % Type "EP" run on it, and an LP curve from the fixed point is
-            % refused with a phasecont: error.
+            % Type "EP" run on it, and the engine refuses an LP curve from
+            % the fixed point. FREE names two parameters, so the toolbox
+            % check of the Free count passes and the refusal comes from
+            % run_start.
             tr = phasecont.simulate(m, x0, [0 1]);
             testCase.verifyEqual(tr.T, [0; 1]);
             testCase.verifyEqual(tr.Stop, "End");
@@ -76,14 +86,9 @@ classdef MapRefusalTest < matlab.unittest.TestCase
             testCase.verifyEqual(pt.Label, "EP");
             br = phasecont.continuation(m, pt, Free = free(1), MaxSteps = 3);
             testCase.verifySize(br.Tests, [size(br.Alpha, 1) 4]);
-            try
-                phasecont.continuation(m, pt, Type = "LP", Free = free);
-            catch err
-                testCase.verifyTrue(startsWith(string(err.identifier), "phasecont:"), ...
-                    string(err.identifier));
-                return
-            end
-            testCase.verifyFail("an LP curve of a map ran");
+            testCase.verifyErrorText( ...
+                @() phasecont.continuation(m, pt, Type = "LP", Free = free), ...
+                "phasecont:engine:unsupportedModel", testCase.Refusal);
         end
     end
 
@@ -99,7 +104,8 @@ classdef MapRefusalTest < matlab.unittest.TestCase
         end
 
         function curvesOfTheLogisticMapAreRefused(testCase)
-            testCase.verifyCurvesAreRefused(testCase.model(testCase.Logistic), 0.5, "r");
+            testCase.verifyCurvesAreRefused( ...
+                testCase.model(testCase.LogisticTwo), 0.5, ["r" "s"]);
         end
 
         function curvesOfTheHenonMapAreRefused(testCase)
@@ -109,7 +115,7 @@ classdef MapRefusalTest < matlab.unittest.TestCase
 
         function curvesAreRefusedWithMethDiscrete(testCase)
             testCase.verifyCurvesAreRefused( ...
-                testCase.model(testCase.LogisticDiscrete), 0.5, "r");
+                testCase.model(testCase.LogisticTwoDiscrete), 0.5, ["r" "s"]);
             testCase.verifyCurvesAreRefused( ...
                 testCase.model(testCase.HenonDiscrete), [0.5 0.1], ["a" "b"]);
         end
