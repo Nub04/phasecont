@@ -692,23 +692,33 @@ fn a_map_runs_an_ep_problem_and_matches_the_api() {
     }
 }
 
-/// A map runs a PD curve of fixed points: the Henon map's PD curve is a = 3 (1 - b)^2 / 4 with
-/// x = 2 / (3 (1 - b)). The points equal the rows that the API table gives for the same
-/// problem, bit for bit (SPEC 8w, test 8).
-#[test]
-fn a_map_runs_a_pd_curve_and_matches_the_api() {
+/// Runs a map curve problem through `pc-cli cont` and through the API table and checks
+/// that each point equals its ABI row bit for bit (SPEC 8w, test 7). `names` lists the
+/// parameters in model order, `tag` names the problem file and `check` sees each point of the
+/// CLI output. The row is
+/// [a2, u, mu_re, mu_im, h, newton_iters], where u holds x, a1 and, on the NS curve, kappa.
+fn map_curve_matches_api(
+    tag: &str,
+    source: &Path,
+    body: &str,
+    names: [&str; 2],
+    p: [f64; 2],
+    u0: &[f64],
+    check: impl Fn(&Value),
+) {
     use pc_cli::session::{Engine, Evaluator};
-    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pc-ode/tests/corpus");
-    let source = corpus.join("henon_map.ode");
-    let (b0, a0) = (0.3_f64, 3.0 * 0.49 / 4.0);
-    let x0 = 2.0 / (3.0 * (1.0 - b0));
-    let body = r#""type":"PD","free":["a","b"],"options":{"bounds":[0.1,0.6]}"#;
-    let path = scratch().join("map_pd.json");
+    // Each caller gets its own file, since the tests run in parallel.
+    let path = scratch().join(format!("map_curve_{tag}.json"));
+    let u0_text: Vec<String> = u0.iter().map(|v| format!("{v:?}")).collect();
     std::fs::write(
         &path,
         format!(
-            r#"{{{body},"params":{{"a":{a0:?},"b":{b0:?}}},"u0":[{x0:?},{:?}]}}"#,
-            b0 * x0
+            r#"{{{body},"params":{{"{}":{:?},"{}":{:?}}},"u0":[{}]}}"#,
+            names[0],
+            p[0],
+            names[1],
+            p[1],
+            u0_text.join(",")
         ),
     )
     .unwrap();
@@ -722,44 +732,108 @@ fn a_map_runs_a_pd_curve_and_matches_the_api() {
     assert_eq!(branches.len(), 1, "{v}");
     let points = branches[0]["points"].as_array().unwrap();
     assert!(points.len() > 5, "{v}");
-    for p in points {
-        let b = num(&p["alpha"]);
-        let x = 2.0 / (3.0 * (1.0 - b));
-        assert_eq!(p["u"].as_array().unwrap().len(), 3, "{p}");
-        assert!((num(&p["u"][0]) - x).abs() <= 1e-8, "x at b = {b}: {p}");
-        assert!((num(&p["u"][1]) - b * x).abs() <= 1e-8, "y at b = {b}: {p}");
-        let a = 3.0 * (1.0 - b).powi(2) / 4.0;
-        assert!((num(&p["u"][2]) - a).abs() <= 1e-8, "a at b = {b}: {p}");
-    }
+    points.iter().for_each(&check);
 
     let engine = Engine::load().unwrap();
-    let text = std::fs::read_to_string(&source).unwrap();
+    let text = std::fs::read_to_string(source).unwrap();
     let m = engine.model(&text, Evaluator::Jit).unwrap();
-    let got = m
-        .run(&format!("{{{body}}}"), &[x0, b0 * x0], &[a0, b0])
-        .unwrap();
+    let got = m.run(&format!("{{{body}}}"), u0, &p).unwrap();
     assert_eq!(got.rows.len(), 1);
     let block = &got.rows[0];
+    let n = u0.len();
+    let nu = points[0]["u"].as_array().unwrap().len();
+    let stride = 1 + nu + 2 * n + 2;
     assert_eq!(block.rows(), points.len());
-    assert_eq!(block.cols(), 10);
+    assert_eq!(block.cols(), stride);
     let f = |x: &Value| x.as_f64().unwrap_or(f64::NAN);
-    for (r, (row, p)) in block.data().chunks(10).zip(points).enumerate() {
-        let want = [
-            f(&p["alpha"]),
-            f(&p["u"][0]),
-            f(&p["u"][1]),
-            f(&p["u"][2]),
-            f(&p["eigenvalues"][0][0]),
-            f(&p["eigenvalues"][1][0]),
-            f(&p["eigenvalues"][0][1]),
-            f(&p["eigenvalues"][1][1]),
-            f(&p["h"]),
-            f(&p["newton_iters"]),
-        ];
+    for (r, (row, p)) in block.data().chunks(stride).zip(points).enumerate() {
+        let mut want = vec![f(&p["alpha"])];
+        want.extend((0..nu).map(|i| f(&p["u"][i])));
+        want.extend((0..n).map(|i| f(&p["eigenvalues"][i][0])));
+        want.extend((0..n).map(|i| f(&p["eigenvalues"][i][1])));
+        want.push(f(&p["h"]));
+        want.push(f(&p["newton_iters"]));
         let same = row
             .iter()
             .zip(&want)
             .all(|(a, w)| a.to_bits() == w.to_bits() || (a.is_nan() && w.is_nan()));
         assert!(same, "row {r}: api {row:?}, cont {want:?}");
     }
+}
+
+/// A map runs a PD curve of fixed points: the Henon map's PD curve is a = 3 (1 - b)^2 / 4 with
+/// x = 2 / (3 (1 - b)).
+#[test]
+fn a_map_runs_a_pd_curve_and_matches_the_api() {
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pc-ode/tests/corpus");
+    let (b0, a0) = (0.3_f64, 3.0 * 0.49 / 4.0);
+    let x0 = 2.0 / (3.0 * (1.0 - b0));
+    map_curve_matches_api(
+        "pd",
+        &corpus.join("henon_map.ode"),
+        r#""type":"PD","free":["a","b"],"options":{"bounds":[0.1,0.6]}"#,
+        ["a", "b"],
+        [a0, b0],
+        &[x0, b0 * x0],
+        |p| {
+            let b = num(&p["alpha"]);
+            let x = 2.0 / (3.0 * (1.0 - b));
+            assert_eq!(p["u"].as_array().unwrap().len(), 3, "{p}");
+            assert!((num(&p["u"][0]) - x).abs() <= 1e-8, "x at b = {b}: {p}");
+            assert!((num(&p["u"][1]) - b * x).abs() <= 1e-8, "y at b = {b}: {p}");
+            let a = 3.0 * (1.0 - b).powi(2) / 4.0;
+            assert!((num(&p["u"][2]) - a).abs() <= 1e-8, "a at b = {b}: {p}");
+        },
+    );
+}
+
+/// A map runs an LP curve of fixed points: the Henon map's LP curve is a = -(1 - b)^2 / 4
+/// with x = 2 / (1 - b).
+#[test]
+fn a_map_runs_an_lp_curve_and_matches_the_api() {
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pc-ode/tests/corpus");
+    let (b0, a0) = (0.3_f64, -0.49 / 4.0);
+    let x0 = 2.0 / (1.0 - b0);
+    map_curve_matches_api(
+        "lp",
+        &corpus.join("henon_map.ode"),
+        r#""type":"LP","free":["a","b"],"options":{"bounds":[0.1,0.6]}"#,
+        ["a", "b"],
+        [a0, b0],
+        &[x0, b0 * x0],
+        |p| {
+            let b = num(&p["alpha"]);
+            let x = 2.0 / (1.0 - b);
+            assert_eq!(p["u"].as_array().unwrap().len(), 3, "{p}");
+            assert!((num(&p["u"][0]) - x).abs() <= 1e-8, "x at b = {b}: {p}");
+            assert!((num(&p["u"][1]) - b * x).abs() <= 1e-8, "y at b = {b}: {p}");
+            let a = -(1.0 - b).powi(2) / 4.0;
+            assert!((num(&p["u"][2]) - a).abs() <= 1e-8, "a at b = {b}: {p}");
+        },
+    );
+}
+
+/// A map runs an NS curve of fixed points: AUTO's Henon form (x, y) -> (y, a - b x - y^2)
+/// has the NS curve b = 1 with x = y = -1 + sqrt(1 + a) and kappa = -y. Free [b, a], so
+/// u = (x, y, b, kappa) and alpha = a.
+#[test]
+fn a_map_runs_an_ns_curve_and_matches_the_api() {
+    let models = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pc-engine/tests/models");
+    map_curve_matches_api(
+        "ns",
+        &models.join("map_henon_auto.ode"),
+        r#""type":"NS","free":["b","a"],"options":{"bounds":[0.2,1.5]}"#,
+        ["a", "b"],
+        [0.69, 1.0],
+        &[0.3, 0.3],
+        |p| {
+            let a = num(&p["alpha"]);
+            let y = -1.0 + (1.0 + a).sqrt();
+            assert_eq!(p["u"].as_array().unwrap().len(), 4, "{p}");
+            assert!((num(&p["u"][0]) - y).abs() <= 1e-8, "x at a = {a}: {p}");
+            assert!((num(&p["u"][1]) - y).abs() <= 1e-8, "y at a = {a}: {p}");
+            assert!((num(&p["u"][2]) - 1.0).abs() <= 1e-8, "b at a = {a}: {p}");
+            assert!((num(&p["u"][3]) + y).abs() <= 1e-8, "kappa at a = {a}: {p}");
+        },
+    );
 }

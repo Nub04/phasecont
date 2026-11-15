@@ -775,8 +775,10 @@ fn map_curves_refuse_bad_problems_and_bad_starts() {
     }
     let ma = compiled(HENON_AUTO);
     let json = r#"{"type":"NS","free":["b","a"]}"#;
-    // b = 0.5: the complex pair has modulus sqrt(0.5), off the unit circle.
-    let (rc, err) = failed_run(&ma, json, &[0.3, 0.3], &[0.69, 0.5]);
+    // b = 0.5: the fixed point x = y = (-1.5 + sqrt(2.25 + 4 a)) / 2 has the complex pair
+    // of modulus sqrt(0.5), off the unit circle, so only the NS rows are off.
+    let x = (-1.5 + (2.25 + 4.0 * 0.69_f64).sqrt()) / 2.0;
+    let (rc, err) = failed_run(&ma, json, &[x, x], &[0.69, 0.5]);
     assert_eq!(rc, BAD_PROBLEM, "{err}");
     assert!(
         err.starts_with("bad problem: the start is not near the NS curve: the residual is "),
