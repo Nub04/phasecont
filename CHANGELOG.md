@@ -44,6 +44,7 @@ The version number of this release is not chosen yet. The toolbox still reports 
 ### Known limits
 
 - Maps (`x(t+1)=...`, or `x'=...` with `@ meth=discrete`) run only in `simulate`, `equilibrium`, `continuation` with Types `"EP"`, `"LP"`, `"PD"` and `"NS"`, `PhasePlane`, `cobweb` and `ensemble`. Types `"H"`, `"LC"`, `"LPC"` and `"HOM"` refuse them, so a cycle of a map is followed as a fixed point of its k-th iterate with `Iterate`. `PhasePlane` iterates a map forward only. The codim-2 points of map curves have no normal form coefficients, and the least period of a period-k point is not checked.
+- Three bounds in the continuation of map curves have no published source: a start must lie within 10^-6 of its curve, a CH sign change counts only above 10^-8, and the CH test divides by c1 and checks only for an exact zero. The `Switch = "PD1"` option and a start at a PD point check that the kernel of A + I is one-dimensional, but a kernel of dimension 2 or more whose singular values all lie between 10^-8 and 10^-6 of the largest passes that check.
 - Delay models run only in `continuation`. `simulate`, `equilibrium` and `ensemble` refuse them.
 - The `.ode` reader refuses noise, `global`, differential-algebraic and Volterra equations, boundary value problems, `sum`, `shift`, `special`, `export`, tables read from a file and `#include`. The README lists them.
 - `simulate` integrates only with the Dormand-Prince 5(4) pair.
