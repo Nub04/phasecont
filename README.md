@@ -18,6 +18,7 @@ PhaseCont (working name) is a MATLAB toolbox for phase-plane and bifurcation ana
 - Write a branch as a pgfplots figure and its special points as a booktabs table, compile the document with `latexmk`, or edit it in the LaTeX studio app (`phasecont.latex`, `phasecont.app.LatexStudio`).
 - Save a model and its results to a session file, load it again, and replay every run to check the result (`phasecont.Session`, `phasecont.session.replay`).
 - Explore a model in the phase-plane app, with direction field, nullclines, trajectories and equilibria (`phasecont.app.PhasePlane`).
+- Iterate maps (`x(t+1)=...`), find their fixed points and period-k points with their multipliers, continue them in one parameter with LP, BP, PD and NS points and their normal form coefficients, and follow their LP, PD and NS curves in two parameters with codim-2 labels. The phase-plane app and `phasecont.cobweb` draw maps, and `phasecont.ensemble` iterates them. [Maps](#maps) has examples.
 - Build a model from equation text, a table, a MATLAB function handle, a MATLAB function file or an SBML file, with no `.ode` file (`phasecont.Model.fromEquations`, `fromTable`, `fromFunction`, `fromFile`), or type it into the model editor (`phasecont.app.ModelEditor`).
 
 `Lyapunov`, `Coefficients` and `Floquet` (delay models), `InclinationFlips` (homoclinic curves) and `Detect = "BPC"` (delay cycles) are off unless you pass them, because each one adds work at every point. `help phasecont.continuation` describes them.
@@ -117,6 +118,8 @@ Some lines load and do nothing. Active comments (lines that start with `"`) give
 
 A delay model, one that calls `delay(x, tau)`, loads and runs in `continuation` (equilibria, Hopf curves and cycles from a Hopf point). `simulate`, `equilibrium` and `ensemble` refuse it with the error `phasecont:engine:badArg`.
 
+## Maps
+
 A map is a file of `x(t+1)=...` lines, or of `x'=...` lines with `@ meth=discrete`, which XPPAUT also iterates as a map. `Model.IsMap` is true for a map, and `simulate` iterates it. Save this as `logistic.ode`:
 
 ```
@@ -142,7 +145,40 @@ br = phasecont.continuation(m, eq, Free = "r", Direction = 1, Bounds = [2 3.5]);
 br.points("PD")                                    % r = 3, x = 2/3
 ```
 
-On a map, `Tests` has the four columns `[LP BP PD NS]`, `Stable` is true where every multiplier has modulus below 1, and `Detect` takes a subset of `["LP" "BP" "PD" "NS"]`, all four by default. `Data.coefficient` holds the fold coefficient at an LP point, the period-doubling coefficient b at a PD point (b > 0 is supercritical) and the Neimark-Sacker coefficient d at an NS point (d < 0 is supercritical). An NS point also has the angle θ of its multipliers e^{±iθ} in `Data.values.theta`. Sessions save and replay iterations and branches of fixed points. Other types of `continuation` on a map raise a `phasecont:` error. `ensemble` iterates a map too (see the ensemble section). `Model.rhs` evaluates the right-hand side of a map. Curves of fixed points in two parameters and period-k points are planned.
+On a map, `Tests` has the four columns `[LP BP PD NS]`, `Stable` is true where every multiplier has modulus below 1, and `Detect` takes a subset of `["LP" "BP" "PD" "NS"]`, all four by default. `Data.coefficient` holds the fold coefficient at an LP point, the period-doubling coefficient b at a PD point (b > 0 is supercritical) and the Neimark-Sacker coefficient d at an NS point (d < 0 is supercritical). An NS point also has the angle θ of its multipliers e^{±iθ} in `Data.values.theta`. `ensemble` iterates a map too (see [Test your GPU](#test-your-gpu)). `Model.rhs` evaluates the right-hand side of a map.
+
+`continuation` with Type `"LP"`, `"PD"` or `"NS"` and two free parameters follows the curve of fixed points with a multiplier 1, a multiplier -1 or a pair of multipliers e^{±iθ}, from an LP, PD or NS point of a branch. Save this as `henon.ode`:
+
+```
+par a=0.2, b=0.3
+x(t+1)=1-a*x^2+y
+y(t+1)=b*x
+init x=1.09, y=0.33
+done
+```
+
+```matlab
+m   = phasecont.Model("henon.ode");
+eq  = phasecont.equilibrium(m, [1.09 0.33]);
+br  = phasecont.continuation(m, eq, Free = "a", Direction = 1, Bounds = [-1 0.5]);
+pd  = br.points("PD");                              % a = 3(1 - b)^2/4 = 0.3675
+pdc = phasecont.continuation(m, pd, Type = "PD", Free = ["a" "b"], Bounds = [0.1 0.6]);
+```
+
+On these curves `Bounds` bound the second free parameter, b here. The Branch has `Type` `"LP"`, `"PD"` or `"NS"`, `U` the fixed point, `Alpha` the two parameters, `Eigenvalues` the multipliers and `Stable` false, since a multiplier lies on the unit circle. An NS curve also has `Kappa`, the cosine of θ. The curves label their codim-2 points: LPPD, LPNS, CP and R1 on an LP curve; LPPD, PDNS, GPD and R2 on a PD curve; and R1 to R4, LPNS, PDNS, NSNS and CH on an NS curve. They are labels only, and their `Data.coefficient` is NaN. `Detect`, `Switch`, `Var`, `NTST`, `NCOL` and `MeshAdapt` are refused, as on the LP curve of an ODE. Types `"H"`, `"LC"`, `"LPC"` and `"HOM"` on a map raise `phasecont:engine:unsupportedModel`.
+
+`Iterate = k` on `equilibrium` and `continuation` puts F^k, the k-th iterate of the map, in place of F, so the run finds and follows period-k points, and `Branch.Iterate` holds k. `Switch = "PD1"` on an EP run of a map returns two branches: the branch at iterate k, and the branch at iterate 2k that starts at the first PD point of the first branch. A run with Type `"EP"` from a PD point at iterate k also starts the branch at iterate 2k. An LP, PD or NS curve runs at the iterate of the special point it starts from. `Iterate` on an ODE or a delay model, and an `Iterate` on a curve that differs from that of its special point, raise `phasecont:model:badOption`. PhaseCont does not check the least period, so a solve with `Iterate = 2` can converge to a fixed point of F.
+
+```matlab
+m   = phasecont.Model("logistic.ode");
+eq  = phasecont.equilibrium(m, 0.6);
+brs = phasecont.continuation(m, eq, Free = "r", Direction = 1, Bounds = [2 3.6], Switch = "PD1");
+brs(2).Iterate                                      % 2
+brs(2).points("PD")                                 % r = 1 + sqrt(6)
+p   = phasecont.equilibrium(m, 0.8, Params = struct(r = 3.2), Iterate = 2);   % x = 0.7995, multiplier 0.16
+```
+
+Sessions save and replay iterations, branches and curves of fixed points, and runs at any iterate.
 
 `phasecont.app.PhasePlane` shows a map too. On a map with two or more variables, a click iterates it N times (the T field is labeled N) and draws the iterates as dots, a click in mode "Equilibrium" marks the fixed point as stable when every multiplier has modulus below 1, and the nullcline of a variable is the curve where the map leaves that variable unchanged. A map is iterated forward only and has no direction field. On a map with one variable that does not use `t`, the app opens a cobweb view: the graph y = F(x), the diagonal y = x and the staircase of each run. `phasecont.cobweb` draws the same plot in any axes:
 
