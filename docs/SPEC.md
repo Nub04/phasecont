@@ -2358,6 +2358,67 @@ Six rulings of this slice are recorded in `docs/STATUS.md`:
 6. Rust, `pc-engine`: on `map_ns4.ode` of test 4 of Section 8w, CH = -1, LPNS, PDNS and NSNS are constant (the values of the rest pair 0.95e^{±1.6i}), and direction -1 has R4 at th = π/2 and R3 at th = 2π/3.
 7. `cargo test` and the full MATLAB suite stay green (0 failed).
 
+## 8y. Maps, slice 5: period-k points
+
+Slice 5 computes period-k points of a map, that is fixed points of the k-th iterate F^k. An `Iterate = k` option on `equilibrium` and `continuation` puts F^k in place of F in the fixed point solve, the EP branch and the LP, PD and NS curves of Sections 8v to 8x. A PD point of a branch at iterate k starts the branch of period-2k points.
+
+Owner approval: the owner approved slices 3 to 8 of the map plan on 2026-11-15 and answered decision 10 the same day: an `Iterate = k` option on `equilibrium` and `continuation` with a read-only `Branch.Iterate`, both `Switch = "PD1"` on a map EP run and a start from a stored PD special, and LP, PD and NS curves of period-k points. The C ABI keeps its function signatures and `abi_version` stays 1.
+
+**The iterated map.** `IteratedMap` (`crates/pc-engine/src/mapiter.rs`) wraps the model of a map F and evaluates the entries of F^k on the contract of `crates/pc-ir/src/entry.rs`. With x_0 = x, x_{j+1} = F(x_j, p) for j = 0 to k - 1 and A_j = F_x(x_j):
+- `F` is x_k.
+- `JacU` is A_{k-1} ⋯ A_1 A_0 (eqs. 4.1 and 4.2 of the paper below).
+- `JacP` is M_k, with M_0 = 0 and M_{j+1} = A_j M_j + F_p(x_j) (eq. 4.7).
+- `Aux` is the auxiliary values at x_0.
+- `Dir` with m slots (1 to 5) and directions z_1 to z_m: for a nonempty subset S of {1, ..., m}, X_j(S) is the derivative of x_j along the directions in S. X_0({s}) is the state part of z_s, X_0(S) = 0 when S has more than one element, and P(S) is the parameter part of z_s when S = {s} and 0 otherwise. Then X_{j+1}(S) is the sum, over the set partitions {B_1, ..., B_r} of S, of D^r F(x_j)[(X_j(B_1), P(B_1)), ..., (X_j(B_r), P(B_r))], and the entry is X_k({1, ..., m}). This is the chain rule for the derivatives of a composition (Faà di Bruno's formula), and with m = 2 and 3 state slots it is eqs. 4.3 and 4.4. A `U` slot has no parameter part, and a `P` slot has a zero state part.
+- The inner calls use `U` slots when every slot of the request is `U`, and `Full` slots otherwise. A term with a block that is exactly zero is skipped. Each step keeps the 2^m - 1 subsets, so the memory is O(2^m n) for `Dir` and O(n²) for `JacU`, whatever k is, and a step with m = 5 makes up to 202 inner calls (52 on the last step).
+- `p` holds the parameters and `t` last, and every step gets the same `p`. EP and curve runs refuse a model that uses `t`, so `t` never changes a result.
+- With k = 1 the problem runs on the model itself, so a run without the key gives the same rows, bit for bit, as before this slice.
+
+**Where F^k is used.** An EP run and the solve of `model_equilibrium` work on F^k(x) - x (`MapAsRoot` over `IteratedMap`) and read the multipliers from the `JacU` of F^k. The curve runs of Sections 8w and 8x take `IteratedMap` directly. The test functions, the coefficients of Section 8v and the codim-2 tests of Section 8x are those of F^k at the stored point x_0, as in Section 4.1 of the paper, which computes the normal form coefficients of a period-k point from the derivatives of F^k. `"switch":"BP1"` on a run at iterate k stays at iterate k.
+
+**The least period is not checked.** A fixed point of F is also a fixed point of F^2, so a solve with `Iterate = 2` can converge to a fixed point of F, and a run at iterate k can pass through points whose least period divides k. Nothing labels or refuses that.
+
+**PD switch.** `"switch":"PD1"` on a map EP run at iterate k takes the first PD special of branch 0 (`PDj` takes the j-th) and continues branch 1 at iterate 2k from it. Let A^(k) be the `JacU` of F^k at the special and σ_0 ≥ ... ≥ σ_{n-1} the singular values of A^(k) + I. The switch is refused with "PD is not simple" when σ_{n-1} > 10^-6 max(σ_0, 1), or when n ≥ 2 and σ_{n-2} ≤ 10^-8 max(σ_0, 1). These are the checks `switch_bp` makes on its matrix, except that the second one is scaled by max(σ_0, 1) and not by σ_0: when A^(k) is close to -I every singular value of A^(k) + I is small, and a check relative to σ_0 would call a kernel of dimension n simple. q spans the kernel of A^(k) + I (`null_right`). It is an eigenvector of the multiplier 1 of F^{2k}, and (q, 0) is the tangent of the branch of 2k-cycles at the special: branch 1 starts at the special's (x, α) with the first tangent (q, 0)/|q|, signed so that the first component larger than 10^-12 in size is positive, and with `start_is_special` set. As for a BP switch, Newton is skipped at the start and its residual is checked against `tol_f`. The special need not be refined. x + hq and x - hq lie near two points of the same 2k-cycle, so `SwitchDirection` is not needed and stays refused for PD1. `continue_ep` locates and labels the specials of branch 1 as on any branch.
+
+**Start at a PD point.** `"start":"pd"` on a map EP run with iterate 2k starts at the setup's (x, α), which must be a simple PD point of F^k: with the checks of the PD switch on A^(k) + I, the run is refused with "the start is not a simple PD point of F^k" (k written as a number) when σ_{n-1} > 10^-6 max(σ_0, 1), or when n ≥ 2 and σ_{n-2} ≤ 10^-8 max(σ_0, 1). Branch 0 then runs at iterate 2k with the first tangent (q, 0)/|q| and `start_is_special` set, so its rows are those of branch 1 of a PD switch at the same point, bit for bit. `start_is_special` may be sent with `"start":"pd"` and is always set. `"switch":"PD1"` on such a run goes to iterate 4k.
+
+**Problem JSON.** The top-level key `"iterate"` is a whole number from 1 to 10^6 (1 when absent), read like `ntst`. The errors are:
+- "iterate: expected a whole number from 1 to 1000000" for any other value.
+- "iterate: only a map takes this key" on an ODE or a model with delays.
+- "iterate: only an EP, LP, PD or NS run of a map takes this key" on an `ITER` run.
+- "start: only an EP run of a map takes this key" on a map LP, PD, NS or `ITER` run. ODE runs keep "start: only an LC or HOM run takes this key".
+- "start: an EP run of a map takes only \"pd\"" for any other start value on a map EP run.
+- "start: a start at a PD point needs an even iterate, twice the iterate of the PD point" for `"start":"pd"` with an odd iterate.
+
+`"switch"` on a map EP run takes `BPj` and `PDj`. 10^6 has no source: it bounds the work of one evaluation.
+
+**Status JSON.** Every branch of a map EP or map curve run has `"iterate"`: k, and branch 1 of a PD switch has 2k. ODE and delay runs have no such key. `model_equilibrium` reads `"iterate"` from its options with the same errors, solves F^k(x) = x and returns the multipliers of F^k. `pc-cli cont` passes the key through the problem JSON.
+
+**Rows.** The row layouts of Sections 8v to 8x do not change. x is the point the solver reached, one point x_0 of the k-cycle. The others are F^j(x_0), and the stored point is not moved to any particular one of them.
+
+**MATLAB.**
+- `equilibrium(m, x0, ..., Iterate = k)` and `continuation(..., Iterate = k)` take a positive whole number up to 10^6. On an ODE or delay model, the option raises `phasecont:model:badOption`.
+- The returned Point has a hidden read-only `Iterate` (1 by default), and a Branch has a read-only `Iterate` from the status branch (1 when the key is missing).
+- `continuation(m, P, Type = "EP")` without `Iterate`: if P is a PD special of a map branch at iterate k, the run starts the 2k branch there (`"iterate"`: 2k with `"start":"pd"`); otherwise it runs at the iterate of P. With `Iterate` given, the value 2k at a PD special is the same doubling start, and any other value is an ordinary start at that iterate.
+- On Type `"LP"`, `"PD"` and `"NS"` from a special of a map branch, the curve runs at the special's iterate. A different `Iterate` raises `phasecont:model:badOption`, since the special is not a special of the curve at that iterate.
+- `Switch = "PD1"` returns a 1-by-2 Branch array, [period-k, period-2k].
+- A session already stores the problem JSON and the status JSON of each run. Load reads `Iterate` of a Branch from the stored status and of an equilibrium Point from the stored options, and replay sends the stored problem, so a run at iterate k replays at iterate k. A 1.0.0 session has no such key and loads with `Iterate` 1.
+
+**Where the formulas come from.** Section 4.1 of Govaerts, Khoshsiar Ghaziani, Kuznetsov and Meijer (2007) gives the Jacobian, the multilinear forms and the parameter derivatives of F^k by the recursions 4.1 to 4.8. The set partition form for all orders is PhaseCont's: it gives eqs. 4.3 and 4.4 for m = 2 and 3. The tangent (q, 0) of the 2k branch, its sign rule and the thresholds of the simplicity check are PhaseCont choices; the thresholds are those of `switch_bp`.
+
+**What this slice does not do.** It stores one point of each k-cycle, does not check the least period, and adds no PhasePlane map mode, cobweb view or `ensemble` map method. It computes no new normal form coefficients: the coefficients of Sections 8v and 8x are those of F^k.
+
+**Acceptance tests (slice 5).** Every model is our own. The models `map_logistic2.ode`, `map_logistic3.ode` and `map_henon2.ode` write F∘F and F∘F∘F out with a user function of x. Points are located to 10^-8 in the parameters, and each test computes its expected values in the test.
+1. Rust, `pc-engine`: `IteratedMap` with k = 2 on `map_logistic.ode` and `map_henon.ode`, and with k = 3 on `map_logistic.ode`, agrees with the composed models for `F`, `JacU`, `JacP` and `Dir` with every slot list of `U`, `P` and `Full` of length 1 to 5, at three points each, to 10^-10 max(1, |value|).
+2. Rust, `pc-engine`: the logistic map `x(t+1)=r*x*(1-x)` from x = 0.6, r = 2.5, with r in [2.5, 3.6] and `"switch":"PD1"`, has PD at r = 3 on branch 0. Branch 1 runs at iterate 2, each of its points is one of x± = [(r + 1) ± √((r + 1)(r - 3))]/(2r) to 10^-9 with the multiplier -r² + 2r + 4 to 10^-9, and it has PD at r = 1 + √6 with a coefficient equal to that of the PD of an iterate 1 run on `map_logistic2.ode` through the same point, to 10^-8 relative. The status has `"iterate"` 1 and 2.
+3. Rust, `pc-engine`: `"start":"pd"` with iterate 2 at the PD point of branch 0 of test 2 gives the rows of branch 1 of test 2, bit for bit. With `"switch":"PD1"` added, its branch 1 runs at iterate 4: at each point F^4(x) = x to 10^-9, and the PD special of that branch has the product of r(1 - 2x_j) over its orbit equal to -1 to 10^-7.
+4. Rust, `pc-engine`: the Hénon map `x(t+1)=1-a*x^2+y`, `y(t+1)=b*x` with b = 0.3 from a = 0.2, with a in [0.2, 1.2] and `"switch":"PD1"`: PD at a = 3(1 - b)²/4 on branch 0, and on branch 1 (iterate 2) the trace of the product of the Jacobians along the orbit equal to 4((1 - b)² - a) + 2b to 10^-9 at each point, and PD at a = (1 - b)² + (1 + b)²/4. The PD curve at iterate 2 with free [a, b] from that PD, with b in [-1.2, 1.2] and in both directions, has a = (1 - b)² + (1 + b)²/4 to 10^-9 at each point and R2 at (a, b) = (1, 1) and (4, -1), and has the same specials with the same labels, to 10^-8, as the PD curve at iterate 1 of `map_henon2.ode` from the same point.
+5. Rust, `pc-engine`: on `map_cusp_cp.ode` of Section 8x, the LP curve at iterate 2 is a1 = -2x³, a2 = 3x² with LPPD = 5/4 and R1 = ±1, and has CP at (0, 0). On `map_ch.ode`, the NS curve at iterate 2 is z = 0, a1 = 0 with κ = cos 2 and CH = a2/√(a2² + 1), and has CH at a2 = 0.
+6. Rust, `pc-engine`: the map `x(t+1)=-(1+a)*x`, `y(t+1)=-(1+a)*y`, `z(t+1)=-(1+a)*z` from a = -0.5 has PD at a = 0, where A + I = -aI, and `"switch":"PD1"` there gives "PD is not simple". `"start":"pd"` with iterate 2 at a = 0 gives "the start is not a simple PD point of F^1", and so does the logistic map at x = 0.6, r = 2.5.
+7. Rust, `pc-ffi`: the errors of the problem JSON above, each on a problem that differs from a valid one in that key alone; the status of a map EP run has `"iterate"` 1 without the key, a PD switch has 1 and 2, and an ODE run has no `"iterate"`; `model_equilibrium` with `"iterate"`: 2 on the logistic map at r = 3.2 returns x+ or x- with the multiplier -r² + 2r + 4 = 0.16, and refuses the key on an ODE.
+8. MATLAB, `tests/MapPeriodTest.m`: `equilibrium` with `Iterate = 2` on the logistic map at r = 3.2 returns x+ or x- with the multiplier 0.16 and Stable true. `continuation` with `Switch = "PD1"` returns two Branches with `Iterate` 1 and 2 and PD at r = 1 + √6 on the second, and `continuation` from the PD special of the first with Type `"EP"` gives the second Branch's points to 10^-12. Type `"PD"` from the 2-cycle PD of the Hénon map gives a curve with `Iterate` 2 on a = (1 - b)² + (1 + b)²/4. `Iterate` on an ODE and a different `Iterate` on a curve raise `phasecont:model:badOption`. A session round trip keeps `Iterate`, and its replay passes.
+9. `cargo test` and the full MATLAB suite stay green (0 failed).
+
 ## 9. Acceptance tests
 
 Exact tests (no oracle needed):
