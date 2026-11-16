@@ -21,6 +21,7 @@ mod locate;
 mod lpcurve;
 mod mapcurve;
 mod mapfix;
+mod mapiter;
 mod model;
 mod normal;
 mod palc;
@@ -79,6 +80,7 @@ pub use mapcurve::{
     continue_map_lp_curve, continue_map_ns_curve, continue_map_pd_curve,
 };
 pub use mapfix::MapAsRoot;
+pub use mapiter::IteratedMap;
 pub use model::{DdeModel, Evaluator, ModelEval, build, build_allowing_t, build_dde, check_tables};
 pub use normal::{
     GH_NORMALIZATION, H_NORMALIZATION, LP_NORMALIZATION, first_lyapunov, fold_coefficient,
