@@ -142,7 +142,14 @@ br = phasecont.continuation(m, eq, Free = "r", Direction = 1, Bounds = [2 3.5]);
 br.points("PD")                                    % r = 3, x = 2/3
 ```
 
-On a map, `Tests` has the four columns `[LP BP PD NS]`, `Stable` is true where every multiplier has modulus below 1, and `Detect` takes a subset of `["LP" "BP" "PD" "NS"]`, all four by default. `Data.coefficient` holds the fold coefficient at an LP point, the period-doubling coefficient b at a PD point (b > 0 is supercritical) and the Neimark-Sacker coefficient d at an NS point (d < 0 is supercritical). An NS point also has the angle θ of its multipliers e^{±iθ} in `Data.values.theta`. Sessions save and replay iterations and branches of fixed points. Other types of `continuation` on a map raise a `phasecont:` error, `ensemble` refuses a map with `phasecont:engine:unsupportedModel`, and `phasecont.app.PhasePlane` refuses it with `phasecont:app:mapModel`. `Model.rhs` evaluates the right-hand side of a map. Curves of fixed points in two parameters and period-k points are planned.
+On a map, `Tests` has the four columns `[LP BP PD NS]`, `Stable` is true where every multiplier has modulus below 1, and `Detect` takes a subset of `["LP" "BP" "PD" "NS"]`, all four by default. `Data.coefficient` holds the fold coefficient at an LP point, the period-doubling coefficient b at a PD point (b > 0 is supercritical) and the Neimark-Sacker coefficient d at an NS point (d < 0 is supercritical). An NS point also has the angle θ of its multipliers e^{±iθ} in `Data.values.theta`. Sessions save and replay iterations and branches of fixed points. Other types of `continuation` on a map raise a `phasecont:` error, and `ensemble` refuses a map with `phasecont:engine:unsupportedModel`. `Model.rhs` evaluates the right-hand side of a map. Curves of fixed points in two parameters and period-k points are planned.
+
+`phasecont.app.PhasePlane` shows a map too. On a map with two or more variables, a click iterates it N times (the T field is labeled N) and draws the iterates as dots, a click in mode "Equilibrium" marks the fixed point as stable when every multiplier has modulus below 1, and the nullcline of a variable is the curve where the map leaves that variable unchanged. A map is iterated forward only and has no direction field. On a map with one variable that does not use `t`, the app opens a cobweb view: the graph y = F(x), the diagonal y = x and the staircase of each run. `phasecont.cobweb` draws the same plot in any axes:
+
+```matlab
+m = phasecont.Model("logistic.ode");
+h = phasecont.cobweb(m, 0.1, 10);                 % 10 iterates from x = 0.1
+```
 
 ## Models without an `.ode` file
 
