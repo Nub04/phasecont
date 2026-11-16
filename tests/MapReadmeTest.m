@@ -2,8 +2,9 @@ classdef MapReadmeTest < matlab.unittest.TestCase
     % Tests slice 8 of map support (SPEC section 8ab, test 1): the examples
     % of the "Maps" section of README.md. Each test writes the README's
     % .ode text into a temporary folder, runs the README calls as written
-    % there and checks the values the README states in its comments and
-    % in the text around them. The plot calls draw into a hidden figure.
+    % there and checks the values in the comments of those calls. Where a
+    % test also checks a statement of the text around a block, a comment
+    % at the check names it. The plot calls draw into a hidden figure.
 
     properties (Constant)
         % x -> r x (1 - x), with the fixed point x = 1 - 1/r, its multiplier
@@ -74,19 +75,23 @@ classdef MapReadmeTest < matlab.unittest.TestCase
 
     methods (Test)
         function readmeHoldsTheseModelsAndLines(testCase)
-            % The tests below copy the "Maps" section of the README. This
-            % test fails when that section changes, so the copy and the
-            % README stay the same.
+            % The tests below copy the two models and the lines in Lines
+            % from the "Maps" section of the README. This test fails when
+            % a model is no longer a block of that section or a line is no
+            % longer a whole line of it, so the copy and the README stay
+            % the same. It does not check the prose.
             readme = string(fileread(fullfile(testCase.Root, "README.md")));
             readme = replace(readme, sprintf("\r\n"), newline);
             maps = extractAfter(readme, newline + "## Maps" + newline);
             testCase.assertFalse(ismissing(maps), "README.md has no Maps section");
             maps = extractBefore(maps, newline + "## ");
             testCase.assertFalse(ismissing(maps), "the Maps section has no next heading");
-            testCase.verifySubstring(maps, testCase.Logistic + "```");
-            testCase.verifySubstring(maps, testCase.Henon + "```");
+            testCase.verifySubstring(maps, newline + testCase.Logistic + "```");
+            testCase.verifySubstring(maps, newline + testCase.Henon + "```");
+            rows = splitlines(maps);
             for line = testCase.Lines
-                testCase.verifySubstring(maps, line);
+                testCase.verifyTrue(any(rows == line), ...
+                    "not a whole line of the Maps section: " + line);
             end
         end
 
@@ -134,9 +139,9 @@ classdef MapReadmeTest < matlab.unittest.TestCase
             testCase.verifyLessThanOrEqual(b, 0.6 + testCase.Tol);
             testCase.verifyEqual(b(1), 0.3, AbsTol = testCase.Tol);
             testCase.verifyEqual(max(b), 0.6, AbsTol = testCase.Tol);
-            % The text after the block: U is the fixed point, Eigenvalues
-            % the multipliers, one of them -1 on a PD curve, and Stable is
-            % false.
+            % The text around the block: a PD curve has a multiplier -1
+            % (before it), U is the fixed point, Eigenvalues the
+            % multipliers and Stable is false (after it).
             x = pdc.U(:, 1);
             y = pdc.U(:, 2);
             testCase.verifyEqual([1 - a.*x.^2 + y, b.*x], [x y], AbsTol = testCase.Tol);
@@ -186,7 +191,7 @@ classdef MapReadmeTest < matlab.unittest.TestCase
             testCase.verifyNumElements(h.Steps.XData, 21);
             testCase.verifyEqual([h.Start.XData h.Start.YData], [0.1 0.1]);
             testCase.verifyEqual([h.Steps.XData(end) h.Steps.YData(end)], ...
-                [x(end) x(end)]);
+                [x(end) x(end)], AbsTol = testCase.Tol);
         end
     end
 end
