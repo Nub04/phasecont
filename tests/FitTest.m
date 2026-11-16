@@ -683,8 +683,8 @@ classdef FitTest < matlab.unittest.TestCase
 
         function aBadMaxStepsIsRefusedByEnsemble(testCase)
             % fit passes a given MaxSteps on unchanged, so the errors are
-            % those of ensemble: badOption for a value, MATLAB's own
-            % argument validation for a size.
+            % those of ensemble: badOption for a value, and the
+            % mustBeScalarOrEmpty validator of ensemble for a size.
             m = testCase.model(testCase.Decay);
             t = (0.5:0.5:3)';
             Y = exp(-1.3*t);
@@ -695,7 +695,25 @@ classdef FitTest < matlab.unittest.TestCase
             end
             c = testCase.options([], struct("MaxSteps", [1 2]));
             testCase.verifyError(@() phasecont.fit(m, 1, [], t, Y, c{:}), ...
-                "MATLAB:validation:IncompatibleSize");
+                "MATLAB:validators:mustBeScalarOrEmpty");
+        end
+
+        function aMapIsRefused(testCase)
+            % fit fits ODE models. A map is refused before any option is read.
+            maps = ["par r=2" + newline + "init x=0.2" + newline + ...
+                    "x(t+1)=r*x*(1-x)" + newline + "done" + newline, ...
+                    "par r=2" + newline + "init x=0.2" + newline + ...
+                    "x'=r*x*(1-x)" + newline + "@ meth=discrete" + newline + ...
+                    "done" + newline];
+            for text = maps
+                m = testCase.model(text);
+                testCase.verifyTrue(m.IsMap);
+                c = testCase.options([], struct("Fit", "r"));
+                testCase.verifyError(@() phasecont.fit(m, 0.2, [], (1:3)', ...
+                    [0.3; 0.4; 0.5], c{:}), "phasecont:fit:mapModel");
+                testCase.verifyError(@() phasecont.fit(m, 0.2, [], (1:3)', ...
+                    [0.3; 0.4; 0.5]), "phasecont:fit:mapModel");
+            end
         end
 
         function aPerturbedPointPastThePoleAtAnAcceptedStepIsRefused(testCase)

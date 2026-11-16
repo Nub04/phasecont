@@ -56,7 +56,7 @@ function r = fit(m, x0, P, t, Y, options)
 %   Jacobian column is exactly zero raises phasecont:fit:unidentifiable; this
 %   is reliable with Dt and is not guaranteed with Rtol and Atol. The warning
 %   phasecont:ensemble:memberStopped is off while the fit runs. Ctrl+C
-%   cancels the run.
+%   cancels the run. A map (M.IsMap) is refused with phasecont:fit:mapModel.
 %
 %   See also phasecont.ensemble, phasecont.FitResult, phasecont.simulate.
 arguments
@@ -78,6 +78,11 @@ arguments
     options.StepTol = []
     options.MaxIter = []
     options.MaxSteps = []
+end
+
+if m.IsMap
+    error("phasecont:fit:mapModel", ...
+        "fit fits ODE models, and this model is a map (x(t+1)=... or @ meth=discrete). Fitting a map is not supported.");
 end
 
 % A missing required option is reported first, then a bad value. Dt, Rtol and
