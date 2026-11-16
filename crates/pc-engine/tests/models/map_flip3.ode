@@ -1,0 +1,8 @@
+# x -> -(1 + a) x in three variables: a PD at a = 0 whose kernel has dimension 3,
+# SPEC section 8y test 6.
+par a=-0.5
+x(t+1)=-(1+a)*x
+y(t+1)=-(1+a)*y
+z(t+1)=-(1+a)*z
+init x=0, y=0, z=0
+done

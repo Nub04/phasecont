@@ -10,6 +10,7 @@ use crate::ep::EpSetup;
 use crate::error::EngineError;
 use crate::model::ModelEval;
 use crate::refine::Ctx;
+use pc_ir::EntryKind;
 use pc_linalg::{null_left, null_right, singular_values};
 
 /// Roots closer than this (up to sign) are one root: the BP is not simple.
@@ -118,6 +119,117 @@ pub fn switch_bp(
     next.tangent0 = Some(t);
     next.start_is_special = true;
     Ok(next)
+}
+
+/// Setup for the branch of period-2k points that leaves the branch of period-k points of a
+/// map at its PD special `branch.specials[special]` (SPEC section 8y).
+///
+/// `model` is `F^k` itself (an [`IteratedMap`](crate::IteratedMap) or the map), not the
+/// residual `F^k - x`. With `A` its `JacU` at the special, `q` spans the kernel of `A + I`:
+/// it is an eigenvector of the multiplier 1 of `F^{2k}`, and `(q, 0)/|q|` is the first
+/// tangent of the 2k branch, signed so that its first component above 1e-12 in size is
+/// positive. The returned setup has `u0` at the special, `params[free]` set to its alpha,
+/// that tangent in `tangent0` and `start_is_special` set; it runs on `F^{2k}`. The special
+/// need not be refined. `BadProblem` when `special` is out of range or not a PD, and
+/// `BadProblem("PD is not simple")` when the kernel of `A + I` is not one-dimensional by
+/// the checks of [`pd_tangent`].
+pub fn switch_pd(
+    model: &mut dyn ModelEval,
+    setup: &EpSetup,
+    branch: &Branch,
+    special: usize,
+) -> Result<EpSetup, EngineError> {
+    let sp = branch
+        .specials
+        .get(special)
+        .ok_or_else(|| EngineError::BadProblem(format!("no special point {special}")))?;
+    if sp.label != "PD" {
+        return Err(EngineError::BadProblem(format!(
+            "special point {special} is a {}, not a PD",
+            sp.label
+        )));
+    }
+    let (u, alpha) = (&sp.point.u, sp.point.alpha);
+    let t = pd_tangent(model, &setup.params, setup.free, u, alpha)?
+        .ok_or_else(|| EngineError::BadProblem("PD is not simple".into()))?;
+    let mut next = setup.clone();
+    next.u0 = u.clone();
+    next.params[setup.free] = alpha;
+    next.tangent0 = Some(t);
+    next.start_is_special = true;
+    Ok(next)
+}
+
+/// Setup for a run of period-2k points that starts at the PD point `(setup.u0,
+/// setup.params[free])` of `F^k` (`"start":"pd"`, SPEC section 8y). `model` is `F^k`, and
+/// `k` only names it in the error. The point and the tangent are those of [`switch_pd`] at
+/// the same point, so the run gives the rows of branch 1 of a PD switch there.
+/// `BadProblem("the start is not a simple PD point of F^k")`, with `k` written as a
+/// number, when the checks of [`pd_tangent`] fail.
+pub fn pd_start(
+    model: &mut dyn ModelEval,
+    setup: &EpSetup,
+    k: usize,
+) -> Result<EpSetup, EngineError> {
+    let alpha = *setup.params.get(setup.free).ok_or_else(|| {
+        EngineError::BadProblem("the free parameter does not fit the model".into())
+    })?;
+    let t = pd_tangent(model, &setup.params, setup.free, &setup.u0, alpha)?.ok_or_else(|| {
+        EngineError::BadProblem(format!("the start is not a simple PD point of F^{k}"))
+    })?;
+    let mut next = setup.clone();
+    next.tangent0 = Some(t);
+    next.start_is_special = true;
+    Ok(next)
+}
+
+/// The first tangent `(q, 0)/|q|` of the period-doubled branch at `(u, alpha)`, or `None`
+/// when the kernel of `A + I` is not one-dimensional. With `A` the `JacU` of `model` and
+/// `sv_0 >= ... >= sv_{n-1}` the singular values of `A + I`, that is when
+/// `sv_{n-1} > 1e-6 max(sv_0, 1)` or, for `n >= 2`, `sv_{n-2} <= 1e-8 max(sv_0, 1)`. These
+/// are the checks of [`switch_bp`] with the second one also scaled by `max(sv_0, 1)`: when
+/// `A` is close to `-I` every singular value is small.
+fn pd_tangent(
+    model: &mut dyn ModelEval,
+    params: &[f64],
+    free: usize,
+    u: &[f64],
+    alpha: f64,
+) -> Result<Option<Vec<f64>>, EngineError> {
+    let (n, n_p) = (model.n(), model.n_p());
+    if n == 0 || u.len() != n || params.len() != n_p || free >= n_p {
+        return Err(EngineError::BadProblem(
+            "the PD point does not fit the model".into(),
+        ));
+    }
+    let mut p = params.to_vec();
+    p[free] = alpha;
+    p.push(0.0);
+    let mut a = vec![0.0; n * n];
+    model.eval(&EntryKind::JacU, u, &p, &[], &mut a)?;
+    for i in 0..n {
+        a[i + n * i] += 1.0;
+    }
+    let sv = singular_values(&a, n, n)?;
+    let floor = sv[0].max(1.0);
+    if sv[n - 1] > 1e-6 * floor || (n >= 2 && sv[n - 2] <= 1e-8 * floor) {
+        return Ok(None);
+    }
+    let q = null_right(&a, n, n, 1)?.swap_remove(0);
+    let nrm = q.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let mut t: Vec<f64> = q.iter().map(|x| x / nrm).collect();
+    if t.iter()
+        .copied()
+        .find(|x| x.abs() > SIGN_TOL)
+        .unwrap_or(1.0)
+        < 0.0
+    {
+        for x in t.iter_mut() {
+            *x = -*x;
+        }
+    }
+    t.push(0.0);
+    Ok(Some(t))
 }
 
 /// Solves `c11 b1² + 2 c12 b1 b2 + c22 b2² = 0` on the unit circle and returns the root

@@ -1,0 +1,9 @@
+# The second iterate of the Henon map (x, y) -> (1 - a x^2 + y, b x), written out with
+# user functions, SPEC section 8y tests 1 and 4.
+par a=1.4,b=0.3
+f(u,v)=1-a*u^2+v
+g(u)=b*u
+x(t+1)=f(f(x,y),g(x))
+y(t+1)=g(f(x,y))
+init x=0,y=0
+done

@@ -35,9 +35,10 @@ use crate::ivp::{IvpOptions, IvpSetup, integrate};
 use crate::lpcurve::continue_lp_curve;
 use crate::mapcurve::{continue_map_lp_curve, continue_map_ns_curve, continue_map_pd_curve};
 use crate::mapfix::MapAsRoot;
+use crate::mapiter::IteratedMap;
 use crate::model::{Evaluator, build, build_allowing_t, build_dde};
 use crate::panic::{clear_last_panic, install_hook, mark_worker, payload_message, take_last_panic};
-use crate::switch::{special_index, switch_bp};
+use crate::switch::{pd_start, special_index, switch_bp, switch_pd};
 use pc_ode::{Model, ModelInfo};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -123,6 +124,13 @@ pub struct RunSpec {
     /// run switches there and follows the second branch. Only an `Ep` run and a delay cycle
     /// run (at a `BPC`) can switch.
     pub switch_at: Option<String>,
+    /// The k of a run on the k-th iterate `F^k` of a map (SPEC section 8y): an `Ep` run or a
+    /// map curve run. Every other run takes only 1, the default.
+    pub iterate: usize,
+    /// Starts an `Ep` run of a map at the PD point `setup` of `F^{iterate/2}` and follows
+    /// the branch of period-`iterate` points from there (`"start":"pd"`, SPEC section 8y).
+    /// Needs an even `iterate`. Default false.
+    pub pd_start: bool,
     /// Test hook: wraps the evaluator in one that panics in `eval` after this many
     /// successful calls.
     #[cfg(test)]
@@ -146,6 +154,8 @@ impl RunSpec {
             setup,
             opts,
             switch_at: None,
+            iterate: 1,
+            pd_start: false,
             #[cfg(test)]
             panic_after: None,
         }
@@ -195,6 +205,9 @@ pub struct Status {
 struct Inner {
     branches: Vec<Branch>,
     state: RunState,
+    /// The k of `F^k` of each branch of a map `Ep` or map curve run, by branch index;
+    /// `None` (or missing) for every other branch.
+    iterates: Vec<Option<usize>>,
 }
 
 struct Shared {
@@ -322,6 +335,43 @@ fn follow(
     b
 }
 
+/// [`follow`] on the model a run of a map needs: `F^k - x` for an `Ep` run, `F^k` for a
+/// curve of fixed points (SPEC section 8y), and the model itself for every other run. Records
+/// `k` as the iterate of branch `idx` for the first two.
+#[allow(clippy::too_many_arguments)]
+fn follow_at(
+    shared: &Shared,
+    model: &mut dyn crate::model::ModelEval,
+    map: bool,
+    k: usize,
+    kind: &RunKind,
+    setup: &EpSetup,
+    opts: &Options,
+    idx: usize,
+) -> Result<Branch, EngineError> {
+    let ep = matches!(kind, RunKind::Ep);
+    let curve = matches!(
+        kind,
+        RunKind::MapLpCurve(_) | RunKind::MapPdCurve(_) | RunKind::MapNsCurve(_)
+    );
+    if !map || !(ep || curve) {
+        return follow(shared, model, kind, setup, opts, idx);
+    }
+    {
+        let mut g = shared.lock();
+        if g.iterates.len() <= idx {
+            g.iterates.resize(idx + 1, None);
+        }
+        g.iterates[idx] = Some(k);
+    }
+    let mut it = IteratedMap::new(model, k);
+    if ep {
+        follow(shared, &mut MapAsRoot::new(&mut it), kind, setup, opts, idx)
+    } else {
+        follow(shared, &mut it, kind, setup, opts, idx)
+    }
+}
+
 fn body(shared: &Shared, spec: RunSpec) -> RunState {
     if spec.switch_at.is_some() && !matches!(spec.kind, RunKind::Ep | RunKind::DdeCycle { .. }) {
         return finish(
@@ -356,6 +406,48 @@ fn body(shared: &Shared, spec: RunSpec) -> RunState {
             )),
         );
     }
+    let k = spec.iterate;
+    if !(1..=1_000_000).contains(&k) {
+        return finish(
+            shared,
+            Err(EngineError::BadProblem(
+                "iterate: expected a whole number from 1 to 1000000".into(),
+            )),
+        );
+    }
+    if k > 1 && !map {
+        return finish(
+            shared,
+            Err(EngineError::BadProblem(
+                "iterate: only a map takes this key".into(),
+            )),
+        );
+    }
+    if k > 1 && !(map_curve || matches!(spec.kind, RunKind::Ep)) {
+        return finish(
+            shared,
+            Err(EngineError::BadProblem(
+                "iterate: only an EP, LP, PD or NS run of a map takes this key".into(),
+            )),
+        );
+    }
+    if spec.pd_start && !(map && matches!(spec.kind, RunKind::Ep)) {
+        return finish(
+            shared,
+            Err(EngineError::BadProblem(
+                "start: only an EP run of a map takes this key".into(),
+            )),
+        );
+    }
+    if spec.pd_start && !k.is_multiple_of(2) {
+        return finish(
+            shared,
+            Err(EngineError::BadProblem(
+                "start: a start at a PD point needs an even iterate, twice the iterate of the PD point"
+                    .into(),
+            )),
+        );
+    }
     match spec.kind {
         RunKind::DdeEq(roots) => return body_dde(shared, spec, roots),
         RunKind::DdeHopf {
@@ -382,14 +474,16 @@ fn body(shared: &Shared, spec: RunSpec) -> RunState {
         None => model,
     };
     let mut model = model;
-    let mut fixed;
-    let model: &mut dyn crate::model::ModelEval = if map && matches!(spec.kind, RunKind::Ep) {
-        fixed = MapAsRoot::new(model.as_mut());
-        &mut fixed
+    let model: &mut dyn crate::model::ModelEval = model.as_mut();
+    let setup = if spec.pd_start {
+        match pd_start(&mut IteratedMap::new(model, k / 2), &spec.setup, k / 2) {
+            Ok(s) => s,
+            Err(e) => return finish(shared, Err(e)),
+        }
     } else {
-        model.as_mut()
+        spec.setup.clone()
     };
-    let first = match follow(shared, &mut *model, &spec.kind, &spec.setup, &spec.opts, 0) {
+    let first = match follow_at(shared, model, map, k, &spec.kind, &setup, &spec.opts, 0) {
         Ok(b) => b,
         Err(e) => return finish(shared, Err(e)),
     };
@@ -403,7 +497,7 @@ fn body(shared: &Shared, spec: RunSpec) -> RunState {
     }
     // Only a run that switches keeps a copy: it needs the branch to find the special point.
     store_branch(shared, 0, first.clone());
-    let Some(k) = special_index(&first, name) else {
+    let Some(j) = special_index(&first, name) else {
         return finish(
             shared,
             Err(EngineError::BadProblem(format!(
@@ -411,11 +505,28 @@ fn body(shared: &Shared, spec: RunSpec) -> RunState {
             ))),
         );
     };
-    let next = match switch_bp(&mut *model, &spec.setup, &first, k, &spec.opts) {
+    // A PD of a map leaves for the branch of period-2k points (SPEC section 8y); every other
+    // switch is a BP switch on the model of branch 0.
+    let pd = map && first.specials[j].label == "PD";
+    let switched = if pd {
+        switch_pd(&mut IteratedMap::new(model, k), &setup, &first, j)
+    } else if map {
+        switch_bp(
+            &mut MapAsRoot::new(&mut IteratedMap::new(model, k)),
+            &setup,
+            &first,
+            j,
+            &spec.opts,
+        )
+    } else {
+        switch_bp(model, &setup, &first, j, &spec.opts)
+    };
+    let next = match switched {
         Ok(s) => s,
         Err(e) => return finish(shared, Err(e)),
     };
-    match follow(shared, &mut *model, &RunKind::Ep, &next, &spec.opts, 1) {
+    let k1 = if pd { 2 * k } else { k };
+    match follow_at(shared, model, map, k1, &RunKind::Ep, &next, &spec.opts, 1) {
         Ok(b) => {
             let stop = store_branch(shared, 1, b);
             finish_stop(shared, Ok(&stop))
@@ -844,6 +955,7 @@ impl Run {
             inner: Mutex::new(Inner {
                 branches: Vec::new(),
                 state: RunState::Running,
+                iterates: Vec::new(),
             }),
             cancel: AtomicBool::new(false),
         });
@@ -910,6 +1022,12 @@ impl Run {
             .branches
             .get(branch)
             .map(|b| b.stop.clone())
+    }
+
+    /// The k of `F^k` that `branch` runs on: `Some` for each branch of a map `Ep` run or map
+    /// curve run (SPEC section 8y), `None` for every other branch and a missing one.
+    pub fn iterate(&self, branch: usize) -> Option<usize> {
+        self.shared.lock().iterates.get(branch).copied().flatten()
     }
 
     /// The warnings of `branch`; empty when the branch does not exist.
@@ -1121,6 +1239,7 @@ mod tests {
             inner: Mutex::new(Inner {
                 branches: Vec::new(),
                 state: RunState::Running,
+                iterates: Vec::new(),
             }),
             cancel: AtomicBool::new(false),
         };
@@ -1156,6 +1275,7 @@ mod tests {
             inner: Mutex::new(Inner {
                 branches: Vec::new(),
                 state: RunState::Running,
+                iterates: Vec::new(),
             }),
             cancel: AtomicBool::new(false),
         }
@@ -1239,6 +1359,7 @@ mod tests {
             inner: Mutex::new(Inner {
                 branches: Vec::new(),
                 state: RunState::Running,
+                iterates: Vec::new(),
             }),
             cancel: AtomicBool::new(false),
         });
@@ -1269,6 +1390,7 @@ mod tests {
             inner: Mutex::new(Inner {
                 branches: vec![b, placeholder()],
                 state: RunState::Done,
+                iterates: Vec::new(),
             }),
             cancel: AtomicBool::new(false),
         });

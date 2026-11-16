@@ -1,0 +1,7 @@
+# The third iterate of the logistic map x -> r x (1 - x), written out with a user
+# function, SPEC section 8y test 1.
+par r=3.2
+f(u)=r*u*(1-u)
+x(t+1)=f(f(f(x)))
+init x=0.1
+done
