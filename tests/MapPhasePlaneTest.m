@@ -98,6 +98,20 @@ classdef MapPhasePlaneTest < matlab.unittest.TestCase
             end
         end
 
+        function file = saveBare(testCase, app, pt, name)
+            % Saves PT with empty eigenvalue lists, as a session file may
+            % hold it, and returns the file.
+            r = pt.Record;
+            f = struct("Kind", r.Kind, "Problem", r.Problem, "Type", r.Type, ...
+                "Free", r.Free, "Grid", r.Grid, "N", r.N, ...
+                "ModelSha", r.ModelSha, "U0", r.U0, "P", r.P, ...
+                "Result", struct("U", pt.U, "Eigenvalues", complex(zeros(0, 1))));
+            bare = phasecont.Point(U = pt.U, P = pt.P, Label = "EP", ...
+                Model = app.Model, Record = phasecont.internal.RunRecord(f));
+            file = fullfile(testCase.Dir, name);
+            save(phasecont.Session(app.Model, {bare}), file);
+        end
+
         function verifyIdsFreed(testCase, first, last)
             % Handle ids count up in steps of 2, so every id strictly
             % between FIRST and LAST must be unknown to the engine.
@@ -211,6 +225,8 @@ classdef MapPhasePlaneTest < matlab.unittest.TestCase
             testCase.verifyErrorText(@() app.showField(true), ...
                 "phasecont:app:mapModel", "A map has no direction field.");
             testCase.verifyEqual(testCase.count(app, "pc-field"), 0);
+            app.showField(false);
+            testCase.verifyEqual(testCase.count(app, "pc-field"), 0);
         end
 
         % Test 2.
@@ -318,6 +334,10 @@ classdef MapPhasePlaneTest < matlab.unittest.TestCase
             testCase.verifyEqual(app.Direction, "Forward");
             testCase.verifyEqual(string(testCase.control(app, "uilabel", 3, 1).Text), "N");
             testCase.verifyFalse(any(startsWith(app.Notes, "The model sets @")));
+
+            app = testCase.makeApp("@ bound=100" + newline + testCase.Henon, Evaluator);
+            testCase.verifyTrue(any(app.Notes == "The model sets @ bound. " ...
+                + "The app iterates the map one step at a time and ignores them."));
 
             text = "@ total=2.5" + newline + testCase.Henon;
             app = testCase.makeApp(text, Evaluator);
@@ -436,7 +456,7 @@ classdef MapPhasePlaneTest < matlab.unittest.TestCase
         function cobwebStopsEarlyAtAnOverflow(testCase, Evaluator)
             app = testCase.makeApp(testCase.Square, Evaluator);
             app.setT(12);
-            tr = app.clickAt(2, 0);
+            tr = testCase.verifyWarningFree(@() app.clickAt(2, 0));
             testCase.verifyEqual(tr.T, (0:9).');
             testCase.verifyEqual(tr.Stop, "Error");
             x = zeros(10, 1);
@@ -452,6 +472,18 @@ classdef MapPhasePlaneTest < matlab.unittest.TestCase
             testCase.verifyEqual(s.YData(:), Y);
             testCase.verifyEqual([s.XData(end) s.YData(end)], [x(10) x(10)]);
             testCase.verifyTrue(endsWith(app.Status, "Stopped early at n = 9 (Error)."));
+
+            % x^2 overflows above 2^512, so the graph has a gap there and
+            % keeps every finite value.
+            app.setWindow([0 2^513 0 2^513]);
+            g = testCase.line1(app, "pc-cobweb-graph");
+            expected = g.XData .^ 2;
+            expected(~isfinite(expected)) = NaN;
+            gap = isnan(g.YData);
+            testCase.verifyTrue(any(gap));
+            testCase.verifyTrue(any(~gap));
+            testCase.verifyEqual(gap, isnan(expected));
+            testCase.verifyEqual(g.YData(~gap), expected(~gap), RelTol = 1e-15);
         end
 
         % Test 6.
@@ -465,7 +497,7 @@ classdef MapPhasePlaneTest < matlab.unittest.TestCase
             testCase.verifyTrue(isvalid(m));
 
             app = testCase.makeApp(testCase.Henon, Evaluator);
-            first = testCase.model(testCase.Shift);
+            first = testCase.model(testCase.Shift, Evaluator);
             file = fullfile(testCase.Dir, "shift.pcsession.json");
             save(phasecont.Session(first, {}), file);
             testCase.verifyErrorText( ...
@@ -473,7 +505,7 @@ classdef MapPhasePlaneTest < matlab.unittest.TestCase
                 "phasecont:app:nonAutonomous", text);
             testCase.verifyErrorText(@() app.openSession(file), ...
                 "phasecont:app:nonAutonomous", text);
-            after = testCase.model(testCase.Shift);
+            after = testCase.model(testCase.Shift, Evaluator);
             testCase.verifyIdsFreed(first.Id, after.Id);
             % The app keeps its model.
             testCase.verifyTrue(isvalid(app.Model));
@@ -491,7 +523,7 @@ classdef MapPhasePlaneTest < matlab.unittest.TestCase
             texts = [testCase.Rotation testCase.Henon testCase.Logistic];
             for k = 1:3
                 files(k) = fullfile(testCase.Dir, sprintf("view%d.pcsession.json", k));
-                save(phasecont.Session(testCase.model(texts(k)), {}), files(k));
+                save(phasecont.Session(testCase.model(texts(k), Evaluator), {}), files(k));
             end
             app = testCase.makeApp(testCase.Rotation, Evaluator);
             testCase.verifyControls(app, "T", true(1, 5), "u", "v");
@@ -513,6 +545,49 @@ classdef MapPhasePlaneTest < matlab.unittest.TestCase
             app.setDirection("Both");
             app.showField(true);
             testCase.verifyGreaterThan(testCase.count(app, "pc-field"), 0);
+        end
+
+        function aLoadedPointWithoutMultipliersIsACross(testCase, Evaluator)
+            % A session file can hold a fixed point whose multiplier list
+            % is empty. The app must not read "no multipliers" as "every
+            % multiplier has modulus below 1".
+            texts = [testCase.Henon testCase.Logistic];
+            starts = [0.65 0.2; 0.62 0.3];
+            for k = 1:2
+                app = testCase.makeApp(texts(k), Evaluator);
+                app.setClickMode("Equilibrium");
+                pt = app.clickAt(starts(k, 1), starts(k, 2));
+                file = testCase.saveBare(app, pt, sprintf("bare%d.pcsession.json", k));
+                other = testCase.openFile(file);
+                testCase.verifyEqual(testCase.count(other, "pc-equilibrium-unknown"), 1);
+                testCase.verifyEqual(testCase.count(other, "pc-equilibrium-stable"), 0);
+                testCase.verifyEqual(testCase.count(other, "pc-equilibrium-unstable"), 0);
+            end
+        end
+
+        function aLoadedFixedPointIsMarkedByTheModulus(testCase, Evaluator)
+            % At r = 3.2 the multiplier 2 - r = -1.2 has a negative real
+            % part and modulus above 1. At r = 1.5 it is 0.5, with a
+            % positive real part and modulus below 1.
+            app = testCase.makeApp(testCase.Logistic, Evaluator);
+            app.setClickMode("Equilibrium");
+            rs = [3.2 1.5];
+            want = ["pc-equilibrium-unstable" "pc-equilibrium-stable"];
+            other = ["pc-equilibrium-stable" "pc-equilibrium-unstable"];
+            for k = 1:2
+                r = rs(k);
+                app.setParameter("r", r);
+                pt = app.clickAt(1 - 1 / r + 0.02, 0.3);
+                testCase.verifyEqual(pt.U, 1 - 1 / r, AbsTol = 1e-10);
+                testCase.verifyEqual(pt.Eigenvalues, 2 - r, AbsTol = 1e-10);
+                file = fullfile(testCase.Dir, sprintf("modulus%d.pcsession.json", k));
+                app.saveSession(file);
+                loaded = testCase.openFile(file);
+                h = testCase.line1(loaded, want(k));
+                testCase.verifyEqual([h.XData h.YData], [pt.U pt.U], AbsTol = 1e-10);
+                testCase.verifyEqual(testCase.count(loaded, other(k)), 0);
+                testCase.verifyEqual(testCase.count(loaded, "pc-equilibrium-unknown"), 0);
+            end
         end
     end
 end

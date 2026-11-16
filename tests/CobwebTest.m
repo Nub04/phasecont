@@ -18,6 +18,15 @@ classdef CobwebTest < matlab.unittest.TestCase
             "done" + newline
         Decay = "par a=2" + newline + "init x=1" + newline + ...
             "x'=-a*x" + newline + "done" + newline
+        % An ODE with two variables, a map with two variables that uses t
+        % and an ODE with one variable that uses t, for the order of the
+        % refusals.
+        Spring = "init u=1, v=0" + newline + "u'=v" + newline + ...
+            "v'=-u" + newline + "done" + newline
+        ShiftPair = "init x=1, y=0" + newline + "x(t+1)=y+t" + newline + ...
+            "y(t+1)=x" + newline + "done" + newline
+        Forced = "init x=1" + newline + "x'=-x+sin(t)" + newline + ...
+            "done" + newline
     end
 
     properties (TestParameter)
@@ -119,10 +128,10 @@ classdef CobwebTest < matlab.unittest.TestCase
             testCase.verifyEqual(string(ax.YLabel.String), "x(n+1)");
         end
 
-        function aFixedPointStartGivesTheUnitWidth(testCase)
+        function aFixedPointStartGivesTheUnitWidth(testCase, Evaluator)
             % F(0) = 0 exactly, so every iterate is 0 and the range is
             % 0 -+ max(1, 0)/10.
-            m = testCase.model(testCase.Logistic);
+            m = testCase.model(testCase.Logistic, Evaluator);
             h = phasecont.cobweb(m, 0, 5, Parent = testCase.newAxes());
             testCase.verifyEqual(h.Graph.XData([1 end]), [-0.1 0.1]);
             testCase.verifyEqual(h.Diagonal.XData, [-0.1 0.1]);
@@ -130,8 +139,8 @@ classdef CobwebTest < matlab.unittest.TestCase
             testCase.verifyEqual(h.Steps.YData(:), zeros(11, 1));
         end
 
-        function paramsSetTheIteratesAndTheGraph(testCase)
-            m = testCase.model(testCase.Logistic);
+        function paramsSetTheIteratesAndTheGraph(testCase, Evaluator)
+            m = testCase.model(testCase.Logistic, Evaluator);
             [h, tr] = phasecont.cobweb(m, 0.1, 10, Params = struct("r", 3.2), ...
                 Parent = testCase.newAxes());
             x = CobwebTest.logistic(3.2, 0.1, 10);
@@ -150,10 +159,14 @@ classdef CobwebTest < matlab.unittest.TestCase
             hold(ax, "off");
             phasecont.cobweb(m, 0.1, 4, Parent = ax);
             testCase.verifyFalse(ishold(ax));
+            % Parent draws into the axes without resetting them, held or not.
+            phasecont.cobweb(m, 0.2, 4, Parent = ax);
+            testCase.verifyFalse(ishold(ax));
+            testCase.verifyNumElements(findobj(ax, "Tag", "pc-cobweb"), 2);
             hold(ax, "on");
             phasecont.cobweb(m, 0.3, 4, Parent = ax);
             testCase.verifyTrue(ishold(ax));
-            testCase.verifyNumElements(findobj(ax, "Tag", "pc-cobweb"), 2);
+            testCase.verifyNumElements(findobj(ax, "Tag", "pc-cobweb"), 3);
         end
 
         function withoutParentHoldOnKeepsTheFirstPlot(testCase)
@@ -173,6 +186,7 @@ classdef CobwebTest < matlab.unittest.TestCase
             hold(ax, "off");
             phasecont.cobweb(m, 0.2, 4);
             testCase.verifyNumElements(findobj(ax, "Tag", "pc-cobweb"), 1);
+            testCase.verifyFalse(ishold(ax));
         end
 
         function noOutputReturnsNothing(testCase)
@@ -183,8 +197,8 @@ classdef CobwebTest < matlab.unittest.TestCase
             testCase.verifyNumElements(findobj(ax, "Tag", "pc-cobweb"), 1);
         end
 
-        function anEarlyStopDrawsTheKeptIterates(testCase)
-            m = testCase.model(testCase.Square);
+        function anEarlyStopDrawsTheKeptIterates(testCase, Evaluator)
+            m = testCase.model(testCase.Square, Evaluator);
             ax = testCase.newAxes();
             [h, tr] = testCase.verifyWarning( ...
                 @() phasecont.cobweb(m, 2, 12, Parent = ax), ...
@@ -198,6 +212,15 @@ classdef CobwebTest < matlab.unittest.TestCase
             testCase.verifyEqual(h.Steps.YData(:), Y);
             g = CobwebTest.rangeOf(x);
             testCase.verifyEqual(h.Graph.XData([1 end]), g);
+            % The graph runs past 2^512, where x^2 overflows, so it has a
+            % gap (NaN) there and the exact square everywhere else.
+            xs = h.Graph.XData;
+            expected = xs .^ 2;
+            expected(~isfinite(expected)) = NaN;
+            gap = isnan(h.Graph.YData);
+            testCase.verifyTrue(any(gap));
+            testCase.verifyEqual(gap, isnan(expected));
+            testCase.verifyEqual(h.Graph.YData(~gap), expected(~gap), RelTol = 1e-15);
         end
 
         function refusesWhatIsNotAMapOfOneVariable(testCase)
@@ -213,6 +236,16 @@ classdef CobwebTest < matlab.unittest.TestCase
             shift = testCase.model(testCase.Shift);
             testCase.verifyErrorText(@() phasecont.cobweb(shift, 1, 5, Parent = ax), ...
                 "A cobweb plot needs a map that does not use t.");
+            % The checks run in that order: kind, then size, then t.
+            spring = testCase.model(testCase.Spring);
+            testCase.verifyErrorText(@() phasecont.cobweb(spring, [1 0], 5, Parent = ax), ...
+                "A cobweb plot needs a map, and this model is not a map.");
+            pair = testCase.model(testCase.ShiftPair);
+            testCase.verifyErrorText(@() phasecont.cobweb(pair, [1 0], 5, Parent = ax), ...
+                "A cobweb plot needs a map with one variable, and this map has 2.");
+            forced = testCase.model(testCase.Forced);
+            testCase.verifyErrorText(@() phasecont.cobweb(forced, 1, 5, Parent = ax), ...
+                "A cobweb plot needs a map, and this model is not a map.");
             testCase.verifyEmpty(ax.Children);
         end
 
