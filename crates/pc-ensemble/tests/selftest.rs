@@ -82,6 +82,21 @@ fn the_analytic_errors_are_small_and_nonzero() {
 }
 
 #[test]
+fn the_single_precision_iterate_error_is_small_and_nonzero() {
+    // The start states and the sums round to f32, so a zero error would mean the check
+    // compares a result with itself. In double precision the error is 0 by design.
+    let r = run_selftest(Selected {
+        backend: Backend::Cpu,
+        device: 0,
+        precision: Precision::Single,
+    })
+    .unwrap();
+    let t = r.tiers.iter().find(|t| t.name == "iterate").unwrap();
+    assert!(t.max_error > 0.0, "{t:?}");
+    assert!(t.max_error < 1e-6, "{t:?}");
+}
+
+#[test]
 fn a_missing_device_is_not_a_pass() {
     let e = run_selftest(Selected {
         backend: Backend::Cpu,
@@ -117,7 +132,7 @@ mod run_with {
 
     use pc_ensemble::device::{Backend, DeviceInfo};
     use pc_ensemble::selftest::{SelfTestError, run_with};
-    use pc_ensemble::{EnsembleError, EnsembleResult, Job, Label, Precision, run_cpu};
+    use pc_ensemble::{EnsembleError, EnsembleResult, Job, Label, Method, Precision, run_cpu};
 
     fn device() -> DeviceInfo {
         DeviceInfo {
@@ -213,6 +228,79 @@ mod run_with {
                 .iter()
                 .any(|t| t.name.starts_with("analytic") && !t.pass())
         );
+    }
+
+    fn flip_first(mut r: EnsembleResult) -> EnsembleResult {
+        r.states[0] = f64::from_bits(r.states[0].to_bits() ^ 1);
+        r
+    }
+
+    #[test]
+    fn a_wrong_bit_in_the_map_jobs_alone_fails_the_comparison() {
+        // Only the Henon job of the comparison uses `iter`, so the comparison fails only
+        // if that job is in it. One bit of a state near 16 is far below the iterate limit.
+        let flip = |j: &Job| {
+            let r = cpu(j)?;
+            Ok(if j.method == Method::Iter {
+                flip_first(r)
+            } else {
+                r
+            })
+        };
+        for p in [Precision::Single, Precision::Double] {
+            let r = run_with(&flip, device(), label(p), true).unwrap();
+            assert_eq!(r.bit_exact, Some(false), "{}", p.name());
+            assert!(!r.pass);
+            for name in ["analytic-rk4", "analytic-dp5", "iterate"] {
+                let t = r.tiers.iter().find(|t| t.name == name).unwrap();
+                assert!(t.pass(), "{}: {t:?}", p.name());
+            }
+        }
+    }
+
+    #[test]
+    fn a_map_job_that_changes_between_calls_fails_determinism() {
+        // Only the Henon job of the determinism tier uses `iter`, so the tier fails only
+        // if that job is in it.
+        for p in [Precision::Single, Precision::Double] {
+            let calls = AtomicUsize::new(0);
+            let drift = |j: &Job| {
+                let r = cpu(j)?;
+                let odd = j.method == Method::Iter && calls.fetch_add(1, Ordering::SeqCst) % 2 == 1;
+                Ok(if odd { flip_first(r) } else { r })
+            };
+            let r = run_with(&drift, device(), label(p), false).unwrap();
+            let det = r.tiers.iter().find(|t| t.name == "determinism").unwrap();
+            assert!(det.max_error > 0.0, "{}: {det:?}", p.name());
+            assert!(!r.pass);
+            for name in ["analytic-rk4", "analytic-dp5", "iterate"] {
+                let t = r.tiers.iter().find(|t| t.name == name).unwrap();
+                assert!(t.pass(), "{}: {t:?}", p.name());
+            }
+        }
+    }
+
+    #[test]
+    fn a_runner_that_passes_the_wrong_time_to_a_map_fails_the_iterate_tier() {
+        // Iterating over [t0 + 1, t1 + 1] evaluates F at k + 1 in place of k, the error the
+        // tier is there to catch. The ODE tiers and determinism still pass.
+        let late = |j: &Job| {
+            if j.method == Method::Iter {
+                let mut shifted = j.clone();
+                shifted.t0 += 1.0;
+                shifted.t1 += 1.0;
+                cpu(&shifted)
+            } else {
+                cpu(j)
+            }
+        };
+        for p in [Precision::Single, Precision::Double] {
+            let r = run_with(&late, device(), label(p), false).unwrap();
+            assert!(!r.pass);
+            for t in &r.tiers {
+                assert_eq!(t.pass(), t.name != "iterate", "{}: {t:?}", p.name());
+            }
+        }
     }
 
     #[test]
