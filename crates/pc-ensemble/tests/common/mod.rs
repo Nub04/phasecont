@@ -49,6 +49,25 @@ pub const VDP: &str = "par mu=1.5\nx'=v\nv'=mu*(1-x*x)*v-x\ndone\n";
 /// A model with several transcendental functions.
 pub const MIXED: &str = "par a=0.7\nx'=sin(x)*exp(-0.1*x*x)+a*cos(t)\ny'=tanh(x-y)-0.2*y\ndone\n";
 
+/// The logistic map `x -> r x (1 - x)`.
+pub const LOGISTIC_MAP: &str = "par r=2.5\nx(t+1)=r*x*(1-x)\ndone\n";
+/// The Henon map `(x, y) -> (1 - a x^2 + y, b x)`.
+pub const HENON_MAP: &str = "par a=1.4,b=0.3\nx(t+1)=1-a*x^2+y\ny(t+1)=b*x\ndone\n";
+/// `x -> x + t`, where `t` is the number of the iterate.
+pub const SHIFT_MAP: &str = "x(t+1)=x+t\ndone\n";
+
+/// A map on `n` states, our own text, that uses only `+ - *`: each state takes a damped
+/// copy of its neighbor and loses a little of its own square.
+pub fn ring_map(n: usize) -> String {
+    let mut s = String::new();
+    for i in 0..n {
+        let next = (i + 1) % n;
+        s.push_str(&format!("x{i}(t+1)=0.9*x{next}-0.1*x{i}*x{i}+0.05\n"));
+    }
+    s.push_str("done\n");
+    s
+}
+
 /// Lorenz-96 with `n` states, our own text. It uses only `+ - *`, so the kernel and the CPU
 /// agree bit for bit whatever the math functions do.
 pub fn lorenz96(n: usize) -> String {

@@ -157,6 +157,9 @@ pub struct Dp5Par<T: Real> {
 pub enum Kind<T: Real> {
     Rk4(Vec<Seg<T>>),
     Dp5(Dp5Par<T>),
+    /// One segment per sample interval with `m = b - a` iterates and `h = 1`. `half` and
+    /// `h6` are zero and unused.
+    Iter(Vec<Seg<T>>),
 }
 
 /// What every member of a run shares.
@@ -213,6 +216,25 @@ impl<'a, T: Real> Ctx<'a, T> {
                 atol: T::from_f64(atol),
                 hmax: T::from_f64(hmax),
             }),
+            Method::Iter => {
+                let mut segs = Vec::with_capacity(times.len());
+                let (mut a64, mut a) = (job.t0, t0);
+                for (&b64, &b) in checked.times.iter().zip(&times) {
+                    // validate checked that both ends are whole numbers with b > a and
+                    // b - a at most u32::MAX, so the difference is exact.
+                    let m = (b64 - a64) as u64;
+                    segs.push(Seg {
+                        a,
+                        b,
+                        h: T::ONE,
+                        half: T::ZERO,
+                        h6: T::ZERO,
+                        m,
+                    });
+                    (a64, a) = (b64, b);
+                }
+                Kind::Iter(segs)
+            }
         };
         let bounds = T::from_f64(job.bounds);
         Ctx {
@@ -349,6 +371,7 @@ impl<T: Real> Traj<T> {
             match &ctx.kind {
                 Kind::Rk4(segs) => self.rk4(ctx, segs, &mut wk, budget),
                 Kind::Dp5(par) => self.dp5(ctx, par, &mut wk, budget),
+                Kind::Iter(segs) => self.iter(ctx, segs, &mut wk, budget),
             }
         }
         self.status != Status::Running
@@ -440,6 +463,45 @@ impl<T: Real> Traj<T> {
                 s = s + k4[j];
                 y1[j] = y[j] + h6 * s;
             }
+            if self.reject_state(ctx, y1) {
+                return;
+            }
+            y.swap_with_slice(y1);
+            self.t = t_next;
+            self.accepted += 1;
+            self.step_in_seg += 1;
+            if last_in_seg {
+                self.finish_sample(out, y);
+                self.step_in_seg = 0;
+                if self.si as usize == ctx.times.len() {
+                    self.status = Status::Ok;
+                    return;
+                }
+            }
+            if self.accepted >= ctx.max_steps {
+                self.status = Status::MaxSteps;
+                return;
+            }
+        }
+    }
+
+    /// Iteration of a map (SPEC section 8aa): `y1 = F(y, p, ts)` with `ts = a + i` for the
+    /// iterate `i` of the segment, then the same state check as RK4.
+    fn iter(&mut self, ctx: &Ctx<T>, segs: &[Seg<T>], wk: &mut Work<T>, mut budget: u64) {
+        let (y, y1) = (&mut *wk.y, &mut *wk.y1);
+        let (vals, out) = (&mut *wk.vals, &mut *wk.out);
+        while budget > 0 {
+            budget -= 1;
+            let seg = &segs[self.si as usize];
+            let i = self.step_in_seg;
+            let last_in_seg = u64::from(i) + 1 == seg.m;
+            let ts = seg.a + T::from_u32(i);
+            let t_next = if last_in_seg {
+                seg.b
+            } else {
+                seg.a + T::from_u32(i + 1)
+            };
+            eval_at(ctx, y, ts, vals, y1);
             if self.reject_state(ctx, y1) {
                 return;
             }

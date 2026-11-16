@@ -443,10 +443,11 @@ fn an_rk4_interval_with_too_many_steps_is_refused() {
     assert!(validate(&j).is_ok());
 }
 
-/// A map is not an ODE system, whether it is written `x(t+1)=...` or `x'=...` with
-/// `@ meth=discrete` (SPEC 8t). The same file without the option still runs.
+/// RK4 on a map is refused, whether the map is written `x(t+1)=...` or `x'=...` with
+/// `@ meth=discrete` (SPEC sections 8t and 8aa), and the method `iter` runs it. The same
+/// file without the option is an ODE and runs with RK4.
 #[test]
-fn a_map_is_refused_in_both_spellings() {
+fn a_map_is_refused_by_rk4_in_both_spellings() {
     for src in [
         "par r=2\nx(t+1)=r*x*(1-x)\ndone\n",
         "par r=2\nx'=r*x*(1-x)\n@ meth=discrete\ndone\n",
@@ -463,9 +464,14 @@ fn a_map_is_refused_in_both_spellings() {
         );
         assert_eq!(
             run_err(&j),
-            EnsembleError::Unsupported("the model is not an ODE system".into()),
+            EnsembleError::Unsupported(
+                "the model is a map; rk4 and dp5 integrate an ODE, so run a map with method iter"
+                    .into()
+            ),
             "{src}"
         );
+        let j = job(&m, 1, &[0.5], &[2.0], 1.0, Method::Iter, Precision::Double);
+        assert!(run_cpu(&j, u64::MAX, &NO_CANCEL()).is_ok(), "{src}");
     }
     let m = build_model("par r=2\nx'=r*x*(1-x)\ndone\n");
     let j = job(

@@ -192,9 +192,13 @@ mod tests {
         assert!(l.diagnostics.iter().all(|d| d.severity != Severity::Error));
         let model = pc_ir::lower(&l.expanded, &l.info).expect("lower");
         let tape = Tape::build(&model).expect("tape");
-        let src = kernel_source(&tape, Integrator::Rk4, Scalar::F32, Dialect::Msl)
-            .expect("kernel source");
-        assert!(src.contains(&format!("kernel void {ENTRY}(")), "{src}");
+        for i in [Integrator::Rk4, Integrator::Dp5, Integrator::Iter] {
+            let src = kernel_source(&tape, i, Scalar::F32, Dialect::Msl).expect("kernel source");
+            assert!(
+                src.contains(&format!("kernel void {ENTRY}(")),
+                "{i:?}: {src}"
+            );
+        }
     }
 
     #[cfg(not(target_os = "macos"))]

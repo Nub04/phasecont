@@ -19,6 +19,12 @@ const VARIANTS: [(Integrator, Scalar); 4] = [
     (Integrator::Dp5, Scalar::F64),
 ];
 
+/// The `iter` variants, which the maps compile in.
+const MAP_VARIANTS: [(Integrator, Scalar); 2] = [
+    (Integrator::Iter, Scalar::F32),
+    (Integrator::Iter, Scalar::F64),
+];
+
 /// The oldest and the newest architecture the kernel is checked for in every case.
 const EDGE_ARCHS: [&str; 2] = ["compute_75", "compute_120"];
 
@@ -173,4 +179,30 @@ fn the_global_ptx_targets_the_requested_architecture_too() {
         return;
     };
     assert!(text.contains(".target sm_80"));
+}
+
+#[test]
+fn the_maps_compile_with_iter_for_every_architecture_in_both_layouts() {
+    // SPEC 8aa, acceptance test 3.
+    for src in [LOGISTIC_MAP, HENON_MAP] {
+        for (i, s) in MAP_VARIANTS {
+            for arch in ["compute_75", "compute_80", "compute_90", "compute_120"] {
+                let Some(text) = ptx(src, i, s, arch) else {
+                    return;
+                };
+                assert!(text.contains(".entry pc_ens"), "{arch} {i:?} {s:?}");
+                let global = global_ptx(src, i, s, arch).expect("global");
+                assert!(
+                    global.contains(".entry pc_ens"),
+                    "{arch} {i:?} {s:?} global"
+                );
+            }
+            let again = ptx(src, i, s, "compute_80").expect("second compile");
+            assert_eq!(
+                ptx(src, i, s, "compute_80").expect("third compile"),
+                again,
+                "{i:?} {s:?}"
+            );
+        }
+    }
 }

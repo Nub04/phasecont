@@ -1,7 +1,8 @@
 //! The ensemble kernel text, compiled as plain C, gives the bits of the CPU backend.
 //!
 //! Each case runs the CPU backend once and the kernel with several launch sizes, in single
-//! and double precision, for fixed-step RK4 and for Dormand-Prince 5(4).
+//! and double precision, for fixed-step RK4, for Dormand-Prince 5(4) and, on maps, for the
+//! method `iter`.
 
 mod common;
 
@@ -40,6 +41,7 @@ fn tag(name: &str, p: Precision, m: Method) -> String {
     let kind = match m {
         Method::Rk4 { .. } => "rk4",
         Method::Dp5 { .. } => "dp5",
+        Method::Iter => "iter",
     };
     format!("{name}-{}-{kind}", p.name())
 }
@@ -191,6 +193,7 @@ fn an_overflow_matches_the_cpu_under_a_bound_that_cannot_catch_it() {
                 let ok_ends: &[Status] = match method {
                     Method::Rk4 { .. } => &[Status::NonFinite],
                     Method::Dp5 { .. } => &[Status::NonFinite, Status::StepTooSmall],
+                    Method::Iter => unreachable!("methods() gives rk4 and dp5"),
                 };
                 assert!(ok_ends.contains(&r.status[0]), "{what}: {:?}", r.status[0]);
                 assert_eq!(r.status[1], Status::Ok, "{what}");
@@ -232,5 +235,77 @@ fn a_step_below_roundoff_matches_the_cpu() {
             return;
         };
         assert_eq!(r.status[0], Status::StepTooSmall, "{what}");
+    }
+}
+
+#[test]
+fn maps_match_the_cpu_bit_for_bit() {
+    // SPEC 8aa, acceptance test 3: the logistic, Henon and x + t maps with samples.
+    let cases: [(&str, &str, &[f64]); 4] = [
+        ("logistic", LOGISTIC_MAP, &[3.7]),
+        ("henon", HENON_MAP, &[1.4, 0.3]),
+        ("shift", SHIFT_MAP, &[]),
+        ("ring", &ring_map(6), &[]),
+    ];
+    for (name, src, params) in cases {
+        let m = build_model(src);
+        let x0: Vec<f64> = x0_for(m.n(), MEMBERS)
+            .iter()
+            .map(|v| 0.2 + 0.1 * v)
+            .collect();
+        for p in BOTH {
+            let outs = [
+                ("final", Output::Final),
+                ("samples", Output::Samples(vec![1.0, 7.0, 25.0, 40.0])),
+            ];
+            for (label, out) in outs {
+                let mut j = job(&m, MEMBERS, &x0, params, 40.0, Method::Iter, p);
+                j.output = out;
+                let what = tag(&format!("{name}-{label}"), p, Method::Iter);
+                let Some(r) = check(&what, &j) else {
+                    return;
+                };
+                assert!(
+                    r.status.iter().all(|s| *s == Status::Ok),
+                    "{what}: {:?}",
+                    r.status
+                );
+                assert!(r.accepted.iter().all(|&a| a == 40), "{what}");
+            }
+        }
+    }
+}
+
+#[test]
+fn map_stops_match_the_cpu() {
+    // An overflow, a bound and the step limit each stop a member of a map part way.
+    let square = build_model("x(t+1)=x^2\ndone\n");
+    let double = build_model("x(t+1)=2*x\ndone\n");
+    for p in BOTH {
+        let mut j = job(&square, 2, &[1e10, 0.5], &[], 20.0, Method::Iter, p);
+        j.output = Output::Samples(vec![2.0, 10.0, 20.0]);
+        let what = tag("map-overflow", p, Method::Iter);
+        let Some(r) = check(&what, &j) else {
+            return;
+        };
+        assert_eq!(r.status, [Status::NonFinite, Status::Ok], "{what}");
+
+        let mut j = job(&double, 1, &[1.0], &[], 20.0, Method::Iter, p);
+        j.bounds = 100.0;
+        let what = tag("map-bounds", p, Method::Iter);
+        let Some(r) = check(&what, &j) else {
+            return;
+        };
+        assert_eq!(r.status[0], Status::Bounds, "{what}");
+        assert_eq!(r.t_reached[0], 6.0, "{what}");
+
+        let mut j = job(&double, 1, &[1.0], &[], 20.0, Method::Iter, p);
+        j.max_steps = 5;
+        let what = tag("map-max-steps", p, Method::Iter);
+        let Some(r) = check(&what, &j) else {
+            return;
+        };
+        assert_eq!(r.status[0], Status::MaxSteps, "{what}");
+        assert_eq!(r.t_reached[0], 5.0, "{what}");
     }
 }

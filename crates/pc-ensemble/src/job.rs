@@ -54,6 +54,9 @@ pub enum Method {
     /// Dormand-Prince 5(4) with the controller of `pc_engine::integrate`, one step size
     /// per member. `hmax` may be infinite.
     Dp5 { rtol: f64, atol: f64, hmax: f64 },
+    /// Iteration of a map, x(k+1) = F(x(k), p, t = k), one call of F per iterate (SPEC
+    /// section 8aa). The times are whole numbers.
+    Iter,
 }
 
 /// A native right-hand side of a model, compiled by the caller (pc-jit), for double precision
@@ -263,10 +266,22 @@ fn bad<T>(m: impl Into<String>) -> Result<T, EnsembleError> {
 pub fn validate(job: &Job) -> Result<Checked, EnsembleError> {
     let n = job.model.n();
     let n_p = job.model.n_p();
-    if job.model.kind != pc_ode::ModelKind::Ode {
-        return Err(EnsembleError::Unsupported(
-            "the model is not an ODE system".into(),
-        ));
+    match (job.model.kind, job.method) {
+        (pc_ode::ModelKind::None, _) => {
+            return Err(EnsembleError::Unsupported(
+                "the model has no ODE and no map".into(),
+            ));
+        }
+        (pc_ode::ModelKind::Map, Method::Rk4 { .. } | Method::Dp5 { .. }) => {
+            return Err(EnsembleError::Unsupported(
+                "the model is a map; rk4 and dp5 integrate an ODE, so run a map with method iter"
+                    .into(),
+            ));
+        }
+        (pc_ode::ModelKind::Ode, Method::Iter) => {
+            return bad("method iter iterates a map, and the model is an ODE; use rk4 or dp5");
+        }
+        (pc_ode::ModelKind::Ode, _) | (pc_ode::ModelKind::Map, Method::Iter) => {}
     }
     if n == 0 {
         return bad("the model has no states");
@@ -375,6 +390,39 @@ pub fn validate(job: &Job) -> Result<Checked, EnsembleError> {
                     "rtol {rtol:e} is below {least:e}, 13 times the unit roundoff of {} precision",
                     job.precision.name()
                 )));
+            }
+        }
+        Method::Iter => {
+            // The iterate index of a segment is a 32-bit counter, and `a + (real)i` must be
+            // exact in the job precision: times up to 2^24 and 2^24 iterates per segment in
+            // single precision, times up to 2^53 and u32::MAX iterates in double precision.
+            let (limit, cap) = match job.precision {
+                Precision::Single => (16_777_216.0, 16_777_216.0),
+                Precision::Double => (9_007_199_254_740_992.0, f64::from(u32::MAX)),
+            };
+            for &v in std::iter::once(&job.t0).chain(&times) {
+                if v.fract() != 0.0 {
+                    return bad(format!("method iter needs whole-number times, got {v}"));
+                }
+            }
+            for &v in std::iter::once(&job.t0).chain(&times) {
+                if v.abs() > limit {
+                    return bad(format!(
+                        "method iter in {} precision needs times of magnitude at most {limit}, got {v}",
+                        job.precision.name()
+                    ));
+                }
+            }
+            let mut a = job.t0;
+            for &b in &times {
+                let m = b - a;
+                if m > cap {
+                    return bad(format!(
+                        "method iter makes {m} iterates between {a} and {b}, over the limit of {cap} per sample interval in {} precision",
+                        job.precision.name()
+                    ));
+                }
+                a = b;
             }
         }
     }

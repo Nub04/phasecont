@@ -17,11 +17,16 @@ fn source(src: &str, integrator: Integrator, scalar: Scalar, dialect: Dialect) -
     kernel_source(&tape, integrator, scalar, dialect).expect("kernel source")
 }
 
-const BOTH: [(Integrator, Scalar); 4] = [
+/// Every integrator in both precisions. The text does not depend on the kind of the model,
+/// so the `iter` texts here come from the same ODE text as the others; the tests of the
+/// `iter` template itself use a map.
+const BOTH: [(Integrator, Scalar); 6] = [
     (Integrator::Rk4, Scalar::F32),
     (Integrator::Rk4, Scalar::F64),
     (Integrator::Dp5, Scalar::F32),
     (Integrator::Dp5, Scalar::F64),
+    (Integrator::Iter, Scalar::F32),
+    (Integrator::Iter, Scalar::F64),
 ];
 
 #[test]
@@ -317,7 +322,7 @@ fn the_opencl_dp5_tables_live_in_constant_memory() {
     }
 }
 
-const SINGLE: [Integrator; 2] = [Integrator::Rk4, Integrator::Dp5];
+const SINGLE: [Integrator; 3] = [Integrator::Rk4, Integrator::Dp5, Integrator::Iter];
 
 #[test]
 fn the_msl_entry_is_one_guarded_thread_per_member() {
@@ -436,6 +441,7 @@ fn the_private_size_formula_matches_the_arrays_in_the_kernel_text() {
     }
     assert_eq!(private_reals(10, Integrator::Rk4), 70);
     assert_eq!(private_reals(10, Integrator::Dp5), 100);
+    assert_eq!(private_reals(10, Integrator::Iter), 20);
 }
 
 fn global(src: &str, integrator: Integrator, scalar: Scalar, dialect: Dialect) -> String {
@@ -488,13 +494,24 @@ fn the_global_text_keeps_the_scratch_in_the_work_slice() {
                 )),
                 "{i:?} {s:?} {d:?}"
             );
-            for decl in [
-                "PC_GLOBAL pc_real *y = w + PC_PERSIST;",
-                "PC_GLOBAL pc_real *y1 = y + PC_N;",
-                "PC_GLOBAL pc_real *yt = y1 + PC_N;",
-                "PC_GLOBAL pc_real *k = yt + PC_N;",
-            ] {
+            let decls: &[&str] = match i {
+                Integrator::Iter => &[
+                    "PC_GLOBAL pc_real *y = w + PC_PERSIST;",
+                    "PC_GLOBAL pc_real *y1 = y + PC_N;",
+                ],
+                Integrator::Rk4 | Integrator::Dp5 => &[
+                    "PC_GLOBAL pc_real *y = w + PC_PERSIST;",
+                    "PC_GLOBAL pc_real *y1 = y + PC_N;",
+                    "PC_GLOBAL pc_real *yt = y1 + PC_N;",
+                    "PC_GLOBAL pc_real *k = yt + PC_N;",
+                ],
+            };
+            for decl in decls {
                 assert!(text.contains(decl), "{i:?} {s:?} {d:?}: {decl}");
+            }
+            if i == Integrator::Iter {
+                assert!(!text.contains("*yt"), "{s:?} {d:?}");
+                assert!(!text.contains("*k ="), "{s:?} {d:?}");
             }
             assert_eq!(declared_private_reals(&text), 0, "{i:?} {s:?} {d:?}");
             // Every use of the scratch still goes through the same loads and stores.
@@ -535,8 +552,9 @@ fn the_global_text_differs_from_the_private_text_only_in_the_array_lines() {
             let k = match i {
                 Integrator::Rk4 => "4u",
                 Integrator::Dp5 => "7u",
+                Integrator::Iter => "",
             };
-            for (from, to) in [
+            let pairs = [
                 (
                     "PC_GLOBAL pc_real *y = w + PC_PERSIST;",
                     "pc_real y[PC_N];".to_string(),
@@ -553,7 +571,10 @@ fn the_global_text_differs_from_the_private_text_only_in_the_array_lines() {
                     "PC_GLOBAL pc_real *k = yt + PC_N;",
                     format!("pc_real k[{k} * PC_N];"),
                 ),
-            ] {
+            ];
+            // The map method keeps only `y` and `y1`.
+            let used = if i == Integrator::Iter { 2 } else { 4 };
+            for (from, to) in pairs.into_iter().take(used) {
                 assert_eq!(back.matches(from).count(), 1, "{i:?} {s:?} {d:?}: {from}");
                 back = back.replace(from, &to);
             }
@@ -610,11 +631,70 @@ fn the_global_size_formula_counts_the_arrays_the_text_points_to() {
     for n in [1, 2, 40, 6000] {
         assert_eq!(Layout::Global.work_len(n, Integrator::Rk4), 8 * n + 1);
         assert_eq!(Layout::Global.work_len(n, Integrator::Dp5), 12 * n + 3);
+        assert_eq!(Layout::Global.work_len(n, Integrator::Iter), 3 * n + 1);
         for i in SINGLE {
             assert_eq!(
                 Layout::Global.work_len(n, i),
                 work_len(n, i) + private_reals(n, i)
             );
+        }
+    }
+}
+
+/// The body of the step loop of a kernel text: from `while (budget` to the write-back.
+fn step_loop(text: &str) -> &str {
+    let start = text.find("while (budget").expect("step loop");
+    let end = start + text[start..].find("    w[0] = t;").expect("write-back");
+    &text[start..end]
+}
+
+#[test]
+fn the_iter_kernel_evaluates_the_map_once_per_iterate() {
+    // SPEC 8aa, acceptance test 3: one `pc_rhs` call in the loop, no stage vectors and
+    // `PC_WL` n + 1 in the private layout.
+    let map = "par a=1.4,b=0.3\nx(t+1)=1-a*x^2+y\ny(t+1)=b*x\ndone\n";
+    for d in GLOBAL_DIALECTS {
+        for s in [Scalar::F32, Scalar::F64] {
+            if !has(d, s) {
+                continue;
+            }
+            let text = source(map, Integrator::Iter, s, d);
+            let body = step_loop(&text);
+            assert_eq!(body.matches("pc_rhs(").count(), 1, "{s:?} {d:?}");
+            assert!(body.contains("pc_rhs(ts, y, par, y1);"), "{s:?} {d:?}");
+            assert_eq!(text.matches("pc_rhs(ts").count(), 1, "{s:?} {d:?}");
+            for absent in [
+                "pc_real yt[",
+                "pc_real k[",
+                "pc_dp5_step",
+                "PC_SIX",
+                "seg_h",
+            ] {
+                assert!(!text.contains(absent), "{s:?} {d:?}: {absent}");
+            }
+            assert!(text.contains("pc_real y[PC_N];"), "{s:?} {d:?}");
+            assert!(text.contains("pc_real y1[PC_N];"), "{s:?} {d:?}");
+            assert!(text.contains("#define PC_WL 3u\n"), "{s:?} {d:?}");
+            assert_eq!(declared_private_reals(&text), 2, "{s:?} {d:?}");
+            // The time inside F is the number of the iterate, and it is a sum, never a product.
+            assert!(
+                body.contains("pc_real ts = sa + (pc_real)ii;"),
+                "{s:?} {d:?}"
+            );
+            let g = global(map, Integrator::Iter, s, d);
+            assert!(g.contains("#define PC_WL 7u\n"), "{s:?} {d:?}");
+            assert!(g.contains("#define PC_PERSIST 3u\n"), "{s:?} {d:?}");
+        }
+    }
+}
+
+#[test]
+fn the_iter_kernel_keeps_no_dp5_constants() {
+    let map = "par r=2.5\nx(t+1)=r*x*(1-x)\ndone\n";
+    for d in [Dialect::Cuda, Dialect::OpenCl] {
+        let text = source(map, Integrator::Iter, Scalar::F64, d);
+        for table in ["pc_cn", "pc_am", "pc_em", "pc_hinit"] {
+            assert!(!text.contains(table), "{d:?}: {table}");
         }
     }
 }

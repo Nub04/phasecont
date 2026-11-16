@@ -153,6 +153,7 @@ impl Shim {
         let integrator = match job.method {
             Method::Rk4 { .. } => Integrator::Rk4,
             Method::Dp5 { .. } => Integrator::Dp5,
+            Method::Iter => Integrator::Iter,
         };
         let scalar = match job.precision {
             Precision::Single => Scalar::F32,

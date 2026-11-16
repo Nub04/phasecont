@@ -5,11 +5,13 @@
 //! same layout, rounded to the scalar type of the run:
 //!
 //! * `rc`, `5 + 4 * ns` values: `t0`, the bound, `rtol`, `atol`, `hmax`, then the `ns` output
-//!   times and, for RK4, the start, end and length of each segment. The slots of the method
+//!   times and, for RK4 and the iteration of a map, the start, end and length of each
+//!   segment (the length is 1 for a map). The slots of the method
 //!   a job does not use are zero. The bound is capped at the largest finite value of the
 //!   scalar type, so an infinite bound reads as that value and `|y| <= bound` fails for NaN and
 //!   for infinity alike.
-//! * `segm`, `ns` counts: steps of each RK4 segment, zero for the adaptive method.
+//! * `segm`, `ns` counts: steps of each RK4 segment or iterates of each map segment, zero for
+//!   the adaptive method.
 //! * `x0`, `members * n` states and `par`, the parameters (one set shared by every member,
 //!   or `members * n_p` values with `pstride = n_p`).
 //! * `work`, `work_len(n, integrator)` values per member (more under the global scratch
@@ -23,7 +25,8 @@
 //! state and the stage vectors) is private to the thread and does not appear in it, except
 //! under [`Layout::Global`], where the same scratch follows those words in the member's
 //! slice (`Layout::work_len` values) and the words a launch hands on stay where they are. The
-//! member's time `t` is the first value in both layouts, then for RK4 the state `y`; for DP5
+//! member's time `t` is the first value in both layouts, then for RK4 and a map the state `y`;
+//! for DP5
 //! the step size `h`, the step error memory `facold`, the state `y` and the first stage `k0`
 //! (the last stage of the previous step).
 
@@ -69,7 +72,7 @@ pub fn pack_in<T: Real>(job: &Job, checked: &Checked, tape: &Tape, layout: Layou
     let zeros = |len: usize| vec![T::ZERO; len];
 
     let (rtol, atol, hmax, seg_a, seg_b, seg_h, segm) = match &ctx.kind {
-        Kind::Rk4(segs) => (
+        Kind::Rk4(segs) | Kind::Iter(segs) => (
             T::ZERO,
             T::ZERO,
             T::ZERO,
@@ -193,6 +196,7 @@ pub fn integrator_of(method: Method) -> Integrator {
     match method {
         Method::Rk4 { .. } => Integrator::Rk4,
         Method::Dp5 { .. } => Integrator::Dp5,
+        Method::Iter => Integrator::Iter,
     }
 }
 

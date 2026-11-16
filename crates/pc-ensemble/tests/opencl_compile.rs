@@ -64,6 +64,23 @@ fn clang_has_fp64() -> bool {
     matches!(check(src, "fp64-probe"), Ok(Some(())))
 }
 
+/// The `iter` variants, which the maps compile in.
+const MAP_VARIANTS: [(Integrator, Scalar); 2] = [
+    (Integrator::Iter, Scalar::F32),
+    (Integrator::Iter, Scalar::F64),
+];
+
+/// The ODE models in the RK4 and Dormand-Prince variants, then the maps in the `iter` ones.
+fn cases() -> Vec<(&'static str, &'static [(Integrator, Scalar)])> {
+    let mut v: Vec<(&'static str, &'static [(Integrator, Scalar)])> = [DECAY, VDP, OSC, MIXED]
+        .into_iter()
+        .map(|m| (m, &VARIANTS[..]))
+        .collect();
+    v.push((LOGISTIC_MAP, &MAP_VARIANTS[..]));
+    v.push((HENON_MAP, &MAP_VARIANTS[..]));
+    v
+}
+
 fn kernel(model: &str, i: Integrator, s: Scalar) -> String {
     kernel_in(model, i, s, Layout::Private)
 }
@@ -76,8 +93,8 @@ fn kernel_in(model: &str, i: Integrator, s: Scalar, layout: Layout) -> String {
 #[test]
 fn every_model_and_variant_parses_as_opencl_c() {
     let fp64 = clang_has_fp64();
-    for (n, model) in [DECAY, VDP, OSC, MIXED].into_iter().enumerate() {
-        for (i, s) in VARIANTS {
+    for (n, (model, variants)) in cases().into_iter().enumerate() {
+        for &(i, s) in variants {
             if s == Scalar::F64 && !fp64 {
                 skip_gpu(
                     "clang-opencl",

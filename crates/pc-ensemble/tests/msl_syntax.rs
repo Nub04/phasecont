@@ -22,6 +22,8 @@ use pc_ensemble::Tape;
 use pc_ensemble::kernel::{Integrator, Layout, kernel_source_in};
 
 const VARIANTS: [Integrator; 2] = [Integrator::Rk4, Integrator::Dp5];
+/// The variant the maps compile in.
+const MAP_VARIANTS: [Integrator; 1] = [Integrator::Iter];
 
 /// What `<metal_stdlib>` provides to this kernel, in C++.
 const SHIM: &str = r#"
@@ -97,8 +99,10 @@ fn kernel_in(model: &str, i: Integrator, layout: Layout) -> String {
 
 #[test]
 fn every_model_and_integrator_parses_as_cpp_with_the_shim() {
-    for (n, model) in [DECAY, VDP, OSC, MIXED].into_iter().enumerate() {
-        for i in VARIANTS {
+    let odes = [DECAY, VDP, OSC, MIXED].map(|m| (m, &VARIANTS[..]));
+    let maps = [LOGISTIC_MAP, HENON_MAP].map(|m| (m, &MAP_VARIANTS[..]));
+    for (n, (model, variants)) in odes.into_iter().chain(maps).enumerate() {
+        for &i in variants {
             // Both layouts are dumped, so the hosted macOS job compiles the global one with
             // Metal itself: the shim here removes the address spaces and cannot check them.
             for layout in [Layout::Private, Layout::Global] {

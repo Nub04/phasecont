@@ -3,7 +3,7 @@
 //! The kernel is a transcription of [`crate::traj`], so a backend that runs it without fused
 //! multiply-add reproduces the CPU backend operation for operation. The text is built from
 //! the right-hand side of the model (`pc_codegen::kernel::emit_rhs`), a dialect prelude and
-//! one of two fixed integrator templates. The templates hold no sizes: the model sizes come
+//! one of three fixed integrator templates (RK4, Dormand-Prince and the iteration of a map). The templates hold no sizes: the model sizes come
 //! in as macros (`PC_N`, `PC_WL`), so the templates are plain strings.
 //!
 //! One launch advances every member by at most `steps` step attempts. The state lives in
@@ -13,10 +13,11 @@
 //! Every dialect has an entry point: C loops over the members, the others run one thread or
 //! work item per member. Metal has no double, so its kernels exist for `f32` only.
 //!
-//! The scratch of a step (`y`, `y1`, `yt` and the stage vectors) lives in one of two places,
+//! The scratch of a step (`y`, `y1`, and for the integrators `yt` and the stage vectors)
+//! lives in one of two places,
 //! chosen by [`Layout`]. The private layout keeps it in arrays of the thread. The global
 //! layout keeps it in the member's slice of `work`, behind the words a launch hands on, for
-//! the models whose arrays do not fit in the local memory of a CUDA thread. Only the four
+//! the models whose arrays do not fit in the local memory of a CUDA thread. Only the
 //! declarations differ, so both layouts run the same operations in the same order.
 
 use pc_codegen::kernel::{Dialect, KernelError, Scalar, emit_rhs, float_literal, prelude};
@@ -33,16 +34,18 @@ pub const CTL: usize = 8;
 pub enum Integrator {
     Rk4,
     Dp5,
+    /// The iteration of a map, one call of F per iterate (SPEC section 8aa).
+    Iter,
 }
 
 /// Values per member in the `work` buffer: what a launch hands to the next one.
 ///
-/// RK4 keeps `t`, then `y`. DP5 keeps `t`, `h` and `facold`, then `y` and the first stage `k0`,
-/// which is the last stage of the previous step. The trial state and the other stages are
+/// RK4 and the iteration of a map keep `t`, then `y`. DP5 keeps `t`, `h` and `facold`, then `y`
+/// and the first stage `k0`, which is the last stage of the previous step. The trial state and the other stages are
 /// private to the thread and live only inside a launch.
 pub fn work_len(n: usize, integrator: Integrator) -> usize {
     match integrator {
-        Integrator::Rk4 => n + 1,
+        Integrator::Rk4 | Integrator::Iter => n + 1,
         Integrator::Dp5 => 2 * n + 3,
     }
 }
@@ -59,8 +62,8 @@ pub enum Layout {
 impl Layout {
     /// Values per member in the `work` buffer under this layout.
     ///
-    /// The global layout adds the private arrays to what a launch hands on: `8n + 1` for RK4
-    /// and `12n + 3` for Dormand-Prince.
+    /// The global layout adds the private arrays to what a launch hands on: `8n + 1` for RK4,
+    /// `12n + 3` for Dormand-Prince and `3n + 1` for the iteration of a map.
     pub fn work_len(self, n: usize, integrator: Integrator) -> usize {
         match self {
             Layout::Private => work_len(n, integrator),
@@ -69,13 +72,15 @@ impl Layout {
     }
 }
 
-/// Reals that one thread of the RK4 or Dormand-Prince kernel holds in private arrays: the
+/// Reals that one thread of a kernel holds in private arrays: for RK4 and Dormand-Prince the
 /// state, the trial state, a second trial state and the stage vectors (4 for RK4, 7 for
-/// Dormand-Prince). A test reads the declarations in the kernel text and checks this count.
+/// Dormand-Prince), and for the iteration of a map the state and the next state. A test reads
+/// the declarations in the kernel text and checks this count.
 pub fn private_reals(n: usize, integrator: Integrator) -> usize {
     match integrator {
         Integrator::Rk4 => n.saturating_mul(7),
         Integrator::Dp5 => n.saturating_mul(10),
+        Integrator::Iter => n.saturating_mul(2),
     }
 }
 
@@ -143,6 +148,7 @@ pub fn kernel_source_in(
             s.push_str(DP5_HELPERS);
             s.push_str(&DP5.replace(ARRAYS, arrays(integrator, layout)));
         }
+        Integrator::Iter => s.push_str(&ITER.replace(ARRAYS, arrays(integrator, layout))),
     }
     s.push_str(entry);
     Ok(s)
@@ -151,8 +157,8 @@ pub fn kernel_source_in(
 /// The line of a template that the declarations of the scratch replace.
 const ARRAYS: &str = "    /*PC_ARRAYS*/\n";
 
-/// The declarations of `y`, `y1`, `yt` and the stage vectors `k`. The global ones point into
-/// `w` behind the `PC_PERSIST` words, one array after the other.
+/// The declarations of `y`, `y1`, and for the integrators `yt` and the stage vectors `k`. The
+/// global ones point into `w` behind the `PC_PERSIST` words, one array after the other.
 fn arrays(integrator: Integrator, layout: Layout) -> &'static str {
     match (layout, integrator) {
         (Layout::Private, Integrator::Rk4) => {
@@ -161,11 +167,16 @@ fn arrays(integrator: Integrator, layout: Layout) -> &'static str {
         (Layout::Private, Integrator::Dp5) => {
             "    pc_real y[PC_N];\n    pc_real y1[PC_N];\n    pc_real yt[PC_N];\n    pc_real k[7u * PC_N];\n"
         }
+        (Layout::Private, Integrator::Iter) => "    pc_real y[PC_N];\n    pc_real y1[PC_N];\n",
+        (Layout::Global, Integrator::Iter) => GLOBAL_ARRAYS_ITER,
         (Layout::Global, _) => GLOBAL_ARRAYS,
     }
 }
 
 const GLOBAL_ARRAYS: &str = "    PC_GLOBAL pc_real *y = w + PC_PERSIST;\n    PC_GLOBAL pc_real *y1 = y + PC_N;\n    PC_GLOBAL pc_real *yt = y1 + PC_N;\n    PC_GLOBAL pc_real *k = yt + PC_N;\n";
+
+const GLOBAL_ARRAYS_ITER: &str =
+    "    PC_GLOBAL pc_real *y = w + PC_PERSIST;\n    PC_GLOBAL pc_real *y1 = y + PC_N;\n";
 
 fn def(out: &mut String, name: &str, lit: &str) {
     out.push_str("#define PC_");
@@ -219,6 +230,8 @@ fn consts<T: Real>(integrator: Integrator, scalar: Scalar) -> String {
             array(&mut s, "pc_am", &a);
             array(&mut s, "pc_em", &e);
         }
+        // The iteration of a map uses no constant.
+        Integrator::Iter => {}
     }
     s
 }
@@ -344,6 +357,99 @@ PC_FN void pc_member(PC_IN pc_real *PC_RESTRICT rc, PC_IN pc_ulong *PC_RESTRICT 
             sum = sum + k[3u * PC_N + i];
             y1[i] = y[i] + h6 * sum;
         }
+        bad = pc_bad_state(y1, lim);
+        if (bad != PC_RUNNING) {
+            st = bad;
+        } else {
+            for (i = 0u; i < PC_N; i++) {
+                y[i] = y1[i];
+            }
+            t = t_next;
+            accepted += 1u;
+            ii += 1u;
+            if (last != 0u) {
+                for (i = 0u; i < PC_N; i++) {
+                    out[si * PC_N + i] = y[i];
+                }
+                si += 1u;
+                ii = 0u;
+                if (si == ns) {
+                    st = PC_OK;
+                } else {
+                    PC_SEG_LOAD(si);
+                }
+            }
+            if (st == PC_RUNNING && accepted >= max_steps) {
+                st = PC_MAX_STEPS;
+            }
+        }
+    }
+    w[0] = t;
+    for (i = 0u; i < PC_N; i++) {
+        w[1u + i] = y[i];
+    }
+    c[0] = st;
+    c[2] = accepted;
+    c[4] = si;
+    c[5] = ii;
+}
+
+"#;
+
+const ITER: &str = r#"
+/* The iteration of a map (SPEC section 8aa): y1 = F(y, p, ts) with ts = a + i for the
+   iterate i of the segment, then the state check of RK4. A member loads the segment
+   constants only when it moves to the next segment. */
+#define PC_SEG_LOAD(s) \
+    do { \
+        m = segm[s]; \
+        sa = seg_a[s]; \
+        sb = seg_b[s]; \
+    } while (0)
+
+PC_FN void pc_member(PC_IN pc_real *PC_RESTRICT rc, PC_IN pc_ulong *PC_RESTRICT segm,
+                     PC_IN pc_real *PC_RESTRICT x0, PC_IN pc_real *PC_RESTRICT par,
+                     PC_GLOBAL pc_real *PC_RESTRICT w, PC_GLOBAL pc_real *PC_RESTRICT out,
+                     PC_GLOBAL pc_uint *PC_RESTRICT c, pc_ulong budget, pc_uint max_steps,
+                     pc_uint ns)
+{
+    /*PC_ARRAYS*/
+    PC_IN pc_real *seg_a = rc + 5u + ns;
+    PC_IN pc_real *seg_b = rc + 5u + 2u * ns;
+    pc_real lim = rc[1];
+    pc_uint st = c[0];
+    pc_uint accepted = c[2];
+    pc_uint si = c[4];
+    pc_uint ii = c[5];
+    pc_ulong m = 0u;
+    pc_real sa = PC_ZERO;
+    pc_real sb = PC_ZERO;
+    pc_real t;
+    pc_uint i;
+
+    if (st != PC_RUNNING) {
+        return;
+    }
+    PC_SEG_LOAD(si);
+    if (c[1] == 0u) {
+        c[1] = 1u;
+        t = rc[0];
+        for (i = 0u; i < PC_N; i++) {
+            y[i] = x0[i];
+        }
+    } else {
+        t = w[0];
+        for (i = 0u; i < PC_N; i++) {
+            y[i] = w[1u + i];
+        }
+    }
+    while (budget > 0u && st == PC_RUNNING) {
+        pc_uint last = ((pc_ulong)ii + 1u == m) ? 1u : 0u;
+        pc_real ts = sa + (pc_real)ii;
+        pc_real t_next = (last != 0u) ? sb : sa + (pc_real)(ii + 1u);
+        pc_uint bad;
+        budget -= 1u;
+        pc_rhs(ts, y, par, y1);
         bad = pc_bad_state(y1, lim);
         if (bad != PC_RUNNING) {
             st = bad;
