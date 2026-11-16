@@ -36,9 +36,25 @@ classdef PhasePlane < handle
     % and redraws the field and the nullclines. Branches loaded from a
     % session are kept and saved again but not drawn.
     %
+    % A map (x(t+1)=... or @ meth=discrete) opens one of two views (SPEC 8z).
+    %   Map view, two or more variables. The T field is labeled N, the
+    %   number of iterates, a whole number from 1 to 1e6. A click iterates
+    %   forward N steps and draws the iterates as dots; Direction stays
+    %   "Forward" and there is no direction field. A fixed point is filled
+    %   when every multiplier has modulus below 1 and open otherwise. The
+    %   nullcline of a variable is the curve where the map leaves that
+    %   variable unchanged, F_i(x) = x_i. A map that uses t iterates with
+    %   t = n from n = 0 and has no nullclines or fixed points.
+    %   Cobweb view, one variable. The axes show x against its next value,
+    %   with the graph of F and the diagonal behind the runs. A click
+    %   starts at its x value and draws the staircase of the iterates. The
+    %   map must not use t, and there is no field or nullcline.
+    %
     % Graphics tags: pc-trajectory, pc-start, pc-equilibrium-stable,
-    % pc-equilibrium-unstable, pc-field, pc-nullcline (one line per
-    % variable, with the variable name in UserData).
+    % pc-equilibrium-unstable, pc-equilibrium-unknown, pc-field,
+    % pc-nullcline (one line per variable, with the variable name in
+    % UserData), and in the cobweb view pc-cobweb, pc-cobweb-graph and
+    % pc-cobweb-diagonal.
     %
     % Methods
     %   clickAt, addTrajectory, findEquilibrium, setParameter, setSlice,
@@ -79,12 +95,16 @@ classdef PhasePlane < handle
         OptionPair (1,2) double = [1 2]
         FieldOn (1,1) logical = false
         NullclinesOn (1,1) logical = false
+        % "ode", "map" or "cobweb", from the model (SPEC 8z).
+        View (1,1) string = "ode"
     end
 
     properties (Constant, Access = private)
         FieldGrid = 20
         NullclineGrid = 101
         HmaxDivisor = 500
+        CobwebSamples = 401
+        MaxIterates = 1e6
     end
 
     methods
@@ -108,26 +128,18 @@ classdef PhasePlane < handle
                 error("phasecont:app:badSource", ...
                     "PhasePlane takes a phasecont.Model or the name of a session file.");
             end
-            % No map is drawn yet (SPEC 8t): its states are iterates, not a
-            % vector field.
-            info = m.engineInfo();
-            if info.map
+            try
+                view = viewFor(m);
+            catch err
                 if owns
                     delete(m);
                 end
-                error("phasecont:app:mapModel", ...
-                    "PhasePlane draws ODE models, and this model is a map.");
-            end
-            if numel(m.Variables) < 2
-                if owns
-                    delete(m);
-                end
-                error("phasecont:app:needTwoStates", ...
-                    "A phase plane needs a model with at least two variables.");
+                rethrow(err);
             end
             app.Model = m;
             app.OwnsModel = owns;
             app.Items = items;
+            app.View = view;
             app.resetToModel();
             app.buildUi(options.Visible);
             app.refreshControls();
@@ -161,6 +173,10 @@ classdef PhasePlane < handle
                 app (1,1) phasecont.app.PhasePlane
                 x (1,1) double {mustBeReal, mustBeFinite}
                 y (1,1) double {mustBeReal, mustBeFinite}
+            end
+            if app.View ~= "ode"
+                tr = app.iterateFrom(x, y);
+                return
             end
             if isempty(app.T)
                 error("phasecont:app:missingTime", ...
@@ -209,6 +225,10 @@ classdef PhasePlane < handle
                 app (1,1) phasecont.app.PhasePlane
                 x (1,1) double {mustBeReal, mustBeFinite}
                 y (1,1) double {mustBeReal, mustBeFinite}
+            end
+            if app.View ~= "ode"
+                pt = app.fixedPointFrom(x, y);
+                return
             end
             app.requireAutonomous(true, "equilibrium search");
             pt = phasecont.equilibrium(app.Model, app.startState(x, y), ...
@@ -306,8 +326,14 @@ classdef PhasePlane < handle
 
         function setT(app, value)
             % SETT(APP, T) sets the integration length, a positive number.
-            % SETT(APP, []) clears it.
-            if ~isempty(value) && ~(isnumeric(value) && isreal(value) ...
+            % On a map it sets N, the number of iterates, a whole number
+            % from 1 to 1e6. SETT(APP, []) clears it.
+            if app.View ~= "ode"
+                if ~isempty(value) && ~isIterateCount(value, app.MaxIterates)
+                    error("phasecont:app:badValue", ...
+                        "N must be a whole number from 1 to 1000000, or empty.");
+                end
+            elseif ~isempty(value) && ~(isnumeric(value) && isreal(value) ...
                     && isscalar(value) && isfinite(value) && value > 0)
                 error("phasecont:app:badValue", ...
                     "T must be a positive finite number, or empty.");
@@ -321,6 +347,9 @@ classdef PhasePlane < handle
             arguments
                 app (1,1) phasecont.app.PhasePlane
                 direction (1,1) string {mustBeMember(direction, ["Forward" "Backward" "Both"])}
+            end
+            if app.View ~= "ode" && direction ~= "Forward"
+                error("phasecont:app:mapModel", "A map is iterated forward only.");
             end
             app.Direction = direction;
             app.refreshControls();
@@ -342,6 +371,11 @@ classdef PhasePlane < handle
                 app (1,1) phasecont.app.PhasePlane
                 on (1,1) logical
             end
+            if on && app.View == "map"
+                error("phasecont:app:mapModel", "A map has no direction field.");
+            elseif on && app.View == "cobweb"
+                error("phasecont:app:mapModel", cobwebOnlyText());
+            end
             app.requireAutonomous(on, "direction field");
             app.FieldOn = on;
             app.refreshControls();
@@ -353,6 +387,9 @@ classdef PhasePlane < handle
             arguments
                 app (1,1) phasecont.app.PhasePlane
                 on (1,1) logical
+            end
+            if on && app.View == "cobweb"
+                error("phasecont:app:mapModel", cobwebOnlyText());
             end
             app.requireAutonomous(on, "nullclines");
             app.NullclinesOn = on;
@@ -389,16 +426,18 @@ classdef PhasePlane < handle
                 file (1,1) string
             end
             S = phasecont.Session.load(file);
-            if numel(S.Model.Variables) < 2
+            try
+                view = viewFor(S.Model);
+            catch err
                 delete(S.Model);
-                error("phasecont:app:needTwoStates", ...
-                    "A phase plane needs a model with at least two variables.");
+                rethrow(err);
             end
             old = app.Model;
             ownedOld = app.OwnsModel;
             app.Model = S.Model;
             app.OwnsModel = true;
             app.Items = S.Items;
+            app.View = view;
             if ownedOld
                 delete(old);
             end
@@ -436,7 +475,10 @@ classdef PhasePlane < handle
 
             ix = 1;
             iy = 2;
-            if isfield(o, "xp") || isfield(o, "yp")
+            if app.View == "cobweb"
+                % Both axes show the one variable (SPEC 8z).
+                iy = 1;
+            elseif isfield(o, "xp") || isfield(o, "yp")
                 [ix, iy, notes] = app.axesFromOptions(o, notes);
             end
             app.XIndex = ix;
@@ -447,20 +489,51 @@ classdef PhasePlane < handle
             app.T = [];
             if isfield(o, "total")
                 v = str2double(o.total);
-                if isfinite(v) && v > 0
+                if app.View ~= "ode"
+                    if isIterateCount(v, app.MaxIterates)
+                        app.T = v;
+                    else
+                        notes(end+1, 1) = "@ total = " + o.total ...
+                            + " is not a whole number from 1 to 1000000; enter N.";
+                    end
+                elseif isfinite(v) && v > 0
                     app.T = v;
                 else
                     notes(end+1, 1) = "@ total = " + o.total + " is not a positive number; enter T.";
                 end
             end
-            ignored = intersect(["meth" "dt" "bound" "bounds"], string(fieldnames(o)).');
-            if ~isempty(ignored)
-                notes(end+1, 1) = "The model sets @ " + strjoin(ignored, ", ") ...
-                    + ". The app integrates with Dormand-Prince 5(4) and ignores them.";
-            end
-            if ~m.Autonomous
-                notes(end+1, 1) = "The model uses t. Runs start at t = 0. " ...
-                    + "The field, the nullclines and the equilibria need an autonomous model.";
+            fields = string(fieldnames(o)).';
+            if app.View == "ode"
+                ignored = intersect(["meth" "dt" "bound" "bounds"], fields);
+                if ~isempty(ignored)
+                    notes(end+1, 1) = "The model sets @ " + strjoin(ignored, ", ") ...
+                        + ". The app integrates with Dormand-Prince 5(4) and ignores them.";
+                end
+                if ~m.Autonomous
+                    notes(end+1, 1) = "The model uses t. Runs start at t = 0. " ...
+                        + "The field, the nullclines and the equilibria need an autonomous model.";
+                end
+            else
+                % A meth that starts with d is what makes x'=... a map.
+                ignored = intersect(["bound" "bounds" "dt"], fields);
+                if isfield(o, "meth") && ~startsWith(string(o.meth), ["d" "D"])
+                    ignored = sort([ignored "meth"]);
+                end
+                if ~isempty(ignored)
+                    notes(end+1, 1) = "The model sets @ " + strjoin(ignored, ", ") ...
+                        + ". The app iterates the map one step at a time and ignores them.";
+                end
+                app.Direction = "Forward";
+                if app.View == "cobweb"
+                    notes(end+1, 1) = "In the cobweb view a click starts at its x value. " ...
+                        + "The fixed points lie where the graph crosses the diagonal.";
+                elseif m.Autonomous
+                    notes(end+1, 1) = "On a map, the nullcline of a variable is the curve " ...
+                        + "where the map leaves that variable unchanged.";
+                else
+                    notes(end+1, 1) = "The model uses t. Iterates start at n = 0 with t = n. " ...
+                        + "The nullclines and the fixed points need an autonomous model.";
+                end
             end
             app.Notes = notes;
             app.FieldOn = false;
@@ -520,6 +593,22 @@ classdef PhasePlane < handle
         function [w, notes] = windowFor(app, ix, iy, notes)
             % The view for the pair (ix, iy): the @ xlo.. range when the
             % pair is the one the model names, else Init +/- max(1, |Init|).
+            % In the cobweb view the y range is @ ylo.. or else the x range.
+            if app.View == "cobweb"
+                c = app.Slice(1);
+                r = max(1, abs(c));
+                w = [c - r, c + r, c - r, c + r];
+                o = app.Model.Options;
+                [xr, notes] = rangeFrom(o, "xlo", "xhi", notes);
+                [yr, notes] = rangeFrom(o, "ylo", "yhi", notes);
+                if ~isempty(xr)
+                    w = [xr xr];
+                end
+                if ~isempty(yr)
+                    w(3:4) = yr;
+                end
+                return
+            end
             c = app.Slice([ix iy]);
             r = max(1, abs(c));
             w = [c(1) - r(1), c(1) + r(1), c(2) - r(2), c(2) + r(2)];
@@ -554,6 +643,77 @@ classdef PhasePlane < handle
             x0 = app.Slice;
             x0(app.XIndex) = x;
             x0(app.YIndex) = y;
+        end
+
+        function tr = iterateFrom(app, x, y)
+            % Iterate a map N steps from a click (SPEC 8z). The cobweb
+            % view uses the x of the click only.
+            if isempty(app.T)
+                error("phasecont:app:missingTime", ...
+                    "The model has no @ total. Enter the number of iterates N first.");
+            end
+            N = app.T;
+            if app.View == "cobweb"
+                x0 = x;
+            else
+                x0 = app.startState(x, y);
+            end
+            ws = [warning("off", "phasecont:simulate:stoppedEarly"), ...
+                warning("off", "phasecont:simulate:ignoredOption")];
+            restore = onCleanup(@() warning(ws));
+            tr = phasecont.simulate(app.Model, x0, [0 N], Params = app.Params);
+            clear restore
+            app.Items{end+1} = tr;
+            app.drawItem(tr);
+            if app.View == "cobweb"
+                msg = sprintf("Iterated from x = %.4g for %d steps.", x, N);
+            else
+                msg = sprintf("Iterated from (%.4g, %.4g) for %d steps.", x, y, N);
+            end
+            if tr.Stop ~= "End"
+                msg = msg + sprintf(" Stopped early at n = %d (%s).", tr.T(end), tr.Stop);
+            end
+            app.setStatus(msg);
+        end
+
+        function pt = fixedPointFrom(app, x, y)
+            % Newton's method on F(x) = x from a click, marked by the
+            % moduli of the multipliers (SPEC 8z).
+            app.requireAutonomous(true, "fixed point search");
+            if app.View == "cobweb"
+                x0 = x;
+            else
+                x0 = app.startState(x, y);
+            end
+            pt = phasecont.equilibrium(app.Model, x0, Params = app.Params);
+            app.Items{end+1} = pt;
+            app.drawItem(pt);
+            ev = pt.Eigenvalues;
+            if isempty(ev) || ~all(isfinite(ev))
+                % Drawn as the cross; there is no modulus to report.
+                if app.View == "cobweb"
+                    where = sprintf("x = %.6g", pt.U(1));
+                else
+                    where = sprintf("(%.6g, %.6g)", pt.U(app.XIndex), pt.U(app.YIndex));
+                end
+                app.setStatus("Fixed point at " + where ...
+                    + ": the multipliers are not available.");
+                return
+            end
+            top = max(abs(ev));
+            if all(abs(ev) < 1)
+                kind = "stable";
+            else
+                kind = "unstable";
+            end
+            if app.View == "cobweb"
+                app.setStatus(sprintf("Fixed point at x = %.6g: %s, |multiplier| %.3g.", ...
+                    pt.U(1), kind, top));
+            else
+                app.setStatus(sprintf( ...
+                    "Fixed point at (%.6g, %.6g): %s, largest |multiplier| %.3g.", ...
+                    pt.U(app.XIndex), pt.U(app.YIndex), kind, top));
+            end
         end
 
         function requireAutonomous(app, on, what)
@@ -603,14 +763,18 @@ classdef PhasePlane < handle
             ax.XLim = app.Window(1:2);
             ax.YLim = app.Window(3:4);
             xlabel(ax, app.Model.Variables(app.XIndex));
-            ylabel(ax, app.Model.Variables(app.YIndex));
+            if app.View == "cobweb"
+                ylabel(ax, app.Model.Variables(1) + "(n+1)");
+            else
+                ylabel(ax, app.Model.Variables(app.YIndex));
+            end
             app.redrawBackground();
             app.redrawItems();
         end
 
         function redrawItems(app)
             ax = app.Axes;
-            delete(findobj(ax, "-regexp", "Tag", "^pc-(trajectory|start|equilibrium-.*)$"));
+            delete(findobj(ax, "-regexp", "Tag", "^pc-(trajectory|start|cobweb|equilibrium-.*)$"));
             for k = 1:numel(app.Items)
                 app.drawItem(app.Items{k});
             end
@@ -618,7 +782,17 @@ classdef PhasePlane < handle
 
         function drawItem(app, it)
             ax = app.Axes;
-            if isa(it, "phasecont.Trajectory")
+            if isa(it, "phasecont.Trajectory") && app.View == "cobweb"
+                % The staircase and the start marker, styled as
+                % phasecont.cobweb draws them.
+                [sx, sy] = phasecont.internal.cobwebSteps(it.X(:, 1));
+                color = phasecont.internal.nextColor(ax);
+                line(ax, sx, sy, LineStyle = "-", Color = color, ...
+                    Tag = "pc-cobweb", PickableParts = "none");
+                line(ax, it.X(1, 1), it.X(1, 1), Marker = "o", LineStyle = "none", ...
+                    MarkerSize = 5, Color = color, MarkerFaceColor = color, ...
+                    Tag = "pc-start", PickableParts = "none");
+            elseif isa(it, "phasecont.Trajectory")
                 h = plot(it, Parent = ax, Var = [app.XIndex app.YIndex]);
                 set(h, PickableParts = "none");
             elseif isa(it, "phasecont.Point")
@@ -631,7 +805,13 @@ classdef PhasePlane < handle
                         Tag = "pc-equilibrium-unknown", PickableParts = "none");
                     return
                 end
-                if all(real(ev) < 0)
+                if app.View ~= "ode"
+                    % Multipliers of a map: stable inside the unit circle.
+                    stable = all(abs(ev) < 1);
+                else
+                    stable = all(real(ev) < 0);
+                end
+                if stable
                     tag = "pc-equilibrium-stable";
                     face = [0 0 0];
                 else
@@ -648,14 +828,35 @@ classdef PhasePlane < handle
             ax = app.Axes;
             ax.XLim = app.Window(1:2);
             ax.YLim = app.Window(3:4);
-            delete(findobj(ax, "Tag", "pc-field"));
-            delete(findobj(ax, "Tag", "pc-nullcline"));
+            delete(findobj(ax, "-regexp", "Tag", "^pc-(field|nullcline|cobweb-graph|cobweb-diagonal)$"));
+            if app.View == "cobweb"
+                app.drawCobwebBackground();
+                return
+            end
             if app.NullclinesOn
                 app.drawNullclines();
             end
             if app.FieldOn
                 app.drawField();
             end
+        end
+
+        function drawCobwebBackground(app)
+            % The graph y = F(x) over the x range, with gaps where F is not
+            % finite, and the diagonal y = x across the view (SPEC 8z).
+            ax = app.Axes;
+            w = app.Window;
+            [gx, gy] = phasecont.internal.cobwebGraph(app.Model, app.Params, ...
+                w(1), w(2), app.CobwebSamples);
+            lo = min(w(1), w(3));
+            hi = max(w(2), w(4));
+            hd = line(ax, [lo hi], [lo hi], LineStyle = "--", ...
+                Color = [0.55 0.55 0.55], Tag = "pc-cobweb-diagonal", ...
+                PickableParts = "none");
+            app.sendToBottom(hd);
+            hg = line(ax, gx, gy, LineStyle = "-", Color = [0 0 0], LineWidth = 1.2, ...
+                Tag = "pc-cobweb-graph", PickableParts = "none");
+            app.sendToBottom(hg);
         end
 
         function drawField(app)
@@ -680,14 +881,18 @@ classdef PhasePlane < handle
 
         function drawNullclines(app)
             ax = app.Axes;
-            [F, X, ~] = app.gridRhs(app.NullclineGrid, app.NullclineGrid);
+            [F, X, ~, S] = app.gridRhs(app.NullclineGrid, app.NullclineGrid);
             xs = linspace(app.Window(1), app.Window(2), app.NullclineGrid);
             ys = linspace(app.Window(3), app.Window(4), app.NullclineGrid);
             idx = [app.XIndex app.YIndex];
             colors = [0.85 0.33 0.10; 0.00 0.45 0.74];
             for k = 1:2
-                Z = reshape(F(idx(k), :), size(X));
-                Z(~isfinite(Z)) = NaN;
+                G = F(idx(k), :);
+                if app.View == "map"
+                    % Where the map leaves the variable unchanged.
+                    G = G - S(idx(k), :);
+                end
+                Z = reshape(G, size(X));
                 xy = nullclineLines(xs, ys, Z);
                 h = line(ax, xy(:, 1), xy(:, 2), Color = colors(k, :), ...
                     LineWidth = 1.2, Tag = "pc-nullcline", ...
@@ -696,16 +901,17 @@ classdef PhasePlane < handle
             end
         end
 
-        function [F, X, Y] = gridRhs(app, nx, ny)
+        function [F, X, Y, S] = gridRhs(app, nx, ny)
             % The right-hand side on an ny-by-nx grid of the plane, other
-            % variables at the slice values. F is n-by-(nx*ny).
+            % variables at the slice values, with NaN where it is not
+            % finite. F and the grid states S are n-by-(nx*ny).
             xs = linspace(app.Window(1), app.Window(2), nx);
             ys = linspace(app.Window(3), app.Window(4), ny);
             [X, Y] = meshgrid(xs, ys);
             S = repmat(app.Slice, 1, numel(X));
             S(app.XIndex, :) = X(:).';
             S(app.YIndex, :) = Y(:).';
-            F = app.Model.rhs(S, app.Params);
+            F = phasecont.internal.rhsGaps(app.Model, S, app.Params);
         end
 
         function sendToBottom(app, h)
@@ -740,7 +946,8 @@ classdef PhasePlane < handle
             place(ui.YDrop, 2, 2);
             ui.TField = uieditfield(left, "text", ...
                 ValueChangedFcn = @(~, ~) app.onTChanged());
-            place(uilabel(left, Text = "T"), 3, 1);
+            ui.TLabel = uilabel(left, Text = "T");
+            place(ui.TLabel, 3, 1);
             place(ui.TField, 3, 2);
             ui.DirDrop = uidropdown(left, Items = {'Forward', 'Backward', 'Both'}, ...
                 ValueChangedFcn = @(~, ~) app.onDirection());
@@ -827,8 +1034,17 @@ classdef PhasePlane < handle
             ui.FieldBox.Value = app.FieldOn;
             ui.NullBox.Value = app.NullclinesOn;
             auto = m.Autonomous;
-            ui.FieldBox.Enable = auto;
-            ui.NullBox.Enable = auto;
+            ode = app.View == "ode";
+            if ode
+                ui.TLabel.Text = 'T';
+            else
+                ui.TLabel.Text = 'N';
+            end
+            ui.DirDrop.Enable = ode;
+            ui.XDrop.Enable = app.View ~= "cobweb";
+            ui.YDrop.Enable = app.View ~= "cobweb";
+            ui.FieldBox.Enable = ode && auto;
+            ui.NullBox.Enable = app.View ~= "cobweb" && auto;
             ui.ParamTable.Data = table(m.Parameters(:), app.Params(:), ...
                 VariableNames = {'Parameter', 'Value'});
             others = setdiff(1:numel(vars), [app.XIndex app.YIndex], "stable");
@@ -980,4 +1196,40 @@ end
 if ~isempty(parts)
     xy = vertcat(parts{:});
 end
+end
+
+function view = viewFor(m)
+% The view the app shows for the model M: "ode", "map" or "cobweb"
+% (SPEC 8z). Raises the refusal for a model the app cannot show.
+n = numel(m.Variables);
+if m.IsMap
+    if n >= 2
+        view = "map";
+        return
+    end
+    if ~m.Autonomous
+        error("phasecont:app:nonAutonomous", ...
+            "The cobweb view needs a map that does not use t.");
+    end
+    view = "cobweb";
+    return
+end
+if n < 2
+    error("phasecont:app:needTwoStates", ...
+        "A phase plane needs a model with at least two variables.");
+end
+view = "ode";
+end
+
+function ok = isIterateCount(v, maxN)
+% True when V is a whole number of iterates from 1 to maxN.
+ok = isnumeric(v) && isreal(v) && isscalar(v) && isfinite(v) ...
+    && v == round(v) && v >= 1 && v <= maxN;
+end
+
+function msg = cobwebOnlyText()
+% The refusal text for the direction field and the nullclines in the
+% cobweb view.
+msg = "The cobweb view draws no direction field or nullclines. The fixed " ...
+    + "points lie where the graph crosses the diagonal.";
 end

@@ -4,11 +4,10 @@ classdef MapRefusalTest < matlab.unittest.TestCase
     % see MapIterateTest), equilibrium and continuation with Type "EP" run
     % (see MapFixedPointTest), the LP, PD and NS curves of fixed points run
     % (see MapCurveTest), a Hopf curve of a map is refused by the engine with
-    % phasecont:engine:unsupportedModel, PhasePlane refuses a map with
-    % phasecont:app:mapModel, and the
-    % right-hand side of a map still evaluates. A map is written as
-    % x(t+1)=... or as x'=... with @ meth=discrete. Every model is written
-    % here.
+    % phasecont:engine:unsupportedModel, and the right-hand side of a map
+    % still evaluates. PhasePlane shows a map (see MapPhasePlaneTest). A map
+    % is written as x(t+1)=... or as x'=... with @ meth=discrete. Every
+    % model is written here.
 
     properties (Constant)
         Logistic = "par r=2" + newline + "init x=0.2" + newline + ...
@@ -132,37 +131,6 @@ classdef MapRefusalTest < matlab.unittest.TestCase
             for text = [testCase.Henon testCase.HenonDiscrete]
                 f = testCase.model(text).rhs([0.5; 0.1]);
                 testCase.verifyEqual(f, [0.75; 0.15], AbsTol = 4 * eps);
-            end
-        end
-
-        function phasePlaneRefusesAMap(testCase)
-            for text = [testCase.Henon testCase.HenonDiscrete]
-                m = testCase.model(text);
-                testCase.verifyError( ...
-                    @() phasecont.app.PhasePlane(m, Visible = "off"), ...
-                    "phasecont:app:mapModel");
-                % The caller's model is not deleted.
-                testCase.verifyTrue(isvalid(m));
-            end
-        end
-
-        function phasePlaneRefusesAMapFromASessionFile(testCase)
-            m = testCase.model(testCase.Henon);
-            file = fullfile(testCase.Dir, "henon.pcsession.json");
-            save(phasecont.Session(m, {}), file);
-            testCase.verifyError( ...
-                @() phasecont.app.PhasePlane(file, Visible = "off"), ...
-                "phasecont:app:mapModel");
-            % PhasePlane frees the model it built from the file. Handle ids
-            % count up in steps of 2, so every id between m and a model made
-            % after the refusal must be unknown to the engine.
-            after = testCase.model(testCase.Henon);
-            ids = m.Id + uint64(2):uint64(2):after.Id - uint64(2);
-            testCase.verifyNotEmpty(ids, "the session load made no handle");
-            for id = ids
-                testCase.verifyError(@() pckern("model_info", id), ...
-                    "phasecont:engine:badHandle", ...
-                    sprintf("handle %d is still alive", id));
             end
         end
 
