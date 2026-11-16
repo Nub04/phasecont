@@ -46,6 +46,29 @@ pub type PlainFn = unsafe extern "C" fn(*const f64, *const f64, *mut f64);
 /// `x` has n values, `p` has n_p + 1 (time last), `v` has the packed length of the slots
 /// and `out` has `outputs.len()` values. `out` must not alias `x`, `p` or `v`.
 pub type DirFn = unsafe extern "C" fn(*const f64, *const f64, *const f64, *mut f64);
+/// A plain entry compiled in single precision: [`PlainFn`] over `f32` arrays.
+pub type PlainFnF32 = unsafe extern "C" fn(*const f32, *const f32, *mut f32);
+
+/// The float type of the compiled code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Float {
+    /// Double precision, every entry kind. It follows `pc_ir::eval::eval_op`.
+    F64,
+    /// Single precision, plain entries only. It follows the `f32` tape of pc-ensemble, which
+    /// computes every op in `f32` and rounds each constant to `f32` (ties to even). Tables,
+    /// `Dir` leaves and the special functions (erf, erfc, lgamma, the Bessel functions and
+    /// polygamma) are refused, as that tape refuses them.
+    F32,
+}
+
+impl Float {
+    pub(crate) fn ty(self) -> cranelift_codegen::ir::Type {
+        match self {
+            Float::F64 => types::F64,
+            Float::F32 => types::F32,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum JitError {
@@ -79,8 +102,27 @@ pub(crate) fn cl<T, E: std::fmt::Display>(what: &str, r: Result<T, E>) -> Result
 /// Compiles each entry to one native function. The code reads copies of the tables it
 /// uses, which the result owns, so it stays valid after `dag` is dropped.
 pub fn compile(entries: &[(EntryKind, &Entry)], dag: &Dag) -> Result<JitEntries, JitError> {
+    compile_as(entries, dag, Float::F64)
+}
+
+/// [`compile`] in single precision. Only plain entries are allowed; read them with
+/// [`JitEntries::plain_f32`].
+pub fn compile_f32(entries: &[(EntryKind, &Entry)], dag: &Dag) -> Result<JitEntries, JitError> {
+    if let Some((k, _)) = entries.iter().find(|(k, _)| matches!(k, EntryKind::Dir(_))) {
+        return Err(JitError::MissingImport(format!(
+            "{k:?} in single precision"
+        )));
+    }
+    compile_as(entries, dag, Float::F32)
+}
+
+fn compile_as(
+    entries: &[(EntryKind, &Entry)],
+    dag: &Dag,
+    float: Float,
+) -> Result<JitEntries, JitError> {
     // The guard exists from here on; any `?` below drops it and frees the module.
-    let mut je = JitEntries::new()?;
+    let mut je = JitEntries::new(float)?;
     #[cfg(test)]
     if module::FAIL_AFTER_NEW.with(|f| f.get()) {
         return Err(JitError::Cranelift("forced failure".into()));
@@ -90,6 +132,7 @@ pub fn compile(entries: &[(EntryKind, &Entry)], dag: &Dag) -> Result<JitEntries,
         tables,
         fns,
         frame,
+        ..
     } = &mut je;
     let Some(module) = module.as_mut() else {
         return Err(JitError::Cranelift("module missing".into()));
@@ -106,13 +149,13 @@ pub fn compile(entries: &[(EntryKind, &Entry)], dag: &Dag) -> Result<JitEntries,
         s.params.extend([AbiParam::new(ptr); 4]);
         s
     };
+    let fty = float.ty();
     let mut imports: HashMap<&'static str, FuncId> = HashMap::new();
-    for (name, _) in pc_ir::math::symbols() {
+    for (name, _) in module::symbols(float) {
         let (with_ptr, n) = match name {
             "pc_table" | "pc_table_slope" => (true, 1),
-            "pc_atan2" | "pc_pow" | "pc_mod" | "pc_besselj" | "pc_bessely" | "pc_polygamma" => {
-                (false, 2)
-            }
+            "pc_atan2" | "pc_pow" | "pc_mod" | "pc_besselj" | "pc_bessely" | "pc_polygamma"
+            | "pc_atan2f" | "pc_powf" | "pc_modf" => (false, 2),
             _ => (false, 1),
         };
         let mut sig = module.make_signature();
@@ -120,8 +163,8 @@ pub fn compile(entries: &[(EntryKind, &Entry)], dag: &Dag) -> Result<JitEntries,
             sig.params.push(AbiParam::new(ptr));
         }
         sig.params
-            .extend(std::iter::repeat_n(AbiParam::new(types::F64), n));
-        sig.returns.push(AbiParam::new(types::F64));
+            .extend(std::iter::repeat_n(AbiParam::new(fty), n));
+        sig.returns.push(AbiParam::new(fty));
         let id = cl(name, module.declare_function(name, Linkage::Import, &sig))?;
         imports.insert(name, id);
     }
@@ -140,7 +183,7 @@ pub fn compile(entries: &[(EntryKind, &Entry)], dag: &Dag) -> Result<JitEntries,
 
         let live = pc_ir::eval::live_set(dag, &entry.outputs);
         let mut refs = HashMap::new();
-        for n in lower::imports_needed(dag, &live) {
+        for n in lower::imports_needed(dag, &live, float) {
             let Some(&fid) = imports.get(n) else {
                 return Err(JitError::MissingImport(n.to_string()));
             };
@@ -166,6 +209,7 @@ pub fn compile(entries: &[(EntryKind, &Entry)], dag: &Dag) -> Result<JitEntries,
                 table_ptrs: &table_ptrs,
                 has_dir,
                 ptr,
+                float,
                 target: module.target_config(),
             },
         )?;

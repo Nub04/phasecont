@@ -947,6 +947,103 @@ mod tests {
         }
     }
 
+    /// Compiles the outputs of `tape` as a single-precision `F` entry of `dag` and calls it
+    /// against [`CpuTape::<f32>::eval`]. The function is called on other inputs first, so a
+    /// value kept from an earlier call would show.
+    fn check_native_f32(dag: &Dag, tape: &Tape, x: &[f64], p: &[f64]) -> Result<(), String> {
+        let entry = Entry {
+            kind: EntryKind::F,
+            outputs: tape.outputs.iter().map(|&o| NodeId(o)).collect(),
+        };
+        let jit = pc_jit::compile_f32(&[(EntryKind::F, &entry)], dag).map_err(|e| e.to_string())?;
+        let f = jit.plain_f32(&EntryKind::F).ok_or("no F entry")?;
+        let x: Vec<f32> = x.iter().map(|&v| f32::from_f64(v)).collect();
+        let p: Vec<f32> = p.iter().map(|&v| f32::from_f64(v)).collect();
+        let cpu = CpuTape::<f32>::new(tape);
+        let mut slab = cpu.slab();
+        let mut want = vec![0.0f32; tape.n];
+        cpu.eval(&x, &p, &mut slab, &mut want);
+
+        let xg: Vec<f32> = x.iter().map(|v| v + 1.0).collect();
+        let pg: Vec<f32> = p.iter().map(|v| v + 1.0).collect();
+        let mut got = vec![f32::MAX; tape.n];
+        // SAFETY: `f` is the `F` of `dag` with `tape.n` outputs, `x` has `tape.n` values, `p`
+        // has `tape.n_p + 1` (time last), `got` does not alias them, and `jit` outlives both
+        // calls.
+        unsafe {
+            f(xg.as_ptr(), pg.as_ptr(), got.as_mut_ptr());
+            f(x.as_ptr(), p.as_ptr(), got.as_mut_ptr());
+        }
+        for i in 0..tape.n {
+            if bits(got[i]) != bits(want[i]) {
+                return Err(format!(
+                    "output {i}: jit {:e} vs CpuTape {:e}",
+                    got[i], want[i]
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Values that sit at the edges of `f32`: subnormals, the largest finite value, values
+    /// that overflow or underflow when narrowed, and halfway cases of the narrowing.
+    const SPECIAL_F32: [f64; 10] = [
+        1.401298464324817e-45,
+        -1.1754942106924411e-38,
+        3.4028234663852886e38,
+        -3.4028235677973366e38,
+        1e39,
+        1e-46,
+        1.0000000596046448,
+        1.0000001788139343,
+        -16777217.0,
+        0.1,
+    ];
+
+    fn value_f32() -> impl Strategy<Value = f64> {
+        prop_oneof![
+            -4.0f64..4.0,
+            any::<f64>(),
+            any::<f32>().prop_map(f64::from),
+            proptest::sample::select(SPECIAL.to_vec()),
+            proptest::sample::select(SPECIAL_F32.to_vec()),
+        ]
+    }
+
+    fn native_case_f32() -> impl Strategy<Value = NativeIn> {
+        let raw = (
+            any::<u8>(),
+            any::<u32>(),
+            any::<u32>(),
+            any::<u32>(),
+            value_f32(),
+            -18i32..=18,
+        );
+        (1usize..4, 0usize..3, proptest::collection::vec(raw, 1..40)).prop_flat_map(
+            |(n, n_p, raw)| {
+                (
+                    Just(n),
+                    Just(n_p),
+                    Just(raw),
+                    proptest::collection::vec(any::<u32>(), n),
+                    proptest::collection::vec(value_f32(), n),
+                    proptest::collection::vec(value_f32(), n_p + 1),
+                )
+            },
+        )
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1024))]
+
+        /// The single-precision `F` gives the bits of `CpuTape<f32>` for every op the tape
+        /// takes. Slow: each case compiles a module.
+        #[test]
+        fn the_f32_jit_matches_cpu_tape_bit_for_bit((n, n_p, raw, outs, x, p) in native_case_f32()) {
+            let (dag, tape) = dag_case(n, n_p, &raw, &outs);
+            prop_assert_eq!(check_native_f32(&dag, &tape, &x, &p), Ok(()));
+        }
+    }
     /// The compiled `F` of a model with `if`, `min`, `max`, integer powers and `t`.
     #[test]
     fn the_jit_runs_a_model_like_the_tape() {

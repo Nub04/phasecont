@@ -1,10 +1,11 @@
 //! Lowers the live nodes of one entry to a Cranelift function.
 //!
-//! Every op copies the rule in `pc_ir::eval::eval_op`. Nodes are lowered once each in
-//! increasing id order. No `fma` is emitted.
+//! Every op copies the rule in `pc_ir::eval::eval_op` (double precision) or in the `f32`
+//! tape of pc-ensemble (single precision). Nodes are lowered once each in increasing id
+//! order. No `fma` is emitted.
 
-use crate::JitError;
-use cranelift_codegen::ir::condcodes::FloatCC;
+use crate::{Float, JitError};
+use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, Type, types};
 use cranelift_codegen::isa::TargetFrontendConfig;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -12,8 +13,29 @@ use pc_ir::dag::{Cmp, Dag, Fn1, Fn2, NodeId, Op};
 use pc_ir::math::table_ok;
 use std::collections::{BTreeSet, HashMap};
 
-/// The import name of the shim behind `f`, or `None` for ops lowered in line.
-pub(crate) fn shim1(f: Fn1) -> Option<&'static str> {
+/// The import name of the shim behind `f`, or `None` for ops lowered in line and, in
+/// single precision, for the ops the `f32` tape refuses.
+pub(crate) fn shim1(f: Fn1, float: Float) -> Option<&'static str> {
+    if float == Float::F32 {
+        return Some(match f {
+            Fn1::Sin => "pc_sinf",
+            Fn1::Cos => "pc_cosf",
+            Fn1::Tan => "pc_tanf",
+            Fn1::Asin => "pc_asinf",
+            Fn1::Acos => "pc_acosf",
+            Fn1::Atan => "pc_atanf",
+            Fn1::Sinh => "pc_sinhf",
+            Fn1::Cosh => "pc_coshf",
+            Fn1::Tanh => "pc_tanhf",
+            Fn1::Exp => "pc_expf",
+            Fn1::Ln => "pc_lnf",
+            Fn1::Log10 => "pc_log10f",
+            Fn1::Floor => "pc_floorf",
+            Fn1::Ceil => "pc_ceilf",
+            Fn1::Erf | Fn1::Erfc | Fn1::Lgamma => return None,
+            Fn1::Sqrt | Fn1::Abs | Fn1::Heav | Fn1::Sign => return None,
+        });
+    }
     Some(match f {
         Fn1::Sin => "pc_sin",
         Fn1::Cos => "pc_cos",
@@ -36,7 +58,16 @@ pub(crate) fn shim1(f: Fn1) -> Option<&'static str> {
     })
 }
 
-pub(crate) fn shim2(f: Fn2) -> Option<&'static str> {
+pub(crate) fn shim2(f: Fn2, float: Float) -> Option<&'static str> {
+    if float == Float::F32 {
+        return Some(match f {
+            Fn2::Atan2 => "pc_atan2f",
+            Fn2::Pow => "pc_powf",
+            Fn2::Mod => "pc_modf",
+            Fn2::BesselJ | Fn2::BesselY | Fn2::Polygamma => return None,
+            Fn2::Min | Fn2::Max => return None,
+        });
+    }
     Some(match f {
         Fn2::Atan2 => "pc_atan2",
         Fn2::Pow => "pc_pow",
@@ -49,15 +80,17 @@ pub(crate) fn shim2(f: Fn2) -> Option<&'static str> {
 }
 
 /// Import names the live nodes call.
-pub(crate) fn imports_needed(dag: &Dag, live: &[bool]) -> BTreeSet<&'static str> {
+pub(crate) fn imports_needed(dag: &Dag, live: &[bool], float: Float) -> BTreeSet<&'static str> {
     let mut set = BTreeSet::new();
     for (i, &l) in live.iter().enumerate() {
         if !l {
             continue;
         }
         match *dag.op(NodeId(i as u32)) {
-            Op::Call1(f, _) => set.extend(shim1(f)),
-            Op::Call2(f, _, _) => set.extend(shim2(f)),
+            Op::Call1(f, _) => set.extend(shim1(f, float)),
+            Op::Call2(f, _, _) => set.extend(shim2(f, float)),
+            // `table` refuses these in single precision.
+            Op::Table(..) | Op::TableSlope(..) if float == Float::F32 => {}
             Op::Table(..) => {
                 set.insert("pc_table");
             }
@@ -112,24 +145,50 @@ pub(crate) struct Ctx<'a> {
     /// True for a `DirFn` signature (4 parameters).
     pub has_dir: bool,
     pub ptr: Type,
+    pub float: Float,
     pub target: TargetFrontendConfig,
 }
 
-// x, p, v and out are aligned f64 arrays that the caller guarantees, so the accesses
-// cannot trap.
-fn load(b: &mut FunctionBuilder, base: ir::Value, k: u32) -> ir::Value {
-    let off = 8 * i64::from(k);
+/// The constant `v` in the float type; single precision rounds it as `v as f32` does.
+fn fconst(b: &mut FunctionBuilder, float: Float, v: f64) -> ir::Value {
+    match float {
+        Float::F64 => b.ins().f64const(v),
+        Float::F32 => b.ins().f32const(v as f32),
+    }
+}
+
+/// The NaN of the interpreter in each precision: `f64::NAN` or `f32::NAN`.
+fn fnan(b: &mut FunctionBuilder, float: Float) -> ir::Value {
+    match float {
+        Float::F64 => b.ins().f64const(f64::NAN),
+        Float::F32 => b.ins().f32const(f32::NAN),
+    }
+}
+
+/// log2 of the element size, so element `k` sits at byte `k << shift`.
+fn stride_shift(float: Float) -> u32 {
+    match float {
+        Float::F64 => 3,
+        Float::F32 => 2,
+    }
+}
+
+// x, p, v and out are aligned arrays of the float type that the caller guarantees, so the
+// accesses cannot trap.
+fn load(b: &mut FunctionBuilder, float: Float, base: ir::Value, k: u32) -> ir::Value {
+    let ty = float.ty();
+    let off = i64::from(k) << stride_shift(float);
     match i32::try_from(off) {
-        Ok(o) => b.ins().load(types::F64, MemFlagsData::trusted(), base, o),
+        Ok(o) => b.ins().load(ty, MemFlagsData::trusted(), base, o),
         Err(_) => {
             let a = b.ins().iadd_imm_s(base, off);
-            b.ins().load(types::F64, MemFlagsData::trusted(), a, 0)
+            b.ins().load(ty, MemFlagsData::trusted(), a, 0)
         }
     }
 }
 
-fn store(b: &mut FunctionBuilder, v: ir::Value, base: ir::Value, k: usize) {
-    let off = 8 * k as i64;
+fn store(b: &mut FunctionBuilder, float: Float, v: ir::Value, base: ir::Value, k: usize) {
+    let off = (k as i64) << stride_shift(float);
     match i32::try_from(off) {
         Ok(o) => {
             b.ins().store(MemFlagsData::trusted(), v, base, o);
@@ -141,23 +200,67 @@ fn store(b: &mut FunctionBuilder, v: ir::Value, base: ir::Value, k: usize) {
     }
 }
 
-fn b2f(b: &mut FunctionBuilder, c: ir::Value) -> ir::Value {
-    let one = b.ins().f64const(1.0);
-    let zero = b.ins().f64const(0.0);
-    b.ins().select(c, one, zero)
+/// 1.0 when the `i8` condition `c` is set, else +0.0.
+///
+/// Single precision builds the bits without a branch: `bmask` turns the condition into all
+/// ones or all zeros, and `band` with the bits of 1.0 leaves 1.0 or +0.0, the same two
+/// values the select gives.
+fn b2f(b: &mut FunctionBuilder, float: Float, c: ir::Value) -> ir::Value {
+    match float {
+        Float::F64 => {
+            let one = b.ins().f64const(1.0);
+            let zero = b.ins().f64const(0.0);
+            b.ins().select(c, one, zero)
+        }
+        Float::F32 => {
+            let m = b.ins().bmask(types::I32, c);
+            let k = b.ins().iconst(types::I32, i64::from(1.0f32.to_bits()));
+            let bits = b.ins().band(m, k);
+            b.ins().bitcast(types::F32, MemFlagsData::new(), bits)
+        }
+    }
+}
+
+/// The bits of `x` with the sign bit shifted out: zero exactly for +0.0 and -0.0.
+fn magnitude_bits(b: &mut FunctionBuilder, x: ir::Value) -> ir::Value {
+    let bits = b.ins().bitcast(types::I32, MemFlagsData::new(), x);
+    b.ins().ishl_imm_u(bits, 1)
 }
 
 /// `x != 0.0` as Rust evaluates it: true for NaN (Cranelift `ne` is unordered or not equal).
-fn nonzero(b: &mut FunctionBuilder, x: ir::Value) -> ir::Value {
-    let zero = b.ins().f64const(0.0);
-    b.ins().fcmp(FloatCC::NotEqual, x, zero)
+/// Single precision tests the magnitude bits, which are nonzero for NaN too.
+fn nonzero(b: &mut FunctionBuilder, float: Float, x: ir::Value) -> ir::Value {
+    match float {
+        Float::F64 => {
+            let zero = b.ins().f64const(0.0);
+            b.ins().fcmp(FloatCC::NotEqual, x, zero)
+        }
+        Float::F32 => {
+            let m = magnitude_bits(b, x);
+            b.ins().icmp_imm_u(IntCC::NotEqual, m, 0)
+        }
+    }
+}
+
+/// `x == 0.0`: true for either zero, false for NaN.
+fn is_zero(b: &mut FunctionBuilder, float: Float, x: ir::Value) -> ir::Value {
+    match float {
+        Float::F64 => {
+            let zero = b.ins().f64const(0.0);
+            b.ins().fcmp(FloatCC::Equal, x, zero)
+        }
+        Float::F32 => {
+            let m = magnitude_bits(b, x);
+            b.ins().icmp_imm_u(IntCC::Equal, m, 0)
+        }
+    }
 }
 
 /// The order documented on `Op::PowI`.
-fn powi(b: &mut FunctionBuilder, x: ir::Value, n: i32) -> ir::Value {
+fn powi(b: &mut FunctionBuilder, float: Float, x: ir::Value, n: i32) -> ir::Value {
     let mut m = n.unsigned_abs();
     if m == 0 {
-        return b.ins().f64const(1.0);
+        return fconst(b, float, 1.0);
     }
     let mut base = x;
     let mut acc: Option<ir::Value> = None;
@@ -176,7 +279,7 @@ fn powi(b: &mut FunctionBuilder, x: ir::Value, n: i32) -> ir::Value {
     }
     let r = acc.unwrap_or(base);
     if n < 0 {
-        let one = b.ins().f64const(1.0);
+        let one = fconst(b, float, 1.0);
         b.ins().fdiv(one, r)
     } else {
         r
@@ -202,7 +305,7 @@ pub(crate) fn build(
     } else {
         (None, at(2))
     };
-    let nan = f64::NAN;
+    let fl = c.float;
     let mut vals: Vec<Option<ir::Value>> = vec![None; c.dag.len()];
 
     for i in 0..c.dag.len() {
@@ -215,14 +318,14 @@ pub(crate) fn build(
             .flatten()
         {
             Some(v) => v,
-            None => b.ins().f64const(nan),
+            None => fnan(b, fl),
         };
         let leaf = |b: &mut FunctionBuilder, base: Option<ir::Value>, k: u32| match base {
-            Some(base) => load(b, base, k),
-            None => b.ins().f64const(nan),
+            Some(base) => load(b, fl, base, k),
+            None => fnan(b, fl),
         };
         let r = match *c.dag.op(NodeId(i as u32)) {
-            Op::Const(bits) => b.ins().f64const(f64::from_bits(bits)),
+            Op::Const(bits) => fconst(&mut b, fl, f64::from_bits(bits)),
             Op::Var(k) => leaf(&mut b, x, k),
             Op::Param(k) => leaf(&mut b, p, k),
             Op::Dir(k) => leaf(&mut b, v, k),
@@ -248,7 +351,7 @@ pub(crate) fn build(
             }
             Op::PowI(a, n) => {
                 let a = arg(&mut b, &vals, a);
-                powi(&mut b, a, n)
+                powi(&mut b, fl, a, n)
             }
             Op::Call1(f, a) => {
                 let a = arg(&mut b, &vals, a);
@@ -268,25 +371,24 @@ pub(crate) fn build(
                     Cmp::Eq => FloatCC::Equal,
                 };
                 let t = b.ins().fcmp(cc, l, r);
-                b2f(&mut b, t)
+                b2f(&mut b, fl, t)
             }
             Op::And(l, r) => {
                 let (l, r) = (arg(&mut b, &vals, l), arg(&mut b, &vals, r));
-                let (l, r) = (nonzero(&mut b, l), nonzero(&mut b, r));
+                let (l, r) = (nonzero(&mut b, fl, l), nonzero(&mut b, fl, r));
                 let t = b.ins().band(l, r);
-                b2f(&mut b, t)
+                b2f(&mut b, fl, t)
             }
             Op::Or(l, r) => {
                 let (l, r) = (arg(&mut b, &vals, l), arg(&mut b, &vals, r));
-                let (l, r) = (nonzero(&mut b, l), nonzero(&mut b, r));
+                let (l, r) = (nonzero(&mut b, fl, l), nonzero(&mut b, fl, r));
                 let t = b.ins().bor(l, r);
-                b2f(&mut b, t)
+                b2f(&mut b, fl, t)
             }
             Op::Not(a) => {
                 let a = arg(&mut b, &vals, a);
-                let zero = b.ins().f64const(0.0);
-                let t = b.ins().fcmp(FloatCC::Equal, a, zero);
-                b2f(&mut b, t)
+                let t = is_zero(&mut b, fl, a);
+                b2f(&mut b, fl, t)
             }
             Op::Select(k, l, r) => {
                 let (k, l, r) = (
@@ -294,7 +396,7 @@ pub(crate) fn build(
                     arg(&mut b, &vals, l),
                     arg(&mut b, &vals, r),
                 );
-                let t = nonzero(&mut b, k);
+                let t = nonzero(&mut b, fl, k);
                 b.ins().select(t, l, r)
             }
             Op::Table(id, a) => {
@@ -315,9 +417,9 @@ pub(crate) fn build(
         for (k, o) in c.outputs.iter().enumerate() {
             let r = match vals.get(o.0 as usize).copied().flatten() {
                 Some(v) => v,
-                None => b.ins().f64const(nan),
+                None => fnan(&mut b, fl),
             };
-            store(&mut b, r, out, k);
+            store(&mut b, fl, r, out, k);
         }
     }
     b.ins().return_(&[]);
@@ -342,21 +444,22 @@ fn call_shim(
 }
 
 fn call1(b: &mut FunctionBuilder, c: &Ctx, f: Fn1, x: ir::Value) -> Result<ir::Value, JitError> {
+    let fl = c.float;
     Ok(match f {
         Fn1::Sqrt => b.ins().sqrt(x),
         Fn1::Abs => b.ins().fabs(x),
         // 1 when x >= 0, else 0 (NaN gives 0).
         Fn1::Heav => {
-            let zero = b.ins().f64const(0.0);
+            let zero = fconst(b, fl, 0.0);
             let t = b.ins().fcmp(FloatCC::GreaterThanOrEqual, x, zero);
-            b2f(b, t)
+            b2f(b, fl, t)
         }
         // 1, -1, +0.0 for either zero, and the canonical NaN for NaN, as math::sign.
         Fn1::Sign => {
-            let zero = b.ins().f64const(0.0);
-            let one = b.ins().f64const(1.0);
-            let minus = b.ins().f64const(-1.0);
-            let nan = b.ins().f64const(f64::NAN);
+            let zero = fconst(b, fl, 0.0);
+            let one = fconst(b, fl, 1.0);
+            let minus = fconst(b, fl, -1.0);
+            let nan = fnan(b, fl);
             let is_zero = b.ins().fcmp(FloatCC::Equal, x, zero);
             let neg = b.ins().fcmp(FloatCC::LessThan, x, zero);
             let pos = b.ins().fcmp(FloatCC::GreaterThan, x, zero);
@@ -364,9 +467,9 @@ fn call1(b: &mut FunctionBuilder, c: &Ctx, f: Fn1, x: ir::Value) -> Result<ir::V
             let rest = b.ins().select(neg, minus, rest);
             b.ins().select(pos, one, rest)
         }
-        other => match shim1(other) {
+        other => match shim1(other, fl) {
             Some(name) => call_shim(b, c, name, &[x])?,
-            None => return Err(JitError::MissingImport(format!("{other:?}"))),
+            None => return Err(JitError::MissingImport(format!("{other:?} in {fl:?}"))),
         },
     })
 }
@@ -389,9 +492,14 @@ fn call2(
             let t = b.ins().fcmp(FloatCC::GreaterThan, x, y);
             b.ins().select(t, x, y)
         }
-        other => match shim2(other) {
+        other => match shim2(other, c.float) {
             Some(name) => call_shim(b, c, name, &[x, y])?,
-            None => return Err(JitError::MissingImport(format!("{other:?}"))),
+            None => {
+                return Err(JitError::MissingImport(format!(
+                    "{other:?} in {:?}",
+                    c.float
+                )));
+            }
         },
     })
 }
@@ -403,6 +511,10 @@ fn table(
     id: u32,
     x: ir::Value,
 ) -> Result<ir::Value, JitError> {
+    // The `f32` tape refuses tables, so there is no single precision rule to follow.
+    if c.float == Float::F32 {
+        return Err(JitError::MissingImport(format!("{name} in F32")));
+    }
     match c.table_ptrs.get(&id).copied().flatten() {
         Some(ptr) => {
             let addr = b.ins().iconst(c.ptr, ptr as usize as i64);

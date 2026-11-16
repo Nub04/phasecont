@@ -380,6 +380,72 @@ shim2! {
     pc_math_bessely => bessely, pc_math_polygamma => polygamma, pc_math_mod => pc_mod,
 }
 
+// Single precision shims for the f32 JIT. Each one calls the function that the f32 tape of
+// pc-ensemble calls for the same op (its `Real for f32`), so the JIT and the tape give the
+// same bits: the raw `libm` *f functions, and `f32::floor` and `f32::ceil`. The shims cannot
+// panic, for the reason above. Tables and the special functions have no f32 shim, since the
+// tape refuses them.
+pub type F1s = extern "C" fn(f32) -> f32;
+pub type F2s = extern "C" fn(f32, f32) -> f32;
+
+macro_rules! shim1f {
+    ($($shim:ident => $f:path),* $(,)?) => {
+        $(pub extern "C" fn $shim(x: f32) -> f32 { $f(x) })*
+    };
+}
+macro_rules! shim2f {
+    ($($shim:ident => $f:path),* $(,)?) => {
+        $(pub extern "C" fn $shim(x: f32, y: f32) -> f32 { $f(x, y) })*
+    };
+}
+
+shim1f! {
+    pc_math_sinf => libm::sinf, pc_math_cosf => libm::cosf, pc_math_tanf => libm::tanf,
+    pc_math_asinf => libm::asinf, pc_math_acosf => libm::acosf, pc_math_atanf => libm::atanf,
+    pc_math_sinhf => libm::sinhf, pc_math_coshf => libm::coshf, pc_math_tanhf => libm::tanhf,
+    pc_math_expf => libm::expf, pc_math_lnf => libm::logf, pc_math_log10f => libm::log10f,
+    pc_math_floorf => f32::floor, pc_math_ceilf => f32::ceil,
+}
+shim2f! {
+    pc_math_atan2f => libm::atan2f, pc_math_powf => libm::powf,
+}
+
+/// `mod(x, y)` in single precision, as the f32 tape computes it: `fmodf`, then `+ y` for a
+/// negative remainder.
+pub extern "C" fn pc_math_modf(x: f32, y: f32) -> f32 {
+    let r = libm::fmodf(x, y);
+    if r < 0.0 { r + y } else { r }
+}
+
+/// Every single precision shim under the symbol name the f32 JIT imports.
+pub fn symbols_f32() -> Vec<(&'static str, *const u8)> {
+    let one: [(&'static str, F1s); 14] = [
+        ("pc_sinf", pc_math_sinf),
+        ("pc_cosf", pc_math_cosf),
+        ("pc_tanf", pc_math_tanf),
+        ("pc_asinf", pc_math_asinf),
+        ("pc_acosf", pc_math_acosf),
+        ("pc_atanf", pc_math_atanf),
+        ("pc_sinhf", pc_math_sinhf),
+        ("pc_coshf", pc_math_coshf),
+        ("pc_tanhf", pc_math_tanhf),
+        ("pc_expf", pc_math_expf),
+        ("pc_lnf", pc_math_lnf),
+        ("pc_log10f", pc_math_log10f),
+        ("pc_floorf", pc_math_floorf),
+        ("pc_ceilf", pc_math_ceilf),
+    ];
+    let two: [(&'static str, F2s); 3] = [
+        ("pc_atan2f", pc_math_atan2f),
+        ("pc_powf", pc_math_powf),
+        ("pc_modf", pc_math_modf),
+    ];
+    one.iter()
+        .map(|&(n, f)| (n, f as *const u8))
+        .chain(two.iter().map(|&(n, f)| (n, f as *const u8)))
+        .collect()
+}
+
 // The table shims read through `table_block`, which checks for null and a valid header, and
 // then use `get` and saturating integer arithmetic, so a bad block gives NaN, not a panic.
 /// Shim for [`table`].

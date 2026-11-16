@@ -1,6 +1,6 @@
 //! The owner of the JIT code, with a guard that frees the code pages.
 
-use crate::{DirFn, JitError, PlainFn, flags};
+use crate::{DirFn, Float, JitError, PlainFn, PlainFnF32, flags};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::default_libcall_names;
 use pc_ir::EntryKind;
@@ -30,13 +30,23 @@ pub struct JitEntries {
     pub(crate) fns: Vec<(EntryKind, *const u8)>,
     /// The largest frame (bytes below the frame pointer) among these entries.
     pub(crate) frame: u32,
+    /// The float type of every entry.
+    pub(crate) float: Float,
+}
+
+/// The shims that code of this float type imports.
+pub(crate) fn symbols(float: Float) -> Vec<(&'static str, *const u8)> {
+    match float {
+        Float::F64 => pc_ir::math::symbols(),
+        Float::F32 => pc_ir::math::symbols_f32(),
+    }
 }
 
 impl JitEntries {
-    pub(crate) fn new() -> Result<JitEntries, JitError> {
+    pub(crate) fn new(float: Float) -> Result<JitEntries, JitError> {
         let isa = flags::host_isa()?;
         let mut jb = JITBuilder::with_isa(isa, default_libcall_names());
-        for (name, ptr) in pc_ir::math::symbols() {
+        for (name, ptr) in symbols(float) {
             jb.symbol(name, ptr);
         }
         Ok(JitEntries {
@@ -44,19 +54,33 @@ impl JitEntries {
             tables: Vec::new(),
             fns: Vec::new(),
             frame: 0,
+            float,
         })
     }
 
     /// The function of an `F`, `Aux`, `JacU` or `JacP` entry, or `None` for another kind
     /// or an entry that was not compiled.
+    /// `None` too for entries compiled in single precision.
     pub fn plain(&self, kind: &EntryKind) -> Option<PlainFn> {
-        if matches!(kind, EntryKind::Dir(_)) {
+        if self.float != Float::F64 || matches!(kind, EntryKind::Dir(_)) {
             return None;
         }
         let (_, code) = self.fns.iter().find(|(k, _)| k == kind)?;
         // SAFETY: plain entries were built with the PlainFn signature and the host's
         // default calling convention.
         Some(unsafe { std::mem::transmute::<*const u8, PlainFn>(*code) })
+    }
+
+    /// The function of a plain entry compiled by [`crate::compile_f32`], or `None` for an
+    /// entry of another kind or precision, or one that was not compiled.
+    pub fn plain_f32(&self, kind: &EntryKind) -> Option<PlainFnF32> {
+        if self.float != Float::F32 || matches!(kind, EntryKind::Dir(_)) {
+            return None;
+        }
+        let (_, code) = self.fns.iter().find(|(k, _)| k == kind)?;
+        // SAFETY: single precision entries were built with the PlainFnF32 signature and the
+        // host's default calling convention.
+        Some(unsafe { std::mem::transmute::<*const u8, PlainFnF32>(*code) })
     }
 
     /// The largest stack frame, in bytes, of any entry in this value. `max_frame` is a
@@ -67,7 +91,7 @@ impl JitEntries {
 
     /// The function of a `Dir` entry, or `None` for another kind or a missing entry.
     pub fn dir(&self, kind: &EntryKind) -> Option<DirFn> {
-        if !matches!(kind, EntryKind::Dir(_)) {
+        if self.float != Float::F64 || !matches!(kind, EntryKind::Dir(_)) {
             return None;
         }
         let (_, code) = self.fns.iter().find(|(k, _)| k == kind)?;
