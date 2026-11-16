@@ -1,10 +1,12 @@
 classdef MapReadmeTest < matlab.unittest.TestCase
     % Tests slice 8 of map support (SPEC section 8ab, test 1): the examples
-    % of the "Maps" section of README.md. Each test writes the README's
-    % .ode text into a temporary folder, runs the README calls as written
-    % there and checks the values in the comments of those calls. Where a
-    % test also checks a statement of the text around a block, a comment
-    % at the check names it. The plot calls draw into a hidden figure.
+    % of the "Maps" section of README.md. The setup writes the test's
+    % copies of the two README models into a temporary folder. Four tests
+    % run the README calls as written there, with the plot calls drawing
+    % into a hidden figure, and check the values in the comments of those
+    % calls and some statements of the text around them. The fifth,
+    % readmeHoldsTheseModelsAndLines, checks that the README still holds
+    % the copies.
 
     properties (Constant)
         % x -> r x (1 - x), with the fixed point x = 1 - 1/r, its multiplier
@@ -77,17 +79,19 @@ classdef MapReadmeTest < matlab.unittest.TestCase
         function readmeHoldsTheseModelsAndLines(testCase)
             % The tests below copy the two models and the lines in Lines
             % from the "Maps" section of the README. This test fails when
-            % a model is no longer a block of that section or a line is no
-            % longer a whole line of it, so the copy and the README stay
-            % the same. It does not check the prose.
+            % a model is no longer the whole of a code block in that
+            % section or a line is no longer a whole line of it, so the
+            % copy and the README stay the same. It does not check the
+            % prose.
             readme = string(fileread(fullfile(testCase.Root, "README.md")));
             readme = replace(readme, sprintf("\r\n"), newline);
             maps = extractAfter(readme, newline + "## Maps" + newline);
             testCase.assertFalse(ismissing(maps), "README.md has no Maps section");
             maps = extractBefore(maps, newline + "## ");
             testCase.assertFalse(ismissing(maps), "the Maps section has no next heading");
-            testCase.verifySubstring(maps, newline + testCase.Logistic + "```");
-            testCase.verifySubstring(maps, newline + testCase.Henon + "```");
+            fence = "```" + newline;
+            testCase.verifySubstring(maps, newline + fence + testCase.Logistic + fence);
+            testCase.verifySubstring(maps, newline + fence + testCase.Henon + fence);
             rows = splitlines(maps);
             for line = testCase.Lines
                 testCase.verifyTrue(any(rows == line), ...
