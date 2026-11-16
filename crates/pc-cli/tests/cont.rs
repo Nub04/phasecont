@@ -695,8 +695,9 @@ fn a_map_runs_an_ep_problem_and_matches_the_api() {
 /// Runs a map curve problem through `pc-cli cont` and through the API table and checks
 /// that each point equals its ABI row bit for bit (SPEC 8w, test 7). `names` lists the
 /// parameters in model order, `tag` names the problem file and `check` sees each point of the
-/// CLI output. The row is
-/// [a2, u, mu_re, mu_im, h, newton_iters], where u holds x, a1 and, on the NS curve, kappa.
+/// CLI output. The row is [a2, u, mu_re, mu_im, codim2, h, newton_iters], where u holds x, a1
+/// and, on the NS curve, kappa, and codim2 holds the 4 values of the LP and PD curves or the
+/// 8 values of the NS curve (SPEC 8x).
 fn map_curve_matches_api(
     tag: &str,
     source: &Path,
@@ -742,7 +743,9 @@ fn map_curve_matches_api(
     let block = &got.rows[0];
     let n = u0.len();
     let nu = points[0]["u"].as_array().unwrap().len();
-    let stride = 1 + nu + 2 * n + 2;
+    let k = points[0]["codim2"].as_array().unwrap().len();
+    assert_eq!(k, if nu == n + 2 { 8 } else { 4 }, "{}", points[0]);
+    let stride = 1 + nu + 2 * n + k + 2;
     assert_eq!(block.rows(), points.len());
     assert_eq!(block.cols(), stride);
     let f = |x: &Value| x.as_f64().unwrap_or(f64::NAN);
@@ -751,6 +754,7 @@ fn map_curve_matches_api(
         want.extend((0..nu).map(|i| f(&p["u"][i])));
         want.extend((0..n).map(|i| f(&p["eigenvalues"][i][0])));
         want.extend((0..n).map(|i| f(&p["eigenvalues"][i][1])));
+        want.extend((0..k).map(|i| f(&p["codim2"][i])));
         want.push(f(&p["h"]));
         want.push(f(&p["newton_iters"]));
         let same = row

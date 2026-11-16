@@ -1,0 +1,13 @@
+# A fold in x coupled to z -> (1 + a2 + x) R(1) z + |z|^2 R(1) (-I + J) z in z = (y, w),
+# SPEC section 8x test 3. On the NS curve a1 = x^2, a2 = -x, CH jumps at x = 0 and
+# crosses 0 at x = 1/4.
+par a1=0.25, a2=0.5
+r2=y^2+w^2
+m=1+a2+x
+u=-y-w
+v=y-w
+x(t+1)=x+a1-x^2+0.5*r2
+y(t+1)=m*(cos(1)*y-sin(1)*w)+r2*(cos(1)*u-sin(1)*v)
+w(t+1)=m*(sin(1)*y+cos(1)*w)+r2*(sin(1)*u+cos(1)*v)
+init x=-0.5, y=0, w=0
+done

@@ -1,0 +1,6 @@
+# Cusp of a fold of fixed points at (a1, a2) = (0, 0), SPEC section 8x test 3.
+par a1=0.25, a2=0.75
+x(t+1)=x+a1+a2*x-x^3
+y(t+1)=y/2
+init x=-0.5, y=0
+done

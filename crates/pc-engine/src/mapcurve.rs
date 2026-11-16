@@ -31,14 +31,31 @@
 //! The curves run on the map itself, not on `MapAsRoot`, so `state_jacobian` is `A` and the
 //! eigenvalues stored with each point are the multipliers. On a curve `Point.u` is the
 //! unknown without its last entry and `Point.alpha` is `a2`; `Options::bounds` bound `a2`.
-//! The curves have no codim-2 tests yet.
+//!
+//! Codim-2 tests (SPEC Section 8x, from Table 2.2 of the same paper). The rest set is the
+//! multipliers without the critical ones: 1 on the LP curve, -1 on the PD curve and the two
+//! roots of mu^2 - 2 kappa mu + 1 on the NS curve, each removed as the nearest multiplier.
+//! * LP: LPPD = Re prod(mu + 1) and LPNS = Re prod(mu_i mu_j - 1) over the rest set,
+//!   CP = <w, B(v, v)> and R1 = <w, v> with the unit null vectors v and w.
+//! * PD: LPPD = Re prod(mu - 1), PDNS = Re prod(mu_i mu_j - 1), GPD = <w, C(v, v, v) +
+//!   3 B(v, h)> / 6 with (I - A) h = B(v, v), and R2 = <w, v>.
+//! * NS: R1 to R4 = kappa - 1, kappa + 1, kappa + 1/2 and kappa, then LPNS = Re prod(mu - 1),
+//!   PDNS = Re prod(mu + 1) and NSNS = Re prod(mu_i mu_j - 1) over the rest set, and
+//!   CH = d / |c1| from the Neimark-Sacker coefficient of `normal::map_ns_core`. The last
+//!   four are NaN for |kappa| >= 1.
+//!
+//! A zero of LPNS, PDNS or NSNS from a real pair of product 1 is a neutral saddle and gets
+//! no label.
 
 use crate::branch::{Branch, Options, Point, StopReason};
 use crate::curve2::{CurveSetup, Model2, dot, norm, start_tangent};
-use crate::cycle::{nearest_pair, nearest_pair_is_complex};
+use crate::cycle::{
+    kappa_roots, nearest_pair, nearest_pair_is_complex, pair_product, remove_nearest, rest_product,
+};
 use crate::error::EngineError;
 use crate::hopfcurve::{matmul, matvec, matvec_t, orthonormalize};
 use crate::model::ModelEval;
+use crate::normal::map_ns_core;
 use crate::palc::{Corrected, correct, run_branch};
 use crate::problem::Problem;
 use pc_linalg::{Lu, eigenvalues, null_left, null_right};
@@ -47,6 +64,23 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// The largest residual of a start that the start correction accepts. A PhaseCont value
 /// that waits for the owner's sign-off (SPEC Section 8w, `docs/STATUS.md`).
 pub const START_RESIDUAL_MAX: f64 = 1e-6;
+
+/// Codim-2 labels of the LP curve of a map, in the order of `Point.codim2`.
+pub const MAP_LP_CURVE_LABELS: [&str; 4] = ["LPPD", "LPNS", "CP", "R1"];
+/// Codim-2 labels of the PD curve of a map, in the order of `Point.codim2`.
+pub const MAP_PD_CURVE_LABELS: [&str; 4] = ["LPPD", "PDNS", "GPD", "R2"];
+/// Codim-2 labels of the NS curve of a map, in the order of `Point.codim2`.
+pub const MAP_NS_CURVE_LABELS: [&str; 8] = ["R1", "R2", "R3", "R4", "LPNS", "PDNS", "NSNS", "CH"];
+
+/// The index of CH in [`MAP_NS_CURVE_LABELS`].
+const CH: usize = 7;
+/// The index of NSNS in [`MAP_NS_CURVE_LABELS`].
+const NSNS: usize = 6;
+
+/// A sign change of CH gets a label only when its larger end is at least this. On an
+/// area-preserving map d is 0 and CH is rounding noise along the whole curve. A PhaseCont
+/// value that waits for the owner's sign-off (SPEC Section 8x, ruling (e)).
+pub const CH_BRACKET_FLOOR: f64 = 1e-8;
 
 /// `a + sigma I` for the n by n column-major `a`.
 fn shifted(a: &[f64], n: usize, sigma: f64) -> Vec<f64> {
@@ -78,6 +112,37 @@ fn unit(v: &[f64], curve: &str) -> Result<Vec<f64>, EngineError> {
         )));
     }
     Ok(v.iter().map(|x| x / nv).collect())
+}
+
+/// Whether a zero of NSNS gets a label (SPEC Section 8x, ruling (c)): of the complex
+/// conjugate pairs of `mu`, the one whose product is nearest to 1 is taken as the NS pair
+/// and removed, and the pair of the rest whose product is nearest to 1 must be complex.
+/// With no complex pair, there is no label.
+fn nsns_label_ok(mu: &[(f64, f64)]) -> bool {
+    let mut best: Option<(f64, usize, usize)> = None;
+    for i in 0..mu.len() {
+        for j in i + 1..mu.len() {
+            let (p, q) = (mu[i], mu[j]);
+            let tol = 1e-10 * p.0.hypot(p.1).max(1.0);
+            if p.1 != 0.0 && (p.0 - q.0).abs() <= tol && (p.1 + q.1).abs() <= tol {
+                // The product of a conjugate pair is |p|^2.
+                let d = (p.0 * p.0 + p.1 * p.1 - 1.0).abs();
+                if best.is_none_or(|(e, _, _)| d < e) {
+                    best = Some((d, i, j));
+                }
+            }
+        }
+    }
+    let Some((_, i, j)) = best else {
+        return false;
+    };
+    let rest: Vec<(f64, f64)> = mu
+        .iter()
+        .enumerate()
+        .filter(|&(k, _)| k != i && k != j)
+        .map(|(_, m)| *m)
+        .collect();
+    nearest_pair_is_complex(&rest)
 }
 
 /// Writes `F(u) - u` to `out`.
@@ -172,6 +237,42 @@ impl<'a> MapLpPdProblem<'a> {
         w.truncate(n);
         Ok((v, w))
     }
+
+    /// The multipliers without the one nearest to `-sigma` (1 on the LP curve, -1 on the
+    /// PD curve).
+    fn rest(&self, eigs: &[(f64, f64)]) -> Vec<(f64, f64)> {
+        let mut mu = eigs.to_vec();
+        remove_nearest(&mut mu, (-self.sigma, 0.0));
+        mu
+    }
+
+    /// GPD = <w, C(v, v, v) + 3 B(v, h)> / 6 with (I - A) h = B(v, v) and `bvv = B(v, v)`,
+    /// NaN where the solve fails or the value is not finite.
+    fn gpd(&mut self, u: &[f64], a: &[f64], vh: &[f64], wh: &[f64], bvv: &[f64]) -> f64 {
+        let n = self.m.n;
+        let mut go = || -> Result<f64, EngineError> {
+            // (A - I) h' = B(v, v), so h = -h' solves (I - A) h = B(v, v).
+            let lu = Lu::new(&shifted(a, n, -1.0), n)?;
+            let mut h = bvv.to_vec();
+            lu.solve(&mut h)?;
+            h.iter_mut().for_each(|c| *c = -*c);
+            let c = self.m.c(u, vh, vh, vh)?;
+            let bvh = self.m.b(u, vh, &h)?;
+            Ok((dot(wh, &c) + 3.0 * dot(wh, &bvh)) / 6.0)
+        };
+        match go() {
+            Ok(g) if g.is_finite() => g,
+            _ => f64::NAN,
+        }
+    }
+
+    fn labels(&self) -> &'static [&'static str] {
+        if self.sigma < 0.0 {
+            &MAP_LP_CURVE_LABELS
+        } else {
+            &MAP_PD_CURVE_LABELS
+        }
+    }
 }
 
 impl Problem for MapLpPdProblem<'_> {
@@ -221,19 +322,47 @@ impl Problem for MapLpPdProblem<'_> {
         false
     }
 
+    fn codim2_labels(&self) -> &'static [&'static str] {
+        self.labels()
+    }
+
     fn codim2_tests(
         &mut self,
         x: &[f64],
         _tangent: &[f64],
-        _eigs: &[(f64, f64)],
+        eigs: &[(f64, f64)],
     ) -> Result<Vec<f64>, EngineError> {
         let n = self.m.n;
         self.m.set(x);
-        let a = self.m.jac_u(&x[..n])?;
+        let u = &x[..n];
+        let a = self.m.jac_u(u)?;
         let (v, w) = self.solves(&a)?;
-        self.v_b = unit(&v, self.name)?;
-        self.w_b = unit(&w, self.name)?;
-        Ok(Vec::new())
+        let vh = unit(&v, self.name)?;
+        let wh = unit(&w, self.name)?;
+        let bvv = self.m.b(u, &vh, &vh)?;
+        let rest = self.rest(eigs);
+        // LPPD: prod(mu + 1) on the LP curve, prod(mu - 1) on the PD curve.
+        let lppd = rest_product(&rest, -self.sigma);
+        let ns = pair_product(&rest);
+        let third = if self.sigma < 0.0 {
+            dot(&wh, &bvv)
+        } else {
+            self.gpd(u, &a, &vh, &wh, &bvv)
+        };
+        let r = dot(&wh, &vh);
+        self.v_b = vh;
+        self.w_b = wh;
+        Ok(vec![lppd, ns, third, r])
+    }
+
+    fn codim2_label(&self, i: usize, eigs: &[(f64, f64)]) -> Option<&'static str> {
+        let labels = self.labels();
+        if i == 1 {
+            // A real pair of product 1 is a neutral saddle, not an NS point.
+            nearest_pair_is_complex(&self.rest(eigs)).then_some(labels[1])
+        } else {
+            labels.get(i).copied()
+        }
     }
 }
 
@@ -395,19 +524,69 @@ impl Problem for MapNsProblem<'_> {
         false
     }
 
+    fn codim2_labels(&self) -> &'static [&'static str] {
+        &MAP_NS_CURVE_LABELS
+    }
+
     fn codim2_tests(
         &mut self,
         x: &[f64],
         _tangent: &[f64],
-        _eigs: &[(f64, f64)],
+        eigs: &[(f64, f64)],
     ) -> Result<Vec<f64>, EngineError> {
         let n = self.m.n;
         self.m.set_pair(x[n], x[n + 2]);
-        let a = self.m.jac_u(&x[..n])?;
-        let (xs, ys) = self.solves(&ns_matrix(&a, n, x[n + 1]))?;
+        let u = &x[..n];
+        let kappa = x[n + 1];
+        let a = self.m.jac_u(u)?;
+        let (xs, ys) = self.solves(&ns_matrix(&a, n, kappa))?;
         self.v_b = orthonormalize(&xs, n, "NS")?;
         self.w_b = orthonormalize(&ys, n, "NS")?;
-        Ok(Vec::new())
+        let mut t = vec![kappa - 1.0, kappa + 1.0, kappa + 0.5, kappa];
+        if kappa.abs() >= 1.0 {
+            t.extend([f64::NAN; 4]);
+            return Ok(t);
+        }
+        let mut rest = eigs.to_vec();
+        for r in kappa_roots(kappa) {
+            remove_nearest(&mut rest, r);
+        }
+        t.push(rest_product(&rest, -1.0));
+        t.push(rest_product(&rest, 1.0));
+        t.push(pair_product(&rest));
+        // CH at the multiplier nearest to e^{i theta}, cos theta = kappa.
+        let target = (kappa, (1.0 - kappa * kappa).sqrt());
+        let dist = |m: &(f64, f64)| (m.0 - target.0).hypot(m.1 - target.1);
+        let ch = eigs
+            .iter()
+            .copied()
+            .min_by(|p, q| dist(p).total_cmp(&dist(q)))
+            .and_then(|m| {
+                let gx = shifted(&a, n, -1.0);
+                map_ns_core(&mut self.m.at(u), &a, &gx, m).ok()
+            })
+            .map_or(f64::NAN, |c| {
+                let r = c.c1.0.hypot(c.c1.1);
+                if r.is_finite() && r > 0.0 {
+                    c.d / r
+                } else {
+                    f64::NAN
+                }
+            });
+        t.push(ch);
+        Ok(t)
+    }
+
+    fn codim2_label(&self, i: usize, eigs: &[(f64, f64)]) -> Option<&'static str> {
+        if i == NSNS {
+            nsns_label_ok(eigs).then_some(MAP_NS_CURVE_LABELS[NSNS])
+        } else {
+            MAP_NS_CURVE_LABELS.get(i).copied()
+        }
+    }
+
+    fn crossing_ok(&self, i: usize, a: f64, b: f64) -> bool {
+        i != CH || a.abs().max(b.abs()) >= CH_BRACKET_FLOOR
     }
 }
 
@@ -529,6 +708,25 @@ mod tests {
         let a = [th.cos(), th.sin(), -th.sin(), th.cos()];
         let m = ns_matrix(&a, 2, th.cos());
         assert!(m.iter().all(|v| v.abs() < 1e-15), "{m:?}");
+    }
+
+    #[test]
+    fn nsns_labels_only_a_second_complex_pair() {
+        // SPEC Section 8x, test 1.
+        let pair = |r: f64, th: f64| [(r * th.cos(), r * th.sin()), (r * th.cos(), -r * th.sin())];
+        let two_pairs: Vec<_> = pair(1.0, 1.0).into_iter().chain(pair(1.0, 2.0)).collect();
+        assert!(nsns_label_ok(&two_pairs));
+        let saddle: Vec<_> = pair(1.0, 1.0)
+            .into_iter()
+            .chain([(2.0, 0.0), (0.5, 0.0)])
+            .collect();
+        assert!(!nsns_label_ok(&saddle));
+        // A third pair off the unit circle does not hide the saddle.
+        let mut more = saddle.clone();
+        more.extend(pair(0.5, 0.3));
+        assert!(!nsns_label_ok(&more));
+        assert!(!nsns_label_ok(&[(2.0, 0.0), (0.5, 0.0), (0.3, 0.0)]));
+        assert!(!nsns_label_ok(&[]));
     }
 
     #[test]

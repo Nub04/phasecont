@@ -1,0 +1,10 @@
+# z -> (1 + a1) R(1) z + |z|^2 R(1) (a2 I + J) z in z = (x, y), with R the rotation and
+# J = R(pi/2): a Chenciner point at a2 = 0 on a1 = 0, SPEC section 8x test 3.
+par a1=0, a2=-0.5
+r2=x^2+y^2
+u=a2*x-y
+v=x+a2*y
+x(t+1)=(1+a1)*(cos(1)*x-sin(1)*y)+r2*(cos(1)*u-sin(1)*v)
+y(t+1)=(1+a1)*(sin(1)*x+cos(1)*y)+r2*(sin(1)*u+cos(1)*v)
+init x=0, y=0
+done

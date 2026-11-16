@@ -74,6 +74,7 @@ pub use iterate::{IterSetup, iterate};
 pub use ivp::{IvpOptions, IvpSetup, integrate};
 pub use lpcurve::{LP_CURVE_LABELS, LpCurveProblem, continue_lp_curve};
 pub use mapcurve::{
+    CH_BRACKET_FLOOR, MAP_LP_CURVE_LABELS, MAP_NS_CURVE_LABELS, MAP_PD_CURVE_LABELS,
     MapLpPdProblem, MapNsProblem, START_RESIDUAL_MAX as MAP_CURVE_START_RESIDUAL_MAX,
     continue_map_lp_curve, continue_map_ns_curve, continue_map_pd_curve,
 };

@@ -9,8 +9,9 @@ use crate::error::MAP_MODEL;
 use pc_engine::{
     CYCLE_LABELS, CurveSetup, CycleCurveStart, CycleSetup, CycleStart, EpSetup, Evaluator,
     HOM_CURVE_LABELS, HOPF_CURVE_LABELS, HomStart, HomStartKind, HopfStart, IvpOptions,
-    LP_CURVE_LABELS, LPC_CURVE_LABELS, NCOL_RANGE, NS_CURVE_LABELS, Options, PD_CURVE_LABELS,
-    PdStart, RootOptions, RunKind, RunSpec,
+    LP_CURVE_LABELS, LPC_CURVE_LABELS, MAP_LP_CURVE_LABELS, MAP_NS_CURVE_LABELS,
+    MAP_PD_CURVE_LABELS, NCOL_RANGE, NS_CURVE_LABELS, Options, PD_CURVE_LABELS, PdStart,
+    RootOptions, RunKind, RunSpec,
 };
 use pc_engine::{DdeFloquetOptions, DdeHopfExtras, DdeMeshAdapt};
 use pc_ir::IrModel;
@@ -107,14 +108,10 @@ impl Kind {
     /// curve. Empty for an equilibrium branch.
     pub fn labels(self) -> &'static [&'static str] {
         match self {
-            Kind::Ep
-            | Kind::MapEp
-            | Kind::DdeEp
-            | Kind::Ivp
-            | Kind::Iter
-            | Kind::MapLp
-            | Kind::MapPd
-            | Kind::MapNs => &[],
+            Kind::Ep | Kind::MapEp | Kind::DdeEp | Kind::Ivp | Kind::Iter => &[],
+            Kind::MapLp => &MAP_LP_CURVE_LABELS,
+            Kind::MapPd => &MAP_PD_CURVE_LABELS,
+            Kind::MapNs => &MAP_NS_CURVE_LABELS,
             Kind::Lp => &LP_CURVE_LABELS,
             Kind::Hopf => &HOPF_CURVE_LABELS,
             Kind::DdeHopf => &DDE_HOPF_LABELS,
@@ -2629,7 +2626,8 @@ mod tests {
             let p = parse_problem(&v, &ir, Mode::Abi).unwrap();
             assert_eq!(p.kind, kind, "{ty}");
             assert_eq!(kind.name(), ty);
-            assert!(kind.labels().is_empty(), "{ty}");
+            // The codim-2 labels of SPEC 8x.
+            assert_eq!(kind.labels().len(), if ty == "NS" { 8 } else { 4 }, "{ty}");
             assert_eq!(p.curve_free, Some([1, 0]), "{ty}");
             assert!(p.switch.is_none() && p.cycle.is_none(), "{ty}");
             let free = match (kind, p.run_kind()) {

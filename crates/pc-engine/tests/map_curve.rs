@@ -204,8 +204,23 @@ fn check_henon(br: &Branch, sigma: f64, what: &str) {
             what,
         );
         assert!(p.tests.iter().all(|t| t.is_nan()), "{what}: {:?}", p.tests);
-        assert!(p.codim2.is_empty(), "{what}: {:?}", p.codim2);
+        // SPEC 8x test 4: the rest multiplier is sigma b, so LPPD = prod(mu - sigma) over
+        // it is -sigma (1 - b), and LPNS has no pair. CP or GPD and R1 or R2 are finite.
+        assert_eq!(p.codim2.len(), 4, "{what}");
+        close(
+            p.codim2[0],
+            -sigma * (1.0 - b),
+            1e-8,
+            &format!("{what} LPPD at b = {b}"),
+        );
+        assert!(p.codim2[1].is_nan(), "{what}: {:?}", p.codim2);
+        assert!(
+            p.codim2[2..].iter().all(|t| t.is_finite()),
+            "{what}: {:?}",
+            p.codim2
+        );
     }
+    assert!(br.warnings.is_empty(), "{what}: {:?}", br.warnings);
     assert!(
         br.specials.is_empty(),
         "{what}: {} specials",
@@ -249,9 +264,10 @@ fn test2_henon_lp_and_pd_curves_follow_the_closed_form() {
 }
 
 /// AUTO's Henon form (x, y) -> (y, a - b x - y^2) with F_x = [[0, 1], [-b, -2y]], so
-/// det F_x = b. The NS curve is b = 1 with x = y = -1 + sqrt(1 + a), kappa = -y and the
-/// multipliers kappa +- i sqrt(1 - kappa^2). Free [b, a]: points store u = (x, y, b,
-/// kappa) and alpha = a.
+/// det F_x = b. The NS curve is b = 1 with x = y and a = (x + 1)^2 - 1, kappa = -x, and the
+/// multipliers are the roots of mu^2 - 2 kappa mu + 1, real where |kappa| > 1. The curve
+/// passes the fold in a at x = -1, kappa = 1 (SPEC 8x amends the bounds and the closed
+/// form). Free [b, a]: points store u = (x, y, b, kappa) and alpha = a.
 #[test]
 fn test3_henon_auto_ns_curve_is_b_equal_1() {
     for ev in &BOTH {
@@ -259,30 +275,37 @@ fn test3_henon_auto_ns_curve_is_b_equal_1() {
         for direction in [1.0, -1.0] {
             let opts = Options {
                 direction,
-                bounds: (-0.5, 2.5),
+                bounds: (-1.5, 3.5),
                 ..Options::default()
             };
             let br = curve(continue_map_ns_curve, "map_henon_auto", ev, &setup, &opts).unwrap();
             let what = format!("{ev:?} NS direction {direction}");
             assert!(br.points.len() > 5, "{what}: {} points", br.points.len());
             for p in &br.points {
-                let a = p.alpha;
-                let y = -1.0 + (1.0 + a).sqrt();
-                close(p.u[0], y, 1e-8, &format!("{what} x at a = {a}"));
-                close(p.u[1], y, 1e-8, &format!("{what} y at a = {a}"));
-                close(p.u[2], 1.0, 1e-8, &format!("{what} b at a = {a}"));
-                close(p.u[3], -y, 1e-8, &format!("{what} kappa at a = {a}"));
-                let s = (1.0 - y * y).sqrt();
-                has_multipliers(&p.eigenvalues, &[(-y, s), (-y, -s)], 1e-8, &what);
+                let x = p.u[0];
+                close(
+                    p.alpha,
+                    (x + 1.0).powi(2) - 1.0,
+                    1e-8,
+                    &format!("{what} a at x = {x}"),
+                );
+                close(p.u[1], x, 1e-8, &format!("{what} y at x = {x}"));
+                close(p.u[2], 1.0, 1e-8, &format!("{what} b at x = {x}"));
+                close(p.u[3], -x, 1e-8, &format!("{what} kappa at x = {x}"));
+                let k = -x;
+                has_multipliers(&p.eigenvalues, &eig2(2.0 * k, -1.0, 1.0, 0.0), 1e-7, &what);
                 assert!(p.tests.iter().all(|t| t.is_nan()), "{what}: {:?}", p.tests);
+                assert_eq!(p.codim2.len(), 8, "{what}");
             }
-            assert!(br.specials.is_empty(), "{what}");
             assert_eq!(br.stop, StopReason::Bounds, "{what}");
-            // The default direction is increasing x, which is increasing a.
-            let (first, last) = (br.points[0].alpha, br.points.last().unwrap().alpha);
+            // The default direction is increasing x, which ends at a = 3.5 with x > 0;
+            // direction -1 passes the fold at x = -1 and ends at a = 3.5 with x < -1.
+            let last = br.points.last().unwrap();
+            assert!(last.alpha > 3.4, "{what}: ends at a = {}", last.alpha);
             assert!(
-                (direction > 0.0 && last > 2.4) || (direction < 0.0 && last < -0.4),
-                "{what}: runs from a = {first} to a = {last}"
+                (direction > 0.0 && last.u[0] > 0.0) || (direction < 0.0 && last.u[0] < -1.0),
+                "{what}: ends at x = {}",
+                last.u[0]
             );
         }
     }

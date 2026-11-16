@@ -1,0 +1,8 @@
+# A flip in x next to the z block of map_lpns.ode, SPEC section 8x test 3.
+par a1=0, a2=-0.2, p=0.5403023058681398, q=-0.8414709848078965, r=0.8414709848078965
+g=1+a2-y^2-w^2
+x(t+1)=-(1+a1)*x+x^2
+y(t+1)=g*(p*y+q*w)
+w(t+1)=g*(r*y+p*w)
+init x=0, y=0, w=0
+done

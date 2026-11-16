@@ -630,8 +630,17 @@ fn has_multipliers(re: &[f64], im: &[f64], want: &[(f64, f64)], tol: f64, what: 
     }
 }
 
-/// Runs `json` on `m` and returns the finished status and the rows of its one branch.
-fn curve_run(m: &Id, json: &str, u0: &[f64], p: &[f64]) -> (Value, Vec<f64>) {
+/// Runs `json` on `m` and returns the finished status and the rows of its one branch. The
+/// status must list the codim-2 `labels` and the branch exactly the `specials` labels, in
+/// order, with no warnings.
+fn curve_run(
+    m: &Id,
+    json: &str,
+    u0: &[f64],
+    p: &[f64],
+    labels: &[&str],
+    specials: &[&str],
+) -> (Value, Vec<f64>) {
     let (rc, run) = start_with(m, json, u0, p);
     assert_eq!(rc, 0, "{json}: {}", last_error());
     let run = Id(run);
@@ -639,12 +648,22 @@ fn curve_run(m: &Id, json: &str, u0: &[f64], p: &[f64]) -> (Value, Vec<f64>) {
     assert_eq!(st["state"], "done", "{json}: {st}");
     let branches = st["branches"].as_array().unwrap();
     assert_eq!(branches.len(), 1, "{json}: {st}");
+    let got: Vec<&str> = branches[0]["specials"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["label"].as_str().unwrap())
+        .collect();
+    assert_eq!(got, specials, "{json}: {st}");
+    for s in branches[0]["specials"].as_array().unwrap() {
+        assert!(s["coefficient"].is_null(), "{json}: {s}");
+    }
     assert_eq!(
-        branches[0]["specials"],
+        branches[0]["warnings"],
         serde_json::json!([]),
         "{json}: {st}"
     );
-    assert_eq!(st["codim2_labels"], serde_json::json!([]), "{json}");
+    assert_eq!(st["codim2_labels"], serde_json::json!(labels), "{json}");
     let v = rows(&run, &st);
     (st, v)
 }
@@ -652,7 +671,9 @@ fn curve_run(m: &Id, json: &str, u0: &[f64], p: &[f64]) -> (Value, Vec<f64>) {
 /// Henon (x, y) -> (1 - a x^2 + y, b x) with free [a, b]: the LP curve is
 /// a = -(1 - b)^2 / 4 with x = 2 / (1 - b) and the multipliers 1 and -b, and the PD curve is
 /// a = 3 (1 - b)^2 / 4 with x = 2 / (3 (1 - b)) and the multipliers -1 and b. A row is
-/// [b, x, y, a, mu_re(2), mu_im(2), h, iters] (SPEC 8w, test 6).
+/// [b, x, y, a, mu_re(2), mu_im(2), codim2(4), h, iters] (SPEC 8w, test 6, and 8x). The one
+/// rest multiplier gives LPPD = 1 - b on the LP curve and LPPD = b - 1 on the PD curve, and
+/// LPNS and PDNS are NaN. No codim-2 point lies on b in [0.1, 0.6].
 #[test]
 fn lp_and_pd_curves_of_the_henon_map_follow_the_closed_form() {
     let m = compiled(HENON);
@@ -665,12 +686,17 @@ fn lp_and_pd_curves_of_the_henon_map_follow_the_closed_form() {
         };
         let json =
             format!(r#"{{"type":"{ty}","free":["a","b"],"options":{{"bounds":[0.1,0.6]}}}}"#);
-        let (st, v) = curve_run(&m, &json, &[x0, b0 * x0], &[a0, b0]);
+        let labels = if sigma < 0.0 {
+            ["LPPD", "LPNS", "CP", "R1"]
+        } else {
+            ["LPPD", "PDNS", "GPD", "R2"]
+        };
+        let (st, v) = curve_run(&m, &json, &[x0, b0 * x0], &[a0, b0], &labels, &[]);
         assert_eq!(st["kind"], ty);
         assert_eq!(st["n"], 2);
-        assert_eq!(st["stride"], 10);
-        assert!(v.len() / 10 > 5, "{ty}: {st}");
-        for row in v.chunks(10) {
+        assert_eq!(st["stride"], 14);
+        assert!(v.len() / 14 > 5, "{ty}: {st}");
+        for row in v.chunks(14) {
             let b = row[0];
             let (a, x) = if sigma < 0.0 {
                 (-(1.0 - b).powi(2) / 4.0, 2.0 / (1.0 - b))
@@ -684,27 +710,45 @@ fn lp_and_pd_curves_of_the_henon_map_follow_the_closed_form() {
             let (re, im) = (&row[4..6], &row[6..8]);
             has_multipliers(re, im, &eig2(-2.0 * a * x, 1.0, b, 0.0), 1e-8, &what);
             has_multipliers(re, im, &[(-sigma, 0.0), (sigma * b, 0.0)], 1e-7, &what);
-            assert!(row[8] >= 0.0 && row[9] >= 0.0, "{what}: {row:?}");
+            close(row[8], -sigma * (1.0 - b), 1e-7, &format!("{what}: LPPD"));
+            assert!(row[9].is_nan(), "{what}: {row:?}");
+            assert!(
+                row[10].is_finite() && row[11].is_finite(),
+                "{what}: {row:?}"
+            );
+            assert!(row[12] >= 0.0 && row[13] >= 0.0, "{what}: {row:?}");
         }
         // The default direction is increasing b, to the bound 0.6.
-        let last = v[v.len() - 10];
+        let last = v[v.len() - 14];
         assert!(last > 0.55, "{ty}: ends at b = {last}");
     }
 }
 
 /// AUTO's Henon form with free [b, a]: the NS curve is b = 1 with x = y = -1 + sqrt(1 + a),
 /// kappa = -y and the multipliers kappa +- i sqrt(1 - kappa^2). A row is
-/// [a, x, y, b, kappa, mu_re(2), mu_im(2), h, iters] (SPEC 8w, test 6).
+/// [a, x, y, b, kappa, mu_re(2), mu_im(2), codim2(8), h, iters] (SPEC 8w, test 6, and 8x).
+/// R1 to R4 are kappa - 1, kappa + 1, kappa + 1/2 and kappa, and LPNS, PDNS and NSNS are NaN
+/// with no rest multipliers. Increasing a from 0.69 passes the 1:3 point at a = 5/4.
 #[test]
 fn the_ns_curve_of_the_auto_henon_map_is_b_equal_1() {
     let m = compiled(HENON_AUTO);
     let json = r#"{"type":"NS","free":["b","a"],"options":{"bounds":[-0.5,2.5]}}"#;
-    let (st, v) = curve_run(&m, json, &[0.3, 0.3], &[0.69, 1.0]);
+    let labels = ["R1", "R2", "R3", "R4", "LPNS", "PDNS", "NSNS", "CH"];
+    let (st, v) = curve_run(&m, json, &[0.3, 0.3], &[0.69, 1.0], &labels, &["R3"]);
     assert_eq!(st["kind"], "NS");
     assert_eq!(st["n"], 2);
-    assert_eq!(st["stride"], 11);
-    assert!(v.len() / 11 > 5, "{st}");
-    for row in v.chunks(11) {
+    assert_eq!(st["stride"], 19);
+    assert!(v.len() / 19 > 5, "{st}");
+    // The index is the first point after the special point, so a = 5/4 lies in the step
+    // that ends there.
+    let r3 = st["branches"][0]["specials"][0]["index"].as_u64().unwrap() as usize;
+    assert!(r3 >= 1, "{st}");
+    let (a0, a1) = (v[19 * (r3 - 1)], v[19 * r3]);
+    assert!(
+        a0.min(a1) < 1.25 && 1.25 < a0.max(a1),
+        "R3: a in [{a0}, {a1}]"
+    );
+    for row in v.chunks(19) {
         let a = row[0];
         let y = -1.0 + (1.0 + a).sqrt();
         let what = format!("NS at a = {a}");
@@ -716,9 +760,14 @@ fn the_ns_curve_of_the_auto_henon_map_is_b_equal_1() {
         let (re, im) = (&row[5..7], &row[7..9]);
         has_multipliers(re, im, &eig2(0.0, 1.0, -1.0, -2.0 * y), 1e-8, &what);
         has_multipliers(re, im, &[(-y, s), (-y, -s)], 1e-8, &what);
-        assert!(row[9] >= 0.0 && row[10] >= 0.0, "{what}: {row:?}");
+        let k = -y;
+        for (i, want) in [k - 1.0, k + 1.0, k + 0.5, k].into_iter().enumerate() {
+            close(row[9 + i], want, 1e-8, &format!("{what}: R{}", i + 1));
+        }
+        assert!(row[13..16].iter().all(|t| t.is_nan()), "{what}: {row:?}");
+        assert!(row[17] >= 0.0 && row[18] >= 0.0, "{what}: {row:?}");
     }
-    let last = v[v.len() - 11];
+    let last = v[v.len() - 19];
     assert!(last > 2.45, "NS: ends at a = {last}");
 }
 

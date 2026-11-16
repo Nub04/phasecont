@@ -19,7 +19,7 @@ fn cmul(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
 }
 
 /// Removes the multiplier closest to z, if there is one.
-fn remove_nearest(mu: &mut Vec<(f64, f64)>, z: (f64, f64)) {
+pub(crate) fn remove_nearest(mu: &mut Vec<(f64, f64)>, z: (f64, f64)) {
     let dist = |m: &(f64, f64)| (m.0 - z.0).hypot(m.1 - z.1);
     if let Some(k) = (0..mu.len()).min_by(|&a, &b| dist(&mu[a]).total_cmp(&dist(&mu[b]))) {
         mu.remove(k);
@@ -106,7 +106,7 @@ pub(crate) fn nearest_pair_is_complex(mu: &[(f64, f64)]) -> bool {
 
 /// The two roots of mu^2 - 2 kappa mu + 1, exp(+-i theta) for |kappa| <= 1 and the real
 /// pair mu, 1/mu otherwise.
-fn kappa_roots(kappa: f64) -> [(f64, f64); 2] {
+pub(crate) fn kappa_roots(kappa: f64) -> [(f64, f64); 2] {
     let d = kappa * kappa - 1.0;
     if d <= 0.0 {
         let s = (-d).sqrt();
@@ -142,7 +142,7 @@ fn ns_rest(kappa: f64, eigs: &[(f64, f64)]) -> Vec<(f64, f64)> {
 }
 
 /// The real part of the product of mu + s over `mu`, NaN over no multipliers.
-fn rest_product(mu: &[(f64, f64)], s: f64) -> f64 {
+pub(crate) fn rest_product(mu: &[(f64, f64)], s: f64) -> f64 {
     if mu.is_empty() {
         f64::NAN
     } else {

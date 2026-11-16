@@ -1,0 +1,10 @@
+# z -> (1 + a1 - |z|^2) R(2) z in z = (x, y) next to w -> (1 + a2) K w in w = (u, v),
+# with K of map_lpns.ode, SPEC section 8x test 3.
+par a1=0, a2=-0.2, p=0.5403023058681398, q=-0.8414709848078965, r=0.8414709848078965
+g=1+a1-x^2-y^2
+x(t+1)=g*(cos(2)*x-sin(2)*y)
+y(t+1)=g*(sin(2)*x+cos(2)*y)
+u(t+1)=(1+a2)*(p*u+q*v)
+v(t+1)=(1+a2)*(r*u+p*v)
+init x=0, y=0, u=0, v=0
+done

@@ -1,0 +1,10 @@
+# A fold in x next to z -> (1 + a2 - |z|^2) K z in z = (y, w), K = [p, q; r, p], SPEC
+# section 8x test 3. The defaults give K = R(1); the tests also set the saddle
+# p = cosh(0.7), q = r = sinh(0.7).
+par a1=0, a2=-0.2, p=0.5403023058681398, q=-0.8414709848078965, r=0.8414709848078965
+g=1+a2-y^2-w^2
+x(t+1)=x+a1-x^2
+y(t+1)=g*(p*y+q*w)
+w(t+1)=g*(r*y+p*w)
+init x=0, y=0, w=0
+done

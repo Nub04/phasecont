@@ -855,6 +855,20 @@ pub(crate) fn map_ns_at(at: &mut At) -> Result<MapNs, EngineError> {
     let (i, j) = nearest_pair(&mu)
         .ok_or_else(|| EngineError::Singular("fewer than two multipliers".into()))?;
     let m = if mu[i].1 > 0.0 { mu[i] } else { mu[j] };
+    map_ns_core(at, &a, &gx, m)
+}
+
+/// The Neimark-Sacker coefficients of [`map_ns_at`] for the critical multiplier `m`, with
+/// `a = F_x` and `gx = F_x - I` given, so `at` may be on F or on G = F - x: only its second
+/// and third derivatives are used, and they are the same for both. The NS curve of a map
+/// (SPEC section 8x) calls this with the multiplier nearest to e^{i theta}, cos theta = kappa.
+pub(crate) fn map_ns_core(
+    at: &mut At,
+    a: &[f64],
+    gx: &[f64],
+    m: (f64, f64),
+) -> Result<MapNs, EngineError> {
+    let n = at.n;
     if m.1.is_nan() || m.1 <= 0.0 {
         return Err(EngineError::Singular(
             "the critical pair of multipliers is not complex".into(),
@@ -867,14 +881,14 @@ pub(crate) fn map_ns_at(at: &mut At) -> Result<MapNs, EngineError> {
             "the multipliers are at a strong resonance (1:1, 1:2 or 1:3)".into(),
         ));
     }
-    let (q, p) = pair_eigenvectors(&a, n, m)?;
+    let (q, p) = pair_eigenvectors(a, n, m)?;
     let qc = conj(&q);
-    let lu = Lu::new(&gx, n)?;
+    let lu = Lu::new(gx, n)?;
     let h11 = lin(&[((-1.0, 0.0), &inv_real(&lu, &at.form(&[&q, &qc])?)?)]);
     let bqq = at.form(&[&q, &q])?;
     let (t2c, t2s) = ((2.0 * theta).cos(), (2.0 * theta).sin());
     // (e^{2 i theta} I - A)^-1 = -(A - e^{2 i theta} I)^-1.
-    let (h20r, h20i) = solve_shifted(&a, n, (t2c, t2s), &bqq.0, &bqq.1)?;
+    let (h20r, h20i) = solve_shifted(a, n, (t2c, t2s), &bqq.0, &bqq.1)?;
     let h20: Cv = (
         h20r.iter().map(|x| -x).collect(),
         h20i.iter().map(|x| -x).collect(),

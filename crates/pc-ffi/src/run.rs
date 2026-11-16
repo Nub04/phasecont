@@ -33,8 +33,9 @@ impl Handle for RunHandle {
 /// eig_im(n), codim2(14), h, newton_iters]`, with x0 the saddle and the eigenvalues those
 /// of the Jacobian at x0. A row of a delay equilibrium branch is `[alpha, u(n), roots]`, with
 /// `roots` the number of characteristic roots with a positive real part. A row of an LP or PD
-/// curve of fixed points of a map is `[a2, x(n), a1, mu_re(n), mu_im(n), h, newton_iters]`,
-/// and an NS curve of a map adds kappa after a1 (SPEC 8w). A row of a delay Hopf
+/// curve of fixed points of a map is `[a2, x(n), a1, mu_re(n), mu_im(n), codim2(4), h,
+/// newton_iters]`, and an NS curve of a map adds kappa after a1 and has 8 codim-2 values
+/// (SPEC 8w, 8x). A row of a delay Hopf
 /// curve is `[a2, x(n), a1, kappa, l1, hh]`, with NaN where `l1` or `hh` is off or undefined.
 /// A row of a delay cycle branch on N intervals of m points is `[alpha, u(n (N m + 1)), T, h,
 /// newton_iters, mu_re(c), mu_im(c), trivial_error]`, with `c` the multipliers kept and
@@ -55,10 +56,10 @@ pub(crate) fn stride(kind: Kind, n: usize) -> usize {
         Kind::Ivp | Kind::Iter => n + 1,
         Kind::Lp => 1 + (n + 1) + 2 * n + kind.labels().len() + 2,
         Kind::Hopf => 1 + (n + 2) + 2 * n + kind.labels().len() + 2,
-        // [a2, x(n), a1, mu_re(n), mu_im(n), h, iters] on the LP and PD curves of a map, with
-        // kappa after a1 on the NS curve (SPEC 8w)
-        Kind::MapLp | Kind::MapPd => 3 * n + 4,
-        Kind::MapNs => 3 * n + 5,
+        // [a2, x(n), a1, mu_re(n), mu_im(n), codim2, h, iters] on the LP and PD curves of a
+        // map, with kappa after a1 on the NS curve (SPEC 8w, 8x)
+        Kind::MapLp | Kind::MapPd => 3 * n + 4 + kind.labels().len(),
+        Kind::MapNs => 3 * n + 5 + kind.labels().len(),
         // The parser rejects sizes that overflow; MAX makes a copy fail rather than wrap.
         Kind::Lc { .. }
         | Kind::Lpc { .. }
@@ -349,22 +350,32 @@ mod tests {
 
     #[test]
     fn a_map_curve_row_is_x_a1_and_kappa_on_ns() {
-        // LP and PD: [a2, x(1), a1, mu_re(1), mu_im(1), h, newton_iters]. NS adds kappa
-        // after a1 (SPEC 8w). The tests and codim-2 values are not in the row.
+        // LP and PD: [a2, x(1), a1, mu_re(1), mu_im(1), codim2(4), h, newton_iters]. NS adds
+        // kappa after a1 and has 8 codim-2 values (SPEC 8w, 8x). A missing value is NaN.
         let mut p = point();
         p.codim2 = vec![13.0];
         for kind in [Kind::MapLp, Kind::MapPd] {
-            assert_eq!(stride(kind, 1), 7);
-            let mut row = vec![0.0; 7];
+            assert_eq!(kind.labels().len(), 4);
+            assert_eq!(stride(kind, 1), 11);
+            let mut row = vec![0.0; 11];
             pack_row(kind, &p, 1, &mut row);
-            assert_eq!(row, [0.5, 1.0, 2.0, -1.0, 0.25, 0.125, 3.0]);
-            assert!(kind.labels().is_empty());
+            assert_eq!(row[..6], [0.5, 1.0, 2.0, -1.0, 0.25, 13.0]);
+            assert!(row[6..9].iter().all(|v| v.is_nan()));
+            assert_eq!(row[9..], [0.125, 3.0]);
         }
+        assert_eq!(Kind::MapLp.labels(), ["LPPD", "LPNS", "CP", "R1"]);
+        assert_eq!(Kind::MapPd.labels(), ["LPPD", "PDNS", "GPD", "R2"]);
         p.u.push(4.0);
-        assert_eq!(stride(Kind::MapNs, 1), 8);
-        let mut row = vec![0.0; 8];
+        assert_eq!(
+            Kind::MapNs.labels(),
+            ["R1", "R2", "R3", "R4", "LPNS", "PDNS", "NSNS", "CH"]
+        );
+        assert_eq!(stride(Kind::MapNs, 1), 16);
+        let mut row = vec![0.0; 16];
         pack_row(Kind::MapNs, &p, 1, &mut row);
-        assert_eq!(row, [0.5, 1.0, 2.0, 4.0, -1.0, 0.25, 0.125, 3.0]);
+        assert_eq!(row[..7], [0.5, 1.0, 2.0, 4.0, -1.0, 0.25, 13.0]);
+        assert!(row[7..14].iter().all(|v| v.is_nan()));
+        assert_eq!(row[14..], [0.125, 3.0]);
         assert_eq!(
             [Kind::MapLp.name(), Kind::MapPd.name(), Kind::MapNs.name()],
             ["LP", "PD", "NS"]

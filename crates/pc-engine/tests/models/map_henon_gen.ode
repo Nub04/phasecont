@@ -1,0 +1,7 @@
+# Generalized Henon map (x1, x2) -> (x2, alpha - beta x1 - x2^2 + x1 x2 / 2), SPEC
+# section 8x test 2.
+par alpha=-0.125, beta=-0.5
+x1(t+1)=x2
+x2(t+1)=alpha-beta*x1-x2^2+0.5*x1*x2
+init x1=-0.5, x2=-0.5
+done
