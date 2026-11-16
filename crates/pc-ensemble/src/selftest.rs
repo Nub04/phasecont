@@ -6,11 +6,14 @@
 //!
 //! * `analytic-rk4` and `analytic-dp5`: decay, a harmonic oscillator and logistic growth
 //!   against their exact solutions, error scaled by `1 + |exact|`.
+//! * `iterate`: the map `x(t+1) = a*x + t` with the method `iter` against a loop in `f64`,
+//!   error scaled by `1 + |exact|`. It checks the time a backend passes to the map.
 //! * `determinism`: the same job twice, one member alone, and the members in reverse order
 //!   must give the same bits. The number of values that differ is the error, the limit is 0.
+//!   The jobs are RK4 and Dormand-Prince on a model of `+ - * /` and the Henon map with `iter`.
 //! * Bit-exactness: for a backend that is not the CPU reference, fixed-step RK4 on a model
-//!   of `+ - * /` only must match the CPU backend in the same precision bit for bit.
-//!   The CPU backend is the reference, so its report says `None`.
+//!   of `+ - * /` only and the Henon map with `iter` must match the CPU backend in the same
+//!   precision bit for bit. The CPU backend is the reference, so its report says `None`.
 
 use std::sync::atomic::AtomicBool;
 
@@ -88,6 +91,14 @@ const OSC: &str = "x'=v\nv'=-x\ndone\n";
 const LOGISTIC: &str = "x'=x*(1-x)\ndone\n";
 /// Only `+ - * /`, so a device that rounds those correctly gives the CPU bits.
 const VDP: &str = "par mu=1.5\nx'=v\nv'=mu*(1-x*x)*v-x/(2+v*v)\ndone\n";
+/// A map whose value depends on the time `t` the backend passes to it.
+const AFFINE: &str = "par a=0.5\nx(t+1)=a*x+t\ndone\n";
+/// The Henon map, only `+ - *`. From the start states of `x0_for(2)` it stays bounded over
+/// [0, 50] and approaches the fixed point (1.0895, 0.3268), multipliers about 0.3716 and
+/// -0.8074.
+const HENON: &str = "par a=0.2,b=0.3\nx(t+1)=1-a*x^2+y\ny(t+1)=b*x\ndone\n";
+const HENON_PAR: [f64; 2] = [0.2, 0.3];
+const HENON_T1: f64 = 50.0;
 
 fn model(src: &str) -> IrModel {
     use pc_ode::{MapLoader, SourceMap, load};
@@ -227,6 +238,41 @@ fn dp5(precision: Precision) -> (Method, f64) {
     }
 }
 
+/// Worst `|got - exact| / (1 + |exact|)` for `AFFINE` over [0, 10], where the exact value is
+/// a loop in `f64` that computes `(a*x) + t`.
+fn iterate(run: Runner, precision: Precision) -> Result<f64, EnsembleError> {
+    const A: f64 = 0.5;
+    const T1: f64 = 10.0;
+    let m = model(AFFINE);
+    let x0 = x0_for(1);
+    let r = run(&job(&m, &x0, &[A], T1, Method::Iter, precision))?;
+    let mut worst = 0.0f64;
+    for (i, &start) in x0.iter().enumerate() {
+        if r.status[i] != Status::Ok {
+            return Ok(f64::INFINITY);
+        }
+        let mut e = start;
+        for k in 0..T1 as u32 {
+            e = A * e + f64::from(k);
+        }
+        let g = r.state(i, 0)[0];
+        worst = worst.max((g - e).abs() / (1.0 + e.abs()));
+    }
+    Ok(worst)
+}
+
+/// The limit of the `iterate` tier. Measured on the CPU backend: 4.5e-8 single, which is
+/// the rounding of the start states and of the sums to `f32`, and 0 double, where the
+/// backend does the operations of the loop. The final values are about 16, and a time off
+/// by one at iterate k of the 10 moves them by 0.5^(9 - k), so the smallest such error is
+/// 0.5^9 / 17, about 1.1e-4, above both limits.
+fn iterate_limit(precision: Precision) -> f64 {
+    match precision {
+        Precision::Single => 1e-5,
+        Precision::Double => 1e-12,
+    }
+}
+
 fn same_bits(a: &EnsembleResult, b: &EnsembleResult) -> usize {
     let value = a
         .states
@@ -249,57 +295,97 @@ fn same_bits(a: &EnsembleResult, b: &EnsembleResult) -> usize {
     value + status + steps
 }
 
-/// Number of values that change when the same members run twice, alone, or reversed.
-fn determinism(run: Runner, precision: Precision) -> Result<f64, EnsembleError> {
-    let m = model(VDP);
+/// Number of values that change when the members of one job run twice, alone, or reversed.
+fn differences(
+    run: Runner,
+    m: &IrModel,
+    params: &[f64],
+    t1: f64,
+    method: Method,
+    precision: Precision,
+) -> Result<usize, EnsembleError> {
     let n = m.n();
     let x0 = x0_for(n);
-    let mut differ = 0;
-    for method in [rk4(precision).0, dp5(precision).0] {
-        let full = run(&job(&m, &x0, &[1.5], 3.0, method, precision))?;
-        differ += same_bits(&full, &run(&job(&m, &x0, &[1.5], 3.0, method, precision))?);
+    let full = run(&job(m, &x0, params, t1, method, precision))?;
+    let mut differ = same_bits(&full, &run(&job(m, &x0, params, t1, method, precision))?);
 
-        let member = 3;
-        let alone = run(&job(
-            &m,
-            &x0[member * n..(member + 1) * n],
-            &[1.5],
-            3.0,
-            method,
-            precision,
-        ))?;
+    let member = 3;
+    let alone = run(&job(
+        m,
+        &x0[member * n..(member + 1) * n],
+        params,
+        t1,
+        method,
+        precision,
+    ))?;
+    differ += full
+        .state(member, 0)
+        .iter()
+        .zip(alone.state(0, 0))
+        .filter(|(a, b)| a.to_bits() != b.to_bits())
+        .count();
+
+    let rev: Vec<f64> = (0..MEMBERS)
+        .rev()
+        .flat_map(|i| x0[i * n..(i + 1) * n].iter().copied())
+        .collect();
+    let back = run(&job(m, &rev, params, t1, method, precision))?;
+    for i in 0..MEMBERS {
         differ += full
-            .state(member, 0)
+            .state(i, 0)
             .iter()
-            .zip(alone.state(0, 0))
+            .zip(back.state(MEMBERS - 1 - i, 0))
             .filter(|(a, b)| a.to_bits() != b.to_bits())
             .count();
-
-        let rev: Vec<f64> = (0..MEMBERS)
-            .rev()
-            .flat_map(|i| x0[i * n..(i + 1) * n].iter().copied())
-            .collect();
-        let back = run(&job(&m, &rev, &[1.5], 3.0, method, precision))?;
-        for i in 0..MEMBERS {
-            differ += full
-                .state(i, 0)
-                .iter()
-                .zip(back.state(MEMBERS - 1 - i, 0))
-                .filter(|(a, b)| a.to_bits() != b.to_bits())
-                .count();
-        }
     }
+    Ok(differ)
+}
+
+/// Number of values that change when the same members run twice, alone, or reversed.
+fn determinism(run: Runner, precision: Precision) -> Result<f64, EnsembleError> {
+    let vdp = model(VDP);
+    let mut differ = 0;
+    for method in [rk4(precision).0, dp5(precision).0] {
+        differ += differences(run, &vdp, &[1.5], 3.0, method, precision)?;
+    }
+    let henon = model(HENON);
+    differ += differences(run, &henon, &HENON_PAR, HENON_T1, Method::Iter, precision)?;
     Ok(differ as f64)
 }
 
-/// Whether `run` matches the CPU backend bit for bit on fixed-step RK4 of `VDP`.
+/// Whether `run` matches the CPU backend bit for bit on fixed-step RK4 of `VDP` and on the
+/// Henon map with `iter`.
 fn bit_exact(run: Runner, precision: Precision) -> Result<bool, EnsembleError> {
-    let m = model(VDP);
-    let x0 = x0_for(m.n());
-    let j = job(&m, &x0, &[1.5], 3.0, Method::Rk4 { dt: 0.01 }, precision);
-    let want = run_cpu(&j, u64::MAX, &AtomicBool::new(false))?;
-    let got = run(&j)?;
-    Ok(same_bits(&want, &got) == 0)
+    let vdp = model(VDP);
+    let henon = model(HENON);
+    let x0_vdp = x0_for(vdp.n());
+    let x0_henon = x0_for(henon.n());
+    let jobs = [
+        job(
+            &vdp,
+            &x0_vdp,
+            &[1.5],
+            3.0,
+            Method::Rk4 { dt: 0.01 },
+            precision,
+        ),
+        job(
+            &henon,
+            &x0_henon,
+            &HENON_PAR,
+            HENON_T1,
+            Method::Iter,
+            precision,
+        ),
+    ];
+    for j in &jobs {
+        let want = run_cpu(j, u64::MAX, &AtomicBool::new(false))?;
+        let got = run(j)?;
+        if same_bits(&want, &got) != 0 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Runs the checks on `run`. `compare_bits` adds the bit-exact comparison with the CPU
@@ -323,6 +409,11 @@ pub fn run_with(
             name: "analytic-dp5",
             max_error: analytic(run, m5, precision)?,
             limit: l5,
+        },
+        Tier {
+            name: "iterate",
+            max_error: iterate(run, precision)?,
+            limit: iterate_limit(precision),
         },
         Tier {
             name: "determinism",

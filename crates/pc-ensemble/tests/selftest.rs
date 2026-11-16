@@ -60,7 +60,7 @@ fn the_cpu_selftest_passes_in_both_precisions() {
             assert!(t.max_error.is_finite(), "{}: {t:?}", t.name);
         }
         let names: Vec<&str> = r.tiers.iter().map(|t| t.name).collect();
-        for want in ["analytic-rk4", "analytic-dp5", "determinism"] {
+        for want in ["analytic-rk4", "analytic-dp5", "iterate", "determinism"] {
             assert!(names.contains(&want), "{names:?}");
         }
     }
