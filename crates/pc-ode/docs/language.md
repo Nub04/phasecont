@@ -50,7 +50,7 @@ The first word of a line decides what the line is.
 | Form | Example | Meaning | Status |
 |---|---|---|---|
 | ODE | `x'=-x`, `dx/dt=-x` | state equation | full |
-| Map | `x(t+1)=r*x*(1-x)`, or `x'=...` with `@ meth=discrete` | discrete map | parse, evaluate and iterate (SPEC section 8u); equilibria and continuation refuse maps (SPEC section 8t) |
+| Map | `x(t+1)=r*x*(1-x)`, or `x'=...` with `@ meth=discrete` | discrete map | parse, evaluate and iterate (SPEC section 8u), fixed points, multipliers and a branch of fixed points in one parameter with LP, BP, PD and NS (SPEC section 8v), LP, PD and NS curves of fixed points (SPEC section 8w) with codim-2 labels (SPEC section 8x), period-k points (SPEC section 8y), PhasePlane (SPEC section 8z), and `ensemble` with the method `iter` (SPEC section 8aa); the other curve types and cycles refuse maps (SPEC section 8t) |
 | Initial value | `x(0)=1`, `init x=1,y=2` | initial data | full |
 | Parameter | `par a=1,b=2` | parameters | full |
 | Number | `number c=3` | constant | full |
