@@ -52,7 +52,8 @@ classdef Model < handle
         % such a model with the JIT only, and only through the delay entries.
         IsDelay (1,1) logical = false
         % IsMap is true for a map, written x(t+1)=... or with @ meth=discrete.
-        % simulate iterates a map; equilibrium and continuation refuse it.
+        % simulate and ensemble iterate a map, and equilibrium and
+        % continuation work on its fixed points.
         IsMap (1,1) logical = false
         % SourceSha256 is the SHA-256 of the exact source text, as 64 lower-case
         % hex digits. A saved session stores it to check that a replay runs

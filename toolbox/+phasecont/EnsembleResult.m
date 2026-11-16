@@ -23,12 +23,13 @@ classdef EnsembleResult < handle
     %   States      n-by-S-by-M; States(:, s, k) is member k at Times(s)
     %   Status      M-by-1 string: "ok", "bounds", "stepTooSmall",
     %               "maxSteps" or "notFinite". For a member that did not end
-    %               "ok", States holds its last state and TReached the time
-    %               it got to
+    %               "ok", TReached is the time it got to and States is NaN at
+    %               the output times after TReached
     %   StatusCode  the same as numbers 0 to 4
     %   TReached    time each member reached, M-by-1
-    %   Accepted    accepted steps of each member (fixed steps for RK4)
-    %   Rejected    rejected steps of each member (0 for RK4)
+    %   Accepted    accepted steps of each member (fixed steps for RK4,
+    %               iterates for a map)
+    %   Rejected    rejected steps of each member (0 for RK4 and for a map)
     %   Label       struct with Backend, Device, Driver, Precision and
     %               SinglePrecision
     %   Job         struct with the settings of the run: TSpan, Method,
@@ -83,7 +84,8 @@ classdef EnsembleResult < handle
             %   R = REFINE(OBJ, IDX) integrates the members listed in IDX
             %   from their original start states and parameters with the
             %   same method, tolerances, limits and output times, in double
-            %   precision on the CPU. It returns a phasecont.EnsembleResult
+            %   precision on the CPU. A map is iterated again over the same
+            %   TSPAN with the same Bounds. It returns a phasecont.EnsembleResult
             %   whose Label says "cpu" and "double". Use R.Final(:, k) as a
             %   start point for continuation.
             arguments
@@ -96,13 +98,14 @@ classdef EnsembleResult < handle
                     "IDX must list members from 1 to %d.", obj.Members);
             end
             j = obj.Job;
-            args = {"Backend", "cpu", "Precision", "double", ...
-                "MaxSteps", j.MaxSteps, "Bounds", j.Bounds};
+            args = {"Backend", "cpu", "Precision", "double", "Bounds", j.Bounds};
             if j.Method == "rk4"
-                args = [args, {"Dt", j.Dt}];
-            else
-                args = [args, {"Rtol", j.Rtol, "Atol", j.Atol, "Hmax", j.Hmax}];
+                args = [args, {"MaxSteps", j.MaxSteps, "Dt", j.Dt}];
+            elseif j.Method == "dp5"
+                args = [args, {"MaxSteps", j.MaxSteps, "Rtol", j.Rtol, ...
+                    "Atol", j.Atol, "Hmax", j.Hmax}];
             end
+            % A map (Method "iter") takes no method option and no MaxSteps.
             r = phasecont.ensemble(obj.Model, obj.X0(:, idx), ...
                 obj.P(:, idx), j.TSpan, args{:});
         end

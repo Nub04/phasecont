@@ -15,8 +15,19 @@ function r = ensemble(m, x0, p, tspan, options)
 %   times s1, s2, ... as well. The times must increase; the engine only
 %   integrates forward. With two entries, R holds the state at t1 only.
 %
+%   On a map (M.IsMap), ensemble iterates the map instead, one iterate per
+%   unit of time, and t inside the model is the iterate index. TSPAN is then
+%   [n0 n1] or [n0 s1 ... n1]: increasing whole numbers of magnitude at most
+%   flintmax, with n1 - n0 at most 4294967295. In single precision the engine
+%   also needs every entry to be at most 2^24 in magnitude and two
+%   neighboring entries to be at most 2^24 apart. Precision is
+%   still required, and Backend, Device and Bounds work as for an ODE. Dt,
+%   Rtol, Atol, Hmax and MaxSteps do not apply to a map, and each one passed
+%   raises phasecont:ensemble:mapOption. A member of a map stops early only
+%   with Status "bounds" or "notFinite".
+%
 %   Nothing here has a default for a value that changes a result. These
-%   options are required:
+%   options are required (for a map, only Precision):
 %     Precision   "single" or "double". Single precision is for screening
 %                 (see EnsembleResult); double is exact to the same level as
 %                 phasecont.simulate on the CPU.
@@ -37,9 +48,9 @@ function r = ensemble(m, x0, p, tspan, options)
 %                 in phasecont.gpuDevices (default 0). Not with "auto".
 %     Hmax        largest step length for Rtol/Atol, positive; Inf means no
 %                 cap (default)
-%     MaxSteps    most steps of one trajectory, a positive integer (default
-%                 100000). A trajectory that needs more stops with Status
-%                 "maxSteps"
+%     MaxSteps    most steps of one trajectory, a positive integer; [] means
+%                 100000 (default). A trajectory that needs more stops with
+%                 Status "maxSteps"
 %     Bounds      positive; a trajectory stops with Status "bounds" when a
 %                 state passes this size in absolute value. Inf turns the test
 %                 off (default)
@@ -63,7 +74,7 @@ arguments
     options.Rtol = []
     options.Atol = []
     options.Hmax = []
-    options.MaxSteps (1,1) double = 100000
+    options.MaxSteps double {mustBeScalarOrEmpty} = []
     options.Bounds (1,1) double = Inf
 end
 import phasecont.internal.num2json
@@ -82,23 +93,51 @@ if ~any(precision == ["single" "double"])
         "Precision must be ""single"" or ""double"", got ""%s"".", ...
         options.Precision);
 end
-method = chooseMethod(options);
+isMap = m.IsMap;
+if isMap
+    method = "iter";
+    mapOptions(options);
+else
+    method = chooseMethod(options);
+end
 
 [x0, members] = startStates(x0, n);
 [pm, shared] = parameterSets(m, p, members, np);
 
-if ~(isnumeric(tspan) && isreal(tspan) && isvector(tspan) ...
-        && numel(tspan) >= 2 && all(isfinite(tspan)) ...
-        && issorted(tspan, "strictascend"))
+spanOk = isnumeric(tspan) && isreal(tspan) && isvector(tspan) ...
+    && numel(tspan) >= 2 && all(isfinite(tspan)) ...
+    && issorted(tspan, "strictascend");
+if isMap
+    mapOk = spanOk;
+    if mapOk
+        t = double(tspan);
+        mapOk = all(t == fix(t)) && all(abs(t) <= flintmax) ...
+            && t(end) - t(1) <= double(intmax("uint32"));
+    end
+    if ~mapOk
+        error("phasecont:ensemble:badOption", ...
+            "For a map, TSPAN must be [n0 n1] or [n0 s1 ... n1]: increasing " ...
+            + "whole numbers of magnitude at most flintmax, with n1 - n0 at " ...
+            + "most %d.", intmax("uint32"));
+    end
+elseif ~spanOk
     error("phasecont:ensemble:badOption", ...
         "TSPAN must be [t0 t1] or [t0 s1 ... t1]: finite, real and increasing.");
 end
 tspan = double(tspan(:)).';
 
-if ~(options.MaxSteps >= 1 && options.MaxSteps == fix(options.MaxSteps) ...
-        && options.MaxSteps <= double(intmax("uint32")))
-    error("phasecont:ensemble:badOption", ...
-        "MaxSteps must be an integer from 1 to %d.", intmax("uint32"));
+if isMap
+    % One iterate per unit of time, so the cap never stops a map run.
+    maxSteps = tspan(end) - tspan(1);
+elseif isempty(options.MaxSteps)
+    maxSteps = 100000;
+else
+    maxSteps = options.MaxSteps;
+    if ~(isreal(maxSteps) && maxSteps >= 1 && maxSteps == fix(maxSteps) ...
+            && maxSteps <= double(intmax("uint32")))
+        error("phasecont:ensemble:badOption", ...
+            "MaxSteps must be an integer from 1 to %d.", intmax("uint32"));
+    end
 end
 if ~(options.Bounds > 0)
     error("phasecont:ensemble:badOption", ...
@@ -108,7 +147,9 @@ end
 [backend, device] = chooseDevice(options, precision);
 
 % The job text. Numbers go through num2json so they read back exactly.
-if method == "rk4"
+if method == "iter"
+    methodJson = "{""type"":""iter""}";
+elseif method == "rk4"
     methodJson = "{""type"":""rk4"",""dt"":" + num2json(double(options.Dt)) + "}";
 else
     hmax = "null";
@@ -142,7 +183,7 @@ job = "{""backend"":""" + backend + """,""device"":" + sprintf("%d", device) ...
     + ",""t0"":" + num2json(tspan(1)) + ",""t1"":" + num2json(tspan(end)) ...
     + ",""method"":" + methodJson + ",""output"":" + outputJson ...
     + ",""bounds"":" + boundsJson ...
-    + ",""max_steps"":" + sprintf("%d", options.MaxSteps) ...
+    + ",""max_steps"":" + sprintf("%d", maxSteps) ...
     + ",""params"":""" + params + """}";
 
 try
@@ -185,8 +226,10 @@ label = struct("Backend", string(st.label.backend), ...
     "SinglePrecision", logical(st.label.single_precision));
 jobInfo = struct("TSpan", tspan, "Method", method, "Dt", double(options.Dt), ...
     "Rtol", double(options.Rtol), "Atol", double(options.Atol), ...
-    "Hmax", Inf, "MaxSteps", options.MaxSteps, "Bounds", options.Bounds);
-if method == "dp5" && ~isempty(options.Hmax)
+    "Hmax", Inf, "MaxSteps", maxSteps, "Bounds", options.Bounds);
+if method == "iter"
+    jobInfo.Hmax = [];
+elseif method == "dp5" && ~isempty(options.Hmax)
     jobInfo.Hmax = double(options.Hmax);
 end
 r = phasecont.EnsembleResult(struct( ...
@@ -197,7 +240,11 @@ r = phasecont.EnsembleResult(struct( ...
     "Label", label, "Job", jobInfo));
 
 failed = ismember(r.Status, ["stepTooSmall" "maxSteps" "notFinite"]);
-if any(failed)
+if any(failed) && isMap
+    warning("phasecont:ensemble:memberStopped", ...
+        "%d of %d members stopped before n = %d (notFinite). See Status.", ...
+        nnz(failed), members, tspan(end));
+elseif any(failed)
     warning("phasecont:ensemble:memberStopped", ...
         "%d of %d members stopped before t = %.6g (stepTooSmall, maxSteps or notFinite). See Status.", ...
         nnz(failed), members, tspan(end));
@@ -233,6 +280,17 @@ elseif haveTol
 else
     error("phasecont:ensemble:missingMethod", ...
         "Give Rtol and Atol, or Dt. The step control has no default.");
+end
+end
+
+function mapOptions(options)
+% A map is iterated, so no option of a step method applies. Each one passed is
+% an error, checked in a fixed order.
+for name = ["Dt" "Rtol" "Atol" "Hmax" "MaxSteps"]
+    if ~isempty(options.(name))
+        error("phasecont:ensemble:mapOption", ...
+            "%s does not apply to a map: ensemble iterates a map from n0 to n1.", name);
+    end
 end
 end
 
