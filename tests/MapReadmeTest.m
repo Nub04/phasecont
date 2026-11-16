@@ -2,9 +2,8 @@ classdef MapReadmeTest < matlab.unittest.TestCase
     % Tests slice 8 of map support (SPEC section 8ab, test 1): the examples
     % of the "Maps" section of README.md. Each test writes the README's
     % .ode text into a temporary folder, runs the README calls as written
-    % there and checks the values the README states in its comments. The
-    % plot call of the first example is left out, since MapIterateTest
-    % covers it.
+    % there and checks the values the README states in its comments and
+    % in the text around them. The plot calls draw into a hidden figure.
 
     properties (Constant)
         % x -> r x (1 - x), with the fixed point x = 1 - 1/r, its multiplier
@@ -21,7 +20,9 @@ classdef MapReadmeTest < matlab.unittest.TestCase
         % The README lines that the tests below run or check, as the README
         % writes them, with the values its comments state.
         Lines = string({ ...
+            'm  = phasecont.Model("logistic.ode");', ...
             'tr = phasecont.simulate(m, 0.1, [0 50]);   % rows for n = 0, 1, ..., 50', ...
+            'plot(tr)                                    % the iterates, drawn as dots', ...
             'eq = phasecont.equilibrium(m, 0.6);                % x = 0.6, multiplier -0.5', ...
             'br = phasecont.continuation(m, eq, Free = "r", Direction = 1, Bounds = [2 3.5]);', ...
             'br.points("PD")                                    % r = 3, x = 2/3', ...
@@ -30,10 +31,14 @@ classdef MapReadmeTest < matlab.unittest.TestCase
             'br  = phasecont.continuation(m, eq, Free = "a", Direction = 1, Bounds = [-1 0.5]);', ...
             'pd  = br.points("PD");                              % a = 3(1 - b)^2/4 = 0.3675', ...
             'pdc = phasecont.continuation(m, pd, Type = "PD", Free = ["a" "b"], Bounds = [0.1 0.6]);', ...
+            'm   = phasecont.Model("logistic.ode");', ...
+            'eq  = phasecont.equilibrium(m, 0.6);', ...
             'brs = phasecont.continuation(m, eq, Free = "r", Direction = 1, Bounds = [2 3.6], Switch = "PD1");', ...
             'brs(2).Iterate                                      % 2', ...
             'brs(2).points("PD")                                 % r = 1 + sqrt(6)', ...
-            'p   = phasecont.equilibrium(m, 0.8, Params = struct(r = 3.2), Iterate = 2);   % x = 0.7995, multiplier 0.16'})
+            'p   = phasecont.equilibrium(m, 0.8, Params = struct(r = 3.2), Iterate = 2);   % x = 0.7995, multiplier 0.16', ...
+            'm = phasecont.Model("logistic.ode");', ...
+            'h = phasecont.cobweb(m, 0.1, 10);                 % 10 iterates from x = 0.1'})
         Tol = 1e-8
     end
 
@@ -85,8 +90,16 @@ classdef MapReadmeTest < matlab.unittest.TestCase
             testCase.addTeardown(@() delete(m));
             tr = phasecont.simulate(m, 0.1, [0 50]);
             testCase.verifyEqual(tr.T(:), (0:50)');
+            f = figure(Visible = "off");
+            testCase.addTeardown(@() close(f));
+            plot(tr)
+            line = findobj(f, "Tag", "pc-trajectory");
+            testCase.verifyNumElements(line, 1);
+            testCase.verifyEqual(string(line.LineStyle), "none");
+            testCase.verifyEqual(string(line.Marker), ".");
+            testCase.verifyEqual(line.YData(:), tr.X);
 
-            eq = phasecont.equilibrium(m, 0.6);
+            eq =phasecont.equilibrium(m, 0.6);
             testCase.verifyEqual(eq.U, 0.6, AbsTol = testCase.Tol);
             testCase.verifyEqual(eq.Eigenvalues, -0.5, AbsTol = testCase.Tol);
 
@@ -134,6 +147,26 @@ classdef MapReadmeTest < matlab.unittest.TestCase
             testCase.verifyEqual(p.U, 0.7995, AbsTol = 1e-4);
             testCase.verifyEqual(p.Eigenvalues, 0.16, AbsTol = testCase.Tol);
             testCase.verifyTrue(p.Stable);
+        end
+
+        function cobwebOfTheLogisticMap(testCase)
+            m = phasecont.Model("logistic.ode");
+            testCase.addTeardown(@() delete(m));
+            f = figure(Visible = "off");
+            testCase.addTeardown(@() close(f));
+            h = phasecont.cobweb(m, 0.1, 10);
+            testCase.verifyEqual(ancestor(h.Steps, "figure"), f);
+            % 10 iterates of x -> 2.5 x (1 - x) from x = 0.1, written out
+            % here.
+            x = zeros(11, 1);
+            x(1) = 0.1;
+            for k = 1:10
+                x(k + 1) = 2.5 * x(k) * (1 - x(k));
+            end
+            testCase.verifyNumElements(h.Steps.XData, 21);
+            testCase.verifyEqual([h.Start.XData h.Start.YData], [0.1 0.1]);
+            testCase.verifyEqual([h.Steps.XData(end) h.Steps.YData(end)], ...
+                [x(end) x(end)]);
         end
     end
 end
