@@ -233,6 +233,25 @@ classdef TrajectoryTest < matlab.unittest.TestCase
             testCase.verifyFalse(ishold(ax));
         end
 
+        function eachPlotTakesTheNextColor(testCase)
+            % plot moves the color order index on for every line, also for
+            % a line with a given Color, so Trajectory.plot puts the index
+            % back to one past its own color.
+            m = testCase.model(testCase.Rotation);
+            a = phasecont.simulate(m, [1 0], [0 3]);
+            b = phasecont.simulate(m, [0.5 0], [0 3]);
+            f = figure(Visible = "off");
+            testCase.addTeardown(@() close(f));
+            ax = axes(f);
+            hold(ax, "on");
+            ha = plot(a, Parent = ax);
+            hb = plot(b, Parent = ax);
+            testCase.verifyEqual(ha(1).Color, ax.ColorOrder(1, :));
+            testCase.verifyEqual(ha(2).Color, ax.ColorOrder(1, :));
+            testCase.verifyEqual(hb(1).Color, ax.ColorOrder(2, :));
+            testCase.verifyEqual(ax.ColorOrderIndex, 3);
+        end
+
         function plotRejectsAnUnknownVariable(testCase)
             m = testCase.model(testCase.Rotation);
             tr = phasecont.simulate(m, [1 0], [0 1]);

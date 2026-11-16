@@ -130,7 +130,7 @@ classdef Trajectory < handle
             end
             wasHeld = ishold(ax);
             hold(ax, "on");
-            color = nextColor(ax);
+            [color, after] = phasecont.internal.nextColor(ax);
             style = "-";
             if tr.Map
                 style = ".";
@@ -138,6 +138,7 @@ classdef Trajectory < handle
             line = plot(ax, x, y, style, Color = color, Tag = "pc-trajectory");
             mark = plot(ax, x(1), y(1), "o", Color = color, ...
                 MarkerFaceColor = color, MarkerSize = 5, Tag = "pc-start");
+            ax.ColorOrderIndex = after;
             if ~wasHeld
                 hold(ax, "off");
             end
@@ -186,12 +187,4 @@ classdef Trajectory < handle
             name = names(vi);
         end
     end
-end
-
-function color = nextColor(ax)
-% The next color of the axes color order, which then moves on by one.
-order = ax.ColorOrder;
-idx = ax.ColorOrderIndex;
-color = order(mod(idx - 1, size(order, 1)) + 1, :);
-ax.ColorOrderIndex = mod(idx, size(order, 1)) + 1;
 end
