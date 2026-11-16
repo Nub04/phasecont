@@ -9,6 +9,8 @@ classdef EnsembleMapTest < matlab.unittest.TestCase
         % x(k+1) = 2 x(k) from 1 passes 1e3 at the tenth iterate.
         Double = "init x=1" + newline + "x(t+1)=2*x" + newline + "done" + newline
         Id = "phasecont:ensemble:memberStopped"
+        % The step options in the order ensemble checks them, with a value each.
+        StepOptions = {"Dt", 0.1; "Rtol", 1e-6; "Atol", 1e-8; "Hmax", 1; "MaxSteps", 10}
     end
 
     methods (TestClassSetup)
@@ -37,6 +39,16 @@ classdef EnsembleMapTest < matlab.unittest.TestCase
     end
 
     methods (Static, Access = private)
+        function e = caught(f)
+            % The error f raises; an error of its own if f returns.
+            try
+                f();
+            catch e
+                return
+            end
+            error("EnsembleMapTest:noError", "The call raised no error.");
+        end
+
         function x = logistic(r, x0, n)
             % x(k) for k = 0..n in the class of r and x0.
             x = zeros(n + 1, 1, "like", x0);
@@ -139,11 +151,15 @@ classdef EnsembleMapTest < matlab.unittest.TestCase
 
         function stepOptionsAreRefusedForAMap(testCase)
             m = testCase.model(MapRefusalTest.Logistic);
-            values = {"Dt", 0.1; "Rtol", 1e-6; "Atol", 1e-8; "Hmax", 1; "MaxSteps", 10};
-            for k = 1:size(values, 1)
-                testCase.verifyError(@() phasecont.ensemble(m, 0.1, [], [0 5], ...
-                    "Backend", "cpu", "Precision", "double", values{k, :}), ...
-                    "phasecont:ensemble:mapOption", values{k, 1});
+            for k = 1:size(EnsembleMapTest.StepOptions, 1)
+                name = EnsembleMapTest.StepOptions{k, 1};
+                e = EnsembleMapTest.caught(@() phasecont.ensemble(m, 0.1, [], [0 5], ...
+                    "Backend", "cpu", "Precision", "double", ...
+                    EnsembleMapTest.StepOptions{k, :}));
+                testCase.verifyEqual(string(e.identifier), ...
+                    "phasecont:ensemble:mapOption", name);
+                testCase.verifyEqual(string(e.message), name + ...
+                    " does not apply to a map: ensemble iterates a map from n0 to n1.");
             end
         end
 
@@ -151,14 +167,26 @@ classdef EnsembleMapTest < matlab.unittest.TestCase
             m = testCase.model(MapRefusalTest.Logistic);
             testCase.verifyError(@() phasecont.ensemble(m, 0.1, [], [0 5], ...
                 Backend = "cpu", Dt = 0.1), "phasecont:ensemble:missingPrecision");
-            try
-                phasecont.ensemble(m, 0.1, [], [0 5], Backend = "cpu", ...
-                    Precision = "double", MaxSteps = 10, Rtol = 1e-6, Dt = 0.1);
-                testCase.verifyFail("no error");
-            catch e
-                testCase.verifyEqual(string(e.identifier), "phasecont:ensemble:mapOption");
-                testCase.verifyTrue(startsWith(e.message, "Dt does not apply"), e.message);
+            % Options k to 5, passed last to first, name option k: the order is
+            % Dt, Rtol, Atol, Hmax, MaxSteps whatever the order of the call.
+            values = EnsembleMapTest.StepOptions;
+            n = size(values, 1);
+            for k = 1:n
+                given = values(n:-1:k, :)';
+                e = EnsembleMapTest.caught(@() phasecont.ensemble(m, 0.1, [], [0 5], ...
+                    "Backend", "cpu", "Precision", "double", given{:}));
+                testCase.verifyEqual(string(e.identifier), ...
+                    "phasecont:ensemble:mapOption", values{k, 1});
+                testCase.verifyTrue(startsWith(e.message, ...
+                    values{k, 1} + " does not apply"), e.message);
             end
+            % The check comes before the start states: a 2-by-2 x0 on the
+            % 1-state map is a badStart without Dt and a mapOption with it.
+            testCase.verifyError(@() phasecont.ensemble(m, ones(2), [], [0 5], ...
+                Backend = "cpu", Precision = "double"), "phasecont:model:badStart");
+            testCase.verifyError(@() phasecont.ensemble(m, ones(2), [], [0 5], ...
+                Backend = "cpu", Precision = "double", Dt = 0.1), ...
+                "phasecont:ensemble:mapOption");
         end
 
         function badMapSpansAreRefused(testCase)
