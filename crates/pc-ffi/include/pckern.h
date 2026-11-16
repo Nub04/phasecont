@@ -234,7 +234,8 @@ typedef struct pc_api_v1_t {
    *   {"backend":"cpu"|"cuda"|"opencl"|"metal","device":0,
    *    "precision":"single"|"double","t0":0,"t1":10,
    *    "method":{"type":"rk4","dt":0.01}
-   *            or {"type":"dp5","rtol":1e-6,"atol":1e-9,"hmax":null},
+   *            or {"type":"dp5","rtol":1e-6,"atol":1e-9,"hmax":null}
+   *            for an ODE, {"type":"iter"} for a map,
    *    "output":"final" or {"samples":[t, ...]},
    *    "bounds":null or a positive number,"max_steps":100000,
    *    "params":"shared"|"per_member"}
@@ -244,6 +245,8 @@ typedef struct pc_api_v1_t {
    * member when "params" is "per_member". A job that is wrong in any way,
    * including a tolerance that single precision cannot resolve (the message
    * starts "tolerance too tight"), is PC_ERR_BAD_PROBLEM and nothing starts.
+   * rk4 or dp5 on a map is PC_ERR_UNSUPPORTED_MODEL. iter needs whole-number
+   * times and makes one iterate per unit of time.
    * A missing backend or device is PC_ERR_GPU_UNAVAILABLE. *out_ens is 0 unless
    * set; free the handle with free_handle, which cancels a run that is still
    * going and waits for its worker. */

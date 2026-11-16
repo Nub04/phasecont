@@ -251,11 +251,12 @@ needs every key below except `device`; nothing is filled in for a missing key.
   t0, t1      start and end time, t0 < t1
   method      {\"type\": \"rk4\", \"dt\": X}, a largest fixed step, or
               {\"type\": \"dp5\", \"rtol\": X, \"atol\": X, \"hmax\": X or null}
+              for an ODE; {\"type\": \"iter\"} for a map, with whole-number times
   x0          one array of initial states per member
   params      {\"shared\": [..]} for one set, or {\"per_member\": [[..], ..]}
   output      \"final\", or {\"samples\": [t, ..]} (increasing, in (t0, t1], last = t1)
   bounds      stop a member when a state leaves [-X, X]; a number or null
-  max_steps   most steps per member, at least 1
+  max_steps   most steps (iterates of a map) per member, at least 1
 
 The result has members, n, times, status (one of ok, bounds, step_too_small,
 max_steps, nonfinite per member), states[member][sample][state] (null for a

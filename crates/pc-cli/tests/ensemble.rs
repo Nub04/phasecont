@@ -10,6 +10,7 @@ use common::{code, run, stderr, stdout};
 use serde_json::{Value, json};
 
 const DECAY: &str = "par a=1\nx'=-a*x\ndone\n";
+const LOGISTIC_MAP: &str = include_str!("../../pc-ode/tests/corpus/logistic_map.ode");
 
 fn scratch() -> PathBuf {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("ensemble");
@@ -122,6 +123,53 @@ fn the_adaptive_method_runs_with_an_unbounded_step() {
     let want = 2.0 * (-2.0f64).exp();
     assert!((num(&v["states"][1][0][0]) - want).abs() < 1e-8);
     assert!(num(&v["accepted"][0]) < 100.0);
+}
+
+#[test]
+fn the_iter_method_runs_a_map_and_prints_the_states_of_a_hand_loop() {
+    // x(k+1) = r x(k) (1 - x(k)) with r = 2.5 from 0.1, the product in the order the model
+    // file writes it, so the printed states match bit for bit.
+    let mut job = decay_job();
+    job["t1"] = json!(50.0);
+    job["method"] = json!({"type": "iter"});
+    job["x0"] = json!([[0.1]]);
+    job["params"] = json!({"shared": [2.5]});
+    job["output"] = json!({"samples": [10.0, 20.0, 50.0]});
+    job["max_steps"] = json!(50);
+    let v = ok("logistic_iter", LOGISTIC_MAP, &job);
+    assert_eq!(v["times"], json!([10.0, 20.0, 50.0]));
+    assert_eq!(v["status"], json!(["ok"]));
+    assert_eq!(num(&v["t_reached"][0]), 50.0);
+    assert_eq!(num(&v["accepted"][0]), 50.0);
+    assert_eq!(num(&v["rejected"][0]), 0.0);
+    let r = 2.5f64;
+    let mut x = 0.1f64;
+    let mut want = Vec::new();
+    for k in 1..=50 {
+        x = r * x * (1.0 - x);
+        if [10, 20, 50].contains(&k) {
+            want.push(x);
+        }
+    }
+    for (s, w) in want.into_iter().enumerate() {
+        let got = num(&v["states"][0][s][0]);
+        assert_eq!(
+            got.to_bits(),
+            w.to_bits(),
+            "sample {s}: {got:e} against {w:e}"
+        );
+    }
+}
+
+#[test]
+fn rk4_on_a_map_is_refused_with_the_iter_hint() {
+    let o = run_job("logistic_rk4", LOGISTIC_MAP, &decay_job());
+    assert_ne!(code(&o), 0);
+    assert!(
+        stderr(&o).contains("run a map with method iter"),
+        "{}",
+        stderr(&o)
+    );
 }
 
 #[test]

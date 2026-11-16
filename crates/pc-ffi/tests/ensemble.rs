@@ -16,6 +16,7 @@ const PC_ERR_BAD_ARG: i32 = 2;
 const PC_ERR_BAD_HANDLE: i32 = 3;
 const PC_ERR_BAD_PROBLEM: i32 = 6;
 const PC_ERR_GPU_UNAVAILABLE: i32 = 9;
+const PC_ERR_UNSUPPORTED_MODEL: i32 = 13;
 
 const DECAY: &str = "par k=1\nx'=-k*x\ndone\n";
 const LORENZ: &str = "par s=10, r=28, b=2.6666666666666665\n\
@@ -25,6 +26,8 @@ y'=x*(r-z)-y\n\
 z'=x*y-b*z\n\
 done\n";
 const LORENZ_P: [f64; 3] = [10.0, 28.0, 2.6666666666666665];
+/// The logistic map, as in `crates/pc-ode/tests/corpus/logistic_map.ode`.
+const LOGISTIC_MAP: &str = include_str!("../../pc-ode/tests/corpus/logistic_map.ode");
 
 fn api() -> &'static PcApiV1 {
     let p = pc_api_v1();
@@ -508,4 +511,89 @@ fn a_device_past_the_end_gives_gpu_unavailable() {
     assert_eq!(rc, PC_ERR_GPU_UNAVAILABLE);
     assert_eq!(ens, 0);
     assert!(last_error().contains("device 99"), "{}", last_error());
+}
+
+/// The job JSON of an `iter` run of a map on the CPU in double precision over [0 50], with
+/// samples at 10, 20 and 50 (SPEC 8aa).
+fn iter_job() -> String {
+    job("")
+        .replace(r#""t1":1"#, r#""t1":50"#)
+        .replace(
+            r#""method":{"type":"rk4","dt":0.01}"#,
+            r#""method":{"type":"iter"}"#,
+        )
+        .replace(r#""output":"final""#, r#""output":{"samples":[10,20,50]}"#)
+        .replace(r#""max_steps":100000"#, r#""max_steps":50"#)
+}
+
+#[test]
+fn the_method_parser_takes_iter_with_no_other_key() {
+    let m = parse(LOGISTIC_MAP);
+    let with_dt = iter_job().replace(r#"{"type":"iter"}"#, r#"{"type":"iter","dt":0.1}"#);
+    let (rc, ens) = start_with(&m, &with_dt, &[0.1], &[2.5]);
+    assert_eq!(rc, PC_ERR_BAD_PROBLEM, "{}", last_error());
+    assert_eq!(ens, 0);
+    assert!(
+        last_error().contains("method: unknown key dt"),
+        "{}",
+        last_error()
+    );
+    let rk5 = iter_job().replace(r#"{"type":"iter"}"#, r#"{"type":"rk5"}"#);
+    let (rc, _) = start_with(&m, &rk5, &[0.1], &[2.5]);
+    assert_eq!(rc, PC_ERR_BAD_PROBLEM);
+    let want = r#"method.type must be rk4, dp5 or iter, got rk5; method is {"type": "rk4", "dt": X}, {"type": "dp5", "rtol": X, "atol": X, "hmax": X or null} or {"type": "iter"}"#;
+    assert!(last_error().contains(want), "{}", last_error());
+}
+
+#[test]
+fn iter_on_a_map_handle_runs_and_copies_the_states_of_a_hand_loop() {
+    // The IR keeps the association of r*x*(1-x) as (r*x)*(1-x).
+    let r = 2.5_f64;
+    let mut x = 0.1_f64;
+    let mut want = Vec::new();
+    for k in 1..=50 {
+        x = (r * x) * (1.0 - x);
+        if [10, 20, 50].contains(&k) {
+            want.push(x);
+        }
+    }
+    let m = parse(LOGISTIC_MAP);
+    let ens = start(&m, &iter_job(), &[0.1], &[r]);
+    let v = wait(&ens);
+    assert_eq!(v["state"], "done", "{v}");
+    assert_eq!(v["counts"]["ok"], 1, "{v}");
+    assert_eq!(v["samples"], 3);
+    assert_eq!(copied(ens.0, PC_ENS_TIMES, 3), [10.0, 20.0, 50.0]);
+    let got = copied(ens.0, PC_ENS_STATES, 3);
+    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    assert_eq!(bits(&got), bits(&want), "{got:?} vs {want:?}");
+    assert_eq!(copied(ens.0, PC_ENS_T_REACHED, 1), [50.0]);
+    assert_eq!(copied(ens.0, PC_ENS_ACCEPTED, 1), [50.0]);
+    assert_eq!(copied(ens.0, PC_ENS_REJECTED, 1), [0.0]);
+}
+
+#[test]
+fn rk4_on_a_map_handle_is_unsupported_and_iter_on_an_ode_is_a_bad_problem() {
+    let m = parse(LOGISTIC_MAP);
+    let rk4 = iter_job().replace(r#"{"type":"iter"}"#, r#"{"type":"rk4","dt":0.01}"#);
+    let (rc, ens) = start_with(&m, &rk4, &[0.1], &[2.5]);
+    assert_eq!(rc, PC_ERR_UNSUPPORTED_MODEL, "{}", last_error());
+    assert_eq!(ens, 0);
+    assert!(
+        last_error().contains(
+            "the model is a map; rk4 and dp5 integrate an ODE, so run a map with method iter"
+        ),
+        "{}",
+        last_error()
+    );
+    let ode = parse(DECAY);
+    let (rc, ens) = start_with(&ode, &iter_job(), &[1.0], &[1.0]);
+    assert_eq!(rc, PC_ERR_BAD_PROBLEM, "{}", last_error());
+    assert_eq!(ens, 0);
+    assert!(
+        last_error()
+            .contains("method iter iterates a map, and the model is an ODE; use rk4 or dp5"),
+        "{}",
+        last_error()
+    );
 }

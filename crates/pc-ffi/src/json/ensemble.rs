@@ -133,8 +133,12 @@ pub fn method(v: &Value) -> Parsed<Method> {
             }
             Ok(Method::Dp5 { rtol, atol, hmax })
         }
+        "iter" => {
+            only_keys(m, &["type"], "method: ")?;
+            Ok(Method::Iter)
+        }
         other => Err(format!(
-            "method.type must be rk4 or dp5, got {other}; method is {{\"type\": \"rk4\", \"dt\": X}} or {{\"type\": \"dp5\", \"rtol\": X, \"atol\": X, \"hmax\": X or null}}"
+            "method.type must be rk4, dp5 or iter, got {other}; method is {{\"type\": \"rk4\", \"dt\": X}}, {{\"type\": \"dp5\", \"rtol\": X, \"atol\": X, \"hmax\": X or null}} or {{\"type\": \"iter\"}}"
         )),
     }
 }
