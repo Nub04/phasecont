@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 
 use pc_engine::{
-    EpSetup, Evaluator, MapAsRoot, ModelEval, Options, build_allowing_t, build_dde, check_tables,
-    engine_kinds, entry_symbol, equilibrium,
+    EpSetup, Evaluator, IteratedMap, MapAsRoot, ModelEval, Options, build_allowing_t, build_dde,
+    check_tables, engine_kinds, entry_symbol, equilibrium,
 };
 use pc_ensemble::job::{NATIVE_FRAME_LIMIT, NativeRhs};
 use pc_ir::{Entry, EntryKind, IrModel};
@@ -61,6 +61,8 @@ enum Request {
     Equilibrium {
         setup: EpSetup,
         opts: Options,
+        /// The k of `F^k` for a map (SPEC 8y); 1 for an ODE.
+        iterate: usize,
     },
     /// Compile `F` for the ensemble workers. The code stays on the model thread's slot.
     EnsembleF,
@@ -247,9 +249,18 @@ impl ModelHandle {
         }
     }
 
-    pub fn equilibrium(&self, setup: EpSetup, opts: Options) -> Result<Equilibrium> {
+    pub fn equilibrium(
+        &self,
+        setup: EpSetup,
+        opts: Options,
+        iterate: usize,
+    ) -> Result<Equilibrium> {
         self.ode_only()?;
-        match self.call(Request::Equilibrium { setup, opts })? {
+        match self.call(Request::Equilibrium {
+            setup,
+            opts,
+            iterate,
+        })? {
             Reply::Equilibrium(e) => Ok(e),
             _ => Err(Error::Internal("unexpected reply to equilibrium".into())),
         }
@@ -445,20 +456,26 @@ fn handle(
             ev.eval(&EntryKind::F, &x, &p, &[], &mut out)?;
             Ok(Reply::Rhs(out))
         }
-        Request::Equilibrium { setup, opts } => {
+        Request::Equilibrium {
+            setup,
+            opts,
+            iterate,
+        } => {
             let ev = compiled(ev)?;
-            // A map solves G = F - x = 0, and the eigenvalues of F_x at the fixed point are
-            // its multipliers (SPEC 8v).
+            // A map solves G = F^k - x = 0, and the eigenvalues of the Jacobian of F^k at the
+            // fixed point are its multipliers (SPEC 8v and 8y). k = 1 evaluates F itself, and
+            // an ODE always has k = 1.
+            let mut it = IteratedMap::new(ev, iterate);
             let u = if ctx.info.kind == ModelKind::Map {
-                equilibrium(&mut MapAsRoot::new(&mut *ev), &setup, &opts)?
+                equilibrium(&mut MapAsRoot::new(&mut it), &setup, &opts)?
             } else {
-                equilibrium(ev, &setup, &opts)?
+                equilibrium(&mut it, &setup, &opts)?
             };
-            let n = ev.n();
+            let n = it.n();
             let mut p = setup.params.clone();
             p.push(0.0);
             let mut jac = vec![0.0; n * n];
-            ev.eval(&EntryKind::JacU, &u, &p, &[], &mut jac)?;
+            it.eval(&EntryKind::JacU, &u, &p, &[], &mut jac)?;
             // `JacU` is column-major (`out[i + n*j] = df_i/du_j`), as `eigenvalues` expects.
             let eig = pc_linalg::eigenvalues(&jac, n)
                 .map_err(|e| Error::Numeric(format!("eigenvalues: {e}")))?;

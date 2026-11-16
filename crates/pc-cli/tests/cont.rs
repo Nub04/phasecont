@@ -70,6 +70,8 @@ fn near(got: f64, want: f64, what: &str) {
 fn fold_prints_one_lp_at_zero() {
     let (v, err) = cont_ok("fold");
     assert_eq!(v["branches"].as_array().unwrap().len(), 1);
+    // Only a map run gives the iterate of a branch (SPEC 8y).
+    assert!(v["branches"][0].get("iterate").is_none(), "{v}");
     let lp = specials(&v, 0, "LP");
     assert_eq!(lp.len(), 1, "{v}");
     near(num(&lp[0]["alpha"]), 0.0, "LP alpha");
@@ -643,6 +645,10 @@ fn a_map_runs_an_ep_problem_and_matches_the_api() {
     let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
     let branches = v["branches"].as_array().unwrap();
     assert_eq!(branches.len(), 2, "{v}");
+    assert_eq!(
+        (&branches[0]["iterate"], &branches[1]["iterate"]),
+        (&1.into(), &1.into())
+    );
     let bp = specials(&v, 0, "BP");
     assert_eq!(bp.len(), 1, "{v}");
     near(num(&bp[0]["alpha"]), 1.0, "BP alpha");
@@ -690,6 +696,37 @@ fn a_map_runs_an_ep_problem_and_matches_the_api() {
             assert!(same, "branch {b} row {r}: api {row:?}, cont {want:?}");
         }
     }
+}
+
+/// A PD switch on a map EP run gives branch 0 at iterate 1 and branch 1 at iterate 2, the
+/// 2-cycle of the logistic map with its PD at r = 1 + sqrt(6) (SPEC 8y).
+#[test]
+fn a_map_pd_switch_prints_the_iterate_of_each_branch() {
+    let path = scratch().join("map_pd_switch.json");
+    std::fs::write(
+        &path,
+        r#"{"type":"EP","free":"r","options":{"bounds":[2.5,3.6]},"switch":"PD1","params":{"r":2.5},"u0":[0.6]}"#,
+    )
+    .unwrap();
+    let o = run(
+        &scratch(),
+        &["cont", &model("map_logistic"), path.to_str().unwrap()],
+    );
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+    let branches = v["branches"].as_array().unwrap();
+    assert_eq!(branches.len(), 2, "{v}");
+    assert_eq!(
+        (&branches[0]["iterate"], &branches[1]["iterate"]),
+        (&1.into(), &2.into())
+    );
+    let pd = specials(&v, 1, "PD");
+    assert_eq!(pd.len(), 1, "{v}");
+    let r = num(&pd[0]["alpha"]);
+    assert!(
+        (r - (1.0 + 6f64.sqrt())).abs() < 1e-8,
+        "PD of the 2-cycle at r = {r}"
+    );
 }
 
 /// Runs a map curve problem through `pc-cli cont` and through the API table and checks

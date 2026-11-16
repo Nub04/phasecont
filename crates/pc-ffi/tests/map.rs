@@ -209,29 +209,9 @@ fn equilibrium(m: &Id, x: &[f64], p: &[f64]) -> i32 {
     solve(m, x, p).0
 }
 
-/// Calls `model_equilibrium` and returns the code, the point and the eigenvalues as
-/// (re, im) pairs.
+/// Calls `model_equilibrium` with no options.
 fn solve(m: &Id, x: &[f64], p: &[f64]) -> (i32, Vec<f64>, Vec<(f64, f64)>) {
-    let opts = CString::new("{}").unwrap();
-    let n = x.len();
-    let mut u = vec![f64::NAN; n];
-    let mut eig = vec![f64::NAN; 2 * n];
-    let rc = unsafe {
-        (api().model_equilibrium)(
-            m.0,
-            x.as_ptr(),
-            n,
-            p.as_ptr(),
-            p.len(),
-            opts.as_ptr(),
-            u.as_mut_ptr(),
-            u.len(),
-            eig.as_mut_ptr(),
-            eig.len(),
-        )
-    };
-    let pairs = (0..n).map(|i| (eig[i], eig[n + i])).collect();
-    (rc, u, pairs)
+    solve_opts(m, x, p, "{}")
 }
 
 fn close(got: f64, want: f64, tol: f64, what: &str) {
@@ -861,4 +841,267 @@ fn a_map_curve_on_a_map_that_reads_t_is_refused() {
         assert_eq!((rc, run), (NON_AUTONOMOUS, 0), "{ty}: {}", last_error());
         assert_eq!(last_error(), "the model depends on t");
     }
+}
+
+/// Calls `model_equilibrium` with the options `opts` and returns the code, the point and the
+/// eigenvalues as (re, im) pairs.
+fn solve_opts(m: &Id, x: &[f64], p: &[f64], opts: &str) -> (i32, Vec<f64>, Vec<(f64, f64)>) {
+    let opts = CString::new(opts).unwrap();
+    let n = x.len();
+    let mut u = vec![f64::NAN; n];
+    let mut eig = vec![f64::NAN; 2 * n];
+    let rc = unsafe {
+        (api().model_equilibrium)(
+            m.0,
+            x.as_ptr(),
+            n,
+            p.as_ptr(),
+            p.len(),
+            opts.as_ptr(),
+            u.as_mut_ptr(),
+            u.len(),
+            eig.as_mut_ptr(),
+            eig.len(),
+        )
+    };
+    let pairs = (0..n).map(|i| (eig[i], eig[n + i])).collect();
+    (rc, u, pairs)
+}
+
+/// The 2-cycle x+, x- of the logistic map at `r` > 3.
+fn logistic_cycle(r: f64) -> [f64; 2] {
+    let d = ((r + 1.0) * (r - 3.0)).sqrt();
+    [(r + 1.0 + d) / (2.0 * r), (r + 1.0 - d) / (2.0 * r)]
+}
+
+/// Each error of the `iterate` and `start` keys, on a problem that differs from a valid one
+/// in that key alone (SPEC 8y, test 7).
+/// A refused problem: model, problem JSON, u0, p and the expected error.
+type BadCase<'a> = (&'a Id, String, Vec<f64>, Vec<f64>, &'a str);
+
+#[test]
+fn the_iterate_and_start_keys_refuse_bad_problems() {
+    let m = compiled(LOGISTIC_MAP);
+    let ode = compiled(LOGISTIC_ODE);
+    let hutch = compiled(HUTCH);
+    let henon = compiled(HENON);
+    let ep = r#""type":"EP","free":"r","options":{"max_steps":3}"#;
+    let iter = r#""type":"ITER","tspan":[0,3]"#;
+    // The valid problems first, so that each refusal below is the key alone.
+    let valid: [(&Id, String, &[f64], &[f64]); 6] = [
+        (&m, format!("{{{ep}}}"), &[0.6], &[2.5]),
+        (&m, format!(r#"{{{ep},"iterate":2}}"#), &[0.8], &[3.2]),
+        (&m, format!("{{{iter}}}"), &[0.1], &[2.5]),
+        (&ode, format!("{{{ep}}}"), &[0.0], &[0.5]),
+        (
+            &ode,
+            r#"{"type":"IVP","tspan":[0,1]}"#.into(),
+            &[0.1],
+            &[0.5],
+        ),
+        (
+            &hutch,
+            r#"{"type":"EP","free":"r","roots":{"n":30,"re_min":-0.5},"options":{"max_steps":3}}"#
+                .into(),
+            &[1.0],
+            &[1.3, 1.0],
+        ),
+    ];
+    for (h, json, u0, p) in &valid {
+        let (rc, run) = start_with(h, json, u0, p);
+        assert_eq!(rc, 0, "{json}: {}", last_error());
+        let run = Id(run);
+        let st = wait(&run);
+        assert_ne!(st["state"], "running", "{json}");
+    }
+    let whole = "iterate: expected a whole number from 1 to 1000000";
+    let only_map = "iterate: only a map takes this key";
+    let map_start = "start: only an EP run of a map takes this key";
+    let odd = "start: a start at a PD point needs an even iterate, twice the iterate of the PD \
+               point";
+    let (x, y) = (2.0 / 0.7, 0.3 * 2.0 / 0.7);
+    let bad: Vec<BadCase> = vec![
+        (
+            &m,
+            format!(r#"{{{ep},"iterate":0}}"#),
+            vec![0.6],
+            vec![2.5],
+            whole,
+        ),
+        (
+            &m,
+            format!(r#"{{{ep},"iterate":-1}}"#),
+            vec![0.6],
+            vec![2.5],
+            whole,
+        ),
+        (
+            &m,
+            format!(r#"{{{ep},"iterate":1.5}}"#),
+            vec![0.6],
+            vec![2.5],
+            whole,
+        ),
+        (
+            &m,
+            format!(r#"{{{ep},"iterate":"2"}}"#),
+            vec![0.6],
+            vec![2.5],
+            whole,
+        ),
+        (
+            &m,
+            format!(r#"{{{ep},"iterate":1000001}}"#),
+            vec![0.6],
+            vec![2.5],
+            whole,
+        ),
+        (
+            &ode,
+            format!(r#"{{{ep},"iterate":1}}"#),
+            vec![0.0],
+            vec![0.5],
+            only_map,
+        ),
+        (
+            &ode,
+            r#"{"type":"IVP","tspan":[0,1],"iterate":1}"#.into(),
+            vec![0.1],
+            vec![0.5],
+            only_map,
+        ),
+        (
+            &hutch,
+            r#"{"type":"EP","free":"r","roots":{"n":30,"re_min":-0.5},"options":{"max_steps":3},"iterate":2}"#
+                .into(),
+            vec![1.0],
+            vec![1.3, 1.0],
+            only_map,
+        ),
+        (
+            &m,
+            format!(r#"{{{iter},"iterate":2}}"#),
+            vec![0.1],
+            vec![2.5],
+            "iterate: only an EP, LP, PD or NS run of a map takes this key",
+        ),
+        (
+            &m,
+            format!(r#"{{{iter},"start":"pd"}}"#),
+            vec![0.1],
+            vec![2.5],
+            map_start,
+        ),
+        (
+            &m,
+            format!(r#"{{{ep},"start":"lc"}}"#),
+            vec![0.6],
+            vec![2.5],
+            "start: an EP run of a map takes only \"pd\"",
+        ),
+        (
+            &m,
+            format!(r#"{{{ep},"start":"pd"}}"#),
+            vec![0.6],
+            vec![2.5],
+            odd,
+        ),
+        (
+            &m,
+            format!(r#"{{{ep},"iterate":3,"start":"pd"}}"#),
+            vec![0.6],
+            vec![2.5],
+            odd,
+        ),
+        (
+            &ode,
+            format!(r#"{{{ep},"start":"pd"}}"#),
+            vec![0.0],
+            vec![0.5],
+            "start: only an LC or HOM run takes this key",
+        ),
+    ];
+    for (h, json, u0, p, want) in &bad {
+        let (rc, run) = start_with(h, json, u0, p);
+        assert_eq!((rc, run), (BAD_PROBLEM, 0), "{json}: {}", last_error());
+        assert_eq!(last_error(), *want, "{json}");
+    }
+    for ty in ["LP", "PD", "NS"] {
+        let json = format!(r#"{{"type":"{ty}","free":["a","b"],"start":"pd"}}"#);
+        let (rc, run) = start_with(&henon, &json, &[x, y], &[-0.1225, 0.3]);
+        assert_eq!((rc, run), (BAD_PROBLEM, 0), "{json}: {}", last_error());
+        assert_eq!(last_error(), map_start, "{json}");
+    }
+}
+
+/// The status of a map EP run gives `"iterate"` 1 without the key, a PD switch gives 1 and
+/// 2, and an ODE run gives none (SPEC 8y, test 7).
+#[test]
+fn the_status_gives_the_iterate_of_each_branch_of_a_map_run() {
+    let m = compiled(LOGISTIC_MAP);
+    let base = r#""type":"EP","free":"r","options":{"bounds":[2.5,3.6]}"#;
+    let cases: [(String, Vec<u64>); 2] = [
+        (format!("{{{base}}}"), vec![1]),
+        (format!(r#"{{{base},"switch":"PD1"}}"#), vec![1, 2]),
+    ];
+    for (json, want) in &cases {
+        let (rc, run) = start_with(&m, json, &[0.6], &[2.5]);
+        assert_eq!(rc, 0, "{json}: {}", last_error());
+        let run = Id(run);
+        let st = wait(&run);
+        assert_eq!(st["state"], "done", "{st}");
+        let got: Vec<u64> = st["branches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["iterate"].as_u64().unwrap())
+            .collect();
+        assert_eq!(&got, want, "{json}");
+    }
+    let ode = compiled(LOGISTIC_ODE);
+    let json = r#"{"type":"EP","free":"r","options":{"max_steps":10}}"#;
+    let (rc, run) = start_with(&ode, json, &[0.0], &[0.5]);
+    assert_eq!(rc, 0, "{}", last_error());
+    let run = Id(run);
+    let st = wait(&run);
+    let branches = st["branches"].as_array().unwrap();
+    assert!(!branches.is_empty(), "{st}");
+    for b in branches {
+        assert!(b.get("iterate").is_none(), "{st}");
+    }
+}
+
+/// `model_equilibrium` with `"iterate"`: 2 finds a point of the 2-cycle of the logistic map
+/// with the multiplier -r^2 + 2r + 4, and refuses the key on an ODE (SPEC 8y, test 7).
+#[test]
+fn model_equilibrium_takes_the_iterate_of_a_map() {
+    let r = 3.2;
+    let m = compiled(LOGISTIC_MAP);
+    let (rc, u, eig) = solve_opts(&m, &[0.8], &[r], r#"{"iterate":2}"#);
+    assert_eq!(rc, 0, "{}", last_error());
+    let near = logistic_cycle(r)
+        .iter()
+        .map(|c| (u[0] - c).abs())
+        .fold(f64::INFINITY, f64::min);
+    close(near, 0.0, 1e-12, "x+ or x-");
+    close(eig[0].0, -r * r + 2.0 * r + 4.0, 1e-10, "multiplier of F^2");
+    close(eig[0].0, 0.16, 1e-10, "multiplier 0.16");
+    assert_eq!(eig[0].1, 0.0, "multiplier im");
+    for bad in ["0", "1.5", "\"2\""] {
+        let (rc, _, _) = solve_opts(&m, &[0.8], &[r], &format!(r#"{{"iterate":{bad}}}"#));
+        assert_eq!(rc, BAD_PROBLEM, "{bad}");
+        assert_eq!(
+            last_error(),
+            "iterate: expected a whole number from 1 to 1000000",
+            "{bad}"
+        );
+    }
+    let ode = compiled(LOGISTIC_ODE);
+    let (rc, _, _) = solve_opts(&ode, &[0.9], &[2.0], r#"{"iterate":2}"#);
+    assert_eq!(rc, BAD_PROBLEM, "{}", last_error());
+    assert_eq!(last_error(), "iterate: only a map takes this key");
+    // Without the key both handles solve as before.
+    let (rc, u, _) = solve_opts(&ode, &[0.9], &[2.0], "{}");
+    assert_eq!(rc, 0, "{}", last_error());
+    close(u[0], 1.0, 1e-12, "ODE equilibrium x = 1");
 }

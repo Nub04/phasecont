@@ -272,6 +272,11 @@ pub struct Problem {
     /// and `-1` against it. `Some` exactly when `switch` is there on a delay cycle run, and it
     /// has no default.
     pub switch_direction: Option<i32>,
+    /// The k of a run on the k-th iterate `F^k` of a map (SPEC 8y), from the key `iterate`.
+    /// 1 when the key is missing, which every run that is not a map EP or curve run keeps.
+    pub iterate: usize,
+    /// Whether a map EP run starts at a PD point of `F^{iterate/2}` (`"start":"pd"`, SPEC 8y).
+    pub pd_start: bool,
 }
 
 impl Problem {
@@ -446,6 +451,8 @@ impl Problem {
             RunKind::Ep => {
                 let mut spec = RunSpec::new(model, info, evaluator, self.setup, self.opts);
                 spec.switch_at = self.switch;
+                spec.iterate = self.iterate;
+                spec.pd_start = self.pd_start;
                 spec
             }
             RunKind::DdeCycle { .. } => {
@@ -463,7 +470,11 @@ impl Problem {
                 spec.kind = kind;
                 spec
             }
-            curve => RunSpec::curve(model, info, evaluator, curve, self.opts),
+            curve => {
+                let mut spec = RunSpec::curve(model, info, evaluator, curve, self.opts);
+                spec.iterate = self.iterate;
+                spec
+            }
         }
     }
 }
@@ -499,6 +510,27 @@ fn count(v: &Value, path: &str) -> Result<usize, String> {
     match v.as_u64().and_then(|n| usize::try_from(n).ok()) {
         Some(n) if n >= 1 => Ok(n),
         _ => Err(format!("{path}: expected an integer of at least 1")),
+    }
+}
+
+/// The most iterates of `F` in one evaluation of `F^k` (SPEC 8y). It has no source: it
+/// bounds the work of one evaluation.
+pub const MAX_ITERATE: u64 = 1_000_000;
+
+/// The `"start"` refusal on a map run that is not an EP run (SPEC 8y).
+const MAP_START_REFUSAL: &str = "start: only an EP run of a map takes this key";
+
+/// The key `iterate` of `obj` (SPEC 8y): a whole number from 1 to [`MAX_ITERATE`], 1 when the
+/// key is missing. It is read like `ntst`.
+pub fn parse_iterate(obj: &Map<String, Value>) -> Result<usize, String> {
+    match obj.get("iterate") {
+        None => Ok(1),
+        Some(v) => match v.as_u64() {
+            Some(k) if (1..=MAX_ITERATE).contains(&k) => Ok(k as usize),
+            _ => Err(format!(
+                "iterate: expected a whole number from 1 to {MAX_ITERATE}"
+            )),
+        },
     }
 }
 
@@ -573,6 +605,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
             "floquet",
             "bpc",
             "switch_direction",
+            "iterate",
         ],
         "",
     )?;
@@ -637,6 +670,12 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
     };
     if top.contains_key("tspan") {
         return Err("tspan: only an IVP or ITER run takes this key".into());
+    }
+    let iterate = parse_iterate(top)?;
+    let map_run = matches!(kind, Kind::MapEp | Kind::MapLp | Kind::MapPd | Kind::MapNs);
+    if top.contains_key("iterate") && !map_run {
+        // An ITER run returned above, so this is an ODE or a delay equation.
+        return Err("iterate: only a map takes this key".into());
     }
     let roots = parse_roots(top, kind)?;
     let (omega, lyapunov, coefficients) = parse_hopf_keys(top, kind)?;
@@ -718,13 +757,31 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
                         "{key}: only an LC, LPC, PD, NS or HOM run takes this key"
                     ));
                 }
-                if top.contains_key("start") {
-                    return Err("start: only an LC or HOM run takes this key".into());
+                match (kind, top.get("start")) {
+                    (_, None) => {}
+                    (Kind::MapEp, Some(Value::String(s))) if s == "pd" => {}
+                    (Kind::MapEp, Some(_)) => {
+                        return Err("start: an EP run of a map takes only \"pd\"".into());
+                    }
+                    (Kind::MapLp | Kind::MapPd | Kind::MapNs, Some(_)) => {
+                        return Err(MAP_START_REFUSAL.into());
+                    }
+                    (_, Some(_)) => {
+                        return Err("start: only an LC or HOM run takes this key".into());
+                    }
                 }
             }
             None
         }
     };
+    let pd_start = kind == Kind::MapEp && top.contains_key("start");
+    if pd_start && !iterate.is_multiple_of(2) {
+        return Err(
+            "start: a start at a PD point needs an even iterate, twice the iterate of the PD \
+             point"
+                .into(),
+        );
+    }
 
     let u0 = match top.get("u0") {
         // A start from an orbit has no default state.
@@ -903,7 +960,8 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
     }
 
     let mut setup = EpSetup::new(free, params, u0);
-    setup.start_is_special = start_is_special;
+    // A start at a PD point is always a start at a special point (SPEC 8y).
+    setup.start_is_special = start_is_special || pd_start;
     let problem = Problem {
         setup,
         opts,
@@ -922,6 +980,8 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         floquet,
         bpc,
         switch_direction,
+        iterate,
+        pd_start,
     };
     if mode == Mode::Cli {
         problem.check_u0_len(ir.n(), problem.setup.u0.len())?;
@@ -1170,6 +1230,9 @@ fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Probl
     if !ir.delays.is_empty() {
         return Err(DELAY_TYPE_REFUSAL.into());
     }
+    if top.contains_key("iterate") {
+        return Err("iterate: only a map takes this key".into());
+    }
     refuse_run_keys(top)?;
     let tspan = match top.get("tspan") {
         None => return Err("tspan: missing".into()),
@@ -1216,6 +1279,8 @@ fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Probl
         floquet: None,
         bpc: false,
         switch_direction: None,
+        iterate: 1,
+        pd_start: false,
     };
     if mode == Mode::Cli {
         problem.check_u0_len(ir.n(), problem.setup.u0.len())?;
@@ -1255,6 +1320,12 @@ fn parse_iter(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Prob
     }
     if ir.kind != ModelKind::Map {
         return Err("type ITER: the model is not a map; integrate an ODE with type IVP".into());
+    }
+    if top.contains_key("iterate") {
+        return Err("iterate: only an EP, LP, PD or NS run of a map takes this key".into());
+    }
+    if top.contains_key("start") {
+        return Err(MAP_START_REFUSAL.into());
     }
     refuse_run_keys(top)?;
     if top.contains_key("options") {
@@ -1314,6 +1385,8 @@ fn parse_iter(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Prob
         floquet: None,
         bpc: false,
         switch_direction: None,
+        iterate: 1,
+        pd_start: false,
     };
     if mode == Mode::Cli {
         problem.check_u0_len(ir.n(), problem.setup.u0.len())?;
@@ -2485,10 +2558,7 @@ mod tests {
                 put("ntst", json!(4)),
                 "ntst: only an LC, LPC, PD, NS or HOM run takes this key".into(),
             ),
-            (
-                put("start", json!(0)),
-                "start: only an LC or HOM run takes this key".into(),
-            ),
+            (put("start", json!(0)), MAP_START_REFUSAL.into()),
             (
                 put("switch", json!("BP1")),
                 "switch: only an EP run can switch branches".into(),

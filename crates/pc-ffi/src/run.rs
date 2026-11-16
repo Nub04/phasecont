@@ -261,12 +261,17 @@ pub(crate) fn poll_json(h: &RunHandle, st: &Status) -> Result<Value> {
                     })
                 })
                 .collect();
-            json!({
+            let mut branch = json!({
                 "points": count,
                 "stop": stop.as_ref().map(stop_name),
                 "warnings": h.run.warnings(b),
                 "specials": specials,
-            })
+            });
+            // A map EP or map curve run gives the k of F^k of each branch (SPEC 8y).
+            if let Some(k) = h.run.iterate(b) {
+                branch["iterate"] = json!(k);
+            }
+            branch
         })
         .collect();
     let mut out = json!({

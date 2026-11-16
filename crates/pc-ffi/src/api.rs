@@ -18,7 +18,9 @@ use crate::barrier::{
 use crate::ensemble::{self, EnsHandle};
 use crate::error::{Error, Result, bad_arg};
 use crate::import;
-use crate::json::problem::{Kind, Mode, map_type_runs, parse_options, parse_problem};
+use crate::json::problem::{
+    Kind, Mode, map_type_runs, parse_iterate, parse_options, parse_problem,
+};
 use crate::latex;
 use crate::model::{Build, DELAY_MODEL, ModelHandle, NOT_COMPILED};
 use crate::parse::{MAX_MODEL_TEXT, parse_model};
@@ -423,15 +425,25 @@ pub unsafe extern "C" fn model_info(model: u64, out_json: *mut *mut c_char) -> i
     })
 }
 
-/// Reads the options object of `model_equilibrium`; NULL means the defaults.
-fn engine_options(opts: *const c_char) -> Result<Options> {
+/// Reads the options object of `model_equilibrium` and its key `iterate` (SPEC 8y), which only
+/// a map takes; NULL means the defaults and iterate 1.
+fn engine_options(opts: *const c_char, map: bool) -> Result<(Options, usize)> {
     if opts.is_null() {
-        return Ok(Options::default());
+        return Ok((Options::default(), 1));
     }
     let text = unsafe { str_arg(opts, "options") }?;
-    let v: Value = serde_json::from_str(text)
+    let mut v: Value = serde_json::from_str(text)
         .map_err(|e| Error::BadProblem(format!("options: not valid JSON ({e})")))?;
-    parse_options(&v).map_err(Error::BadProblem)
+    let mut iterate = 1;
+    if let Some(o) = v.as_object_mut() {
+        iterate = parse_iterate(o).map_err(Error::BadProblem)?;
+        if o.remove("iterate").is_some() && !map {
+            return Err(Error::BadProblem(
+                "iterate: only a map takes this key".into(),
+            ));
+        }
+    }
+    Ok((parse_options(&v).map_err(Error::BadProblem)?, iterate))
 }
 
 /// True when the byte ranges of two non-NULL output buffers share a byte.
@@ -475,10 +487,10 @@ pub unsafe extern "C" fn model_equilibrium(
         }
         let u0 = unsafe { f64_arg(u0, nu, "u0") }?.to_vec();
         let p = unsafe { f64_arg(p, np, "p") }?.to_vec();
-        let opts = engine_options(opts)?;
+        let (opts, iterate) = engine_options(opts, h.map)?;
         let u_out = unsafe { f64_out(u_out, nu_out, "u_out") }?;
         let eig_out = unsafe { f64_out(eig_out, neig_out, "eig_out") }?;
-        let r = h.equilibrium(EpSetup::new(0, p, u0), opts)?;
+        let r = h.equilibrium(EpSetup::new(0, p, u0), opts, iterate)?;
         u_out.copy_from_slice(&r.u);
         for (i, (re, im)) in r.eig.iter().enumerate() {
             eig_out[i] = *re;

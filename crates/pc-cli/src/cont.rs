@@ -99,7 +99,12 @@ fn report(run: &Run, state: &RunState) -> ExitCode {
         if b > 0 {
             text.push(b',');
         }
-        text.extend_from_slice(b"{\"points\":[");
+        text.push(b'{');
+        // A map EP or map curve run gives the k of F^k of each branch (SPEC 8y).
+        if let Some(k) = run.iterate(b) {
+            let _ = write!(text, "\"iterate\":{k},");
+        }
+        text.extend_from_slice(b"\"points\":[");
         for (i, p) in run.points(b, 0, n).iter().enumerate() {
             if i > 0 {
                 text.push(b',');
