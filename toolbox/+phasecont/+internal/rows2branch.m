@@ -65,10 +65,13 @@ function br = rows2branch(m, free, p, n, points, specials, branchStatus, kind, g
 %
 % A column of an LP or PD curve of fixed points of a map (kind "LP" or
 % "PD" with M.IsMap and an empty GRID) is [a2, x(1..n), a1, mu_re(1..n),
-% mu_im(1..n), h, newton_iters], and a column of an NS curve of a map is
-% [a2, x(1..n), a1, kappa, mu_re(1..n), mu_im(1..n), h, newton_iters]. The
-% Branch has the multipliers as Eigenvalues, N-by-0 Tests and Codim2, no
-% Codim2Labels, Stable false and, on the NS curve, Kappa. A map LP curve
+% mu_im(1..n), codim2(1..4), h, newton_iters], and a column of an NS curve
+% of a map is [a2, x(1..n), a1, kappa, mu_re(1..n), mu_im(1..n),
+% codim2(1..8), h, newton_iters]. The codim-2 labels are LPPD, LPNS, CP and
+% R1 on the LP curve, LPPD, PDNS, GPD and R2 on the PD curve, and R1, R2,
+% R3, R4, LPNS, PDNS, NSNS and CH on the NS curve. The Branch has the
+% multipliers as Eigenvalues, N-by-0 Tests, the tests in Codim2, Stable
+% false and, on the NS curve, Kappa. A map LP curve
 % that v1.0.0 stored ran as an ODE LP curve of F and has the width 3n + 7
 % of that layout, and a map PD or NS curve that v1.0.0 stored is a curve of
 % cycles with a GRID. Both load in the layout they were stored in.
@@ -121,8 +124,15 @@ nmesh = 0;
 switch layout
     case "MAP"
         block = n + 1 + (kind == "NS");
-        labels = strings(1, 0);
-        extra = 0;
+        switch kind
+            case "LP"
+                labels = ["LPPD" "LPNS" "CP" "R1"];
+            case "PD"
+                labels = ["LPPD" "PDNS" "GPD" "R2"];
+            otherwise
+                labels = ["R1" "R2" "R3" "R4" "LPNS" "PDNS" "NSNS" "CH"];
+        end
+        extra = numel(labels);
     case "EP"
         block = n;
         labels = strings(1, 0);

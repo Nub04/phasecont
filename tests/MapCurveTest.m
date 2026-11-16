@@ -1,7 +1,8 @@
 classdef MapCurveTest < matlab.unittest.TestCase
-    % Tests slice 3 of map support (SPEC section 8w, test 9): continuation
-    % with Type "LP", "PD" or "NS" on a map follows a curve of fixed points
-    % in two parameters. Each test states its map and the closed form of the
+    % Tests slices 3 and 4 of map support (SPEC section 8w, test 9, as
+    % amended by section 8x): continuation with Type "LP", "PD" or "NS" on a
+    % map follows a curve of fixed points in two parameters and labels its
+    % codim-2 points. Each test states its map and the closed form of the
     % curve, and computes the multipliers itself. Every model is written here.
 
     properties (Constant)
@@ -80,8 +81,9 @@ classdef MapCurveTest < matlab.unittest.TestCase
         end
 
         function verifyCurveShape(testCase, br, type)
-            % A map curve has the multipliers as Eigenvalues and no tests,
-            % codim-2 values, special points or mesh.
+            % A map curve has the multipliers as Eigenvalues, no tests or
+            % mesh, and the codim-2 tests and labels of SPEC 8x. Its special
+            % points have those labels and no coefficient.
             npts = size(br.Alpha, 1);
             testCase.verifyGreaterThan(npts, 5);
             testCase.verifyEqual(br.Type, type);
@@ -89,9 +91,14 @@ classdef MapCurveTest < matlab.unittest.TestCase
             testCase.verifySize(br.U, [npts 2]);
             testCase.verifySize(br.Eigenvalues, [npts 2]);
             testCase.verifySize(br.Tests, [npts 0]);
-            testCase.verifySize(br.Codim2, [npts 0]);
-            testCase.verifyEmpty(br.Codim2Labels);
-            testCase.verifyEmpty(br.Specials);
+            labels = mapLabels(type);
+            testCase.verifyEqual(br.Codim2Labels, labels);
+            testCase.verifySize(br.Codim2, [npts numel(labels)]);
+            for k = 1:numel(br.Specials)
+                s = br.Specials(k);
+                testCase.verifyTrue(ismember(s.Label, labels), s.Label);
+                testCase.verifyTrue(isnan(s.Data.coefficient), s.Label);
+            end
             testCase.verifyEqual(br.Stable, false(npts, 1));
             testCase.verifyTrue(isnan(br.NTST));
             if type == "NS"
@@ -122,6 +129,15 @@ classdef MapCurveTest < matlab.unittest.TestCase
                 x = 2 ./ (3*(1 - b));
             end
             testCase.verifyEqual(br.U, [x b.*x], AbsTol = testCase.Tol);
+            % SPEC 8x test 4: the rest multiplier is sigma b, so LPPD is
+            % sigma (b - 1). The map has no multiplier besides the critical
+            % one and the rest, so LPNS or PDNS is NaN, and there is no
+            % special point for b in [0.1, 0.6].
+            testCase.verifyEqual(br.Codim2(:, 1), sigma*(b - 1), ...
+                AbsTol = testCase.Tol);
+            testCase.verifyTrue(all(isnan(br.Codim2(:, 2))));
+            testCase.verifyTrue(all(isfinite(br.Codim2(:, 3:4)), "all"));
+            testCase.verifyEmpty(br.Specials);
             for k = 1:numel(b)
                 what = type + " at b = " + b(k);
                 mu = br.Eigenvalues(k, :);
@@ -165,6 +181,22 @@ classdef MapCurveTest < matlab.unittest.TestCase
             testCase.verifyEqual(b, ones(size(b)), AbsTol = testCase.Tol);
             testCase.verifyEqual(br.U, [y y], AbsTol = testCase.Tol);
             testCase.verifyEqual(br.Kappa, -y, AbsTol = testCase.Tol);
+            % R1 to R4 test kappa - 1, kappa + 1, kappa + 1/2 and kappa. A
+            % 2-D map has no rest multipliers, so LPNS, PDNS and NSNS are
+            % NaN. The one special point is R3 at kappa = -1/2, which is
+            % y = 1/2 and a = 5/4.
+            kap = br.Kappa;
+            testCase.verifyEqual(br.Codim2(:, 1:4), [kap-1, kap+1, kap+0.5, kap], ...
+                AbsTol = testCase.Tol);
+            testCase.verifyTrue(all(isnan(br.Codim2(:, 5:7)), "all"));
+            testCase.assertSize(br.Specials, [1 1]);
+            r3 = br.Specials(1);
+            testCase.verifyEqual(r3.Label, "R3");
+            testCase.verifyEqual(r3.P, [1.25; 1], AbsTol = testCase.Tol);
+            testCase.verifyEqual(r3.U, [0.5; 0.5], AbsTol = testCase.Tol);
+            testCase.verifyEqual(r3.Data.kappa, -0.5, AbsTol = testCase.Tol);
+            testCase.verifyGreaterThan(a(r3.Index), 1.25);
+            testCase.verifyLessThan(a(r3.Index - 1), 1.25);
             for k = 1:numel(a)
                 what = "NS at a = " + a(k);
                 mu = br.Eigenvalues(k, :);
@@ -208,6 +240,8 @@ classdef MapCurveTest < matlab.unittest.TestCase
                     testCase.verifyEqual(got.Eigenvalues, br.Eigenvalues);
                     testCase.verifyEqual(got.Kappa, br.Kappa);
                     testCase.verifyEqual(got.Stable, br.Stable);
+                    testCase.verifyEqual(got.Codim2, br.Codim2);
+                    testCase.verifyEqual([got.Specials.Label], [br.Specials.Label]);
                     testCase.verifyCurveShape(got, br.Type);
                 end
                 r = phasecont.session.replay(files(f));
@@ -293,24 +327,30 @@ classdef MapCurveTest < matlab.unittest.TestCase
             testCase.assertSize(S.Records, [1 1]);
             rec = S.Records{1};
             n = 2;
-            testCase.assertEqual(rec.Stride, 3*n + 4);
-            h = rec.Stride - 1;
+            testCase.assertEqual(rec.Stride, 3*n + 8);
+            % The four codim-2 rows of this version become the three rows
+            % of v1.0.0.
+            head = 3*n + 2;
             points = rec.Points;
             specials = rec.Specials;
             for b = 1:numel(points)
                 k = size(points{b}, 2);
-                points{b} = [points{b}(1:h-1, :); NaN(3, k); points{b}(h:end, :)];
+                points{b} = [points{b}(1:head, :); NaN(3, k); points{b}(end-1:end, :)];
                 k = size(specials{b}, 2);
-                specials{b} = [specials{b}(1:h-1, :); NaN(3, k); specials{b}(h:end, :)];
+                specials{b} = [specials{b}(1:head, :); NaN(3, k); specials{b}(end-1:end, :)];
             end
             json = strrep(rec.Json, """stride"":" + rec.Stride, ...
-                """stride"":" + (rec.Stride + 3));
+                """stride"":" + (rec.Stride - 1));
             testCase.assertNotEqual(json, rec.Json);
+            old = json;
+            json = strrep(json, """codim2_labels"":[""LPPD"",""LPNS"",""CP"",""R1""]", ...
+                """codim2_labels"":[""CP"",""BT"",""ZH""]");
+            testCase.assertNotEqual(json, old);
             f = struct("Kind", rec.Kind, "Problem", rec.Problem, "U0", rec.U0, ...
                 "P", rec.P, "ModelSha", rec.ModelSha, "Type", rec.Type, ...
                 "Free", rec.Free, "Grid", rec.Grid, "N", rec.N, "Json", json, ...
                 "Points", {points}, "Specials", {specials}, ...
-                "Stride", rec.Stride + 3);
+                "Stride", rec.Stride - 1);
             S.Records{1} = phasecont.internal.RunRecord(f);
             header = struct("Created", "2026-11-14T00:00:00Z", ...
                 "EngineName", "pckern", "EngineVersion", "1.0.0", ...
@@ -342,35 +382,37 @@ classdef MapCurveTest < matlab.unittest.TestCase
 
         function mapCurveRowsByHand(testCase)
             % rows2branch on a map model with an empty grid reads the map
-            % layouts: [a2, x(1..n), a1, mu_re, mu_im, h, it] for LP and PD
-            % and [a2, x, a1, kappa, mu_re, mu_im, h, it] for NS.
+            % layouts: [a2, x(1..n), a1, mu_re, mu_im, codim2(1..4), h, it]
+            % for LP and PD and [a2, x, a1, kappa, mu_re, mu_im,
+            % codim2(1..8), h, it] for NS.
             m = testCase.model(testCase.Henon);
             st = struct("points", 2, "stop", "Bounds", "warnings", [], ...
                 "specials", []);
             pts = [ ...
-                0.3, 1 2, -0.1, 1 -0.3, 0 0, 0.01, 2; ...
-                0.4, 3 4, -0.2, 1 -0.4, 0 0, 0.02, 3].';
+                0.3, 1 2, -0.1, 1 -0.3, 0 0, 0.7 NaN 5 6, 0.01, 2; ...
+                0.4, 3 4, -0.2, 1 -0.4, 0 0, 0.6 NaN 7 8, 0.02, 3].';
             for kind = ["LP" "PD"]
                 br = phasecont.internal.rows2branch(m, [1 2], [0; 0], 2, ...
-                    pts, zeros(10, 0), st, kind, []);
+                    pts, zeros(14, 0), st, kind, []);
                 testCase.verifyEqual(br.Type, kind);
                 testCase.verifyEqual(br.Alpha, [-0.1 0.3; -0.2 0.4]);
                 testCase.verifyEqual(br.U, [1 2; 3 4]);
                 testCase.verifyEqual(br.Eigenvalues, ...
                     complex([1 -0.3; 1 -0.4], 0));
                 testCase.verifySize(br.Tests, [2 0]);
-                testCase.verifySize(br.Codim2, [2 0]);
-                testCase.verifyEmpty(br.Codim2Labels);
+                testCase.verifyEqual(br.Codim2, [0.7 NaN 5 6; 0.6 NaN 7 8]);
+                testCase.verifyEqual(br.Codim2Labels, mapLabels(kind));
                 testCase.verifyEqual(br.Stable, false(2, 1));
                 testCase.verifyEqual(br.StepSize, [0.01; 0.02]);
                 testCase.verifyEqual(br.NewtonIters, [2; 3]);
                 testCase.verifyTrue(isnan(br.NTST));
             end
             ns = [ ...
-                0.3, 1 2, -0.1, 0.5, 0.5 0.5, 0.8 -0.8, 0.01, 2; ...
-                0.4, 3 4, -0.2, 0.6, 0.6 0.6, 0.7 -0.7, 0.02, 3].';
+                0.3, 1 2, -0.1, 0.5, 0.5 0.5, 0.8 -0.8, 1:8, 0.01, 2; ...
+                0.4, 3 4, -0.2, 0.6, 0.6 0.6, 0.7 -0.7, 11:18, 0.02, 3].';
             sst = st;
-            sst.specials = struct("label", "NS", "index", 1);
+            sst.specials = struct("label", "R3", "index", 1, ...
+                "coefficient", []);
             br = phasecont.internal.rows2branch(m, [1 2], [0; 0], 2, ...
                 ns, ns(:, 2), sst, "NS", []);
             testCase.verifyEqual(br.Type, "NS");
@@ -379,7 +421,10 @@ classdef MapCurveTest < matlab.unittest.TestCase
             testCase.verifyEqual(br.Eigenvalues, ...
                 [complex(0.5, 0.8) complex(0.5, -0.8); ...
                  complex(0.6, 0.7) complex(0.6, -0.7)]);
-            testCase.verifySize(br.Codim2, [2 0]);
+            testCase.verifyEqual(br.Codim2, [1:8; 11:18]);
+            testCase.verifyEqual(br.Codim2Labels, mapLabels("NS"));
+            testCase.verifyEqual(br.Specials(1).Label, "R3");
+            testCase.verifyTrue(isnan(br.Specials(1).Data.coefficient));
             testCase.verifyEqual(br.Specials(1).Data.kappa, 0.6);
             testCase.verifyEqual(br.Specials(1).U, [3; 4]);
         end
@@ -407,4 +452,16 @@ classdef MapCurveTest < matlab.unittest.TestCase
             testCase.verifyEqual(x, [1 2; 2 3; 3 4; 2 1; 1 2]);
         end
     end
+end
+
+function labels = mapLabels(type)
+% The codim-2 labels of a curve of fixed points of a map (SPEC 8x).
+switch type
+    case "LP"
+        labels = ["LPPD" "LPNS" "CP" "R1"];
+    case "PD"
+        labels = ["LPPD" "PDNS" "GPD" "R2"];
+    otherwise
+        labels = ["R1" "R2" "R3" "R4" "LPNS" "PDNS" "NSNS" "CH"];
+end
 end

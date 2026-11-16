@@ -74,9 +74,11 @@ function br = continuation(m, start, options)
 %   -1, and Type = "NS" for an NS point, a pair of multipliers exp(+-i*theta)
 %   on the unit circle. C.U holds the fixed point, C.Alpha [a b] and
 %   C.Eigenvalues the multipliers; an NS curve also has C.Kappa, which is
-%   cos(theta). These curves do not detect codim-2 points yet: C.Tests and
-%   C.Codim2 are N-by-0 and C.Specials is empty. Detect, Switch, Var, NTST,
-%   NCOL and MeshAdapt do not apply. Type = "H", "LC", "LPC" or "HOM" on a
+%   cos(theta). C.Tests is N-by-0, C.Codim2 holds the codim-2 tests and
+%   C.Specials the codim-2 points: LPPD, LPNS, CP and R1 on an LP curve;
+%   LPPD, PDNS, GPD and R2 on a PD curve; R1 to R4, LPNS, PDNS, NSNS and CH
+%   on an NS curve. Their Data.coefficient is NaN. Detect, Switch, Var,
+%   NTST, NCOL and MeshAdapt do not apply. Type = "H", "LC", "LPC" or "HOM" on a
 %   map raises phasecont:engine:unsupportedModel.
 %
 %   BR = phasecont.continuation(M, X0, Free = "r", Roots = struct(N = 30,

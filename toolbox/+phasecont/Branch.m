@@ -67,7 +67,7 @@ classdef Branch < handle
     %                psi_PD psi_NS] for "LC" (N-by-0 for a delay "LC"); N-by-0
     %                on a curve
     %   Codim2       codim-2 test values at each point of a curve, N-by-k
-    %                (N-by-0 for Type "EP" and "LC" and for a curve of a map)
+    %                (N-by-0 for Type "EP" and "LC")
     %   Codim2Labels the k labels of the columns of Codim2: ["CP" "BT" "ZH"]
     %                for "LP", ["GH" "BT" "ZH" "HH"] for "H" (columns l1 and hh,
     %                ["GH" "HH"], for "H" of a delay model), ["LPPD" "LPNS"
@@ -75,8 +75,10 @@ classdef Branch < handle
     %                "PD", ["R1" "R2" "R3" "R4" "LPNS" "PDNS" "CH"] for "NS",
     %                ["NSA" "BLS" "BLU" "NSF" "NDS" "NDU" "TLS" "TLU" "ZES"
     %                "ZEU" "OFS" "OFU" "IFS" "IFU"] for "HOM" (the last two
-    %                columns are NaN unless InclinationFlips was true); none
-    %                for a curve of a map
+    %                columns are NaN unless InclinationFlips was true);
+    %                ["LPPD" "LPNS" "CP" "R1"] for "LP" of a map, ["LPPD"
+    %                "PDNS" "GPD" "R2"] for "PD" of a map and ["R1" "R2" "R3"
+    %                "R4" "LPNS" "PDNS" "NSNS" "CH"] for "NS" of a map
     %   Period       period of the orbit at each point, N-by-1 (cycles
     %                only); for "HOM", the fixed truncation time T
     %   X0           the saddle at each point, N-by-n ("HOM" only)
