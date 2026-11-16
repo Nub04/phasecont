@@ -4,13 +4,15 @@ classdef PhasePlane < handle
     %   app = phasecont.app.PhasePlane(m)
     %   app = phasecont.app.PhasePlane("diagram.pcsession.json")
     %
-    % M is a phasecont.Model with at least two variables. A session file is
+    % M is a phasecont.Model: an ODE with at least two variables, or a map
+    % (see the map views below). A session file is
     % loaded with phasecont.Session.load and its trajectories and
     % equilibria are drawn. A click in the plot starts a run from that
     % point (the other variables take the slice values): Click mode
     % "Integrate" integrates the model, "Equilibrium" runs Newton's method
     % from the point and marks the result, filled when every eigenvalue has
-    % a negative real part and open otherwise. The check boxes draw a
+    % a negative real part (on a map, when every multiplier has modulus
+    % below 1) and open otherwise. The check boxes draw a
     % normalized direction field on a 20-by-20 grid and the nullclines on a
     % 101-by-101 grid. The model must be autonomous for the field, the
     % nullclines and the equilibria.
@@ -22,11 +24,14 @@ classdef PhasePlane < handle
     %                 the model names (the first two variables when it
     %                 names none); any other pair starts at
     %                 Init +/- max(1, |Init|)
-    %   @ total       the integration length T. Without it the T field is
-    %                 empty and a click asks for T instead of integrating.
+    %   @ total       the integration length T, or on a map the number of
+    %                 iterates N. Without it the field is empty and a click
+    %                 asks for a value instead of running.
     %   @ meth, dt, bound
     %                 not used. The app integrates with the Dormand-Prince
-    %                 5(4) pair and a note says so.
+    %                 5(4) pair, or iterates a map one step at a time, and a
+    %                 note says so. On a map the note names dt, bound,
+    %                 bounds and any meth that does not start with d.
     % The view range only changes the display. Each integration uses
     % Hmax = T/500 so the drawn lines stay smooth.
     %
@@ -219,7 +224,8 @@ classdef PhasePlane < handle
             % PT = FINDEQUILIBRIUM(APP, X, Y) runs Newton's method from the
             % point (X, Y), with the other variables at the slice values,
             % and marks the equilibrium. The marker is filled when every
-            % eigenvalue has a negative real part and open otherwise. A
+            % eigenvalue has a negative real part (on a map, when every
+            % multiplier has modulus below 1) and open otherwise. A
             % failure to converge raises the engine error.
             arguments
                 app (1,1) phasecont.app.PhasePlane

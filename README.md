@@ -87,9 +87,9 @@ PhaseCont reads only a few of the `@` options in an `.ode` file, and only in the
 
 - `xp` and `yp` pick the variables on the two axes.
 - `xlo`, `xhi`, `ylo` and `yhi` set the window.
-- `total` fills in the integration length T.
+- `total` fills in the integration length T, or on a map the number of iterates N.
 
-The app names `meth`, `dt` and `bound` in its notes and does not use them, since it always integrates with the Dormand-Prince 5(4) pair. `simulate`, `equilibrium`, `continuation` and `ensemble` read no `@` options. The first `simulate` call on a model that sets any of them warns once with the ID `phasecont:simulate:ignoredOption` and names them, and the result is the same as without them. The one exception is a `meth` value that starts with `d`, such as `meth=discrete`, which makes the model a map (see below) and gives no warning. Set the solver with the `RelTol`, `AbsTol`, `MaxSteps` and `Hmax` options of `simulate` instead.
+The app names `meth`, `dt` and `bound` in its notes and does not use them, since it always integrates with the Dormand-Prince 5(4) pair. On a map it iterates one step at a time and names `dt`, `bound`, `bounds` and any `meth` that does not start with `d`. `simulate`, `equilibrium`, `continuation` and `ensemble` read no `@` options. The first `simulate` call on a model that sets any of them warns once with the ID `phasecont:simulate:ignoredOption` and names them, and the result is the same as without them. The one exception is a `meth` value that starts with `d`, such as `meth=discrete`, which makes the model a map (see below) and gives no warning. Set the solver with the `RelTol`, `AbsTol`, `MaxSteps` and `Hmax` options of `simulate` instead.
 
 ## What the `.ode` reader refuses
 

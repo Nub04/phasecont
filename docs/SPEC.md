@@ -37,7 +37,7 @@ Parsing rules:
 | Construct | Example | v1 status |
 |---|---|---|
 | ODE | `x'=...`, `dx/dt=...` | full |
-| Map | `x(t+1)=...`, or `x'=...` with `@ meth=discrete` | parse, evaluate and iterate (Section 8u), fixed points, multipliers and a branch of fixed points in one parameter with LP, BP, PD and NS (Section 8v); curves, cycles, PhasePlane and ensemble refuse maps (Section 8t) |
+| Map | `x(t+1)=...`, or `x'=...` with `@ meth=discrete` | parse, evaluate and iterate (Section 8u), fixed points, multipliers and a branch of fixed points in one parameter with LP, BP, PD and NS (Section 8v), LP, PD and NS curves of fixed points (Section 8w) with codim-2 labels (Section 8x), period-k points (Section 8y), and PhasePlane (Section 8z); the other curve types, cycles and ensemble refuse maps (Section 8t) |
 | Initial data | `init x=1,y=2`, `x(0)=1` | full |
 | Parameters | `par a=1,b=2` | full |
 | Numbers, derived parameters | `number c=3`, `!d=a*b` | full |
