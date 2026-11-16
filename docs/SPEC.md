@@ -2275,7 +2275,7 @@ The refusal text becomes "the model is a map (`x(t+1)=...` or `@ meth=discrete`)
 
 **MATLAB.**
 - `phasecont.continuation(m, start, Type = "LP", Free = [a1 a2])` on a map follows the LP curve of fixed points, and Types `"PD"` and `"NS"` follow the PD and NS curves. They take the start and the options of the ODE LP curve: Detect, Switch, Var, NTST, NCOL and MeshAdapt are refused as on that curve.
-- The Branch has Kind `"LP"`, `"PD"` or `"NS"`, U the fixed point, Alpha the two parameters, Eigenvalues the multipliers, Tests N-by-0, Codim2 N-by-0, no Specials and Stable false at every point, since a multiplier lies on the unit circle. The NS branch has Kappa, cos θ of the critical multipliers e^{±iθ}, as on an NS curve of cycles.
+- The Branch has Type `"LP"`, `"PD"` or `"NS"`, U the fixed point, Alpha the two parameters, Eigenvalues the multipliers, Tests N-by-0, Codim2 N-by-0, no Specials and Stable false at every point, since a multiplier lies on the unit circle. The NS branch has Kappa, cos θ of the critical multipliers e^{±iθ}, as on an NS curve of cycles.
 - `Branch.isCycleType`, `internal.rows2branch`, `internal.latexTable` and `latex.figureFromBranch` treat these branches as curves of fixed points, not of cycles. On an ODE, `"PD"` and `"NS"` keep their meaning.
 - Type `"H"`, `"LC"`, `"LPC"` and `"HOM"` on a map raise `phasecont:engine:unsupportedModel`, as does a map PD or NS problem with a mesh.
 - A map LP curve saved by 1.0.0 was run as an ODE LP curve on F and has rows of width 3n + 7. `rows2branch` loads it as stored, in the layout of an ODE LP curve. Its replay runs the map LP curve or is refused, so it gives `Pass = false`. A map PD or NS curve saved by 1.0.0 is a cycle curve with a mesh. It loads as stored, and its replay is refused with `Pass = false`.
@@ -2533,6 +2533,35 @@ Every `BadJob` reaches MATLAB as `phasecont:engine:badProblem` and every `Unsupp
 6. Rust, `pc-cli`: `ensemble` with a job file that uses `iter` on `logistic_map.ode` exits with code 0 and prints the states.
 7. MATLAB, `tests/EnsembleMapTest.m`: on the logistic map and the Hénon map, `ensemble` in double precision on the CPU equals a MATLAB loop bit for bit at the samples and at n1, and equals `simulate` over the same span. In single precision on the CPU it equals a loop over `single` values bit for bit. `x(t+1)=x+t` with samples gives the values of test 2. Each of `Dt`, `Rtol`, `Atol`, `Hmax` and `MaxSteps` raises `mapOption`, and each bad TSPAN ([0 1.5], [0 2 1], [0 Inf], [0 2*flintmax], [0 2^32]) raises `badOption`. [0 2^24+1] in single precision raises `phasecont:engine:badProblem`. x(t+1)=x^2 from 10 warns `memberStopped` with "n = 20" and has Status `notFinite`, `TReached` 8 and `Accepted` 8, and `Bounds` stops a member with `bounds` and no warning. `refine` of a single-precision map result equals the double-precision result. `Label` reports the backend and the precision. `Job.Method` is `"iter"` and `Job.MaxSteps` is n1 - n0. An ODE still runs with `Dt` and with `Rtol` and `Atol`, and the `EnsembleTest` tests stay as they are.
 8. `cargo test` and the full MATLAB suite stay green (0 failed).
+
+## 8ab. Maps, slice 8: docs
+
+Slice 8 closes the map phase with documentation. It changes the docs, the package script `scripts/packageToolbox.m`, `tests/PackageTest.m` and a new `tests/MapReadmeTest.m`, and no engine code, no other MATLAB code, no C ABI and no session format. Sections 8t to 8aa each updated the docs for what they added; this slice adds the rest.
+
+Owner approval: the owner approved slices 3 to 8 of the map plan on 2026-11-15, including plan decision 9, which allows the word "map" in the package text once maps work.
+
+**README.**
+- "What it does" gets a bullet on maps: iteration, fixed points and period-k points with their multipliers, continuation in one parameter with LP, BP, PD and NS points and their coefficients, LP, PD and NS curves in two parameters with codim-2 labels, the phase-plane app, `phasecont.cobweb` and `phasecont.ensemble`. It links to a new heading "Maps".
+- The map paragraphs move under the heading "## Maps", which sits after "What the `.ode` reader refuses" and before "Models without an `.ode` file".
+- The sentences that say other types of `continuation` on a map raise an error and that curves and period-k points are planned are removed. In their place come a paragraph on the curves of Sections 8w and 8x, with the Hénon example below, and a paragraph on `Iterate` and `Switch = "PD1"` of Section 8y, with the logistic example below. The sentence on sessions now covers iterations, branches and curves of fixed points, and runs at any iterate.
+- The Hénon example: `henon.ode` with `par a=0.2, b=0.3`, `x(t+1)=1-a*x^2+y`, `y(t+1)=b*x` and `init x=1.09, y=0.33`. `equilibrium` from [1.09 0.33], `continuation` with `Free = "a"`, `Direction = 1` and `Bounds = [-1 0.5]`, its PD point at a = 3(1 - b)^2/4 = 0.3675, and the PD curve from that point with `Free = ["a" "b"]` and `Bounds = [0.1 0.6]`.
+- The logistic example: `Switch = "PD1"` on the EP branch of the logistic map, `brs(2).Iterate` equal to 2, the first PD point of the 2-cycle at r = 1 + sqrt(6), and `equilibrium(m, 0.8, Params = struct(r = 3.2), Iterate = 2)`, which gives x = 0.7995 with the multiplier 0.16.
+
+**CHANGELOG.** "Added" gets a bullet on curves of fixed points of maps and one on period-k points. The "Changed" bullet on maps lists the Types `"EP"`, `"LP"`, `"PD"` and `"NS"` and says that `"H"`, `"LC"`, `"LPC"` and `"HOM"` on a map raise a `phasecont:` error. "Known limits" lists every call that runs a map, says that a cycle of a map is followed as a fixed point of its k-th iterate with `Iterate`, that the codim-2 points of map curves have no normal form coefficients, and that the least period of a period-k point is not checked.
+
+**Language reference.** The Map row of `crates/pc-ode/docs/language.md` gets the status of the Map row of Section 2, with the sections of slices 2 to 7.
+
+**Package text.** The `Description` of `scripts/packageToolbox.m` gets the sentence "For maps it iterates the model, follows fixed points and period-k points in one parameter, detects their fold, period-doubling and Neimark-Sacker points, follows those points in two parameters, and draws cobweb plots." after the sentence on LaTeX. `PackageTest` checks that sentence, and its pattern of forbidden words drops `\<maps?\>` and keeps `maci64`, `intel` and `matcont`.
+
+**Fix to Section 8w.** The bullet on the Branch of a map curve said "Kind"; the property is `Type`, and the bullet now says so.
+
+**What this slice does not do.** It does not change the version, which stays 1.0.0, and it does not release, push or publish the toolbox.
+
+**Acceptance tests (slice 8).**
+1. MATLAB, `tests/MapReadmeTest.m`: the test writes `logistic.ode` and `henon.ode` with the text of the README into a temporary folder, runs the README calls of the "Maps" section as written there, and checks the values the README states, to 1e-8 unless noted. `simulate` from 0.1 over [0 50] gives 51 rows. On the logistic map at r = 2.5, `equilibrium` from 0.6 gives x = 0.6 with the multiplier -0.5, and the EP branch has one PD point, at r = 3 and x = 2/3. On the Hénon map, the EP branch has one PD point, at a = 3(1 - b)^2/4 = 0.3675, and the PD curve from it has `Type` `"PD"`, satisfies a = 3(1 - b)^2/4 at every point, and has b in [0.1, 0.6], from 0.3 at its start up to 0.6. `Switch = "PD1"` gives two Branches with `Iterate` 1 and 2, the first PD point of the second is at r = 1 + sqrt(6), and the period-2 point at r = 3.2 is x = 0.7995 to 1e-4 with the multiplier 0.16 and `Stable` true. A further test checks that `README.md` still holds both models and these calls with their comments, so a change to the README fails the test until the test changes with it.
+2. `PackageTest` passes with the new sentence and the new pattern.
+3. `LC_ALL=C grep -c` of the em dash gives 0 in every file this slice changes.
+4. `cargo test` and the full MATLAB suite stay green (0 failed).
 
 ## 9. Acceptance tests
 
