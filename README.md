@@ -142,7 +142,7 @@ br = phasecont.continuation(m, eq, Free = "r", Direction = 1, Bounds = [2 3.5]);
 br.points("PD")                                    % r = 3, x = 2/3
 ```
 
-On a map, `Tests` has the four columns `[LP BP PD NS]`, `Stable` is true where every multiplier has modulus below 1, and `Detect` takes a subset of `["LP" "BP" "PD" "NS"]`, all four by default. `Data.coefficient` holds the fold coefficient at an LP point, the period-doubling coefficient b at a PD point (b > 0 is supercritical) and the Neimark-Sacker coefficient d at an NS point (d < 0 is supercritical). An NS point also has the angle θ of its multipliers e^{±iθ} in `Data.values.theta`. Sessions save and replay iterations and branches of fixed points. Other types of `continuation` on a map raise a `phasecont:` error, and `ensemble` refuses a map with `phasecont:engine:unsupportedModel`. `Model.rhs` evaluates the right-hand side of a map. Curves of fixed points in two parameters and period-k points are planned.
+On a map, `Tests` has the four columns `[LP BP PD NS]`, `Stable` is true where every multiplier has modulus below 1, and `Detect` takes a subset of `["LP" "BP" "PD" "NS"]`, all four by default. `Data.coefficient` holds the fold coefficient at an LP point, the period-doubling coefficient b at a PD point (b > 0 is supercritical) and the Neimark-Sacker coefficient d at an NS point (d < 0 is supercritical). An NS point also has the angle θ of its multipliers e^{±iθ} in `Data.values.theta`. Sessions save and replay iterations and branches of fixed points. Other types of `continuation` on a map raise a `phasecont:` error. `ensemble` iterates a map too (see the ensemble section). `Model.rhs` evaluates the right-hand side of a map. Curves of fixed points in two parameters and period-k points are planned.
 
 `phasecont.app.PhasePlane` shows a map too. On a map with two or more variables, a click iterates it N times (the T field is labeled N) and draws the iterates as dots, a click in mode "Equilibrium" marks the fixed point as stable when every multiplier has modulus below 1, and the nullcline of a variable is the curve where the map leaves that variable unchanged. A map is iterated forward only and has no direction field. On a map with one variable that does not use `t`, the app opens a cobweb view: the graph y = F(x), the diagonal y = x and the staircase of each run. `phasecont.cobweb` draws the same plot in any axes:
 
@@ -193,6 +193,14 @@ app = phasecont.app.ModelEditor;
 ## Test your GPU
 
 An ensemble runs many trajectories of one model at once, for a grid of start states or parameter sets. It does not speed up a single run or a continuation. Those stay on the CPU in double precision.
+
+On a map, `ensemble` iterates each member, one iterate per unit of time, and `t` inside the model is the iterate index. `TSPAN` is `[n0 n1]` or `[n0 s1 ... n1]`, increasing whole numbers with `n1 - n0` at most 4294967295, and in single precision every entry must be at most 2^24 in magnitude and two neighboring entries at most 2^24 apart. `Precision` is the only required option. `Dt`, `Rtol`, `Atol`, `Hmax` and `MaxSteps` raise `phasecont:ensemble:mapOption`. A member stops early only with `Status` `"bounds"` or `"notFinite"`, and its states at the times after `TReached` are NaN. With `logistic.ode` from the map section, this iterates 1000 start states at r = 3.7 and records them at n = 100 and n = 200:
+
+```matlab
+m = phasecont.Model("logistic.ode");
+r = phasecont.ensemble(m, linspace(0.1, 0.9, 1000), 3.7, [0 100 200], ...
+        Backend="auto", Precision="single");
+```
 
 The ensemble engine has backends for the CPU, for CUDA (NVIDIA, through NVRTC), for OpenCL (NVIDIA, AMD and Intel) and for Metal (Apple GPUs, single precision only). The CUDA and OpenCL backends have run on an NVIDIA RTX 5060 (2026-11-07), and the OpenCL backend on an Intel Arc 140T (2026-11-08, again on 2026-11-10 through MATLAB and the command line tool). The self-test below passed on both in single and double precision. No AMD device has run. The Metal backend has run only on the virtual GPU of GitHub's hosted macOS runners, never on Apple hardware, so a run on an AMD card or a Mac is the first real check. Run these in order:
 
