@@ -74,14 +74,19 @@ classdef MapReadmeTest < matlab.unittest.TestCase
 
     methods (Test)
         function readmeHoldsTheseModelsAndLines(testCase)
-            % The tests below copy the README. This test fails when the
-            % README changes, so the copy and the README stay the same.
+            % The tests below copy the "Maps" section of the README. This
+            % test fails when that section changes, so the copy and the
+            % README stay the same.
             readme = string(fileread(fullfile(testCase.Root, "README.md")));
             readme = replace(readme, sprintf("\r\n"), newline);
-            testCase.verifySubstring(readme, testCase.Logistic + "```");
-            testCase.verifySubstring(readme, testCase.Henon + "```");
+            maps = extractAfter(readme, newline + "## Maps" + newline);
+            testCase.assertFalse(ismissing(maps), "README.md has no Maps section");
+            maps = extractBefore(maps, newline + "## ");
+            testCase.assertFalse(ismissing(maps), "the Maps section has no next heading");
+            testCase.verifySubstring(maps, testCase.Logistic + "```");
+            testCase.verifySubstring(maps, testCase.Henon + "```");
             for line = testCase.Lines
-                testCase.verifySubstring(readme, line);
+                testCase.verifySubstring(maps, line);
             end
         end
 
@@ -99,7 +104,7 @@ classdef MapReadmeTest < matlab.unittest.TestCase
             testCase.verifyEqual(string(line.Marker), ".");
             testCase.verifyEqual(line.YData(:), tr.X);
 
-            eq =phasecont.equilibrium(m, 0.6);
+            eq = phasecont.equilibrium(m, 0.6);
             testCase.verifyEqual(eq.U, 0.6, AbsTol = testCase.Tol);
             testCase.verifyEqual(eq.Eigenvalues, -0.5, AbsTol = testCase.Tol);
 
@@ -129,6 +134,15 @@ classdef MapReadmeTest < matlab.unittest.TestCase
             testCase.verifyLessThanOrEqual(b, 0.6 + testCase.Tol);
             testCase.verifyEqual(b(1), 0.3, AbsTol = testCase.Tol);
             testCase.verifyEqual(max(b), 0.6, AbsTol = testCase.Tol);
+            % The text after the block: U is the fixed point, Eigenvalues
+            % the multipliers, one of them -1 on a PD curve, and Stable is
+            % false.
+            x = pdc.U(:, 1);
+            y = pdc.U(:, 2);
+            testCase.verifyEqual([1 - a.*x.^2 + y, b.*x], [x y], AbsTol = testCase.Tol);
+            testCase.verifyEqual(min(abs(pdc.Eigenvalues + 1), [], 2), ...
+                zeros(numel(b), 1), AbsTol = testCase.Tol);
+            testCase.verifyEqual(pdc.Stable, false(numel(b), 1));
         end
 
         function periodTwoPoints(testCase)
@@ -139,6 +153,12 @@ classdef MapReadmeTest < matlab.unittest.TestCase
             testCase.verifySize(brs, [1 2]);
             testCase.verifyEqual(brs(2).Iterate, 2);
             testCase.verifyEqual([brs.Iterate], [1 2]);
+            % The text before the block: the branch at iterate 2 starts at
+            % the first PD point of the first branch.
+            pd1 = brs(1).points("PD");
+            testCase.assertNotEmpty(pd1);
+            testCase.verifyEqual([brs(2).Alpha(1) brs(2).U(1, :)], ...
+                [pd1(1).P(1) pd1(1).U(:)'], AbsTol = testCase.Tol);
             pd2 = brs(2).points("PD");
             testCase.assertNotEmpty(pd2);
             testCase.verifyEqual(pd2(1).P(1), 1 + sqrt(6), AbsTol = testCase.Tol);
