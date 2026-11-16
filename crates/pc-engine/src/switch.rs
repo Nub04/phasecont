@@ -17,6 +17,19 @@ use pc_linalg::{null_left, null_right, singular_values};
 const ROOT_TOL: f64 = 1e-6;
 /// A tangent component below this counts as zero when its sign is fixed.
 const SIGN_TOL: f64 = 1e-12;
+/// The second smallest singular value of a matrix whose kernel is taken to be the span of
+/// one vector (two for `switch_bp`, whose matrix is n by n + 1) must exceed the smallest by
+/// this factor. A PhaseCont value without a source, set by the owner's direction on
+/// 2026-11-16 (SPEC Section 8y).
+const KERNEL_GAP: f64 = 1e3;
+
+/// Whether the two smallest singular values `sv` (in decreasing order) are apart by more
+/// than [`KERNEL_GAP`]. It closes the gap that the two threshold checks leave: values both
+/// above 1e-8 and at most 1e-6 times the scale pass them, though the kernel may be larger.
+fn kernel_gap_ok(sv: &[f64]) -> bool {
+    let n = sv.len();
+    n < 2 || sv[n - 2] > KERNEL_GAP * sv[n - 1]
+}
 
 /// Index into `branch.specials` of the special point named `name`: a label followed by a
 /// 1-based ordinal among the specials with that label. "BP1" is the first BP, "H2" the
@@ -98,7 +111,7 @@ pub fn switch_bp(
     // a point whose quadratic form has no pair of real roots.
     let sv = singular_values(&fx, n, n + 1)?;
     let not_simple = n >= 1 && sv[n - 1] > 1e-6 * sv[0].max(1.0);
-    if not_simple || (n >= 2 && sv[n - 2] <= 1e-8 * sv[0]) {
+    if not_simple || (n >= 2 && sv[n - 2] <= 1e-8 * sv[0]) || !kernel_gap_ok(&sv) {
         return Err(EngineError::BadProblem("BP is not simple".into()));
     }
     let phi = null_right(&fx, n, n + 1, 2)?;
@@ -186,9 +199,10 @@ pub fn pd_start(
 /// The first tangent `(q, 0)/|q|` of the period-doubled branch at `(u, alpha)`, or `None`
 /// when the kernel of `A + I` is not one-dimensional. With `A` the `JacU` of `model` and
 /// `sv_0 >= ... >= sv_{n-1}` the singular values of `A + I`, that is when
-/// `sv_{n-1} > 1e-6 max(sv_0, 1)` or, for `n >= 2`, `sv_{n-2} <= 1e-8 max(sv_0, 1)`. These
-/// are the checks of [`switch_bp`] with the second one also scaled by `max(sv_0, 1)`: when
-/// `A` is close to `-I` every singular value is small.
+/// `sv_{n-1} > 1e-6 max(sv_0, 1)` or, for `n >= 2`, `sv_{n-2} <= 1e-8 max(sv_0, 1)` or
+/// `sv_{n-2} <= 1e3 sv_{n-1}` ([`kernel_gap_ok`]). The first two are the checks of
+/// [`switch_bp`] with the second one also scaled by `max(sv_0, 1)`: when `A` is close to
+/// `-I` every singular value is small.
 fn pd_tangent(
     model: &mut dyn ModelEval,
     params: &[f64],
@@ -212,7 +226,7 @@ fn pd_tangent(
     }
     let sv = singular_values(&a, n, n)?;
     let floor = sv[0].max(1.0);
-    if sv[n - 1] > 1e-6 * floor || (n >= 2 && sv[n - 2] <= 1e-8 * floor) {
+    if sv[n - 1] > 1e-6 * floor || (n >= 2 && sv[n - 2] <= 1e-8 * floor) || !kernel_gap_ok(&sv) {
         return Ok(None);
     }
     let q = null_right(&a, n, n, 1)?.swap_remove(0);
@@ -350,5 +364,21 @@ mod tests {
         // Just outside the tolerance the roots are accepted.
         let c = [[1.0, 0.0], [0.0, -1e-9]];
         assert!(branching_root(&c, &basis(), &[1.0, 0.0, 0.0], SIGN_TOL).is_ok());
+    }
+
+    #[test]
+    fn kernel_gap_refuses_a_second_small_singular_value() {
+        // Both of the two smallest are near 1e-7: above 1e-8 and below 1e-6, so the two
+        // threshold checks pass, but the kernel may have dimension 2.
+        assert!(!kernel_gap_ok(&[1.0, 1e-7, 1e-7]));
+        // A factor of exactly 1e3 is not enough, a larger one is.
+        assert!(!kernel_gap_ok(&[1.0, 1e-3, 1e-6]));
+        assert!(kernel_gap_ok(&[1.0, 2e-3, 1e-6]));
+        // A clean simple kernel, an exact zero and a single value.
+        assert!(kernel_gap_ok(&[1.0, 0.5, 0.0]));
+        assert!(kernel_gap_ok(&[1.0, 0.5, 1e-12]));
+        assert!(kernel_gap_ok(&[2.0]));
+        // Two zeros are not a gap.
+        assert!(!kernel_gap_ok(&[1.0, 0.0, 0.0]));
     }
 }
