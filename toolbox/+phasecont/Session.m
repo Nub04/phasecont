@@ -160,9 +160,16 @@ classdef Session
             % equilibrium), built from the stored rows.
             switch rec.Kind
                 case "equilibrium"
+                    % The iterate of a map solve is in its stored options
+                    % (SPEC 8y); a 1.0.0 record has none and means 1.
+                    opts = jsondecode(char(rec.Problem));
+                    k = 1;
+                    if isfield(opts, "iterate")
+                        k = double(opts.iterate);
+                    end
                     item = phasecont.Point(U = rec.Result.U, P = rec.P, ...
                         Eigenvalues = rec.Result.Eigenvalues, Label = "EP", ...
-                        Model = m, Record = rec);
+                        Model = m, Record = rec, Iterate = k);
                 case "simulate"
                     st = phasecont.internal.Run.decode(char(rec.Json));
                     rows = rec.Points{1};

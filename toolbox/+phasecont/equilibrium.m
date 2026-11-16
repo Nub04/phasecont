@@ -9,11 +9,19 @@ function pt = equilibrium(m, x0, options)
 %   PT.Eigenvalues holds the multipliers, the eigenvalues of the Jacobian of
 %   F. PT.Stable is true when every multiplier has modulus below 1.
 %
+%   PT = phasecont.equilibrium(M, X0, Iterate = K) on a map solves
+%   F^K(x, p) = x, where F^K is F applied K times, for one point of a cycle
+%   whose period divides K. PT.Eigenvalues then holds the multipliers of
+%   F^K, and PT.Stable is true when they all have modulus below 1.
+%
 %   Name-value options
 %     Params   struct or numeric vector of parameter values; a struct changes
 %              only the fields it names (default M.ParameterValues)
 %     MaxIter  most Newton iterations (default 50)
 %     Tol      tolerance on the step and the residual (default 1e-10)
+%     Iterate  for a map, the iterate K of F to solve for, a whole number
+%              from 1 to 1e6 (default 1); an ODE or delay model refuses it
+%              with phasecont:model:badOption
 %
 %   If Newton's method does not converge, the call raises the engine error
 %   phasecont:engine:numeric.
@@ -23,6 +31,7 @@ arguments
     options.Params = []
     options.MaxIter (1,1) {mustBeNumeric, mustBeInteger, mustBePositive} = 50
     options.Tol (1,1) {mustBeNumeric, mustBeReal} = 1e-10
+    options.Iterate = []
 end
 if ~(isfinite(options.Tol) && options.Tol > 0)
     error("phasecont:model:badOption", "Tol must be a positive finite number.");
@@ -32,14 +41,21 @@ if isempty(options.Params) && ~isstruct(options.Params)
 else
     p = m.paramVector(options.Params);
 end
+k = phasecont.internal.iterateOption(m, options.Iterate);
 opts = "{""max_newton"":" + phasecont.internal.num2json(options.MaxIter) + ...
     ",""tol_x"":" + phasecont.internal.num2json(options.Tol) + ...
-    ",""tol_f"":" + phasecont.internal.num2json(options.Tol) + "}";
+    ",""tol_f"":" + phasecont.internal.num2json(options.Tol);
+if isempty(k)
+    k = 1;
+else
+    opts = opts + ",""iterate"":" + phasecont.internal.num2json(k);
+end
+opts = opts + "}";
 [u, ev] = pckern("model_equilibrium", m.Id, double(x0(:)), p, char(opts));
 record = phasecont.internal.RunRecord(struct( ...
     "Kind", "equilibrium", "Problem", opts, "U0", double(x0(:)), "P", p(:), ...
     "ModelSha", m.SourceSha256, "N", numel(m.Variables), ...
     "Result", struct("U", u(:), "Eigenvalues", ev(:))));
 pt = phasecont.Point(U = u, P = p, Eigenvalues = ev, Label = "EP", Model = m, ...
-    Record = record);
+    Record = record, Iterate = k);
 end

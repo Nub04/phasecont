@@ -92,6 +92,9 @@ classdef Branch < handle
     %   StepSize     step length used to reach each point
     %   NewtonIters  Newton iterations used at each point
     %   Specials     column of phasecont.Point
+    %   Iterate      the iterate k of a branch or curve of a map: each point
+    %                is one point of a k-cycle and Eigenvalues hold the
+    %                multipliers of the k-th iterate; 1 for every other branch
     %   Stop         why the run stopped ("" when unknown)
     %   Warnings     warning messages from the run
     %   Model        the phasecont.Model the run used
@@ -121,6 +124,7 @@ classdef Branch < handle
         StepSize (:,1) double = zeros(0,1)
         NewtonIters (:,1) double = zeros(0,1)
         Specials (:,1) phasecont.Point = phasecont.Point.empty(0,1)
+        Iterate (1,1) double = 1
         Stop (1,1) string = ""
         Warnings (:,1) string = strings(0,1)
         Model phasecont.Model {mustBeScalarOrEmpty} = phasecont.Model.empty

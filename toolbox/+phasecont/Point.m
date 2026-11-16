@@ -32,6 +32,9 @@ classdef Point
     properties (SetAccess = immutable, Hidden)
         % The run that produced the point; empty for a point read from a branch.
         Record phasecont.internal.RunRecord {mustBeScalarOrEmpty} = phasecont.internal.RunRecord.empty
+        % The iterate k of a point of a map: U is one point of a k-cycle and
+        % Eigenvalues are the multipliers of the k-th iterate. 1 otherwise.
+        Iterate (1,1) double = 1
     end
 
     methods
@@ -45,6 +48,7 @@ classdef Point
                 options.Data (1,1) struct = struct()
                 options.Model phasecont.Model {mustBeScalarOrEmpty} = phasecont.Model.empty
                 options.Record phasecont.internal.RunRecord {mustBeScalarOrEmpty} = phasecont.internal.RunRecord.empty
+                options.Iterate (1,1) double {mustBeInteger, mustBePositive} = 1
             end
             obj.U = options.U;
             obj.P = options.P;
@@ -54,6 +58,7 @@ classdef Point
             obj.Data = options.Data;
             obj.Model = options.Model;
             obj.Record = options.Record;
+            obj.Iterate = options.Iterate;
         end
 
         function s = get.Stable(obj)

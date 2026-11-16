@@ -269,6 +269,15 @@ if isfield(branchStatus, "warnings") && ~isempty(branchStatus.warnings)
     warn = warn(:);
 end
 
+% The iterate k of a map branch (SPEC 8y); a status without the key, as
+% v1.0.0 and every ODE or delay run give, means 1.
+iterate = 1;
+if isMap || mapCurve
+    iterate = numberField(branchStatus, "iterate");
+    if isnan(iterate)
+        iterate = 1;
+    end
+end
 info = specialList(branchStatus);
 pts = phasecont.Point.empty(0, 1);
 if numel(info) ~= size(specials, 2)
@@ -316,7 +325,8 @@ for k = 1:numel(info)
     end
     pts(end+1, 1) = phasecont.Point(U = uk(:), P = pk, ...
         Eigenvalues = ek(:), Label = string(info{k}.label), ...
-        Index = double(info{k}.index) + 1, Data = data, Model = m); %#ok<AGROW>
+        Index = double(info{k}.index) + 1, Data = data, Model = m, ...
+        Iterate = iterate); %#ok<AGROW>
 end
 
 values = struct( ...
@@ -324,7 +334,7 @@ values = struct( ...
     "U", u, "Eigenvalues", ev, "Stable", stable, "Tests", tests, ...
     "Codim2", codim2, "Codim2Labels", labels, ...
     "StepSize", h, "NewtonIters", iters, "Specials", pts, ...
-    "Stop", stop, "Warnings", warn, "Model", m);
+    "Stop", stop, "Warnings", warn, "Model", m, "Iterate", iterate);
 if isCycle
     values.Period = period;
     values.Mesh = mesh;

@@ -67,6 +67,18 @@ function br = continuation(m, start, options)
 %   Data.coefficient2 and the angle theta of the critical multipliers in
 %   Data.values for NS). Switch = "BP1" works as for an ODE.
 %
+%   BR = phasecont.continuation(M, X0, Free = "r", Iterate = K) on a map
+%   follows the fixed points of F^K, F applied K times: each point is one
+%   point of a cycle whose period divides K, BR.Eigenvalues holds the
+%   multipliers of F^K and BR.Iterate is K. BRS = phasecont.continuation(M,
+%   X0, Free = "r", Switch = "PD1") returns a 1-by-2 array: the branch at
+%   iterate K and the branch of period-2K points that leaves its first PD
+%   point, at iterate 2K. From a PD special PT of a map branch at iterate K,
+%   phasecont.continuation(M, PT, Free = "r") starts that 2K branch at PT,
+%   as does Iterate = 2K. Any other Iterate starts an ordinary run at that
+%   iterate. Without Iterate, a run from any other Point takes the iterate
+%   of the branch the point came from, and a run from a state vector takes 1.
+%
 %   C = phasecont.continuation(M, PT, Type = "LP", Free = ["a" "b"]) on a
 %   map follows the curve of fixed points with a multiplier at 1 through
 %   PT, an LP point of a fixed point branch (or a state vector and Params
@@ -78,8 +90,12 @@ function br = continuation(m, start, options)
 %   C.Specials the codim-2 points: LPPD, LPNS, CP and R1 on an LP curve;
 %   LPPD, PDNS, GPD and R2 on a PD curve; R1 to R4, LPNS, PDNS, NSNS and CH
 %   on an NS curve. Their Data.coefficient is NaN. Detect, Switch, Var,
-%   NTST, NCOL and MeshAdapt do not apply. Type = "H", "LC", "LPC" or "HOM" on a
-%   map raises phasecont:engine:unsupportedModel.
+%   NTST, NCOL and MeshAdapt do not apply. A curve from a special point of a
+%   map branch runs at the iterate of that branch, and an Iterate that
+%   differs from it raises phasecont:model:badOption; from an EP point or a
+%   state vector, Iterate = K follows the curve of fixed points of F^K.
+%   C.Iterate holds the iterate. Type = "H", "LC", "LPC" or "HOM" on a map
+%   raises phasecont:engine:unsupportedModel.
 %
 %   BR = phasecont.continuation(M, X0, Free = "r", Roots = struct(N = 30,
 %   ReMin = -0.5)) follows the equilibria of a delay model, one whose
@@ -167,7 +183,10 @@ function br = continuation(m, start, options)
 %                "LC"
 %     Switch     special point to switch at, like "BP1"; Type "EP", or "LC" of a
 %                delay model (like "BPC1", with SwitchDirection and Detect =
-%                "BPC")
+%                "BPC"); "PD1" and so on for a map
+%     Iterate    for a map, the iterate K of F whose fixed points the run
+%                follows, a whole number from 1 to 1e6 (default: see above);
+%                Type "EP", "LP", "PD" or "NS" of a map only
 %     SwitchDirection  1 follows the switched branch along the tangent at the
 %                special point and -1 against it, required with Switch for a
 %                delay "LC" run and refused otherwise
@@ -242,6 +261,7 @@ arguments
     options.Coefficients = missing
     options.Eps = missing
     options.Floquet = missing
+    options.Iterate = []
 end
 import phasecont.internal.num2json
 
@@ -258,6 +278,9 @@ if isMap && ismember(type, ["H" "LC" "LPC" "HOM"])
 end
 % On a map, "LP", "PD" and "NS" are curves of fixed points (SPEC 8w).
 isMapCurve = isMap && ismember(type, ["LP" "PD" "NS"]);
+% The Iterate option, [] when it is not given (SPEC 8y).
+iterate = phasecont.internal.iterateOption(m, options.Iterate);
+pdStart = false;
 isDelay = m.IsDelay;
 if isDelay && type ~= "EP" && type ~= "H" && type ~= "LC"
     error("phasecont:model:badOption", ...
@@ -457,6 +480,9 @@ elseif isHom
     [u0, p, from, mesh, grid] = homStart(m, start, options);
 else
     [u0, p, special] = startValues(m, start, options.Params);
+    if isMap
+        [iterate, pdStart] = mapIterate(start, iterate, type);
+    end
     if isDelayHopf
         omega = delayHopfOmega(start, omega, "H");
     elseif isDelay && special
@@ -576,8 +602,11 @@ elseif isDelayHopf
     end
     problem = problem + ",""options"":{" + strjoin(parts, ",") + "}";
 elseif isCurve
-    problem = "{""type"":""" + type + """,""free"":" + jsonencode(free) + ...
-        ",""options"":{" + strjoin(parts, ",") + "}";
+    problem = "{""type"":""" + type + """,""free"":" + jsonencode(free);
+    if isMapCurve && iterate > 1
+        problem = problem + ",""iterate"":" + num2json(iterate);
+    end
+    problem = problem + ",""options"":{" + strjoin(parts, ",") + "}";
 elseif isCycle
     problem = "{""type"":""LC"",""free"":" + jsonencode(free) + ...
         ",""ntst"":" + num2json(grid(1)) + ",""ncol"":" + num2json(grid(2)) + ...
@@ -593,8 +622,15 @@ elseif isDelay
         num2json(roots.ReMin) + "},""options"":{" + strjoin(parts, ",") + "}";
 else
     problem = "{""type"":""EP"",""free"":" + jsonencode(free) + ...
-        ",""start_is_special"":" + lower(string(special)) + ...
-        ",""options"":{" + strjoin(parts, ",") + "}";
+        ",""start_is_special"":" + lower(string(special));
+    if isMap && iterate > 1
+        % The key is left out at 1, so these problems read as before.
+        problem = problem + ",""iterate"":" + num2json(iterate);
+    end
+    if pdStart
+        problem = problem + ",""start"":""pd""";
+    end
+    problem = problem + ",""options"":{" + strjoin(parts, ",") + "}";
 end
 hasSwitch = ~isempty(options.Switch);
 if hasSwitch
@@ -833,6 +869,36 @@ if ~ok
         "Floquet must be struct(NHist = h, Count = c) with integers h and c of at least 1.");
 end
 fl = struct("NHist", double(value.NHist), "Count", double(value.Count));
+end
+
+function [k, pdStart] = mapIterate(start, k, type)
+% The iterate of a map run and whether an EP run starts the period-doubled
+% branch at a PD point (SPEC 8y). K is the Iterate option, [] when it is not
+% given. A Point carries the iterate of its branch; a state vector has 1.
+pdStart = false;
+from = 1;
+label = "EP";
+if isa(start, "phasecont.Point")
+    from = start.Iterate;
+    label = start.Label;
+end
+if type == "EP"
+    if label == "PD" && (isempty(k) || k == 2*from)
+        k = 2*from;
+        pdStart = true;
+    elseif isempty(k)
+        k = from;
+    end
+elseif label ~= "EP"
+    if ~isempty(k) && k ~= from
+        error("phasecont:model:badOption", ...
+            "Iterate must be %d, the iterate of the %s point, for Type = ""%s"", got %d.", ...
+            from, label, type, k);
+    end
+    k = from;
+elseif isempty(k)
+    k = from;
+end
 end
 
 function [u0, p, special] = startValues(m, start, params)
