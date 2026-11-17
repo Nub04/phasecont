@@ -34,3 +34,18 @@ Thumbs.db
 !crates/pc-cli/tests/fixtures/pe/fixture.dll
 
 /toolbox/bin/
+
+# Local files that must never be committed
+*.bak
+.bak
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+/.claude/
+/.superpowers/
+/CLAUDE.md
+*.log
+junit*.xml
