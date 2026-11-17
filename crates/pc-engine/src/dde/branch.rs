@@ -280,6 +280,11 @@ pub fn continue_equilibrium(
         let mut problem = EpProblem::new(&mut c, &start)?;
         run_branch(&mut problem, &x0, None, &opts, false, cancel, &mut |_| {})?
     };
+    // `run_branch` keeps the points before a cancel. This function returns no partial branch,
+    // and the loops below see the flag only when there are two points or more.
+    if branch.stop == StopReason::Cancelled {
+        return Err(EngineError::Cancelled);
+    }
     let mut warnings = branch.warnings.clone();
 
     let states: Vec<Vec<f64>> = branch
