@@ -14,8 +14,11 @@ classdef Session
     % rows the engine returned, with the numbers stored as 64-bit floats.
     %
     % Load builds the model again from the stored source, checks its hash
-    % and rebuilds the items from the stored rows. It runs nothing. Use
-    % phasecont.session.replay to run every run again and compare.
+    % and rebuilds the items from the stored rows. It runs no continuation,
+    % and what a file records never selects the C compiler route: a file
+    % that records the "aot" evaluator loads with the evaluator
+    % phasecont.config("Codegen") names.
+    % Use phasecont.session.replay to run every run again and compare.
     %
     % Items that came from the same run, such as the branches of one
     % branch switch, are stored once. A Point that was taken from a Branch
@@ -102,9 +105,13 @@ classdef Session
             % S = phasecont.Session.load(FILE) reads a session file and
             % returns the Session. It builds the model from the stored
             % source and raises phasecont:session:hashMismatch when the
-            % source does not match the stored SHA-256. Evaluator = "jit",
-            % "fallback" or "aot" builds the model with that evaluator
-            % instead of the recorded one.
+            % source does not match the stored SHA-256. The model gets the
+            % "jit" or "fallback" evaluator the file records. A recorded
+            % "aot" is not honoured, since a file alone must not start a C
+            % compiler; phasecont.config("Codegen") decides instead. A file
+            % that records any other evaluator raises
+            % phasecont:session:badFile. Evaluator = "jit", "fallback" or
+            % "aot" builds the model with that evaluator instead.
             arguments
                 file (1,1) string
                 options.Evaluator (1,1) string {mustBeMember(options.Evaluator, ["" "jit" "fallback" "aot"])} = ""

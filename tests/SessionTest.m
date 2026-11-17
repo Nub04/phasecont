@@ -106,6 +106,36 @@ classdef SessionTest < matlab.unittest.TestCase
             items = {eq, ep, lc, lpc, hopf, tr};
         end
 
+        function file = sessionWithEvaluator(testCase, ev, name)
+            % A session file of the decay model whose model block records
+            % the evaluator string EV, written without building EV.
+            m = testCase.model(testCase.Decay, "jit");
+            tr = phasecont.simulate(m, 1, [0 2]);
+            file = fullfile(testCase.Dir, name + ".pcsession.json");
+            save(phasecont.Session(m, {tr}), file);
+            text = string(fileread(file, Encoding = "UTF-8"));
+            text = regexprep(text, '"evaluator":\s*"jit"', ...
+                '"evaluator": "' + ev + '"', "once");
+            fid = fopen(file, "w", "n", "UTF-8");
+            fwrite(fid, char(text), "char");
+            fclose(fid);
+        end
+
+        function has = haveCompiler(~)
+            has = ~isempty(mex.getCompilerConfigurations("C", "Selected"));
+        end
+
+        function needCompiler(testCase)
+            testCase.assumeTrue(testCase.haveCompiler(), ...
+                "no mex C compiler is selected (run mex -setup C)");
+        end
+
+        function codegenJit(testCase)
+            old = phasecont.config("Codegen");
+            testCase.addTeardown(@() phasecont.config("Codegen", old));
+            phasecont.config("Codegen", "jit");
+        end
+
         function verifySameItem(testCase, a, b)
             % The loaded item B has the numbers of the original A.
             testCase.verifyClass(b, class(a));
@@ -372,6 +402,64 @@ classdef SessionTest < matlab.unittest.TestCase
             testCase.verifyEqual(back.Items{1}.X, tr.X);
             r = phasecont.session.replay(file, Evaluator = "fallback");
             testCase.verifyTrue(r.Pass);
+        end
+        function aFileThatRecordsAotStartsNoCompiler(testCase)
+            % A session file is data, so no value in it may start a C
+            % compiler. A file that records "aot" loads and replays on the
+            % evaluator phasecont.config("Codegen") names, and the AOT route
+            % never runs, so it cannot warn with phasecont:aot:*.
+            testCase.codegenJit();
+            file = testCase.sessionWithEvaluator("aot", "recorded_aot");
+            back = testCase.verifyWarningFree(@() phasecont.Session.load(file));
+            testCase.addTeardown(@() delete(back.Model));
+            testCase.verifyEqual(back.Model.Evaluator, "jit");
+            testCase.verifyEqual(back.Model.AotInfo.Library, "");
+            r = testCase.verifyWarningFree(@() phasecont.session.replay(file));
+            testCase.verifyTrue(r.Pass);
+            % On a machine with a compiler the same file still builds AOT
+            % when the caller asks for it, so the check above is not empty.
+            if testCase.haveCompiler()
+                aot = phasecont.Session.load(file, Evaluator = "aot");
+                testCase.addTeardown(@() delete(aot.Model));
+                testCase.verifyEqual(aot.Model.Evaluator, "aot");
+            end
+        end
+
+        function theRecordedFallbackAndJitAreHonoured(testCase)
+            testCase.codegenJit();
+            for ev = ["fallback" "jit"]
+                file = testCase.sessionWithEvaluator(ev, "recorded_" + ev);
+                back = phasecont.Session.load(file);
+                testCase.addTeardown(@() delete(back.Model));
+                testCase.verifyEqual(back.Model.Evaluator, ev);
+            end
+        end
+
+        function anUnknownEvaluatorIsABadFile(testCase)
+            for ev = ["evil" "" "AOT" "gpu"]
+                file = testCase.sessionWithEvaluator(ev, "bad_" + matlab.lang.makeValidName("e" + ev));
+                testCase.verifyError(@() phasecont.Session.load(file), ...
+                    "phasecont:session:badFile");
+                testCase.verifyError(@() phasecont.session.replay(file), ...
+                    "phasecont:session:badFile");
+            end
+        end
+
+        function anAotSessionReplaysOnTheJit(testCase)
+            % The AOT library and the JIT agree within 4 ulp, so a diagram
+            % recorded on AOT replays on the JIT at the default Tol. Runs
+            % where mex has a compiler, which covers MSVC on Windows.
+            testCase.needCompiler();
+            testCase.codegenJit();
+            [m, items] = testCase.diagram("aot");
+            testCase.assertEqual(m.Evaluator, "aot");
+            file = fullfile(testCase.Dir, "aot_diagram.pcsession.json");
+            save(phasecont.Session(m, items), file);
+            r = phasecont.session.replay(file);
+            testCase.verifyNumElements(r, 6);
+            testCase.verifyTrue(all([r.Pass]), "a run did not reproduce on the JIT");
+            testCase.verifyTrue(all([r.LabelsMatch]));
+            testCase.verifyTrue(all([r.StopMatch]));
         end
     end
 end

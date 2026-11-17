@@ -213,6 +213,10 @@ classdef sessionCodec
                 "Source", sessionCodec.str(model, "source", "model"), ...
                 "Sha256", sessionCodec.str(model, "sha256", "model"), ...
                 "Evaluator", sessionCodec.str(model, "evaluator", "model"));
+            if ~any(S.Model.Evaluator == ["jit" "fallback" "aot"])
+                sessionCodec.fail("model.evaluator is ""%s""; it must be ""jit"", ""fallback"" or ""aot"".", ...
+                    S.Model.Evaluator);
+            end
             runs = sessionCodec.list(v, "runs", "session");
             S.Records = cell(1, numel(runs));
             for k = 1:numel(runs)
@@ -423,10 +427,13 @@ classdef sessionCodec
 
         function m = buildModel(S, evaluator)
             % Build the model a session file holds and check its hash.
-            % EVALUATOR "" uses the one the file records.
-            ev = S.Model.Evaluator;
-            if evaluator ~= ""
-                ev = evaluator;
+            % EVALUATOR "" uses the "jit" or "fallback" the file records. A
+            % file that records "aot" gets "", so phasecont.config("Codegen")
+            % decides: what a file records must never select the C compiler
+            % route.
+            ev = evaluator;
+            if ev == "" && any(S.Model.Evaluator == ["jit" "fallback"])
+                ev = S.Model.Evaluator;
             end
             m = phasecont.Model.fromSource(S.Model.Source, Name = S.Model.Name, ...
                 Evaluator = ev);

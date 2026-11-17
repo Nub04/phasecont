@@ -20,7 +20,10 @@ function r = replay(file, options)
 %
 %   R = phasecont.session.replay(FILE, Tol = 1e-8, Evaluator = "jit")
 %   sets the tolerance (default 1e-8) and builds the model with another
-%   evaluator than the recorded one. A different platform or evaluator can
+%   evaluator than the recorded one. Without Evaluator the model gets the
+%   "jit" or "fallback" the file records; a recorded "aot" is not honoured,
+%   so the file alone never selects the C compiler route, and
+%   phasecont.config("Codegen") decides instead. A different platform or evaluator can
 %   change the last digits, and a different step sequence in an adaptive
 %   run; Identical reports exact equality separately.
 %
