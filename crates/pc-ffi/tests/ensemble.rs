@@ -198,6 +198,7 @@ fn a_cpu_run_finishes_and_copies_every_array() {
     assert_eq!(label["backend"], "cpu");
     assert_eq!(label["precision"], "double");
     assert_eq!(label["single_precision"], false);
+    assert_eq!(label["math"], "exact");
     assert!(!label["device"].as_str().unwrap().is_empty());
     assert!(!label["driver"].as_str().unwrap().is_empty());
 
@@ -417,6 +418,41 @@ fn a_bad_job_is_a_bad_problem_with_its_own_text() {
     let (rc, _) = start_with(&m, &job(""), &[], &[1.0]);
     assert_eq!(rc, PC_ERR_BAD_PROBLEM);
     assert!(last_error().contains("at least one"), "{}", last_error());
+}
+
+#[test]
+fn math_is_exact_when_left_out_and_fma_runs_only_on_cuda_double() {
+    let m = parse(DECAY);
+    let v = wait(&start(&m, &job(r#","math":"exact""#), &[1.0], &[1.0]));
+    assert_eq!(v["label"]["math"], "exact");
+    let single = job("").replace(r#""precision":"double""#, r#""precision":"single""#);
+    let cuda = |j: &str| j.replace("\"cpu\"", "\"cuda\"");
+    // The refusal comes before the device lookup, so it is the same on a machine with no
+    // CUDA driver: a bad problem, not GPU unavailable.
+    for json in [
+        job(r#","math":"fma""#),
+        format!("{},\"math\":\"fma\"}}", &single[..single.len() - 1]),
+        cuda(&format!(
+            "{},\"math\":\"fma\"}}",
+            &single[..single.len() - 1]
+        )),
+    ] {
+        let (rc, ens) = start_with(&m, &json, &[1.0], &[1.0]);
+        assert_eq!(rc, PC_ERR_BAD_PROBLEM, "{json}");
+        assert_eq!(ens, 0);
+        assert!(
+            last_error().contains("math fma runs only on cuda in double precision"),
+            "{json}: {}",
+            last_error()
+        );
+    }
+    let (rc, _) = start_with(&m, &job(r#","math":"fast""#), &[1.0], &[1.0]);
+    assert_eq!(rc, PC_ERR_BAD_PROBLEM);
+    assert!(
+        last_error().contains("math must be exact or fma"),
+        "{}",
+        last_error()
+    );
 }
 
 #[test]

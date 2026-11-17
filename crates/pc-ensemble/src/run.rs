@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicBool;
 use crate::cpu::run_cpu;
 use crate::cuda::run_cuda;
 use crate::device::{Backend, DeviceInfo};
-use crate::job::{EnsembleError, EnsembleResult, Job};
+use crate::job::{EnsembleError, EnsembleResult, Job, check_math};
 use crate::metal::run_metal;
 use crate::opencl::run_opencl;
 
@@ -18,6 +18,8 @@ const CPU_STEPS_PER_LAUNCH: u64 = 1 << 16;
 /// CPU and in chunked launches on a GPU. `cancel` is read between launches on both, and on
 /// the CPU also before each member.
 ///
+/// A math tier the backend does not take ([`check_math`]) is [`EnsembleError::BadJob`].
+///
 /// A backend that is not built into this binary (Metal off macOS) gives
 /// [`EnsembleError::Unsupported`] naming it. The result carries the label of the backend that
 /// ran.
@@ -26,6 +28,7 @@ pub fn run_on(
     job: &Job,
     cancel: &AtomicBool,
 ) -> Result<EnsembleResult, EnsembleError> {
+    check_math(device.backend, job.precision, job.math)?;
     match device.backend {
         Backend::Cpu => run_cpu(job, CPU_STEPS_PER_LAUNCH, cancel),
         Backend::Cuda => run_cuda(device, job, cancel),

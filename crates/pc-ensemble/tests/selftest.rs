@@ -152,6 +152,7 @@ mod run_with {
             device: "fake".into(),
             driver: "0".into(),
             precision: p,
+            math: pc_ensemble::Math::Exact,
         }
     }
 

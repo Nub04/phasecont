@@ -323,6 +323,7 @@ pub fn run_opencl(
         device: info.name.clone(),
         driver: info.driver.clone(),
         precision: job.precision,
+        math: job.math,
     };
     // The entry this run used, so that a failure removes that one and not a newer one.
     let mut used: Option<Arc<Shared>> = None;

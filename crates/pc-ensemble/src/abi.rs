@@ -240,6 +240,7 @@ mod tests {
             device: "test".into(),
             driver: String::new(),
             precision: Precision::Double,
+            math: crate::job::Math::Exact,
         }
     }
 

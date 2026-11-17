@@ -8,6 +8,7 @@ use core::fmt;
 
 use pc_ir::IrModel;
 
+use crate::device::Backend;
 use crate::real::Real;
 
 /// The scalar type the integration runs in.
@@ -23,6 +24,46 @@ impl Precision {
             Precision::Single => "single",
             Precision::Double => "double",
         }
+    }
+}
+
+/// How the device compiler may round the arithmetic of a GPU kernel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Math {
+    /// Every operation rounds once, as written. Results are bit for bit the same on every
+    /// backend and in every run.
+    Exact,
+    /// The compiler may fuse a multiply and an add into one fused multiply-add. Only a CUDA
+    /// double precision run takes it ([`check_math`]). The bits differ from an exact run.
+    Fma,
+}
+
+impl Math {
+    pub fn name(self) -> &'static str {
+        match self {
+            Math::Exact => "exact",
+            Math::Fma => "fma",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Math> {
+        [Math::Exact, Math::Fma]
+            .into_iter()
+            .find(|m| m.name() == name)
+    }
+}
+
+/// Refuses a math tier the backend and precision do not take. Only CUDA in double precision
+/// takes [`Math::Fma`]: it is the one case where the fused tier measured faster, and every
+/// other backend refuses it instead of running exact under an fma label.
+pub fn check_math(backend: Backend, precision: Precision, math: Math) -> Result<(), EnsembleError> {
+    match (math, backend, precision) {
+        (Math::Exact, _, _) | (Math::Fma, Backend::Cuda, Precision::Double) => Ok(()),
+        (Math::Fma, _, _) => Err(EnsembleError::BadJob(format!(
+            "math fma runs only on cuda in double precision, not on {} in {} precision; use math exact",
+            backend.name(),
+            precision.name()
+        ))),
     }
 }
 
@@ -143,6 +184,9 @@ pub struct Job<'a> {
     /// Accepted steps (RK4: steps) per member before [`Status::MaxSteps`].
     pub max_steps: u32,
     pub precision: Precision,
+    /// The rounding the device compiler may use. [`check_math`] says which backends take
+    /// [`Math::Fma`]; [`run_on`](crate::run::run_on) refuses the rest.
+    pub math: Math,
     /// A compiled right-hand side for a CPU run of its precision. A run of the other precision
     /// and GPU runs ignore it. `None` runs the tape interpreter, which gives the same bits.
     pub native: Option<NativeRhs>,
@@ -203,6 +247,7 @@ pub struct Label {
     pub device: String,
     pub driver: String,
     pub precision: Precision,
+    pub math: Math,
 }
 
 impl Label {
@@ -210,6 +255,13 @@ impl Label {
     /// continuation, normal forms or Floquet multipliers before a double precision rerun.
     pub fn single_precision(&self) -> bool {
         self.precision == Precision::Single
+    }
+
+    /// True when the device compiler fused multiplies and adds, so the bits differ from an
+    /// exact run and the numbers may not feed continuation, normal forms or Floquet
+    /// multipliers before an exact rerun.
+    pub fn fused(&self) -> bool {
+        self.math == Math::Fma
     }
 }
 
@@ -505,4 +557,32 @@ fn check_times<T: Real>(t0: f64, times: &[f64]) -> Result<(), EnsembleError> {
         prev = r;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_cuda_double_takes_fma() {
+        for backend in Backend::ALL {
+            for precision in [Precision::Single, Precision::Double] {
+                assert_eq!(check_math(backend, precision, Math::Exact), Ok(()));
+                let fma = check_math(backend, precision, Math::Fma);
+                if (backend, precision) == (Backend::Cuda, Precision::Double) {
+                    assert_eq!(fma, Ok(()));
+                } else {
+                    assert!(matches!(fma, Err(EnsembleError::BadJob(_))), "{fma:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn math_names_round_trip() {
+        for m in [Math::Exact, Math::Fma] {
+            assert_eq!(Math::from_name(m.name()), Some(m));
+        }
+        assert_eq!(Math::from_name("fast"), None);
+    }
 }

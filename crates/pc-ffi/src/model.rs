@@ -675,6 +675,7 @@ mod tests {
             bounds: f64::INFINITY,
             max_steps: 1_000_000,
             precision,
+            math: pc_ensemble::Math::Exact,
             native,
         };
         let device = find_device(Backend::Cpu, 0).unwrap();
@@ -817,6 +818,7 @@ done\n";
             bounds: f64::INFINITY,
             max_steps: 1_000_000,
             precision,
+            math: pc_ensemble::Math::Exact,
             native,
         };
         let device = find_device(Backend::Cpu, 0).unwrap();

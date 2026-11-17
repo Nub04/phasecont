@@ -13,9 +13,10 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use pc_ensemble::device::{Backend, DeviceInfo, find_device, list_devices};
+use pc_ensemble::job::check_math;
 use pc_ensemble::job::{NATIVE_FRAME_LIMIT, NativeRhs};
 use pc_ensemble::run::run_on;
-use pc_ensemble::{EnsembleError, EnsembleResult, Job, Method, Output, Params, Precision};
+use pc_ensemble::{EnsembleError, EnsembleResult, Job, Math, Method, Output, Params, Precision};
 use pc_ir::{Entry, EntryKind, IrModel};
 use pc_jit::JitEntries;
 use pckern::json::ensemble::{
@@ -165,6 +166,9 @@ pub fn ensemble(file: &Path, job_path: &Path) -> ExitCode {
         Ok(v) => v,
         Err(why) => return bad_job(job_path, &why),
     };
+    if let Err(e) = check_math(spec.head.backend, spec.head.precision, spec.head.math) {
+        return bad_job(job_path, &e.to_string());
+    }
     let device = match find_device(spec.head.backend, spec.head.device) {
         Ok(d) => d,
         Err(why) => {
@@ -188,6 +192,7 @@ pub fn ensemble(file: &Path, job_path: &Path) -> ExitCode {
         bounds: spec.head.bounds,
         max_steps: spec.head.max_steps,
         precision: spec.head.precision,
+        math: spec.head.math,
         // A one-shot run does not repay a compile; the tape gives the same bits.
         native: None,
     };
@@ -222,6 +227,7 @@ fn result_json(r: &EnsembleResult) -> Value {
             "driver": r.label.driver,
             "precision": r.label.precision.name(),
             "single_precision": r.label.single_precision(),
+            "math": r.label.math.name(),
         },
     })
 }
@@ -419,6 +425,7 @@ fn bench_row(case: &BenchCase, device: &DeviceInfo, precision: Precision, member
         bounds: f64::INFINITY,
         max_steps: 1_000_000,
         precision,
+        math: Math::Exact,
         native: jit.as_ref().map(|(_, f, _)| *f),
     };
     let cancel = AtomicBool::new(false);

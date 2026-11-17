@@ -93,6 +93,7 @@ fn run_as<T: Real>(
             device: format!("rayon, {} threads", rayon::current_num_threads()),
             driver: format!("pc-ensemble {}", env!("CARGO_PKG_VERSION")),
             precision: job.precision,
+            math: job.math,
         },
     })
 }

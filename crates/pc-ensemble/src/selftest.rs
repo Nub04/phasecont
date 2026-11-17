@@ -179,6 +179,7 @@ fn job<'a>(
         bounds: f64::INFINITY,
         max_steps: 10_000_000,
         precision,
+        math: crate::job::Math::Exact,
         native: None,
     }
 }
@@ -444,6 +445,7 @@ pub fn run_selftest(sel: Selected) -> Result<Report, SelfTestError> {
         device: device.name.clone(),
         driver: device.driver.clone(),
         precision: sel.precision,
+        math: crate::job::Math::Exact,
     };
     let cancel = AtomicBool::new(false);
     let on = device.clone();

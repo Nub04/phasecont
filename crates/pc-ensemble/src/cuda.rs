@@ -858,6 +858,7 @@ fn session(
         device: device.name.clone(),
         driver: device.driver.clone(),
         precision: job.precision,
+        math: job.math,
     };
     // The free memory bounds the members of one batch. The private layout takes its local
     // memory first: the driver reserves it for every resident thread, whatever the batch size.
