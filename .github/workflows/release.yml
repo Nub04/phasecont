@@ -186,6 +186,9 @@ jobs:
       - name: Check the MEX file for host paths
         shell: bash
         run: scripts/check-host-paths toolbox/bin/${{ matrix.arch }}/pckern.${{ matrix.mexext }}
+      - name: Check the ad hoc signatures
+        if: runner.os == 'macOS'
+        run: scripts/check-adhoc-signature toolbox/bin/maca64/libpckern.dylib toolbox/bin/maca64/pckern.mexmaca64
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bin-${{ matrix.arch }}

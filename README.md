@@ -43,7 +43,14 @@ The `.ode` reader refuses some XPPAUT constructs, and delay models run only in `
    which phasecont.Model
    ```
 
-The macOS binaries are not signed by Apple. If macOS refuses to load `pckern.mexmaca64` or `libpckern.dylib`, please open an issue with the message.
+The macOS binaries carry an ad hoc signature and are not signed or notarized by Apple. If macOS refuses to load `pckern.mexmaca64` or `libpckern.dylib`, for example with a dialog saying it cannot verify the file, remove the quarantine attribute from the toolbox binaries and start a new MATLAB:
+
+```matlab
+d = fileparts(which("pckern"));
+system(sprintf('xattr -dr com.apple.quarantine "%s"', d));
+```
+
+Please also open an issue with the message, since nobody has installed PhaseCont on a physical Mac yet.
 
 ## Upgrading
 

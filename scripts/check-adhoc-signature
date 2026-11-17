@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Fail when a macOS binary has no valid ad hoc code signature. Apple silicon
+# runs only signed code, and the linker signs the PhaseCont library and MEX
+# file ad hoc, so a missing or broken signature means the file will not load.
+#
+# Usage:
+#   scripts/check-adhoc-signature FILE...
+#
+# Exits 1 when a signature is missing, does not match its file or is not ad
+# hoc, and 2 on a usage error. Runs on macOS only (needs codesign).
+set -euo pipefail
+
+if [[ $# -eq 0 ]]; then
+  echo "usage: scripts/check-adhoc-signature FILE..." >&2
+  exit 2
+fi
+
+status=0
+for f in "$@"; do
+  if [[ ! -f "$f" ]]; then
+    echo "check-adhoc-signature: no such file: $f" >&2
+    status=1
+    continue
+  fi
+  if ! codesign --verify --strict --verbose=2 "$f"; then
+    echo "check-adhoc-signature: $f has no valid signature" >&2
+    status=1
+  elif ! codesign -dv "$f" 2>&1 | grep -qx 'Signature=adhoc'; then
+    echo "check-adhoc-signature: $f is not signed ad hoc" >&2
+    status=1
+  else
+    echo "check-adhoc-signature: $f is signed ad hoc"
+  fi
+done
+exit "$status"

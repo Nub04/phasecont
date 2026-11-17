@@ -398,6 +398,9 @@ jobs:
       - name: Check the glibc versions the Linux binaries need
         if: runner.os == 'Linux'
         run: scripts/check-glibc toolbox/bin/glnxa64/pckern.mexa64
+      - name: Check the ad hoc signatures of the macOS binaries
+        if: runner.os == 'macOS'
+        run: scripts/check-adhoc-signature toolbox/bin/maca64/libpckern.dylib toolbox/bin/maca64/pckern.mexmaca64
       - name: Find the package
         shell: bash
         run: echo "PHASECONT_MLTBX=$(ls "$GITHUB_WORKSPACE"/build/PhaseCont-*.mltbx)" >> "$GITHUB_ENV"
