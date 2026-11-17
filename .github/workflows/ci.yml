@@ -17,6 +17,13 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels the run of its older commit. Every other
+# run (push, schedule, manual) gets a group of its own, since a group holds at
+# most one pending run and a newer pending run would replace an older one.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
 
