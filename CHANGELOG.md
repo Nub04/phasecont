@@ -41,6 +41,10 @@ The version number of this release is not chosen yet. The toolbox still reports 
 - Rows of LPC, PD and NS curves have more `Tests` columns, one per new codim-2 test. Code that reads these columns by position needs the new widths.
 - `shift` and `del_shft` are now refused with a message that names the function, instead of an error about the number of arguments.
 
+### Fixed
+
+- Models built with the AOT evaluator run LPC, PD and NS curves. The AOT library had no `F_up` entry, which those curves use, so they stopped with "AOT library has no entry d_up".
+
 ### Compatibility
 
 - Session files saved by 1.0.0 still load. Their LPC, PD and NS rows get NaN in the new test columns. Replaying such a run reports that the row layout changed.

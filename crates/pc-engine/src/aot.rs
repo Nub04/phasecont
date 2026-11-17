@@ -47,8 +47,9 @@ pub fn entry_symbol(kind: &EntryKind) -> String {
 }
 
 /// The entries the engine asks for: the plain ones, `Dir` of orders 1 to 5 with `U`
-/// slots (normal forms) and the two mixed ones that the Hopf and branch-point systems use.
-/// A library that holds all of them serves every problem type.
+/// slots (normal forms), the two mixed ones that the Hopf and branch-point systems use,
+/// and `F_up` for the LPC, PD and NS systems of cycles. A library that holds all of them
+/// serves every problem type.
 pub fn engine_kinds() -> Vec<EntryKind> {
     let mut kinds = vec![
         EntryKind::F,
@@ -61,6 +62,7 @@ pub fn engine_kinds() -> Vec<EntryKind> {
     }
     kinds.push(EntryKind::Dir(vec![Slot::U, Slot::Full]));
     kinds.push(EntryKind::Dir(vec![Slot::Full, Slot::Full]));
+    kinds.push(EntryKind::Dir(vec![Slot::U, Slot::P]));
     kinds
 }
 

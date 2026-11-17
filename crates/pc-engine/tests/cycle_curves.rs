@@ -885,3 +885,76 @@ fn curves_refuse_special_points_of_another_type() {
         other => panic!("NS curve from a PD point: {other:?}"),
     }
 }
+
+/// Wraps an evaluator and records every entry the problem asks for.
+struct Recorder {
+    inner: Box<dyn ModelEval>,
+    seen: Vec<pc_ir::EntryKind>,
+}
+
+impl ModelEval for Recorder {
+    fn n(&self) -> usize {
+        self.inner.n()
+    }
+    fn n_p(&self) -> usize {
+        self.inner.n_p()
+    }
+    fn eval(
+        &mut self,
+        kind: &pc_ir::EntryKind,
+        x: &[f64],
+        p: &[f64],
+        v: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), EngineError> {
+        if !self.seen.contains(kind) {
+            self.seen.push(kind.clone());
+        }
+        self.inner.eval(kind, x, p, v, out)
+    }
+}
+
+/// An AOT library holds the entries of `engine_kinds` and nothing else, so every entry
+/// the LPC, PD and NS systems ask for must be on that list, or those curves fail on an
+/// AOT model with "AOT library has no entry".
+#[test]
+fn cycle_curves_ask_only_for_entries_an_aot_library_has() {
+    let have = pc_engine::engine_kinds();
+    let check = |name: &str, rec: &Recorder| {
+        let missing: Vec<_> = rec.seen.iter().filter(|k| !have.contains(k)).collect();
+        assert!(
+            missing.is_empty(),
+            "{name} asks for {missing:?}, which engine_kinds lacks"
+        );
+    };
+    let mut rec = Recorder {
+        inner: model_of("bautin_lpc", &Evaluator::Jit),
+        seen: vec![],
+    };
+    {
+        let mut p = LpcProblem::new(&mut rec, &bautin_lpc(1.0, 5, 3)).unwrap();
+        let x = p.start().to_vec();
+        jacobian_error(&mut p, &x);
+    }
+    check("LPC", &rec);
+    let mut rec = Recorder {
+        inner: model_of("pd_twist", &Evaluator::Jit),
+        seen: vec![],
+    };
+    {
+        let mut p = PdProblem::new(&mut rec, &pd_start(0.09, 0.3, 5, 3)).unwrap();
+        let x = p.start().to_vec();
+        jacobian_error(&mut p, &x);
+    }
+    check("PD", &rec);
+    let mut rec = Recorder {
+        inner: model_of("ns4", &Evaluator::Jit),
+        seen: vec![],
+    };
+    {
+        let mut p = NsProblem::new(&mut rec, &ns_start(0.2, -0.1, 0.2, 0.5, 5, 3)).unwrap();
+        let x = p.start().to_vec();
+        jacobian_error(&mut p, &x);
+    }
+    check("NS", &rec);
+}
