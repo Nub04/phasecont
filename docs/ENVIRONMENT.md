@@ -82,7 +82,7 @@ Commands: `Get-Command cargo, rustc, rustup, git, nvcc` through `powershell.exe`
 
 | Item | Value |
 |---|---|
-| Release | `26.2.0.3386108 (R2026b)` |
+| Release | `26.2.0.3433840 (R2026b) Update 1`, checked 2026-11-16 (Phase 0 recorded `26.2.0.3386108`) |
 | `matlabroot` | `C:\Program Files\MATLAB\R2026b` |
 | `computer('arch')` | `win64` |
 | MEX C compiler | Microsoft Visual C++ 2026 (C), version 18.0, at `C:\Program Files\Microsoft Visual Studio\18\Community\` |
@@ -96,6 +96,8 @@ Commands: `Get-Command cargo, rustc, rustup, git, nvcc` through `powershell.exe`
 A failed MATLAB command reaches WSL as a nonzero exit code. `scripts/matlab-win "error('phasecont:check','x')"` printed `ERROR: MATLAB error Exit Status: 0x00000001`, and the shell saw exit code 1. A MATLAB test script run this way can therefore report failure with `error` or `assert`.
 
 Every run whose current folder is the repo prints `Warning: Unable to obtain a change notification handle for \\wsl.localhost\fedoralinux-44\home\<user>\dev\phasecont.` MATLAB cannot watch a UNC folder for changes, so a desktop session may not see files edited from WSL until `rehash` runs. Each `-batch` run starts fresh, so `scripts/matlab-win` is not affected.
+
+The three VS Code tasks in `.vscode/tasks.json` call `scripts/matlab-win` and were checked from WSL on 2026-11-16. "MATLAB: check setup" prints the release, `matlabroot` and the UNC path of the repo. "MATLAB: buildtool" with `-tasks` lists cargo, mex, package and test. "MATLAB: run current file" runs a script from a folder whose path holds spaces and a single quote (`odd dir/it's here/probe.m`). A file name with a space fails inside MATLAB, because `run` calls the script by its file name and `probe file` parses as `probe('file')`. `scripts/matlab-win --run` now refuses such a name with exit code 2 and says why, before MATLAB starts.
 
 `ver` lists 120 products in all, each at 26.2, among them Parallel Computing Toolbox, Symbolic Math Toolbox, Optimization Toolbox, MATLAB Coder, GPU Coder and MATLAB Test. The toolbox must not depend on any of them, except Parallel Computing Toolbox on the optional `gpuArray` route. They are all installed here, so an accidental dependency will not fail on this machine; the "Base MATLAB check" test in section 12 of `docs/SPEC.md` catches one.
 

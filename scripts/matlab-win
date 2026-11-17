@@ -28,6 +28,13 @@ win_cwd="$(mquote "$(wslpath -w "$PWD")")"
 
 if [[ "${1:-}" == "--run" ]]; then
   file="${2:?usage: matlab-win --run path/to/file.m}"
+  # MATLAB's run() calls the script by its file name, so the name must be a
+  # valid MATLAB identifier. Spaces and quotes in the folders are fine.
+  stem="$(basename "$file")"; stem="${stem%.*}"
+  if [[ ! "$stem" =~ ^[A-Za-z][A-Za-z0-9_]{0,62}$ ]]; then
+    echo "matlab-win: \"$stem\" is not a valid MATLAB name; rename the file (letters, digits and _, starting with a letter)" >&2
+    exit 2
+  fi
   win_file="$(mquote "$(wslpath -w "$(realpath "$file")")")"
   cmd="run('$win_file')"
 else
