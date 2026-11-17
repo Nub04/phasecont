@@ -49,6 +49,7 @@ use crate::kept::{Kept, Lru};
 use crate::kernel::{Layout, kernel_source_in};
 use crate::real::Real;
 use crate::tape::Tape;
+use crate::winload::{self, NoCwdSearch};
 
 /// The name of the kernel entry point.
 const ENTRY: &str = "pc_ens";
@@ -167,6 +168,19 @@ fn describe(dev: &Device, platform: &str, index: usize) -> Result<(DeviceInfo, H
 }
 
 fn probe_now() -> Probe {
+    // The ICD loader and the drivers it opens load inside the window, so none of them comes
+    // from the current folder. On Windows the loader itself must be in the system folder,
+    // unless OPENCL_DYLIB_PATH names one.
+    let _window = NoCwdSearch::new();
+    if cfg!(windows)
+        && std::env::var_os("OPENCL_DYLIB_PATH").is_none()
+        && !winload::system_library("OpenCL.dll")
+    {
+        return Probe::unavailable(
+            "OpenCL.dll was not found in the Windows system folder (OPENCL_DYLIB_PATH names \
+             another one)",
+        );
+    }
     let platforms = match get_platforms() {
         Ok(p) => p,
         Err(e) if e.0 == DLOPEN_RUNTIME_LOAD_FAILED => {

@@ -26,6 +26,10 @@ The version number of this release is not chosen yet. The toolbox still reports 
 - `Point.Stable`: an `"EP"` Point from `equilibrium` or a session says whether the equilibrium or the fixed point is stable, from its eigenvalues or multipliers. It is empty at a special point such as LP, PD or H, where the linear test decides nothing. It is not stored, so session files do not change.
 - A language server (`pc-lsp`) and a VS Code extension for `.ode` files. The extension is built as a `.vsix` file and is not on the Marketplace.
 
+### Security
+
+- Windows: the GPU backends never load a library from MATLAB's current folder. cudarc and the OpenCL loader open `cuda.dll`, `nvrtc.dll`, `OpenCL.dll` and similar names by bare name, and Windows searches the current folder for those, so before this change a file with one of those names in the current folder ran inside MATLAB at the first call of `phasecont.gpuDevices`, `phasecont.gpuSelfTest` or `phasecont.ensemble`. The first loads now skip the current folder, the CUDA driver and the OpenCL loader come from the Windows system folder, and the NVRTC builtins library is loaded by path from the folder of the NVRTC in use. The folders on `PATH` are still searched, as for any Windows program. Release 1.0.0 has no GPU backend and is not affected.
+
 ### Changed
 
 - Single-precision CPU ensembles run a compiled right-hand side, as double precision already did. `vdp-rk4` at 100000 members runs about 1.9 times faster, with the same bits as before. Models that use tables or erf, erfc, lgamma, the Bessel functions or polygamma still run on the interpreter in single precision.

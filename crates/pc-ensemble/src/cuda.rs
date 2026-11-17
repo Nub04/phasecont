@@ -11,6 +11,11 @@
 //! `CUDA_HOME` or installed under `/usr/local/cuda`. The toolkit copy is loaded by absolute
 //! path, because a bare-name load from inside MATLAB would pick MATLAB's copy again.
 //!
+//! On Windows the first loads of the driver and NVRTC skip the current folder (see
+//! [`crate::winload`]): the driver must be `nvcuda.dll` in the system folder, and the NVRTC
+//! builtins library is loaded by absolute path from the folder of the NVRTC in use, so that
+//! NVRTC's own load of it at the first compile gets that copy.
+//!
 //! The kernel is compiled without fused multiply-add (`--fmad=false`), so a run reproduces
 //! the CPU backend operation for operation. The compile route follows the spike S4 result:
 //! PTX when the driver is at least as new as NVRTC, a cubin for the exact architecture
@@ -42,6 +47,7 @@ use crate::kept::{Kept, Lru};
 use crate::kernel::{Integrator, Layout, kernel_source_in, private_reals};
 use crate::real::Real;
 use crate::tape::Tape;
+use crate::winload::{self, NoCwdSearch};
 
 /// The name of the kernel entry point.
 const ENTRY: &str = "pc_ens";
@@ -253,11 +259,38 @@ fn step_err(step: &'static str, note: Option<String>) -> impl Fn(DriverError) ->
 // ---------------------------------------------------------------------------------------
 // Finding the libraries
 
-/// True when both libraries load by their bare names.
-fn libraries() -> (bool, bool) {
-    // SAFETY: these only try to open the libraries and close them again.
-    guard(|| unsafe { (dsys::is_culib_present(), nsys::is_culib_present()) })
-        .unwrap_or((false, false))
+/// The `cuDriverGetVersion` of the driver, for example 13040. The first call loads the
+/// driver library inside a [`NoCwdSearch`] window and keeps it; later calls reuse it. On
+/// Windows the driver must be `nvcuda.dll` in the system folder, which is loaded first so
+/// that cudarc's bare-name search finds that copy.
+fn driver_version() -> Result<i32, String> {
+    static DRIVER: OnceLock<Result<i32, String>> = OnceLock::new();
+    DRIVER
+        .get_or_init(|| {
+            let missing = || {
+                "the CUDA driver library was not found (nvcuda.dll in the Windows system \
+                 folder, libcuda.so on Linux)"
+                    .to_owned()
+            };
+            let _window = NoCwdSearch::new();
+            if cfg!(windows) && !winload::system_library("nvcuda.dll") {
+                return Err(missing());
+            }
+            // SAFETY: `is_culib_present` only opens and closes the library. The version
+            // call loads cudarc's copy for good, inside the window, and works before cuInit.
+            guard(|| unsafe {
+                if !dsys::is_culib_present() {
+                    return Err(missing());
+                }
+                let mut driver = 0;
+                dsys::cuDriverGetVersion(&mut driver)
+                    .result()
+                    .map(|()| driver)
+                    .map_err(|e| drv_text("cuDriverGetVersion", &e))
+            })
+            .unwrap_or_else(|m| Err(format!("loading the CUDA driver panicked: {m}")))
+        })
+        .clone()
 }
 
 fn is_nvrtc_file(name: &str) -> bool {
@@ -322,38 +355,80 @@ fn preload_toolkit_nvrtc() -> Option<PathBuf> {
             continue;
         };
         // The builtins library goes first, so NVRTC finds the copy of its own release.
-        for b in files_in(&dir, is_builtins_file).into_iter().take(1) {
-            // SAFETY: loading a library runs its initializers, as any dynamic load does.
-            if let Ok(lib) = unsafe { libloading::Library::new(&b) } {
-                std::mem::forget(lib);
-            }
+        if let Some(b) = files_in(&dir, is_builtins_file).into_iter().next() {
+            winload::pinned(&b);
         }
-        // SAFETY: as above.
-        if let Ok(lib) = unsafe { libloading::Library::new(&nvrtc) } {
-            std::mem::forget(lib);
+        if winload::pinned(&nvrtc) {
             return Some(nvrtc);
         }
     }
     None
 }
 
-/// Makes sure NVRTC can be called, by its bare name or else from a toolkit. The answer is
-/// kept, so the toolkit is searched once.
-fn ensure_nvrtc() -> Result<(), String> {
-    static NVRTC: OnceLock<Result<(), String>> = OnceLock::new();
+/// Loads the NVRTC builtins library from the folder of the NVRTC that cudarc loaded, so that
+/// NVRTC's own bare-name load at its first compile, which happens outside any
+/// [`NoCwdSearch`] window, gets this copy. The one named for the NVRTC release goes first.
+fn preload_builtins_next_to_nvrtc(major: i32, minor: i32) {
+    if !cfg!(windows) {
+        return;
+    }
+    // SAFETY: the library is cudarc's, loaded for good by the version call before this.
+    let addr = guard(|| unsafe {
+        nsys::culib()
+            .get::<unsafe extern "C" fn()>(b"nvrtcVersion\0")
+            .map(|f| *f as *const std::ffi::c_void)
+            .ok()
+    })
+    .ok()
+    .flatten();
+    let Some(dir) = addr.and_then(winload::module_dir) else {
+        return;
+    };
+    let exact = dir.join(format!("nvrtc-builtins64_{major}{minor}.dll"));
+    if exact.is_file() && winload::pinned(&exact) {
+        return;
+    }
+    if let Some(b) = files_in(&dir, is_builtins_file).into_iter().next() {
+        winload::pinned(&b);
+    }
+}
+
+/// The `nvrtcVersion` of the NVRTC in use. The first call loads it inside a
+/// [`NoCwdSearch`] window, by its bare name or else from a toolkit, and keeps it; the toolkit
+/// is searched once.
+fn nvrtc_version() -> Result<(i32, i32), String> {
+    static NVRTC: OnceLock<Result<(i32, i32), String>> = OnceLock::new();
     NVRTC
         .get_or_init(|| {
-            if libraries().1 || (preload_toolkit_nvrtc().is_some() && libraries().1) {
-                Ok(())
-            } else {
-                Err(
+            let _window = NoCwdSearch::new();
+            // SAFETY: these only open the library and close it again.
+            let present = || guard(|| unsafe { nsys::is_culib_present() }).unwrap_or(false);
+            if !present() && (preload_toolkit_nvrtc().is_none() || !present()) {
+                return Err(
                     "NVRTC was not found: it comes with MATLAB or with a CUDA toolkit \
                      (set CUDA_PATH to the toolkit folder)"
                         .to_owned(),
-                )
+                );
             }
+            // SAFETY: both pointers are valid for one write. The call loads cudarc's copy
+            // for good, inside the window.
+            let version = guard(|| unsafe {
+                let (mut major, mut minor) = (0, 0);
+                nsys::nvrtcVersion(&mut major, &mut minor)
+                    .result()
+                    .map(|()| (major, minor))
+                    .map_err(|e| format!("nvrtcVersion: {:?}", e.0))
+            })
+            .unwrap_or_else(|m| Err(format!("loading NVRTC panicked: {m}")))?;
+            preload_builtins_next_to_nvrtc(version.0, version.1);
+            Ok(version)
         })
         .clone()
+}
+
+/// Makes sure NVRTC can be called.
+fn ensure_nvrtc() -> Result<(), String> {
+    nvrtc_version().map(|_| ())
 }
 
 // ---------------------------------------------------------------------------------------
@@ -397,24 +472,16 @@ fn version_text(driver: i32, nvrtc: (i32, i32)) -> String {
 }
 
 fn probe_now() -> Probe {
-    if !libraries().0 {
-        return Probe::unavailable(
-            "the CUDA driver library was not found (nvcuda.dll on Windows, libcuda.so on Linux)",
-        );
-    }
-    if let Err(why) = ensure_nvrtc() {
-        return Probe::unavailable(why);
-    }
-    let mut driver = 0;
-    // SAFETY: the pointer is valid for one write. This works before cuInit.
-    if let Err(e) = unsafe { dsys::cuDriverGetVersion(&mut driver) }.result() {
-        return Probe::unavailable(drv_text("cuDriverGetVersion", &e));
-    }
-    let (mut major, mut minor) = (0, 0);
-    // SAFETY: both pointers are valid for one write.
-    if let Err(e) = unsafe { nsys::nvrtcVersion(&mut major, &mut minor) }.result() {
-        return Probe::unavailable(format!("nvrtcVersion: {:?}", e.0));
-    }
+    let driver = match driver_version() {
+        Ok(d) => d,
+        Err(why) => return Probe::unavailable(why),
+    };
+    let (major, minor) = match nvrtc_version() {
+        Ok(v) => v,
+        Err(why) => return Probe::unavailable(why),
+    };
+    // cuInit loads the driver's own helper libraries, so it runs inside a window too.
+    let _window = NoCwdSearch::new();
     if let Err(e) = result::init() {
         return Probe::unavailable(drv_text("cuInit", &e));
     }
