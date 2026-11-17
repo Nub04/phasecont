@@ -44,6 +44,8 @@ pub enum SelfTestError {
     NoDevice(String),
     /// The backend refused or failed a job.
     Run(EnsembleError),
+    /// The backend refused or failed a job of the fma tier, on a device that takes it.
+    Fma(EnsembleError),
 }
 
 impl std::fmt::Display for SelfTestError {
@@ -51,6 +53,9 @@ impl std::fmt::Display for SelfTestError {
         match self {
             SelfTestError::NoDevice(m) => f.write_str(m),
             SelfTestError::Run(e) => write!(f, "the backend failed a self-test job: {e}"),
+            SelfTestError::Fma(e) => {
+                write!(f, "the backend failed a self-test job of the fma tier: {e}")
+            }
         }
     }
 }
@@ -433,7 +438,7 @@ fn bit_exact(run: Runner, precision: Precision) -> Result<bool, EnsembleError> {
 }
 
 /// Runs the jobs of [`bit_exact`] on `run` in both math tiers and compares the two.
-fn fma_difference(run: Runner, precision: Precision) -> Result<FmaDifference, EnsembleError> {
+fn fma_difference(run: Runner, precision: Precision) -> Result<FmaDifference, SelfTestError> {
     let (vdp, henon) = bit_models();
     let (x0_vdp, x0_henon) = (x0_for(vdp.n()), x0_for(henon.n()));
     let exact = bit_jobs(&vdp, &henon, &x0_vdp, &x0_henon, precision, Math::Exact);
@@ -443,7 +448,8 @@ fn fma_difference(run: Runner, precision: Precision) -> Result<FmaDifference, En
         status_differ: 0,
     };
     for (e, f) in exact.iter().zip(&fused) {
-        let (want, got) = (run(e)?, run(f)?);
+        let want = run(e)?;
+        let got = run(f).map_err(SelfTestError::Fma)?;
         for i in 0..MEMBERS {
             if want.status[i] != got.status[i] {
                 out.status_differ += 1;

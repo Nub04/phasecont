@@ -398,8 +398,11 @@ mod run_with {
         };
         let e = run_with(&refuse, device(), label(Precision::Double), true, true).unwrap_err();
         assert!(
-            matches!(e, SelfTestError::Run(EnsembleError::BadJob(_))),
+            matches!(e, SelfTestError::Fma(EnsembleError::BadJob(_))),
             "{e:?}"
         );
+        // The message names the tier, so the CLI error (exit 1) says which jobs failed.
+        let text = e.to_string();
+        assert!(text.contains("fma tier"), "{text}");
     }
 }
