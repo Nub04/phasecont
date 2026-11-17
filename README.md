@@ -35,8 +35,8 @@ The `.ode` reader refuses some XPPAUT constructs, and delay models run only in `
 
 ## Install
 
-1. Download `PhaseCont-<version>.mltbx` from the [Releases page](https://github.com/Nub04/phasecont/releases). `SHA256SUMS` next to it lists the checksum of the file.
-2. Open the `.mltbx` file in MATLAB, or run `matlab.addons.install("PhaseCont-<version>.mltbx")`.
+1. Download the package for your platform from the [Releases page](https://github.com/Nub04/phasecont/releases): `PhaseCont-<version>-win64.mltbx` for Windows, `PhaseCont-<version>-glnxa64.mltbx` for Linux or `PhaseCont-<version>-maca64.mltbx` for macOS on Apple silicon. `PhaseCont-<version>.mltbx` holds all three platforms and installs on any of them. `SHA256SUMS` next to the packages lists their checksums.
+2. Open the `.mltbx` file in MATLAB, or run `matlab.addons.install("PhaseCont-<version>-<platform>.mltbx")` with the name of the file you downloaded.
 3. Check the install:
 
    ```matlab
@@ -369,7 +369,7 @@ You need this only to change PhaseCont itself.
    - `mex` builds the gateway next to it.
    - `test` runs the `matlab.unittest` suites in `tests/`.
 
-4. Optionally, build a package for this platform in `build/`:
+4. Optionally, build a package for this platform, `build/PhaseCont-<version>-<arch>.mltbx`:
 
    ```matlab
    buildtool package
