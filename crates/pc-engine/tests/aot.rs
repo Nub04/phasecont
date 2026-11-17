@@ -475,3 +475,55 @@ fn map_curves_at_iterate_2_run_on_aot() {
         }
     }
 }
+
+/// An EP branch of a map at iterate 2 refines its LP points with the directional
+/// derivative of the whole map (`Dir([Full])`). On an AOT library without that entry the
+/// branch still ran, but the refinement failed into a warning. The branch, its special
+/// points and its warnings match the JIT.
+#[test]
+fn map_ep_branch_at_iterate_2_refines_on_aot() {
+    use pc_engine::{EpSetup, Options, Run, RunSpec, RunState};
+    if gcc_version().is_none() {
+        println!("skip: gcc not found, AOT map EP test not run");
+        return;
+    }
+    let name = "map_cusp_cp";
+    let (so, tag, _, _tmp) = built(name, "map2-ep");
+    let branch = |ev: Evaluator| {
+        let (m, info) = common::load(name);
+        let opts = Options {
+            bounds: (-1.0, 1.0),
+            ..Options::default()
+        };
+        // a1 from 0 at a2 = 0.75: the fixed points x = +-0.5 at a1 = -+0.25 are LP points.
+        let setup = EpSetup::new(0, vec![0.0, 0.75], vec![0.0, 0.0]);
+        let mut spec = RunSpec::new(m, info, ev, setup, opts);
+        spec.iterate = 2;
+        let run = Run::start(spec);
+        let t0 = std::time::Instant::now();
+        while run.poll().state == RunState::Running {
+            assert!(
+                t0.elapsed() < std::time::Duration::from_secs(60),
+                "timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(run.poll().state, RunState::Done);
+        assert_eq!(run.iterate(0), Some(2));
+        (run.specials(0), run.warnings(0))
+    };
+    let (aot, aot_warn) = branch(Evaluator::Aot { lib: so, tag });
+    let (jit, jit_warn) = branch(Evaluator::Jit);
+    assert!(aot_warn.is_empty(), "{aot_warn:?}");
+    assert!(jit_warn.is_empty(), "{jit_warn:?}");
+    let lp = jit.iter().filter(|s| s.label == "LP").count();
+    assert!(lp >= 1, "no LP point on the JIT branch: {jit:?}");
+    assert_eq!(aot.len(), jit.len(), "special points");
+    for (a, b) in aot.iter().zip(&jit) {
+        assert_eq!(a.label, b.label);
+        assert!(same(a.point.alpha, b.point.alpha), "{} alpha", a.label);
+        for (k, (x, y)) in a.point.u.iter().zip(&b.point.u).enumerate() {
+            assert!(same(*x, *y), "{} u[{k}]", a.label);
+        }
+    }
+}

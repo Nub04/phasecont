@@ -45,7 +45,7 @@ The version number of this release is not chosen yet. The toolbox still reports 
 ### Fixed
 
 - Models built with the AOT evaluator run LPC, PD and NS curves. The AOT library had no `F_up` entry, which those curves use, so they stopped with "AOT library has no entry d_up".
-- Maps built with the AOT evaluator run LP, PD and NS curves at `Iterate` 2 or more. The k-th iterate asks for the directional derivative of the whole map, which the AOT library did not hold, so those curves stopped with "AOT library has no entry d_f". Adding the entry changes the tag of every AOT library, so a cached library is built again on first use.
+- Maps built with the AOT evaluator run LP, PD and NS curves at `Iterate` 2 or more, and EP branches there refine their LP and BP points. The k-th iterate asks for the directional derivative of the whole map, which the AOT library did not hold, so those curves stopped with "AOT library has no entry d_f" and EP branches warned "could not refine LP near point ..." and left the point unrefined. Adding the entry changes the tag of every AOT library, so a cached library is built again on first use.
 
 ### Compatibility
 
