@@ -12,6 +12,9 @@ classdef AotTest < matlab.unittest.TestCase
             "init v=-1.2,w=-0.6" + newline + ...
             "v'=v-v^3/3-w+drive" + newline + ...
             "w'=e*(v+a-b*w)" + newline + "done" + newline
+        Henon = "par a=1.4, b=0.3" + newline + "init x=0, y=0" + newline + ...
+            "x(t+1)=1-a*x^2+y" + newline + "y(t+1)=b*x" + newline + ...
+            "done" + newline
     end
 
     properties
@@ -201,6 +204,37 @@ classdef AotTest < matlab.unittest.TestCase
             testCase.assertNotEmpty(hash);
             testCase.verifySubstring(lib, hash);
             testCase.verifyTrue(isfile(lib));
+        end
+
+        function mapCurveAtIterate2RunsOnAot(testCase)
+            % The k-th iterate of a map asks for the directional derivative
+            % of the whole map, so the PD curve of the Henon 2-cycle needs
+            % that entry in the library. It runs on AOT and agrees with the
+            % JIT.
+            testCase.needCompiler();
+            fh = testCase.write("h.ode", testCase.Henon);
+            runs = cell(1, 2);
+            evs = ["aot" "jit"];
+            for k = 1:2
+                m = phasecont.Model(fh, Evaluator = evs(k));
+                testCase.assertEqual(m.Evaluator, evs(k));
+                b = 0.3;
+                x = (-(1 - b) + sqrt((1 - b)^2 + 0.8)) / 0.4;
+                eq = phasecont.equilibrium(m, [x b*x], Params = struct(a = 0.2, b = b));
+                brs = phasecont.continuation(m, eq, Free = "a", Direction = 1, ...
+                    Hmax = 0.05, MaxSteps = 1000, Bounds = [0.2 1.2], Switch = "PD1");
+                testCase.assertSize(brs, [1 2]);
+                pd2 = brs(2).points("PD");
+                testCase.assertSize(pd2, [1 1]);
+                runs{k} = testCase.verifyWarningFree(@() phasecont.continuation( ...
+                    m, pd2, Type = "PD", Free = ["a" "b"], Bounds = [0.1 0.6]));
+            end
+            [a, j] = runs{:};
+            testCase.verifyEqual(a.Iterate, 2);
+            testCase.verifyGreaterThan(size(a.Alpha, 1), 5);
+            testCase.assertSize(a.Alpha, size(j.Alpha));
+            testCase.verifyEqual(a.Alpha, j.Alpha, AbsTol = 1e-9);
+            testCase.verifyEqual(a.U, j.U, AbsTol = 1e-9);
         end
 
         function hookedTextGetsItsOwnLibrary(testCase)

@@ -136,6 +136,22 @@ classdef SessionTest < matlab.unittest.TestCase
             phasecont.config("Codegen", "jit");
         end
 
+        function codegenAot(testCase)
+            old = phasecont.config("Codegen");
+            testCase.addTeardown(@() phasecont.config("Codegen", old));
+            phasecont.config("Codegen", "aot");
+        end
+
+        function noAotBuild(testCase)
+            % Any AOT build from here on reaches the hook, which throws, so
+            % Model.compileAot warns with phasecont:aot:compile. The hook
+            % runs before the cache lookup, so a cached library cannot hide
+            % a build.
+            testCase.addTeardown(@() phasecont.internal.aotHook([]));
+            phasecont.internal.aotHook(@(~) error("SessionTest:aotBuild", ...
+                "an AOT build started"));
+        end
+
         function verifySameItem(testCase, a, b)
             % The loaded item B has the numbers of the original A.
             testCase.verifyClass(b, class(a));
@@ -410,26 +426,30 @@ classdef SessionTest < matlab.unittest.TestCase
             % never runs, so it cannot warn with phasecont:aot:*.
             testCase.codegenJit();
             file = testCase.sessionWithEvaluator("aot", "recorded_aot");
+            testCase.noAotBuild();
             back = testCase.verifyWarningFree(@() phasecont.Session.load(file));
             testCase.addTeardown(@() delete(back.Model));
             testCase.verifyEqual(back.Model.Evaluator, "jit");
             testCase.verifyEqual(back.Model.AotInfo.Library, "");
             r = testCase.verifyWarningFree(@() phasecont.session.replay(file));
             testCase.verifyTrue(r.Pass);
-            % On a machine with a compiler the same file still builds AOT
-            % when the caller asks for it, so the check above is not empty.
-            if testCase.haveCompiler()
-                aot = phasecont.Session.load(file, Evaluator = "aot");
-                testCase.addTeardown(@() delete(aot.Model));
-                testCase.verifyEqual(aot.Model.Evaluator, "aot");
-            end
+            % The hook catches a build: a load that asks for AOT warns, with
+            % or without a compiler, so the checks above are not empty.
+            aot = testCase.verifyWarning( ...
+                @() phasecont.Session.load(file, Evaluator = "aot"), ...
+                "phasecont:aot:compile");
+            testCase.addTeardown(@() delete(aot.Model));
+            testCase.verifyEqual(aot.Model.Evaluator, "jit");
         end
 
         function theRecordedFallbackAndJitAreHonoured(testCase)
-            testCase.codegenJit();
+            % Codegen "aot" would build a library if the recorded value were
+            % ignored, and the hook turns that build into a warning.
+            testCase.codegenAot();
+            testCase.noAotBuild();
             for ev = ["fallback" "jit"]
                 file = testCase.sessionWithEvaluator(ev, "recorded_" + ev);
-                back = phasecont.Session.load(file);
+                back = testCase.verifyWarningFree(@() phasecont.Session.load(file));
                 testCase.addTeardown(@() delete(back.Model));
                 testCase.verifyEqual(back.Model.Evaluator, ev);
             end
@@ -455,7 +475,9 @@ classdef SessionTest < matlab.unittest.TestCase
             testCase.assertEqual(m.Evaluator, "aot");
             file = fullfile(testCase.Dir, "aot_diagram.pcsession.json");
             save(phasecont.Session(m, items), file);
-            r = phasecont.session.replay(file);
+            % The replay builds no library: the hook would make it warn.
+            testCase.noAotBuild();
+            r = testCase.verifyWarningFree(@() phasecont.session.replay(file));
             testCase.verifyNumElements(r, 6);
             testCase.verifyTrue(all([r.Pass]), "a run did not reproduce on the JIT");
             testCase.verifyTrue(all([r.LabelsMatch]));
