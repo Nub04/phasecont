@@ -284,6 +284,17 @@ typedef struct pc_api_v1_t {
    * free_string. The call reads and writes no files. */
   int32_t (*latex_render)(uint32_t kind, const char *doc_json,
                           char **result_json);
+
+  /* Writes the Jacobian dF/du at u (time 0) to jac_out in column-major order,
+   * jac_out[i + n*j] = dF_i/du_j. nu is n, np the parameter count and njac
+   * n*n; another length is PC_ERR_BAD_ARG. opts_json is NULL or an object
+   * whose only key is "iterate" (a map only): the Jacobian of the k-th
+   * iterate F^k, the matrix model_equilibrium takes its eigenvalues from. A
+   * delay model and an uncompiled model are PC_ERR_BAD_ARG, a non-autonomous
+   * model PC_ERR_NON_AUTONOMOUS and a bad option PC_ERR_BAD_PROBLEM. */
+  int32_t (*model_jacobian)(uint64_t model, const double *u, size_t nu,
+                            const double *p, size_t np, const char *opts_json,
+                            double *jac_out, size_t njac);
 } pc_api_v1_t;
 
 #define PC_IMPORT_SBML 1
@@ -299,7 +310,7 @@ typedef struct pc_api_v1_t {
 typedef const pc_api_v1_t *(*pc_api_v1_fn)(void);
 
 /* Layout of pc_api_v1_t on 64-bit targets, in bytes. */
-#define PC_API_V1_SIZE 184
+#define PC_API_V1_SIZE 192
 #define PC_API_V1_OFFSET_ABI_VERSION 0
 #define PC_API_V1_OFFSET_STRUCT_SIZE 4
 #define PC_API_V1_OFFSET_MODEL_FROM_ODE 8
@@ -324,6 +335,7 @@ typedef const pc_api_v1_t *(*pc_api_v1_fn)(void);
 #define PC_API_V1_OFFSET_ENS_COPY 160
 #define PC_API_V1_OFFSET_ENS_CANCEL 168
 #define PC_API_V1_OFFSET_LATEX_RENDER 176
+#define PC_API_V1_OFFSET_MODEL_JACOBIAN 184
 
 #ifndef PCKERN_NO_LAYOUT_CHECK
 /* C89 negative-array checks: _Static_assert needs /std:c11 on MSVC. */
@@ -355,6 +367,7 @@ PC_CHECK_OFFSET(ens_poll, PC_API_V1_OFFSET_ENS_POLL);
 PC_CHECK_OFFSET(ens_copy, PC_API_V1_OFFSET_ENS_COPY);
 PC_CHECK_OFFSET(ens_cancel, PC_API_V1_OFFSET_ENS_CANCEL);
 PC_CHECK_OFFSET(latex_render, PC_API_V1_OFFSET_LATEX_RENDER);
+PC_CHECK_OFFSET(model_jacobian, PC_API_V1_OFFSET_MODEL_JACOBIAN);
 #endif
 
 #ifdef __cplusplus

@@ -500,6 +500,68 @@ pub unsafe extern "C" fn model_equilibrium(
     })
 }
 
+/// Reads the options object of `model_jacobian` (SPEC 8ac): NULL or an object whose only key
+/// is `iterate`, which only a map takes. Returns the iterate, 1 by default.
+fn jacobian_options(opts: *const c_char, map: bool) -> Result<usize> {
+    if opts.is_null() {
+        return Ok(1);
+    }
+    let text = unsafe { str_arg(opts, "options") }?;
+    let v: Value = serde_json::from_str(text)
+        .map_err(|e| Error::BadProblem(format!("options: not valid JSON ({e})")))?;
+    let o = v
+        .as_object()
+        .ok_or_else(|| Error::BadProblem("options: expected an object".into()))?;
+    if let Some(k) = o.keys().find(|k| k.as_str() != "iterate") {
+        return Err(Error::BadProblem(format!("options: unknown key `{k}`")));
+    }
+    if o.contains_key("iterate") && !map {
+        return Err(Error::BadProblem(
+            "iterate: only a map takes this key".into(),
+        ));
+    }
+    parse_iterate(o).map_err(Error::BadProblem)
+}
+
+/// Writes the column-major Jacobian of `F` (or of `F^k` on a map) at `u` to `jac_out`
+/// (SPEC 8ac).
+///
+/// # Safety
+/// `u` must be valid for `nu` reads, `p` for `np`, `jac_out` for `njac` writes, and `opts`
+/// NULL or NUL-terminated.
+pub unsafe extern "C" fn model_jacobian(
+    model: u64,
+    u: *const f64,
+    nu: usize,
+    p: *const f64,
+    np: usize,
+    opts: *const c_char,
+    jac_out: *mut f64,
+    njac: usize,
+) -> i32 {
+    barrier(|| {
+        let h = model_handle(model)?;
+        h.ode_only()?;
+        let n = h.n();
+        if !h.names.autonomous {
+            return Err(Error::NonAutonomous(EngineError::NonAutonomous.to_string()));
+        }
+        expect_len("u", n, nu)?;
+        expect_len("p", h.n_p(), np)?;
+        let nn = n
+            .checked_mul(n)
+            .ok_or_else(|| bad_arg("jac_out: n*n overflows"))?;
+        expect_len("jac_out", nn, njac)?;
+        let u = unsafe { f64_arg(u, nu, "u") }?.to_vec();
+        let p = unsafe { f64_arg(p, np, "p") }?.to_vec();
+        let iterate = jacobian_options(opts, h.map)?;
+        let out = unsafe { f64_out(jac_out, njac, "jac_out") }?;
+        let jac = h.jacobian(u, p, iterate)?;
+        out.copy_from_slice(&jac);
+        Ok(())
+    })
+}
+
 /// Translates SBML or a MATLAB function into `.ode` text. `opts` is NULL or a JSON object, and
 /// `out_json` is NULL unless the call sets it. A failed import returns `PC_ERR_MODEL` and sets
 /// `out_json` to the error object (see `import.rs`); the caller frees the string either way.

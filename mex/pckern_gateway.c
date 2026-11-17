@@ -20,6 +20,7 @@
  *   f = pckern("model_rhs", m, x, p, t)    f(x, p, t); t is a real double scalar
  *   F = pckern("model_rhs_batch", m, X, p [, t])   X is n-by-k, one point per column; F is n-by-k
  *   [u, ev] = pckern("model_equilibrium", m, u0, p, opts)
+ *   J = pckern("model_jacobian", m, u, p, opts)   n-by-n; opts "" or {"iterate":k}
  *   r = pckern("run_start", m, problem, u0, p)
  *   status = pckern("run_poll", r)
  *   rows = pckern("run_copy", r, branch, what, start, count, stride)
@@ -736,6 +737,30 @@ static void cmd_model_equilibrium(int nlhs, mxArray *plhs[], int nrhs, const mxA
         mxDestroyArray(ev);
 }
 
+static void cmd_model_jacobian(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
+{
+    uint64_t m;
+    const double *u, *p;
+    size_t n, np;
+    char *opts;
+    mxArray *jac;
+    int32_t rc;
+    need_args(nrhs, 5, 5, "model_jacobian");
+    need_outs(nlhs, 1, "model_jacobian");
+    m = get_handle(prhs[1]);
+    u = get_vec(prhs[2], "u", &n);
+    p = get_vec(prhs[3], "p", &np);
+    opts = get_text(prhs[4], "opts");
+    /* Column-major, as MATLAB stores an n-by-n matrix. */
+    jac = mxCreateDoubleMatrix(n, n, mxREAL);
+    rc = g_api->model_jacobian(m, u, n, p, np, opts[0] ? opts : NULL, mxGetDoubles(jac), n * n);
+    mxFree(opts);
+    if (rc != 0)
+        mxDestroyArray(jac);
+    check(rc);
+    plhs[0] = jac;
+}
+
 static void cmd_run_start(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 {
     uint64_t m, run = 0;
@@ -911,6 +936,7 @@ static const struct {
     {"model_rhs", cmd_model_rhs},
     {"model_rhs_batch", cmd_model_rhs_batch},
     {"model_equilibrium", cmd_model_equilibrium},
+    {"model_jacobian", cmd_model_jacobian},
     {"import", cmd_import},
     {"latex", cmd_latex},
     {"run_start", cmd_run_start},

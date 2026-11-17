@@ -65,6 +65,12 @@ enum Request {
         /// The k of `F^k` for a map (SPEC 8y); 1 for an ODE.
         iterate: usize,
     },
+    /// The Jacobian of `F^iterate` at `u` (SPEC 8ac); `iterate` is 1 for an ODE.
+    Jacobian {
+        u: Vec<f64>,
+        p: Vec<f64>,
+        iterate: usize,
+    },
     /// Compile `F` for the ensemble workers in this precision. The code stays in the model
     /// thread's slot for that precision.
     EnsembleF(Precision),
@@ -83,6 +89,7 @@ enum Reply {
     CFile(PathBuf),
     Rhs(Vec<f64>),
     Equilibrium(Equilibrium),
+    Jacobian(Vec<f64>),
     EnsembleF(Option<NativeRhs>),
 }
 
@@ -277,6 +284,16 @@ impl ModelHandle {
         }
     }
 
+    /// The column-major Jacobian of `F^iterate` at `u` with parameters `p` and time 0, the
+    /// matrix [`Self::equilibrium`] takes its eigenvalues from (SPEC 8ac).
+    pub fn jacobian(&self, u: Vec<f64>, p: Vec<f64>, iterate: usize) -> Result<Vec<f64>> {
+        self.ode_only()?;
+        match self.call(Request::Jacobian { u, p, iterate })? {
+            Reply::Jacobian(j) => Ok(j),
+            _ => Err(Error::Internal("unexpected reply to jacobian".into())),
+        }
+    }
+
     /// The compiled `F` in `precision` for the ensemble workers, or `None` when the model has
     /// none (a delay model, an oversized frame, a compile error) and the run uses the tape.
     /// The first call for a precision compiles on the model thread, 0.1 to 7 ms for the models
@@ -349,6 +366,18 @@ fn compiled(ev: &mut Option<Box<dyn ModelEval>>) -> Result<&mut dyn ModelEval> {
         Some(b) => Ok(&mut **b),
         None => Err(bad_arg(NOT_COMPILED)),
     }
+}
+
+/// The column-major Jacobian of `it` at `u` with parameters `params` and time 0. Both
+/// `model_equilibrium` and `model_jacobian` call it, so they see the same bits (SPEC 8ac).
+fn jacobian_at(it: &mut IteratedMap<'_>, u: &[f64], params: &[f64]) -> Result<Vec<f64>> {
+    let n = it.n();
+    let mut p = params.to_vec();
+    p.push(0.0);
+    let mut jac = vec![0.0; n * n];
+    // `JacU` is column-major (`out[i + n*j] = df_i/du_j`), as `eigenvalues` expects.
+    it.eval(&EntryKind::JacU, u, &p, &[], &mut jac)?;
+    Ok(jac)
 }
 
 /// What the model thread owns besides the evaluator.
@@ -520,14 +549,15 @@ fn handle(
                 equilibrium(&mut it, &setup, &opts)?
             };
             let n = it.n();
-            let mut p = setup.params.clone();
-            p.push(0.0);
-            let mut jac = vec![0.0; n * n];
-            it.eval(&EntryKind::JacU, &u, &p, &[], &mut jac)?;
-            // `JacU` is column-major (`out[i + n*j] = df_i/du_j`), as `eigenvalues` expects.
+            let jac = jacobian_at(&mut it, &u, &setup.params)?;
             let eig = pc_linalg::eigenvalues(&jac, n)
                 .map_err(|e| Error::Numeric(format!("eigenvalues: {e}")))?;
             Ok(Reply::Equilibrium(Equilibrium { u, eig }))
+        }
+        Request::Jacobian { u, p, iterate } => {
+            let ev = compiled(ev)?;
+            let mut it = IteratedMap::new(ev, iterate);
+            Ok(Reply::Jacobian(jacobian_at(&mut it, &u, &p)?))
         }
         Request::Panic => panic!("debug model panic"),
     }

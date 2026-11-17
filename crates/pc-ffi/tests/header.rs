@@ -58,6 +58,7 @@ fields!(
     ens_copy,
     ens_cancel,
     latex_render,
+    model_jacobian,
 );
 
 #[test]
