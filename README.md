@@ -47,7 +47,7 @@ The macOS binaries are not signed by Apple. If macOS refuses to load `pckern.mex
 
 ## Upgrading
 
-Close every MATLAB session that has used PhaseCont before you install a new version or uninstall the old one. The MEX gateway never unloads the engine library while MATLAB runs, so the old files stay locked and the upgrade fails with "Permission denied". Start a new MATLAB, then install the new `.mltbx`.
+Close every MATLAB session that has used PhaseCont before you install a new version or uninstall the old one. The MEX gateway never unloads the engine library while MATLAB runs, so the old files stay locked and the upgrade fails with "Permission denied". Start a new MATLAB. If you installed 1.0.0-preview, uninstall it in the Add-On Manager there before you install 1.0.0. Then install the new `.mltbx`.
 
 ## First run
 

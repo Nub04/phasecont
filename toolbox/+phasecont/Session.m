@@ -168,7 +168,7 @@ classdef Session
             switch rec.Kind
                 case "equilibrium"
                     % The iterate of a map solve is in its stored options
-                    % (SPEC 8y); a 1.0.0 record has none and means 1.
+                    % (SPEC 8y); a 1.0.0-preview record has none and means 1.
                     opts = jsondecode(char(rec.Problem));
                     k = 1;
                     if isfield(opts, "iterate")

@@ -320,7 +320,7 @@ classdef MapFixedPointTest < matlab.unittest.TestCase
         end
 
         function aVersion1SessionOfAMapLoadsAsStored(testCase)
-            % v1.0.0 stored a map EP branch with rows of width 3n + 6 and an
+            % v1.0.0-preview stored a map EP branch with rows of width 3n + 6 and an
             % H test where the PD test goes, and its problem asked for h.
             % Such a file is made here from a branch of this version by
             % removing the NS row and asking for h.

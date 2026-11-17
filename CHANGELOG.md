@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-The version number of this release is not chosen yet. The toolbox still reports 1.0.0.
+This release is 1.0.0. The release of 2026-11-04, first published as 1.0.0, is now 1.0.0-preview, a pre-release. The toolbox of both reports version 1.0.0.
 
 ### Added
 
@@ -37,8 +37,8 @@ The version number of this release is not chosen yet. The toolbox still reports 
 
 - Single-precision CPU ensembles run a compiled right-hand side, as double precision already did. `vdp-rk4` at 100000 members runs about 1.9 times faster, with the same bits as before. Models that use tables or erf, erfc, lgamma, the Bessel functions or polygamma still run on the interpreter in single precision.
 - `simulate` warns once per model with `phasecont:simulate:ignoredOption` and names the `@` options of the model, such as `meth` and `dt`, since it uses none of them. The results do not change. The warning comes after the run, so a run that fails gives no warning.
-- `simulate` iterates a map, and `equilibrium` and `continuation` with Types `"EP"`, `"LP"`, `"PD"` and `"NS"` compute its fixed points, their multipliers and the curves of its LP, PD and NS points. In 1.0.0 they treated the right-hand side of a map as an ODE and gave wrong results. Types `"H"`, `"LC"`, `"LPC"` and `"HOM"` on a map now raise a `phasecont:` error. `phasecont.app.PhasePlane` shows a map instead of a vector field (see Added). `Model.rhs` still evaluates the right-hand side.
-- A file of `x'=...` lines with `@ meth=discrete` (any `meth` value that starts with `d`) is now a map, as in XPPAUT, so it runs as a map in every call above. In 1.0.0 it was integrated as an ODE, and `ensemble` integrated it too.
+- `simulate` iterates a map, and `equilibrium` and `continuation` with Types `"EP"`, `"LP"`, `"PD"` and `"NS"` compute its fixed points, their multipliers and the curves of its LP, PD and NS points. In 1.0.0-preview they treated the right-hand side of a map as an ODE and gave wrong results. Types `"H"`, `"LC"`, `"LPC"` and `"HOM"` on a map now raise a `phasecont:` error. `phasecont.app.PhasePlane` shows a map instead of a vector field (see Added). `Model.rhs` still evaluates the right-hand side.
+- A file of `x'=...` lines with `@ meth=discrete` (any `meth` value that starts with `d`) is now a map, as in XPPAUT, so it runs as a map in every call above. In 1.0.0-preview it was integrated as an ODE, and `ensemble` integrated it too.
 - `continuation`, `simulate` and session replay check for the result more often in the first few milliseconds, so short runs return in about 5 ms instead of about 50 ms. The results do not change.
 - Rows of LPC, PD and NS curves have more `Tests` columns, one per new codim-2 test. Code that reads these columns by position needs the new widths.
 - `shift` and `del_shft` are now refused with a message that names the function, instead of an error about the number of arguments.
@@ -50,10 +50,11 @@ The version number of this release is not chosen yet. The toolbox still reports 
 
 ### Compatibility
 
-- Session files saved by 1.0.0 still load. Their LPC, PD and NS rows get NaN in the new test columns. Replaying such a run reports that the row layout changed.
-- A session saved by 1.0.0 with a run on a map loads with its stored rows, which are wrong. An EP branch of a map from such a file gets NaN in its PD and NS columns, since 1.0.0 stored an H test there. Replaying any of these runs gives `Pass = false`, since 1.0.0 treated the map as an ODE. A run that the engine refuses, such as an integration of a map or an EP branch that asks for the H test, also warns with `phasecont:session:runFailed`.
+- If you installed 1.0.0-preview, uninstall it in the Add-On Manager before installing 1.0.0. Both report version 1.0.0 with the same toolbox identifier, and an install of one over the other has not been tested.
+- Session files saved by 1.0.0-preview still load. Their LPC, PD and NS rows get NaN in the new test columns. Replaying such a run reports that the row layout changed.
+- A session saved by 1.0.0-preview with a run on a map loads with its stored rows, which are wrong. An EP branch of a map from such a file gets NaN in its PD and NS columns, since 1.0.0-preview stored an H test there. Replaying any of these runs gives `Pass = false`, since 1.0.0-preview treated the map as an ODE. A run that the engine refuses, such as an integration of a map or an EP branch that asks for the H test, also warns with `phasecont:session:runFailed`.
 - The engine library and the MEX gateway must come from the same release. A new gateway refuses an old library, which can happen only after a partial upgrade.
-- As in 1.0.0, close every MATLAB session that used PhaseCont before you install a new version, or the install fails with "Permission denied".
+- As in 1.0.0-preview, close every MATLAB session that used PhaseCont before you install a new version, or the install fails with "Permission denied".
 
 ### Known limits
 
@@ -65,6 +66,6 @@ The version number of this release is not chosen yet. The toolbox still reports 
 - The classification of Hopf-Hopf points into unfolding cases is not yet checked against a published table, and help marks the case letters as unconfirmed.
 - GPU ensembles have run on an NVIDIA RTX 5060 Laptop GPU (CUDA and OpenCL, single and double precision) and an Intel Arc 140T (OpenCL, single and double precision). Metal has run only on the virtual GPU of GitHub's hosted macOS runners, in single precision, never on Apple hardware. No AMD device has run.
 
-## 1.0.0 (2026-11-04)
+## 1.0.0-preview (2026-11-04)
 
-First public release.
+First public release. It was published as 1.0.0 and later renamed 1.0.0-preview and marked as a pre-release; its toolbox still reports version 1.0.0.

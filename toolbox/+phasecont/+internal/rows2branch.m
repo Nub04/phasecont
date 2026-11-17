@@ -72,16 +72,16 @@ function br = rows2branch(m, free, p, n, points, specials, branchStatus, kind, g
 % R3, R4, LPNS, PDNS, NSNS and CH on the NS curve. The Branch has the
 % multipliers as Eigenvalues, N-by-0 Tests, the tests in Codim2, Stable
 % false and, on the NS curve, Kappa. A map LP curve
-% that v1.0.0 stored ran as an ODE LP curve of F and has the width 3n + 7
-% of that layout, and a map PD or NS curve that v1.0.0 stored is a curve of
+% that v1.0.0-preview stored ran as an ODE LP curve of F and has the width 3n + 7
+% of that layout, and a map PD or NS curve that v1.0.0-preview stored is a curve of
 % cycles with a GRID. Both load in the layout they were stored in.
 %
-% Rows of an LPC, PD or NS curve that a v1.0.0 session stored are narrower:
+% Rows of an LPC, PD or NS curve that a v1.0.0-preview session stored are narrower:
 % they lack the codim-2 tests added later (CPC and R1, GPD and R2, CH). The
 % function pads them with NaN after the old tests and builds the branch as
 % usual, so the new tests read NaN there.
 %
-% Rows of an EP branch of a map that a v1.0.0 session stored have width
+% Rows of an EP branch of a map that a v1.0.0-preview session stored have width
 % 3n + 6: that engine treated the map as an ODE, so the eigenvalues belong to
 % the wrong system and the third test is an H test where the PD test goes.
 % The function loads them as stored: the third test becomes NaN and a column
@@ -108,8 +108,8 @@ if kind == "DDELC" || (kind == "LC" && ~isempty(m) && m.IsDelay)
 end
 isMap = kind == "EP" && ~isempty(m) && m.IsMap;
 % An LP, PD or NS curve of fixed points of a map (SPEC 8w) has no mesh. A map
-% PD or NS curve that v1.0.0 stored is a curve of cycles with a GRID, and a
-% v1.0.0 map LP curve has the width 3n + 7 of an ODE LP curve, so both load
+% PD or NS curve that v1.0.0-preview stored is a curve of cycles with a GRID, and a
+% v1.0.0-preview map LP curve has the width 3n + 7 of an ODE LP curve, so both load
 % in the layouts they were stored in.
 mapCurve = any(kind == ["LP" "PD" "NS"]) && ~isempty(m) && m.IsMap && isempty(grid);
 if mapCurve && kind == "LP" && size(points, 1) == 3*n + 7 ...
@@ -196,7 +196,7 @@ if ~isnan(oldTests) && oldTests < extra ...
     specials = padRows(specials, at, extra - oldTests);
 end
 if isMap && size(points, 1) == stride - 1 && size(specials, 1) == stride - 1
-    % A map EP branch saved by v1.0.0, with the H test where PD goes.
+    % A map EP branch saved by v1.0.0-preview, with the H test where PD goes.
     at = 1 + block + 2*n + 3;
     points(at, :) = NaN;
     specials(at, :) = NaN;
@@ -270,7 +270,7 @@ if isfield(branchStatus, "warnings") && ~isempty(branchStatus.warnings)
 end
 
 % The iterate k of a map branch (SPEC 8y); a status without the key, as
-% v1.0.0 and every ODE or delay run give, means 1.
+% v1.0.0-preview and every ODE or delay run give, means 1.
 iterate = 1;
 if isMap || mapCurve
     iterate = numberField(branchStatus, "iterate");
@@ -535,7 +535,7 @@ end
 end
 
 function k = v1Codim2Count(kind)
-% The number of codim-2 tests a v1.0.0 session stored for a curve of cycles,
+% The number of codim-2 tests a v1.0.0-preview session stored for a curve of cycles,
 % or NaN for a kind whose rows never changed width.
 switch kind
     case "LPC"

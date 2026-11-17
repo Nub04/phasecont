@@ -1,4 +1,4 @@
-//! Replay of a session on a map model (SPEC sections 8t, 8u and 8v). A 1.0.0 session can hold
+//! Replay of a session on a map model (SPEC sections 8t, 8u and 8v). A 1.0.0-preview session can hold
 //! map runs with the rows the old engine computed. Replay goes through `model_equilibrium` and
 //! `run_start`. Since SPEC 8v `model_equilibrium` solves F(x) = x on a map, so a stored
 //! equilibrium record with the old value fails on the comparison. An IVP record is still refused
@@ -35,7 +35,7 @@ fn scratch() -> PathBuf {
 }
 
 /// A session with an equilibrium record and a trajectory record on `source`. The stored
-/// equilibrium is the root of F that the 1.0.0 engine found, x = 0 with eigenvalue 2. The
+/// equilibrium is the root of F that the 1.0.0-preview engine found, x = 0 with eigenvalue 2. The
 /// fixed point from 0.5 at r = 2 is x = 1/2 with multiplier 0, so the comparison fails. The
 /// IVP values are placeholders, since replay refuses the IVP before it compares anything.
 fn map_session(source: &str) -> Session {
