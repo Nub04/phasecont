@@ -15,7 +15,7 @@
 //! Workspace of a member, `10 n + n_p + 1` values in this order: `y`, `y1`, `yt`, the seven
 //! stages `k0` to `k6`, and the parameters followed by the time.
 
-use crate::job::{Checked, Job, Method, NativeRhs, Params, Precision, Status};
+use crate::job::{Checked, Job, Method, NativeRhs, Params, Status};
 use crate::real::Real;
 use crate::tape::{CpuTape, Slab, Tape};
 
@@ -166,7 +166,7 @@ pub enum Kind<T: Real> {
 pub struct Ctx<'a, T: Real> {
     /// The right-hand side, lowered once for `T`.
     pub rhs: CpuTape<T>,
-    /// A compiled right-hand side, set only for a double precision job that carries one.
+    /// A compiled right-hand side, set only for a job that carries one of precision `T`.
     pub native: Option<NativeRhs>,
     pub n: usize,
     pub n_p: usize,
@@ -239,11 +239,8 @@ impl<'a, T: Real> Ctx<'a, T> {
         let bounds = T::from_f64(job.bounds);
         Ctx {
             rhs: CpuTape::new(tape),
-            native: if job.precision == Precision::Double {
-                job.native
-            } else {
-                None
-            },
+            // A function of the other precision would only fall back to the tape on each call.
+            native: job.native.filter(|&f| T::native(f).is_some()),
             n: checked.n,
             n_p: checked.n_p,
             x0: job.x0,

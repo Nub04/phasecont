@@ -59,14 +59,22 @@ pub enum Method {
     Iter,
 }
 
-/// A native right-hand side of a model, compiled by the caller (pc-jit), for double precision
-/// CPU runs. A run calls it in place of the [`crate::tape::CpuTape`] interpreter.
+/// A native right-hand side of a model, compiled by the caller (pc-jit), for CPU runs. A run
+/// of the same precision calls it in place of the [`crate::tape::CpuTape`] interpreter; a run
+/// of the other precision ignores it.
 ///
 /// The function reads `x` (`n` values) and `p` (`n_p` parameters, then `t`) and writes `n`
-/// values to `out`, which it must not alias. It gives the bits of the tape, with no fused
-/// multiply-add.
+/// values to `out`, which it must not alias. It gives the bits of the tape of its precision,
+/// with no fused multiply-add.
 #[derive(Clone, Copy, Debug)]
-pub struct NativeRhs(unsafe extern "C" fn(*const f64, *const f64, *mut f64));
+pub struct NativeRhs(pub(crate) NativeFn);
+
+/// The function behind a [`NativeRhs`], by precision.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum NativeFn {
+    Double(unsafe extern "C" fn(*const f64, *const f64, *mut f64)),
+    Single(unsafe extern "C" fn(*const f32, *const f32, *mut f32)),
+}
 
 /// The largest stack frame, in bytes, that a caller may hand to [`NativeRhs::new`]. A rayon
 /// worker has a 2 MiB stack and the integrator's own frames sit below the call, so the limit
@@ -74,26 +82,47 @@ pub struct NativeRhs(unsafe extern "C" fn(*const f64, *const f64, *mut f64));
 pub const NATIVE_FRAME_LIMIT: u32 = 256 * 1024;
 
 impl NativeRhs {
-    /// Wraps `f`.
+    /// Wraps `f`, a double precision `F`.
     ///
     /// # Safety
     /// `f` must be the `F` entry of this job's model, with exactly `n` outputs. It must give
-    /// the same bits as the tape for every input, and be callable from any thread at the same
-    /// time. Its stack frame must fit a rayon worker's 2 MiB stack. The code behind it must
-    /// stay valid until every run that holds this value has returned.
+    /// the same bits as the `f64` tape for every input, and be callable from any thread at the
+    /// same time. Its stack frame must fit a rayon worker's 2 MiB stack. The code behind it
+    /// must stay valid until every run that holds this value has returned.
     pub unsafe fn new(f: unsafe extern "C" fn(*const f64, *const f64, *mut f64)) -> Self {
-        NativeRhs(f)
+        NativeRhs(NativeFn::Double(f))
     }
 
-    /// Calls the function.
+    /// Wraps `f`, a single precision `F`.
     ///
     /// # Safety
-    /// `x` and `p` must be valid for the lengths above, and `out` for `n` writes, with no
-    /// overlap between `out` and the inputs.
-    #[inline]
-    pub(crate) unsafe fn call(self, x: *const f64, p: *const f64, out: *mut f64) {
-        // SAFETY: the caller keeps the contract of `new` and the pointers.
-        unsafe { (self.0)(x, p, out) }
+    /// The contract of [`NativeRhs::new`], with the `f32` tape in place of the `f64` one.
+    pub unsafe fn new_f32(f: unsafe extern "C" fn(*const f32, *const f32, *mut f32)) -> Self {
+        NativeRhs(NativeFn::Single(f))
+    }
+
+    /// The precision the function was compiled for.
+    pub fn precision(self) -> Precision {
+        match self.0 {
+            NativeFn::Double(_) => Precision::Double,
+            NativeFn::Single(_) => Precision::Single,
+        }
+    }
+
+    /// The double precision function, or `None` for a single precision one.
+    pub(crate) fn double(self) -> Option<unsafe extern "C" fn(*const f64, *const f64, *mut f64)> {
+        match self.0 {
+            NativeFn::Double(f) => Some(f),
+            NativeFn::Single(_) => None,
+        }
+    }
+
+    /// The single precision function, or `None` for a double precision one.
+    pub(crate) fn single(self) -> Option<unsafe extern "C" fn(*const f32, *const f32, *mut f32)> {
+        match self.0 {
+            NativeFn::Single(f) => Some(f),
+            NativeFn::Double(_) => None,
+        }
     }
 }
 
@@ -114,8 +143,8 @@ pub struct Job<'a> {
     /// Accepted steps (RK4: steps) per member before [`Status::MaxSteps`].
     pub max_steps: u32,
     pub precision: Precision,
-    /// A compiled right-hand side for a double precision CPU run. Single precision runs and
-    /// GPU runs ignore it. `None` runs the tape interpreter, which gives the same bits.
+    /// A compiled right-hand side for a CPU run of its precision. A run of the other precision
+    /// and GPU runs ignore it. `None` runs the tape interpreter, which gives the same bits.
     pub native: Option<NativeRhs>,
 }
 

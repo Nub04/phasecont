@@ -336,23 +336,33 @@ fn l96_x0(n: usize, members: usize) -> Vec<f64> {
     x0
 }
 
-/// Compiles `F` of `ir` for a double-precision CPU row, the way `ens_start` does. Returns the
-/// code, the function and the compile time in seconds, or `None` when the tape runs instead.
-fn bench_native(ir: &IrModel) -> Option<(JitEntries, NativeRhs, f64)> {
+/// Compiles `F` of `ir` for a CPU row of `precision`, the way `ens_start` does. Returns the
+/// code, the function and the compile time in seconds, or `None` when the tape runs instead
+/// (a single precision model with an op the `f32` JIT refuses, or a frame over the limit).
+fn bench_native(ir: &IrModel, precision: Precision) -> Option<(JitEntries, NativeRhs, f64)> {
     let start = Instant::now();
     let entry = Entry {
         kind: EntryKind::F,
         outputs: ir.f.clone(),
     };
-    let je = pc_jit::compile(&[(EntryKind::F, &entry)], &ir.dag).ok()?;
+    let entries = [(EntryKind::F, &entry)];
+    let je = match precision {
+        Precision::Double => pc_jit::compile(&entries, &ir.dag),
+        Precision::Single => pc_jit::compile_f32(&entries, &ir.dag),
+    }
+    .ok()?;
     if je.frame() > NATIVE_FRAME_LIMIT {
         return None;
     }
-    let f = je.plain(&EntryKind::F)?;
-    // SAFETY: `f` is the `F` entry of `ir` with `n` outputs. The JIT gives the bits of the
-    // tape, keeps no state and its frame is within the limit. The caller keeps `je` alive
-    // until the last run that uses `f` has returned.
-    let native = unsafe { NativeRhs::new(f) };
+    // SAFETY: the function is the `F` entry of `ir` with `n` outputs, in the precision of the
+    // row. The JIT gives the bits of that precision's tape, keeps no state and its frame is
+    // within the limit. The caller keeps `je` alive until the last run that uses it returns.
+    let native = unsafe {
+        match precision {
+            Precision::Double => NativeRhs::new(je.plain(&EntryKind::F)?),
+            Precision::Single => NativeRhs::new_f32(je.plain_f32(&EntryKind::F)?),
+        }
+    };
     Some((je, native, start.elapsed().as_secs_f64()))
 }
 
@@ -388,8 +398,8 @@ fn bench_row(case: &BenchCase, device: &DeviceInfo, precision: Precision, member
         CaseKind::L96(n) => (l96_x0(n, members), vec![8.0], false, 10.0, rk4),
     };
     // Compiled outside the timed loop, once per row, and kept until the row ends.
-    let jit = if device.backend == Backend::Cpu && precision == Precision::Double {
-        bench_native(&case.ir)
+    let jit = if device.backend == Backend::Cpu {
+        bench_native(&case.ir, precision)
     } else {
         None
     };

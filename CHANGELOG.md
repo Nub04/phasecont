@@ -28,6 +28,7 @@ The version number of this release is not chosen yet. The toolbox still reports 
 
 ### Changed
 
+- Single-precision CPU ensembles run a compiled right-hand side, as double precision already did. `vdp-rk4` at 100000 members runs about 1.9 times faster, with the same bits as before. Models that use tables or erf, erfc, lgamma, the Bessel functions or polygamma still run on the interpreter in single precision.
 - `simulate` warns once per model with `phasecont:simulate:ignoredOption` and names the `@` options of the model, such as `meth` and `dt`, since it uses none of them. The results do not change. The warning comes after the run, so a run that fails gives no warning.
 - `simulate` iterates a map, and `equilibrium` and `continuation` with Types `"EP"`, `"LP"`, `"PD"` and `"NS"` compute its fixed points, their multipliers and the curves of its LP, PD and NS points. In 1.0.0 they treated the right-hand side of a map as an ODE and gave wrong results. Types `"H"`, `"LC"`, `"LPC"` and `"HOM"` on a map now raise a `phasecont:` error. `phasecont.app.PhasePlane` shows a map instead of a vector field (see Added). `Model.rhs` still evaluates the right-hand side.
 - A file of `x'=...` lines with `@ meth=discrete` (any `meth` value that starts with `d`) is now a map, as in XPPAUT, so it runs as a map in every call above. In 1.0.0 it was integrated as an ODE, and `ensemble` integrated it too.

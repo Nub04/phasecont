@@ -5,6 +5,7 @@
 //! library. `sqrt`, `abs`, `floor` and `ceil` are exact in IEEE arithmetic and use the
 //! standard library.
 
+use crate::job::NativeRhs;
 use core::fmt::Debug;
 use core::ops::{Add, Div, Mul, Neg, Sub};
 
@@ -40,10 +41,8 @@ pub trait Real:
     /// run does not hold its output twice.
     fn into_f64_vec(v: Vec<Self>) -> Vec<f64>;
     fn from_u32(n: u32) -> Self;
-    /// `s` as `f64` values when `Self` is `f64`, else `None`.
-    fn as_f64s(s: &[Self]) -> Option<&[f64]>;
-    /// [`Real::as_f64s`] for a mutable slice.
-    fn as_f64s_mut(s: &mut [Self]) -> Option<&mut [f64]>;
+    /// The function of `f` when it was compiled for `Self`, else `None`.
+    fn native(f: NativeRhs) -> Option<unsafe extern "C" fn(*const Self, *const Self, *mut Self)>;
 
     fn abs(self) -> Self;
     fn sqrt(self) -> Self;
@@ -78,7 +77,7 @@ pub trait Real:
 
 macro_rules! impl_real {
     (
-        $t:ident, $name:literal, $uround:expr, widen $widen:path, view $view:path, view_mut $view_mut:path,
+        $t:ident, $name:literal, $uround:expr, widen $widen:path, native $native:ident,
         sin $sin:path, cos $cos:path, tan $tan:path, asin $asin:path, acos $acos:path,
         atan $atan:path, sinh $sinh:path, cosh $cosh:path, tanh $tanh:path, exp $exp:path,
         ln $ln:path, log10 $log10:path, atan2 $atan2:path, pow $pow:path, fmod $fmod:path
@@ -103,11 +102,10 @@ macro_rules! impl_real {
             fn from_u32(n: u32) -> Self {
                 n as $t
             }
-            fn as_f64s(s: &[Self]) -> Option<&[f64]> {
-                $view(s)
-            }
-            fn as_f64s_mut(s: &mut [Self]) -> Option<&mut [f64]> {
-                $view_mut(s)
+            fn native(
+                f: NativeRhs,
+            ) -> Option<unsafe extern "C" fn(*const Self, *const Self, *mut Self)> {
+                f.$native()
             }
             fn abs(self) -> Self {
                 <$t>::abs(self)
@@ -190,31 +188,15 @@ fn widen_f64(v: Vec<f64>) -> Vec<f64> {
     v
 }
 
-fn view_f32(_: &[f32]) -> Option<&[f64]> {
-    None
-}
-
-fn view_f32_mut(_: &mut [f32]) -> Option<&mut [f64]> {
-    None
-}
-
-fn view_f64(s: &[f64]) -> Option<&[f64]> {
-    Some(s)
-}
-
-fn view_f64_mut(s: &mut [f64]) -> Option<&mut [f64]> {
-    Some(s)
-}
-
 impl_real!(
-    f32, "single", 1.192_092_9e-7, widen widen_f32, view view_f32, view_mut view_f32_mut,
+    f32, "single", 1.192_092_9e-7, widen widen_f32, native single,
     sin libm::sinf, cos libm::cosf, tan libm::tanf, asin libm::asinf, acos libm::acosf,
     atan libm::atanf, sinh libm::sinhf, cosh libm::coshf, tanh libm::tanhf, exp libm::expf,
     ln libm::logf, log10 libm::log10f, atan2 libm::atan2f, pow libm::powf, fmod libm::fmodf
 );
 
 impl_real!(
-    f64, "double", 2.3e-16, widen widen_f64, view view_f64, view_mut view_f64_mut,
+    f64, "double", 2.3e-16, widen widen_f64, native double,
     sin pc_ir::math::sin, cos pc_ir::math::cos, tan pc_ir::math::tan, asin pc_ir::math::asin,
     acos pc_ir::math::acos, atan pc_ir::math::atan, sinh pc_ir::math::sinh,
     cosh pc_ir::math::cosh, tanh pc_ir::math::tanh, exp pc_ir::math::exp,

@@ -15,6 +15,7 @@ use pc_engine::{
     EpSetup, Evaluator, IteratedMap, MapAsRoot, ModelEval, Options, build_allowing_t, build_dde,
     check_tables, engine_kinds, entry_symbol, equilibrium,
 };
+use pc_ensemble::Precision;
 use pc_ensemble::job::{NATIVE_FRAME_LIMIT, NativeRhs};
 use pc_ir::{Entry, EntryKind, IrModel};
 use pc_jit::JitEntries;
@@ -64,8 +65,9 @@ enum Request {
         /// The k of `F^k` for a map (SPEC 8y); 1 for an ODE.
         iterate: usize,
     },
-    /// Compile `F` for the ensemble workers. The code stays on the model thread's slot.
-    EnsembleF,
+    /// Compile `F` for the ensemble workers in this precision. The code stays in the model
+    /// thread's slot for that precision.
+    EnsembleF(Precision),
     Panic,
 }
 
@@ -102,12 +104,15 @@ pub(crate) struct ModelHandle {
     /// ITER and EP runs and `model_equilibrium` take one (SPEC 8u, 8v). A delay model is never
     /// a map, since lowering refuses a delay in a map.
     pub map: bool,
-    /// The compiled `F` of the ensemble workers, from the first double-precision CPU run.
-    /// The outer `None` means not tried yet, the inner one that the model has none (a delay
-    /// model, an `F` with a frame over [`NATIVE_FRAME_LIMIT`], or a compile error). The code
-    /// lives in a slot of the model thread, so it lives as long as this handle, and a new
-    /// `model_compile` does not touch it.
-    native: Mutex<Option<Option<NativeRhs>>>,
+    /// The compiled `F` of the ensemble workers, one per precision (see [`slot_of`]), each
+    /// from the first CPU run of that precision. The outer `None` means not tried yet, the
+    /// inner one that the model has none (a delay model, an `F` with a frame over
+    /// [`NATIVE_FRAME_LIMIT`], or a compile error). The code lives in a slot of the model
+    /// thread, so it lives as long as this handle, and a new `model_compile` does not touch it.
+    native: Mutex<[Option<Option<NativeRhs>>; 2]>,
+    /// Test hook: when set, the model thread panics on the next ensemble `F` request.
+    #[cfg(test)]
+    panic_in_native: Arc<std::sync::atomic::AtomicBool>,
     /// The evaluator the model thread holds, with the library path for an AOT one.
     /// Written by that thread after a successful compile.
     evaluator: Arc<Mutex<Option<Evaluator>>>,
@@ -141,6 +146,8 @@ impl ModelHandle {
         let delay = !ir.delays.is_empty();
         let map = info.kind == ModelKind::Map;
         let ir = Arc::new(ir);
+        #[cfg(test)]
+        let panic_in_native = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let ctx = Context {
             model: model.clone(),
             info: info.clone(),
@@ -151,6 +158,8 @@ impl ModelHandle {
             max_frame: Arc::clone(&max_frame),
             evaluator: Arc::clone(&evaluator),
             tag: Cell::new(None),
+            #[cfg(test)]
+            panic_in_native: Arc::clone(&panic_in_native),
         };
         let thread = std::thread::Builder::new()
             .name("pckern-model".into())
@@ -164,7 +173,9 @@ impl ModelHandle {
             names,
             delay,
             map,
-            native: Mutex::new(None),
+            native: Mutex::new([None, None]),
+            #[cfg(test)]
+            panic_in_native,
             evaluator,
             c_file: Mutex::new(None),
             max_frame,
@@ -266,19 +277,20 @@ impl ModelHandle {
         }
     }
 
-    /// The compiled `F` for the ensemble workers, or `None` when the model has none (a delay
-    /// model, an oversized frame, a compile error) and the run uses the tape. The first call
-    /// compiles on the model thread, 0.1 to 7 ms for the models measured; later calls return
-    /// the stored value.
+    /// The compiled `F` in `precision` for the ensemble workers, or `None` when the model has
+    /// none (a delay model, an oversized frame, a compile error) and the run uses the tape.
+    /// The first call for a precision compiles on the model thread, 0.1 to 7 ms for the models
+    /// measured; later calls return the stored value.
     ///
     /// The returned function stays valid while `self` lives. A run holds an `Arc` of this
     /// handle, so it does.
-    pub fn native_rhs(&self) -> Result<Option<NativeRhs>> {
-        let mut slot = lock(&self.native);
+    pub fn native_rhs(&self, precision: Precision) -> Result<Option<NativeRhs>> {
+        let mut slots = lock(&self.native);
+        let slot = &mut slots[slot_of(precision)];
         if let Some(done) = *slot {
             return Ok(done);
         }
-        let got = match self.call(Request::EnsembleF)? {
+        let got = match self.call(Request::EnsembleF(precision))? {
             Reply::EnsembleF(f) => f,
             _ => return Err(Error::Internal("unexpected reply to ensemble F".into())),
         };
@@ -308,8 +320,9 @@ impl Drop for ModelHandle {
 fn serve(ctx: Context, rx: Receiver<Msg>) {
     let mut ev: Option<Box<dyn ModelEval>> = None;
     // Declared after `ev`, so it drops first. Ensemble workers call into it only while an
-    // `Arc<ModelHandle>` is alive, and the handle's `Drop` joins this thread.
-    let mut native: Option<JitEntries> = None;
+    // `Arc<ModelHandle>` is alive, and the handle's `Drop` joins this thread. One slot per
+    // precision, indexed by `slot_of`.
+    let mut native: [Option<JitEntries>; 2] = [None, None];
     while let Ok(Msg::Call(req, reply)) = rx.recv() {
         let r = guarded(|| handle(*req, &ctx, &mut ev, &mut native));
         // The JIT compiles each entry on first use, so the frame can grow after any request.
@@ -353,12 +366,29 @@ struct Context {
     ir: Arc<IrModel>,
     /// The `pc_aot_tag` of this model's C text, once `emit_c` or an AOT compile has made it.
     tag: Cell<Option<u64>>,
+    #[cfg(test)]
+    panic_in_native: Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// Compiles `F` of the lowered model into `slot` and returns a function for ensemble workers.
-/// Gives `None`, and leaves `slot` empty, for a delay model, for a frame over `limit` bytes
-/// and when Cranelift refuses the model. A run then uses the tape, which gives the same bits.
-fn compile_native(ctx: &Context, slot: &mut Option<JitEntries>, limit: u32) -> Option<NativeRhs> {
+/// The index of the ensemble `F` slot of a precision.
+fn slot_of(precision: Precision) -> usize {
+    match precision {
+        Precision::Double => 0,
+        Precision::Single => 1,
+    }
+}
+
+/// Compiles `F` of the lowered model in `precision` into `slot` and returns a function for
+/// ensemble workers of that precision. Gives `None`, and leaves `slot` empty, for a delay
+/// model, for a frame over `limit` bytes and when Cranelift refuses the model (in single
+/// precision it refuses the ops the `f32` tape refuses). A run then uses the tape, which
+/// gives the same bits.
+fn compile_native(
+    ctx: &Context,
+    slot: &mut Option<JitEntries>,
+    limit: u32,
+    precision: Precision,
+) -> Option<NativeRhs> {
     if ctx.delay {
         return None;
     }
@@ -371,22 +401,33 @@ fn compile_native(ctx: &Context, slot: &mut Option<JitEntries>, limit: u32) -> O
         // `jit_max_frame` reports the frames of the model's own evaluator, so the compile for
         // the ensemble puts the mark back.
         let mark = pc_jit::max_frame();
-        let built = pc_jit::compile(&[(EntryKind::F, &entry)], &ctx.ir.dag);
+        let entries = [(EntryKind::F, &entry)];
+        let built = match precision {
+            Precision::Double => pc_jit::compile(&entries, &ctx.ir.dag),
+            Precision::Single => pc_jit::compile_f32(&entries, &ctx.ir.dag),
+        };
         pc_jit::set_max_frame(mark);
         let je = built.ok()?;
-        if je.frame() > limit {
+        let has_f = match precision {
+            Precision::Double => je.plain(&EntryKind::F).is_some(),
+            Precision::Single => je.plain_f32(&EntryKind::F).is_some(),
+        };
+        if je.frame() > limit || !has_f {
             return None;
         }
-        je.plain(&EntryKind::F)?;
         *slot = Some(je);
     }
-    let f = slot.as_ref()?.plain(&EntryKind::F)?;
-    // SAFETY: `f` is the `F` entry of this model with `n` outputs, built by the JIT, which
-    // gives the bits of the tape (the 0 ulp tests in pc-ensemble) and keeps no state, so
-    // threads may call it at once. Its frame was within `limit` when it was stored. `slot`
-    // keeps the code until the model thread ends, and the handle joins that thread only
-    // after every run is done.
-    Some(unsafe { NativeRhs::new(f) })
+    let je = slot.as_ref()?;
+    // SAFETY: `f` is the `F` entry of this model with `n` outputs, built by the JIT in the
+    // precision of the run, which gives the bits of the tape of that precision (the 0 ulp
+    // tests in pc-ensemble) and keeps no state, so threads may call it at once. Its frame was
+    // within `limit` when it was stored. `slot` keeps the code until the model thread ends,
+    // and the handle joins that thread only after every run is done.
+    let f = match precision {
+        Precision::Double => unsafe { NativeRhs::new(je.plain(&EntryKind::F)?) },
+        Precision::Single => unsafe { NativeRhs::new_f32(je.plain_f32(&EntryKind::F)?) },
+    };
+    Some(f)
 }
 
 impl Context {
@@ -405,14 +446,21 @@ fn handle(
     req: Request,
     ctx: &Context,
     ev: &mut Option<Box<dyn ModelEval>>,
-    native: &mut Option<JitEntries>,
+    native: &mut [Option<JitEntries>; 2],
 ) -> Result<Reply> {
     match req {
-        Request::EnsembleF => Ok(Reply::EnsembleF(compile_native(
-            ctx,
-            native,
-            NATIVE_FRAME_LIMIT,
-        ))),
+        Request::EnsembleF(precision) => {
+            #[cfg(test)]
+            if ctx.panic_in_native.load(Ordering::Relaxed) {
+                panic!("debug ensemble F panic");
+            }
+            Ok(Reply::EnsembleF(compile_native(
+                ctx,
+                &mut native[slot_of(precision)],
+                NATIVE_FRAME_LIMIT,
+                precision,
+            )))
+        }
         Request::Compile(build) => {
             let mut p = ctx.warm_p.clone();
             let which = match build {
@@ -554,6 +602,7 @@ mod tests {
             model: p.model,
             info: p.info,
             tag: Cell::new(None),
+            panic_in_native: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -570,6 +619,15 @@ mod tests {
     }
 
     fn run(h: &ModelHandle, method: Method, native: Option<NativeRhs>) -> EnsembleResult {
+        run_in(h, method, native, Precision::Double)
+    }
+
+    fn run_in(
+        h: &ModelHandle,
+        method: Method,
+        native: Option<NativeRhs>,
+        precision: Precision,
+    ) -> EnsembleResult {
         let members = 7;
         let x0: Vec<f64> = (0..members)
             .flat_map(|k| [1.0 + 0.3 * k as f64, 0.1 * k as f64])
@@ -586,7 +644,7 @@ mod tests {
             method,
             bounds: f64::INFINITY,
             max_steps: 1_000_000,
-            precision: Precision::Double,
+            precision,
             native,
         };
         let device = find_device(Backend::Cpu, 0).unwrap();
@@ -605,13 +663,13 @@ mod tests {
             + "done\n";
         let ctx = context_of(&ode);
         let mut slot = None;
-        assert!(compile_native(&ctx, &mut slot, NATIVE_FRAME_LIMIT).is_some());
+        assert!(compile_native(&ctx, &mut slot, NATIVE_FRAME_LIMIT, Precision::Double).is_some());
         let frame = slot.as_ref().unwrap().frame();
         assert!(frame > 0, "the 40-state model should need a stack frame");
         let mut refused = None;
-        assert!(compile_native(&ctx, &mut refused, frame - 1).is_none());
+        assert!(compile_native(&ctx, &mut refused, frame - 1, Precision::Double).is_none());
         assert!(refused.is_none(), "a refused compile must not keep code");
-        assert!(compile_native(&ctx, &mut refused, frame).is_some());
+        assert!(compile_native(&ctx, &mut refused, frame, Precision::Double).is_some());
         assert!(refused.is_some());
     }
 
@@ -619,27 +677,42 @@ mod tests {
     fn a_delay_model_gets_no_native_function() {
         let ctx = context_of(HUTCH);
         let mut slot = None;
-        assert!(compile_native(&ctx, &mut slot, NATIVE_FRAME_LIMIT).is_none());
+        assert!(compile_native(&ctx, &mut slot, NATIVE_FRAME_LIMIT, Precision::Double).is_none());
         assert!(slot.is_none());
-        assert!(handle_of(HUTCH).native_rhs().unwrap().is_none());
+        assert!(
+            handle_of(HUTCH)
+                .native_rhs(Precision::Double)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
     fn a_second_compile_keeps_the_first_code() {
         let ctx = context_of(VDP);
         let mut slot = None;
-        let a = address(compile_native(&ctx, &mut slot, NATIVE_FRAME_LIMIT));
-        let b = address(compile_native(&ctx, &mut slot, NATIVE_FRAME_LIMIT));
+        let a = address(compile_native(
+            &ctx,
+            &mut slot,
+            NATIVE_FRAME_LIMIT,
+            Precision::Double,
+        ));
+        let b = address(compile_native(
+            &ctx,
+            &mut slot,
+            NATIVE_FRAME_LIMIT,
+            Precision::Double,
+        ));
         assert_eq!(a, b);
     }
 
     #[test]
     fn the_handle_compiles_once_and_a_recompile_leaves_the_code_alone() {
         let h = handle_of(VDP);
-        let first = h.native_rhs().unwrap();
+        let first = h.native_rhs(Precision::Double).unwrap();
         h.compile(Build::Jit).unwrap();
         h.compile(Build::Jit).unwrap();
-        let second = h.native_rhs().unwrap();
+        let second = h.native_rhs(Precision::Double).unwrap();
         assert_eq!(address(first), address(second));
         // The code from before the recompiles still runs, and still gives the tape's bits.
         let method = Method::Rk4 { dt: 0.01 };
@@ -651,7 +724,7 @@ mod tests {
     #[test]
     fn a_run_with_the_compiled_f_has_the_bits_of_the_tape() {
         let h = handle_of(VDP);
-        let native = h.native_rhs().unwrap();
+        let native = h.native_rhs(Precision::Double).unwrap();
         assert!(native.is_some(), "an ODE model gets a native function");
         for method in [
             Method::Rk4 { dt: 0.01 },
@@ -689,7 +762,12 @@ y'=if(x>0)then(-x*y^2+cos(y))else(x^2*y-exp(-y*y))-0.1*y\n\
 done\n";
 
     /// Seven members with their own `(a, b)`, on the model `WIDE`.
-    fn run_wide(h: &ModelHandle, method: Method, native: Option<NativeRhs>) -> EnsembleResult {
+    fn run_wide(
+        h: &ModelHandle,
+        method: Method,
+        native: Option<NativeRhs>,
+        precision: Precision,
+    ) -> EnsembleResult {
         let members = 7;
         let x0: Vec<f64> = (0..members)
             .flat_map(|k| [0.5 - 0.2 * k as f64, 0.1 * k as f64])
@@ -708,7 +786,7 @@ done\n";
             method,
             bounds: f64::INFINITY,
             max_steps: 1_000_000,
-            precision: Precision::Double,
+            precision,
             native,
         };
         let device = find_device(Backend::Cpu, 0).unwrap();
@@ -718,7 +796,7 @@ done\n";
     #[test]
     fn a_wide_model_with_t_per_member_parameters_and_a_branch_has_the_bits_of_the_tape() {
         let h = handle_of(WIDE);
-        let native = h.native_rhs().unwrap();
+        let native = h.native_rhs(Precision::Double).unwrap();
         assert!(native.is_some(), "an ODE model gets a native function");
         for method in [
             Method::Rk4 { dt: 0.01 },
@@ -728,8 +806,8 @@ done\n";
                 hmax: f64::INFINITY,
             },
         ] {
-            let with = run_wide(&h, method, native);
-            let without = run_wide(&h, method, None);
+            let with = run_wide(&h, method, native, Precision::Double);
+            let without = run_wide(&h, method, None, Precision::Double);
             assert!(same_bits(&with.states, &without.states), "{method:?}");
             assert_eq!(with.status, without.status, "{method:?}");
             assert!(same_bits(&with.t_reached, &without.t_reached), "{method:?}");
@@ -746,7 +824,7 @@ done\n";
         let h = Arc::new(handle_of("par k=1\ninit x=1\nx'=-k*erf(x)\ndone\n"));
         let id = crate::ensemble::start(&h, JOB, &[1.0], &[1.0]).expect("the run starts");
         assert!(
-            lock(&h.native).is_none(),
+            lock(&h.native).iter().all(Option::is_none),
             "a refused model must not be compiled"
         );
         registry::remove(id).unwrap();
@@ -755,9 +833,16 @@ done\n";
     #[test]
     fn a_model_the_tape_takes_is_compiled_by_the_first_double_cpu_run() {
         let h = Arc::new(handle_of(VDP));
-        assert!(lock(&h.native).is_none());
+        assert!(lock(&h.native).iter().all(Option::is_none));
         let id = crate::ensemble::start(&h, JOB, &[1.0, 0.0], &[1.5]).unwrap();
-        assert!(matches!(*lock(&h.native), Some(Some(_))));
+        assert!(matches!(
+            lock(&h.native)[slot_of(Precision::Double)],
+            Some(Some(_))
+        ));
+        assert!(
+            lock(&h.native)[slot_of(Precision::Single)].is_none(),
+            "a double run compiles only the double F"
+        );
         registry::remove(id).unwrap();
     }
 
@@ -765,14 +850,142 @@ done\n";
     fn the_ensemble_compile_does_not_raise_the_reported_jit_frame() {
         let h = handle_of(&lorenz96_40());
         let before = h.max_frame();
-        assert!(h.native_rhs().unwrap().is_some());
+        assert!(h.native_rhs(Precision::Double).unwrap().is_some());
         assert_eq!(h.max_frame(), before);
         // A compile on this thread leaves the mark where it was, too.
         let ctx = context_of(&lorenz96_40());
         let mut slot = None;
         let mark = pc_jit::max_frame();
-        assert!(compile_native(&ctx, &mut slot, NATIVE_FRAME_LIMIT).is_some());
+        assert!(compile_native(&ctx, &mut slot, NATIVE_FRAME_LIMIT, Precision::Double).is_some());
         assert!(slot.as_ref().unwrap().frame() > 0);
         assert_eq!(pc_jit::max_frame(), mark);
+    }
+
+    /// The two DP5 settings and RK4, with tolerances the single-precision check accepts.
+    fn methods_of(precision: Precision) -> [Method; 2] {
+        let (rtol, atol) = match precision {
+            Precision::Double => (1e-6, 1e-9),
+            Precision::Single => (1e-4, 1e-6),
+        };
+        [
+            Method::Rk4 { dt: 0.01 },
+            Method::Dp5 {
+                rtol,
+                atol,
+                hmax: f64::INFINITY,
+            },
+        ]
+    }
+
+    fn assert_same_run(with: &EnsembleResult, without: &EnsembleResult, what: &str) {
+        assert!(same_bits(&with.states, &without.states), "{what}");
+        assert_eq!(with.status, without.status, "{what}");
+        assert!(same_bits(&with.t_reached, &without.t_reached), "{what}");
+        assert_eq!(with.accepted, without.accepted, "{what}");
+        assert_eq!(with.rejected, without.rejected, "{what}");
+    }
+
+    #[test]
+    fn a_single_run_with_the_compiled_f_has_the_bits_of_the_f32_tape() {
+        let h = handle_of(VDP);
+        let native = h.native_rhs(Precision::Single).unwrap();
+        assert_eq!(
+            native.map(NativeRhs::precision),
+            Some(Precision::Single),
+            "an ODE model gets a single-precision function"
+        );
+        for method in methods_of(Precision::Single) {
+            let with = run_in(&h, method, native, Precision::Single);
+            let without = run_in(&h, method, None, Precision::Single);
+            assert_same_run(&with, &without, &format!("{method:?}"));
+        }
+        let h = handle_of(WIDE);
+        let native = h.native_rhs(Precision::Single).unwrap();
+        assert!(native.is_some());
+        for method in methods_of(Precision::Single) {
+            let with = run_wide(&h, method, native, Precision::Single);
+            let without = run_wide(&h, method, None, Precision::Single);
+            assert_same_run(&with, &without, &format!("wide {method:?}"));
+        }
+    }
+
+    #[test]
+    fn each_precision_has_its_own_compiled_f() {
+        let h = handle_of(VDP);
+        let single = h.native_rhs(Precision::Single).unwrap();
+        let double = h.native_rhs(Precision::Double).unwrap();
+        assert_eq!(single.map(NativeRhs::precision), Some(Precision::Single));
+        assert_eq!(double.map(NativeRhs::precision), Some(Precision::Double));
+        assert_ne!(address(single), address(double));
+        // Later calls return the stored code of each precision.
+        assert_eq!(
+            address(single),
+            address(h.native_rhs(Precision::Single).unwrap())
+        );
+        assert_eq!(
+            address(double),
+            address(h.native_rhs(Precision::Double).unwrap())
+        );
+        // A function of the wrong precision is ignored, so the run keeps the tape's bits.
+        let method = Method::Rk4 { dt: 0.01 };
+        let crossed = run_in(&h, method, double, Precision::Single);
+        let tape = run_in(&h, method, None, Precision::Single);
+        assert_same_run(&crossed, &tape, "double F on a single run");
+    }
+
+    #[test]
+    fn single_precision_refuses_what_the_f32_tape_refuses() {
+        // `erf` is in the double JIT but not in the f32 one.
+        let ctx = context_of("par k=1\ninit x=1\nx'=-k*erf(x)\ndone\n");
+        let mut slot = None;
+        assert!(compile_native(&ctx, &mut slot, NATIVE_FRAME_LIMIT, Precision::Single).is_none());
+        assert!(slot.is_none(), "a refused compile must not keep code");
+        assert!(compile_native(&ctx, &mut slot, NATIVE_FRAME_LIMIT, Precision::Double).is_some());
+        // The frame guard holds in single precision too.
+        let ctx = context_of(&lorenz96_40());
+        let mut slot = None;
+        assert!(compile_native(&ctx, &mut slot, NATIVE_FRAME_LIMIT, Precision::Single).is_some());
+        let frame = slot.as_ref().unwrap().frame();
+        assert!(frame > 0, "the 40-state model should need a stack frame");
+        let mut refused = None;
+        assert!(compile_native(&ctx, &mut refused, frame - 1, Precision::Single).is_none());
+        assert!(refused.is_none());
+    }
+
+    const JOB_SINGLE: &str = r#"{"backend":"cpu","precision":"single","t0":0,"t1":1,"method":{"type":"rk4","dt":0.01},"output":"final","bounds":null,"max_steps":100000,"params":"shared"}"#;
+
+    #[test]
+    fn a_model_the_tape_takes_is_compiled_by_the_first_single_cpu_run() {
+        let h = Arc::new(handle_of(VDP));
+        let id = crate::ensemble::start(&h, JOB_SINGLE, &[1.0, 0.0], &[1.5]).unwrap();
+        assert!(matches!(
+            lock(&h.native)[slot_of(Precision::Single)],
+            Some(Some(_))
+        ));
+        assert!(
+            lock(&h.native)[slot_of(Precision::Double)].is_none(),
+            "a single run compiles only the single F"
+        );
+        registry::remove(id).unwrap();
+    }
+
+    #[test]
+    fn a_panic_while_compiling_the_ensemble_f_fails_the_start() {
+        for job in [JOB, JOB_SINGLE] {
+            let h = Arc::new(handle_of(VDP));
+            h.panic_in_native.store(true, Ordering::Relaxed);
+            let e = crate::ensemble::start(&h, job, &[1.0, 0.0], &[1.5])
+                .expect_err("the start must fail");
+            assert!(matches!(e, Error::Panic(_)), "{job}: {e}");
+            assert!(e.to_string().contains("debug ensemble F panic"), "{e}");
+            assert!(
+                lock(&h.native).iter().all(Option::is_none),
+                "a failed compile stores nothing"
+            );
+            // The model thread survives the panic, and the next start compiles.
+            h.panic_in_native.store(false, Ordering::Relaxed);
+            let id = crate::ensemble::start(&h, job, &[1.0, 0.0], &[1.5]).unwrap();
+            registry::remove(id).unwrap();
+        }
     }
 }

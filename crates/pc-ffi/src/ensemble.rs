@@ -180,14 +180,11 @@ pub(crate) fn start(
         &model.ir, &head, members, x0, params, per_member, None,
     ))?;
     let device = find_device(head.backend, head.device).map_err(Error::GpuUnavailable)?;
-    // Only a double-precision CPU run calls a compiled `F`. The first such run of a model
-    // compiles it, after `validate` and only when the tape takes every op of `F`, so a model
-    // the ensemble refuses is never compiled. The refused run fails later, as before.
-    let native = if device.backend == Backend::Cpu
-        && head.precision == Precision::Double
-        && Tape::build(&model.ir).is_ok()
-    {
-        model.native_rhs()?
+    // Only a CPU run calls a compiled `F`, one per precision. The first CPU run of a model in a
+    // precision compiles it, after `validate` and only when the tape takes every op of `F`, so
+    // a model the ensemble refuses is never compiled. The refused run fails later, as before.
+    let native = if device.backend == Backend::Cpu && Tape::build(&model.ir).is_ok() {
+        model.native_rhs(head.precision)?
     } else {
         None
     };

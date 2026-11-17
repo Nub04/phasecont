@@ -1040,13 +1040,13 @@ Done (all keep the bits): private scratch on the GPU (RK4 single 100k members on
 
 Dropped by measurement: DP5 member compaction against warp divergence (1.058x against a 1.1x gate), block sizes 128 and 256 (within 3% of 64), progress counters in the control block, and the launch-ramp warm start.
 
-Gates passed only by owner decision: G1 on DP5 (1.00x against 1.2x) and the Arc Lorenz-96 n = 40 single row (0.43x against a 5% regression limit). One SPEC row is not met: the P36 row of SPEC section 14 asks for `vdp-rk4` at 100000 members on the CPU to run at least 1.3 times faster in both precisions. Double went from 513 to 258 ms (1.99x, from the JIT), but single went from 564 ms to 521 to 565 ms (about 1.0x).
+Gates passed only by owner decision: G1 on DP5 (1.00x against 1.2x) and the Arc Lorenz-96 n = 40 single row (0.43x against a 5% regression limit). One SPEC row is not met: the P36 row of SPEC section 14 asks for `vdp-rk4` at 100000 members on the CPU to run at least 1.3 times faster in both precisions. Double went from 513 to 258 ms (1.99x, from the JIT), but single went from 564 ms to 521 to 565 ms (about 1.0x). The single-precision JIT of 2026-11-16 (plan item C, branch `f32-jit`) meets the row: in 5 interleaved rounds of `pc-cli ensemble --bench` on Windows, single `vdp-rk4` at 100000 members took 516 ms without the JIT and 292 ms with it (1.77x), and 560 against 283 ms in a second set (1.98x), or 1.93x against the 564 ms baseline. Double stayed within noise (262 against 260 ms). The bench hashes did not change (single `78cf287b0a170177`, double `8013014065fe54f1`).
 
 Roofline for RK4 at 100k members: RTX 5060 at 6 to 13% of its FP32 peak in single and 54 to 114% of FP64 in double, Arc 140T at about 15% in single, CPU at 1 to 4% of its vector peak.
 
 Next, ranked by expected gain, all bit-exact:
 
-1. A single-precision JIT on the CPU (estimate 2x, and it would meet the 1.3x row).
+1. Done 2026-11-16: the single-precision JIT (1.93x, see above).
 2. Several members per thread and SIMD across members on the CPU (estimate 3x to 6x, a week or more).
 3. The Arc live-value spill in the emitted right-hand side (Lorenz-96 n = 40 back to about 330 ms at 10k, and a higher state cap).
 4. A profile of RK4 on the RTX 5060 with Nsight Compute (needs an install approval) to find the missing FP32 time.

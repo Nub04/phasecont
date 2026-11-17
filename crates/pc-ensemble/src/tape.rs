@@ -536,7 +536,8 @@ impl<T: Real> CpuTape<T> {
 
     /// [`CpuTape::eval_xt`] through a compiled `F`. The function reads `x` from the caller's
     /// slice and the parameters and `t` from the slab, where [`CpuTape::bind`] put them, so the
-    /// slab's temporaries are not touched. Single precision runs [`CpuTape::eval_xt`] instead.
+    /// slab's temporaries are not touched. A function of the other precision is not called;
+    /// [`CpuTape::eval_xt`] runs instead.
     ///
     /// Panics when `x` has fewer than `n` values or `out` fewer than the tape's outputs, before
     /// the call.
@@ -547,31 +548,29 @@ impl<T: Real> CpuTape<T> {
             self.slab_len(),
             "the slab is from another tape"
         );
-        let (Some(xv), Some(ov)) = (T::as_f64s(x), T::as_f64s_mut(out)) else {
+        let Some(g) = T::native(f) else {
             return self.eval_xt(x, t, slab, out);
         };
         assert!(
-            xv.len() >= self.n,
+            x.len() >= self.n,
             "native rhs: {} states, the model has {}",
-            xv.len(),
+            x.len(),
             self.n
         );
         assert!(
-            ov.len() >= self.outputs.len(),
+            out.len() >= self.outputs.len(),
             "native rhs: room for {} outputs, the model has {}",
-            ov.len(),
+            out.len(),
             self.outputs.len()
         );
-        let Some(sv) = T::as_f64s_mut(slab.0.as_mut_slice()) else {
-            unreachable!("x and out were f64, so the slab is");
-        };
         let ps = self.consts.len() + self.n;
-        sv[ps + self.np1 - 1] = t.to_f64();
-        // SAFETY: `xv` has `n` values and `sv[ps..]` the `n_p` parameters and `t`, in the order
-        // the function reads them; `ov` has room for every output. They are three distinct
-        // slices, so `out` does not alias an input. The contract of `NativeRhs::new` covers the
-        // rest.
-        unsafe { f.call(xv.as_ptr(), sv[ps..].as_ptr(), ov.as_mut_ptr()) };
+        let sv = &mut slab.0[ps..];
+        sv[self.np1 - 1] = t;
+        // SAFETY: `x` has `n` values and `sv` the `n_p` parameters and `t`, in the order the
+        // function reads them; `out` has room for every output. They are three distinct
+        // slices, so `out` does not alias an input. The contract of `NativeRhs::new` (or
+        // `new_f32`, which `T::native` matched to `T`) covers the rest.
+        unsafe { g(x.as_ptr(), sv.as_ptr(), out.as_mut_ptr()) };
     }
 }
 
@@ -964,16 +963,17 @@ mod tests {
         let mut want = vec![0.0f32; tape.n];
         cpu.eval(&x, &p, &mut slab, &mut want);
 
+        // SAFETY: `f` is the `F` of `dag` with `tape.n` outputs, and the JIT and the `f32` tape
+        // give the same bits (this test); it is called on one thread, and `jit` outlives every
+        // call below.
+        let native = unsafe { NativeRhs::new_f32(f) };
         let xg: Vec<f32> = x.iter().map(|v| v + 1.0).collect();
         let pg: Vec<f32> = p.iter().map(|v| v + 1.0).collect();
         let mut got = vec![f32::MAX; tape.n];
-        // SAFETY: `f` is the `F` of `dag` with `tape.n` outputs, `x` has `tape.n` values, `p`
-        // has `tape.n_p + 1` (time last), `got` does not alias them, and `jit` outlives both
-        // calls.
-        unsafe {
-            f(xg.as_ptr(), pg.as_ptr(), got.as_mut_ptr());
-            f(x.as_ptr(), p.as_ptr(), got.as_mut_ptr());
-        }
+        cpu.bind(&pg, &mut slab);
+        cpu.eval_native(native, &xg, pg[tape.n_p], &mut slab, &mut got);
+        cpu.bind(&p, &mut slab);
+        cpu.eval_native(native, &x, p[tape.n_p], &mut slab, &mut got);
         for i in 0..tape.n {
             if bits(got[i]) != bits(want[i]) {
                 return Err(format!(
@@ -1079,23 +1079,37 @@ mod tests {
         }
     }
 
-    /// Single precision never calls the compiled function.
+    /// A native function of the other precision is not called: each tape runs its own
+    /// interpreter instead.
     #[test]
-    fn single_precision_ignores_the_native_function() {
-        unsafe extern "C" fn poison(_: *const f64, _: *const f64, out: *mut f64) {
+    fn a_native_function_of_the_other_precision_is_not_called() {
+        unsafe extern "C" fn poison64(_: *const f64, _: *const f64, out: *mut f64) {
+            // SAFETY: the caller gave one output.
+            unsafe { *out = 12345.0 };
+        }
+        unsafe extern "C" fn poison32(_: *const f32, _: *const f32, out: *mut f32) {
             // SAFETY: the caller gave one output.
             unsafe { *out = 12345.0 };
         }
         let ir = model("x'=sin(x)+1\ndone\n");
         let tape = Tape::build(&ir).expect("tape");
-        // SAFETY: never called in single precision, which is what this test checks.
-        let native = unsafe { NativeRhs::new(poison) };
+        // SAFETY: neither is called, which is what this test checks.
+        let (double, single) = unsafe { (NativeRhs::new(poison64), NativeRhs::new_f32(poison32)) };
+
         let cpu = CpuTape::<f32>::new(&tape);
         let mut slab = cpu.slab();
         cpu.bind(&[0.0], &mut slab);
         let (mut want, mut got) = ([0.0f32], [0.0f32]);
         cpu.eval_xt(&[0.5], 0.0, &mut slab, &mut want);
-        cpu.eval_native(native, &[0.5], 0.0, &mut slab, &mut got);
+        cpu.eval_native(double, &[0.5], 0.0, &mut slab, &mut got);
+        assert_eq!(got[0].to_bits(), want[0].to_bits());
+
+        let cpu = CpuTape::<f64>::new(&tape);
+        let mut slab = cpu.slab();
+        cpu.bind(&[0.0], &mut slab);
+        let (mut want, mut got) = ([0.0f64], [0.0f64]);
+        cpu.eval_xt(&[0.5], 0.0, &mut slab, &mut want);
+        cpu.eval_native(single, &[0.5], 0.0, &mut slab, &mut got);
         assert_eq!(got[0].to_bits(), want[0].to_bits());
     }
 
