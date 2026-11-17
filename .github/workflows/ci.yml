@@ -49,6 +49,34 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo deny check
 
+  # arm64 Linux (the CPU of DGX Spark) and Windows on Arm. continue-on-error keeps
+  # the job from blocking a merge while it is new. The bench must give the same bit
+  # hashes as on x86_64, since the CPU path rounds every operation the same way.
+  rust-arm:
+    if: github.event_name != 'schedule'
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04-arm, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.99.1
+          components: clippy
+      - run: rustc -vV
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked --no-fail-fast
+      - name: Check the bench bit hashes
+        shell: bash
+        run: |
+          cargo run --release --locked -p pc-cli -- ensemble --bench --members 100000 --case vdp-rk4 > bench.json
+          scripts/check-bench-bits bench.json
+
   # The nightly run checks the lock file against the RustSec advisory database, so an
   # advisory published after the last push still shows up within a day.
   advisories:
@@ -205,6 +233,16 @@ jobs:
           name: pckern-win64
           path: target/x86_64-pc-windows-gnu/release/pckern.dll
           if-no-files-found: error
+      - name: Cross build pc-cli.exe for the Prism job
+        run: |
+          export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc
+          export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS="--remap-path-prefix=$GITHUB_WORKSPACE=/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo"
+          cargo build --release --locked --target x86_64-pc-windows-gnu -p pc-cli
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pc-cli-win64
+          path: target/x86_64-pc-windows-gnu/release/pc-cli.exe
+          if-no-files-found: error
       - name: Collect the third-party license texts of the three platforms
         run: >-
           target/release/pc-cli licenses
@@ -219,6 +257,28 @@ jobs:
           name: third-party-licenses
           path: licenses/THIRD_PARTY_LICENSES.txt
           if-no-files-found: error
+
+  # MATLAB on a Windows on Arm laptop (Snapdragon) is the win64 build run under
+  # Prism emulation, so this job runs the shipped x86_64 pc-cli.exe on an arm64
+  # runner and checks that the bench gives the x86_64 bit hashes there too.
+  prism:
+    if: github.event_name != 'schedule'
+    needs: pckern-win
+    continue-on-error: true
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pc-cli-win64
+          path: prism
+      - name: Check the bench bit hashes under emulation
+        shell: bash
+        run: |
+          prism/pc-cli.exe ensemble --bench --members 100000 --case vdp-rk4 > bench.json
+          scripts/check-bench-bits bench.json
 
   # Hosted runners have no GPU, and a self-hosted runner on a public repository
   # is unsafe, so there is none. The three jobs below run what a machine without

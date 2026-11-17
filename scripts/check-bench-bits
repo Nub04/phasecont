@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Fail unless every vdp-rk4 row of a `pc-cli ensemble --bench` JSON report has
+# the pinned bit hash of its precision. The hashes are the same on every
+# platform and backend we have run, so a different hash means a result changed.
+#
+# Usage:
+#   pc-cli ensemble --bench --members 100000 --case vdp-rk4 > bench.json
+#   scripts/check-bench-bits bench.json
+set -euo pipefail
+
+if [[ $# -ne 1 || ! -f "$1" ]]; then
+  echo "usage: scripts/check-bench-bits BENCH.json" >&2
+  exit 2
+fi
+
+single=78cf287b0a170177
+double=8013014065fe54f1
+
+# Each row object opens and closes at an indent of four spaces. A row is judged
+# when it closes: a skipped row is passed over, a row with an error or without
+# a hash fails, and a vdp-rk4 row must carry the hash of its precision.
+awk -v single="$single" -v double="$double" '
+  /^    \{/ { bits = ""; kase = ""; p = ""; skipped = 0; err = "" }
+  /^      "bits": "[0-9a-f]+"/ { match($0, /"[0-9a-f]+"/); bits = substr($0, RSTART + 1, RLENGTH - 2) }
+  /^      "case": "/ { split($0, q, "\""); kase = q[4] }
+  /^      "precision": "/ { split($0, q, "\""); p = q[4] }
+  /^      "skipped": / { skipped = 1 }
+  /^      "error": / { err = $0 }
+  /^    \}/ {
+    if (kase != "vdp-rk4" || p == "" || skipped) next
+    if (err != "") { printf "check-bench-bits: %s row failed:%s\n", p, err; bad = 1; next }
+    want = (p == "single") ? single : double
+    seen[p]++
+    if (bits != want) { printf "check-bench-bits: %s row has \"%s\", expected %s\n", p, bits, want; bad = 1 }
+    else printf "check-bench-bits: %s %s ok\n", p, bits
+  }
+  END {
+    if (!seen["single"]) { print "check-bench-bits: no single vdp-rk4 row"; bad = 1 }
+    if (!seen["double"]) { print "check-bench-bits: no double vdp-rk4 row"; bad = 1 }
+    exit bad
+  }
+' "$1"
