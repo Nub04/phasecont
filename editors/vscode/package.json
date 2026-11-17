@@ -68,7 +68,7 @@
             "verbose"
           ],
           "default": "off",
-          "description": "Log the messages between VS Code and the language server in the PhaseCont output channel."
+          "markdownDescription": "How much of the traffic between VS Code and the language server to log in the PhaseCont output channel. Logging happens only while that channel's log level is Trace (run `Developer: Set Log Level...` and pick PhaseCont). At Trace, `off` logs the messages, the same as `messages`."
         }
       }
     },
