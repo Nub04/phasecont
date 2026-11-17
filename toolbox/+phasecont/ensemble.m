@@ -42,7 +42,8 @@ function r = ensemble(m, x0, p, tspan, options)
 %   Other name-value options
 %     Backend     "auto" (default), "cpu", "cuda", "opencl" or "metal".
 %                 "auto" takes the first of CUDA, OpenCL, Metal and then the
-%                 CPU that has a device for the Precision. R.Label says
+%                 CPU that has a device for the Precision. On macOS the
+%                 order is Metal, OpenCL and then the CPU. R.Label says
 %                 which one ran.
 %     Device      index of the device within its backend, counting from 0, as
 %                 in phasecont.gpuDevices (default 0). Not with "auto".
@@ -387,7 +388,7 @@ if precision == "single"
 else
     list = list(list.Fp64, :);
 end
-for b = ["cuda" "opencl" "metal" "cpu"]
+for b = phasecont.internal.autoBackendOrder()
     hit = list(list.Backend == b, :);
     if ~isempty(hit)
         backend = b;

@@ -369,6 +369,15 @@ classdef EnsembleTest < matlab.unittest.TestCase
             testCase.verifyEqual(r.Label.Precision, "double");
         end
 
+        function autoTriesMetalFirstOnMacOS(testCase)
+            testCase.verifyEqual(phasecont.internal.autoBackendOrder(true), ...
+                ["metal" "opencl" "cpu"]);
+            testCase.verifyEqual(phasecont.internal.autoBackendOrder(false), ...
+                ["cuda" "opencl" "metal" "cpu"]);
+            testCase.verifyEqual(phasecont.internal.autoBackendOrder(), ...
+                phasecont.internal.autoBackendOrder(ismac));
+        end
+
         function selfTestPassesOnTheCpu(testCase, GpuPrecision)
             s = phasecont.gpuSelfTest(Backend = "cpu", Precision = GpuPrecision);
             testCase.verifyTrue(s.Pass, evalc("disp(s.Checks)"));
