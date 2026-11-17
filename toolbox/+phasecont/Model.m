@@ -18,7 +18,9 @@ classdef Model < handle
     %
     % The model lives in the engine and is freed when the object is deleted
     % or cleared. Saving a Model stores its source text, and loading it
-    % compiles the text again.
+    % compiles the text again. A model saved with Evaluator "aot" loads
+    % with the evaluator that phasecont.config("Codegen") names, so loading
+    % a MAT file starts the C compiler only when Codegen is "aot".
     %
     % Evaluator chooses how the engine runs the equations:
     %   "jit"       native code compiled in the MATLAB process
@@ -448,9 +450,16 @@ classdef Model < handle
         end
 
         function obj = loadobj(s)
-            % Compile the saved source text again. Id is transient.
+            % Compile the saved source text again. Id is transient. A MAT
+            % file is data, so a recorded "aot" (or any value other than
+            % "jit" and "fallback") does not start the C compiler: the
+            % Codegen setting picks the evaluator instead, as it does for a
+            % session file.
             obj = s;
             obj.Id = uint64(0);
+            if ~any(string(obj.Evaluator) == ["jit" "fallback"])
+                obj.Evaluator = phasecont.config("Codegen");
+            end
             obj.build();
         end
     end

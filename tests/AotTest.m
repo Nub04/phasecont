@@ -237,6 +237,25 @@ classdef AotTest < matlab.unittest.TestCase
             testCase.verifyEqual(a.U, j.U, AbsTol = 1e-9);
         end
 
+        function aMatFileThatRecordsAotStartsNoCompiler(testCase)
+            % A MAT file is data. A model saved with Evaluator "aot" follows
+            % the Codegen setting when it loads, so loading it never starts
+            % the C compiler unless Codegen asks for AOT.
+            testCase.needCompiler();
+            m = phasecont.Model(testCase.write("f.ode", testCase.Fhn), Evaluator = "aot");
+            testCase.assertEqual(m.Evaluator, "aot");
+            file = fullfile(testCase.Dir, "aotmodel.mat");
+            save(file, "m");
+            phasecont.internal.aotHook(@(~) error("AotTest:aotBuild", "an AOT build started"));
+            l = testCase.verifyWarningFree(@() load(file));
+            testCase.verifyEqual(l.m.Evaluator, "jit");
+            testCase.verifyEqual(l.m.rhs([0.3 0.9]), m.rhs([0.3 0.9]));
+            phasecont.internal.aotHook([]);
+            phasecont.config("Codegen", "aot");
+            l = load(file);
+            testCase.verifyEqual(l.m.Evaluator, "aot");
+        end
+
         function hookedTextGetsItsOwnLibrary(testCase)
             % The hook changes the text that is compiled, so the library must
             % not be the one built for the unchanged text.
