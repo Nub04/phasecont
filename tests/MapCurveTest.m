@@ -313,7 +313,7 @@ classdef MapCurveTest < matlab.unittest.TestCase
         end
 
         function aVersion1MapLpCurveLoadsInItsOldLayout(testCase)
-            % v1.0.0 ran an LP curve of a map as the ODE LP curve of F and
+            % v1.0.0-preview ran an LP curve of a map as the ODE LP curve of F and
             % stored rows of width 3n + 7, with the codim-2 tests CP, BT and
             % ZH before h. Such a file is made here from a curve of this
             % version by adding three NaN rows. It loads in the ODE layout,
@@ -329,7 +329,7 @@ classdef MapCurveTest < matlab.unittest.TestCase
             n = 2;
             testCase.assertEqual(rec.Stride, 3*n + 8);
             % The four codim-2 rows of this version become the three rows
-            % of v1.0.0.
+            % of v1.0.0-preview.
             head = 3*n + 2;
             points = rec.Points;
             specials = rec.Specials;
@@ -430,7 +430,7 @@ classdef MapCurveTest < matlab.unittest.TestCase
         end
 
         function aVersion1MapCycleCurveKeepsTheCycleLayout(testCase)
-            % v1.0.0 stored a PD or NS curve of a map as a curve of cycles
+            % v1.0.0-preview stored a PD or NS curve of a map as a curve of cycles
             % with a grid. On a map model with a grid, rows2branch keeps that
             % layout, so the Branch has a mesh and its cycles.
             m = testCase.model(testCase.Henon);

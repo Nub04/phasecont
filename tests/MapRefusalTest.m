@@ -135,7 +135,7 @@ classdef MapRefusalTest < matlab.unittest.TestCase
         end
 
         function replayOfAMapSessionFailsEveryRun(testCase)
-            % A 1.0.0 session can hold runs on a map. Here the runs come
+            % A 1.0.0-preview session can hold runs on a map. Here the runs come
             % from the same right-hand side written as an ODE, and the file
             % then gets the map source and its hash, as such a session had.
             % Since SPEC 8v the equilibrium record runs and fails on the

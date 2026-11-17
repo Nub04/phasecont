@@ -28,7 +28,7 @@ Only files on disk are served (`file:` URIs), so an untitled buffer gets highlig
 
 - `PhaseCont: Restart Language Server` (`phasecont.restartServer`).
 - `phasecont.server.path`: absolute path to `pc-lsp`. Empty uses the bundled server.
-- `phasecont.trace.server`: `off`, `messages` or `verbose`. The output goes to the "PhaseCont" output channel.
+- `phasecont.trace.server`: `off`, `messages` or `verbose`. The output goes to the "PhaseCont" output channel, and only while that channel's log level is Trace: run `Developer: Set Log Level...` and pick PhaseCont. At Trace, `off` logs the messages, the same as `messages`.
 
 ## Tests
 

@@ -2,6 +2,8 @@
 //! refusals of a missing or wrong library. The library is built with gcc; the tests print
 //! a note and return when it is missing.
 
+#[path = "../../pc-codegen/tests/common/cc_check.rs"]
+mod cc_check;
 mod common;
 
 use pc_codegen::emit_c_tagged;
@@ -24,7 +26,12 @@ const FLAGS: [&str; 7] = [
     "-Wextra",
 ];
 
+/// First line of `gcc --version`, or `None` when gcc is not usable here (see
+/// [`cc_check::usable`]).
 fn gcc_version() -> Option<String> {
+    if !cc_check::usable("gcc") {
+        return None;
+    }
     let o = Command::new("gcc").arg("--version").output().ok()?;
     if !o.status.success() {
         return None;
@@ -146,7 +153,7 @@ fn same(a: f64, b: f64) -> bool {
 #[test]
 fn aot_matches_jit_on_the_corpus() {
     let Some(v) = gcc_version() else {
-        println!("skip: gcc not found, AOT evaluator test not run");
+        println!("skip: no usable gcc, AOT evaluator test not run");
         return;
     };
     println!("compiler: {v}");
@@ -211,7 +218,7 @@ fn aot_matches_jit_on_the_corpus() {
 #[test]
 fn build_with_aot_runs_a_model() {
     if gcc_version().is_none() {
-        println!("skip: gcc not found, AOT build test not run");
+        println!("skip: no usable gcc, AOT build test not run");
         return;
     }
     let (model, info) = common::load("lorenz");
@@ -258,7 +265,7 @@ fn missing_library_is_a_model_error() {
 #[test]
 fn library_without_init_is_a_model_error() {
     if gcc_version().is_none() {
-        println!("skip: gcc not found, AOT refusal test not run");
+        println!("skip: no usable gcc, AOT refusal test not run");
         return;
     }
     let tmp = Temp::new("noinit");
@@ -277,7 +284,7 @@ fn library_without_init_is_a_model_error() {
 #[test]
 fn library_without_an_entry_is_a_model_error() {
     if gcc_version().is_none() {
-        println!("skip: gcc not found, AOT refusal test not run");
+        println!("skip: no usable gcc, AOT refusal test not run");
         return;
     }
     // Has pc_aot_init and f, but no jac_u.
@@ -298,7 +305,7 @@ fn library_without_an_entry_is_a_model_error() {
 #[test]
 fn missing_directional_entry_is_an_error_at_first_use() {
     if gcc_version().is_none() {
-        println!("skip: gcc not found, AOT refusal test not run");
+        println!("skip: no usable gcc, AOT refusal test not run");
         return;
     }
     let (model, info) = common::load("fold");
@@ -329,7 +336,7 @@ fn built(name: &str, tag: &str) -> (PathBuf, u64, (usize, usize, usize), Temp) {
 #[test]
 fn a_library_of_another_model_is_refused_by_its_tag() {
     if gcc_version().is_none() {
-        println!("skip: gcc not found, AOT tag test not run");
+        println!("skip: no usable gcc, AOT tag test not run");
         return;
     }
     // Same n, n_p and n_aux, different C text: only the tag tells them apart.
@@ -355,7 +362,7 @@ fn a_library_of_another_model_is_refused_by_its_tag() {
 #[test]
 fn library_without_a_tag_symbol_is_a_model_error() {
     if gcc_version().is_none() {
-        println!("skip: gcc not found, AOT tag test not run");
+        println!("skip: no usable gcc, AOT tag test not run");
         return;
     }
     // An older library: init and f, but no pc_aot_tag. The tag check runs before init.
@@ -373,7 +380,7 @@ fn library_without_a_tag_symbol_is_a_model_error() {
 #[test]
 fn build_refuses_a_library_with_the_wrong_tag() {
     if gcc_version().is_none() {
-        println!("skip: gcc not found, AOT tag test not run");
+        println!("skip: no usable gcc, AOT tag test not run");
         return;
     }
     let (so, tag, _, _t) = built("fold", "build-tag");
@@ -438,7 +445,7 @@ fn map_curve2(
 fn map_curves_at_iterate_2_run_on_aot() {
     use pc_engine::{CurveSetup, RunKind};
     if gcc_version().is_none() {
-        println!("skip: gcc not found, AOT map curve test not run");
+        println!("skip: no usable gcc, AOT map curve test not run");
         return;
     }
     let cases: [MapCase; 2] = [
@@ -484,7 +491,7 @@ fn map_curves_at_iterate_2_run_on_aot() {
 fn map_ep_branch_at_iterate_2_refines_on_aot() {
     use pc_engine::{EpSetup, Options, Run, RunSpec, RunState};
     if gcc_version().is_none() {
-        println!("skip: gcc not found, AOT map EP test not run");
+        println!("skip: no usable gcc, AOT map EP test not run");
         return;
     }
     let name = "map_cusp_cp";

@@ -26,3 +26,8 @@ updates:
     groups:
       npm-minor:
         update-types: [minor, patch]
+    # @types/node follows the Node version inside VS Code (24 for VS Code
+    # 1.146), not the newest Node. Raise its major with engines.vscode.
+    ignore:
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]

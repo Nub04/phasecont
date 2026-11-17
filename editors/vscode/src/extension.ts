@@ -8,7 +8,7 @@ import {
 import { resolveServer } from "./server";
 
 let client: LanguageClient | undefined;
-let output: vscode.OutputChannel | undefined;
+let output: vscode.LogOutputChannel | undefined;
 
 function isFile(file: string): boolean {
   try {
@@ -79,7 +79,7 @@ async function stopClient(): Promise<void> {
 export async function activate(
   context: vscode.ExtensionContext,
 ): Promise<void> {
-  output = vscode.window.createOutputChannel("PhaseCont");
+  output = vscode.window.createOutputChannel("PhaseCont", { log: true });
   context.subscriptions.push(output);
 
   const restart = async (): Promise<void> => {

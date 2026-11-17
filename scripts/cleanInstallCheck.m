@@ -13,13 +13,15 @@
 %                            PROGRAM "statement". Without it that MATLAB is
 %                            started as  matlabroot/bin/matlab -batch "statement".
 %
-% install  checks the version in the file name, stops if PhaseCont is
-%          already installed, installs the .mltbx and checks the version and
-%          Guid. It checks that phasecont.Model resolves into the add-on
-%          folder and not the repo, that THIRD_PARTY_LICENSES.txt is there,
-%          and that the root, bin/<arch> and examples folders are on the
-%          path. It writes those folders to a state file in tempdir for the
-%          later steps. It does not load pckern.
+% install  checks that the file name (see packageFileName) has the
+%          version of buildfile.m and names this platform or none, stops
+%          if PhaseCont is already installed, installs the .mltbx and
+%          checks the version and Guid. It checks that phasecont.Model
+%          resolves into the add-on folder and not the repo, that
+%          THIRD_PARTY_LICENSES.txt is there, and that the root,
+%          bin/<arch> and examples folders are on the path. It writes
+%          those folders to a state file in tempdir for the later steps.
+%          It does not load pckern.
 % example  reports whether this MATLAB lists the install and found
 %          phasecont.Model on its path when it started, adds the installed
 %          folders with addpath either way, and runs the FitzHugh-Nagumo
@@ -85,11 +87,7 @@ function installStep(cfg)
 file = mltbxFile();
 [~, base, ext] = fileparts(file);
 name = string(base) + string(ext);
-tok = regexp(name, "^PhaseCont-(.+)\.mltbx$", "tokens", "once");
-if ~isempty(tok) && tok{1} ~= cfg.Version
-    error("phasecont:install:version", ...
-        "File name %s has version %s but buildfile.m says %s", name, tok{1}, cfg.Version);
-end
+checkPackageFileName(name, cfg.Version, string(computer("arch")));
 
 before = matlab.addons.toolbox.installedToolboxes;
 if ~isempty(before)

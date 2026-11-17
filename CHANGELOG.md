@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-The version number of this release is not chosen yet. The toolbox still reports 1.0.0.
+This release is 1.0.0. The release of 2026-11-04, first published as 1.0.0, is now 1.0.0-preview, a pre-release. The toolbox of both reports version 1.0.0.
 
 ### Added
 
@@ -25,24 +25,28 @@ The version number of this release is not chosen yet. The toolbox still reports 
 - `FastMath = true` on `phasecont.ensemble` lets the CUDA compiler fuse multiply-adds in double precision, which cut a van der Pol ensemble of 100000 members from 57.5 to 38.9 ms (RK4) and from 157.5 to 107.9 ms (Dormand-Prince) on an RTX 5060 Laptop GPU, timed through MATLAB. It raises the warning `phasecont:ensemble:fastMath` on every run, the results are not bit-reproducible, `R.Label.Math` is `"fma"`, and `refine` runs without it. Any other backend or precision raises `phasecont:ensemble:fastMathBackend`. The CLI and C ABI job JSON takes the same tier as the optional key `"math": "exact" | "fma"`, the result label carries `math`, and the CUDA double run of `pc-cli gpu selftest` reports the largest difference between the two tiers under `fma` without failing on it.
 - Data fitting: `phasecont.fit` fits chosen parameters of an ODE model to trajectory data with the Levenberg-Marquardt method, with one `ensemble` call per iteration in double precision on the CPU, and returns a `phasecont.FitResult` with the estimate, the residual, the Jacobian and the history of the iterations. The difference step, the damping and the stopping rules have no default.
 - `Point.Stable`: an `"EP"` Point from `equilibrium` or a session says whether the equilibrium or the fixed point is stable, from its eigenvalues or multipliers. It is empty at a special point such as LP, PD or H, where the linear test decides nothing. It is not stored, so session files do not change.
-- A language server (`pc-lsp`) and a VS Code extension for `.ode` files. The extension is built as a `.vsix` file and is not on the Marketplace.
+- A language server (`pc-lsp`) and a VS Code extension for `.ode` files. The extension is built as a `.vsix` file and is not on the Marketplace. It needs VS Code 1.146 or newer.
 
 ### Security
 
-- Windows: the GPU backends never load a library from MATLAB's current folder. cudarc and the OpenCL loader open `cuda.dll`, `nvrtc.dll`, `OpenCL.dll` and similar names by bare name, and Windows searches the current folder for those, so before this change a file with one of those names in the current folder ran inside MATLAB at the first call of `phasecont.gpuDevices`, `phasecont.gpuSelfTest` or `phasecont.ensemble`. The first loads now skip the current folder, the CUDA driver and the OpenCL loader come from the Windows system folder, and the NVRTC builtins library is loaded by path from the folder of the NVRTC in use. The folders on `PATH` are still searched, as for any Windows program. Release 1.0.0 has no GPU backend and is not affected.
-- Windows: `phasecont.latex.build` and the LaTeX editor app never run a `latexmk` from MATLAB's current folder. A bare program name went to cmd.exe, which looks in the current folder before `PATH`, so a `latexmk.bat` in a downloaded folder ran on the first build. The name is now looked up in the `PATH` folders only and runs by its full path. Release 1.0.0 has no LaTeX build and is not affected.
-- `Session.load` and `phasecont.session.replay` no longer build an AOT library because a session file records `"aot"`. Before this change, loading such a file ran `mex` on C code generated from the model source in the file. The C text comes from our own code generator, but a session file from someone else should not start a compiler on its own. Such a file now loads with the evaluator that `phasecont.config("Codegen")` names (`"jit"` unless you changed it), and the `Evaluator` option still picks one. A file that records any evaluator other than `"jit"`, `"fallback"` or `"aot"` raises `phasecont:session:badFile`. Release 1.0.0 is affected.
-- Loading a MAT file that holds a `phasecont.Model` saved with `Evaluator` `"aot"` no longer builds an AOT library. Before this change, `load` ran `mex` on C code generated from the model source in the file, the same route the session fix above closed for session files. The model now loads with the evaluator that `phasecont.config("Codegen")` names, so a saved `"jit"` or `"fallback"` model loads as before and a saved `"aot"` model loads on the JIT unless `Codegen` is `"aot"`. Release 1.0.0 is affected.
+- Windows: the GPU backends never load a library from MATLAB's current folder. cudarc and the OpenCL loader open `cuda.dll`, `nvrtc.dll`, `OpenCL.dll` and similar names by bare name, and Windows searches the current folder for those, so before this change a file with one of those names in the current folder ran inside MATLAB at the first call of `phasecont.gpuDevices`, `phasecont.gpuSelfTest` or `phasecont.ensemble`. The first loads now skip the current folder, the CUDA driver and the OpenCL loader come from the Windows system folder, and the NVRTC builtins library is loaded by path from the folder of the NVRTC in use. The folders on `PATH` are still searched, as for any Windows program. Release 1.0.0-preview has no GPU backend and is not affected.
+- Windows: `phasecont.latex.build` and the LaTeX editor app never run a `latexmk` from MATLAB's current folder. A bare program name went to cmd.exe, which looks in the current folder before `PATH`, so a `latexmk.bat` in a downloaded folder ran on the first build. The name is now looked up in the `PATH` folders only and runs by its full path. Release 1.0.0-preview has no LaTeX build and is not affected.
+- `Session.load` and `phasecont.session.replay` no longer build an AOT library because a session file records `"aot"`. Before this change, loading such a file ran `mex` on C code generated from the model source in the file. The C text comes from our own code generator, but a session file from someone else should not start a compiler on its own. Such a file now loads with the evaluator that `phasecont.config("Codegen")` names (`"jit"` unless you changed it), and the `Evaluator` option still picks one. A file that records any evaluator other than `"jit"`, `"fallback"` or `"aot"` raises `phasecont:session:badFile`. Release 1.0.0-preview is affected.
+- Loading a MAT file that holds a `phasecont.Model` saved with `Evaluator` `"aot"` no longer builds an AOT library. Before this change, `load` ran `mex` on C code generated from the model source in the file, the same route the session fix above closed for session files. The model now loads with the evaluator that `phasecont.config("Codegen")` names, so a saved `"jit"` or `"fallback"` model loads as before and a saved `"aot"` model loads on the JIT unless `Codegen` is `"aot"`. Release 1.0.0-preview is affected.
 
 ### Changed
 
+- `pc-cli session replay` refuses a session file whose `model.evaluator` is not `"jit"`, `"fallback"` or `"aot"` and exits 2, as `phasecont.session.replay` already did with `phasecont:session:badFile`. Before, any other value replayed on the JIT without a message.
+- On macOS, `ensemble` with `Backend = "auto"` tries Metal before OpenCL, since Apple deprecated OpenCL in favor of Metal. Windows and Linux keep the order CUDA, OpenCL, Metal, CPU. Pass `Backend = "opencl"` to keep OpenCL on a Mac.
+- The release ships one package per platform, `PhaseCont-<version>-win64.mltbx`, `PhaseCont-<version>-glnxa64.mltbx` and `PhaseCont-<version>-maca64.mltbx`, next to `PhaseCont-<version>.mltbx`, which holds all three platforms as before. All four use the same toolbox identifier, so any of them replaces an installed PhaseCont. A local `buildtool package` now writes `build/PhaseCont-<version>-<arch>.mltbx`.
 - Single-precision CPU ensembles run a compiled right-hand side, as double precision already did. `vdp-rk4` at 100000 members runs about 1.9 times faster, with the same bits as before. Models that use tables or erf, erfc, lgamma, the Bessel functions or polygamma still run on the interpreter in single precision.
 - `simulate` warns once per model with `phasecont:simulate:ignoredOption` and names the `@` options of the model, such as `meth` and `dt`, since it uses none of them. The results do not change. The warning comes after the run, so a run that fails gives no warning.
-- `simulate` iterates a map, and `equilibrium` and `continuation` with Types `"EP"`, `"LP"`, `"PD"` and `"NS"` compute its fixed points, their multipliers and the curves of its LP, PD and NS points. In 1.0.0 they treated the right-hand side of a map as an ODE and gave wrong results. Types `"H"`, `"LC"`, `"LPC"` and `"HOM"` on a map now raise a `phasecont:` error. `phasecont.app.PhasePlane` shows a map instead of a vector field (see Added). `Model.rhs` still evaluates the right-hand side.
-- A file of `x'=...` lines with `@ meth=discrete` (any `meth` value that starts with `d`) is now a map, as in XPPAUT, so it runs as a map in every call above. In 1.0.0 it was integrated as an ODE, and `ensemble` integrated it too.
+- `simulate` iterates a map, and `equilibrium` and `continuation` with Types `"EP"`, `"LP"`, `"PD"` and `"NS"` compute its fixed points, their multipliers and the curves of its LP, PD and NS points. In 1.0.0-preview they treated the right-hand side of a map as an ODE and gave wrong results. Types `"H"`, `"LC"`, `"LPC"` and `"HOM"` on a map now raise a `phasecont:` error. `phasecont.app.PhasePlane` shows a map instead of a vector field (see Added). `Model.rhs` still evaluates the right-hand side.
+- A file of `x'=...` lines with `@ meth=discrete` (any `meth` value that starts with `d`) is now a map, as in XPPAUT, so it runs as a map in every call above. In 1.0.0-preview it was integrated as an ODE, and `ensemble` integrated it too.
 - `continuation`, `simulate` and session replay check for the result more often in the first few milliseconds, so short runs return in about 5 ms instead of about 50 ms. The results do not change.
 - Rows of LPC, PD and NS curves have more `Tests` columns, one per new codim-2 test. Code that reads these columns by position needs the new widths.
 - `shift` and `del_shft` are now refused with a message that names the function, instead of an error about the number of arguments.
+- The VS Code extension uses `vscode-languageclient` 11. `phasecont.trace.server` now logs only while the log level of the PhaseCont output channel is Trace (`Developer: Set Log Level...`), and at Trace its `off` value logs the messages, the same as `messages`.
 
 ### Fixed
 
@@ -51,10 +55,11 @@ The version number of this release is not chosen yet. The toolbox still reports 
 
 ### Compatibility
 
-- Session files saved by 1.0.0 still load. Their LPC, PD and NS rows get NaN in the new test columns. Replaying such a run reports that the row layout changed.
-- A session saved by 1.0.0 with a run on a map loads with its stored rows, which are wrong. An EP branch of a map from such a file gets NaN in its PD and NS columns, since 1.0.0 stored an H test there. Replaying any of these runs gives `Pass = false`, since 1.0.0 treated the map as an ODE. A run that the engine refuses, such as an integration of a map or an EP branch that asks for the H test, also warns with `phasecont:session:runFailed`.
+- If you installed 1.0.0-preview, uninstall it in the Add-On Manager before installing 1.0.0. Both report version 1.0.0 with the same toolbox identifier, and an install of one over the other has not been tested.
+- Session files saved by 1.0.0-preview still load. Their LPC, PD and NS rows get NaN in the new test columns. Replaying such a run reports that the row layout changed.
+- A session saved by 1.0.0-preview with a run on a map loads with its stored rows, which are wrong. An EP branch of a map from such a file gets NaN in its PD and NS columns, since 1.0.0-preview stored an H test there. Replaying any of these runs gives `Pass = false`, since 1.0.0-preview treated the map as an ODE. A run that the engine refuses, such as an integration of a map or an EP branch that asks for the H test, also warns with `phasecont:session:runFailed`.
 - The engine library and the MEX gateway must come from the same release. A new gateway refuses an old library, which can happen only after a partial upgrade.
-- As in 1.0.0, close every MATLAB session that used PhaseCont before you install a new version, or the install fails with "Permission denied".
+- As in 1.0.0-preview, close every MATLAB session that used PhaseCont before you install a new version, or the install fails with "Permission denied".
 
 ### Known limits
 
@@ -66,6 +71,6 @@ The version number of this release is not chosen yet. The toolbox still reports 
 - The classification of Hopf-Hopf points into unfolding cases is not yet checked against a published table, and help marks the case letters as unconfirmed.
 - GPU ensembles have run on an NVIDIA RTX 5060 Laptop GPU (CUDA and OpenCL, single and double precision) and an Intel Arc 140T (OpenCL, single and double precision). Metal has run only on the virtual GPU of GitHub's hosted macOS runners, in single precision, never on Apple hardware. No AMD device has run.
 
-## 1.0.0 (2026-11-04)
+## 1.0.0-preview (2026-11-04)
 
-First public release.
+First public release. It was published as 1.0.0 and later renamed 1.0.0-preview and marked as a pre-release; its toolbox still reports version 1.0.0.

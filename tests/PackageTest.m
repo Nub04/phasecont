@@ -151,20 +151,93 @@ classdef PackageTest < matlab.unittest.TestCase
         end
 
         function onePlatformPackagesOnlyThatPlatform(testCase)
-            rmdir(fullfile(testCase.BinFolder, "glnxa64"), "s");
-            rmdir(fullfile(testCase.BinFolder, "maca64"), "s");
-            testCase.Platforms = "win64";
-            testCase.build();
-            [names, folder] = testCase.unpack();
-            testCase.verifyFalse(any(startsWith(names, ["bin/glnxa64", "bin/maca64"])));
-            testCase.verifyTrue(any(names == "bin/win64/pckern.dll"));
-            req = readMetadata(folder, "systemRequirements.xml");
-            testCase.verifyEqual(attribute(req, "win"), "true");
-            testCase.verifyEqual(attribute(req, "linux"), "false");
-            testCase.verifyEqual(attribute(req, "mac"), "false");
-            addon = readMetadata(folder, "addonProperties.xml");
-            testCase.verifySubstring(tagText(addon, "description"), ...
-                "This package runs on Windows.");
+            % Each one-platform package holds only its own binaries, says so
+            % in its metadata and keeps the identifier of the all-platform
+            % package, so it installs over it.
+            flags = struct(win64 = ["true", "false", "false"], ...
+                glnxa64 = ["false", "true", "false"], maca64 = ["false", "false", "true"]);
+            words = struct(win64 = "Windows", glnxa64 = "Linux", ...
+                maca64 = "macOS on Apple silicon");
+            every = testCase.Platforms;
+            for p = every
+                % A bin folder with this platform only, so packaging cannot
+                % read the others.
+                bin = fullfile(testCase.Temp, "bin-" + p);
+                mkdir(bin);
+                copyfile(fullfile(testCase.BinFolder, p), fullfile(bin, p));
+                testCase.Platforms = p;
+                testCase.build(strings(1, 0), struct(BinFolder = bin));
+                [names, folder] = testCase.unpack();
+                testCase.verifyFalse(any(startsWith(names, "bin/" + setdiff(every, p))), p);
+                files = testCase.Binaries.(p);
+                for k = 1:size(files, 1)
+                    testCase.verifyTrue(any(names == "bin/" + p + "/" + files{k, 1}), ...
+                        p + ": missing " + files{k, 1});
+                end
+                req = readMetadata(folder, "systemRequirements.xml");
+                testCase.verifyEqual([attribute(req, "win"), attribute(req, "linux"), ...
+                    attribute(req, "mac")], flags.(p), p);
+                addon = readMetadata(folder, "addonProperties.xml");
+                testCase.verifyEqual(tagText(addon, "identifier"), testCase.Identifier, p);
+                testCase.verifyTrue(endsWith(tagText(addon, "description"), ...
+                    "This package runs on " + words.(p) + "."), p);
+            end
+        end
+
+        function packageFileNameNamesEachPlatform(testCase)
+            for p = ["win64", "glnxa64", "maca64"]
+                testCase.verifyEqual(packageFileName("1.2.3", p), ...
+                    "PhaseCont-1.2.3-" + p + ".mltbx");
+            end
+            testCase.verifyEqual(packageFileName("1.2.3", ["win64", "glnxa64", "maca64"]), ...
+                "PhaseCont-1.2.3.mltbx");
+            testCase.verifyEqual(packageFileName("10.0.11", ["maca64", "win64", "glnxa64"]), ...
+                "PhaseCont-10.0.11.mltbx");
+        end
+
+        function packageFileNameRejectsOtherPlatformLists(testCase)
+            values = {"maci64", "WIN64", ["win64", "glnxa64"], ["win64", "win64"], ...
+                strings(1, 0), ["win64", "glnxa64", "maca64", "win64"], ""};
+            for k = 1:numel(values)
+                testCase.verifyError(@() packageFileName("1.2.3", values{k}), ...
+                    "phasecont:package:platforms", "platforms value " + k);
+            end
+            for v = ["1.2", "1.2.3.4", "v1.2.3", "1.2.3-preview", ""]
+                testCase.verifyError(@() packageFileName(v, "win64"), ...
+                    "phasecont:package:badVersion", v);
+            end
+        end
+
+        function checkPackageFileNameAcceptsMatchingFiles(testCase)
+            every = ["win64", "glnxa64", "maca64"];
+            for arch = every
+                testCase.verifyEqual(checkPackageFileName( ...
+                    packageFileName("1.2.3", arch), "1.2.3", arch), arch);
+                testCase.verifyEqual(checkPackageFileName( ...
+                    packageFileName("1.2.3", every), "1.2.3", arch), "");
+            end
+        end
+
+        function checkPackageFileNameRejectsMismatches(testCase)
+            testCase.verifyError(@() checkPackageFileName( ...
+                "PhaseCont-1.2.3-win64.mltbx", "1.2.3", "glnxa64"), ...
+                "phasecont:install:platform");
+            testCase.verifyError(@() checkPackageFileName( ...
+                "PhaseCont-1.2.3-maca64.mltbx", "1.2.3", "win64"), ...
+                "phasecont:install:platform");
+            testCase.verifyError(@() checkPackageFileName( ...
+                "PhaseCont-1.2.4-win64.mltbx", "1.2.3", "win64"), ...
+                "phasecont:install:version");
+            testCase.verifyError(@() checkPackageFileName( ...
+                "PhaseCont-1.2.4.mltbx", "1.2.3", "win64"), ...
+                "phasecont:install:version");
+            for name = ["PhaseCont-1.2.3-maci64.mltbx", "PhaseCont.mltbx", ...
+                    "Other-1.2.3.mltbx", "PhaseCont-1.2.3-win64.zip", ...
+                    "PhaseCont-1.2.3-win64-glnxa64.mltbx", "PhaseCont-1.2.3 (1).mltbx", ...
+                    "PhaseCont-1.2.3-WIN64.mltbx", "phasecont-1.2.3.mltbx"]
+                testCase.verifyError(@() checkPackageFileName(name, "1.2.3", "win64"), ...
+                    "phasecont:install:fileName", name);
+            end
         end
 
         function platformOrderDoesNotMatter(testCase)

@@ -67,6 +67,12 @@ Commands: `command -v` for each tool, and `dnf list --available` for the package
 
 WSL has git 2.56.0 with `user.name` and `user.email` set globally and `init.defaultBranch` unset. The repo was created with `git init -b main`. Git for Windows is also installed, at `C:\Program Files\Git\cmd\git.exe`.
 
+## Node and gh
+
+The VS Code extension builds with Node 26.3.1 and npm 11.16.0 from the Fedora packages `nodejs26`, `nodejs26-bin`, `nodejs26-npm` and `nodejs26-npm-bin` (2026-11-17). `nodejs26-bin` points `/usr/bin/node` at `node-26`. `nodejs22` 22.23.1 is also installed through dnf, as `/usr/bin/node-22`, and nothing in the repo uses it. Tools come only from dnf packages, with no second copy from npm, nvm or a tarball.
+
+The GitHub CLI is `gh` 2.97.0 from the Fedora `gh` package, the newest version dnf offers.
+
 ## Windows toolchains
 
 | Item | Value |

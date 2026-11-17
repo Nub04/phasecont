@@ -35,19 +35,26 @@ The `.ode` reader refuses some XPPAUT constructs, and delay models run only in `
 
 ## Install
 
-1. Download `PhaseCont-<version>.mltbx` from the [Releases page](https://github.com/Nub04/phasecont/releases). `SHA256SUMS` next to it lists the checksum of the file.
-2. Open the `.mltbx` file in MATLAB, or run `matlab.addons.install("PhaseCont-<version>.mltbx")`.
+1. Download the package for your platform from the [Releases page](https://github.com/Nub04/phasecont/releases): `PhaseCont-<version>-win64.mltbx` for Windows, `PhaseCont-<version>-glnxa64.mltbx` for Linux or `PhaseCont-<version>-maca64.mltbx` for macOS on Apple silicon. `PhaseCont-<version>.mltbx` holds all three platforms and installs on any of them. `SHA256SUMS` next to the packages lists their checksums.
+2. Open the `.mltbx` file in MATLAB, or run `matlab.addons.install("PhaseCont-<version>-<platform>.mltbx")` with the name of the file you downloaded.
 3. Check the install:
 
    ```matlab
    which phasecont.Model
    ```
 
-The macOS binaries are not signed by Apple. If macOS refuses to load `pckern.mexmaca64` or `libpckern.dylib`, please open an issue with the message.
+The macOS binaries carry an ad hoc signature and are not signed or notarized by Apple. If macOS refuses to load `pckern.mexmaca64` or `libpckern.dylib`, for example with a dialog saying it cannot verify the file, remove the quarantine attribute from the toolbox binaries and start a new MATLAB:
+
+```matlab
+d = fileparts(which("pckern"));
+system(sprintf('xattr -dr com.apple.quarantine "%s"', d));
+```
+
+Please also open an issue with the message, since nobody has installed PhaseCont on a physical Mac yet.
 
 ## Upgrading
 
-Close every MATLAB session that has used PhaseCont before you install a new version or uninstall the old one. The MEX gateway never unloads the engine library while MATLAB runs, so the old files stay locked and the upgrade fails with "Permission denied". Start a new MATLAB, then install the new `.mltbx`.
+Close every MATLAB session that has used PhaseCont before you install a new version or uninstall the old one. The MEX gateway never unloads the engine library while MATLAB runs, so the old files stay locked and the upgrade fails with "Permission denied". Start a new MATLAB. If you installed 1.0.0-preview, uninstall it in the Add-On Manager there before you install 1.0.0. Then install the new `.mltbx`.
 
 ## First run
 
@@ -362,7 +369,7 @@ You need this only to change PhaseCont itself.
    - `mex` builds the gateway next to it.
    - `test` runs the `matlab.unittest` suites in `tests/`.
 
-4. Optionally, build a package for this platform in `build/`:
+4. Optionally, build a package for this platform, `build/PhaseCont-<version>-<arch>.mltbx`:
 
    ```matlab
    buildtool package

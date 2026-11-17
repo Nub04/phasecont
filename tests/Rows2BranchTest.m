@@ -396,7 +396,7 @@ classdef Rows2BranchTest < matlab.unittest.TestCase
         end
 
         function oldCurveRowsArePaddedWithNaN(testCase)
-            % A v1.0.0 session stored LPC and PD rows with two codim-2 tests
+            % A v1.0.0-preview session stored LPC and PD rows with two codim-2 tests
             % (24 rows for n = 2, NTST = 2, NCOL = 2) and NS rows with six
             % (29 rows). The new tests read NaN.
             e = phasecont.Model.empty;

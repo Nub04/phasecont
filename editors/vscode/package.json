@@ -11,7 +11,7 @@
     "directory": "editors/vscode"
   },
   "engines": {
-    "vscode": "^1.100.0"
+    "vscode": "^1.146.0"
   },
   "categories": [
     "Programming Languages",
@@ -68,7 +68,7 @@
             "verbose"
           ],
           "default": "off",
-          "description": "Log the messages between VS Code and the language server in the PhaseCont output channel."
+          "markdownDescription": "How much of the traffic between VS Code and the language server to log in the PhaseCont output channel. Logging happens only while that channel's log level is Trace (run `Developer: Set Log Level...` and pick PhaseCont). At Trace, `off` logs the messages, the same as `messages`."
         }
       }
     },
@@ -82,20 +82,20 @@
   "scripts": {
     "typecheck": "tsc --noEmit -p .",
     "build": "tsc -p .",
-    "bundle": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node22 --minify",
+    "bundle": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node24 --minify",
     "vscode:prepublish": "npm run bundle",
     "test": "tsc -p . && node --test \"out/test/**/*.test.js\"",
     "package": "vsce package --no-dependencies"
   },
   "dependencies": {
-    "vscode-languageclient": "9.0.1"
+    "vscode-languageclient": "11.0.0"
   },
   "devDependencies": {
-    "@types/node": "22.20.5",
-    "@types/vscode": "1.100.0",
-    "@vscode/vsce": "4.1.0",
+    "@types/node": "24.19.2",
+    "@types/vscode": "1.146.0",
+    "@vscode/vsce": "4.1.1",
     "esbuild": "0.28.2",
-    "typescript": "6.0.3",
+    "typescript": "7.0.2",
     "vscode-oniguruma": "2.0.1",
     "vscode-textmate": "9.3.2"
   }

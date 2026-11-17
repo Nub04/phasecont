@@ -8,6 +8,9 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use libloading::{Library, Symbol};
+
+#[path = "../../../pc-codegen/tests/common/cc_check.rs"]
+mod cc_check;
 use pc_codegen::kernel::{Dialect, Scalar};
 use pc_ensemble::abi::pack_in;
 use pc_ensemble::job::{Job, Label, Method, Precision, validate};
@@ -49,13 +52,11 @@ impl Drop for Dir {
     }
 }
 
+/// The first usable compiler of gcc, clang and cc (see [`cc_check::usable`]).
 fn compiler() -> Option<&'static str> {
-    ["gcc", "clang", "cc"].into_iter().find(|cc| {
-        Command::new(cc)
-            .arg("--version")
-            .output()
-            .is_ok_and(|o| o.status.success())
-    })
+    ["gcc", "clang", "cc"]
+        .into_iter()
+        .find(|cc| cc_check::usable(cc))
 }
 
 /// The transcendental functions of the kernel, in the order of `C_TABLE`: twelve of one
@@ -144,9 +145,9 @@ impl Shim {
         let Some(cc) = compiler() else {
             assert!(
                 std::env::var_os("PC_REQUIRE_CC").is_none(),
-                "no C compiler found and PC_REQUIRE_CC is set"
+                "no usable C compiler and PC_REQUIRE_CC is set"
             );
-            println!("SKIPPED: no C compiler");
+            println!("SKIPPED: no usable C compiler");
             return None;
         };
         let tape = Tape::build(job.model).expect("tape");

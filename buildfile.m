@@ -6,8 +6,9 @@ function plan = buildfile
 %
 % "buildtool -tasks" lists the tasks. The cargo and mex tasks write to the
 % folder that tests/+fixtures/binFolder.m names. The package task builds
-% build/PhaseCont-<version>.mltbx from those binaries for this platform, or
-% for win64, glnxa64 and maca64 when PHASECONT_BINROOT is set (see packageTask).
+% build/PhaseCont-<version>-<arch>.mltbx from those binaries for this
+% platform, or packages from the folder PHASECONT_BINROOT names, by default
+% all three platforms as build/PhaseCont-<version>.mltbx (see packageTask).
 
 plan = buildplan(localfunctions);
 
@@ -104,37 +105,52 @@ mex(args{:});
 end
 
 function packageTask(context)
-% Package the toolbox as build/PhaseCont-<version>.mltbx.
+% Package the toolbox as build/<name>, where scripts/packageFileName.m gives
+% the name: PhaseCont-<version>-<platform>.mltbx for one platform and
+% PhaseCont-<version>.mltbx for all three.
 % scripts/packageToolbox.m does the staging and packaging; this task gathers
 % the inputs: the binaries and a THIRD_PARTY_LICENSES.txt (made by pc-cli
 % licenses, or with PHASECONT_PREBUILT set, the file PHASECONT_LICENSES names).
 %   PHASECONT_BINROOT set:  a folder holding win64/, glnxa64/ and maca64/,
-%       each with the MEX file and the library (the release job sets it);
-%       the package covers all three platforms.
+%       each with the MEX file and the library (the release job sets it).
+%       PHASECONT_PLATFORMS picks the platforms: one of win64, glnxa64 and
+%       maca64, or all three separated by commas. Unset, it means all three.
 %   Otherwise:  the package covers this platform only and takes the outputs
-%       of the cargo and mex tasks.
+%       of the cargo and mex tasks. PHASECONT_PLATFORMS must then be unset or
+%       name this platform.
 root = context.Plan.RootFolder;
 oldPath = path;
 restorePath = onCleanup(@() path(oldPath));
 addpath(fullfile(root, "tests"), fullfile(root, "scripts"));
 
 binRoot = string(getenv("PHASECONT_BINROOT"));
+asked = strip(split(string(getenv("PHASECONT_PLATFORMS")), ","))';
+asked = asked(strlength(asked) > 0);
 if strlength(binRoot) > 0
     platforms = ["win64", "glnxa64", "maca64"];
+    if ~isempty(asked)
+        platforms = asked;
+    end
 else
     platforms = string(computer("arch"));
     if ~any(platforms == ["win64", "glnxa64", "maca64"])
         error("phasecont:package:platform", ...
             "PhaseCont packages win64, glnxa64 and maca64; this MATLAB is %s.", platforms);
     end
+    if ~isempty(asked) && ~isequal(asked, platforms)
+        error("phasecont:package:platform", ...
+            "Without PHASECONT_BINROOT the package holds this platform (%s) only; PHASECONT_PLATFORMS is %s.", ...
+            platforms, strjoin(asked, ","));
+    end
     binRoot = localBinRoot(root, platforms);
 end
 
 pkgVersion = toolboxVersion();
+outName = packageFileName(pkgVersion, platforms);
 packageToolbox( ...
     Root = root, ...
     StageFolder = fullfile(root, "build", "package", "PhaseCont"), ...
-    OutputFile = fullfile(root, "build", "PhaseCont-" + pkgVersion + ".mltbx"), ...
+    OutputFile = fullfile(root, "build", outName), ...
     Version = pkgVersion, ...
     Identifier = toolboxUuid(), ...
     BinFolder = binRoot, ...

@@ -1,16 +1,18 @@
-# Builds the PhaseCont .mltbx for win64, glnxa64 and maca64, installs it on
-# each platform and, for a v* tag, publishes it as a GitHub Release.
+# Builds the PhaseCont packages, one .mltbx for each of win64, glnxa64 and
+# maca64 and one that holds all three, installs each on its platforms and, for
+# a v* tag, publishes them as a GitHub Release.
 #
 # A manual run (workflow_dispatch) is a dry run: it builds, tests and installs
-# the package and uploads it as a workflow artifact, but creates no release.
+# the packages and uploads them as a workflow artifact, but creates no release.
 #
 # Jobs:
 #   lib-win, lib-linux, lib-mac  build the pckern library of each platform
 #   licenses                     third-party license texts of the three targets
 #   mex                          MEX gateway and test suites on each platform
 #   load-el8                     load the glnxa64 binaries on Rocky Linux 8
-#   package                      one .mltbx with the binaries of all three
-#   install                      install, run an example, uninstall, per platform
+#   package                      a .mltbx per platform and one with all three
+#   install                      install, run an example, uninstall, for the
+#                                platform package and the all-platform one
 #   release                      tag check, SHA256SUMS, gh release create
 name: release
 
@@ -74,9 +76,9 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.17.1
-      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
-          tool: cargo-zigbuild@0.24.0
+          tool: cargo-zigbuild@0.24.1
       - name: Build libpckern.so for glibc 2.28
         run: |
           export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="--remap-path-prefix=$GITHUB_WORKSPACE=/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo"
@@ -186,6 +188,9 @@ jobs:
       - name: Check the MEX file for host paths
         shell: bash
         run: scripts/check-host-paths toolbox/bin/${{ matrix.arch }}/pckern.${{ matrix.mexext }}
+      - name: Check the ad hoc signatures
+        if: runner.os == 'macOS'
+        run: scripts/check-adhoc-signature toolbox/bin/maca64/libpckern.dylib toolbox/bin/maca64/pckern.mexmaca64
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bin-${{ matrix.arch }}
@@ -251,11 +256,38 @@ jobs:
       - uses: matlab-actions/setup-matlab@f9e43010f1ae678f7cfa0542fe2a4f60f7d1ad8d # v3.1.0
         with:
           release: R2026b
-      - name: Run buildtool package
+      # Each run replaces the stage and writes its own file name
+      # (scripts/packageFileName.m), so the four packages sit side by side.
+      - name: Package win64
+        uses: matlab-actions/run-build@cf54c2229a74d57eb4e6ba1bbebd45793d37797e # v3.4.0
+        env:
+          PHASECONT_PLATFORMS: win64
+        with:
+          tasks: package
+          build-options: -skip cargo -skip mex -skip test
+      - name: Package glnxa64
+        uses: matlab-actions/run-build@cf54c2229a74d57eb4e6ba1bbebd45793d37797e # v3.4.0
+        env:
+          PHASECONT_PLATFORMS: glnxa64
+        with:
+          tasks: package
+          build-options: -skip cargo -skip mex -skip test
+      - name: Package maca64
+        uses: matlab-actions/run-build@cf54c2229a74d57eb4e6ba1bbebd45793d37797e # v3.4.0
+        env:
+          PHASECONT_PLATFORMS: maca64
+        with:
+          tasks: package
+          build-options: -skip cargo -skip mex -skip test
+      - name: Package all three platforms
         uses: matlab-actions/run-build@cf54c2229a74d57eb4e6ba1bbebd45793d37797e # v3.4.0
         with:
           tasks: package
           build-options: -skip cargo -skip mex -skip test
+      - name: Check that there are exactly four packages
+        run: |
+          ls -l build/PhaseCont-*.mltbx
+          test "$(ls build/PhaseCont-*.mltbx | wc -l)" -eq 4
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: PhaseCont-mltbx
@@ -268,6 +300,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
+        package: [platform, all]
+        include:
+          - { os: windows-latest, arch: win64 }
+          - { os: ubuntu-latest, arch: glnxa64 }
+          - { os: macos-latest, arch: maca64 }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -278,9 +315,29 @@ jobs:
         with:
           name: PhaseCont-mltbx
           path: dist
+      # "platform" picks PhaseCont-<version>-<arch>.mltbx and "all" picks
+      # PhaseCont-<version>.mltbx; anything but exactly one match fails.
       - name: Find the package
         shell: bash
-        run: echo "PHASECONT_MLTBX=$(ls "$GITHUB_WORKSPACE"/dist/PhaseCont-*.mltbx)" >> "$GITHUB_ENV"
+        env:
+          PACKAGE: ${{ matrix.package }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          files=()
+          for f in "$GITHUB_WORKSPACE"/dist/PhaseCont-*.mltbx; do
+            name=${f##*/}
+            if [[ "$PACKAGE" == platform && "$name" =~ ^PhaseCont-[0-9]+\.[0-9]+\.[0-9]+-${ARCH}\.mltbx$ ]] ||
+               [[ "$PACKAGE" == all && "$name" =~ ^PhaseCont-[0-9]+\.[0-9]+\.[0-9]+\.mltbx$ ]]; then
+              files+=("$f")
+            fi
+          done
+          if [[ ${#files[@]} -ne 1 ]]; then
+            echo "::error::Expected one $PACKAGE package for $ARCH in dist, found ${#files[@]}"
+            ls -l "$GITHUB_WORKSPACE"/dist
+            exit 1
+          fi
+          echo "Installing ${files[0]##*/}"
+          echo "PHASECONT_MLTBX=${files[0]}" >> "$GITHUB_ENV"
       - uses: matlab-actions/setup-matlab@f9e43010f1ae678f7cfa0542fe2a4f60f7d1ad8d # v3.1.0
         with:
           release: R2026b
@@ -330,8 +387,11 @@ jobs:
             echo "::error::Tag $GITHUB_REF_NAME does not match buildfile.m version $version"
             exit 1
           fi
-          test -f "dist/PhaseCont-$version.mltbx"
-      - name: Attest the build provenance of the package
+          for suffix in "" -win64 -glnxa64 -maca64; do
+            test -f "dist/PhaseCont-$version$suffix.mltbx"
+          done
+          test "$(ls dist/PhaseCont-*.mltbx | wc -l)" -eq 4
+      - name: Attest the build provenance of the packages
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/PhaseCont-*.mltbx

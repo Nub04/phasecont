@@ -312,7 +312,7 @@ classdef SessionTest < matlab.unittest.TestCase
         end
 
         function loadPadsTheRowsOfAVersion1CurveOfCycles(testCase)
-            % A v1.0.0 LPC record has no CPC and R1 rows. The load pads them
+            % A v1.0.0-preview LPC record has no CPC and R1 rows. The load pads them
             % with NaN and keeps the numbers of the other tests.
             [m, items] = testCase.diagram("jit");
             file = fullfile(testCase.Dir, "v1.pcsession.json");
