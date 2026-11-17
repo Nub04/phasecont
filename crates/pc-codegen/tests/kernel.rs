@@ -8,6 +8,9 @@ use libloading::{Library, Symbol};
 use pc_codegen::kernel::{Dialect, KernelError, Scalar, emit_rhs, float_literal, prelude};
 use pc_ir::dag::{Fn1, Fn2, NodeId, Op};
 
+#[path = "common/cc_check.rs"]
+mod cc_check;
+
 const FLAGS: [&str; 8] = [
     "-O2",
     "-fPIC",
@@ -39,13 +42,11 @@ impl Drop for Dir {
     }
 }
 
+/// The first usable compiler of gcc, clang and cc (see [`cc_check::usable`]).
 fn compiler() -> Option<&'static str> {
-    ["gcc", "clang", "cc"].into_iter().find(|cc| {
-        Command::new(cc)
-            .arg("--version")
-            .output()
-            .is_ok_and(|o| o.status.success())
-    })
+    ["gcc", "clang", "cc"]
+        .into_iter()
+        .find(|cc| cc_check::usable(cc))
 }
 
 /// Compiles `c` to a shared library. `None` after a loud skip when there is no compiler.
@@ -53,9 +54,9 @@ fn build(tag: &str, c: &str) -> Option<(Dir, Library)> {
     let Some(cc) = compiler() else {
         assert!(
             std::env::var_os("PC_REQUIRE_CC").is_none(),
-            "no C compiler found and PC_REQUIRE_CC is set"
+            "no usable C compiler and PC_REQUIRE_CC is set"
         );
-        println!("SKIPPED: no C compiler");
+        println!("SKIPPED: no usable C compiler");
         return None;
     };
     let dir = Dir::new(tag);
@@ -382,4 +383,13 @@ fn the_time_input_is_the_function_argument() {
         t.contains("out[0] = v0;") && t.contains("out[1] = v1;"),
         "{t}"
     );
+}
+
+#[test]
+fn target_triples_name_the_cpu_as_rust_does() {
+    assert_eq!(cc_check::triple_arch("x86_64-w64-mingw32"), "x86_64");
+    assert_eq!(cc_check::triple_arch("x86_64-redhat-linux\n"), "x86_64");
+    assert_eq!(cc_check::triple_arch("aarch64-linux-gnu"), "aarch64");
+    assert_eq!(cc_check::triple_arch("arm64-apple-darwin24.0.0"), "aarch64");
+    assert_eq!(cc_check::triple_arch(""), "");
 }

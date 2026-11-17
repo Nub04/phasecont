@@ -3,6 +3,8 @@
 
 #![allow(dead_code)]
 
+#[path = "cc_check.rs"]
+mod cc_check;
 #[path = "lower_text.rs"]
 mod lower_text;
 
@@ -23,7 +25,12 @@ pub const FLAGS: [&str; 7] = [
     "-Wextra",
 ];
 
+/// First line of `cc --version`, or `None` when `cc` is not usable here (see
+/// [`cc_check::usable`]).
 pub fn cc_version(cc: &str) -> Option<String> {
+    if !cc_check::usable(cc) {
+        return None;
+    }
     let o = Command::new(cc).arg("--version").output().ok()?;
     if !o.status.success() {
         return None;
@@ -37,11 +44,11 @@ pub fn gcc_version() -> Option<String> {
 }
 
 /// Compilers the AOT text is checked with: gcc, and clang when installed. Clang is skipped
-/// on Windows, where it targets MSVC and rejects the `-fPIC` in `FLAGS`.
+/// on Windows, where it targets MSVC and rejects the `-fPIC` in `FLAGS`, and so is a
+/// compiler for another CPU.
 pub fn compilers() -> Vec<&'static str> {
     ["gcc", "clang"]
         .into_iter()
-        .filter(|cc| !(cfg!(windows) && *cc == "clang"))
         .filter(|cc| cc_version(cc).is_some())
         .collect()
 }

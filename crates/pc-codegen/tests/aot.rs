@@ -212,7 +212,7 @@ const MODELS: [(&str, &str); 9] = [
 #[test]
 fn aot_matches_jit_on_every_model() {
     let Some(v) = gcc_version() else {
-        println!("skip: gcc not found, AOT C test not run");
+        println!("skip: no usable gcc, AOT C test not run");
         return;
     };
     record_compiler(&v);
@@ -361,7 +361,7 @@ fn out_of_range_leaves_are_nan() {
 #[test]
 fn bessel_order_cap_matches_eval_in_aot() {
     if gcc_version().is_none() {
-        println!("skip: gcc not found, AOT Bessel cap test not run");
+        println!("skip: no usable gcc, AOT Bessel cap test not run");
         return;
     }
     const ORDERS: [f64; 4] = [10000.0, -10000.0, 10001.0, -10001.0];
@@ -403,7 +403,7 @@ unsafe extern "C" fn fake_sin(_: f64) -> f64 {
 #[test]
 fn each_library_keeps_its_own_math_table() {
     if gcc_version().is_none() {
-        println!("skip: gcc not found, AOT C test not run");
+        println!("skip: no usable gcc, AOT C test not run");
         return;
     }
     let mut ir = build_model("x'=sin(x)\ndone\n");

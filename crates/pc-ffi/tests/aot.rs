@@ -10,6 +10,9 @@ use pc_engine::{engine_kinds, entry_symbol};
 use pc_ir::lower;
 use pc_ode::{MapLoader, SourceMap, load};
 use pckern::{PcApiV1, pc_api_v1};
+
+#[path = "../../pc-codegen/tests/common/cc_check.rs"]
+mod cc_check;
 use serde_json::Value;
 
 const LORENZ: &str = "par s=10, r=28, b=2.6666666666666665\n\
@@ -125,10 +128,11 @@ fn emit(m: &Id, dir: &Path) -> PathBuf {
     PathBuf::from(info(m)["c_file"].as_str().expect("c_file").to_owned())
 }
 
-/// Compiles the emitted C with gcc, or None (with a note) when gcc is missing.
+/// Compiles the emitted C with gcc, or None (with a note) when gcc is missing or not usable
+/// here (see [`cc_check::usable`]).
 fn build_lib(c_file: &Path) -> Option<PathBuf> {
-    if Command::new("gcc").arg("--version").output().is_err() {
-        println!("skipped: gcc is not installed");
+    if !cc_check::usable("gcc") {
+        println!("skipped: no usable gcc");
         return None;
     }
     let lib = c_file.with_extension(std::env::consts::DLL_EXTENSION);

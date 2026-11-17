@@ -404,7 +404,7 @@ fn section_3_and_4_checks_pass_on_the_model_set() {
             record_compiler(v);
             println!("AOT compiler: {v}");
         }
-        None => println!("skip: gcc not found, the AOT check is not run"),
+        None => println!("skip: no usable gcc, the AOT check is not run"),
     }
     let started = Instant::now();
     let results = run_all(&files, gcc.is_some());
