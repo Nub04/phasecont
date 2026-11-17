@@ -100,7 +100,7 @@ classdef Branch < handle
     %   Model        the phasecont.Model the run used
     %
     % Methods
-    %   points, plot, cycle
+    %   points, plot, cycle, classify, tdplot
 
     properties (SetAccess = private)
         Type (1,1) string = "EP"
@@ -250,6 +250,183 @@ classdef Branch < handle
             for k = 1:numel(br)
                 h = [h; br(k).drawOne(ax, options.Var)]; %#ok<AGROW>
             end
+            if nargout == 0
+                clear h
+            end
+        end
+    end
+
+    methods
+        function [tbl, J] = classify(br, options)
+            %CLASSIFY The type of every point of a branch of equilibria.
+            %   TBL = classify(BR) classifies each point of a branch of Type
+            %   "EP" (equilibria of an ODE, or fixed points of a map) with
+            %   the rules of Point.classify. TBL has one row per point and
+            %   the variables Alpha, Type, Hyperbolic, T, D, Disc, Rotation,
+            %   NStable, NUnstable, NCenter and Borderline. Rotation is ""
+            %   where it is not set and Borderline holds the names of the
+            %   tests that fired, joined by a space. The type is undecided
+            %   where Hyperbolic is false; BR.Stable gives the engine's
+            %   stability.
+            %
+            %   [TBL, J] = classify(BR) also returns the Jacobians, n-by-n-by-N.
+            %   classify(BR, Tol = TOL) sets the tolerance as Point.classify.
+            %
+            %   The Jacobian at row i is the one of the model at BR.U(i,:) with
+            %   BR.P whose free entry is BR.Alpha(i) (of F^K on a map, with
+            %   K = BR.Iterate). classify raises phasecont:branch:noJacobian
+            %   on a branch whose Type is not "EP", whose Model is empty or
+            %   deleted, of a delay or non-autonomous model, or at a point
+            %   whose Jacobian has NaN or Inf entries.
+            arguments
+                br (1,1) phasecont.Branch
+                options.Tol (1,1) double {mustBeReal} = 1e-9
+            end
+            tol = options.Tol;
+            if ~(isfinite(tol) && tol >= 0 && tol < 1)
+                error("phasecont:branch:badOption", ...
+                    "Tol must be a finite real number with 0 <= Tol < 1.");
+            end
+            if br.Type ~= "EP"
+                error("phasecont:branch:noJacobian", ...
+                    "No Jacobian along this branch: its Type is ""%s"", not ""EP"".", ...
+                    br.Type);
+            end
+            if ~br.hasModel()
+                error("phasecont:branch:noJacobian", ...
+                    "No Jacobian along this branch: it has no model, or its model was deleted.");
+            end
+            m = br.Model;
+            if m.IsDelay
+                error("phasecont:branch:noJacobian", ...
+                    "No Jacobian along this branch: the model has delay terms.");
+            elseif ~m.Autonomous
+                error("phasecont:branch:noJacobian", ...
+                    "No Jacobian along this branch: the model uses t.");
+            end
+            [npts, n] = size(br.U);
+            J = zeros(n, n, npts);
+            types = strings(npts, 1);
+            rot = strings(npts, 1);
+            border = strings(npts, 1);
+            hyp = true(npts, 1);
+            [T, D, Disc, ns, nu, nc] = deal(NaN(npts, 1));
+            for i = 1:npts
+                p = br.P;
+                p(br.FreeIndex) = br.Alpha(i);
+                [Ji, why] = phasecont.internal.modelJacobian(m, br.U(i, :), ...
+                    p, br.Iterate);
+                if why ~= ""
+                    error("phasecont:branch:noJacobian", ...
+                        "No Jacobian at point %d of this branch: %s.", i, why);
+                end
+                c = phasecont.internal.classifyJacobian(Ji, m.IsMap, tol);
+                J(:, :, i) = Ji;
+                types(i) = c.Type;
+                hyp(i) = c.Hyperbolic;
+                T(i) = c.T;
+                D(i) = c.D;
+                Disc(i) = c.Disc;
+                if ~isempty(c.Rotation)
+                    rot(i) = c.Rotation;
+                end
+                border(i) = strjoin(c.Borderline, " ");
+                ns(i) = c.NStable;
+                nu(i) = c.NUnstable;
+                nc(i) = c.NCenter;
+            end
+            tbl = table(br.Alpha, types, hyp, T, D, Disc, rot, ns, nu, nc, border, ...
+                VariableNames = ["Alpha" "Type" "Hyperbolic" "T" "D" "Disc" ...
+                "Rotation" "NStable" "NUnstable" "NCenter" "Borderline"]);
+        end
+
+        function h = tdplot(br, options)
+            %TDPLOT Draw a branch of equilibria in the trace-determinant plane.
+            %   H = TDPLOT(BR) draws a two-dimensional branch of Type "EP" as
+            %   the path of (T, D) of its points (Tag "pc-td-path"), its special
+            %   points at their own (T, D) with labels ("pc-special",
+            %   "pc-label"), the parabola D = T^2/4 ("pc-td-parabola") and the
+            %   axes T = 0 and D = 0 ("pc-td-axis"). On a map it also draws the
+            %   triangle |D| < 1, |T| < 1 + D where both multipliers are inside
+            %   the unit circle ("pc-td-triangle"). TDPLOT(BR, Tol = TOL) passes
+            %   TOL to classify; TDPLOT(BR, Parent = AX) draws into AX. Without
+            %   Parent it uses newplot, so hold on is respected. H holds the
+            %   lines, markers and texts as a column vector.
+            arguments
+                br (1,1) phasecont.Branch
+                options.Tol (1,1) double {mustBeReal} = 1e-9
+                options.Parent = []
+            end
+            if br.Type == "EP" && br.stateCount() ~= 2
+                error("phasecont:branch:badOption", ...
+                    "tdplot needs a branch with 2 states; this one has %d.", ...
+                    br.stateCount());
+            end
+            tbl = br.classify(Tol = options.Tol);
+            if isempty(options.Parent)
+                ax = newplot;
+            else
+                ax = options.Parent;
+            end
+            T = tbl.T;
+            D = tbl.D;
+            isMap = br.Model.IsMap;
+            sp = br.Specials;
+            keep = false(numel(sp), 1);
+            px = NaN(numel(sp), 1);
+            py = px;
+            for k = 1:numel(sp)
+                [Js, why] = phasecont.internal.modelJacobian(br.Model, sp(k).U, ...
+                    sp(k).P, sp(k).Iterate);
+                if why == ""
+                    keep(k) = true;
+                    px(k) = Js(1,1) + Js(2,2);
+                    py(k) = Js(1,1)*Js(2,2) - Js(1,2)*Js(2,1);
+                end
+            end
+            sp = sp(keep);
+            px = px(keep);
+            py = py(keep);
+
+            % The T range of the reference curves: the path, 0 and, on a
+            % map, the triangle, widened by 10 percent on each side.
+            tr = [T; px; 0];
+            dr = [D; py; 0];
+            if isMap
+                tr = [tr; -2; 2];
+                dr = [dr; -1; 1];
+            end
+            tlo = min(tr);
+            thi = max(tr);
+            pad = 0.1 * max(thi - tlo, 1);
+            tlo = tlo - pad;
+            thi = thi + pad;
+            tt = linspace(tlo, thi, 201);
+            dr = [dr; tt(:).^2/4];
+            dlo = min(dr);
+            dhi = max(dr);
+            dpad = 0.1 * max(dhi - dlo, 1);
+            dlo = dlo - dpad;
+            dhi = dhi + dpad;
+            gray = [0.5 0.5 0.5];
+            h = gobjects(0, 1);
+            h(end+1, 1) = line(ax, [tlo thi], [0 0], Color = gray, ...
+                LineStyle = "-", Tag = "pc-td-axis");
+            h(end+1, 1) = line(ax, [0 0], [dlo dhi], Color = gray, ...
+                LineStyle = "-", Tag = "pc-td-axis");
+            h(end+1, 1) = line(ax, tt, tt.^2/4, Color = gray, ...
+                LineStyle = ":", Tag = "pc-td-parabola");
+            if isMap
+                h(end+1, 1) = line(ax, [-2 2 0 -2], [1 1 -1 1], Color = gray, ...
+                    LineStyle = "--", Tag = "pc-td-triangle");
+            end
+            color = nextColor(ax);
+            h(end+1, 1) = line(ax, T, D, Color = color, LineStyle = "-", ...
+                Marker = ".", MarkerSize = 8, Tag = "pc-td-path");
+            h = [h; specialMarks(ax, sp, px, py, ...
+                0.015 * (thi - tlo), 0.015 * (dhi - dlo))];
+            xlabel(ax, "T (trace)");
+            ylabel(ax, "D (determinant)");
             if nargout == 0
                 clear h
             end

@@ -63,6 +63,17 @@ classdef ClassifyTest < matlab.unittest.TestCase
             testCase.verifyEqual([c.NStable c.NUnstable c.NCenter], counts);
             testCase.verifyEqual(c.Borderline, string(borderline));
         end
+
+        function br = henonBranch(testCase)
+            % The Henon branch of fixed points in a from a = 0.2 at b = 0.3.
+            b = 0.3;
+            m = testCase.model(testCase.Henon);
+            x = (-(1 - b) + sqrt((1 - b)^2 + 0.8)) / 0.4;
+            eq = phasecont.equilibrium(m, [x b*x] + 0.01, ...
+                Params = struct(a = 0.2, b = b));
+            br = phasecont.continuation(m, eq, Free = "a", Direction = 1, ...
+                Hmax = 0.05, MaxSteps = 1000, Bounds = [-1 0.5]);
+        end
     end
 
     methods (Test)
@@ -279,6 +290,164 @@ classdef ClassifyTest < matlab.unittest.TestCase
                 testCase.verifyError(@() classify(pt, Tol = tol), ...
                     "phasecont:point:badOption", sprintf("Tol %g", tol));
             end
+        end
+
+        % Branch.classify and Branch.tdplot (SPEC section 8ad, tests 1 to 4).
+
+        function spiralBranch(testCase)
+            m = testCase.model("par r=-1" + newline + ...
+                "x'=r*x-y" + newline + "y'=x+r*y" + newline + "done" + newline);
+            br = phasecont.continuation(m, [0 0], Free = "r", Direction = 1, ...
+                Bounds = [-1 1], Hmax = 0.05, MaxSteps = 200);
+            [tbl, J] = classify(br);
+            r = br.Alpha;
+            npts = numel(r);
+            testCase.assertGreaterThan(npts, 10);
+            % The branch covers r from -1 to 1.
+            testCase.verifyEqual([min(r) max(r)], [-1 1], AbsTol = 1e-9);
+            testCase.verifySize(J, [2 2 npts]);
+            testCase.verifyEqual(tbl.Alpha, r);
+            testCase.verifyEqual(tbl.T, 2*r, AbsTol = 1e-12);
+            testCase.verifyEqual(tbl.D, r.^2 + 1, AbsTol = 1e-12);
+            off = ~contains(tbl.Borderline, "zeroT");
+            testCase.verifyTrue(all(tbl.Type(off & r < 0) == "stable spiral"));
+            testCase.verifyTrue(all(tbl.Type(off & r > 0) == "unstable spiral"));
+            testCase.verifyTrue(any(r < 0) && any(r > 0));
+            testCase.verifyTrue(all(tbl.Rotation == "counterclockwise"));
+            for i = 1:npts
+                p = br.P;
+                p(br.FreeIndex) = r(i);
+                pt = phasecont.Point(U = br.U(i, :).', P = p, Label = "EP", ...
+                    Model = m);
+                c = classify(pt);
+                testCase.verifyEqual(tbl.Type(i), c.Type, sprintf("row %d", i));
+                testCase.verifyEqual(J(:, :, i), c.Jacobian, sprintf("row %d", i));
+                testCase.verifyEqual(tbl.Borderline(i), strjoin(c.Borderline, " "), ...
+                    sprintf("row %d", i));
+                testCase.verifyEqual([tbl.NStable(i) tbl.NUnstable(i) tbl.NCenter(i)], ...
+                    [c.NStable c.NUnstable c.NCenter], sprintf("row %d", i));
+            end
+        end
+
+        function saddleNodeBranch(testCase)
+            m = testCase.model("par r=1" + newline + ...
+                "x'=r-x^2" + newline + "y'=-y" + newline + "done" + newline);
+            br = phasecont.continuation(m, [1 0], Free = "r", Direction = -1, ...
+                Bounds = [-1 1.5], Hmax = 0.05, MaxSteps = 300);
+            tbl = classify(br);
+            clear0 = ~contains(tbl.Borderline, "zeroD") & ...
+                ~contains(tbl.Borderline, "zeroDisc");
+            nodes = clear0 & tbl.D > 0;
+            saddles = clear0 & tbl.D < 0;
+            testCase.verifyTrue(any(nodes) && any(saddles));
+            testCase.verifyTrue(all(tbl.Type(nodes) == "stable node"));
+            testCase.verifyTrue(all(tbl.Type(saddles) == "saddle"));
+            testCase.verifyTrue(all(tbl.Rotation == ""));
+        end
+
+        function logisticBranch(testCase)
+            m = testCase.model(testCase.Logistic);
+            eq = phasecont.equilibrium(m, 0.6);
+            br = phasecont.continuation(m, eq, Free = "r", Direction = 1, ...
+                Bounds = [1.5 3.5], Hmax = 0.05, MaxSteps = 200);
+            tbl = classify(br);
+            below = tbl.Alpha < 2.99;
+            above = tbl.Alpha > 3.01;
+            testCase.verifyTrue(any(below) && any(above));
+            testCase.verifyTrue(all(tbl.Type(below) == "stable (1 inside the unit circle)"));
+            testCase.verifyTrue(all(tbl.Type(above) == ...
+                "unstable (0 inside, 1 outside the unit circle)"));
+            testCase.verifyTrue(all(isnan(tbl.T)));
+        end
+
+        function henonBranchTraceAndDeterminant(testCase)
+            br = testCase.henonBranch();
+            tbl = classify(br);
+            ev = br.Eigenvalues;
+            testCase.verifyEqual(tbl.T, real(sum(ev, 2)), RelTol = 1e-12, AbsTol = 1e-12);
+            testCase.verifyEqual(tbl.D, real(prod(ev, 2)), RelTol = 1e-12, AbsTol = 1e-12);
+        end
+
+        function branchesWithNoJacobian(testCase)
+            % A cycle branch.
+            m = testCase.model("par a=1,b=1.2" + newline + ...
+                "x'=a-(b+1)*x+x^2*y" + newline + "y'=b*x-x^2*y" + newline + ...
+                "done" + newline);
+            eq = phasecont.equilibrium(m, [1 1.2]);
+            ep = phasecont.continuation(m, eq, Free = "b", Bounds = [0.5 4]);
+            h = ep.points("H");
+            testCase.assertNotEmpty(h);
+            lc = phasecont.continuation(m, h(1), Type = "LC", Free = "b", ...
+                NTST = 20, NCOL = 4, Bounds = [1.5 3], MaxSteps = 10);
+            testCase.verifyError(@() classify(lc), "phasecont:branch:noJacobian");
+            % The same EP branch after its model is deleted.
+            testCase.verifyClass(classify(ep), "table");
+            delete(m);
+            testCase.verifyError(@() classify(ep), "phasecont:branch:noJacobian");
+            % A delay model.
+            md = testCase.model(testCase.Hutchinson);
+            bd = phasecont.continuation(md, 1, Free = "r", ...
+                Roots = struct(N = 30, ReMin = -0.5), Bounds = [1.2 2.0], ...
+                Direction = 1, Hmax = 0.05);
+            testCase.verifyEqual(bd.Type, "EP");
+            testCase.verifyError(@() classify(bd), "phasecont:branch:noJacobian");
+        end
+
+        function branchBadTolIsRefused(testCase)
+            br = testCase.henonBranch();
+            for tol = [-1e-9 1 NaN Inf]
+                testCase.verifyError(@() classify(br, Tol = tol), ...
+                    "phasecont:branch:badOption", sprintf("Tol %g", tol));
+            end
+        end
+
+        function tdplotOfTheSpiralBranch(testCase)
+            m = testCase.model("par r=-1" + newline + ...
+                "x'=r*x-y" + newline + "y'=x+r*y" + newline + "done" + newline);
+            br = phasecont.continuation(m, [0 0], Free = "r", Direction = 1, ...
+                Bounds = [-1 1], Hmax = 0.05, MaxSteps = 200);
+            f = figure(Visible = "off");
+            testCase.addTeardown(@() close(f));
+            ax = axes(f);
+            h = tdplot(br, Parent = ax);
+            tbl = classify(br);
+            path = findobj(ax, Tag = "pc-td-path");
+            testCase.verifySize(path, [1 1]);
+            testCase.verifyEqual([path.XData(:) path.YData(:)], [tbl.T tbl.D]);
+            testCase.verifySize(findobj(ax, Tag = "pc-td-parabola"), [1 1]);
+            testCase.verifySize(findobj(ax, Tag = "pc-td-axis"), [2 1]);
+            testCase.verifyEmpty(findobj(ax, Tag = "pc-td-triangle"));
+            testCase.verifyEqual(string(ax.XLabel.String), "T (trace)");
+            testCase.verifyEqual(string(ax.YLabel.String), "D (determinant)");
+            testCase.verifyTrue(all(isgraphics(h)));
+            % The Hopf point at r = 0 sits at (0, 1).
+            sp = findobj(ax, Tag = "pc-special");
+            testCase.verifyNotEmpty(sp);
+            xy = [vertcat(sp.XData) vertcat(sp.YData)];
+            testCase.verifyLessThan(min(vecnorm(xy - [0 1], 2, 2)), 1e-6);
+        end
+
+        function tdplotOfTheHenonBranch(testCase)
+            br = testCase.henonBranch();
+            f = figure(Visible = "off");
+            testCase.addTeardown(@() close(f));
+            ax = axes(f);
+            tdplot(br, Parent = ax);
+            tri = findobj(ax, Tag = "pc-td-triangle");
+            testCase.verifySize(tri, [1 1]);
+            corners = unique([tri.XData(:) tri.YData(:)], "rows");
+            testCase.verifyEqual(corners, [-2 1; 0 -1; 2 1]);
+        end
+
+        function tdplotRefusesThreeStates(testCase)
+            m = testCase.model("par r=-1" + newline + "x'=r*x" + newline + ...
+                "y'=-y" + newline + "z'=-z" + newline + "done" + newline);
+            br = phasecont.continuation(m, [0 0 0], Free = "r", Direction = 1, ...
+                Bounds = [-1 -0.5], Hmax = 0.05, MaxSteps = 20);
+            f = figure(Visible = "off");
+            testCase.addTeardown(@() close(f));
+            testCase.verifyError(@() tdplot(br, Parent = axes(f)), ...
+                "phasecont:branch:badOption");
         end
     end
 end
