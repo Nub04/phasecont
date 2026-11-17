@@ -432,6 +432,13 @@ impl Session {
                 Ok(item)
             })
             .collect::<Result<Vec<_>, String>>()?;
+        // The same set the MATLAB reader accepts. A recorded "aot" replays on the JIT.
+        let evaluator = str_field(model, "evaluator", "model")?;
+        if !matches!(evaluator.as_str(), "jit" | "fallback" | "aot") {
+            return Err(format!(
+                "model.evaluator is \"{evaluator}\"; it must be \"jit\", \"fallback\" or \"aot\""
+            ));
+        }
         Ok(Self {
             created: str_field(o, "created", "session")?,
             engine_name: str_field(engine, "name", "engine")?,
@@ -442,7 +449,7 @@ impl Session {
                 name: str_field(model, "name", "model")?,
                 source: str_field(model, "source", "model")?,
                 sha256: str_field(model, "sha256", "model")?,
-                evaluator: str_field(model, "evaluator", "model")?,
+                evaluator,
             },
             runs,
             items,
@@ -1231,6 +1238,12 @@ mod tests {
         assert!(edit(&|v| v["items"][0]["run"] = json!(9)).contains("items[0]"));
         assert!(edit(&|v| v["items"][0]["branch"] = json!(3)).contains("items[0]"));
         assert!(edit(&|v| v["items"][1]["branch"] = json!(1)).contains("items[1]"));
+        assert!(edit(&|v| v["model"]["evaluator"] = json!("jlt")).contains("model.evaluator"));
+        for ev in ["jit", "fallback", "aot"] {
+            let mut v = sample().to_json();
+            v["model"]["evaluator"] = json!(ev);
+            assert!(Session::parse(&v.to_string()).is_ok(), "{ev}");
+        }
         assert!(Session::parse("[]").is_err());
         assert!(Session::parse("{").unwrap_err().contains("not valid JSON"));
     }

@@ -35,6 +35,7 @@ This release is 1.0.0. The release of 2026-11-04, first published as 1.0.0, is n
 
 ### Changed
 
+- `pc-cli session replay` refuses a session file whose `model.evaluator` is not `"jit"`, `"fallback"` or `"aot"` and exits 2, as `phasecont.session.replay` already did with `phasecont:session:badFile`. Before, any other value replayed on the JIT without a message.
 - Single-precision CPU ensembles run a compiled right-hand side, as double precision already did. `vdp-rk4` at 100000 members runs about 1.9 times faster, with the same bits as before. Models that use tables or erf, erfc, lgamma, the Bessel functions or polygamma still run on the interpreter in single precision.
 - `simulate` warns once per model with `phasecont:simulate:ignoredOption` and names the `@` options of the model, such as `meth` and `dt`, since it uses none of them. The results do not change. The warning comes after the run, so a run that fails gives no warning.
 - `simulate` iterates a map, and `equilibrium` and `continuation` with Types `"EP"`, `"LP"`, `"PD"` and `"NS"` compute its fixed points, their multipliers and the curves of its LP, PD and NS points. In 1.0.0-preview they treated the right-hand side of a map as an ODE and gave wrong results. Types `"H"`, `"LC"`, `"LPC"` and `"HOM"` on a map now raise a `phasecont:` error. `phasecont.app.PhasePlane` shows a map instead of a vector field (see Added). `Model.rhs` still evaluates the right-hand side.

@@ -1110,10 +1110,10 @@ PhaseCont is ahead in continuation (two-parameter curves with codim-2 labels and
 
 ## Open questions
 
-- Open from the review of the session evaluator fix (2026-11-17, branch `session-evaluator`). Item 1 is settled; two are small follow-ups.
+- Open from the review of the session evaluator fix (2026-11-17, branch `session-evaluator`). Items 1 and 3 are settled; item 2 is a small follow-up.
   1. Settled 2026-11-17 (owner said yes). `Model.loadobj` used to rebuild a saved model with the evaluator the MAT file holds, so a MAT file whose model records `"aot"` started the C compiler when it loaded. It now keeps `"jit"` and `"fallback"` and otherwise builds with `phasecont.config("Codegen")`, the same rule as `sessionCodec.buildModel`. Test: `AotTest/aMatFileThatRecordsAotStartsNoCompiler`.
   2. `sessionCodec.buildModel` compiles the model before it compares the source hash. Both values come from the same file, so this is an integrity check and not a guard, but checking the hash first would skip a build that is about to be refused.
-  3. The CLI reads the recorded evaluator without checking it: any value other than `"fallback"` replays on the JIT. A file with a misspelled evaluator replays without a message.
+  3. Settled 2026-11-17. The CLI read the recorded evaluator without checking it, so a misspelled evaluator replayed on the JIT without a message. `Session::parse` now accepts only `"jit"`, `"fallback"` and `"aot"`, the set the MATLAB reader accepts, and `pc-cli session replay` exits 2 for any other value. Test: `session::tests::reading_refuses_what_it_does_not_know`.
 
 - Open from the analysis tools, slice 1 (2026-11-16, SPEC section 8ac, `Point.classify` and `model_jacobian`, branch `analysis-tools`). Three values are project choices with no reference behind them, and each needs the owner's sign-off:
   1. A star (J a multiple of I) is told from a degenerate node by the band ‖J − (T/2)I‖_F ≤ √Tol·s. The square root is there because the eigenvalue split of a near-double root grows like the square root of the perturbation; the factor itself is mine.
