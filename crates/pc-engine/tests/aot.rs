@@ -392,3 +392,86 @@ fn build_refuses_a_library_with_the_wrong_tag() {
     );
     build(&model, &info, Evaluator::Aot { lib: so, tag }).expect("matching tag");
 }
+
+/// One map curve case: model name, curve kind, start and bounds.
+type MapCase = (
+    &'static str,
+    fn(pc_engine::CurveSetup) -> pc_engine::RunKind,
+    pc_engine::CurveSetup,
+    (f64, f64),
+);
+
+/// Runs `kind` from `setup` on the map `name` at iterate 2 with `ev` to its end.
+fn map_curve2(
+    name: &str,
+    ev: Evaluator,
+    kind: fn(pc_engine::CurveSetup) -> pc_engine::RunKind,
+    setup: pc_engine::CurveSetup,
+    bounds: (f64, f64),
+) -> Vec<pc_engine::Point> {
+    use pc_engine::{Options, Run, RunSpec, RunState};
+    let (m, info) = common::load(name);
+    let opts = Options {
+        bounds,
+        ..Options::default()
+    };
+    let mut spec = RunSpec::curve(m, info, ev, kind(setup), opts);
+    spec.iterate = 2;
+    let run = Run::start(spec);
+    let t0 = std::time::Instant::now();
+    while run.poll().state == RunState::Running {
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(60),
+            "timed out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(run.poll().state, RunState::Done, "{name}");
+    assert_eq!(run.iterate(0), Some(2), "{name}");
+    run.points(0, 0, usize::MAX)
+}
+
+/// The curves of a map at iterate 2 ask for the directional derivative of the whole map
+/// (`Dir([Full])`), so an AOT library must hold that entry. Each curve matches the JIT bit
+/// for bit.
+#[test]
+fn map_curves_at_iterate_2_run_on_aot() {
+    use pc_engine::{CurveSetup, RunKind};
+    if gcc_version().is_none() {
+        println!("skip: gcc not found, AOT map curve test not run");
+        return;
+    }
+    let cases: [MapCase; 2] = [
+        (
+            "map_cusp_cp",
+            RunKind::MapLpCurve,
+            CurveSetup::new([0, 1], vec![0.25, 0.75], vec![-0.5, 0.0]),
+            (-1.0, 1.0),
+        ),
+        (
+            "map_ch",
+            RunKind::MapNsCurve,
+            CurveSetup::new([0, 1], vec![0.0, -0.5], vec![0.0, 0.0]),
+            (-1.0, 1.0),
+        ),
+    ];
+    for (name, kind, setup, bounds) in cases {
+        let (so, tag, _, _tmp) = built(name, &format!("map2-{name}"));
+        let aot = map_curve2(
+            name,
+            Evaluator::Aot { lib: so, tag },
+            kind,
+            setup.clone(),
+            bounds,
+        );
+        let jit = map_curve2(name, Evaluator::Jit, kind, setup, bounds);
+        assert!(aot.len() > 5, "{name}: {} points", aot.len());
+        assert_eq!(aot.len(), jit.len(), "{name} points");
+        for (i, (a, b)) in aot.iter().zip(&jit).enumerate() {
+            assert!(same(a.alpha, b.alpha), "{name} point {i} alpha");
+            for (k, (x, y)) in a.u.iter().zip(&b.u).enumerate() {
+                assert!(same(*x, *y), "{name} point {i} u[{k}]");
+            }
+        }
+    }
+}

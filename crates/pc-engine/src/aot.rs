@@ -48,8 +48,10 @@ pub fn entry_symbol(kind: &EntryKind) -> String {
 
 /// The entries the engine asks for: the plain ones, `Dir` of orders 1 to 5 with `U`
 /// slots (normal forms), the two mixed ones that the Hopf and branch-point systems use,
-/// and `F_up` for the LPC, PD and NS systems of cycles. A library that holds all of them
-/// serves every problem type.
+/// `Dir([Full])`, which the k-th iterate of a map asks for when it applies the chain rule
+/// to a mixed entry, and `F_up` for the LPC, PD and NS systems of cycles. A library that
+/// holds all of them serves every problem type of an ODE or a map. Delay models have no
+/// AOT route.
 pub fn engine_kinds() -> Vec<EntryKind> {
     let mut kinds = vec![
         EntryKind::F,
@@ -60,6 +62,7 @@ pub fn engine_kinds() -> Vec<EntryKind> {
     for k in 1..=5 {
         kinds.push(EntryKind::Dir(vec![Slot::U; k]));
     }
+    kinds.push(EntryKind::Dir(vec![Slot::Full]));
     kinds.push(EntryKind::Dir(vec![Slot::U, Slot::Full]));
     kinds.push(EntryKind::Dir(vec![Slot::Full, Slot::Full]));
     kinds.push(EntryKind::Dir(vec![Slot::U, Slot::P]));
