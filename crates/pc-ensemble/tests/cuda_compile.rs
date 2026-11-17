@@ -25,8 +25,9 @@ const MAP_VARIANTS: [(Integrator, Scalar); 2] = [
     (Integrator::Iter, Scalar::F64),
 ];
 
-/// The oldest and the newest architecture the kernel is checked for in every case.
-const EDGE_ARCHS: [&str; 2] = ["compute_75", "compute_120"];
+/// The oldest architecture, the newest discrete one (RTX 50, cc 12.0) and the GB10 of
+/// DGX Spark (cc 12.1), checked in every case.
+const EDGE_ARCHS: [&str; 3] = ["compute_75", "compute_120", "compute_121"];
 
 /// Compiles, or ends the test with a loud skip when NVRTC is missing.
 fn ptx(src: &str, i: Integrator, s: Scalar, arch: &str) -> Option<String> {
@@ -186,7 +187,13 @@ fn the_maps_compile_with_iter_for_every_architecture_in_both_layouts() {
     // SPEC 8aa, acceptance test 3.
     for src in [LOGISTIC_MAP, HENON_MAP] {
         for (i, s) in MAP_VARIANTS {
-            for arch in ["compute_75", "compute_80", "compute_90", "compute_120"] {
+            for arch in [
+                "compute_75",
+                "compute_80",
+                "compute_90",
+                "compute_120",
+                "compute_121",
+            ] {
                 let Some(text) = ptx(src, i, s, arch) else {
                     return;
                 };
