@@ -22,6 +22,8 @@ classdef AppTest < matlab.unittest.TestCase
             "init x=1,y=0" + newline + "done" + newline
         Saddle = "x'=x" + newline + "y'=-y" + newline + ...
             "init x=1,y=1" + newline + "done" + newline
+        SkewSaddle = "x'=x+y" + newline + "y'=-y" + newline + ...
+            "init x=1,y=1" + newline + "done" + newline
         Decay = "x'=-x" + newline + "y'=-2*y" + newline + ...
             "init x=1,y=1" + newline + "done" + newline
         Param = "par a=-1" + newline + "x'=a*x" + newline + "y'=-y" + newline + ...
@@ -65,6 +67,12 @@ classdef AppTest < matlab.unittest.TestCase
             testCase.addTeardown(@() delete(m));
             app = phasecont.app.PhasePlane(m, Visible = "off");
             testCase.addTeardown(@() delete(app));
+        end
+
+        function s = scaledLength(~, app, dx, dy)
+            % The length of (dx, dy) with each axis scaled by its range.
+            w = app.Window;
+            s = hypot(dx / (w(2) - w(1)), dy / (w(4) - w(3)));
         end
 
         function n = count(~, app, tag)
@@ -388,6 +396,101 @@ classdef AppTest < matlab.unittest.TestCase
             testCase.verifyError(@() app.findEquilibrium(0, 0), ...
                 "phasecont:app:nonAutonomous");
             testCase.verifyEqual(testCase.count(app, "pc-field"), 0);
+        end
+
+        function saddleClickShowsTypeAndEigenvectors(testCase)
+            % SPEC 8ac test 4: the type in the status and the two
+            % eigenvector lines of a 2D saddle.
+            app = testCase.makeApp(testCase.Saddle);
+            app.findEquilibrium(0.2, -0.1);
+            testCase.verifyTrue(contains(app.Status, "Type: saddle."), app.Status);
+            testCase.verifyTrue(contains(app.Status, "J = [1 0;0 -1]."), app.Status);
+            h = findobj(app.Axes, "Tag", "pc-eigenvector");
+            testCase.verifyNumElements(h, 2);
+            % The eigenvectors of diag(1, -1) are the axes, up to sign.
+            d = sortrows(abs(vertcat(h.UserData)));
+            testCase.verifyEqual(d, [0 1; 1 0], AbsTol = 1e-12);
+            for k = 1:2
+                dx = diff(h(k).XData);
+                dy = diff(h(k).YData);
+                testCase.verifyEqual(testCase.scaledLength(app, dx, dy), 0.2, RelTol = 1e-12);
+                testCase.verifyEqual(abs([dx dy] / hypot(dx, dy)), ...
+                    abs(h(k).UserData), AbsTol = 1e-12);
+            end
+            % Swapping the axes redraws the items, and the lines with them.
+            app.setAxes("y", "x");
+            testCase.verifyEqual(testCase.count(app, "pc-eigenvector"), 2);
+            app.clear();
+            testCase.verifyEqual(testCase.count(app, "pc-eigenvector"), 0);
+        end
+
+        function saddleEigenvectorsFollowTheAxes(testCase)
+            % J = [1 1; 0 -1] has the eigenvectors (1, 0) and (1, -2)/sqrt(5),
+            % which are not symmetric under a swap of the axes.
+            app = testCase.makeApp(testCase.SkewSaddle);
+            app.findEquilibrium(0.1, -0.1);
+            testCase.verifyTrue(contains(app.Status, "Type: saddle."), app.Status);
+            [V, ~] = eig([1 1; 0 -1]);
+            for swap = [false true]
+                if swap
+                    app.setAxes("y", "x");
+                    want = V([2 1], :);
+                else
+                    want = V;
+                end
+                want = want ./ vecnorm(want);
+                h = findobj(app.Axes, "Tag", "pc-eigenvector");
+                testCase.verifyNumElements(h, 2);
+                for k = 1:2
+                    d = h(k).UserData;
+                    dx = diff(h(k).XData);
+                    dy = diff(h(k).YData);
+                    testCase.verifyEqual([dx dy] / hypot(dx, dy), d, AbsTol = 1e-12);
+                    % Each line is one of the eigenvectors, up to sign.
+                    err = min([vecnorm(want - d.'), vecnorm(want + d.')]);
+                    testCase.verifyLessThan(err, 1e-12);
+                end
+            end
+        end
+
+        function eigenvectorsScaleWithEachAxis(testCase)
+            % On a window 8 wide and 1 high, each side still spans one
+            % tenth of the window in scaled units, and setWindow resizes
+            % lines that are already drawn.
+            app = testCase.makeApp(testCase.SkewSaddle);
+            app.findEquilibrium(0.1, -0.1);
+            app.setWindow([-4 4 -0.5 0.5]);
+            h = findobj(app.Axes, "Tag", "pc-eigenvector");
+            testCase.verifyNumElements(h, 2);
+            for k = 1:2
+                dx = diff(h(k).XData);
+                dy = diff(h(k).YData);
+                testCase.verifyEqual(testCase.scaledLength(app, dx, dy), 0.2, RelTol = 1e-12);
+                % One tenth of 8 and of 1 on each side of the origin.
+                testCase.verifyLessThanOrEqual(max(abs(h(k).XData)), 0.8 + 1e-12);
+                testCase.verifyLessThanOrEqual(max(abs(h(k).YData)), 0.1 + 1e-12);
+            end
+        end
+
+        function spiralClickShowsTypeAndRotation(testCase)
+            % x' = -x + y, y' = -x - y: J21 = -1, so clockwise in (x, y).
+            app = testCase.makeApp(testCase.Spiral);
+            app.findEquilibrium(0.1, 0.1);
+            testCase.verifyTrue(contains(app.Status, ...
+                "Type: stable spiral, clockwise."), app.Status);
+            testCase.verifyEqual(testCase.count(app, "pc-eigenvector"), 0);
+            app.setAxes("y", "x");
+            app.findEquilibrium(0.1, 0.1);
+            testCase.verifyTrue(contains(app.Status, ...
+                "Type: stable spiral, counterclockwise."), app.Status);
+        end
+
+        function threeStateClickShowsTypeAndJacobian(testCase)
+            app = testCase.makeApp(testCase.Three);
+            app.findEquilibrium(0.1, 0.1);
+            testCase.verifyTrue(contains(app.Status, ...
+                "Type: stable node (3 stable, 0 unstable)."), app.Status);
+            testCase.verifyTrue(contains(app.Status, "J = [-1 0 0;0 -2 0;0 0 -3]."), app.Status);
         end
 
         function clearRemovesEveryItem(testCase)

@@ -250,18 +250,22 @@ classdef MapPhasePlaneTest < matlab.unittest.TestCase
                     want = "pc-equilibrium-unstable";
                     other = "pc-equilibrium-stable";
                     kind = "unstable";
+                    typeText = "unstable (1 inside, 1 outside the unit circle)";
                 else
                     testCase.verifyLessThan(top, 1);
                     want = "pc-equilibrium-stable";
                     other = "pc-equilibrium-unstable";
                     kind = "stable";
+                    typeText = "stable (2 inside the unit circle)";
                 end
                 h = testCase.line1(app, want);
                 testCase.verifyEqual([h.XData h.YData], [xs ys], AbsTol = 1e-10);
                 testCase.verifyEqual(testCase.count(app, other), 0);
+                % SPEC 8ac appends the type and J to the status.
+                J = [-2 * a * pt.U(1), 1; b, 0];
                 testCase.verifyEqual(app.Status, sprintf( ...
-                    "Fixed point at (%.6g, %.6g): %s, largest |multiplier| %.3g.", ...
-                    pt.U(1), pt.U(2), kind, top));
+                    "Fixed point at (%.6g, %.6g): %s, largest |multiplier| %.3g. Type: %s. J = %s.", ...
+                    pt.U(1), pt.U(2), kind, top, typeText, mat2str(J, 4)));
             end
         end
 
@@ -390,7 +394,8 @@ classdef MapPhasePlaneTest < matlab.unittest.TestCase
             h = testCase.line1(app, "pc-equilibrium-stable");
             testCase.verifyEqual([h.XData h.YData], [0.6 0.6], AbsTol = 1e-10);
             testCase.verifyEqual(app.Status, sprintf( ...
-                "Fixed point at x = %.6g: stable, |multiplier| %.3g.", pt.U, 0.5));
+                "Fixed point at x = %.6g: stable, |multiplier| %.3g. " + ...
+                "Type: stable (1 inside the unit circle). J = -0.5.", pt.U, 0.5));
 
             r = 3.2;
             app.setParameter("r", r);

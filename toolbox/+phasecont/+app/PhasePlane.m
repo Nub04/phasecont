@@ -56,7 +56,8 @@ classdef PhasePlane < handle
     %   map must not use t, and there is no field or nullcline.
     %
     % Graphics tags: pc-trajectory, pc-start, pc-equilibrium-stable,
-    % pc-equilibrium-unstable, pc-equilibrium-unknown, pc-field,
+    % pc-equilibrium-unstable, pc-equilibrium-unknown, pc-eigenvector
+    % (the eigenvectors of a 2D saddle, unit direction in UserData), pc-field,
     % pc-nullcline (one line per variable, with the variable name in
     % UserData), and in the cobweb view pc-cobweb, pc-cobweb-graph and
     % pc-cobweb-diagonal.
@@ -249,7 +250,7 @@ classdef PhasePlane < handle
             end
             app.setStatus(sprintf( ...
                 "Equilibrium at (%.6g, %.6g): %s, largest real part %.3g.", ...
-                pt.U(app.XIndex), pt.U(app.YIndex), kind, top));
+                pt.U(app.XIndex), pt.U(app.YIndex), kind, top) + app.typeText(pt));
         end
 
         function setParameter(app, name, value)
@@ -328,6 +329,13 @@ classdef PhasePlane < handle
             app.Window = window;
             app.refreshControls();
             app.redrawBackground();
+            % The eigenvector lines are sized by the window.
+            delete(findobj(app.Axes, "Tag", "pc-eigenvector"));
+            for k = 1:numel(app.Items)
+                if isa(app.Items{k}, "phasecont.Point")
+                    app.drawEigenvectors(app.Items{k});
+                end
+            end
         end
 
         function setT(app, value)
@@ -714,11 +722,68 @@ classdef PhasePlane < handle
             end
             if app.View == "cobweb"
                 app.setStatus(sprintf("Fixed point at x = %.6g: %s, |multiplier| %.3g.", ...
-                    pt.U(1), kind, top));
+                    pt.U(1), kind, top) + app.typeText(pt));
             else
                 app.setStatus(sprintf( ...
                     "Fixed point at (%.6g, %.6g): %s, largest |multiplier| %.3g.", ...
-                    pt.U(app.XIndex), pt.U(app.YIndex), kind, top));
+                    pt.U(app.XIndex), pt.U(app.YIndex), kind, top) + app.typeText(pt));
+            end
+        end
+
+        function text = typeText(app, pt)
+            % The classification appended to the status of a click (SPEC
+            % 8ac): " Type: <Type>." or " Type: <Type>, <Rotation>.", and
+            % " J = <J>." for n of 3 or less. Empty when classify refuses
+            % the point.
+            text = "";
+            c = classifyOrEmpty(pt);
+            if isempty(c)
+                return
+            end
+            if isempty(c.Rotation)
+                text = " Type: " + c.Type + ".";
+            else
+                rot = c.Rotation;
+                if app.XIndex > app.YIndex
+                    % u2 is horizontal and u1 vertical, so the screen
+                    % shows the mirror image of the (u1, u2) plane.
+                    if rot == "counterclockwise"
+                        rot = "clockwise";
+                    else
+                        rot = "counterclockwise";
+                    end
+                end
+                text = " Type: " + c.Type + ", " + rot + ".";
+            end
+            if size(c.Jacobian, 1) <= 3
+                text = text + " J = " + string(mat2str(c.Jacobian, 4)) + ".";
+            end
+        end
+
+        function drawEigenvectors(app, pt)
+            % The two eigenvectors of a two-dimensional ODE saddle, as
+            % lines through the point in the plotted coordinates. Each
+            % side spans one tenth of the window, measured with each axis
+            % scaled by its own range, so the lines look the same length
+            % when the two ranges differ (SPEC 8ac).
+            if app.View ~= "ode" || numel(pt.U) ~= 2
+                return
+            end
+            c = classifyOrEmpty(pt);
+            if isempty(c) || c.Type ~= "saddle"
+                return
+            end
+            [V, ~] = eig(c.Jacobian);
+            range = [app.Window(2) - app.Window(1), app.Window(4) - app.Window(3)];
+            x0 = pt.U(app.XIndex);
+            y0 = pt.U(app.YIndex);
+            for k = 1:2
+                d = [V(app.XIndex, k), V(app.YIndex, k)];
+                d = d / norm(d);
+                half = 0.1 / norm(d ./ range);
+                line(app.Axes, x0 + half * [-d(1) d(1)], y0 + half * [-d(2) d(2)], ...
+                    LineStyle = "-", Color = [0.4 0.4 0.4], ...
+                    Tag = "pc-eigenvector", UserData = d, PickableParts = "none");
             end
         end
 
@@ -780,7 +845,7 @@ classdef PhasePlane < handle
 
         function redrawItems(app)
             ax = app.Axes;
-            delete(findobj(ax, "-regexp", "Tag", "^pc-(trajectory|start|cobweb|equilibrium-.*)$"));
+            delete(findobj(ax, "-regexp", "Tag", "^pc-(trajectory|start|cobweb|eigenvector|equilibrium-.*)$"));
             for k = 1:numel(app.Items)
                 app.drawItem(app.Items{k});
             end
@@ -827,6 +892,7 @@ classdef PhasePlane < handle
                 line(ax, it.U(app.XIndex), it.U(app.YIndex), Marker = "o", ...
                     MarkerSize = 8, LineStyle = "none", Color = [0 0 0], ...
                     MarkerFaceColor = face, Tag = tag, PickableParts = "none");
+                app.drawEigenvectors(it);
             end
         end
 
@@ -1238,4 +1304,16 @@ function msg = cobwebOnlyText()
 % cobweb view.
 msg = "The cobweb view draws no direction field or nullclines. The fixed " ...
     + "points lie where the graph crosses the diagonal.";
+end
+
+function c = classifyOrEmpty(pt)
+% The classify struct of a Point, or [] when classify refuses it.
+try
+    c = pt.classify();
+catch err
+    if err.identifier ~= "phasecont:point:noJacobian"
+        rethrow(err)
+    end
+    c = [];
+end
 end
