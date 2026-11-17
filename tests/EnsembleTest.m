@@ -419,5 +419,44 @@ classdef EnsembleTest < matlab.unittest.TestCase
             testCase.verifyEqual(f.Label.Backend, "cpu");
             testCase.verifyLessThan(abs(f.Final(1) - cos(3)), 1e-4);
         end
+
+        function fastMathIsOffByDefault(testCase)
+            m = testCase.model(testCase.Rotation);
+            r = phasecont.ensemble(m, [1; 0], [], [0 1], Backend = "cpu", ...
+                Precision = "double", Dt = 0.01);
+            testCase.verifyEqual(r.Label.Math, "exact");
+            testCase.verifyFalse(r.Job.FastMath);
+        end
+
+        function fastMathRunsOnlyOnCudaInDouble(testCase)
+            % The refusal comes before any device is opened, so it needs no GPU.
+            m = testCase.model(testCase.Rotation);
+            cases = {{"cpu", "double"}, {"cpu", "single"}, {"cuda", "single"}, ...
+                {"opencl", "double"}, {"metal", "single"}};
+            for k = 1:numel(cases)
+                c = cases{k};
+                testCase.verifyError(@() phasecont.ensemble(m, [1; 0], [], [0 1], ...
+                    Backend = c{1}, Precision = c{2}, Dt = 0.01, FastMath = true), ...
+                    "phasecont:ensemble:fastMathBackend", c{1} + " " + c{2});
+            end
+        end
+
+        function fastMathOnCudaWarnsAndIsLabelled(testCase)
+            testCase.skipUnlessDevice("cuda", "double");
+            m = testCase.model(testCase.Rotation);
+            run = @(fast) phasecont.ensemble(m, [1 0.5; 0 0], [], [0 3], ...
+                Backend = "cuda", Precision = "double", Rtol = 1e-10, ...
+                Atol = 1e-12, FastMath = fast);
+            exact = run(false);
+            testCase.verifyEqual(exact.Label.Math, "exact");
+            fast = testCase.verifyWarning(@() run(true), "phasecont:ensemble:fastMath");
+            testCase.verifyEqual(fast.Label.Math, "fma");
+            testCase.verifyTrue(fast.Job.FastMath);
+            testCase.verifyEqual(fast.Status, ["ok"; "ok"]);
+            testCase.verifyLessThan(max(abs(fast.Final - exact.Final), [], "all"), 1e-8);
+            f = testCase.verifyWarningFree(@() fast.refine(1));
+            testCase.verifyEqual(f.Label.Math, "exact");
+            testCase.verifyEqual(f.Label.Backend, "cpu");
+        end
     end
 end

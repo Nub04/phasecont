@@ -54,6 +54,15 @@ function r = ensemble(m, x0, p, tspan, options)
 %     Bounds      positive; a trajectory stops with Status "bounds" when a
 %                 state passes this size in absolute value. Inf turns the test
 %                 off (default)
+%     FastMath    false (default) or true. true lets the CUDA compiler use
+%                 fused multiply-add, which runs double precision faster on
+%                 some GPUs. It works only with Backend "cuda" and Precision
+%                 "double"; anything else raises
+%                 phasecont:ensemble:fastMathBackend, including a Backend
+%                 "auto" that picks another device. Every such run warns with
+%                 phasecont:ensemble:fastMath, and R.Label.Math is "fma"
+%                 instead of "exact". The results are not bit-reproducible:
+%                 call refine before they feed continuation.
 %
 %   A trajectory that stops with "stepTooSmall", "maxSteps" or "notFinite"
 %   is reported with the warning ID phasecont:ensemble:memberStopped. The
@@ -76,6 +85,7 @@ arguments
     options.Hmax = []
     options.MaxSteps double {mustBeScalarOrEmpty} = []
     options.Bounds (1,1) double = Inf
+    options.FastMath (1,1) logical = false
 end
 import phasecont.internal.num2json
 
@@ -145,6 +155,15 @@ if ~(options.Bounds > 0)
 end
 
 [backend, device] = chooseDevice(options, precision);
+math = "exact";
+if options.FastMath
+    if backend ~= "cuda" || precision ~= "double"
+        error("phasecont:ensemble:fastMathBackend", ...
+            "FastMath runs only with Backend ""cuda"" and Precision ""double"", not " ...
+            + "on %s in %s precision. Set FastMath = false.", backend, precision);
+    end
+    math = "fma";
+end
 
 % The job text. Numbers go through num2json so they read back exactly.
 if method == "iter"
@@ -180,6 +199,7 @@ if shared
 end
 job = "{""backend"":""" + backend + """,""device"":" + sprintf("%d", device) ...
     + ",""precision"":""" + precision + """" ...
+    + ",""math"":""" + math + """" ...
     + ",""t0"":" + num2json(tspan(1)) + ",""t1"":" + num2json(tspan(end)) ...
     + ",""method"":" + methodJson + ",""output"":" + outputJson ...
     + ",""bounds"":" + boundsJson ...
@@ -192,6 +212,15 @@ catch err
     throw(mapError(err));
 end
 cleanup = onCleanup(@() delete(ens)); %#ok<NASGU>
+if math == "fma"
+    warning("phasecont:ensemble:fastMath", "%s", ...
+        "FastMath is on: this run uses fused multiply-add on CUDA. Results are " ...
+        + "not bit-reproducible against the default, or against another backend. " ...
+        + "For chaotic models they can differ from the default run by more than " ...
+        + "rounding, and step counts and Status can differ too. Do not use these " ...
+        + "states as input to continuation, a normal form or Floquet multipliers; " ...
+        + "call refine first.");
+end
 polls = 0;
 while true
     st = ens.poll();
@@ -223,10 +252,12 @@ label = struct("Backend", string(st.label.backend), ...
     "Device", string(st.label.device), ...
     "Driver", string(st.label.driver), ...
     "Precision", string(st.label.precision), ...
-    "SinglePrecision", logical(st.label.single_precision));
+    "SinglePrecision", logical(st.label.single_precision), ...
+    "Math", string(st.label.math));
 jobInfo = struct("TSpan", tspan, "Method", method, "Dt", double(options.Dt), ...
     "Rtol", double(options.Rtol), "Atol", double(options.Atol), ...
-    "Hmax", Inf, "MaxSteps", maxSteps, "Bounds", options.Bounds);
+    "Hmax", Inf, "MaxSteps", maxSteps, "Bounds", options.Bounds, ...
+    "FastMath", math == "fma");
 if method == "iter"
     jobInfo.Hmax = [];
 elseif method == "dp5" && ~isempty(options.Hmax)

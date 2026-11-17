@@ -15,6 +15,9 @@ classdef EnsembleResult < handle
     % before the states feed continuation, a normal form or Floquet
     % multipliers. Those need double precision.
     %
+    % A FastMath run (Label.Math = "fma") is for screening too, in the same
+    % way: its states are not bit-reproducible. refine runs without FastMath.
+    %
     % Properties
     %   Model       the phasecont.Model the run used
     %   X0          start states, n-by-M
@@ -30,10 +33,11 @@ classdef EnsembleResult < handle
     %   Accepted    accepted steps of each member (fixed steps for RK4,
     %               iterates for a map)
     %   Rejected    rejected steps of each member (0 for RK4 and for a map)
-    %   Label       struct with Backend, Device, Driver, Precision and
-    %               SinglePrecision
+    %   Label       struct with Backend, Device, Driver, Precision,
+    %               SinglePrecision and Math ("exact", or "fma" for a
+    %               FastMath run)
     %   Job         struct with the settings of the run: TSpan, Method,
-    %               Dt, Rtol, Atol, Hmax, MaxSteps, Bounds
+    %               Dt, Rtol, Atol, Hmax, MaxSteps, Bounds, FastMath
     %   Final       n-by-M states at the last output time
     %   Members     number of trajectories
     %
