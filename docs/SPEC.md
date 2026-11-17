@@ -2563,6 +2563,75 @@ Owner approval: the owner approved slices 3 to 8 of the map plan on 2026-11-15, 
 3. `LC_ALL=C grep -c` of the em dash gives 0 in every file this slice changes.
 4. `cargo test` and the full MATLAB suite stay green (0 failed).
 
+## 8ac. Analysis tools, slice 1: the Jacobian and type of a point
+
+Slice 1 of the analysis tools gives a `Point` its Jacobian and a classification of the fixed point it holds, in one, two, three and more dimensions, for ODE models and for maps. It adds one C ABI member, one gateway command, one method and two dependent properties of `phasecont.Point`, and the click display of the phase-plane app. It changes no session format and no existing result.
+
+Owner approval: the owner approved items 1 to 4 of the analysis tools and the EE mode on 2026-11-16, with the relative tolerance $10^{-9}$ as an option `Tol`, and counts plus names in three dimensions.
+
+**Sources.** Strogatz, *Nonlinear Dynamics and Chaos*, 3rd ed.: Section 2.4 (one dimension: $f'(x^*) < 0$ is stable, $f'(x^*) > 0$ unstable, $f'(x^*) = 0$ undecided by the linearization), Section 5.2 (two dimensions: $\lambda = (\tau \pm \sqrt{\tau^2 - 4\Delta})/2$, $\Delta < 0$ a saddle, $\Delta > 0$ with $\tau^2 - 4\Delta > 0$ a node and $< 0$ a spiral, $\tau = 0$ a center, a star or a degenerate node on the parabola $\tau^2 = 4\Delta$, $\Delta = 0$ non-isolated), Section 6.3 (hyperbolic means $\mathrm{Re}\,\lambda \neq 0$ for every eigenvalue; centers and points with a zero eigenvalue are the marginal cases), Section 10.1 (a fixed point of a one-dimensional map is stable when $|f'(x^*)| < 1$, unstable when $> 1$, undecided at $= 1$) and Exercise 12.2.6 (a fixed point of a map is linearly stable if and only if every eigenvalue of the Jacobian has $|\lambda| < 1$). The three-dimensional names node, saddle, focus-node and saddle-focus come from the Scholarpedia article "Equilibria". Strogatz's "spiral" is that article's "focus"; this section keeps "spiral" in two dimensions and the article's names in three.
+
+**C ABI.** One member is appended after `latex_render`:
+
+```c
+int32_t (*model_jacobian)(uint64_t model, const double* u, size_t nu,
+                          const double* p, size_t np, const char* opts_json,
+                          double* jac_out, size_t njac);              /* offset 184, table size 192 */
+```
+
+- It evaluates $J = \partial F/\partial u$ at `u` with parameters `p` (time 0) and writes it to `jac_out` in column-major order, so `jac_out[i + n*j]` is $\partial F_i/\partial u_j$. `nu` must be n, `np` must be the parameter count and `njac` must be $n^2$; any other length is badArg.
+- `opts_json` is NULL or an object whose only key is `iterate`, a whole number from 1 to the bound of `parse_iterate`. With `iterate` k on a map, $J$ is the Jacobian of the k-th iterate $F^k$ at `u`, by the chain rule along the orbit, which is the matrix `model_equilibrium` takes its eigenvalues from. `iterate` on a model that is not a map, any other key and text that is not JSON are badProblem.
+- A delay model is refused with the text of Section 8c ("the model has delay terms, and this entry is for ODE models"). A non-autonomous model is refused as `model_equilibrium` refuses it (`NonAutonomous`). A model that was not compiled is badArg, as for `model_equilibrium`.
+- The work is the one `model_equilibrium` does after its Newton solve: the request goes to the model's worker, which builds the iterate and evaluates the `JacU` entry. Both requests call one shared helper, so the Jacobian that `model_equilibrium` takes its eigenvalues from and the one `model_jacobian` returns are the same bits at the same point.
+- It runs under the panic barrier and returns a status (rule 7). `abi_version` stays 1. The table is 25 members and 192 bytes.
+
+The gateway command is `J = pckern("model_jacobian", m, u, p, opts)`. It returns the n-by-n double matrix, copied straight from the column-major buffer. `opts` is a char row, empty for none.
+
+**MATLAB.** `phasecont.Point` gains a method and two dependent properties. No existing property changes.
+
+- `c = classify(pt, Tol = 1e-9)` returns a struct with the fields `Type` (string), `Stable` (logical, or empty when the linearization does not decide), `Hyperbolic` (logical), `T`, `D`, `Disc` (doubles; `NaN` unless n = 2), `Rotation` (string, empty unless set below), `NStable`, `NUnstable`, `NCenter` (counts of eigenvalues), `Borderline` (string array naming the tests below that fired), `Tol` and `Jacobian`. `Tol` must be a finite real scalar with $0 \le$ `Tol` $< 1$.
+- `pt.Jacobian` is `c.Jacobian` and `pt.Type` is `c.Type` with the default `Tol`. Both getters return empty and never raise: for a point that is not `"EP"` (or the fixed point of a map), a point with no `Model`, a freed or uncompiled model, a delay model, a non-autonomous model, or a `U` whose length is not n.
+- `classify` on such a point raises `phasecont:point:noJacobian`.
+- The Jacobian comes from `model_jacobian` at `pt.U` and the parameter values of the point, with `iterate` equal to `pt.Iterate` on a map.
+- The eigenvalues are `eig(J)` in MATLAB, so the counts and types do not depend on the stored `Eigenvalues` of the point.
+
+**Classification.** Let $s = \|J\|_F$, the Frobenius norm, and `Tol` as given. A test that compares with `Tol` fires when its quantity is within the band; its name goes into `Borderline`.
+
+*ODE, n = 1.* $J = f'(x^*)$. `"stable"` when $f' < 0$, `"unstable"` when $f' > 0$ and `"zero eigenvalue"` with `Stable` empty when $f' = 0$ exactly. A relative band is empty here, since $s = |f'|$. Whether $f'' \neq 0$ makes the point half-stable (Strogatz 2.4) is not decided: the C ABI has no entry for $f''$, and the question is open in `docs/STATUS.md`.
+
+*ODE, n = 2.* $T = J_{11} + J_{22}$, $D = J_{11}J_{22} - J_{12}J_{21}$ and $\mathrm{Disc} = T^2 - 4D$. The tests are `zeroD` ($|D| \le$ `Tol`$\,s^2$), `zeroT` ($|T| \le$ `Tol`$\,s$) and `zeroDisc` ($|\mathrm{Disc}| \le$ `Tol`$\,s^2$). They are applied in this order, and the first that matches decides:
+1. `zeroD`: `"zero eigenvalue"`, not hyperbolic, `Stable` empty.
+2. $D < 0$: `"saddle"`, unstable, hyperbolic.
+3. `zeroT` and $\mathrm{Disc} < 0$: `"center"`, not hyperbolic, `Stable` empty.
+4. `zeroDisc`: `"stable star"` or `"unstable star"` when $\|J - (T/2)I\|_F \le \sqrt{\mathrm{Tol}}\,s$, else `"stable degenerate node"` or `"unstable degenerate node"`, by the sign of $T$.
+5. $\mathrm{Disc} > 0$: `"stable node"` or `"unstable node"` by the sign of $T$.
+6. Otherwise ($\mathrm{Disc} < 0$): `"stable spiral"` or `"unstable spiral"` by the sign of $T$.
+
+For a spiral and a center, `Rotation` is `"counterclockwise"` when $J_{21} > 0$ and `"clockwise"` when $J_{21} < 0$, in the plane with $u_1$ on the horizontal axis and $u_2$ on the vertical axis ($\dot x = -y$, $\dot y = x$ has $J_{21} = 1$ and turns counterclockwise). The threshold $\sqrt{\mathrm{Tol}}$ of the star test is a project choice with no source and is an owner sign-off item in `docs/STATUS.md`.
+
+*ODE, n = 3.* An eigenvalue is on the imaginary axis when $|\mathrm{Re}\,\lambda| \le$ `Tol`$\,s$ (test `zeroRe`), and a pair is complex when $|\mathrm{Im}\,\lambda| > (\sqrt{\mathrm{Tol}}/2)\,s$, which matches the band of `zeroDisc` in two dimensions. The counts are of the eigenvalues with $\mathrm{Re} < 0$, $> 0$ and on the axis. The names, each followed by `" (s stable, u unstable)"` with the counts, or `" (s stable, u unstable, c on the imaginary axis)"` when c > 0:
+- c > 0: `"non-hyperbolic"`.
+- all eigenvalues real and s or u equal to 3: `"stable node"` or `"unstable node"`.
+- a complex pair and s or u equal to 3: `"stable focus-node"` or `"unstable focus-node"`.
+- all real, mixed signs: `"saddle"`.
+- a complex pair, mixed signs: `"saddle-focus"`.
+
+*ODE, n ≥ 4.* `"hyperbolic"` or `"non-hyperbolic"`, with the counts as in three dimensions.
+
+*Maps, any n.* $J$ is the Jacobian of $F^k$ with $k$ = `pt.Iterate`. A multiplier $\mu$ is on the unit circle when $\bigl||\mu| - 1\bigr| \le$ `Tol` (test `unitCircle`). The counts are of the multipliers inside, outside and on the circle; `NStable` counts inside and `NUnstable` outside. The type is `"stable (i inside the unit circle)"` when every multiplier is inside, `"unstable (i inside, o outside the unit circle)"` when one is outside and none is on it, and `"non-hyperbolic (i inside, o outside, c on the unit circle)"` otherwise, with `Stable` empty. The regions of the $(T, D)$ plane are those of an ODE and do not apply to a map, so a map gets no node, spiral or saddle names and no `Rotation`; $T$, $D$ and $\mathrm{Disc}$ are still returned when n = 2. The absolute band on $|\mu|$ is a project choice and an owner sign-off item in `docs/STATUS.md`.
+
+**App.** In the phase-plane app, a click in Equilibrium mode (or on a map, in the fixed-point search) keeps the status text it has today and appends `" Type: <Type>."`, or `" Type: <Type>, <Rotation>."` when `Rotation` is set, and for n of 3 or less `" J = <J>."` with `mat2str(J, 4)`. A two-dimensional ODE point whose type is `"saddle"` also gets its two eigenvectors drawn as lines through the point, tagged `pc-eigenvector`, in the plotted coordinates, and removed with the other items on redraw. Each side of a line with unit direction $d$ has length $0.1/\|(d_1/w, d_2/h)\|_2$, where $w$ and $h$ are the widths of the x and y ranges of the window, so it spans one tenth of the window with each axis scaled by its range. `setWindow` redraws the lines at the new size. When the app plots $u_2$ horizontally and $u_1$ vertically, the `Rotation` in the status text is reversed so it matches the screen.
+
+**Packed test flags.** Inside `classify` the borderline tests are kept as one `uint8` with one bit per test (`zeroD` 1, `zeroT` 2, `zeroDisc` 4, `zeroRe` 8, `unitCircle` 16), set with `bitor` and read with `bitand`, and `Borderline` is built from it. This is the only bit-level form in the slice; the tests check `Borderline` on every case below.
+
+**Acceptance tests (slice 1).**
+1. Rust, `pc-ffi`: `model_jacobian` on a 2D linear ODE $\dot u = Au$ returns $A$ in column-major order bit for bit; on the Hénon map with `{"iterate":2}` it returns $J(F(u))\,J(u)$ to $10^{-14}$ relative; the eigenvalues of the returned matrix at the point `model_equilibrium` returns equal its `eig_out` bit for bit; a delay model, a non-autonomous model, a model that was not compiled, `iterate` on an ODE, an unknown key, `nu`, `np` or `njac` of the wrong length and NULL pointers are each the error named above, and no call panics.
+2. Rust, `pc-ffi/tests/header.rs`: `model_jacobian` is at offset 184 and the table is 192 bytes, in Rust and in `pckern.h`.
+3. MATLAB, `tests/ClassifyTest.m`, each with a model written by the test: the saddle $\dot x = x$, $\dot y = -y$; the stable and unstable spiral with `Rotation` from $\dot x = -y + a x$, $\dot y = x + a y$ for $a = \mp 0.1$ (counterclockwise) and its mirror (clockwise); the center $\dot x = -y$, $\dot y = x$; the stable star $\dot x = -x$, $\dot y = -y$; the degenerate node $\dot x = -x + y$, $\dot y = -y$; the zero eigenvalue $\dot x = x$, $\dot y = 0$; stable and unstable nodes; 1D $\dot x = -x$ and $\dot x = x$; a 3D saddle-focus $(-0.1 \pm i, 1)$ giving `"saddle-focus (2 stable, 1 unstable)"`; a 3D stable focus-node; a 4D hyperbolic case with its counts; the logistic map at r = 2.5 (`"stable (1 inside the unit circle)"`) and at r = 3 (non-hyperbolic); the Hénon map at its 2D fixed point; and the period-2 point of the logistic map with `Iterate` 2. Each checks `Type`, `Stable`, `Hyperbolic`, the counts and `Borderline`, and the Tol band on a perturbed center. The getters return empty for a `"LC"` point, a point with no model and a delay model, and `classify` on those raises `phasecont:point:noJacobian`.
+4. MATLAB, `tests/AppTest.m`: `findEquilibrium` on the saddle model appends `"Type: saddle."` to the status and draws two `pc-eigenvector` lines whose directions are the eigenvectors to 1e-12, on a skew saddle too, with the components swapped when the axes are swapped, and with each side of length $0.1/\|(d_1/w, d_2/h)\|_2$ after `setWindow` to unequal ranges; on the stable spiral it appends the type and the rotation; with the axes swapped the rotation is reversed; `clear` removes the lines.
+5. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo deny check` and the full MATLAB suite stay green (0 failed).
+6. `LC_ALL=C grep -c` of the em dash gives 0 in every file this slice changes.
+
 ## 9. Acceptance tests
 
 Exact tests (no oracle needed):
@@ -2641,7 +2710,9 @@ typedef struct {
   int32_t (*ens_poll)(uint64_t ens, char** status_json);                        /* offset 152 */
   int32_t (*ens_copy)(uint64_t ens, uint32_t what, double* buf, size_t buf_len);/* offset 160 */
   int32_t (*ens_cancel)(uint64_t ens);                                          /* offset 168 */
-  int32_t (*latex_render)(uint32_t kind, const char* doc_json, char** out_json);/* offset 176, table size 184 */
+  int32_t (*latex_render)(uint32_t kind, const char* doc_json, char** out_json);/* offset 176 */
+  int32_t (*model_jacobian)(uint64_t model, const double* u, size_t nu, const double* p, size_t np,
+                            const char* opts_json, double* jac_out, size_t njac); /* offset 184, table size 192 */
 } pc_api_v1_t;
 ```
 
@@ -2657,7 +2728,7 @@ typedef struct {
 - A job that is wrong in any way is badProblem with a message that starts `bad ensemble job: `, and a tolerance that single precision cannot resolve (`rtol < 13 * 2^-23`) is badProblem with a message that starts `tolerance too tight: `. The gateway keeps both under `phasecont:engine:badProblem`, and the MATLAB layer tells them apart by the prefix and raises `phasecont:ensemble:toleranceTooTight` for the second.
 - The gateway commands are `pckern("ens_devices")`, `pckern("ens_start", model, jobJson, x0, p)`, `pckern("ens_poll", id)`, `pckern("ens_copy", id, what, count)` and `pckern("ens_cancel", id)`. The first two return text and an id. `ens_copy` returns a `count`-by-1 double.
 
-**LaTeX (P12b).** `latex_render(kind, doc_json, &out_json)` renders one figure or table document to LaTeX text. It was appended after `ens_cancel`; it changed nothing before it, and `abi_version` stays 1. The table is now 24 members and 184 bytes. The call reads no file and writes none: external data comes back as named files in the result, and MATLAB writes them.
+**LaTeX (P12b).** `latex_render(kind, doc_json, &out_json)` renders one figure or table document to LaTeX text. It was appended after `ens_cancel`; it changed nothing before it, and `abi_version` stays 1. The table was then 24 members and 184 bytes. The call reads no file and writes none: external data comes back as named files in the result, and MATLAB writes them.
 - `kind` is `PC_LATEX_PGFPLOTS` 1 or `PC_LATEX_TABLE` 2. `doc_json` is the document that `pc-cli latex` reads (section 13). Any other `kind`, a NULL `doc_json` or `out_json`, and text that is not UTF-8 are badArg. `*out_json` is NULL after a badArg.
 - On success the result is `{"ok":true,"tex":"...","data_files":[{"name","content"}]}` and the call returns 0. `data_files` is empty for inline data.
 - A document the renderer rejects returns `PC_ERR_BAD_PROBLEM` and sets `*out_json` to `{"ok":false,"error":{"id":"phasecont:latex:<kind>","kind":"<kind>","message":"..."}}`. The kinds are `missingDigits`, `badDigits`, `nonFinite`, `emptySeries`, `emptyTable`, `lengthMismatch`, `badName` and `badInput`. This adds no error code, and `last_error` holds the same message. The gateway returns that JSON without raising, and the MATLAB caller raises `phasecont:latex:<kind>`.
@@ -2959,4 +3030,6 @@ Check every citation before quoting it in user-facing docs.
 - Hairer, E., Nørsett, S. P., and Wanner, G. *Solving Ordinary Differential Equations I: Nonstiff Problems*, 2nd ed. Springer, 1993. Sections II.4 and II.5 for the step-size control and the starting step.
 - Dormand, J. R., and Prince, P. J. "A family of embedded Runge-Kutta formulae." *J. Comput. Appl. Math.*, 1980.
 - NIST. *Secure Hash Standard (SHS)*, FIPS 180-4, 2015.
+- Strogatz, S. H. *Nonlinear Dynamics and Chaos*, 3rd ed. CRC Press, 2024. Sections 2.4, 5.2, 6.3 and 10.1 and Exercise 12.2.6 for the classification of fixed points in Section 8ac.
+- Scholarpedia, "Equilibria". Section 8ac takes the three-dimensional names node, saddle, focus-node and saddle-focus from it.
 - Josefsson, S. *The Base16, Base32, and Base64 Data Encodings*, RFC 4648, 2006.
