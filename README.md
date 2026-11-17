@@ -414,6 +414,8 @@ cargo deny check
 
 `pc-cli` is a headless tool for the same engine. For example, `target/debug/pc-cli parse FILE` parses a model and prints its diagnostics, and `pc-cli session replay FILE` replays a session file.
 
+`pc-cli` follows `#include` to any path a model names, so opening an untrusted `.ode` file with it can read other files on your machine and print lines of them in its diagnostics. The MATLAB toolbox refuses `#include`.
+
 ## Layout
 
 | Path | Content |
