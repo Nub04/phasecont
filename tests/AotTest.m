@@ -125,6 +125,20 @@ classdef AotTest < matlab.unittest.TestCase
             end
         end
 
+        function aotClassifyMatchesJit(testCase)
+            % Point.classify through model_jacobian on an AOT model (SPEC 8ac).
+            testCase.needCompiler();
+            fl = testCase.write("lc.ode", testCase.Lorenz);
+            j = phasecont.Model(fl);
+            a = phasecont.Model(fl, Evaluator = "aot");
+            testCase.assertEqual(a.Evaluator, "aot");
+            u = [0.5; -0.25; 2];
+            cj = classify(phasecont.Point(U = u, P = j.ParameterValues, Label = "EP", Model = j));
+            ca = classify(phasecont.Point(U = u, P = a.ParameterValues, Label = "EP", Model = a));
+            testCase.verifyUlp(ca.Jacobian(:).', cj.Jacobian(:).', 4);
+            testCase.verifyEqual(ca.Type, cj.Type);
+        end
+
         function aotBranchMatchesJit(testCase)
             testCase.needCompiler();
             ff = testCase.write("f.ode", testCase.Fhn);
