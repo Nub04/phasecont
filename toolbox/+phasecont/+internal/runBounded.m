@@ -20,12 +20,14 @@ function r = runBounded(argv, folder, timeout)
 %   On Windows, Java adds ".exe" to a bare program name and nothing else, so
 %   a program that is a .cmd or .bat wrapper is not found. The name is
 %   looked up with phasecont.internal.findProgram first, with PATHEXT as cmd
-%   does but never in the current folder, and Java gets the full path. A
-%   name that is not found does not start through Java.
+%   does but never in the current folder or FOLDER, and both routes below
+%   get the full path. A name that is not found raises
+%   phasecont:internal:noProgram and starts nothing.
 %
 %   SYSTEM is the fallback when MATLAB has no JVM or Java cannot start the
 %   program. It cannot be stopped from here, and it needs every argument
-%   after the first to hold letters, digits and _ - . / \ : = + only, else
+%   after the first to hold letters, digits and _ - . / \ : = + only, and
+%   the program path to hold no " or %, else
 %   phasecont:internal:badArgument. A finite TIMEOUT cannot be enforced
 %   there, so the call warns with phasecont:latex:noTimeout. TIMEOUT of Inf
 %   asks for no limit, so it falls back without a warning.
@@ -39,6 +41,13 @@ arguments
     timeout (1,1) double {mustBePositive}
 end
 
+% Both routes get the absolute path. A bare name given to SYSTEM after the cd
+% below would run a file of that name from FOLDER first on Windows.
+program = phasecont.internal.findProgram(argv(1));
+if program == ""
+    error("phasecont:internal:noProgram", """%s"" is not on the path.", argv(1));
+end
+argv(1) = program;
 command = quote(argv(1)) + strjoin(" " + argv(2:end), "");
 r = struct("Status", -1, "Output", "", "TimedOut", false, "Command", command);
 
@@ -54,11 +63,7 @@ end
 outFile = string(tempname(tempdir)) + ".txt";
 try
     list = java.util.ArrayList();
-    program = phasecont.internal.findProgram(argv(1));
-    if program == ""
-        error("phasecont:internal:noProgram", """%s"" is not on the path.", argv(1));
-    end
-    list.add(char(program));
+    list.add(char(argv(1)));
     for k = 2:numel(argv)
         list.add(char(argv(k)));
     end
@@ -107,6 +112,10 @@ r.Output = readOutput(outFile);
 end
 
 function r = runUnbounded(r, argv, folder)
+if contains(argv(1), ["""", "%"])
+    error("phasecont:internal:badArgument", ...
+        "Without a time limit the program path may not hold "" or %%.");
+end
 for k = 2:numel(argv)
     if isempty(regexp(argv(k), "^[A-Za-z0-9_\-./\\:=+]+$", "once"))
         error("phasecont:internal:badArgument", ...

@@ -57,11 +57,41 @@ classdef RunBoundedTest < matlab.unittest.TestCase
             testCase.verifyFalse(r.TimedOut);
         end
 
-        function aProgramThatCannotStartFallsBackQuietlyForInf(testCase)
+        function aProgramThatIsNotFoundRaisesNoProgram(testCase)
+            % No fallback to SYSTEM, for Inf and for a finite limit alike.
             name = "phasecont-no-such-program";
-            testCase.verifyWarningFree(@() RunBoundedTest.tryRun(name, Inf));
-            testCase.verifyWarning(@() RunBoundedTest.tryRun(name, 30), ...
-                "phasecont:latex:noTimeout");
+            testCase.verifyError(@() phasecont.internal.runBounded( ...
+                name, string(tempdir), Inf), "phasecont:internal:noProgram");
+            testCase.verifyError(@() phasecont.internal.runBounded( ...
+                name, string(tempdir), 30), "phasecont:internal:noProgram");
+        end
+
+        function aProgramPlantedInTheFolderNeverRuns(testCase)
+            % A file named like the program, in the folder the program runs
+            % in but not on PATH, must not run on either route.
+            folder = string(tempname(tempdir));
+            mkdir(folder);
+            testCase.addTeardown(@() rmdir(folder, "s"));
+            marker = fullfile(folder, "planted-ran.txt");
+            name = "pcplanted";
+            if ispc
+                file = fullfile(folder, name + ".bat");
+                body = "@echo ran> """ + marker + """" + newline;
+            else
+                file = fullfile(folder, name);
+                body = "#!/bin/sh" + newline + "echo ran > '" + marker + "'" + newline;
+            end
+            fid = fopen(file, "w");
+            fprintf(fid, "%s", body);
+            fclose(fid);
+            if ~ispc
+                fileattrib(char(file), "+x");
+            end
+            for limit = [Inf, 30]
+                testCase.verifyError(@() phasecont.internal.runBounded( ...
+                    name, folder, limit), "phasecont:internal:noProgram");
+            end
+            testCase.verifyFalse(isfile(marker));
         end
 
         function everyExitLeavesNoOutputFileInTheTempFolder(testCase)
@@ -71,7 +101,12 @@ classdef RunBoundedTest < matlab.unittest.TestCase
             phasecont.internal.runBounded(["whoami"], string(tempdir), Inf);
             phasecont.internal.runBounded(RunBoundedTest.sleeper(60), ...
                 string(tempdir), 1);
-            RunBoundedTest.tryRun("pc-no-such-program-xyz", Inf);
+            try
+                phasecont.internal.runBounded("pc-no-such-program-xyz", ...
+                    string(tempdir), Inf);
+            catch
+                % noProgram is expected. Only the temp folder matters here.
+            end
             after = string({dir(fullfile(tempdir, "tp*.txt")).name});
             testCase.verifyEmpty(setdiff(after, before));
         end
@@ -103,16 +138,6 @@ classdef RunBoundedTest < matlab.unittest.TestCase
                 argv = ["ping", "-n", string(seconds + 1), "127.0.0.1"];
             else
                 argv = ["sleep", string(seconds)];
-            end
-        end
-
-        function tryRun(name, timeout)
-            % The system fallback runs a program that does not exist and
-            % returns a nonzero status. Only warnings matter here.
-            try
-                phasecont.internal.runBounded(name, string(tempdir), timeout);
-            catch
-                % The fallback may refuse or fail. The warning is the point.
             end
         end
     end
