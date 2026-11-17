@@ -45,6 +45,7 @@ This release is 1.0.0. The release of 2026-11-04, first published as 1.0.0, is n
 - `continuation`, `simulate` and session replay check for the result more often in the first few milliseconds, so short runs return in about 5 ms instead of about 50 ms. The results do not change.
 - Rows of LPC, PD and NS curves have more `Tests` columns, one per new codim-2 test. Code that reads these columns by position needs the new widths.
 - `shift` and `del_shft` are now refused with a message that names the function, instead of an error about the number of arguments.
+- The VS Code extension uses `vscode-languageclient` 11. `phasecont.trace.server` now logs only while the log level of the PhaseCont output channel is Trace (`Developer: Set Log Level...`), and at Trace its `off` value logs the messages, the same as `messages`.
 
 ### Fixed
 
