@@ -3,11 +3,21 @@
 
 use std::process::Command;
 
-/// The CPU field of a target triple, spelled as `std::env::consts::ARCH` spells it. Apple
-/// compilers print `arm64` where Rust writes `aarch64`.
+/// The CPU field of a target triple, spelled as `std::env::consts::ARCH` spells it. GNU and
+/// Apple compilers name some CPUs differently from Rust: Apple prints `arm64` for `aarch64`,
+/// FreeBSD `amd64` for `x86_64`, and GNU names the variant (`i686`, `armv7l`, `powerpc64le`,
+/// `mipsel`) where Rust names the family.
 pub fn triple_arch(triple: &str) -> &str {
     match triple.trim().split('-').next().unwrap_or("") {
-        "arm64" => "aarch64",
+        "arm64" | "aarch64_be" => "aarch64",
+        "amd64" => "x86_64",
+        "i386" | "i486" | "i586" | "i686" => "x86",
+        "powerpc64le" => "powerpc64",
+        "powerpcle" => "powerpc",
+        "mipsel" => "mips",
+        "mips64el" => "mips64",
+        "sparcv9" => "sparc64",
+        cpu if cpu.starts_with("arm") || cpu.starts_with("thumb") => "arm",
         cpu => cpu,
     }
 }

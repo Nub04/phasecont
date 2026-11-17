@@ -391,5 +391,18 @@ fn target_triples_name_the_cpu_as_rust_does() {
     assert_eq!(cc_check::triple_arch("x86_64-redhat-linux\n"), "x86_64");
     assert_eq!(cc_check::triple_arch("aarch64-linux-gnu"), "aarch64");
     assert_eq!(cc_check::triple_arch("arm64-apple-darwin24.0.0"), "aarch64");
+    assert_eq!(cc_check::triple_arch("amd64-portbld-freebsd14.1"), "x86_64");
+    assert_eq!(cc_check::triple_arch("i686-linux-gnu"), "x86");
+    assert_eq!(cc_check::triple_arch("i386-pc-solaris2.11"), "x86");
+    assert_eq!(
+        cc_check::triple_arch("armv7l-unknown-linux-gnueabihf"),
+        "arm"
+    );
+    assert_eq!(cc_check::triple_arch("arm-linux-gnueabihf"), "arm");
+    assert_eq!(cc_check::triple_arch("powerpc64le-linux-gnu"), "powerpc64");
+    assert_eq!(cc_check::triple_arch("mipsel-linux-gnu"), "mips");
+    assert_eq!(cc_check::triple_arch("mips64el-linux-gnuabi64"), "mips64");
+    assert_eq!(cc_check::triple_arch("riscv64-linux-gnu"), "riscv64");
+    assert_eq!(cc_check::triple_arch("s390x-linux-gnu"), "s390x");
     assert_eq!(cc_check::triple_arch(""), "");
 }
