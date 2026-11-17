@@ -579,7 +579,7 @@ fn c_text(raw: &[c_char]) -> String {
     let bytes: Vec<u8> = raw
         .iter()
         .take_while(|&&c| c != 0)
-        .map(|&c| c as u8)
+        .map(|&c| u8::from_ne_bytes(c.to_ne_bytes()))
         .collect();
     String::from_utf8_lossy(&bytes).into_owned()
 }
@@ -1068,7 +1068,10 @@ mod tests {
 
     #[test]
     fn a_text_buffer_ends_at_the_nul() {
-        let raw: Vec<c_char> = b"error: x\0garbage".iter().map(|&b| b as c_char).collect();
+        let raw: Vec<c_char> = b"error: x\0garbage"
+            .iter()
+            .map(|&b| c_char::from_ne_bytes([b]))
+            .collect();
         assert_eq!(c_text(&raw), "error: x");
         assert_eq!(c_text(&[]), "");
     }
