@@ -2632,6 +2632,31 @@ For a spiral and a center, `Rotation` is `"counterclockwise"` when $J_{21} > 0$ 
 5. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo deny check` and the full MATLAB suite stay green (0 failed).
 6. `LC_ALL=C grep -c` of the em dash gives 0 in every file this slice changes.
 
+## 8ad. Analysis tools, slice 2: the type along a branch and the trace-determinant plane
+
+Slice 2 classifies every point of a branch of equilibria or fixed points with the rules of Section 8ac, and draws the branch in the plane of trace and determinant. It adds two methods of `phasecont.Branch`. It adds no C ABI member, stores nothing new in a `Branch` and changes no session format: the types are computed when asked for, from `model_jacobian`, so a saved session loads as before.
+
+**Sources.** The regions of the $(T, D)$ plane of an ODE are those of Strogatz, 3rd ed., Section 5.2 (Figure 5.2.8): saddles below $D = 0$, nodes between $D = 0$ and the parabola $T^2 = 4D$, spirals above it, centers on $T = 0$ above $D = 0$. For a two-dimensional map, a fixed point is stable when both multipliers are inside the unit circle (Strogatz, Exercise 12.2.6), which in the $(T, D)$ plane is the triangle $|D| < 1$, $|T| < 1 + D$ (the Jury conditions for $\mu^2 - T\mu + D = 0$). Its sides are $D = T - 1$ (a multiplier at 1), $D = -T - 1$ (a multiplier at $-1$) and $D = 1$ with $|T| < 2$ (a complex pair on the circle), with corners $(\pm 2, 1)$ and $(0, -1)$.
+
+**Shared core.** The classification of Section 8ac moves into one internal function of $J$, the model kind and `Tol`, which `Point.classify` and `Branch.classify` both call, so a branch point and a `Point` at the same $u$ and $p$ get the same type. The Jacobian request with its refusals moves into one internal function too. `Point.classify` returns what it returned before.
+
+**MATLAB.**
+
+- `[tbl, J] = classify(br, Tol = 1e-9)` on a branch of Type `"EP"` (of an ODE or of a map) returns a table with one row per point of the branch and the variables `Alpha`, `Type`, `Hyperbolic`, `T`, `D`, `Disc`, `Rotation`, `NStable`, `NUnstable`, `NCenter` and `Borderline`. Each row is the `classify` result of Section 8ac at `br.U(i,:)` with the parameter vector `br.P` whose free entry is `br.Alpha(i)`, and on a map with `iterate` equal to `br.Iterate`. `Rotation` is `""` where it is not set and `Borderline` is the names joined by a space, `""` where no test fired. The table has no `Stable` variable: the branch has one already, and the type is undecided exactly where `Hyperbolic` is false. `J` is n-by-n-by-N.
+- `classify` raises `phasecont:branch:noJacobian` on a branch whose Type is not `"EP"`, on a branch whose `Model` is empty or deleted, and on a delay or non-autonomous model, with the reason in the message, and on a point whose Jacobian has NaN or Inf entries, naming the point. `Tol` is checked as in Section 8ac: a real scalar that is NaN, Inf, negative or at least 1 raises `phasecont:branch:badOption`, and a `Tol` that is not a real double scalar fails the `arguments` block with its MATLAB validation identifier, as in `Point.classify`.
+- `h = tdplot(br, Tol = 1e-9, Parent = ax)` draws a branch of Type `"EP"` with n = 2 in the $(T, D)$ plane: the path of $(T_i, D_i)$ as one solid line with a dot at each point (Tag `pc-td-path`; the region it crosses gives the stability, so it is not split into stable and unstable runs), the special points of the branch at the $(T, D)$ of their own Jacobian with their labels (Tags `pc-special` and `pc-label`; a special point with no Jacobian is left out), the parabola $D = T^2/4$ (Tag `pc-td-parabola`) and the two axes $T = 0$ and $D = 0$ (Tag `pc-td-axis`). On a map it also draws the stability triangle (Tag `pc-td-triangle`). The x label is `"T (trace)"` and the y label `"D (determinant)"`. A branch with n other than 2 raises `phasecont:branch:badOption`. `Parent` and `hold` behave as in `plot`. `br` is one branch.
+- The reference curves span the T range of the path, of the special points and of the triangle (when drawn), always including $T = 0$. The range is widened on each side by 10 percent of its width, or by 0.1 when the width is below 1, so the axes never have zero width. The D range of the axis $T = 0$ is set the same way from the path, the special points, the triangle, $D = 0$ and the parabola over the T range.
+
+**Bit-level forms.** None are added. The flags of Section 8ac are reused through the shared core.
+
+**Acceptance tests (slice 2).**
+1. MATLAB, `tests/ClassifyTest.m`: on the branch of equilibria of $\dot x = r x - y$, $\dot y = x + r y$ with r free from $-1$ to 1, `classify` gives `"stable spiral"` where $r < 0$ and `"unstable spiral"` where $r > 0$, `Rotation` `"counterclockwise"` on both, $T = 2r$ and $D = r^2 + 1$ to $10^{-12}$, and every row equals `classify` of a `Point` built at that row's $u$ and $p$. On the saddle-node $\dot x = r - x^2$, $\dot y = -y$, every row with $D > 0$ outside the `zeroD` band and $|\mathrm{Disc}|$ outside the `zeroDisc` band is `"stable node"` and every row with $D < 0$ outside the band is `"saddle"`, and both kinds occur.
+2. On the logistic map branch the table rows are `"stable (1 inside the unit circle)"` below r = 3, and on the Hénon map branch $T$ and $D$ equal the sum and the product of `br.Eigenvalues` to $10^{-12}$ relative.
+3. `classify` raises `phasecont:branch:noJacobian` on an `"LC"` branch, after the model is deleted, and on a delay `"EP"` branch.
+4. `tdplot` on the spiral branch draws one `pc-td-path`, one `pc-td-parabola` and two `pc-td-axis` lines, and the path data equal `[tbl.T tbl.D]`; on the Hénon branch it also draws `pc-td-triangle` with corners $(\pm 2, 1)$ and $(0, -1)$; on a 3D branch it raises `phasecont:branch:badOption`.
+5. The full MATLAB suite stays green (0 failed). No Rust changes.
+6. `LC_ALL=C grep -c` of the em dash gives 0 in every file this slice changes.
+
 ## 9. Acceptance tests
 
 Exact tests (no oracle needed):
