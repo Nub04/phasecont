@@ -314,6 +314,32 @@ classdef LatexTest < matlab.unittest.TestCase
                 "phasecont:latex:engineNotFound");
         end
 
+        function buildNeverRunsAProgramFromTheCurrentFolder(testCase)
+            % cmd.exe looks in the current folder before PATH, so a file there
+            % named like the program would run. build looks the name up in the
+            % PATH folders only.
+            tmp = testCase.applyFixture(matlab.unittest.fixtures.TemporaryFolderFixture);
+            marker = fullfile(tmp.Folder, "ran.txt");
+            name = "pcplantedlatexmk";
+            if ispc
+                file = fullfile(tmp.Folder, name + ".bat");
+                body = "@echo ran> """ + marker + """" + newline;
+            else
+                file = fullfile(tmp.Folder, name);
+                body = "#!/bin/sh" + newline + "echo ran > '" + marker + "'" + newline;
+            end
+            fid = fopen(file, "w");
+            fprintf(fid, "%s", body);
+            fclose(fid);
+            if ~ispc
+                fileattrib(char(file), "+x");
+            end
+            testCase.applyFixture(matlab.unittest.fixtures.CurrentFolderFixture(tmp.Folder));
+            testCase.verifyError(@() phasecont.latex.build("x", Executable = name), ...
+                "phasecont:latex:engineNotFound");
+            testCase.verifyFalse(isfile(marker));
+        end
+
         function buildRejectsANonPositiveTimeout(testCase)
             for t = [0 -1 NaN]
                 testCase.verifyError( ...

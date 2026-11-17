@@ -9,8 +9,10 @@ function result = build(tex, options)
 %                 the document reads (R.Files of phasecont.latex.pgfplots)
 %     Engine      "latexmk", the only engine for now
 %     Executable  path of the latexmk program, default the name "latexmk"
-%                 on the system path. Letters, digits, spaces and
-%                 _ - . / \ : ( ) + only, else phasecont:latex:badEngine.
+%                 on the system path. A bare name is looked up in the PATH
+%                 folders only, never in the current folder. Letters,
+%                 digits, spaces and _ - . / \ : ( ) + only, else
+%                 phasecont:latex:badEngine.
 %     Timeout     seconds that latexmk may run, default Inf, which sets no
 %                 limit. When a finite time is up, latexmk and the TeX
 %                 programs it started are stopped. Ctrl-C stops them too,
@@ -52,7 +54,14 @@ if isempty(regexp(exe, "^[A-Za-z0-9 _\-./\\:()+]+$", "once"))
         "The latexmk path may hold letters, digits, spaces and _ - . / \\ : ( ) + only.");
 end
 
-[status, ~] = system(quote(exe) + " -v");
+% A bare name goes to cmd.exe or the shell only as a full path, so a file of
+% that name in the current folder never runs.
+found = phasecont.internal.findProgram(exe);
+status = -1;
+if found ~= "" && ~contains(found, ["""", "%"])
+    exe = found;    % " and % would break the quoting of cmd.exe
+    [status, ~] = system(quote(exe) + " -v");
+end
 if status ~= 0
     error("phasecont:latex:engineNotFound", ...
         "Cannot run ""%s"" (status %d). Install TeX Live or MiKTeX, or pass Executable.", ...

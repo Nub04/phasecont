@@ -19,8 +19,9 @@ function r = runBounded(argv, folder, timeout)
 %
 %   On Windows, Java adds ".exe" to a bare program name and nothing else, so
 %   a program that is a .cmd or .bat wrapper is not found. The name is
-%   looked up on the path with PATHEXT first, as cmd does, and Java gets the
-%   full path.
+%   looked up with phasecont.internal.findProgram first, with PATHEXT as cmd
+%   does but never in the current folder, and Java gets the full path. A
+%   name that is not found does not start through Java.
 %
 %   SYSTEM is the fallback when MATLAB has no JVM or Java cannot start the
 %   program. It cannot be stopped from here, and it needs every argument
@@ -53,7 +54,11 @@ end
 outFile = string(tempname(tempdir)) + ".txt";
 try
     list = java.util.ArrayList();
-    list.add(char(resolveProgram(argv(1))));
+    program = phasecont.internal.findProgram(argv(1));
+    if program == ""
+        error("phasecont:internal:noProgram", """%s"" is not on the path.", argv(1));
+    end
+    list.add(char(program));
     for k = 2:numel(argv)
         list.add(char(argv(k)));
     end
@@ -99,46 +104,6 @@ catch
     % Status stays -1.
 end
 r.Output = readOutput(outFile);
-end
-
-function path = resolveProgram(name)
-% Windows only: the full path of NAME as cmd would find it, or NAME when
-% nothing matches (Java then reports the failure). A name without a folder
-% is searched in every folder of the path, trying each PATHEXT extension.
-path = name;
-if ~ispc
-    return
-end
-exts = split(string(getenv("PATHEXT")), ";");
-exts = exts(exts ~= "");
-if isempty(exts)
-    exts = [".COM"; ".EXE"; ".BAT"; ".CMD"];
-end
-[~, ~, own] = fileparts(name);
-if own == ""
-    names = name + exts;
-else
-    names = [name; name + exts];
-end
-if contains(name, ["/", "\"])
-    folders = "";
-else
-    folders = split(string(getenv("PATH")), ";");
-    folders = erase(folders, """");
-    folders = folders(folders ~= "");
-end
-for f = reshape(folders, 1, [])
-    for n = reshape(names, 1, [])
-        candidate = n;
-        if f ~= ""
-            candidate = fullfile(f, n);
-        end
-        if isfile(candidate)
-            path = string(candidate);
-            return
-        end
-    end
-end
 end
 
 function r = runUnbounded(r, argv, folder)

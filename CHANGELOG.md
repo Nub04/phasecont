@@ -29,6 +29,7 @@ The version number of this release is not chosen yet. The toolbox still reports 
 ### Security
 
 - Windows: the GPU backends never load a library from MATLAB's current folder. cudarc and the OpenCL loader open `cuda.dll`, `nvrtc.dll`, `OpenCL.dll` and similar names by bare name, and Windows searches the current folder for those, so before this change a file with one of those names in the current folder ran inside MATLAB at the first call of `phasecont.gpuDevices`, `phasecont.gpuSelfTest` or `phasecont.ensemble`. The first loads now skip the current folder, the CUDA driver and the OpenCL loader come from the Windows system folder, and the NVRTC builtins library is loaded by path from the folder of the NVRTC in use. The folders on `PATH` are still searched, as for any Windows program. Release 1.0.0 has no GPU backend and is not affected.
+- Windows: `phasecont.latex.build` and the LaTeX editor app never run a `latexmk` from MATLAB's current folder. A bare program name went to cmd.exe, which looks in the current folder before `PATH`, so a `latexmk.bat` in a downloaded folder ran on the first build. The name is now looked up in the `PATH` folders only and runs by its full path. Release 1.0.0 has no LaTeX build and is not affected.
 
 ### Changed
 
