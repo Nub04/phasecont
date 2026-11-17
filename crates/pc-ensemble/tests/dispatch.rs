@@ -268,6 +268,24 @@ fn run_on_refuses_fma_off_cuda_double_before_any_device_is_touched() {
 }
 
 #[test]
+fn run_on_takes_fma_on_cuda_double() {
+    // Device 9999 does not exist, so the run fails, but at the device and not as a bad job.
+    let m = build_model(DECAY);
+    let mut j = job(
+        &m,
+        1,
+        &[1.0],
+        &[1.0],
+        1.0,
+        Method::Rk4 { dt: 0.01 },
+        Precision::Double,
+    );
+    j.math = Math::Fma;
+    let e = run_on(&fake(Backend::Cuda, 9999), &j, &AtomicBool::new(false)).unwrap_err();
+    assert!(!matches!(e, EnsembleError::BadJob(_)), "{e:?}");
+}
+
+#[test]
 fn an_exact_cpu_run_is_labeled_exact() {
     let m = build_model(DECAY);
     let j = job(

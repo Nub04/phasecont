@@ -1059,9 +1059,20 @@ mod tests {
             eprintln!("SKIPPED: no NVRTC ({why})");
             return;
         }
-        // A multiply feeding an add: the fma tier fuses it into one DFMA, the exact tier keeps
-        // a DMUL and a DADD, so the two cubins differ.
         let src = "extern \"C\" __global__ void k(double *a) { a[0] = a[1] * a[2] + a[3]; }";
+        // The PTX route: the fma tier fuses the multiply and the add, the exact tier does not.
+        let ptx = |math| {
+            let opts = CompileOptions {
+                options: options("compute_120", math),
+                ..Default::default()
+            };
+            compile_ptx_with_opts(src, opts).unwrap().to_src()
+        };
+        assert!(!ptx(Math::Exact).contains("fma.rn.f64"));
+        assert!(ptx(Math::Fma).contains("fma.rn.f64"));
+        // The cubin route: a cubin also records its options, so different bytes alone do not
+        // show fusion. They do show that the tier reaches NVRTC, since the same tier compiles
+        // to the same bytes.
         let exact = compile_cubin(src, "sm_120", Math::Exact).unwrap();
         let fma = compile_cubin(src, "sm_120", Math::Fma).unwrap();
         assert!(!exact.is_empty() && !fma.is_empty());
