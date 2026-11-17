@@ -24,7 +24,7 @@ The version number of this release is not chosen yet. The toolbox still reports 
 - Ensembles of maps: `phasecont.ensemble` iterates a map on the CPU and on CUDA, OpenCL and Metal, with `t` inside the model the iterate index. `TSPAN` holds whole numbers, `Precision` is the only required option, and `Dt`, `Rtol`, `Atol`, `Hmax` and `MaxSteps` raise `phasecont:ensemble:mapOption`. `Job.Method` is `"iter"`, and `refine` iterates again on the CPU in double precision. The self-test of `pc-cli gpu selftest` has an `iterate` tier, and its determinism and bit-exactness tiers also run the Henon map.
 - Data fitting: `phasecont.fit` fits chosen parameters of an ODE model to trajectory data with the Levenberg-Marquardt method, with one `ensemble` call per iteration in double precision on the CPU, and returns a `phasecont.FitResult` with the estimate, the residual, the Jacobian and the history of the iterations. The difference step, the damping and the stopping rules have no default.
 - `Point.Stable`: an `"EP"` Point from `equilibrium` or a session says whether the equilibrium or the fixed point is stable, from its eigenvalues or multipliers. It is empty at a special point such as LP, PD or H, where the linear test decides nothing. It is not stored, so session files do not change.
-- A language server (`pc-lsp`) and a VS Code extension for `.ode` files. The extension is built as a `.vsix` file and is not on the Marketplace.
+- A language server (`pc-lsp`) and a VS Code extension for `.ode` files. The extension is built as a `.vsix` file and is not on the Marketplace. It needs VS Code 1.146 or newer.
 
 ### Security
 
