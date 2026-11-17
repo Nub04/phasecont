@@ -1110,6 +1110,11 @@ PhaseCont is ahead in continuation (two-parameter curves with codim-2 labels and
 
 ## Open questions
 
+- Open from the review of the session evaluator fix (2026-11-17, branch `session-evaluator`). One needs the owner; two are small follow-ups.
+  1. Owner question. `Model.loadobj` rebuilds a saved model with the evaluator the MAT file holds. A MAT file whose model records `"aot"` starts the C compiler when it loads, which is the route the session fix closed for session files. A fix would build with `phasecont.config("Codegen")` when the file says `"aot"`, the same rule as `sessionCodec.buildModel`. That changes what `load` returns, so it waits for a yes.
+  2. `sessionCodec.buildModel` compiles the model before it compares the source hash. Both values come from the same file, so this is an integrity check and not a guard, but checking the hash first would skip a build that is about to be refused.
+  3. The CLI reads the recorded evaluator without checking it: any value other than `"fallback"` replays on the JIT. A file with a misspelled evaluator replays without a message.
+
 - Open from the analysis tools, slice 1 (2026-11-16, SPEC section 8ac, `Point.classify` and `model_jacobian`, branch `analysis-tools`). Three values are project choices with no reference behind them, and each needs the owner's sign-off:
   1. A star (J a multiple of I) is told from a degenerate node by the band ‖J − (T/2)I‖_F ≤ √Tol·s. The square root is there because the eigenvalue split of a near-double root grows like the square root of the perturbation; the factor itself is mine.
   2. A multiplier of a map is on the unit circle when ||μ| − 1| ≤ Tol. The band is absolute, since |μ| = 1 is already a scale-free test.
