@@ -319,6 +319,11 @@ fn toolkit_dirs() -> Vec<PathBuf> {
     if !cfg!(windows) {
         roots.push(PathBuf::from("/usr/local/cuda"));
     }
+    dirs_under(roots)
+}
+
+/// The folders under each toolkit root that can hold NVRTC.
+fn dirs_under(roots: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     for r in roots {
         for sub in [
@@ -327,6 +332,7 @@ fn toolkit_dirs() -> Vec<PathBuf> {
             "lib64",
             "lib/x64",
             "targets/x86_64-linux/lib",
+            "targets/sbsa-linux/lib",
         ] {
             dirs.push(r.join(sub));
         }
@@ -1041,6 +1047,23 @@ mod tests {
             assert!(!is_nvrtc_file("libnvrtc-builtins.so.13.4"));
             assert!(is_builtins_file("libnvrtc-builtins.so.13.4"));
         }
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn an_arm64_server_toolkit_is_searched() {
+        // CUDA for Linux arm64 servers (sbsa, such as DGX Spark) keeps NVRTC in
+        // targets/sbsa-linux/lib.
+        let root = std::env::temp_dir().join(format!("pc-sbsa-{}", std::process::id()));
+        let lib = root.join("targets/sbsa-linux/lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(lib.join("libnvrtc.so.13"), b"").unwrap();
+        let found: Vec<PathBuf> = dirs_under(vec![root.clone()])
+            .iter()
+            .flat_map(|d| files_in(d, is_nvrtc_file))
+            .collect();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(found, vec![lib.join("libnvrtc.so.13")]);
     }
 
     #[test]
