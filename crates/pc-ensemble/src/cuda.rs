@@ -1033,6 +1033,43 @@ mod tests {
     use pc_codegen::kernel::KernelError;
 
     #[test]
+    fn the_math_tier_sets_the_fmad_option() {
+        let exact = options("sm_120", Math::Exact);
+        let fma = options("sm_120", Math::Fma);
+        assert_eq!(
+            exact,
+            ["--gpu-architecture=sm_120", "--fmad=false", "--std=c++17"]
+        );
+        assert_eq!(
+            fma,
+            ["--gpu-architecture=sm_120", "--fmad=true", "--std=c++17"]
+        );
+    }
+
+    #[test]
+    fn the_cubin_route_builds_each_tier_with_its_own_option() {
+        if let Err(why) = ensure_nvrtc() {
+            let required = std::env::var("PC_REQUIRE_GPU")
+                .map(|v| v.split(',').any(|b| b.trim() == "cuda"))
+                .unwrap_or(false);
+            assert!(
+                !required,
+                "PC_REQUIRE_GPU names cuda, but NVRTC is missing: {why}"
+            );
+            eprintln!("SKIPPED: no NVRTC ({why})");
+            return;
+        }
+        // A multiply feeding an add: the fma tier fuses it into one DFMA, the exact tier keeps
+        // a DMUL and a DADD, so the two cubins differ.
+        let src = "extern \"C\" __global__ void k(double *a) { a[0] = a[1] * a[2] + a[3]; }";
+        let exact = compile_cubin(src, "sm_120", Math::Exact).unwrap();
+        let fma = compile_cubin(src, "sm_120", Math::Fma).unwrap();
+        assert!(!exact.is_empty() && !fma.is_empty());
+        assert_ne!(exact, fma);
+        assert_eq!(exact, compile_cubin(src, "sm_120", Math::Exact).unwrap());
+    }
+
+    #[test]
     fn the_route_follows_the_driver_and_nvrtc_release() {
         assert_eq!(select(13040, 13, 4), Some(Route::Ptx));
         assert_eq!(select(13020, 13, 4), Some(Route::Cubin));

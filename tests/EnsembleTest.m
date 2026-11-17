@@ -429,10 +429,12 @@ classdef EnsembleTest < matlab.unittest.TestCase
         end
 
         function fastMathRunsOnlyOnCudaInDouble(testCase)
-            % The refusal comes before any device is opened, so it needs no GPU.
+            % The refusal comes before any device is opened, so it needs no GPU. Backend
+            % "auto" in single precision picks either the CPU or a GPU in single
+            % precision, and both are refused.
             m = testCase.model(testCase.Rotation);
             cases = {{"cpu", "double"}, {"cpu", "single"}, {"cuda", "single"}, ...
-                {"opencl", "double"}, {"metal", "single"}};
+                {"opencl", "double"}, {"metal", "single"}, {"auto", "single"}};
             for k = 1:numel(cases)
                 c = cases{k};
                 testCase.verifyError(@() phasecont.ensemble(m, [1; 0], [], [0 1], ...

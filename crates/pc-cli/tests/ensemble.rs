@@ -460,3 +460,47 @@ fn bad_bench_arguments_are_usage_errors() {
         assert_eq!(code(&o), 2, "{args:?}: {}", stderr(&o));
     }
 }
+
+#[test]
+fn the_math_key_defaults_to_exact_and_is_labeled() {
+    let v = ok("math_default", DECAY, &decay_job());
+    assert_eq!(v["label"]["math"], "exact");
+    let mut job = decay_job();
+    job["math"] = json!("exact");
+    let v = ok("math_exact", DECAY, &job);
+    assert_eq!(v["label"]["math"], "exact");
+}
+
+#[test]
+fn a_wrong_math_value_names_the_key() {
+    for (i, bad) in [json!("fast"), json!(null), json!(true)]
+        .into_iter()
+        .enumerate()
+    {
+        let mut job = decay_job();
+        job["math"] = bad;
+        let o = run_job(&format!("math_bad_{i}"), DECAY, &job);
+        assert_eq!(code(&o), 2, "{}", stderr(&o));
+        assert!(stderr(&o).contains("math"), "{}", stderr(&o));
+        assert_eq!(stdout(&o), "");
+    }
+}
+
+#[test]
+fn fma_off_cuda_double_is_a_bad_job_before_any_device_lookup() {
+    // Exit 2 (bad job), not 3 (no device): the tier is checked before the device is looked up,
+    // so the cuda single case gives the same answer on a machine with no CUDA.
+    for (i, (backend, precision)) in [("cpu", "double"), ("opencl", "double"), ("cuda", "single")]
+        .into_iter()
+        .enumerate()
+    {
+        let mut job = decay_job();
+        job["backend"] = json!(backend);
+        job["precision"] = json!(precision);
+        job["math"] = json!("fma");
+        let o = run_job(&format!("math_fma_{i}"), DECAY, &job);
+        assert_eq!(code(&o), 2, "{backend} {precision}: {}", stderr(&o));
+        assert!(stderr(&o).contains("fma"), "{}", stderr(&o));
+        assert_eq!(stdout(&o), "");
+    }
+}
