@@ -22,7 +22,8 @@ use pc_ir::IrModel;
 use crate::cpu::run_cpu;
 use crate::device::{Backend, DeviceInfo, find_device};
 use crate::job::{
-    EnsembleError, EnsembleResult, Job, Label, Method, Output, Params, Precision, Status,
+    EnsembleError, EnsembleResult, Job, Label, Math, Method, Output, Params, Precision, Status,
+    check_math,
 };
 use crate::run::run_on;
 
@@ -83,7 +84,21 @@ pub struct Report {
     pub tiers: Vec<Tier>,
     /// `None` when the backend is the reference the comparison would use.
     pub bit_exact: Option<bool>,
+    /// How far the fma tier moves the bit-exact jobs, on a device that takes that tier
+    /// ([`check_math`]), else `None`. It is a report only and never counts toward `pass`.
+    pub fma: Option<FmaDifference>,
     pub pass: bool,
+}
+
+/// The fma tier against the exact tier on the same device, over the jobs of the bit-exact
+/// comparison.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FmaDifference {
+    /// Worst `|fma - exact| / (1 + |exact|)` over the members whose status is the same in
+    /// both runs.
+    pub max_difference: f64,
+    /// Members whose status differs between the two runs.
+    pub status_differ: usize,
 }
 
 const DECAY: &str = "par a=1.3\nx'=-a*x\ndone\n";
@@ -167,6 +182,18 @@ fn job<'a>(
     method: Method,
     precision: Precision,
 ) -> Job<'a> {
+    job_in(m, x0, params, t1, method, precision, Math::Exact)
+}
+
+fn job_in<'a>(
+    m: &'a IrModel,
+    x0: &'a [f64],
+    params: &'a [f64],
+    t1: f64,
+    method: Method,
+    precision: Precision,
+    math: Math,
+) -> Job<'a> {
     Job {
         model: m,
         members: x0.len() / m.n(),
@@ -179,7 +206,7 @@ fn job<'a>(
         bounds: f64::INFINITY,
         max_steps: 10_000_000,
         precision,
-        math: crate::job::Math::Exact,
+        math,
         native: None,
     }
 }
@@ -354,32 +381,48 @@ fn determinism(run: Runner, precision: Precision) -> Result<f64, EnsembleError> 
     Ok(differ as f64)
 }
 
-/// Whether `run` matches the CPU backend bit for bit on fixed-step RK4 of `VDP` and on the
-/// Henon map with `iter`.
-fn bit_exact(run: Runner, precision: Precision) -> Result<bool, EnsembleError> {
-    let vdp = model(VDP);
-    let henon = model(HENON);
-    let x0_vdp = x0_for(vdp.n());
-    let x0_henon = x0_for(henon.n());
-    let jobs = [
-        job(
-            &vdp,
-            &x0_vdp,
+/// The two models of the bit-exact comparison: fixed-step RK4 of `VDP` and the Henon map
+/// with `iter`.
+fn bit_models() -> (IrModel, IrModel) {
+    (model(VDP), model(HENON))
+}
+
+fn bit_jobs<'a>(
+    vdp: &'a IrModel,
+    henon: &'a IrModel,
+    x0_vdp: &'a [f64],
+    x0_henon: &'a [f64],
+    precision: Precision,
+    math: Math,
+) -> [Job<'a>; 2] {
+    [
+        job_in(
+            vdp,
+            x0_vdp,
             &[1.5],
             3.0,
             Method::Rk4 { dt: 0.01 },
             precision,
+            math,
         ),
-        job(
-            &henon,
-            &x0_henon,
+        job_in(
+            henon,
+            x0_henon,
             &HENON_PAR,
             HENON_T1,
             Method::Iter,
             precision,
+            math,
         ),
-    ];
-    for j in &jobs {
+    ]
+}
+
+/// Whether `run` matches the CPU backend bit for bit on fixed-step RK4 of `VDP` and on the
+/// Henon map with `iter`.
+fn bit_exact(run: Runner, precision: Precision) -> Result<bool, EnsembleError> {
+    let (vdp, henon) = bit_models();
+    let (x0_vdp, x0_henon) = (x0_for(vdp.n()), x0_for(henon.n()));
+    for j in &bit_jobs(&vdp, &henon, &x0_vdp, &x0_henon, precision, Math::Exact) {
         let want = run_cpu(j, u64::MAX, &AtomicBool::new(false))?;
         let got = run(j)?;
         if same_bits(&want, &got) != 0 {
@@ -389,13 +432,40 @@ fn bit_exact(run: Runner, precision: Precision) -> Result<bool, EnsembleError> {
     Ok(true)
 }
 
+/// Runs the jobs of [`bit_exact`] on `run` in both math tiers and compares the two.
+fn fma_difference(run: Runner, precision: Precision) -> Result<FmaDifference, EnsembleError> {
+    let (vdp, henon) = bit_models();
+    let (x0_vdp, x0_henon) = (x0_for(vdp.n()), x0_for(henon.n()));
+    let exact = bit_jobs(&vdp, &henon, &x0_vdp, &x0_henon, precision, Math::Exact);
+    let fused = bit_jobs(&vdp, &henon, &x0_vdp, &x0_henon, precision, Math::Fma);
+    let mut out = FmaDifference {
+        max_difference: 0.0,
+        status_differ: 0,
+    };
+    for (e, f) in exact.iter().zip(&fused) {
+        let (want, got) = (run(e)?, run(f)?);
+        for i in 0..MEMBERS {
+            if want.status[i] != got.status[i] {
+                out.status_differ += 1;
+                continue;
+            }
+            for (g, w) in got.state(i, 0).iter().zip(want.state(i, 0)) {
+                out.max_difference = out.max_difference.max((g - w).abs() / (1.0 + w.abs()));
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Runs the checks on `run`. `compare_bits` adds the bit-exact comparison with the CPU
-/// backend; pass `false` for the CPU backend itself.
+/// backend; pass `false` for the CPU backend itself. `compare_fma` adds the report of
+/// [`FmaDifference`]; pass `true` only for a device that takes the fma tier.
 pub fn run_with(
     run: Runner,
     device: DeviceInfo,
     label: Label,
     compare_bits: bool,
+    compare_fma: bool,
 ) -> Result<Report, SelfTestError> {
     let precision = label.precision;
     let (m4, l4) = rk4(precision);
@@ -427,12 +497,19 @@ pub fn run_with(
     } else {
         None
     };
+    // The fma report runs after `pass` is fixed and never changes it.
     let pass = tiers.iter().all(Tier::pass) && bit_exact != Some(false);
+    let fma = if compare_fma {
+        Some(fma_difference(run, precision)?)
+    } else {
+        None
+    };
     Ok(Report {
         label,
         device,
         tiers,
         bit_exact,
+        fma,
         pass,
     })
 }
@@ -445,7 +522,7 @@ pub fn run_selftest(sel: Selected) -> Result<Report, SelfTestError> {
         device: device.name.clone(),
         driver: device.driver.clone(),
         precision: sel.precision,
-        math: crate::job::Math::Exact,
+        math: Math::Exact,
     };
     let cancel = AtomicBool::new(false);
     let on = device.clone();
@@ -453,5 +530,6 @@ pub fn run_selftest(sel: Selected) -> Result<Report, SelfTestError> {
     // Comparing the CPU backend with the CPU loop proves nothing, so only a device of
     // another backend gets the bit comparison.
     let compare_bits = sel.backend != Backend::Cpu;
-    run_with(&run, device, label, compare_bits)
+    let compare_fma = check_math(device.backend, sel.precision, Math::Fma).is_ok();
+    run_with(&run, device, label, compare_bits, compare_fma)
 }

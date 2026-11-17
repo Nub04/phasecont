@@ -224,8 +224,12 @@ but cannot start; the reason follows).
 `selftest` runs a few small ensembles on one device and prints one JSON object:
 the device, the driver, the precision, the worst error of each tier against its
 limit, whether the device matches the CPU backend bit for bit (`null` for the
-CPU backend itself) and `pass`. The device is the first of the backend unless
---device says otherwise, and the report names the device that ran.
+CPU backend itself), `fma` and `pass`. `fma` is `null` unless the device takes
+the fma tier (CUDA in double precision); there it gives the worst relative
+difference between the fma and exact runs of the bit-exact jobs and the number
+of members whose status differs. It is a report only and never changes `pass`.
+The device is the first of the backend unless --device says otherwise, and the
+report names the device that ran.
 
 options:
   --backend B    cpu, cuda, opencl or metal (required)

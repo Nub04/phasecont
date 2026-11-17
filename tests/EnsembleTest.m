@@ -453,7 +453,11 @@ classdef EnsembleTest < matlab.unittest.TestCase
             testCase.verifyEqual(fast.Label.Math, "fma");
             testCase.verifyTrue(fast.Job.FastMath);
             testCase.verifyEqual(fast.Status, ["ok"; "ok"]);
-            testCase.verifyLessThan(max(abs(fast.Final - exact.Final), [], "all"), 1e-8);
+            % Both tiers are checked against the closed form at 10 times Rtol, the rule
+            % of the refine test above; there is no bound on fma against exact.
+            want = [cos(3) 0.5 * cos(3); -sin(3) -0.5 * sin(3)];
+            testCase.verifyLessThan(max(abs(exact.Final - want), [], "all"), 1e-9);
+            testCase.verifyLessThan(max(abs(fast.Final - want), [], "all"), 1e-9);
             f = testCase.verifyWarningFree(@() fast.refine(1));
             testCase.verifyEqual(f.Label.Math, "exact");
             testCase.verifyEqual(f.Label.Backend, "cpu");
