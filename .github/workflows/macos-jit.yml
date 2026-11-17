@@ -30,7 +30,7 @@ jobs:
       - run: cargo test --no-fail-fast
       - name: Show the compiler the AOT test used
         run: cargo test -p pc-codegen --test aot -- --nocapture 2>&1 | grep -iE "gcc|clang|skip|flags" || true
-      - uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
+      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         with:
           tool: cargo-deny
       - run: cargo deny check
