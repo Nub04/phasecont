@@ -868,6 +868,14 @@ impl<'a> Checker<'a> {
             return;
         }
         let Some(s) = self.lookup(&id.key) else {
+            // XPPAUT 8.2.2 reads these two undeclared names as event actions
+            // that stop the run and record a row. A declared parameter or
+            // state of that name is an ordinary target (checked above).
+            // Every `global` statement already makes the model simulation
+            // only, so the IR refuses these models by name.
+            if matches!(id.key.as_str(), "arret" | "out_put") {
+                return;
+            }
             if self.suppressed(&id.key) {
                 return;
             }

@@ -874,6 +874,40 @@ fn global_targets() {
 }
 
 #[test]
+fn global_arret_and_out_put_are_event_actions() {
+    // XPPAUT 8.2.2 reads `arret=` and `out_put=` in a `global` action list
+    // as stop-the-run and record-a-row (probes global-arret, global-out-put).
+    // The model is a simulation-only model, so the IR refuses it by name.
+    for text in [
+        "x'=1\nglobal 1 x-0.5 {arret=1}",
+        "x'=1\nglobal 1 x-0.5 {out_put=1}",
+        "x'=1\nglobal 1 x-0.5 {ARRET=(x>0.8)}",
+        "x'=1\nglobal 1 x-0.5 {Out_Put=1; x=0}",
+    ] {
+        let (info, diags) = run(text);
+        assert!(diags.is_empty(), "{text:?}: {diags:#?}");
+        assert!(info.simulation_only, "{text:?}");
+    }
+    // A declared parameter or state of that name is an ordinary target
+    // (probes global-arret-par, global-arret-state).
+    clean("par arret=0\nx'=1\nglobal 1 x-0.5 {arret=1}");
+    clean("x'=1\narret'=0\nglobal 1 x-0.5 {arret=1}");
+    // Neither word is a value: XPPAUT refuses a model that reads `arret`.
+    assert_eq!(
+        codes("x'=1\nglobal 1 x-0.5 {arret=1}\naux a=arret"),
+        vec![UNDEFINED_NAME]
+    );
+    // A shorter spelling is still an undeclared target.
+    assert_eq!(codes("x'=1\nglobal 1 x-0.5 {arre=1}"), vec![BAD_TARGET]);
+    assert_eq!(codes("x'=1\nglobal 1 x-0.5 {out_pu=1}"), vec![BAD_TARGET]);
+    // A fixed quantity of that name stays refused.
+    assert_eq!(
+        codes("arret=2\nx'=1\nglobal 1 x-0.5 {arret=1}"),
+        vec![BAD_TARGET]
+    );
+}
+
+#[test]
 fn arg_calls() {
     assert_eq!(codes("f(u)=arg2(1)"), vec![BAD_ARG]);
     assert_eq!(codes("x'=arg1(2)"), vec![BAD_ARG]);

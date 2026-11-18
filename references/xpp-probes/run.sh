@@ -165,6 +165,14 @@ check_xpp() {
       fail=1
       return
     fi
+    if [ "$key" = rows ]; then
+      # rows=N: the output file has exactly N lines (a stop or a recorded row).
+      got=$(wc -l < "$dir/o.dat" 2>/dev/null) || got=norows
+      got=${got//[[:space:]]/}
+      gots="$gots rows=$got"
+      [ "$got" = "$val" ] || ok=0
+      continue
+    fi
     row=1
     if [[ $key == *@* ]]; then
       row=${key#*@}; key=${key%@*}

@@ -65,6 +65,16 @@ fn refuses_simulation_only() {
 }
 
 #[test]
+fn refuses_global_event_actions() {
+    // `arret` and `out_put` are event actions in XPPAUT. The model must not
+    // lower, so no path can run it and ignore the action.
+    for action in ["arret=1", "out_put=1"] {
+        let src = format!("x'=1\nx(0)=0\nglobal 1 x-0.5 {{{action}}}\ndone\n");
+        assert_eq!(kinds(&src), vec![K::SimulationOnly], "{action}");
+    }
+}
+
+#[test]
 fn refuses_delay_with_call_span() {
     let src = "x'=-delay(x,1)\ndone\n";
     let e = errs(src);

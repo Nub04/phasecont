@@ -1,0 +1,9 @@
+# global-arret-read: Can a formula read `arret` when only a global action assigns it (XPPAUT 8.2.2)?
+# xpp: error
+# pc: ODE0039
+# ruling: `arret` is an action, not a value. Reading it is an undefined name (language.md, Statement details).
+x'=1
+x(0)=0
+global 1 x-0.55 {arret=1}
+aux a=arret
+@ total=2,dt=0.1,meth=euler

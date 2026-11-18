@@ -1,0 +1,10 @@
+# global-arret-par: Is `arret` a declared parameter an ordinary global target, with no stop (XPPAUT 8.2.2)?
+# xpp: rows=21
+# pc: ok
+# ruling: a declared parameter or state named `arret` or `out_put` is assigned like any other (language.md, Statement details).
+x'=1
+x(0)=0
+par arret=0
+aux v=arret
+global 1 x-0.55 {arret=1}
+@ total=2,dt=0.1,meth=euler

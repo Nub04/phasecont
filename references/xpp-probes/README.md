@@ -24,6 +24,7 @@ Line 1 of every probe is a `#` comment, `# <id>: <question>`, because XPPAUT 8.0
 | `# xpp: hang` | XPPAUT runs into the 10 s timeout or crashes (an include cycle) |
 | `# xpp: a=1 b=2` | one value per named aux column |
 | `# xpp: v@2=14`, `# xpp: t@2=0.5` | `<column>@N` reads row N of the output instead of row 1 (`t` is the time column) |
+| `# xpp: rows=21` | the output file has exactly that many lines (a stop or a recorded row changes the count) |
 | `# states: N` | number of states, when it is not 1 (columns are `t`, states, then aux in file order) |
 | `# pc: ok` | `pc-cli parse` gives no diagnostic |
 | `# pc: ODE0010,ODE0014` | the diagnostic codes `pc-cli parse` gives, in order of first appearance |
@@ -107,8 +108,14 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `fn-mod-more` | Does mod follow fmod plus y when the remainder is negative, for more signs and sizes? | `mod(-0.1,1)`, `mod(2.5,-1)`, `mod(-2.5,-1)`, `mod(0,-3)`, `mod(-3,3)`, `mod(123456.75,7)`, `mod(-123456.75,7)`, `mod(0.75,-1)` | v1=0.89999998 v2=0.5 v3=-1.5 v4=0 v5=-0 v6=4.75 v7=2.25 v8=0.75 | no diagnostic; computes the same values with `r = fmod(x, y)`, plus `y` when `r < 0` | matches |
 | `fn-random` | What do ran(0) and poisson(0) give? | `ran(0)`, `poisson(0)` | 0 and 0 | no diagnostic | matches |
 | `fn-shift` | Does shift(x,0) evaluate? | `10*shift(x,0)` | 30 | ODE0055 warning, `shift` unsupported | PhaseCont choice |
+| `global-arre` | Is `arre=1`, a shortened `arret`, a global target XPPAUT refuses (XPPAUT 8.2.2)? | `global 1 x-0.55 {arre=1}` | error | ODE0058 error | matches |
+| `global-arret` | Does `arret=1` in a global action list stop the run (XPPAUT 8.2.2)? | `global 1 x-0.55 {arret=1}` | rows=6 (the run ends at t=0.5 of 2) | no diagnostic; the IR refuses the model as simulation only | matches |
+| `global-arret-par` | Is a declared parameter `arret` an ordinary global target, with no stop (XPPAUT 8.2.2)? | `par arret=0`, `global 1 x-0.55 {arret=1}` | rows=21 | no diagnostic | matches |
+| `global-arret-read` | Can a formula read `arret` when only a global action assigns it (XPPAUT 8.2.2)? | `aux a=arret` | error | ODE0039 error | matches |
+| `global-arret-state` | Is a declared state `arret` an ordinary global target, with no stop (XPPAUT 8.2.2)? | `arret'=0`, `global 1 x-0.55 {arret=1}` | rows=21 | no diagnostic | matches |
 | `global-braces` | Does global 1 {t-0.5} {x=5} work like the form without braces? | `global 1 {t-0.5} {x=5}`, `aux v=x` | v@2=5 | no diagnostic | matches |
 | `global-empty` | Is an empty global list {} accepted? | `global 1 t-0.5 {}` | error ("Bad global") | ODE0020 error | matches |
+| `global-out-put` | Does `out_put=1` in a global action list add an output row at the crossing (XPPAUT 8.2.2)? | `global 1 x-0.55 {out_put=1}`, `nout=5` | t@3=0.55, rows=6 | ODE0024 warning for `nout`; the IR refuses the model as simulation only | matches |
 | `global-par-target` | Can a global event assign a parameter? | `par a=1`, `global 1 t-0.9 {a=5}` | v@1=1 v@2=5 | no diagnostic | matches |
 | `global-plain` | Does global 1 t-0.5 {x=5} set x at the crossing? | `global 1 t-0.5 {x=5}`, `aux v=x` | v@2=5 | no diagnostic | matches |
 | `global-two` | Does global 1 t-0.5 {x=5;y=2} set both states? | `global 1 t-0.5 {x=5;y=2}` | v@2=25 | no diagnostic | matches |

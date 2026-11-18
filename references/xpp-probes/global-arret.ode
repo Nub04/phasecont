@@ -1,0 +1,9 @@
+# global-arret: Does `arret=1` in a global action list stop the run (XPPAUT 8.2.2)?
+# xpp: rows=6
+# pc: ok
+# ruling: pc-ode accepts `arret` and `out_put` as undeclared global targets. The model is simulation only, so pc-ir refuses it with SimulationOnly (language.md, Statement details).
+x'=1
+x(0)=0
+aux v=x
+global 1 x-0.55 {arret=1}
+@ total=2,dt=0.1,meth=euler
