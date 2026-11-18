@@ -3,10 +3,20 @@
 //! The rules copy the `Dual` rules of `interp.rs` formula for formula and branch for
 //! branch. Every derivative is built through the folding constructors of [`Dag`], so a
 //! zero tangent folds away and a term with a zero tangent is never built (the same as the
-//! interpreter, which skips a zero tangent so it never meets an infinite partial). One
-//! difference remains: the interpreter tests the tangent at run time and the DAG tests it
-//! at build time, so a symbolic tangent that happens to be 0.0 at a point still multiplies
-//! an infinite or NaN partial there.
+//! interpreter, which skips a zero tangent so it never meets an infinite partial).
+//!
+//! The interpreter tests the tangent at run time and the DAG tests it at build time. A
+//! symbolic tangent can be 0.0 at a point (a clamp such as `max(a - x, 0)` is flat there),
+//! so a rule whose partial can be infinite or NaN at a finite input builds `ZMul(tangent,
+//! partial)` instead of `Mul` (see [`zterm`]). A zero tangent then contributes `+0`, as in
+//! the interpreter. The rules left on a plain `Mul` or `Div` have partials that are finite
+//! wherever their argument is finite: `sin`, `cos`, `tan`, `atan`, `sinh`, `cosh`, `tanh`,
+//! `exp`, `abs` (through `sign`), `erf`, `erfc`, an integer power `n >= 1`, table slopes
+//! and `pow` with a constant integer exponent `>= 1`. The product rule multiplies by
+//! another operand of the model and the quotient term `da / b` divides by one, so a
+//! non-finite value there is a non-finite model value. A zero tangent times an overflowed
+//! `exp` or `sinh` is not guarded either. A guarded rule also maps a true singularity, such
+//! as the derivative of `sqrt(u^2)` at `u = 0`, to 0 instead of NaN.
 //!
 //! `polygamma(m, x)` differentiates to `polygamma(m + 1, x)` for `m` in 0..=3. The math
 //! layer supports `m` up to 4 only, so a derivative that would need `m = 5` (the first
@@ -45,6 +55,52 @@ fn term(dag: &mut Dag, tangent: NodeId, partial: impl FnOnce(&mut Dag) -> NodeId
     }
     let p = partial(dag);
     dag.mul(tangent, p)
+}
+
+/// `ZMul(tangent, partial())`: the term of a rule whose partial can be infinite or NaN at a
+/// finite input. The zero constant tangent never builds `partial`. A partial that is a
+/// finite constant cannot poison the product, so it stays a plain `mul`.
+fn zterm(dag: &mut Dag, tangent: NodeId, partial: impl FnOnce(&mut Dag) -> NodeId) -> NodeId {
+    if is_zero(dag, tangent) {
+        return dag.konst(0.0);
+    }
+    let p = partial(dag);
+    match cval(dag, p) {
+        Some(c) if c.is_finite() => dag.mul(tangent, p),
+        _ => dag.zmul(tangent, p),
+    }
+}
+
+/// Whether a derivative of the call `op` has a partial that can be infinite or NaN at a
+/// finite input, so that a zero tangent must not multiply it. This is the list of rules in
+/// [`rule`] that use [`zterm`], for the multilinear forms of `multi.rs`, which multiply the
+/// partials of every order by a product of tangents. A `pow` with a constant integer
+/// exponent `>= 1` has finite partials of every order.
+pub(crate) fn partial_may_be_nonfinite(dag: &Dag, op: &Op) -> bool {
+    match *op {
+        Op::Call1(f, _) => !matches!(
+            f,
+            Fn1::Sin
+                | Fn1::Cos
+                | Fn1::Tan
+                | Fn1::Atan
+                | Fn1::Sinh
+                | Fn1::Cosh
+                | Fn1::Tanh
+                | Fn1::Exp
+                | Fn1::Abs
+                | Fn1::Erf
+                | Fn1::Erfc
+        ),
+        Op::PowI(_, n) => n < 0,
+        Op::Table(..) => false,
+        Op::Call2(Fn2::Pow, _, b) => {
+            !matches!(cval(dag, b), Some(c) if c >= 1.0 && c.fract() == 0.0 && c.is_finite())
+        }
+        Op::Call2(Fn2::Min | Fn2::Max, ..) => false,
+        Op::Call2(..) => true,
+        _ => false,
+    }
 }
 
 /// The children of `op` whose derivatives the rule for `op` reads.
@@ -122,6 +178,19 @@ fn rule(dag: &mut Dag, memo: &HashMap<(NodeId, Wrt), NodeId>, node: NodeId, wrt:
             let t2 = term(dag, db, |_| a);
             dag.add(t1, t2)
         }
+        // `ZMul(t, p)` is `t * p` with a zero `t` giving +0, so each term of the product
+        // rule is guarded by its own tangent factor. A zero `t` makes the second term +0,
+        // and a zero `da` makes the first one +0, even where `p`, `dp` or `da` is infinite.
+        Op::ZMul(a, b) => {
+            let (da, db) = (dc(dag, a), dc(dag, b));
+            let t1 = zterm(dag, da, |_| b);
+            let t2 = if is_zero(dag, db) {
+                dag.konst(0.0)
+            } else {
+                dag.zmul(a, db)
+            };
+            dag.add(t1, t2)
+        }
         Op::Div(a, b) => {
             let (da, db) = (dc(dag, a), dc(dag, b));
             let ta = if is_zero(dag, da) {
@@ -130,7 +199,7 @@ fn rule(dag: &mut Dag, memo: &HashMap<(NodeId, Wrt), NodeId>, node: NodeId, wrt:
                 dag.div(da, b)
             };
             // The quotient is `node` itself.
-            let tb = term(dag, db, |g| {
+            let tb = zterm(dag, db, |g| {
                 let q = g.div(a, b);
                 let qb = g.div(q, b);
                 g.neg(qb)
@@ -139,11 +208,17 @@ fn rule(dag: &mut Dag, memo: &HashMap<(NodeId, Wrt), NodeId>, node: NodeId, wrt:
         }
         Op::PowI(a, n) => {
             let da = dc(dag, a);
-            term(dag, da, |g| {
+            // `n < 0` has an infinite partial at 0; `n >= 2` is finite wherever `a` is.
+            let slope = |g: &mut Dag| {
                 let c = g.konst(f64::from(n));
                 let p = g.powi(a, n - 1);
                 g.mul(c, p)
-            })
+            };
+            if n < 0 {
+                zterm(dag, da, slope)
+            } else {
+                term(dag, da, slope)
+            }
         }
         Op::Call1(f, a) => {
             let da = dc(dag, a);
@@ -195,8 +270,8 @@ fn call1_rule(dag: &mut Dag, f: Fn1, node: NodeId, a: NodeId, da: NodeId) -> Nod
             let tt = g.mul(node, node);
             g.add(one, tt)
         }),
-        Fn1::Asin => term(dag, da, |g| inv_sqrt_1m_sq(g, a)),
-        Fn1::Acos => term(dag, da, |g| {
+        Fn1::Asin => zterm(dag, da, |g| inv_sqrt_1m_sq(g, a)),
+        Fn1::Acos => zterm(dag, da, |g| {
             let r = inv_sqrt_1m_sq(g, a);
             g.neg(r)
         }),
@@ -214,17 +289,17 @@ fn call1_rule(dag: &mut Dag, f: Fn1, node: NodeId, a: NodeId, da: NodeId) -> Nod
             g.sub(one, tt)
         }),
         Fn1::Exp => term(dag, da, |_| node),
-        Fn1::Ln => term(dag, da, |g| {
+        Fn1::Ln => zterm(dag, da, |g| {
             let one = g.konst(1.0);
             g.div(one, a)
         }),
-        Fn1::Log10 => term(dag, da, |g| {
+        Fn1::Log10 => zterm(dag, da, |g| {
             let one = g.konst(1.0);
             let c = g.konst(std::f64::consts::LN_10);
             let s = g.mul(a, c);
             g.div(one, s)
         }),
-        Fn1::Sqrt => term(dag, da, |g| {
+        Fn1::Sqrt => zterm(dag, da, |g| {
             let one = g.konst(1.0);
             let two = g.konst(2.0);
             let s = g.mul(two, node);
@@ -236,7 +311,7 @@ fn call1_rule(dag: &mut Dag, f: Fn1, node: NodeId, a: NodeId, da: NodeId) -> Nod
             let s = erf_slope(g, a);
             g.neg(s)
         }),
-        Fn1::Lgamma => term(dag, da, |g| {
+        Fn1::Lgamma => zterm(dag, da, |g| {
             let m = g.konst(0.0);
             g.call2(Fn2::Polygamma, m, a)
         }),
@@ -254,11 +329,11 @@ fn call2_rule(
     match f {
         // atan2(y, x) with y = a and x = b.
         Fn2::Atan2 => {
-            let dy = term(dag, da, |g| {
+            let dy = zterm(dag, da, |g| {
                 let d = sum_squares(g, a, b);
                 g.div(b, d)
             });
-            let dx = term(dag, db, |g| {
+            let dx = zterm(dag, db, |g| {
                 let d = sum_squares(g, a, b);
                 let q = g.div(a, d);
                 g.neg(q)
@@ -266,19 +341,28 @@ fn call2_rule(
             dag.add(dy, dx)
         }
         Fn2::Pow => {
-            let dx = term(dag, da, |g| {
+            // `b * a^(b-1)` is finite for finite `a` only when `b` is a constant integer
+            // `>= 1`; otherwise `a = 0` gives an infinite or NaN partial.
+            let slope = |g: &mut Dag| {
                 let one = g.konst(1.0);
                 let ym1 = g.sub(b, one);
                 let p = g.call2(Fn2::Pow, a, ym1);
                 g.mul(b, p)
-            });
+            };
+            let finite_slope = !partial_may_be_nonfinite(dag, &Op::Call2(Fn2::Pow, a, b));
+            let dx = if finite_slope {
+                term(dag, da, slope)
+            } else {
+                zterm(dag, da, slope)
+            };
             // A zero result contributes nothing, so `0 * ln(0)` is never formed.
             let dy = if is_zero(dag, db) {
                 dag.konst(0.0)
             } else {
                 let ln = dag.call1(Fn1::Ln, a);
                 let r = dag.mul(node, ln);
-                let t = dag.mul(db, r);
+                // `r` is infinite where `a` is 0 or the power overflows, and `db` can be 0.
+                let t = dag.zmul(db, r);
                 let z = dag.konst(0.0);
                 let c = dag.cmp(Cmp::Eq, node, z);
                 dag.select(c, z, t)
@@ -286,7 +370,7 @@ fn call2_rule(
             dag.add(dx, dy)
         }
         Fn2::Mod => {
-            let dy = term(dag, db, |g| {
+            let dy = zterm(dag, db, |g| {
                 let num = g.sub(a, node);
                 let q = g.div(num, b);
                 g.neg(q)
@@ -295,7 +379,7 @@ fn call2_rule(
         }
         // DLMF 10.6.1 for the order k = trunc(a) that `besselj` and `bessely` use. The order
         // has no tangent, since a truncated order is piecewise constant.
-        Fn2::BesselJ | Fn2::BesselY => term(dag, db, |g| {
+        Fn2::BesselJ | Fn2::BesselY => zterm(dag, db, |g| {
             let one = g.konst(1.0);
             let k = trunc(g, a);
             let nm = g.sub(k, one);
@@ -306,7 +390,7 @@ fn call2_rule(
             let half = g.konst(0.5);
             g.mul(diff, half)
         }),
-        Fn2::Polygamma => term(dag, db, |g| {
+        Fn2::Polygamma => zterm(dag, db, |g| {
             let next = match cval(g, a) {
                 Some(m) if m == 0.0 || m == 1.0 || m == 2.0 || m == 3.0 => Some(m + 1.0),
                 _ => None,

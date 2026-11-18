@@ -345,6 +345,15 @@ pub(crate) fn build(
                 let (l, r) = (arg(&mut b, &vals, l), arg(&mut b, &vals, r));
                 b.ins().fmul(l, r)
             }
+            // `t == 0` gives +0 whatever `p` is, else `t * p`; see `Op::ZMul`. The product is
+            // always computed and then discarded, so there is no branch.
+            Op::ZMul(t, p) => {
+                let (t, p) = (arg(&mut b, &vals, t), arg(&mut b, &vals, p));
+                let zero = fconst(&mut b, fl, 0.0);
+                let t_is_zero = is_zero(&mut b, fl, t);
+                let prod = b.ins().fmul(t, p);
+                b.ins().select(t_is_zero, zero, prod)
+            }
             Op::Div(l, r) => {
                 let (l, r) = (arg(&mut b, &vals, l), arg(&mut b, &vals, r));
                 b.ins().fdiv(l, r)

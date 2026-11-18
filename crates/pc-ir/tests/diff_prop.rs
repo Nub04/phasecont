@@ -159,6 +159,7 @@ fn rebuild(src: &Dag) -> Result<Dag, String> {
             Op::Add(a, b) => dst.add(a, b),
             Op::Sub(a, b) => dst.sub(a, b),
             Op::Mul(a, b) => dst.mul(a, b),
+            Op::ZMul(a, b) => dst.zmul(a, b),
             Op::Div(a, b) => dst.div(a, b),
             Op::PowI(a, n) => dst.powi(a, n),
             Op::Call1(f, a) => dst.call1(f, a),

@@ -305,6 +305,27 @@ fn awkward_constants_and_tables_match_eval() {
     assert_eq!(out[2].to_bits(), 0xfff8_0000_0000_0000);
 }
 
+/// `ZMul` in the AOT C: a zero multiplier gives +0 although the factor is infinite or NaN.
+#[test]
+fn a_zero_multiplier_hides_a_non_finite_factor_in_aot() {
+    let mut ir = build_model("x'=-x\ndone\n");
+    let dag: &mut Dag = &mut ir.dag;
+    let x = dag.var(0);
+    let one = dag.konst(1.0);
+    let inv = dag.div(one, x);
+    let lg = dag.call1(Fn1::Ln, x);
+    let outs = vec![dag.zmul(x, inv), dag.zmul(x, lg)];
+    let e = Entry {
+        kind: EntryKind::F,
+        outputs: outs,
+    };
+    check_against_eval("zmul", &ir, &e, &XS, &[]);
+    let mut out = vec![f64::NAN; e.outputs.len()];
+    eval(&ir.dag, &e.outputs, &[0.0], &[0.0], &[], &mut out);
+    assert_eq!(out[0].to_bits(), 0.0f64.to_bits());
+    assert_eq!(out[1].to_bits(), 0.0f64.to_bits());
+}
+
 /// A malformed or missing table lowers to NaN and its argument stays dead, so the C has
 /// no unused variable (the tests compile with -Werror).
 #[test]

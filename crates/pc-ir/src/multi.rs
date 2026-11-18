@@ -20,12 +20,19 @@
 //! `polygamma(m, x)` is still seen by the derivative rule. Components that fold to the
 //! constant 0 never reach a product, so zero directions cost nothing.
 //!
+//! A component that is zero at run time must contribute +0 even where its partial is
+//! infinite or NaN at a finite input, as the interpreter's `Dual::term` does. So where
+//! [`partial_may_be_nonfinite`] says the partial can be non-finite, the product of the
+//! partial and the block components is a `ZMul` that tests the block product first. The
+//! `ZMul` node gets the product rule with `ZMul` terms, and the Div recurrence tests each
+//! term of `q b = a` and the final quotient.
+//!
 //! `pow(x, y)`: the interpreter skips every term that carries a `y` derivative when
 //! `pow(x, y)` is 0 (it would meet `0 * ln 0`), so those terms are wrapped in a select on
 //! `pow(x, y) == 0`.
 
 use crate::dag::{Cmp, Dag, Fn1, Fn2, NodeId, Op};
-use crate::diff::{Wrt, d, diff_children};
+use crate::diff::{Wrt, d, diff_children, partial_may_be_nonfinite};
 use crate::entry::Slot;
 use std::collections::HashMap;
 
@@ -72,6 +79,9 @@ struct Faa {
     done: HashMap<(usize, usize), NodeId>,
     sub: HashMap<NodeId, NodeId>,
     sums: [NodeId; 2],
+    /// The partials of this call can be infinite or NaN at a finite input, so a product
+    /// that is zero at run time must give +0 (see [`Op::ZMul`]).
+    guard: bool,
 }
 
 impl<'a> Builder<'a> {
@@ -218,6 +228,23 @@ impl<'a> Builder<'a> {
                     c[s] = acc;
                 }
             }
+            // The same sum as `Mul`, each term guarded by its first factor.
+            Op::ZMul(a, b) => {
+                let (a, b) = (self.get(a), self.get(b));
+                for s in 1..self.size {
+                    let mut acc = self.zero;
+                    let mut t = s;
+                    loop {
+                        let m = self.dag.zmul(a[t], b[s ^ t]);
+                        acc = self.dag.add(acc, m);
+                        if t == 0 {
+                            break;
+                        }
+                        t = (t - 1) & s;
+                    }
+                    c[s] = acc;
+                }
+            }
             Op::Div(a, b) => {
                 let (a, b) = (self.get(a), self.get(b));
                 for s in 1..self.size {
@@ -225,7 +252,8 @@ impl<'a> Builder<'a> {
                     // Proper subsets of s, empty one first.
                     let mut t = (s - 1) & s;
                     loop {
-                        let m = self.dag.mul(c[t], b[s ^ t]);
+                        // A zero tangent component adds +0 even where the quotient is infinite.
+                        let m = self.dag.zmul(b[s ^ t], c[t]);
                         sum = self.dag.add(sum, m);
                         if t == 0 {
                             break;
@@ -236,7 +264,21 @@ impl<'a> Builder<'a> {
                     c[s] = if self.is_zero(num) {
                         self.zero
                     } else {
-                        self.dag.div(num, b[0])
+                        let q = self.dag.div(num, b[0]);
+                        // A zero numerator gives +0 where `b[0]` is 0, as the interpreter,
+                        // which skips a zero tangent. The select tests the numerator itself.
+                        // A nonzero finite constant divisor cannot give 0 / 0.
+                        match self.dag.op(b[0]) {
+                            Op::Const(bits)
+                                if {
+                                    let c = f64::from_bits(*bits);
+                                    c != 0.0 && c.is_finite()
+                                } =>
+                            {
+                                q
+                            }
+                            _ => self.dag.select(num, q, self.zero),
+                        }
                     };
                 }
             }
@@ -304,6 +346,7 @@ impl<'a> Builder<'a> {
             done: HashMap::new(),
             sub,
             sums: [self.zero; 2],
+            guard: partial_may_be_nonfinite(self.dag, &op),
         };
         let is_pow = matches!(op, Op::Call2(Fn2::Pow, ..));
         for (s, slot) in c.iter_mut().enumerate().skip(1) {
@@ -332,7 +375,12 @@ impl<'a> Builder<'a> {
             if self.is_zero(p) {
                 return;
             }
-            let t = self.dag.mul(p, prod);
+            // A zero tangent product contributes +0 even where the partial is infinite.
+            let t = if ctx.guard {
+                self.dag.zmul(prod, p)
+            } else {
+                self.dag.mul(p, prod)
+            };
             let at = usize::from(j > 0);
             ctx.sums[at] = self.dag.add(ctx.sums[at], t);
             return;
@@ -417,6 +465,10 @@ fn subst(dag: &mut Dag, node: NodeId, sub: &mut HashMap<NodeId, NodeId>) -> Node
         Op::Mul(a, b) => {
             let (a, b) = (subst(dag, a, sub), subst(dag, b, sub));
             dag.mul(a, b)
+        }
+        Op::ZMul(a, b) => {
+            let (a, b) = (subst(dag, a, sub), subst(dag, b, sub));
+            dag.zmul(a, b)
         }
         Op::Div(a, b) => {
             let (a, b) = (subst(dag, a, sub), subst(dag, b, sub));
