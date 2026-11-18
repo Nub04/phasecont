@@ -324,6 +324,99 @@ fn zmul_matches_eval_over_special_values() {
     assert_eq!(call(1e-310, f64::INFINITY), f64::INFINITY);
 }
 
+/// `ZDiv(n, d)` is +0 when `n` is zero of either sign and `n / d` otherwise.
+#[test]
+fn zdiv_matches_eval_over_special_values() {
+    let mut dag = Dag::new(1000);
+    let (a, b) = (dag.var(0), dag.var(1));
+    let z = dag.zdiv(a, b);
+    let vals = [
+        f64::NAN,
+        0.0,
+        -0.0,
+        1.0,
+        -1.0,
+        2.5,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        1e-310,
+        1e308,
+    ];
+    let mut pts = Vec::new();
+    for &u in &vals {
+        for &v in &vals {
+            pts.push(vec![u, v]);
+        }
+    }
+    check_points(&dag, vec![z], &pts, "zdiv");
+    // The hand-written meaning, independent of the evaluator.
+    let e = entry(vec![z]);
+    let jit = compile(&[(EntryKind::F, &e)], &dag).expect("compile");
+    let f: PlainFn = jit.plain(&EntryKind::F).expect("F entry");
+    let call = |x: f64, y: f64| -> f64 {
+        let xs = [x, y];
+        let ps = [0.5, 0.25];
+        let mut out = [f64::NAN];
+        // SAFETY: the entry reads two variables and writes one output.
+        unsafe { f(xs.as_ptr(), ps.as_ptr(), out.as_mut_ptr()) };
+        out[0]
+    };
+    assert_eq!(call(0.0, 0.0).to_bits(), 0.0f64.to_bits());
+    assert_eq!(call(-0.0, -0.0).to_bits(), 0.0f64.to_bits());
+    assert_eq!(call(-0.0, 2.0).to_bits(), 0.0f64.to_bits());
+    assert!(call(f64::NAN, 1.0).is_nan());
+    assert_eq!(call(6.0, 3.0), 2.0);
+    assert_eq!(call(1.0, 0.0), f64::INFINITY);
+    assert_eq!(call(1e-310, 1e-310), 1.0);
+}
+
+/// The single-precision JIT gives the hand-written `ZMul` and `ZDiv` bits over the whole
+/// grid of special values, including the f32 subnormal 1e-40, which is not zero.
+#[test]
+fn zmul_and_zdiv_in_single_precision_follow_their_rule_bit_for_bit() {
+    use crate::{PlainFnF32, compile_f32};
+    let mut dag = Dag::new(1000);
+    let (a, b) = (dag.var(0), dag.var(1));
+    let (zm, zd) = (dag.zmul(a, b), dag.zdiv(a, b));
+    let e = entry(vec![zm, zd]);
+    let jit = compile_f32(&[(EntryKind::F, &e)], &dag).expect("compile");
+    let f: PlainFnF32 = jit.plain_f32(&EntryKind::F).expect("F entry");
+    let vals = [
+        f32::NAN,
+        0.0,
+        -0.0,
+        1.0,
+        -1.0,
+        2.5,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        1e-40,
+        -1e-40,
+        3e38,
+    ];
+    for &t in &vals {
+        for &p in &vals {
+            let (xs, ps) = ([t, p], [0.5f32, 0.25]);
+            let mut out = [f32::MAX; 2];
+            // SAFETY: the entry reads two variables and writes two outputs.
+            unsafe { f(xs.as_ptr(), ps.as_ptr(), out.as_mut_ptr()) };
+            let want = if t == 0.0 {
+                [0.0f32, 0.0]
+            } else {
+                [t * p, t / p]
+            };
+            for k in 0..2 {
+                let ok =
+                    (out[k].is_nan() && want[k].is_nan()) || out[k].to_bits() == want[k].to_bits();
+                assert!(
+                    ok,
+                    "op {k} at ({t:?}, {p:?}): {:?} vs {:?}",
+                    out[k], want[k]
+                );
+            }
+        }
+    }
+}
 #[test]
 fn tables_survive_dropping_the_dag() {
     let mut dag = Dag::new(100);

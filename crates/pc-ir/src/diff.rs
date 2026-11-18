@@ -9,14 +9,17 @@
 //! symbolic tangent can be 0.0 at a point (a clamp such as `max(a - x, 0)` is flat there),
 //! so a rule whose partial can be infinite or NaN at a finite input builds `ZMul(tangent,
 //! partial)` instead of `Mul` (see [`zterm`]). A zero tangent then contributes `+0`, as in
-//! the interpreter. The rules left on a plain `Mul` or `Div` have partials that are finite
-//! wherever their argument is finite: `sin`, `cos`, `tan`, `atan`, `sinh`, `cosh`, `tanh`,
-//! `exp`, `abs` (through `sign`), `erf`, `erfc`, an integer power `n >= 1`, table slopes
-//! and `pow` with a constant integer exponent `>= 1`. The product rule multiplies by
-//! another operand of the model and the quotient term `da / b` divides by one, so a
-//! non-finite value there is a non-finite model value. A zero tangent times an overflowed
-//! `exp` or `sinh` is not guarded either. A guarded rule also maps a true singularity, such
-//! as the derivative of `sqrt(u^2)` at `u = 0`, to 0 instead of NaN.
+//! the interpreter. The first term of the quotient rule, `tangent / denominator`, is a
+//! `ZDiv` (see [`quotient_term`]): a zero tangent over a zero denominator, as in a clamped
+//! `max(m, 0)` inside `exp(-1 / m)`, is +0 and not `0 / 0`. The rules left on a plain `Mul`
+//! have partials that are finite wherever their argument is finite: `sin`, `cos`, `tan`,
+//! `atan`, `sinh`, `cosh`, `tanh`, `exp`, `abs` (through `sign`), `erf`, `erfc`, an integer
+//! power `n >= 1`, table slopes and `pow` with a constant integer exponent `>= 1`. The
+//! product rule multiplies by another operand of the model and stays a plain `Mul`: a zero
+//! tangent times an infinite operand is NaN, so `exp(-c * (1 / m))` with a clamped `c` and a
+//! zero `m` still gives a NaN Jacobian (the model value is finite there, since `exp(-inf)`
+//! is 0). A zero tangent times an overflowed `exp` or `sinh` is not guarded either. A guarded rule also maps a true singularity, such as the derivative of
+//! `sqrt(u^2)` at `u = 0`, to 0 instead of NaN.
 //!
 //! `polygamma(m, x)` differentiates to `polygamma(m + 1, x)` for `m` in 0..=3. The math
 //! layer supports `m` up to 4 only, so a derivative that would need `m = 5` (the first
@@ -68,6 +71,21 @@ fn zterm(dag: &mut Dag, tangent: NodeId, partial: impl FnOnce(&mut Dag) -> NodeI
     match cval(dag, p) {
         Some(c) if c.is_finite() => dag.mul(tangent, p),
         _ => dag.zmul(tangent, p),
+    }
+}
+
+/// `tangent / denominator`, the first term of the quotient rule. A tangent that is zero at
+/// run time over a zero denominator must give +0, not `0 / 0`, as the interpreter skips a
+/// zero tangent, so the term is a `ZDiv` unless the denominator is a nonzero finite
+/// constant (then a plain `div` has the same value for every tangent but a `-0.0`). The
+/// zero constant tangent never builds the term.
+fn quotient_term(dag: &mut Dag, tangent: NodeId, denom: NodeId) -> NodeId {
+    if is_zero(dag, tangent) {
+        return dag.konst(0.0);
+    }
+    match cval(dag, denom) {
+        Some(c) if c != 0.0 && c.is_finite() => dag.div(tangent, denom),
+        _ => dag.zdiv(tangent, denom),
     }
 }
 
@@ -193,15 +211,24 @@ fn rule(dag: &mut Dag, memo: &HashMap<(NodeId, Wrt), NodeId>, node: NodeId, wrt:
         }
         Op::Div(a, b) => {
             let (da, db) = (dc(dag, a), dc(dag, b));
-            let ta = if is_zero(dag, da) {
-                dag.konst(0.0)
-            } else {
-                dag.div(da, b)
-            };
+            let ta = quotient_term(dag, da, b);
             // The quotient is `node` itself.
             let tb = zterm(dag, db, |g| {
                 let q = g.div(a, b);
                 let qb = g.div(q, b);
+                g.neg(qb)
+            });
+            dag.add(ta, tb)
+        }
+        // `ZDiv(n, d)` is `n / d` with a zero `n` giving +0, so the quotient rule of `Div`
+        // applies with each term guarded by its own tangent: `ZDiv(dn, d)` is +0 for a zero
+        // `dn`, and the second term is `ZMul(dd, -(q / d))`, with `q` the node itself. A
+        // `-(q / d)` that is infinite or NaN (a zero `d`) is hidden by a zero `dd`.
+        Op::ZDiv(a, b) => {
+            let (da, db) = (dc(dag, a), dc(dag, b));
+            let ta = quotient_term(dag, da, b);
+            let tb = zterm(dag, db, |g| {
+                let qb = g.div(node, b);
                 g.neg(qb)
             });
             dag.add(ta, tb)

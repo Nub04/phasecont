@@ -82,6 +82,14 @@ pub enum Op {
     /// between the constant `+0.0` and the product `t * p`.
     ZMul(NodeId, NodeId),
     Div(NodeId, NodeId),
+    /// `ZDiv(n, d)` is `+0.0` when `n == 0.0` (either sign), else exactly `n / d`. A NaN `n`
+    /// is not zero. The derivative rules use it for `tangent / denominator`: a tangent that
+    /// is zero at run time over a denominator that is also zero (a clamped quotient inside
+    /// `exp`, for example) then contributes `+0` instead of `0 / 0 = NaN`, as in the
+    /// fallback interpreter, which skips a zero tangent.
+    ///
+    /// Every evaluator copies this rule bit for bit, as for [`Op::ZMul`].
+    ZDiv(NodeId, NodeId),
     /// Integer power with `2 <= |n| <= 16` (the constructor folds n = 0 and n = 1 and sends
     /// larger |n| to `Pow`).
     ///
@@ -333,6 +341,21 @@ impl Dag {
             Some(0.0) => return self.konst(0.0),
             Some(c) if c.is_finite() => return self.mul(t, p),
             _ => {}
+        }
+        self.intern(op)
+    }
+
+    /// `n / d` with a zero `n` giving `+0.0` (see [`Op::ZDiv`]). A constant zero `n` folds to
+    /// `+0.0` whatever `d` is. A `ZDiv` never becomes a `Div` here, not even for `d = 1` or
+    /// a finite constant `d`, since a `-0.0` numerator gives `-0.0` through `Div` and `+0.0`
+    /// through `ZDiv`. `ZDiv` and `Div` never merge for the same reason.
+    pub fn zdiv(&mut self, n: NodeId, d: NodeId) -> NodeId {
+        let op = Op::ZDiv(n, d);
+        if let Some(c) = self.fold(op, &[n, d]) {
+            return c;
+        }
+        if self.is_zero(n) {
+            return self.konst(0.0);
         }
         self.intern(op)
     }

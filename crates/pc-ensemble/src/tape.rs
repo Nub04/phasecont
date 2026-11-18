@@ -43,6 +43,7 @@ fn remap(op: &Op, m: &[u32]) -> Op {
         Op::Mul(a, b) => Op::Mul(r(a), r(b)),
         Op::ZMul(a, b) => Op::ZMul(r(a), r(b)),
         Op::Div(a, b) => Op::Div(r(a), r(b)),
+        Op::ZDiv(a, b) => Op::ZDiv(r(a), r(b)),
         Op::PowI(a, n) => Op::PowI(r(a), n),
         Op::Call1(f, a) => Op::Call1(f, r(a)),
         Op::Call2(f, a, b) => Op::Call2(f, r(a), r(b)),
@@ -230,6 +231,7 @@ fn eval_op<T: Real>(op: &Op, v: &[T], x: &[T], p: &[T]) -> T {
         Op::Mul(u, w) => a(u) * a(w),
         Op::ZMul(u, w) => zmul(a(u), a(w)),
         Op::Div(u, w) => a(u) / a(w),
+        Op::ZDiv(u, w) => zdiv(a(u), a(w)),
         Op::PowI(u, n) => powi(a(u), n),
         Op::Call1(f, u) => call1(f, a(u)),
         Op::Call2(f, u, w) => call2(f, a(u), a(w)),
@@ -246,6 +248,11 @@ fn eval_op<T: Real>(op: &Op, v: &[T], x: &[T], p: &[T]) -> T {
 /// `+0` when `t == 0` (either sign), else `t * p`: the rule of `Op::ZMul`.
 fn zmul<T: Real>(t: T, p: T) -> T {
     if t == T::ZERO { T::ZERO } else { t * p }
+}
+
+/// `+0` when `n == 0` (either sign), else `n / d`: the rule of `Op::ZDiv`.
+fn zdiv<T: Real>(n: T, d: T) -> T {
+    if n == T::ZERO { T::ZERO } else { n / d }
 }
 
 fn cmp<T: Real>(c: Cmp, l: T, r: T) -> T {
@@ -284,6 +291,7 @@ enum Ins {
     Mul(u32, u32),
     ZMul(u32, u32),
     Div(u32, u32),
+    ZDiv(u32, u32),
     Call1(Fn1, u32),
     Call2(Fn2, u32, u32),
     Cmp(Cmp, u32, u32),
@@ -308,6 +316,7 @@ unsafe fn run<T: Real>(ins: Ins, s: &[T]) -> T {
         Ins::Mul(u, w) => a(u) * a(w),
         Ins::ZMul(u, w) => zmul(a(u), a(w)),
         Ins::Div(u, w) => a(u) / a(w),
+        Ins::ZDiv(u, w) => zdiv(a(u), a(w)),
         Ins::Call1(f, u) => call1(f, a(u)),
         Ins::Call2(f, u, w) => call2(f, a(u), a(w)),
         Ins::Cmp(c, u, w) => cmp(c, a(u), a(w)),
@@ -458,6 +467,7 @@ impl<T: Real> CpuTape<T> {
                     Op::Mul(a, b) => lo.emit(Ins::Mul(c(a), c(b))),
                     Op::ZMul(a, b) => lo.emit(Ins::ZMul(c(a), c(b))),
                     Op::Div(a, b) => lo.emit(Ins::Div(c(a), c(b))),
+                    Op::ZDiv(a, b) => lo.emit(Ins::ZDiv(c(a), c(b))),
                     Op::PowI(a, k) => lo.powi(c(a), k, one),
                     Op::Call1(f, a) => lo.emit(Ins::Call1(f, c(a))),
                     Op::Call2(f, a, b) => lo.emit(Ins::Call2(f, c(a), c(b))),
@@ -744,7 +754,7 @@ mod tests {
                     _ => Op::Dir(0),
                 }
             } else {
-                match (kind >> 4) % 14 {
+                match (kind >> 4) % 15 {
                     0 => Op::Neg(id(a)),
                     1 => Op::Add(id(a), id(b)),
                     2 => Op::Sub(id(a), id(b)),
@@ -758,7 +768,8 @@ mod tests {
                     10 => Op::Or(id(a), id(b)),
                     11 => Op::Not(id(a)),
                     12 => Op::Select(id(a), id(b), id(c)),
-                    _ => Op::ZMul(id(a), id(b)),
+                    13 => Op::ZMul(id(a), id(b)),
+                    _ => Op::ZDiv(id(a), id(b)),
                 }
             };
             ops.push(op);
@@ -842,7 +853,7 @@ mod tests {
             } else {
                 let pick = |x: u32| ids[x as usize % ids.len()];
                 let (x, y, z) = (pick(a), pick(b), pick(c));
-                match (kind >> 4) % 14 {
+                match (kind >> 4) % 15 {
                     0 => dag.neg(x),
                     1 => dag.add(x, y),
                     2 => dag.sub(x, y),
@@ -856,7 +867,8 @@ mod tests {
                     10 => dag.or(x, y),
                     11 => dag.not(x),
                     12 => dag.select(x, y, z),
-                    _ => dag.zmul(x, y),
+                    13 => dag.zmul(x, y),
+                    _ => dag.zdiv(x, y),
                 }
             };
             ids.push(id);
@@ -1143,34 +1155,49 @@ mod tests {
         cpu.eval_native(native, &[1.0], 0.0, &mut slab, &mut out);
     }
 
-    /// The written-out chain of `PowI` is the chain of [`powi`], including `k` of 0, 1 and
-    /// the ends of `i32`.
-    /// `ZMul(t, p)` is +0 for a zero `t` of either sign, whatever `p` is, and `t * p`
-    /// otherwise, in the interpreter and the compiled tape, in both precisions.
+    /// `ZMul(t, p)` and `ZDiv(t, p)` are +0 for a zero `t` of either sign, whatever `p` is,
+    /// and `t * p` or `t / p` otherwise, in the interpreter and the compiled tape, in both
+    /// precisions.
     #[test]
-    fn a_zero_multiplier_hides_a_non_finite_factor() {
+    fn a_zero_first_operand_hides_a_non_finite_second_operand() {
         fn run<T: Real>(vals: &[f64]) {
             let tape = Tape {
                 n: 2,
                 n_p: 0,
-                ops: vec![Op::Var(0), Op::Var(1), Op::ZMul(NodeId(0), NodeId(1))],
-                outputs: vec![2],
+                ops: vec![
+                    Op::Var(0),
+                    Op::Var(1),
+                    Op::ZMul(NodeId(0), NodeId(1)),
+                    Op::ZDiv(NodeId(0), NodeId(1)),
+                ],
+                outputs: vec![2, 3],
             };
             let cpu = CpuTape::<T>::new(&tape);
             let mut slab = cpu.slab();
             for &t in vals {
                 for &p in vals {
                     let (tt, pp) = (T::from_f64(t), T::from_f64(p));
-                    let want = if tt == T::ZERO { T::ZERO } else { tt * pp };
-                    let mut got = [T::ZERO];
+                    let want = if tt == T::ZERO {
+                        [T::ZERO, T::ZERO]
+                    } else {
+                        [tt * pp, tt / pp]
+                    };
+                    let mut got = [T::ZERO; 2];
                     cpu.eval(&[tt, pp], &[T::ZERO], &mut slab, &mut got);
-                    assert_eq!(bits(got[0]), bits(want), "{} {t:e} {p:e}", T::NAME);
-                    let mut by_tape = [T::ZERO];
+                    let mut by_tape = [T::ZERO; 2];
                     let mut scratch = vec![T::ZERO; tape.len()];
                     tape.eval(&[tt, pp], &[T::ZERO], &mut scratch, &mut by_tape);
-                    assert_eq!(bits(by_tape[0]), bits(want), "{} {t:e} {p:e}", T::NAME);
-                    if t == 0.0 {
-                        assert_eq!(bits(got[0]), bits(T::ZERO), "zero sign");
+                    for k in 0..2 {
+                        assert_eq!(bits(got[k]), bits(want[k]), "{} {k} {t:e} {p:e}", T::NAME);
+                        assert_eq!(
+                            bits(by_tape[k]),
+                            bits(want[k]),
+                            "{} {k} {t:e} {p:e}",
+                            T::NAME
+                        );
+                        if t == 0.0 {
+                            assert_eq!(bits(got[k]), bits(T::ZERO), "zero sign");
+                        }
                     }
                 }
             }
@@ -1189,6 +1216,8 @@ mod tests {
         run::<f32>(&vals);
     }
 
+    /// The written-out chain of `PowI` is the chain of [`powi`], including `k` of 0, 1 and
+    /// the ends of `i32`.
     #[test]
     fn integer_powers_take_the_same_multiply_chain() {
         let xs = [

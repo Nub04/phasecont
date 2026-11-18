@@ -141,6 +141,85 @@ fn the_derivative_of_zmul_guards_each_term_and_drops_static_zeros() {
     assert_eq!(run(&g, dq, &[0.0, 0.0]).to_bits(), 0.0f64.to_bits());
 }
 
+#[test]
+fn zdiv_is_plus_zero_for_a_zero_numerator_and_a_quotient_otherwise() {
+    let mut g = Dag::new(100);
+    let (n, dd) = (g.var(0), g.var(1));
+    let z = g.zdiv(n, dd);
+    assert!(matches!(g.op(z), Op::ZDiv(a, b) if *a == n && *b == dd));
+    for &nv in &SPECIALS {
+        for &dv in &SPECIALS {
+            let want = if nv == 0.0 { 0.0 } else { nv / dv };
+            let got = run(&g, z, &[nv, dv]);
+            assert!(
+                same(got, want),
+                "zdiv({nv:?}, {dv:?}) = {got:?} ({:016x}), want {want:?}",
+                got.to_bits()
+            );
+        }
+    }
+}
+
+#[test]
+fn a_zero_in_the_denominator_is_not_guarded_for_a_nonzero_numerator() {
+    let mut g = Dag::new(100);
+    let (n, dd) = (g.var(0), g.var(1));
+    let z = g.zdiv(n, dd);
+    assert_eq!(run(&g, z, &[1.0, 0.0]), f64::INFINITY);
+    assert_eq!(run(&g, z, &[-1.0, -0.0]), f64::INFINITY);
+    assert!(run(&g, z, &[f64::NAN, 0.0]).is_nan());
+}
+
+#[test]
+fn zdiv_folds() {
+    let mut g = Dag::new(100);
+    let (n, dd) = (g.var(0), g.var(1));
+    let plus = g.konst(0.0);
+    // A static zero numerator of either sign gives +0, whatever the denominator is.
+    let (pz, nz) = (g.konst(0.0), g.konst(-0.0));
+    assert_eq!(g.zdiv(pz, dd), plus);
+    assert_eq!(g.zdiv(nz, dd), plus);
+    // Both operands constant: evaluated with the same rule.
+    let (zero, one, two, six) = (g.konst(-0.0), g.konst(1.0), g.konst(2.0), g.konst(6.0));
+    assert_eq!(g.zdiv(zero, zero), plus);
+    let three = g.konst(3.0);
+    assert_eq!(g.zdiv(six, two), three);
+    let ninf = g.konst(f64::NEG_INFINITY);
+    assert_eq!(g.zdiv(one, zero), ninf);
+    // A nonconstant numerator stays a ZDiv node, whatever the denominator, including 1 and
+    // a finite constant: `-0.0 / c` is `-0.0` but `ZDiv(-0.0, c)` is `+0.0`.
+    for den in [dd, one, two, zero] {
+        let z = g.zdiv(n, den);
+        assert!(matches!(g.op(z), Op::ZDiv(..)), "{den:?}");
+    }
+    // ZDiv and Div never merge.
+    let q = g.div(n, dd);
+    let z = g.zdiv(n, dd);
+    assert_ne!(q, z);
+    assert_eq!(g.zdiv(n, dd), z);
+    assert_eq!(g.div(n, dd), q);
+}
+
+#[test]
+fn the_derivative_of_zdiv_guards_each_term() {
+    let mut g = Dag::new(100);
+    let (n, dd) = (g.var(0), g.var(1));
+    let z = g.zdiv(n, dd);
+    let mut memo = HashMap::new();
+    // d/du0: ZDiv(1, d) is 1 / d; the term with dd = 0 is dropped.
+    let d0 = d(&mut g, &mut memo, z, Wrt::U(0));
+    let one = g.konst(1.0);
+    let want = g.zdiv(one, dd);
+    assert_eq!(d0, want);
+    // d/du1: ZMul(1, -(q / d)), the term with dn = 0 is dropped.
+    let d1 = d(&mut g, &mut memo, z, Wrt::U(1));
+    assert_eq!(run(&g, d1, &[6.0, 3.0]), -(6.0 / 3.0 / 3.0));
+    // A zero numerator and a zero denominator: the derivative in the numerator direction
+    // is +0 (a zero tangent), where the plain quotient is 1 / 0 = inf. Here the tangent
+    // is the constant 1, so the term is 1 / d, which is not guarded.
+    assert_eq!(run(&g, d0, &[0.0, 0.0]), f64::INFINITY);
+}
+
 fn build(src: &str) -> (pc_ir::IrModel, Fallback) {
     let mut map = SourceMap::new();
     let top = map.add("t.ode", src);
@@ -179,6 +258,8 @@ fn templates() -> Vec<(&'static str, String)> {
         ("exp of log10", format!("exp(log10({m}))")),
         ("exp of lgamma", format!("exp(-lgamma({m}))")),
         ("exp of a negative power", format!("exp(-{m}^(-2))")),
+        ("exp of a reciprocal", format!("exp(-1/{m})")),
+        ("exp of a quotient", format!("exp(-(1+{m})/{m})")),
         ("atan2 at the origin", format!("atan2({m},{m})")),
         ("sqrt of a product", format!("sqrt({m}*{m})")),
         (
@@ -214,7 +295,7 @@ proptest! {
 
     #[test]
     fn random_clamps_inside_singular_functions_give_the_fallback_derivatives(
-        which in 0usize..9,
+        which in 0usize..11,
         c1 in -2i32..=2,
         c2 in -2i32..=2,
         seed in 1u64..1000,
@@ -229,6 +310,8 @@ proptest! {
             5 => format!("exp(-{m}^(-2))"),
             6 => format!("atan2({m},{m})+sqrt({m})*y"),
             7 => format!("{m}^q"),
+            8 => format!("exp(-1/{m})"),
+            9 => format!("exp(-(1+{m})/{m})*y"),
             _ => format!("exp(log10({m}))+sqrt({m})"),
         };
         let src = format!("par a=1, q=0.5\ninit x=0, y=0\nx'=-x+{rhs}\ny'=-y+x*y\ndone\n");

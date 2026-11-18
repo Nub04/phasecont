@@ -111,6 +111,10 @@ pub fn eval_op(
             if t == 0.0 { 0.0 } else { t * arg(p) }
         }
         Op::Div(a, b) => arg(a) / arg(b),
+        Op::ZDiv(n, d) => {
+            let n = arg(n);
+            if n == 0.0 { 0.0 } else { n / arg(d) }
+        }
         Op::PowI(a, n) => powi(arg(a), n),
         Op::Call1(f, a) => call1(f, arg(a)),
         Op::Call2(f, a, b) => call2(f, arg(a), arg(b)),
@@ -154,6 +158,7 @@ pub fn children(op: &Op, f: &mut dyn FnMut(NodeId)) {
         | Op::Mul(a, b)
         | Op::ZMul(a, b)
         | Op::Div(a, b)
+        | Op::ZDiv(a, b)
         | Op::Call2(_, a, b)
         | Op::Cmp(_, a, b)
         | Op::And(a, b)
@@ -289,6 +294,9 @@ fn err_op(
             mulz(val(a).abs(), err(b)) + mulz(val(b).abs(), err(a)) + ar
         }
         Op::Div(a, b) => (err(a) + mulz(ar, err(b))) / val(b).abs() + ar,
+        // A zero numerator over a zero denominator gives exactly +0, which the bound covers.
+        Op::ZDiv(a, b) if val(a) == 0.0 && val(b) == 0.0 => 0.0,
+        Op::ZDiv(a, b) => (err(a) + mulz(ar, err(b))) / val(b).abs() + ar,
         Op::PowI(a, n) => {
             let (av, ea) = (val(a).abs(), err(a));
             // Binary powering compounds by the `Mul` rule: `|n| - 1` roundings of size `|r|`,

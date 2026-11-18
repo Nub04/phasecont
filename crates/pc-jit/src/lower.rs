@@ -256,6 +256,14 @@ fn is_zero(b: &mut FunctionBuilder, float: Float, x: ir::Value) -> ir::Value {
     }
 }
 
+/// `+0.0` when `x == 0.0` (either zero), else `r`: the rule of `Op::ZMul` and `Op::ZDiv`,
+/// with `r` the product or quotient, which is always computed.
+fn zero_guard(b: &mut FunctionBuilder, float: Float, x: ir::Value, r: ir::Value) -> ir::Value {
+    let zero = fconst(b, float, 0.0);
+    let x_is_zero = is_zero(b, float, x);
+    b.ins().select(x_is_zero, zero, r)
+}
+
 /// The order documented on `Op::PowI`.
 fn powi(b: &mut FunctionBuilder, float: Float, x: ir::Value, n: i32) -> ir::Value {
     let mut m = n.unsigned_abs();
@@ -345,18 +353,21 @@ pub(crate) fn build(
                 let (l, r) = (arg(&mut b, &vals, l), arg(&mut b, &vals, r));
                 b.ins().fmul(l, r)
             }
-            // `t == 0` gives +0 whatever `p` is, else `t * p`; see `Op::ZMul`. The product is
-            // always computed and then discarded, so there is no branch.
+            // `t == 0` gives +0 whatever `p` is, else `t * p`; see `Op::ZMul`.
             Op::ZMul(t, p) => {
                 let (t, p) = (arg(&mut b, &vals, t), arg(&mut b, &vals, p));
-                let zero = fconst(&mut b, fl, 0.0);
-                let t_is_zero = is_zero(&mut b, fl, t);
                 let prod = b.ins().fmul(t, p);
-                b.ins().select(t_is_zero, zero, prod)
+                zero_guard(&mut b, fl, t, prod)
             }
             Op::Div(l, r) => {
                 let (l, r) = (arg(&mut b, &vals, l), arg(&mut b, &vals, r));
                 b.ins().fdiv(l, r)
+            }
+            // `n == 0` gives +0 whatever `d` is, else `n / d`; see `Op::ZDiv`.
+            Op::ZDiv(n, d) => {
+                let (n, d) = (arg(&mut b, &vals, n), arg(&mut b, &vals, d));
+                let quot = b.ins().fdiv(n, d);
+                zero_guard(&mut b, fl, n, quot)
             }
             Op::PowI(a, n) => {
                 let a = arg(&mut b, &vals, a);

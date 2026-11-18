@@ -25,8 +25,8 @@
 //! [`partial_may_be_nonfinite`] says the partial can be non-finite, the product of the
 //! partial and the block components is a `ZMul` that tests the block product first. The
 //! `ZMul` node gets the product rule with `ZMul` terms, and the Div recurrence uses `ZMul` for
-//! each term of `q b = a`. The final quotient `num / b_0` is not guarded: it is 0 / 0 when the
-//! numerator and `b_0` are both zero at run time, which the interpreter skips.
+//! each term of `q b = a`. The final quotient `num / b_0` is a `ZDiv`: a numerator that is zero
+//! at run time over a zero `b_0` gives +0, as the interpreter does by skipping a zero tangent.
 //!
 //! `pow(x, y)`: the interpreter skips every term that carries a `y` derivative when
 //! `pow(x, y)` is 0 (it would meet `0 * ln 0`), so those terms are wrapped in a select on
@@ -246,7 +246,8 @@ impl<'a> Builder<'a> {
                     c[s] = acc;
                 }
             }
-            Op::Div(a, b) => {
+            // `ZDiv` is the same recurrence: its tangent components are those of `Div`.
+            Op::Div(a, b) | Op::ZDiv(a, b) => {
                 let (a, b) = (self.get(a), self.get(b));
                 for s in 1..self.size {
                     let mut sum = self.zero;
@@ -262,14 +263,12 @@ impl<'a> Builder<'a> {
                         t = (t - 1) & s;
                     }
                     let num = self.dag.sub(a[s], sum);
-                    // A zero numerator over a zero `b[0]` is 0 / 0 here, where the
-                    // interpreter skips the zero tangent. A guard would cost a node per
-                    // component and push large models past the node limit, so this
-                    // case stays unguarded (see the SPEC).
+                    // A zero numerator over a zero `b[0]` is +0 as in the interpreter, which
+                    // skips a zero tangent. `ZDiv` replaces the `Div`, so it costs no node.
                     c[s] = if self.is_zero(num) {
                         self.zero
                     } else {
-                        self.dag.div(num, b[0])
+                        self.dag.zdiv(num, b[0])
                     };
                 }
             }
@@ -464,6 +463,10 @@ fn subst(dag: &mut Dag, node: NodeId, sub: &mut HashMap<NodeId, NodeId>) -> Node
         Op::Div(a, b) => {
             let (a, b) = (subst(dag, a, sub), subst(dag, b, sub));
             dag.div(a, b)
+        }
+        Op::ZDiv(a, b) => {
+            let (a, b) = (subst(dag, a, sub), subst(dag, b, sub));
+            dag.zdiv(a, b)
         }
         Op::PowI(a, k) => {
             let a = subst(dag, a, sub);
