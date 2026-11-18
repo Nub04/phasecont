@@ -7,7 +7,10 @@
 //! whole body for `j = i1`, then the whole body for the next index. In a
 //! copy, a name with an index becomes the name followed by the decimal
 //! index (`x[j+1]` at `j = 2` is `x3`), and a bare index form such as
-//! `[j*2]` becomes the integer it stands for. Every copy keeps the spans of
+//! `[j*2]` becomes the integer it stands for. A constant index `f[3]`
+//! needs no range and no copy: it is the name `f3` wherever it stands, in a
+//! range line or a block too, except in the places listed at
+//! [`refused_fixed`]. Every copy keeps the spans of
 //! the template and records its index in [`Stmt::array_index`] and its
 //! template in [`Stmt::array_template`], so that later passes can say which
 //! copy a diagnostic comes from.
@@ -25,6 +28,7 @@ use crate::ast::{
     Expr, Ident, Index, IndexOp, MarkovLine, Model, Stmt, StmtKind, SuppressedName, Value,
 };
 use crate::diag::{Code, Diagnostic, Sink, with_summary};
+use crate::parser::expr::UNSUPPORTED_INDEX;
 use crate::span::{FileId, Span};
 
 /// A statement with more than one range `[i1..i2]`.
@@ -283,6 +287,7 @@ fn index_text(index: &Index) -> String {
             IndexOp::Sub => format!("[j-{n}]"),
             IndexOp::Mul => format!("[j*{n}]"),
         },
+        Index::Fixed { n, .. } => format!("[{n}]"),
     }
 }
 
@@ -291,6 +296,7 @@ fn index_text(index: &Index) -> String {
 fn index_value(index: &Index, j: i64) -> Option<i64> {
     match index {
         Index::Range { .. } => Some(j),
+        Index::Fixed { n, .. } => Some(i64::from(*n)),
         Index::Var { op, n, .. } => {
             let n = i64::from(*n);
             match op {
@@ -301,6 +307,67 @@ fn index_value(index: &Index, j: i64) -> Option<i64> {
             }
         }
     }
+}
+
+/// The first name of `kind` with a constant index `[n]` in a place where
+/// XPPAUT 8.2.2 was not measured to read it as part of the name: the left
+/// side of `x(0)=` and `x(t+1)=`, and the names of `markov`, `wiener`,
+/// `set`, `global` and `@` statements. (The parser reads no index on the
+/// parameter of a function.) The
+/// measured ones are reads in a formula, a call name, and the declared name
+/// of an ODE, `dy/dt`, fixed, derived, `aux`, `par`, `init`, `number`,
+/// `table` and function line; `x[1](0)=3` was measured not to set `x1`.)
+fn refused_fixed(kind: &StmtKind) -> Option<&Ident> {
+    let names: Vec<&Ident> = match kind {
+        StmtKind::InitValue { name, .. }
+        | StmtKind::Map { name, .. }
+        | StmtKind::Markov { name, .. } => vec![name],
+        StmtKind::Set { name, entries } => std::iter::once(name)
+            .chain(entries.iter().map(|e| &e.name))
+            .collect(),
+        StmtKind::Options { entries } => entries.iter().map(|e| &e.name).collect(),
+        StmtKind::Global { assigns, .. } => assigns.iter().map(|a| &a.name).collect(),
+        StmtKind::Wiener { names } => names.iter().collect(),
+        _ => Vec::new(),
+    };
+    names
+        .into_iter()
+        .find(|id| matches!(id.index, Some(Index::Fixed { .. })))
+}
+
+/// True for a function whose name has an index other than `[n]`; the
+/// parser reported it.
+fn function_with_bad_index(kind: &StmtKind) -> bool {
+    matches!(
+        kind,
+        StmtKind::Function { name, .. }
+            if name.index.as_ref().is_some_and(|i| !matches!(i, Index::Fixed { .. }))
+    )
+}
+
+/// Appends the value of the index of `id` at `j` to its name and drops the
+/// index.
+fn number_name(id: &mut Ident, j: i64) {
+    if let Some(index) = id.index.take() {
+        // Invariant: `bounds_ok` ran on the statement and rejected every index
+        // that is out of range or overflows, so each value here is in range.
+        let v = index_value(&index, j).expect("index checked before copying");
+        id.text = format!("{}{v}", id.text);
+        id.key = format!("{}{v}", id.key);
+    }
+}
+
+/// Numbers every name of `kind` at `j`, the name of a function too. The
+/// name of a function has an index only when it is a constant one.
+fn number_names(kind: &mut StmtKind, j: i64) {
+    if let StmtKind::Function { name, .. } = kind {
+        number_name(name, j);
+    }
+    visit(kind, &mut |slot| {
+        if let Slot::Name(id) = slot {
+            number_name(id, j);
+        }
+    });
 }
 
 /// The note that points at the first of several ranges.
@@ -375,6 +442,25 @@ impl Expander {
         }
     }
 
+    /// Reports a constant index where XPPAUT does not read it as part of
+    /// the name (see [`refused_fixed`]). Returns true when it did.
+    fn refuse_fixed(&mut self, stmt: &Stmt) -> bool {
+        let Some(id) = refused_fixed(&stmt.kind) else {
+            return false;
+        };
+        let Some(index @ Index::Fixed { n, .. }) = &id.index else {
+            return false;
+        };
+        let message = format!(
+            "`{0}{1}`: a constant index is not read as part of the name on this left side; \
+             write `{0}{n}`",
+            id.text,
+            index_text(index),
+        );
+        self.report(UNSUPPORTED_INDEX, index.span(), message);
+        true
+    }
+
     /// A new template id.
     fn template(&mut self) -> u32 {
         let id = self.next_template;
@@ -394,7 +480,7 @@ impl Expander {
             // The parser reported it; keep it as written.
             StmtKind::BadBlock { .. } => self.out.push(stmt.clone()),
             // The parser reported the index on a function name.
-            StmtKind::Function { name, .. } if name.index.is_some() => self.suppress(stmt),
+            kind if function_with_bad_index(kind) => self.suppress(stmt),
             _ => {
                 if !self.line(stmt) {
                     self.suppress(stmt);
@@ -406,6 +492,9 @@ impl Expander {
     /// A statement outside an array block. Returns false when it is
     /// dropped.
     fn line(&mut self, stmt: &Stmt) -> bool {
+        if self.refuse_fixed(stmt) {
+            return false;
+        }
         let (found, nodes) = occurrences(&stmt.kind);
         let weight = weight(stmt, nodes);
         let ranges: Vec<&Occurrence> = found
@@ -423,7 +512,11 @@ impl Expander {
         }
         match ranges.as_slice() {
             [] => {
-                if let Some(var) = found.first() {
+                // A constant index needs no range; the first `[j]` form does.
+                let var = found
+                    .iter()
+                    .find(|o| !matches!(o.index, Index::Fixed { .. }));
+                if let Some(var) = var {
                     let message = format!(
                         "`{}` uses the index `j`, but this line has no range `[i1..i2]` and is \
                          not inside an array block",
@@ -432,7 +525,9 @@ impl Expander {
                     self.report(INDEX_OUT_OF_SCOPE, var.index.span(), message);
                     return false;
                 }
-                self.out.push(stmt.clone());
+                let mut out = stmt.clone();
+                number_names(&mut out.kind, 0);
+                self.out.push(out);
                 true
             }
             [range] => {
@@ -502,7 +597,7 @@ impl Expander {
                     self.suppress(stmt);
                     continue;
                 }
-                StmtKind::Function { name, .. } if name.index.is_some() => {
+                kind if function_with_bad_index(kind) => {
                     self.suppress(stmt);
                     continue;
                 }
@@ -515,6 +610,10 @@ impl Expander {
                     continue;
                 }
                 _ => {}
+            }
+            if self.refuse_fixed(stmt) {
+                self.suppress(stmt);
+                continue;
             }
             let (found, w) = occurrences(&stmt.kind);
             if let Some(range) = found
@@ -645,14 +744,13 @@ fn copy(stmt: &Stmt, j: i64, template: u32) -> Stmt {
     // Invariant: `bounds_ok` ran on this statement and rejected every index that
     // is out of range or overflows, so each value here is in range.
     let value = |index: &Index| index_value(index, j).expect("index checked before copying");
+    // `visit` skips the name of a function; it has an index only when it is
+    // a constant one.
+    if let StmtKind::Function { name, .. } = &mut out.kind {
+        number_name(name, j);
+    }
     visit(&mut out.kind, &mut |slot| match slot {
-        Slot::Name(id) => {
-            if let Some(index) = id.index.take() {
-                let v = value(&index);
-                id.text = format!("{}{v}", id.text);
-                id.key = format!("{}{v}", id.key);
-            }
-        }
+        Slot::Name(id) => number_name(id, j),
         Slot::Bare(expr) => {
             if let Expr::Index(index) = expr {
                 let v = value(index);

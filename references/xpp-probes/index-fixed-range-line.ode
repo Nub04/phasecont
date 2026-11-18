@@ -1,0 +1,13 @@
+# index-fixed-range-line: Does a constant index next to a range read as the numbered name (XPPAUT 8.2.2)?
+# xpp: r@1=5 yy@3=-3 rows=3
+# pc: ok
+# states: 2
+# ruling: pc-ode reads `name[n]` as `name<n>` on a range line too, so `flux[3]` and `flux3` are the same fixed quantity (language.md, Arrays).
+flux[1..3]=[j]*x
+y'=-flux[3]
+x'=0
+x(0)=1
+y(0)=0
+aux r=flux[2]+flux3
+aux yy=y
+@ total=1,dt=0.5,meth=euler

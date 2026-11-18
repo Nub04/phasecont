@@ -1,0 +1,8 @@
+# index-fixed-initval: Does the init value x[1](0)=3 set x1 (XPPAUT 8.2.2)?
+# xpp: v=0
+# pc: ODE0015
+# ruling: pc-ode refuses it (ODE0015). XPPAUT takes the line but does not set x1, so reading it as `x1(0)=3` would give a different start value.
+x1'=1
+x[1](0)=3
+aux v=x1
+@ total=0,dt=1

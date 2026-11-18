@@ -231,10 +231,10 @@ fn formulas() {
 }
 
 #[test]
-fn ddt_needs_a_letter_after_d_and_no_index() {
+fn ddt_needs_a_letter_after_d_and_no_j_index() {
     // `d2/dt=1` is not a d/dt form: `d2` is a name and `/` is not a left side.
     assert_eq!(codes("d2/dt=1"), vec![UNRECOGNIZED_STATEMENT]);
-    // `dx[j]/dt` is not a d/dt form either.
+    // `dx[j]/dt` is not a d/dt form either (only a constant `[n]` is read).
     assert_eq!(codes("dx[j]/dt=1"), vec![UNRECOGNIZED_STATEMENT]);
 }
 
@@ -742,6 +742,59 @@ fn unrecognized_statement() {
     check_one("+x=1", UNRECOGNIZED_STATEMENT, (0, 4), None);
     check_one("x y", UNRECOGNIZED_STATEMENT, (0, 3), None);
     check_one("x'=1\n  x y z # c\n", UNRECOGNIZED_STATEMENT, (7, 16), None);
+}
+
+#[test]
+fn constant_index_on_a_left_side() {
+    let two = Index::Fixed {
+        n: 2,
+        span: DUMMY_SPAN,
+    };
+    let id = |text: &str| Ident {
+        index: Some(two.clone()),
+        ..ident(text)
+    };
+    // `dy[2]/dt=` has the name `y[2]`, as `dy/dt=` has the name `y`.
+    assert_eq!(
+        clean_one("dy[2]/dt=1"),
+        StmtKind::Ode {
+            name: id("y"),
+            form: OdeForm::Ddt,
+            rhs: n("1"),
+        }
+    );
+    assert_eq!(
+        clean_one("y[2]'=1"),
+        StmtKind::Ode {
+            name: id("y"),
+            form: OdeForm::Prime,
+            rhs: n("1"),
+        }
+    );
+    assert_eq!(
+        clean_one("f[3]=1"),
+        StmtKind::Fixed {
+            name: Ident {
+                index: Some(Index::Fixed {
+                    n: 3,
+                    span: DUMMY_SPAN
+                }),
+                ..ident("f")
+            },
+            rhs: n("1"),
+        }
+    );
+    // A function name takes the index, too.
+    assert_eq!(clean("g[2](u)=u*2").len(), 1);
+    // The name part of `dy[2]/dt` spans `y[2]`.
+    let (model, _) = parse_all("dy[2]/dt=1");
+    let StmtKind::Ode { name, .. } = &model.statements[0].kind else {
+        panic!("not an ODE");
+    };
+    assert_eq!(name.span, sp(1, 5));
+    // Other index forms are not read on `dx/dt=`.
+    assert_eq!(codes("dy[j]/dt=1"), vec![UNRECOGNIZED_STATEMENT]);
+    assert_eq!(codes("dy[1..2]/dt=1"), vec![UNRECOGNIZED_STATEMENT]);
 }
 
 #[test]

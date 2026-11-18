@@ -639,6 +639,30 @@ fn names_and_index_forms() {
 }
 
 #[test]
+fn constant_index_is_written_as_an_integer() {
+    // The integer is read, so a leading zero is written without it.
+    assert_eq!(canon("x[3]+y[03]+g[2](4)"), "x[3] + y[3] + g[2](4)");
+    assert_eq!(canon("x[ 7 ]"), "x[7]");
+    let src = "f[3]=7\ny[2]'=1\ndy[2]/dt=1\npar a[2]=3\ninit y[2]=4\nnumber n[2]=5\n!d[2]=5\n\
+               aux w[2]=x+f[03]\ntable h[2] % 3 0 2 t^2\ng[2](u)=u*h[2](1)\nx[1](0)=3\n";
+    let m = parse_ok(src);
+    assert_round_trip(&m);
+    let text = write(&m);
+    assert!(text.contains("dy[2]/dt=1"), "{text}");
+    assert!(text.contains("f[3]"), "{text}");
+    assert!(!text.contains("[03]"), "{text}");
+    // The hand-built tree writes the same way.
+    let e = Expr::Name(indexed(
+        "x",
+        Index::Fixed {
+            n: 4,
+            span: DUMMY_SPAN,
+        },
+    ));
+    assert_eq!(expr_text(e), "x[4]");
+}
+
+#[test]
 fn error_nodes_write_text_that_reparses_with_an_error() {
     let e = bin(BinaryOp::Add, name("a"), Expr::Error { span: DUMMY_SPAN });
     let m = model(vec![stmt(StmtKind::Fixed {

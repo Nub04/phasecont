@@ -142,6 +142,11 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `include-ok` | Does #include inc/a.ode load the file? | `#include inc/a.ode` | 3 | no diagnostic; computes 3 | matches |
 | `include-path` | Is an include inside inc/sub/a.ode taken relative to that file? | `#include b.ode` in `inc/sub/a.ode` | error (taken relative to the working directory) | no diagnostic; relative to the including file | PhaseCont choice |
 | `include-quotes` | Does a quoted file name in #include load the file? | `#include "inc/a.ode"` | error (the name is undefined) | ODE0059 error | matches |
+| `index-fixed-bare` | What does a bare `[3]` give (XPPAUT 8.2.2)? | `aux v=[3]` | v=3 | ODE0015, a constant index can only follow a name | PhaseCont choice |
+| `index-fixed-decl` | Does a constant index on a declared name name the numbered symbol (XPPAUT 8.2.2)? | `y[1]'=1`, `dz[2]/dt=2`, `init q[2]=4`, `par a[2]=3`, `number n[2]=6`, `f[3]=7`, `!d[2]=n2+1`, `g[2](u)=u*4`, `table h[2] % 3 0 2 t^2`, `aux w[2]=y1+3`, a `%[1..2]` block with `v[j]=n[2]*[j]` | s=14 w=3 e=40 m=18 | no diagnostic; same values | matches |
+| `index-fixed-initval` | Does the init value `x[1](0)=3` set `x1` (XPPAUT 8.2.2)? | `x1'=1`, `x[1](0)=3`, `aux v=x1` | v=0 (not set) | ODE0015 error | PhaseCont choice |
+| `index-fixed-range-line` | Does a constant index next to a range line read as the numbered name (XPPAUT 8.2.2)? | `flux[1..3]=[j]*x`, `y'=-flux[3]`, `aux r=flux[2]+flux3` | r=5, yy=-3 at t=1 | no diagnostic; same values | matches |
+| `index-fixed-read` | Is `name[n]` read as `name<n>` in a formula (XPPAUT 8.2.2)? | `f3=7`, `par a2=3`, `k3=100`, `g2(u)=u*2`, `aux r=f[3]+a[2]+g[2](4)+k[03]` | r=118 | no diagnostic; computes 118 | matches |
 | `kw-fixed-letters` | Are p=, a=, w=, i=, d=, g=, b=, m= fixed quantities? | `p = 5`, `a = 6`, `w = 7`, `i = 8`, `d = 9`, `g = 10`, `b = 11`, `m = 12` | vp=5 va=6 vw=7 vi=8 vd=9 vg=10 vb=11 vm=12 | no diagnostic; computes vp=5 va=6 vw=7 vi=8 vd=9 vg=10 vb=11 vm=12 | matches |
 | `kw-p-nospace` | Is p=5 (no blanks) a fixed quantity? | `p=5` | 5 | no diagnostic; computes 5 | matches |
 | `kw-p-par` | Does p a=5 declare a parameter? | `p a=5` | 5 | no diagnostic; computes 5 | matches |

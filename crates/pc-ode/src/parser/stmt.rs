@@ -19,7 +19,7 @@ use crate::ast::{
 use crate::diag::{Code, Diagnostic, FixIt};
 use crate::lexer::{Token, TokenKind, lex};
 use crate::options::is_known_option;
-use crate::parser::expr::clip;
+use crate::parser::expr::{UNSUPPORTED_INDEX, clip};
 use crate::parser::{ExprCursor, parse_expr, parse_index, parse_name};
 use crate::span::{FileId, Span};
 
@@ -989,6 +989,14 @@ impl StmtParser<'_> {
             let before = self.diags.len();
             match self.index() {
                 Some(index @ Index::Var { .. }) => value = Some(Value::Index(index)),
+                Some(index @ Index::Fixed { .. }) => {
+                    // XPPAUT 8.2.2 reads a bare `[3]` as 3; only a name takes
+                    // a constant index here.
+                    let message =
+                        "a constant index can only follow a name; write the number".to_string();
+                    self.report(UNSUPPORTED_INDEX, index.span(), message, None);
+                    value = Some(Value::Error { span: index.span() });
+                }
                 Some(index) => {
                     let message = "a range cannot be a value; use `[j]` or a number".to_string();
                     self.report(BAD_VALUE, index.span(), message, None);
@@ -1658,6 +1666,18 @@ impl StmtParser<'_> {
                 let rhs = self.expr();
                 Some(self.end_statement(start, StmtKind::Fixed { name, rhs }, false))
             }
+            // `dy[2]/dt=`: the name is `y[2]`.
+            TokenKind::Slash if self.ddt_fixed_index(&name) => {
+                self.pos += 3;
+                let rhs = self.expr();
+                let name = self.without_leading_d(name);
+                let kind = StmtKind::Ode {
+                    name,
+                    form: OdeForm::Ddt,
+                    rhs,
+                };
+                Some(self.end_statement(start, kind, false))
+            }
             _ => {
                 self.pos = self.line_start(self.pos);
                 self.unrecognized()
@@ -1716,6 +1736,33 @@ impl StmtParser<'_> {
             index: None,
             span: name_span,
         })
+    }
+
+    /// True when `name`, just read, is `dy[2]` of a `dy[2]/dt=` left side,
+    /// with the current token at the `/`. Only a constant index is read
+    /// here; XPPAUT 8.2.2 was measured on `dy[2]/dt=` alone.
+    fn ddt_fixed_index(&self, name: &Ident) -> bool {
+        let mut chars = name.key.chars();
+        let starts_d =
+            chars.next() == Some('d') && chars.next().is_some_and(|c| c.is_ascii_alphabetic());
+        let is_dt = matches!(self.kind(1), TokenKind::Name(k) if k == "dt");
+        starts_d
+            && matches!(name.index, Some(Index::Fixed { .. }))
+            && is_dt
+            && *self.kind(2) == TokenKind::Eq
+    }
+
+    /// `name` of `dy[2]` without the `d`: the name `y[2]`, with the span
+    /// and the text moved past the `d`.
+    fn without_leading_d(&self, name: Ident) -> Ident {
+        let span = self.span(name.span.start + 1, name.span.end);
+        let base = name.text.len();
+        Ident {
+            text: name.text[1..base].to_string(),
+            key: name.key[1..].to_string(),
+            index: name.index,
+            span,
+        }
     }
 
     /// A left side `name(...)`, at the `(`: `x(t+1)`, `x(0)`, `x(t)`
@@ -1794,7 +1841,10 @@ impl StmtParser<'_> {
                 }
             }
         }
-        if let Some(index) = &name.index {
+        // `g[2](u)=...` declares `g2`, like the other constant indices.
+        if let Some(index) = &name.index
+            && !matches!(index, Index::Fixed { .. })
+        {
             let message = format!(
                 "a function name cannot have an index; remove `{}`",
                 self.quote(index.span())

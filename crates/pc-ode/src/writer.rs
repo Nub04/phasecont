@@ -129,7 +129,9 @@ pub fn format_number(value: f64) -> String {
 fn stmt(out: &mut String, s: &Stmt) {
     match &s.kind {
         StmtKind::Ode { name, form, rhs } => {
-            if *form == OdeForm::Ddt && name.index.is_none() {
+            // Only a constant index is read after `d`: `dy[2]/dt=`.
+            let ddt_ok = matches!(name.index, None | Some(Index::Fixed { .. }));
+            if *form == OdeForm::Ddt && ddt_ok {
                 out.push('d');
                 out.push_str(&ident(name));
                 out.push_str("/dt=");
@@ -323,6 +325,7 @@ fn index(ix: &Index) -> String {
             IndexOp::Sub => format!("[j-{n}]"),
             IndexOp::Mul => format!("[j*{n}]"),
         },
+        Index::Fixed { n, .. } => format!("[{n}]"),
     }
 }
 
