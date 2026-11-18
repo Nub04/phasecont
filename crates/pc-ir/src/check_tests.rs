@@ -324,3 +324,46 @@ fn an_entry_that_cannot_be_built_for_another_reason_still_fails() {
     assert!(r.pass && r.skip, "{r}");
     assert!(r.to_string().contains("SKIP"), "{r}");
 }
+
+const NAN_HALF: &str = "par g=0.5, q=2.5
+init x=0,y=0
+x'=g*y^q
+y'=-y
+done
+";
+
+#[test]
+fn sample_points_with_a_non_finite_model_value_are_skipped() {
+    let (fb, mut ir) = setup(NAN_HALF);
+    let rep = check_model_with(&mut ir, &fb, &low_order(40, 1, 3));
+    let text = rep.to_string();
+    assert!(rep.passed(), "{text}");
+    for label in ["A (FD)", "f_alpha (FD)", "B (FD)", "C (FD)"] {
+        let r = rep.find(label).unwrap();
+        assert!(r.skipped_points > 0, "{label}: {text}");
+        assert!(
+            r.points > 0 && r.points + r.skipped_points == 40,
+            "{label}: {text}"
+        );
+        assert!(r.to_string().contains("points skipped"), "{r}");
+    }
+}
+
+#[test]
+fn an_fd_row_with_no_usable_point_fails() {
+    let (fb, mut ir) = setup("par q=2.5\ninit x=0\nx'=(0-1-x*x)^q\ndone\n");
+    let rep = check_model_with(&mut ir, &fb, &low_order(5, 1, 1));
+    let a = rep.find("A (FD)").unwrap();
+    assert!(!a.pass && a.points == 0 && a.skipped_points == 5, "{rep}");
+    assert!(a.to_string().contains("no usable point"), "{a}");
+    assert!(!rep.passed());
+}
+
+#[test]
+fn a_model_with_finite_values_everywhere_skips_no_point() {
+    let (fb, mut ir) = setup("par a=1.5\ninit x=0.5\nx'=a*x^3\ndone\n");
+    let rep = check_model_with(&mut ir, &fb, &low_order(5, 1, 3));
+    assert!(rep.passed(), "{rep}");
+    assert!(rep.entries.iter().all(|e| e.skipped_points == 0 && !e.skip));
+    assert!(!rep.to_string().contains("skipped"), "{rep}");
+}

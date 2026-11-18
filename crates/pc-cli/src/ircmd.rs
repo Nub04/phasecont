@@ -228,6 +228,7 @@ mod tests {
             points: 3,
             note: note.map(str::to_string),
             skip: false,
+            skipped_points: 0,
         }
     }
 

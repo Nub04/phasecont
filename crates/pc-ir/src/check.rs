@@ -173,8 +173,13 @@ pub struct EntryReport {
     pub x: Vec<f64>,
     /// `p` (with `t` last) where the worst error happened.
     pub p: Vec<f64>,
+    /// Points that were compared.
     pub points: usize,
-    /// Set when the entry could not be built.
+    /// Sample points left out of a finite-difference row because the model value `f(x, p)`
+    /// there is not finite. Zero for every other row.
+    pub skipped_points: usize,
+    /// Set when the entry could not be built, or when a finite-difference row has no
+    /// usable point.
     pub note: Option<String>,
 }
 
@@ -190,6 +195,7 @@ impl EntryReport {
             x: Vec::new(),
             p: Vec::new(),
             points: 0,
+            skipped_points: 0,
             note: None,
         }
     }
@@ -273,6 +279,21 @@ impl fmt::Display for EntryReport {
         )?;
         if let Some(n) = &self.note {
             write!(f, "  ({n})")?;
+        } else if self.skipped_points > 0 {
+            write!(
+                f,
+                "  ({} of {} points skipped, non-finite model value)",
+                self.skipped_points,
+                self.skipped_points + self.points
+            )?;
+            if !self.pass {
+                write!(
+                    f,
+                    "\n    at x = {}, p = {}",
+                    fmt_vec(&self.x),
+                    fmt_vec(&self.p)
+                )?;
+            }
         } else if !self.pass {
             write!(
                 f,
@@ -411,13 +432,18 @@ fn step(base: f64) -> f64 {
     f64::EPSILON.cbrt() * base.abs().max(1.0)
 }
 
+/// One finite-difference row. `skipped` is the number of sample points that were left
+/// out because the model value there is not finite; a row that left out every point
+/// fails, since it checked nothing.
 fn fd_report(
     label: &str,
     tol: f64,
+    skipped: usize,
     rep_pts: impl Iterator<Item = (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, f64)>,
 ) -> EntryReport {
     // Each item: (x, p, exact, fd, extra scale from a differenced lower-order quantity).
     let mut rep = EntryReport::new(label.to_string());
+    rep.skipped_points = skipped;
     for (x, p, exact, fd, extra) in rep_pts {
         let s = scale(&exact).max(extra).max(f64::MIN_POSITIVE);
         let it = exact.iter().zip(&fd).map(|(&a, &b)| {
@@ -430,6 +456,12 @@ fn fd_report(
             (err, r)
         });
         rep.record(it, s, &x, &p);
+    }
+    if skipped > 0 && rep.points == 0 {
+        rep.pass = false;
+        rep.note = Some(format!(
+            "no usable point: all {skipped} sample points have a non-finite model value"
+        ));
     }
     rep
 }
@@ -513,8 +545,19 @@ fn fd_checks(ir: &mut IrModel, opt: &Options, rng: &mut Rng) -> Vec<EntryReport>
     let mut fa_pts = Vec::new();
     let mut b_pts = Vec::new();
     let mut c_pts = Vec::new();
+    let mut skipped = 0_usize;
     for _ in 0..opt.points {
         let (x, p) = draw_point(ir, rng, opt.half_width);
+        let v: Vec<f64> = (0..n).map(|_| rng.range(-1.0, 1.0)).collect();
+        let w: Vec<f64> = (0..n).map(|_| rng.range(-1.0, 1.0)).collect();
+        let z: Vec<f64> = (0..n).map(|_| rng.range(-1.0, 1.0)).collect();
+        // A point where the model itself is not finite has no finite difference to compare
+        // with. It still draws its directions above, so the later points of a seed are the
+        // same ones as before.
+        if f_at(&x, &p).iter().any(|y| !y.is_finite()) {
+            skipped += 1;
+            continue;
+        }
         // A: column j by central differences of f.
         let exact = dag(ir, &EntryKind::JacU, &x, &p, &[]);
         let mut fd = vec![0.0; n * n];
@@ -546,9 +589,6 @@ fn fd_checks(ir: &mut IrModel, opt: &Options, rng: &mut Rng) -> Vec<EntryReport>
             fa_pts.push((x.clone(), p.clone(), exact, fd, 0.0));
         }
         // B(v, w) by differencing A v = Dir[U](v) along w.
-        let v: Vec<f64> = (0..n).map(|_| rng.range(-1.0, 1.0)).collect();
-        let w: Vec<f64> = (0..n).map(|_| rng.range(-1.0, 1.0)).collect();
-        let z: Vec<f64> = (0..n).map(|_| rng.range(-1.0, 1.0)).collect();
         let vw: Vec<f64> = v.iter().chain(&w).copied().collect();
         let exact_b = dag(ir, &u2, &x, &p, &vw);
         let h = f64::EPSILON.cbrt();
@@ -579,12 +619,28 @@ fn fd_checks(ir: &mut IrModel, opt: &Options, rng: &mut Rng) -> Vec<EntryReport>
         let extra_c = scale(&bp).max(scale(&bm)) * 1e-6;
         c_pts.push((x.clone(), p.clone(), exact_c, fd_c, extra_c));
     }
-    let mut out = vec![fd_report("A (FD)", FD_TOL_FIRST, a_pts.into_iter())];
+    let mut out = vec![fd_report(
+        "A (FD)",
+        FD_TOL_FIRST,
+        skipped,
+        a_pts.into_iter(),
+    )];
     if n_p > 0 {
-        out.push(fd_report("f_alpha (FD)", FD_TOL_FIRST, fa_pts.into_iter()));
+        let rows = fa_pts.into_iter();
+        out.push(fd_report("f_alpha (FD)", FD_TOL_FIRST, skipped, rows));
     }
-    out.push(fd_report("B (FD)", FD_TOL_HIGHER, b_pts.into_iter()));
-    out.push(fd_report("C (FD)", FD_TOL_HIGHER, c_pts.into_iter()));
+    out.push(fd_report(
+        "B (FD)",
+        FD_TOL_HIGHER,
+        skipped,
+        b_pts.into_iter(),
+    ));
+    out.push(fd_report(
+        "C (FD)",
+        FD_TOL_HIGHER,
+        skipped,
+        c_pts.into_iter(),
+    ));
     out
 }
 
