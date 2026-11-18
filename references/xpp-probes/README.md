@@ -94,6 +94,10 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `eqspace-x0` | Are blanks around = accepted in x(0)=? | `x(0) = 3` | 13 | no diagnostic; computes 13 | matches |
 | `exp-overflow` | What is exp(710)? | `exp(710)` | inf | no diagnostic; computes inf | matches |
 | `fixed-aux-above` | Does an aux above a fixed quantity see its final value? | `aux v=b` above `b=3` | 5 | no diagnostic; computes 5 | matches |
+| `aux-fixed-after` | Can an aux column share its name with an earlier fixed quantity (XPPAUT 8.2.2)? | `f=2*x+1`, `aux f=7*x`, `aux g=f` | f=7 g=3 (the aux column keeps its formula, readers get the fixed value) | no diagnostic; the IR gives the same two values | matches |
+| `aux-fixed-before` | Can an aux column share its name with a later fixed quantity (XPPAUT 8.2.2)? | `aux f=7*x`, `f=2*x+1`, `aux g=f` | f=7 g=3 | no diagnostic; same values | matches |
+| `aux-fixed-self` | Does `aux f=f+1` after a fixed quantity f read the fixed quantity (XPPAUT 8.2.2)? | `f=2*x+1`, `aux f=f+1` | f=4 (at x=1) | no diagnostic; computes 4 | matches |
+| `aux-fixed-self-before` | Does `aux f=f+1` above a fixed quantity f read the fixed quantity (XPPAUT 8.2.2)? | `aux f=f+1`, `f=2*x+1` | f=4 | no diagnostic; computes 4 | matches |
 | `fixed-forward-func` | What does a fixed quantity get from a function that reads a later fixed quantity? | `b=g(1)`, `c=5`, `g(u)=u+c` | 1 (c is still 0) | ODE0042 error | PhaseCont choice |
 | `fixed-forward` | What does a fixed quantity read from a later line? | `b=c+1` above `c=2` | 1 | ODE0042 error, fixed quantity defined on a later line | PhaseCont choice |
 | `fn-atan2` | Which argument order does atan2 use? | `atan2(1,0)`, `atan2(-1,-1)` | v1=1.5707964 v2=-2.3561945 | no diagnostic; computes v1=1.5707964 v2=-2.3561945 | matches |

@@ -1,0 +1,10 @@
+# aux-fixed-before: Can an aux column share its name with a later fixed quantity (XPPAUT 8.2.2)?
+# xpp: f=7 g=3
+# pc: ok
+# ruling: pc-ode accepts it, in either order. The name resolves to the fixed quantity, so `aux g=f` is 2*x+1 (language.md, Names and order).
+x'=-x
+x(0)=1
+aux f=7*x
+f=2*x+1
+aux g=f
+@ total=1,dt=0.5

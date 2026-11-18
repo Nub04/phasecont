@@ -284,6 +284,62 @@ fn duplicates() {
     );
 }
 
+/// XPPAUT 8.2.2 accepts `aux f=...` for a name that is also a fixed
+/// quantity, in either order. Every reader of `f` gets the fixed quantity
+/// and the aux column keeps its own formula (`aux-fixed-*` probes).
+#[test]
+fn aux_may_repeat_a_fixed_name() {
+    for text in [
+        "x'=-x+0*f\nf=2*x+1\naux f=7*x",
+        "x'=-x+0*f\naux f=7*x\nf=2*x+1",
+        "x'=-x\nf=2*x+1\naux f=f+1",
+        "x'=-x\naux f=f+1\nf=2*x+1",
+        "x'=-x\nf=2*x+1\naux F=7*x",
+    ] {
+        let info = info(text);
+        // The name resolves to the fixed quantity, so a read of `f` is not
+        // an aux misuse (AUX_IN_FORMULA).
+        assert_eq!(
+            info.symbol("f").unwrap().kind,
+            SymbolKind::Fixed,
+            "{text:?}"
+        );
+        let count = |want: fn(SymbolKind) -> bool| {
+            info.symbols
+                .iter()
+                .filter(|s| s.name.key == "f" && want(s.kind))
+                .count()
+        };
+        assert_eq!(count(|k| k == SymbolKind::Fixed), 1, "{text:?}");
+        assert_eq!(count(|k| k == SymbolKind::Aux), 1, "{text:?}");
+    }
+    // Other formulas read the fixed quantity, whatever the order.
+    clean("x'=-x\ny'=f\naux f=7*x\nf=2*x+1\naux g=f");
+    // Only one aux per fixed name; the repeat is reported as before.
+    for text in [
+        "x'=-x\nf=2*x+1\naux f=1\naux f=2",
+        "x'=-x\naux f=1\nf=2*x+1\naux f=2",
+        "x'=-x\naux f=1\naux f=2\nf=2*x+1",
+    ] {
+        let (_, diags) = run(text);
+        let dups = diags.iter().filter(|d| d.code == DUPLICATE_NAME).count();
+        assert_eq!(dups, 1, "{text:?}: {diags:#?}");
+    }
+    // A second fixed quantity is still a duplicate.
+    for text in ["x'=-x\nf=1\naux f=2\nf=3", "x'=-x\naux f=2\nf=1\nf=3"] {
+        assert_eq!(codes(text), vec![DUPLICATE_NAME], "{text:?}");
+    }
+    // An aux repeating a parameter, a state or a function stays an error.
+    for text in [
+        "x'=-x\npar p=1\naux p=2",
+        "x'=-x\naux x=2",
+        "x'=-x\ng(u)=u\naux g=2",
+        "x'=-x\n!d=2\naux d=2",
+    ] {
+        assert_eq!(codes(text), vec![DUPLICATE_NAME], "{text:?}");
+    }
+}
+
 #[test]
 fn initial_values() {
     clean("x'=1\ny'=1\nx(0)=1\ninit y=2");

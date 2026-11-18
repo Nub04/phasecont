@@ -279,3 +279,30 @@ fn array_models_lower() {
     assert_eq!(m.init, [1.0, 2.0, 3.0]);
     assert_eq!(run(&m, &m.f, &[1.0, 1.0, 1.0], &[0.0]), [0.0, 1.0, 2.0]);
 }
+
+/// An aux that repeats a fixed name keeps its own formula; every other
+/// reader of the name gets the fixed quantity. The values are the ones
+/// XPPAUT 8.2.2 wrote for the `aux-fixed-*` probes at x = 1.
+#[test]
+fn aux_repeating_a_fixed_name_reads_the_fixed_quantity() {
+    // Aux after the fixed quantity, and before it.
+    for src in [
+        "x'=-x\ny'=f\nf=2*x+1\naux f=7*x\naux g=f\ndone\n",
+        "x'=-x\ny'=f\naux f=7*x\nf=2*x+1\naux g=f\ndone\n",
+    ] {
+        let m = ir(src);
+        assert_eq!(m.aux_names, ["f", "g"], "{src:?}");
+        // x' = -1, y' = f = 3; aux f = 7, aux g = f = 3.
+        assert_eq!(run(&m, &m.f, &[1.0, 0.0], &[]), [-1.0, 3.0], "{src:?}");
+        assert_eq!(run(&m, &m.aux, &[1.0, 0.0], &[]), [7.0, 3.0], "{src:?}");
+    }
+    // The aux formula reads the fixed quantity of the same name.
+    for src in [
+        "x'=-x\nf=2*x+1\naux f=f+1\ndone\n",
+        "x'=-x\naux f=f+1\nf=2*x+1\ndone\n",
+    ] {
+        let m = ir(src);
+        assert_eq!(m.aux_names, ["f"], "{src:?}");
+        assert_eq!(run(&m, &m.aux, &[1.0], &[]), [4.0], "{src:?}");
+    }
+}
