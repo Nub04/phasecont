@@ -24,8 +24,9 @@
 //! infinite or NaN at a finite input, as the interpreter's `Dual::term` does. So where
 //! [`partial_may_be_nonfinite`] says the partial can be non-finite, the product of the
 //! partial and the block components is a `ZMul` that tests the block product first. The
-//! `ZMul` node gets the product rule with `ZMul` terms, and the Div recurrence tests each
-//! term of `q b = a` and the final quotient.
+//! `ZMul` node gets the product rule with `ZMul` terms, and the Div recurrence uses `ZMul` for
+//! each term of `q b = a`. The final quotient `num / b_0` is not guarded: it is 0 / 0 when the
+//! numerator and `b_0` are both zero at run time, which the interpreter skips.
 //!
 //! `pow(x, y)`: the interpreter skips every term that carries a `y` derivative when
 //! `pow(x, y)` is 0 (it would meet `0 * ln 0`), so those terms are wrapped in a select on
@@ -261,24 +262,14 @@ impl<'a> Builder<'a> {
                         t = (t - 1) & s;
                     }
                     let num = self.dag.sub(a[s], sum);
+                    // A zero numerator over a zero `b[0]` is 0 / 0 here, where the
+                    // interpreter skips the zero tangent. A guard would cost a node per
+                    // component and push large models past the node limit, so this
+                    // case stays unguarded (see the SPEC).
                     c[s] = if self.is_zero(num) {
                         self.zero
                     } else {
-                        let q = self.dag.div(num, b[0]);
-                        // A zero numerator gives +0 where `b[0]` is 0, as the interpreter,
-                        // which skips a zero tangent. The select tests the numerator itself.
-                        // A nonzero finite constant divisor cannot give 0 / 0.
-                        match self.dag.op(b[0]) {
-                            Op::Const(bits)
-                                if {
-                                    let c = f64::from_bits(*bits);
-                                    c != 0.0 && c.is_finite()
-                                } =>
-                            {
-                                q
-                            }
-                            _ => self.dag.select(num, q, self.zero),
-                        }
+                        self.dag.div(num, b[0])
                     };
                 }
             }
