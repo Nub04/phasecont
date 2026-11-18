@@ -380,3 +380,48 @@ fn a_finite_model_value_with_a_non_finite_derivative_is_compared_and_fails() {
     assert!(!a.pass && a.points == 5 && a.skipped_points == 0, "{rep}");
     assert!(!rep.passed());
 }
+
+#[test]
+fn the_node_limit_defaults_to_max_nodes_and_a_hook_lowers_it() {
+    let (_, mut ir) = setup("init x=0.5\nx'=sin(x)*cos(x)+x*x\ndone\n");
+    assert_eq!(ir.node_limit(), crate::dag::MAX_NODES);
+    assert!(ir.entry(&EntryKind::JacU).is_ok());
+    // A limit at the current size leaves no room for a new node. An entry built before the
+    // change stays available, a new one is refused as too large.
+    let size = ir.dag.len();
+    ir.set_node_limit(size);
+    assert_eq!(ir.node_limit(), size);
+    assert!(ir.entry(&EntryKind::JacU).is_ok());
+    let e = ir
+        .entry(&EntryKind::Dir(vec![Slot::U, Slot::U]))
+        .unwrap_err();
+    assert_eq!(e.kind, IrErrorKind::TooLarge);
+    // The refused request left the DAG as it was, and the limit can be raised again.
+    assert_eq!(ir.dag.len(), size);
+    assert!(!ir.dag.exceeded());
+    ir.set_node_limit(crate::dag::MAX_NODES);
+    assert!(ir.entry(&EntryKind::Dir(vec![Slot::U, Slot::U])).is_ok());
+}
+
+#[test]
+fn a_lowered_node_limit_gives_skip_rows_and_no_failure() {
+    // Lowered normally, then limited through the hook: no entry beyond F can be built.
+    let (fb, mut ir) = setup("par a=1.5\ninit x=0.5,y=0.2\nx'=a*sin(x)*y\ny'=cos(x)-y*y\ndone\n");
+    ir.set_node_limit(ir.dag.len());
+    let rep = check_model_with(&mut ir, &fb, &low_order(3, 1, 2));
+    let text = rep.to_string();
+    assert!(rep.passed(), "{text}");
+    assert_eq!(rep.failures().count(), 0, "{text}");
+    let skipped: Vec<&str> = rep
+        .entries
+        .iter()
+        .filter(|e| e.skip)
+        .map(|e| e.label.as_str())
+        .collect();
+    for label in ["JacU", "JacP", "Dir[U]", "Dir[U,U]", "FD"] {
+        assert!(skipped.contains(&label), "{label} not skipped: {text}");
+    }
+    assert!(!rep.find("F").unwrap().skip && rep.find("F").unwrap().pass);
+    assert!(text.contains("SKIP") && !text.contains("FAIL"), "{text}");
+    assert!(text.contains("entry too large"), "{text}");
+}

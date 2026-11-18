@@ -195,6 +195,20 @@ impl Dag {
         self.exceeded
     }
 
+    /// The node limit: adding a new node while the DAG already holds this many sets
+    /// [`Dag::exceeded`].
+    pub fn cap(&self) -> usize {
+        self.cap
+    }
+
+    /// Changes the node limit. Nodes already in the DAG stay. The new limit applies to the
+    /// nodes added from now on, so a limit at or below `len()` makes the next new node
+    /// exceed it. The default is `MAX_NODES`; this exists so a test can reach the
+    /// `TooLarge` path without a model of a million nodes.
+    pub fn set_cap(&mut self, cap: usize) {
+        self.cap = cap;
+    }
+
     /// The op of `id`. An id from another DAG may be out of range; that returns `Const(NaN)`
     /// rather than panicking.
     pub fn op(&self, id: NodeId) -> &Op {
