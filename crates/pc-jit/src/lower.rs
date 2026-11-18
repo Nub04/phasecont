@@ -259,22 +259,16 @@ fn is_zero(b: &mut FunctionBuilder, float: Float, x: ir::Value) -> ir::Value {
 /// `+0.0` when `x == 0.0` (either zero), else `r`: the rule of `Op::ZMul` and `Op::ZDiv`,
 /// with `r` the product or quotient, which is always computed.
 ///
-/// The choice is made on the integer bits: the magnitude bits of `x` are nonzero exactly
-/// when `x != 0.0` (NaN included), `bmask` widens that to all ones or all zeros, and `band`
-/// keeps the bits of `r` or leaves the bits of +0.0. Cranelift lowers a float `select` on
-/// x64 to a conditional move that is a jump, so the mask form is used instead.
+/// A float `select` is a compare and a jump on x64: Cranelift lowers it to a conditional
+/// move that it emits as a branch. The jump was kept on purpose. Integer-mask forms (the
+/// magnitude bits through `bmask` and `band`, and a vector `fcmp` with `band`) took 145 ns
+/// and 120 ns against 102 ns for the select on the fourth derivative of a two-variable
+/// model, because the compare and the `band` sit on the dependency chain and a Jacobian
+/// sees the same zero pattern on every call, so the jump predicts.
 fn zero_guard(b: &mut FunctionBuilder, float: Float, x: ir::Value, r: ir::Value) -> ir::Value {
-    let (int, flt) = match float {
-        Float::F64 => (types::I64, types::F64),
-        Float::F32 => (types::I32, types::F32),
-    };
-    let xbits = b.ins().bitcast(int, MemFlagsData::new(), x);
-    let mag = b.ins().ishl_imm_u(xbits, 1);
-    let keep = b.ins().icmp_imm_u(IntCC::NotEqual, mag, 0);
-    let mask = b.ins().bmask(int, keep);
-    let rbits = b.ins().bitcast(int, MemFlagsData::new(), r);
-    let out = b.ins().band(rbits, mask);
-    b.ins().bitcast(flt, MemFlagsData::new(), out)
+    let zero = fconst(b, float, 0.0);
+    let x_is_zero = is_zero(b, float, x);
+    b.ins().select(x_is_zero, zero, r)
 }
 
 /// The order documented on `Op::PowI`.
