@@ -316,14 +316,18 @@ impl Dag {
     }
 
     /// `t * p` with a zero `t` giving `+0.0` (see [`Op::ZMul`]). A constant zero `t` folds to
-    /// `+0.0` whatever `p` is. A nonzero finite constant `t` cannot be zero at run time, so
-    /// the node becomes an ordinary `mul`. An infinite or NaN constant `t` stays a `ZMul`
-    /// node. `ZMul` and `Mul` never merge, since they differ when `t` is zero and `p` is
-    /// not finite.
+    /// `+0.0` whatever `p` is, and so does a constant zero `p`, as in [`Dag::mul`]. A nonzero
+    /// finite constant `t` cannot be zero at run time, so the node becomes an ordinary
+    /// `mul`. An infinite or NaN constant `t` stays a `ZMul` node. `ZMul` and `Mul` never
+    /// merge, since they differ when `t` is zero and `p` is not finite.
     pub fn zmul(&mut self, t: NodeId, p: NodeId) -> NodeId {
         let op = Op::ZMul(t, p);
         if let Some(c) = self.fold(op, &[t, p]) {
             return c;
+        }
+        // A static zero factor folds to +0 whatever `t` is, as in `mul`.
+        if self.is_zero(p) {
+            return self.konst(0.0);
         }
         match self.cval(t) {
             Some(0.0) => return self.konst(0.0),

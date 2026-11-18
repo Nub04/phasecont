@@ -89,8 +89,13 @@ fn zmul_folds() {
     let m = g.mul(two, p);
     assert_eq!(g.zmul(two, p), m);
     assert!(matches!(g.op(m), Op::Mul(..)));
-    // A nonconstant tangent, and an infinite or NaN constant one, stay ZMul nodes.
+    // A static zero factor folds to +0, as `x * 0` does in `Dag::mul`. Without it, a
+    // sparse component list would keep a node per dead term and the entries grow.
     let t = g.var(0);
+    let (p_zero, p_nzero) = (g.konst(0.0), g.konst(-0.0));
+    assert_eq!(g.zmul(t, p_zero), plus);
+    assert_eq!(g.zmul(t, p_nzero), plus);
+    // A nonconstant tangent, and an infinite or NaN constant one, stay ZMul nodes.
     let z = g.zmul(t, p);
     assert!(matches!(g.op(z), Op::ZMul(..)));
     let z = g.zmul(inf, p);
