@@ -367,3 +367,16 @@ fn a_model_with_finite_values_everywhere_skips_no_point() {
     assert!(rep.entries.iter().all(|e| e.skipped_points == 0 && !e.skip));
     assert!(!rep.to_string().contains("skipped"), "{rep}");
 }
+
+#[test]
+fn a_finite_model_value_with_a_non_finite_derivative_is_compared_and_fails() {
+    // x is drawn in [0.5, 1.5), so exp(2000*x) overflows at every sample point
+    // and on both sides of every difference. f = atan(inf) = pi/2 is finite,
+    // while the exact derivative is 2000*inf * 1/(1+inf) = inf * 0 = NaN. Only
+    // a non-finite f skips a point, so the A row compares every point and fails.
+    let (fb, mut ir) = setup("init x=1\nx'=atan(exp(2000*x))\ndone\n");
+    let rep = check_model_with(&mut ir, &fb, &low_order(5, 1, 1));
+    let a = rep.find("A (FD)").unwrap();
+    assert!(!a.pass && a.points == 5 && a.skipped_points == 0, "{rep}");
+    assert!(!rep.passed());
+}
