@@ -1,0 +1,8 @@
+# opt-nout-prefix: Does a key that starts with nout, such as noutx, set njmp (XPPAUT 8.2.2)?
+# xpp: t@2=1
+# pc: ok
+# ruling: matches: a key that starts with nout is nout, the same prefix rule as for njmp (crates/pc-ode/docs/language.md, Lists)
+x'=1
+x(0)=0
+aux v=x
+@ total=4,dt=0.5,meth=euler,noutx=2

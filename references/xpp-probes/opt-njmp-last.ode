@@ -1,0 +1,9 @@
+# opt-njmp-last: njmp=4 and then nout=2 on a later @ line, which one wins (XPPAUT 8.2.2)?
+# xpp: rows=5
+# pc: ok
+# ruling: matches: nout and njmp set one value, so the last entry wins; here nout=2 (crates/pc-ode/docs/language.md, Lists)
+x'=1
+x(0)=0
+aux v=x
+@ total=4,dt=0.5,meth=euler,njmp=4
+@ nout=2

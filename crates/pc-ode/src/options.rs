@@ -49,6 +49,7 @@ pub const NAMES: &[&str] = &[
     "total",
     "dt",
     "njmp",
+    "nout",
     "t0",
     "trans",
     "nmesh",
@@ -149,11 +150,13 @@ pub const NUMBERED: &[(&str, u8, u8)] = &[
 /// Measured on 2026-11-14 (probes `opt-prefix-*` and `meth-method`): `totalx`
 /// sets `total`, `dtx` sets `dt`, `t0x` sets `t0`, `method` sets `meth`, and
 /// `transx`, `njmpx`, `boundx`, `tolerx` and `dtminx` act like `trans`,
-/// `njmp`, `bound`, `toler` and `dtmin`. A shorter key such as `tot` or `met`
-/// sets nothing. The other names in [`NAMES`] are matched exactly, since no
-/// probe has shown the prefix rule for them.
+/// `njmp`, `bound`, `toler` and `dtmin`. `nout` is the old name of `njmp`:
+/// `nout` and `noutx` set the same value as `njmp` (probes `opt-nout-*`, on
+/// 2026-11-18 with XPPAUT 8.2.2). A shorter key such as `tot` or `met` sets
+/// nothing. The other names in [`NAMES`] are matched exactly, since no probe
+/// has shown the prefix rule for them.
 pub const PREFIX_NAMES: &[&str] = &[
-    "bound", "dt", "dtmin", "meth", "njmp", "t0", "toler", "total", "trans",
+    "bound", "dt", "dtmin", "meth", "njmp", "nout", "t0", "toler", "total", "trans",
 ];
 
 /// True when `key`, a lower-case option name, is a documented option, or a
@@ -195,7 +198,9 @@ mod tests {
 
     #[test]
     fn other_names_are_unknown() {
-        for key in ["totl", "tot", "tota", "met", "jac", "eps", "foo", "d", "t"] {
+        for key in [
+            "totl", "tot", "tota", "met", "jac", "eps", "foo", "d", "t", "nou", "no",
+        ] {
             assert!(!is_known_option(key), "{key}");
         }
     }
@@ -203,7 +208,8 @@ mod tests {
     #[test]
     fn keys_that_start_with_a_measured_name_are_known() {
         for key in [
-            "totalx", "dtx", "dtt", "dtminx", "t0x", "transx", "njmpx", "boundx", "tolerx",
+            "totalx", "dtx", "dtt", "dtminx", "t0x", "transx", "njmpx", "boundx", "tolerx", "nout",
+            "noutx",
         ] {
             assert!(is_known_option(key), "{key}");
         }

@@ -740,6 +740,18 @@ fn a_repeated_option_keeps_its_first_place_and_its_last_value() {
     assert_eq!(options_of(&m), pairs(&[("xp", "b"), ("total", "7")]));
 }
 
+// XPPAUT 8.2.2 reads `nout` as `njmp` (probes `opt-nout-*`): both set one value and the last
+// one wins, also across `@` lines and for a key that starts with `nout`.
+#[test]
+fn nout_is_listed_as_njmp_and_the_last_of_the_two_wins() {
+    let m = model("x'=-x\n@ total=4,nout=2\n@ njmp=4\ndone\n");
+    assert_eq!(options_of(&m), pairs(&[("total", "4"), ("njmp", "4")]));
+    let m = model("x'=-x\n@ njmp=4,nout=2\ndone\n");
+    assert_eq!(options_of(&m), pairs(&[("njmp", "2")]));
+    let m = model("x'=-x\n@ NOUTX=3\ndone\n");
+    assert_eq!(options_of(&m), pairs(&[("njmp", "3")]));
+}
+
 // XPPAUT 8.0 ignores an option with blanks around `=` (the parser warns about it), so the
 // list leaves it out instead of reporting a value XPPAUT would not use.
 #[test]

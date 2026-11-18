@@ -124,7 +124,7 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `global-arret-state` | Is a declared state `arret` an ordinary global target, with no stop (XPPAUT 8.2.2)? | `arret'=0`, `global 1 x-0.55 {arret=1}` | rows=21 | no diagnostic | matches |
 | `global-braces` | Does global 1 {t-0.5} {x=5} work like the form without braces? | `global 1 {t-0.5} {x=5}`, `aux v=x` | v@2=5 | no diagnostic | matches |
 | `global-empty` | Is an empty global list {} accepted? | `global 1 t-0.5 {}` | error ("Bad global") | ODE0020 error | matches |
-| `global-out-put` | Does `out_put=1` in a global action list add an output row at the crossing (XPPAUT 8.2.2)? | `global 1 x-0.55 {out_put=1}`, `nout=5` | t@3=0.55, rows=6 | ODE0024 warning for `nout`; the IR refuses the model as simulation only | matches |
+| `global-out-put` | Does `out_put=1` in a global action list add an output row at the crossing (XPPAUT 8.2.2)? | `global 1 x-0.55 {out_put=1}`, `nout=5` | t@3=0.55, rows=6 | no diagnostic; the IR refuses the model as simulation only | matches |
 | `global-par-target` | Can a global event assign a parameter? | `par a=1`, `global 1 t-0.9 {a=5}` | v@1=1 v@2=5 | no diagnostic | matches |
 | `global-plain` | Does global 1 t-0.5 {x=5} set x at the crossing? | `global 1 t-0.5 {x=5}`, `aux v=x` | v@2=5 | no diagnostic | matches |
 | `global-two` | Does global 1 t-0.5 {x=5;y=2} set both states? | `global 1 t-0.5 {x=5;y=2}` | v@2=25 | no diagnostic | matches |
@@ -189,6 +189,11 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `op-bang` | Is a bare ! accepted (!1)? | `!1` | error (no output) | ODE0007 error, not an operator | matches |
 | `op-ne` | Is != accepted (1!=2)? | `1!=2` | error (no output) | ODE0007 error, not an operator | matches |
 | `op-single-eq` | Is a single = inside a formula accepted (1=2)? | `1=2` | error (no output) | ODE0008 error, write `==` | matches |
+| `opt-njmp-last` | njmp=4, then nout=2 on a later @ line: which wins (XPPAUT 8.2.2)? | `@ njmp=4` then `@ nout=2` | rows=5 (nout=2 wins) | no diagnostic; the model info lists njmp=2 | matches |
+| `opt-nout` | Does nout=2 set the output step like njmp=2 (XPPAUT 8.2.2)? | `@ ...,nout=2` | t@2=1 | no diagnostic; the model info lists njmp=2 | matches |
+| `opt-nout-last` | nout=2, then njmp=4 on a later @ line: which wins (XPPAUT 8.2.2)? | `@ ...,nout=2` then `@ njmp=4` | rows=3 (njmp=4 wins) | no diagnostic; the model info lists njmp=4 | matches |
+| `opt-nout-prefix` | Does a key that starts with nout, such as noutx, set njmp (XPPAUT 8.2.2)? | `@ ...,noutx=2` | t@2=1 | no diagnostic; the model info lists njmp=2 | matches |
+| `opt-nout-short` | Does nou, a key shorter than nout, set the output step (XPPAUT 8.2.2)? | `@ ...,nou=2` | rows=9 (nothing set) | ODE0024 warning, unknown option | matches |
 | `opt-prefix-dt` | Does a key that starts with dt, such as dtx, set dt? | `@ dtx=0.5,total=1` | t@2=0.5 | no diagnostic | matches |
 | `opt-prefix-short` | Does tot, a key shorter than total, set total? | `@ tot=2,dt=1` | t@21=20 (total stays 20) | ODE0024 warning, unknown option | matches |
 | `opt-prefix-t0` | Does a key that starts with t0, such as t0x, set t0? | `@ t0x=5,dt=0.5,total=1` | t@1=5 | no diagnostic | matches |
