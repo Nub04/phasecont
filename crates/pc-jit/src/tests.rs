@@ -1211,3 +1211,44 @@ fn bessel_derivative_with_truncated_orders_matches_eval_and_finite_differences()
         }
     }
 }
+
+/// The guard of `ZMul` and `ZDiv` is made of integer bit operations. A float `select` would
+/// lower to a conditional move that is a jump on x64, so the listing must hold no jump.
+#[test]
+fn the_zero_guard_compiles_without_a_jump() {
+    use crate::compile_f32;
+    let mut dag = Dag::new(1000);
+    let (a, b) = (dag.var(0), dag.var(1));
+    let (zm, zd) = (dag.zmul(a, b), dag.zdiv(a, b));
+    let e = entry(vec![zm, zd]);
+    let jumps = |text: &str| -> Vec<String> {
+        text.lines()
+            .map(str::trim)
+            .filter(|l| {
+                // A conditional move prints as `movsd a, b; jnz $next; movsd c, b; $next:`,
+                // so every `;`-separated instruction is checked.
+                l.split(';').any(|ins| {
+                    let op = ins.split_whitespace().next().unwrap_or("");
+                    op.starts_with('j') || op.starts_with("cmov")
+                })
+            })
+            .map(str::to_string)
+            .collect()
+    };
+    for single in [false, true] {
+        crate::module::LISTINGS.with(|l| l.borrow_mut().clear());
+        let jit = if single {
+            compile_f32(&[(EntryKind::F, &e)], &dag)
+        } else {
+            compile(&[(EntryKind::F, &e)], &dag)
+        };
+        let _jit = jit.expect("compile");
+        let text = crate::module::LISTINGS.with(|l| l.borrow().join("\n"));
+        assert!(text.lines().count() > 4, "no listing captured: {text}");
+        assert_eq!(
+            jumps(&text),
+            Vec::<String>::new(),
+            "single={single}\n{text}"
+        );
+    }
+}

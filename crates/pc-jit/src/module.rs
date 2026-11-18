@@ -16,6 +16,8 @@ thread_local! {
     pub(crate) static FREED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// When set, `compile` fails right after `JITModule::new`.
     pub(crate) static FAIL_AFTER_NEW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The machine code listing of each function compiled on this thread, in order.
+    pub(crate) static LISTINGS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Compiled entries. Dropping it frees the code pages and the table copies, so the

@@ -213,7 +213,13 @@ fn compile_as(
                 target: module.target_config(),
             },
         )?;
+        #[cfg(test)]
+        ctx.set_disasm(true);
         cl(&name, module.define_function(id, &mut ctx))?;
+        #[cfg(test)]
+        if let Some(text) = ctx.compiled_code().and_then(|c| c.vcode.clone()) {
+            module::LISTINGS.with(|l| l.borrow_mut().push(text));
+        }
         if let Some(fl) = ctx.compiled_code().and_then(|c| c.buffer.frame_layout()) {
             module::MAX_FRAME.with(|m| m.set(m.get().max(fl.frame_to_fp_offset)));
             *frame = (*frame).max(fl.frame_to_fp_offset);
