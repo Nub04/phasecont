@@ -220,7 +220,7 @@ jobs:
       - name: Resolve every symbol of libpckern.so and the MEX file
         shell: bash
         run: |
-          ldd --version | head -n 1
+          ldd --version | sed -n 1p
           bash scripts/check-ldd binroot/glnxa64/libpckern.so
           bash scripts/check-ldd --allow libmx.so --allow libmex.so --allow libmat.so \
             --allow libMatlabDataArray.so binroot/glnxa64/pckern.mexa64

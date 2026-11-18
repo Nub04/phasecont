@@ -25,7 +25,9 @@ for f in "$@"; do
   if ! codesign --verify --strict --verbose=2 "$f"; then
     echo "check-adhoc-signature: $f has no valid signature" >&2
     status=1
-  elif ! codesign -dv "$f" 2>&1 | grep -qx 'Signature=adhoc'; then
+  # Read all of codesign's output before matching: under pipefail, grep -q
+  # quitting early can kill codesign with SIGPIPE and fail the pipeline.
+  elif ! info=$(codesign -dv "$f" 2>&1) || ! grep -qx 'Signature=adhoc' <<<"$info"; then
     echo "check-adhoc-signature: $f is not signed ad hoc" >&2
     status=1
   else

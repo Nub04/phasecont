@@ -88,7 +88,7 @@ for f in "${files[@]}"; do
     if [[ $missing_allowed -eq 1 ]]; then
       note=", apart from the allowed missing libraries"
     fi
-    echo "check-ldd: $f resolves every symbol$note ($(ldd --version | head -n 1))"
+    echo "check-ldd: $f resolves every symbol$note ($(ldd --version | sed -n 1p))"
   fi
 done
 exit "$status"

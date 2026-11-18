@@ -111,7 +111,7 @@ jobs:
           echo "$f: $flags"
           case "$flags" in
             *runtime*)
-              if echo "$ents" | grep -qE 'allow-unsigned-executable-memory|disable-executable-page-protection'; then
+              if grep -qE 'allow-unsigned-executable-memory|disable-executable-page-protection' <<<"$ents"; then
                 echo "hardened, with an entitlement that allows the JIT"
               else
                 echo "::error::MATLAB uses the hardened runtime without an entitlement that allows cranelift-jit's memory"
