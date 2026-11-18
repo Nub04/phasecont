@@ -562,15 +562,17 @@ fn a_spaced_option_stays_spaced() {
 }
 
 #[test]
-fn a_trailing_backslash_gets_a_blank() {
-    // Review 1, finding 5: raw text that ends in `\` must not continue the
-    // line.
+fn a_backslash_then_blanks_continues_the_line() {
+    // XPPAUT 8.2.2 joins a line that ends in a backslash and blanks with the
+    // next line, or with the end of the text, so no parsed raw text keeps a
+    // trailing backslash and the writer never has to guard one.
     for (src, want) in [
-        ("@ total=10\\ \n", "@ total=10\\ \n"),
-        ("@ total=x\\ \nx'=1\n", "@ total=x\\ \nx'=1\n"),
-        ("bndry x\\ \ny'=1\n", "bndry x\\ \ny'=1\n"),
-        ("bndry x\\ ", "bndry x\\ \n"),
-        ("\"hello\\ \nx'=1\n", "\"hello\\ \nx'=1\n"),
+        ("@ total=10\\ \n", "@ total=10\n"),
+        ("@ total=10,\\ \ndt=1\n", "@ total=10, dt=1\n"),
+        ("@ total=10,\\\t \r\ndt=1\n", "@ total=10, dt=1\n"),
+        ("bndry x\\ \n", "bndry x\n"),
+        ("bndry x\\ ", "bndry x\n"),
+        ("\"hello\\ ", "\"hello\n"),
     ] {
         let (m, diags) = parse(src, FILE);
         assert!(
@@ -1265,7 +1267,7 @@ fn raw_assign(
 const OPTION_NAMES: &[&str] = &[
     "meth", "dt", "total", "xlo", "xhi", "maxstor", "bounds", "Ntst",
 ];
-const RAW_VALUES: &[&str] = &["stiff", "0.01", "1e-3", "200", "-5", "x1", "Qrk", "10\\"];
+const RAW_VALUES: &[&str] = &["stiff", "0.01", "1e-3", "200", "-5", "x1", "Qrk"];
 
 /// Lines the parser keeps as `Unsupported` statements.
 const UNSUPPORTED_LINES: &[&str] = &[
@@ -1280,7 +1282,8 @@ const UNSUPPORTED_LINES: &[&str] = &[
     "w(t)=1 + int{exp(-t)}",
     "z=sum(0,2)of(i')",
     "bdry x - 1",
-    // Raw text that ends in a backslash; the parser trims the blank.
+    // Raw text that ends in a backslash at the end of the text: the lexer
+    // reads the backslash as a continuation, so the text does not keep it.
     "bndry x\\ ",
     "\"hello\\ ",
 ];

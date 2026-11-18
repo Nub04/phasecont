@@ -14,12 +14,12 @@ Where XPPAUT 8.0 and the manual disagree, the measured behavior wins unless a ru
 
 ## Lines
 
-- A file is a sequence of lines. A backslash at the end of a line joins it with the next line (manual). The lexer treats backslash plus newline, or backslash plus `\r\n`, as a blank, so spans point into the original text.
+- A file is a sequence of lines. A backslash at the end of a line joins it with the next line (manual). The lexer treats backslash plus newline, or backslash plus `\r\n`, as a blank, so spans point into the original text. Spaces and tabs between the backslash and the line end do not matter: `x'=1+\` followed by two blanks and a newline still continues the line (measured on XPPAUT 8.2.2: probes `backslash-blanks`, `backslash-tab`, `backslash-mixed-blanks`). A backslash at the very end of the text, with or without blanks after it, joins nothing and is not an error (measured: probe `backslash-eof`), so a parsed statement never ends in a backslash. XPPAUT also reads other text after a backslash, as in `1+\ 2` or `1+\5`, as a continuation and drops that text (measured: probe `backslash-text`); PhaseCont does not copy that, since it would silently change the formula, and keeps the stray-character error for it.
 - A line whose first non-blank character is `#` is a comment, except `#include` (manual). Comments are kept in the AST and written back.
 - A trailing `#` comment after a statement is accepted after a `par`, `number` or `@` list, kept on the statement and written back (measured: XPPAUT 8.0 ignores it there). After any other statement it is an error (measured for formulas and `init`, which XPPAUT rejects; PhaseCont choice for the statements not measured).
 - A file whose first line starts with a digit is in the old XPPAUT format, which is an error (manual).
 - Case is ignored in names and keywords (manual, measured). The AST keeps the spelling as written and uses the lower-case form as the lookup key.
-- A stray character is an error. That includes any non-ASCII character outside a comment, and a backslash that is not the last character of a line (PhaseCont choice).
+- A stray character is an error. That includes any non-ASCII character outside a comment, and a backslash that is followed by anything other than blanks and the line end (PhaseCont choice, see above).
 - A byte order mark (U+FEFF) at the very start of a file is ignored. Anywhere else it is a stray character (PhaseCont choice).
 - A lone `\r` that is not followed by `\n` ends a line, like `\n` and `\r\n` (PhaseCont choice). A comment stops at the first `\r` or `\n`.
 
@@ -348,7 +348,7 @@ Each pass (include, expand, check) keeps at most 10000 diagnostics (`MAX_DIAGNOS
 |---|---|---|
 | ODE0001 | error | A number literal is malformed, such as `1.2.3`, `0x10` or `1_000` ([Numbers](#numbers)). |
 | ODE0002 | error | A number literal is too large for a double, such as `1e999` ([Numbers](#numbers)). |
-| ODE0003 | error | A character that no token can start with, including a non-ASCII character outside a comment ([Lines](#lines)). |
+| ODE0003 | error | A character that no token can start with, including a non-ASCII character outside a comment and a backslash followed by text other than blanks ([Lines](#lines)). |
 | ODE0004 | error | An expression is missing where one is required, as in `x'=`. |
 | ODE0005 | error | Two operands follow each other with no operator, as in `(1)(2)`. The fix-it inserts `*` ([Implicit multiplication](#implicit-multiplication)). |
 | ODE0006 | error | A token that cannot appear at this point of an expression, such as the `,` in `(1,2)`. |

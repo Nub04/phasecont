@@ -267,15 +267,10 @@ fn stmt(out: &mut String, s: &Stmt) {
         StmtKind::Unsupported { text, .. } => out.push_str(text),
         StmtKind::Done => out.push_str("done"),
     }
-    let ends_in_comment = s.comment.is_some()
-        || matches!(s.kind, StmtKind::Comment(_) | StmtKind::Include { .. })
-        || matches!(&s.kind, StmtKind::Markov { lines, .. }
-            if matches!(lines.last(), Some(MarkovLine::Comment(_))));
     trailing(out, &s.comment);
-    // A backslash right before the newline would join the next line.
-    if !ends_in_comment && out.ends_with('\\') {
-        out.push(' ');
-    }
+    // The parser never keeps a trailing backslash in a statement: it reads
+    // the backslash and any blanks after it as a line continuation, so no
+    // guard is needed here.
     out.push('\n');
 }
 

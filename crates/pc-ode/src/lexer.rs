@@ -223,13 +223,21 @@ impl Lexer<'_> {
         }
     }
 
-    /// A backslash joins lines when a line terminator follows it directly.
-    /// Anywhere else it is a stray character.
+    /// A backslash joins lines when only spaces and tabs sit between it and
+    /// the line terminator or the end of the text (XPPAUT 8.2.2 measured:
+    /// probes backslash-blanks and backslash-eof). Anywhere else it is a
+    /// stray character: XPPAUT drops other text after a backslash, and
+    /// PhaseCont refuses that instead of dropping it.
     fn backslash(&mut self) {
-        match (self.peek(1), self.peek(2)) {
-            (Some(b'\n'), _) => self.skip_blank(2),
-            (Some(b'\r'), Some(b'\n')) => self.skip_blank(3),
-            (Some(b'\r'), _) => self.skip_blank(2),
+        let mut gap = 1;
+        while matches!(self.peek(gap), Some(b' ' | b'\t')) {
+            gap += 1;
+        }
+        match (self.peek(gap), self.peek(gap + 1)) {
+            (Some(b'\n'), _) => self.skip_blank(gap + 1),
+            (Some(b'\r'), Some(b'\n')) => self.skip_blank(gap + 2),
+            (Some(b'\r'), _) => self.skip_blank(gap + 1),
+            (None, _) => self.skip_blank(gap),
             _ => self.stray(),
         }
     }
@@ -691,6 +699,43 @@ mod tests {
     }
 
     #[test]
+    fn backslash_then_blanks_then_a_line_end_continues_the_line() {
+        // XPPAUT 8.2.2 joins the lines when only spaces or tabs sit between
+        // the backslash and the line end (probes backslash-blanks,
+        // backslash-tab, backslash-mixed-blanks, backslash-blanks-cr).
+        for text in [
+            "1+\\ \n2",
+            "1+\\  \n2",
+            "1+\\\t\n2",
+            "1+\\ \t \n2",
+            "1+\\ \r\n2",
+            "1+\\ \r2",
+            "1+\\\n2",
+        ] {
+            let (tokens, diags) = lex(F, text);
+            assert!(diags.is_empty(), "{text:?}: {diags:#?}");
+            assert_eq!(
+                kinds_of(&tokens),
+                vec![n(1.0), TokenKind::Plus, n(2.0)],
+                "{text:?}"
+            );
+            // The joined line leaves a blank before the 2, like a plain
+            // backslash-newline.
+            assert!(tokens[2].preceded_by_blank, "{text:?}");
+        }
+        // At the end of the text the backslash joins nothing and is not an
+        // error (probe backslash-eof).
+        for text in ["1+\\", "1+\\ ", "1+\\\t "] {
+            let (tokens, diags) = lex(F, text);
+            assert!(diags.is_empty(), "{text:?}: {diags:#?}");
+            assert_eq!(kinds_of(&tokens), vec![n(1.0), TokenKind::Plus], "{text:?}");
+        }
+        // Blanks then a second line end do not continue it twice.
+        let (tokens, _) = lex(F, "1\\ \n\n2");
+        assert_eq!(kinds_of(&tokens), vec![n(1.0), TokenKind::Newline, n(2.0)]);
+    }
+
+    #[test]
     fn comment_ignores_a_trailing_backslash_and_lone_cr() {
         use TokenKind::*;
         let text = "# a \\\nb";
@@ -829,8 +874,10 @@ mod tests {
         for (text, bad) in [
             ("$", "$"),
             ("a ? b", "?"),
-            ("\\", "\\"),
-            ("a\\ \nb", "\\"),
+            ("a\\ x\nb", "\\"),
+            ("a\\5\nb", "\\"),
+            ("a\\ # c\nb", "\\"),
+            ("a\\ \\\nb", "\\"),
             (".", "."),
             ("é", "é"),
             ("x = Ω", "Ω"),

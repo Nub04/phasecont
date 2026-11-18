@@ -66,6 +66,11 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `comment-par` | Is a trailing comment after a par list accepted? | `par a=2 # c` | 2 | no diagnostic; computes 2 | matches |
 | `const-e-name` | Is e an ordinary name (par e=2)? | `par e=2`, `aux v=e` | 2 | no diagnostic; computes 2 | matches |
 | `const-pi` | Is pi a constant? | `pi` | 3.1415927 | no diagnostic; computes 3.1415927 | matches |
+| `backslash-blanks` | Does a backslash followed by two blanks continue the line (XPPAUT 8.2.2)? | `x'=1+\` and two blanks, then `2` | v@3=3 | no diagnostic; computes v@3=3 | matches |
+| `backslash-eof` | Is a backslash at the very end of the file, with no newline, accepted (XPPAUT 8.2.2)? | last line `@ total=1,dt=0.5,meth=euler\` | v@3=1 | no diagnostic; computes v@3=1 | matches |
+| `backslash-mixed-blanks` | Does a backslash followed by a space, a tab and a space continue the line (XPPAUT 8.2.2)? | `x'=1+\` and ` \t `, then `2` | v@3=3 | no diagnostic; computes v@3=3 | matches |
+| `backslash-text` | What does XPPAUT 8.2.2 do with text after a backslash (`\5`)? | `x'=1+\5` then `2` | v@3=3 (continues, drops the `5`) | ODE0003 and ODE0019 errors | PhaseCont choice |
+| `backslash-tab` | Does a backslash followed by a tab continue the line (XPPAUT 8.2.2)? | `x'=1+\` and a tab, then `2` | v@3=3 | no diagnostic; computes v@3=3 | matches |
 | `cont-aux` | Does a backslash continue an aux line? | `aux v=1+\` then `2` | 3 | no diagnostic; computes 3 | matches |
 | `cont-ode` | Does a backslash continue an ODE line (not line 1)? | `x'=0+\` then `0` | 13 | no diagnostic; computes 13 | matches |
 | `cont-par` | Does a backslash continue a par line? | `par a=1,\` then `b=2` | va=1 vb=2 | no diagnostic; computes va=1 vb=2 | matches |

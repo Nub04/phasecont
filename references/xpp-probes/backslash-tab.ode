@@ -1,0 +1,9 @@
+# backslash-tab: Does a backslash followed by a tab continue the line (XPPAUT 8.2.2)?
+# xpp: v@3=3
+# pc: ok
+# ruling: a backslash followed only by blanks and the line end continues the line, like a plain backslash (language.md, Lines).
+x'=1+\	
+2
+x(0)=0
+aux v=x
+@ total=1,dt=0.5,meth=euler

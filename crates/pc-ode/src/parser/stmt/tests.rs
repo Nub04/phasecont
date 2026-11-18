@@ -678,6 +678,21 @@ fn unsupported_families() {
 /// an algebraic constraint; `s`, `sa` and `sz` are not keywords). The probes
 /// are `references/xpp-probes/solv-*.ode`.
 #[test]
+fn a_backslash_then_blanks_gives_the_same_statements_as_a_plain_backslash() {
+    // XPPAUT 8.2.2 (probes backslash-blanks, backslash-tab,
+    // backslash-mixed-blanks) computes the same model for all of these.
+    let plain = stmts("x'=1+\\\n2\npar a=1,\\\nb=2\n");
+    for gap in [" ", "  ", "\t", " \t "] {
+        let text = format!("x'=1+\\{gap}\n2\npar a=1,\\{gap}\nb=2\n");
+        let (model, diags) = parse_all(&text);
+        assert!(diags.is_empty(), "{text:?}: {diags:#?}");
+        assert_eq!(model.strip_spans().statements, plain, "{text:?}");
+    }
+    // Other text after the backslash is still an error.
+    assert_eq!(codes("x'=1+\\ 2\n"), vec![STRAY_CHARACTER]);
+}
+
+#[test]
 fn solv_is_the_first_two_letters() {
     for word in [
         "solv", "solve", "sol", "so", "solver", "sozz", "SOLVE", "So",
