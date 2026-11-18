@@ -221,7 +221,7 @@ fn a_clamped_root_does_not_make_the_jacobian_nan() {
 /// zero tangent over zero is 0, not NaN, so the Jacobian is -1 as in the fallback.
 #[test]
 fn a_clamped_quotient_does_not_make_the_jacobian_nan() {
-    let json = scratch().join("sqclamp.json");
+    let json = scratch().join("qclamp.json");
     std::fs::write(
         &json,
         r#"{"type":"EP","free":"a","params":{"a":1},"u0":[0],"options":{"max_steps":8}}"#,
