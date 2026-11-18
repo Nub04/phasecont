@@ -6,7 +6,7 @@
 
 use crate::CompiledModel;
 use pc_ir::check::{Rng, close_err, close_ulps, draw_point, fmt_vec, scale, slot_label};
-use pc_ir::eval::eval_err;
+use pc_ir::eval::eval_entry_err;
 use pc_ir::{Entry, EntryKind, Fallback, IrError, IrErrorKind, IrModel, Slot};
 
 fn dir(slots: &[Slot]) -> (EntryKind, String) {
@@ -198,15 +198,9 @@ pub fn jit_rows(mut ir: IrModel, fb: &Fallback, points: usize, seed: u64, hw: f6
             let v: Vec<f64> = (0..v_len).map(|_| rng.range(-1.0, 1.0)).collect();
             let mut want = vec![f64::NAN; entry.outputs.len()];
             let mut err = vec![f64::NAN; entry.outputs.len()];
-            eval_err(
-                &cm.ir().dag,
-                &entry.outputs,
-                &x,
-                &p,
-                &v,
-                &mut want,
-                &mut err,
-            );
+            // A derivative entry is stored as `out + 0.0` in every evaluator, so the DAG side
+            // is evaluated the same way.
+            eval_entry_err(&cm.ir().dag, &entry, &x, &p, &v, &mut want, &mut err);
             let mut got = vec![f64::NAN; entry.outputs.len()];
             if let Err(e) = cm.call(&kind, &x, &p, &v, &mut got) {
                 call_error = Some(e.to_string());

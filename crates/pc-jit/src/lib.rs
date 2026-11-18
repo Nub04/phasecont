@@ -208,6 +208,7 @@ fn compile_as(
                 refs: &refs,
                 table_ptrs: &table_ptrs,
                 has_dir,
+                derivative: kind.is_derivative(),
                 ptr,
                 float,
                 target: module.target_config(),

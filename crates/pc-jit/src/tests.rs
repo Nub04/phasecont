@@ -1,6 +1,6 @@
 use crate::{DirFn, PlainFn, compile, module};
 use pc_ir::dag::{Cmp, Dag, Fn1, Fn2, NodeId};
-use pc_ir::eval::eval;
+use pc_ir::eval::{eval, eval_entry};
 use pc_ir::{Entry, EntryKind, Slot, lower};
 use proptest::prelude::*;
 
@@ -641,12 +641,12 @@ fn model_entries_match_eval() {
             if let EntryKind::Dir(slots) = kind {
                 let len: usize = slots.iter().map(|s| s.len(n, n_p)).sum();
                 let v: Vec<f64> = (0..len).map(|_| r.range(-1.0, 1.0)).collect();
-                eval(&ir.dag, &e.outputs, &x, &p, &v, &mut want);
+                eval_entry(&ir.dag, e, &x, &p, &v, &mut want);
                 let f: DirFn = jit.dir(kind).expect("dir fn");
                 // SAFETY: x has n, p has n_p + 1, v has len and got has n values.
                 unsafe { f(x.as_ptr(), p.as_ptr(), v.as_ptr(), got.as_mut_ptr()) };
             } else {
-                eval(&ir.dag, &e.outputs, &x, &p, &[], &mut want);
+                eval_entry(&ir.dag, e, &x, &p, &[], &mut want);
                 let f: PlainFn = jit.plain(kind).expect("plain fn");
                 // SAFETY: lengths follow the entry contract.
                 unsafe { f(x.as_ptr(), p.as_ptr(), got.as_mut_ptr()) };
@@ -655,6 +655,62 @@ fn model_entries_match_eval() {
                 assert!(same(*a, *b), "{kind:?} out {k}: {a:?} vs {b:?}");
             }
         }
+    }
+}
+
+/// The raw DAG gives -0 for `-(max(x,0)^2)` differentiated at x = 0 (the folds see a static
+/// zero, the clamp is active at run time). A derivative entry of the JIT stores `out + 0.0`,
+/// so it gives +0, as `eval_entry` does. This also shows that Cranelift keeps the `fadd`. `F`
+/// keeps the -0 of its value.
+#[test]
+fn a_derivative_entry_stores_plus_zero_and_f_keeps_minus_zero() {
+    let mut ir = build_model("par a=1\ninit x=0\nx'=-(max(x,0)^2)\ndone\n");
+    let kinds = [
+        EntryKind::F,
+        EntryKind::JacU,
+        EntryKind::Dir(vec![Slot::U]),
+        EntryKind::Dir(vec![Slot::U, Slot::U]),
+        EntryKind::Dir(vec![Slot::U, Slot::U, Slot::U]),
+    ];
+    let es: Vec<Entry> = kinds.iter().map(|k| ir.entry(k).expect("entry")).collect();
+    let pairs: Vec<(EntryKind, &Entry)> = kinds.iter().cloned().zip(es.iter()).collect();
+    let jit = compile(&pairs, &ir.dag).expect("compile");
+    let (x, p) = ([0.0], [1.0, 0.0]);
+    let mut raw_minus_zeros = 0;
+    for (kind, e) in &pairs {
+        let v = vec![1.0; kind_len(kind)];
+        let mut raw = [f64::MAX];
+        eval(&ir.dag, &e.outputs, &x, &p, &v, &mut raw);
+        let mut want = [f64::MAX];
+        eval_entry(&ir.dag, e, &x, &p, &v, &mut want);
+        let mut got = [f64::MAX];
+        if matches!(kind, EntryKind::Dir(_)) {
+            let f: DirFn = jit.dir(kind).expect("dir fn");
+            // SAFETY: x has 1 value, p has 2, v has one value per slot and got has 1.
+            unsafe { f(x.as_ptr(), p.as_ptr(), v.as_ptr(), got.as_mut_ptr()) };
+        } else {
+            let f: PlainFn = jit.plain(kind).expect("plain fn");
+            // SAFETY: lengths follow the entry contract.
+            unsafe { f(x.as_ptr(), p.as_ptr(), got.as_mut_ptr()) };
+        }
+        assert_eq!(got[0].to_bits(), want[0].to_bits(), "{kind:?}");
+        if *kind == EntryKind::F {
+            assert_eq!(got[0].to_bits(), (-0.0f64).to_bits(), "F");
+        } else {
+            assert_eq!(got[0].to_bits(), 0.0f64.to_bits(), "{kind:?}");
+            if raw[0].to_bits() == (-0.0f64).to_bits() {
+                raw_minus_zeros += 1;
+            }
+        }
+    }
+    // The raw DAG gives -0 for at least one derivative entry, so the +0 above is the store.
+    assert!(raw_minus_zeros >= 1, "the raw DAG gave no -0");
+}
+
+fn kind_len(kind: &EntryKind) -> usize {
+    match kind {
+        EntryKind::Dir(slots) => slots.len(),
+        _ => 0,
     }
 }
 
@@ -688,7 +744,7 @@ fn bessel_order_cap_matches_eval() {
                 assert_eq!(got[0].is_nan(), capped, "{f} F n={n} x={x}: {got:?}");
                 // SAFETY: as above.
                 unsafe { ju(xs.as_ptr(), p.as_ptr(), got.as_mut_ptr()) };
-                eval(&ir.dag, &es[1].outputs, &xs, &p, &[], &mut want);
+                eval_entry(&ir.dag, &es[1], &xs, &p, &[], &mut want);
                 assert!(
                     same(got[0], want[0]),
                     "{f} JacU n={n} x={x}: {got:?} vs {want:?}"
@@ -1182,7 +1238,7 @@ fn bessel_derivative_with_truncated_orders_matches_eval_and_finite_differences()
             let (mut got, mut want) = ([0.0], [0.0]);
             // SAFETY: x has 1 value, p has 2 and out has 1.
             unsafe { ju([x].as_ptr(), p.as_ptr(), got.as_mut_ptr()) };
-            eval(&ir.dag, &es[1].outputs, &[x], &p, &[], &mut want);
+            eval_entry(&ir.dag, &es[1], &[x], &p, &[], &mut want);
             assert!(
                 same(got[0], want[0]),
                 "JacU a={a} x={x}: {got:?} vs {want:?}"
@@ -1203,7 +1259,7 @@ fn bessel_derivative_with_truncated_orders_matches_eval_and_finite_differences()
             let v = [1.0, 1.0];
             // SAFETY: v has the packed length of two U slots.
             unsafe { d2([x].as_ptr(), p.as_ptr(), v.as_ptr(), got.as_mut_ptr()) };
-            eval(&ir.dag, &es[2].outputs, &[x], &p, &v, &mut want);
+            eval_entry(&ir.dag, &es[2], &[x], &p, &v, &mut want);
             assert!(
                 same(got[0], want[0]),
                 "Dir a={a} x={x}: {got:?} vs {want:?}"

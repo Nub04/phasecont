@@ -572,9 +572,12 @@ pub fn emit_c_tagged(ir: &IrModel, entries: &[(String, &Entry)]) -> Result<Emitt
                 node(&mut s, dag, NodeId(i as u32), &lens, &usable);
             }
         }
+        // A derivative entry stores `out + 0.0`, so a zero derivative is +0, as in the JIT and
+        // `pc_ir::eval::eval_entry`. The build flags keep signed zeros (no fast math).
+        let plus_zero = if e.kind.is_derivative() { " + 0.0" } else { "" };
         for (k, o) in e.outputs.iter().enumerate() {
             if (o.0 as usize) < dag.len() {
-                let _ = writeln!(s, "    out[{k}] = {};", var(*o));
+                let _ = writeln!(s, "    out[{k}] = {}{plus_zero};", var(*o));
             } else {
                 let _ = writeln!(s, "    out[{k}] = {};", nan_const());
             }

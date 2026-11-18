@@ -1071,7 +1071,8 @@ impl Fallback {
             }
             for (i, fi) in f.iter().enumerate() {
                 if let Some(o) = out.get_mut(i + self.n * j) {
-                    *o = fi.eps;
+                    // `+ 0.0`: a zero derivative is +0, as in `eval::eval_entry`.
+                    *o = fi.eps + 0.0;
                 }
             }
         }
@@ -1123,7 +1124,8 @@ impl Fallback {
         let mut f = vec![S::from_f64(0.0); n];
         let mut aux = vec![S::from_f64(0.0); self.n_aux];
         self.interp.eval(&xs, &ps, &mut f, &mut aux);
-        let vals: Vec<f64> = f.iter().map(|fi| fi.top()).collect();
+        // `+ 0.0`: a zero derivative is +0, as in `eval::eval_entry`.
+        let vals: Vec<f64> = f.iter().map(|fi| fi.top() + 0.0).collect();
         copy_out(out, &vals);
     }
 }

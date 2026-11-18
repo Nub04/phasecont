@@ -44,6 +44,14 @@ pub enum EntryKind {
     Dir(Vec<Slot>),
 }
 
+impl EntryKind {
+    /// True for `JacU`, `JacP` and `Dir`, the entries whose outputs are derivatives. Every
+    /// evaluator stores a derivative as `out + 0.0`, so that a zero derivative is +0.
+    pub fn is_derivative(&self) -> bool {
+        matches!(self, EntryKind::JacU | EntryKind::JacP | EntryKind::Dir(_))
+    }
+}
+
 /// A DAG entry: one output node per entry value, in the layout of the contract above.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {

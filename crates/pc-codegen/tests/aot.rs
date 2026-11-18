@@ -6,7 +6,7 @@ use common::{FLAGS, build_model, compile_c, compilers, gcc_version, record_compi
 use libloading::Symbol;
 use pc_codegen::emit_c;
 use pc_ir::dag::{Dag, Fn1, Fn2, NodeId};
-use pc_ir::eval::eval;
+use pc_ir::eval::{eval, eval_entry};
 use pc_ir::math::{MATH, MathTable};
 use pc_ir::{Entry, EntryKind, IrModel, Slot};
 use pc_jit::CompiledModel;
@@ -225,7 +225,7 @@ fn aot_matches_jit_on_every_model() {
     }
 }
 
-/// Compiles `e` with every available compiler and compares each output with `eval`,
+/// Compiles `e` with every available compiler and compares each output with `eval_entry`,
 /// bit for bit (NaN sign and payload included), at the given `x` and `v` values.
 fn check_against_eval(tag: &str, ir: &IrModel, e: &Entry, xs: &[f64], v: &[f64]) {
     let is_dir = matches!(e.kind, EntryKind::Dir(_));
@@ -234,7 +234,7 @@ fn check_against_eval(tag: &str, ir: &IrModel, e: &Entry, xs: &[f64], v: &[f64])
         let aot = compile_c(cc, tag, &c);
         for &xv in xs {
             let mut want = vec![f64::MAX; e.outputs.len()];
-            eval(&ir.dag, &e.outputs, &[xv], &[0.0], v, &mut want);
+            eval_entry(&ir.dag, e, &[xv], &[0.0], v, &mut want);
             let mut got = vec![f64::MIN; e.outputs.len()];
             aot.call("ent", &[xv], &[0.0], is_dir.then_some(v), &mut got);
             for (i, (a, b)) in got.iter().zip(&want).enumerate() {
@@ -343,6 +343,55 @@ fn a_zero_numerator_hides_a_zero_denominator_in_aot() {
     eval(&ir.dag, &e.outputs, &[0.0], &[0.0], &[], &mut out);
     assert_eq!(out[0].to_bits(), 0.0f64.to_bits());
     assert_eq!(out[1].to_bits(), 0.0f64.to_bits());
+}
+
+/// A derivative entry of the AOT C stores `out + 0.0`: the derivative of `-(max(x,0)^2)` at
+/// x = 0 is -0 in the raw DAG and +0 in the C, as in the JIT. `F` keeps its -0.
+#[test]
+fn a_derivative_entry_stores_plus_zero_in_aot() {
+    let mut ir = build_model("x'=-(max(x,0)^2)\ndone\n");
+    let kinds = [
+        EntryKind::F,
+        EntryKind::JacU,
+        EntryKind::Dir(vec![Slot::U, Slot::U]),
+    ];
+    let es: Vec<Entry> = kinds.iter().map(|k| ir.entry(k).expect("entry")).collect();
+    let named: Vec<(String, &Entry)> = es
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (format!("ent{i}"), e))
+        .collect();
+    let c = emit_c(&ir, &named).expect("emit");
+    assert!(c.contains(" + 0.0;"), "no normalized store in the C");
+    let mut raw_minus_zeros = 0;
+    for cc in compilers() {
+        let aot = compile_c(cc, "plus_zero", &c);
+        for (i, e) in es.iter().enumerate() {
+            let is_dir = matches!(e.kind, EntryKind::Dir(_));
+            let v = [1.0, 1.0];
+            let mut raw = [f64::MAX];
+            eval(&ir.dag, &e.outputs, &[0.0], &[0.0], &v, &mut raw);
+            let mut got = [f64::MIN];
+            aot.call(
+                &format!("ent{i}"),
+                &[0.0],
+                &[0.0],
+                is_dir.then_some(&v[..]),
+                &mut got,
+            );
+            let want = if e.kind == EntryKind::F {
+                (-0.0f64).to_bits()
+            } else {
+                0.0f64.to_bits()
+            };
+            assert_eq!(got[0].to_bits(), want, "{cc} {:?}", e.kind);
+            if e.kind != EntryKind::F && raw[0].to_bits() == (-0.0f64).to_bits() {
+                raw_minus_zeros += 1;
+            }
+        }
+    }
+    // The raw DAG gives -0 for a derivative entry, so the +0 above comes from the store.
+    assert!(raw_minus_zeros >= 1, "the raw DAG gave no -0");
 }
 
 /// A malformed or missing table lowers to NaN and its argument stays dead, so the C has

@@ -380,6 +380,54 @@ pub fn eval_err(
     }
 }
 
+/// [`eval`] for one entry, and for a derivative entry the output is stored as `out + 0.0`,
+/// which turns a -0 into +0 and leaves every other value as it is.
+///
+/// The DAG folds zeros it sees when it is built, and the f64 fallback sees the zeros of one
+/// run, so the two disagree on the sign of a zero derivative (`-(max(x, 0)^2)` at `x = 0`
+/// differentiates to -0 in the DAG and +0 in the fallback). A zero derivative is stored as
+/// +0 everywhere, as the guard of [`Op::ZMul`] already gives +0. ForwardDiff.jl does the
+/// same in its NaN-safe mode: `_mul_partial` returns `zero(y)`, a +0, when the partial is
+/// zero (src/partials.jl in ForwardDiff.jl, MIT). The convention is taken, no code.
+///
+/// The `+ 0.0` has to come after the DAG is evaluated: `Dag::add` folds a `+ 0` away, so a
+/// node cannot carry it. `F` and `Aux` are not touched, since a value of the model keeps the
+/// sign it has.
+pub fn eval_entry(
+    dag: &Dag,
+    entry: &crate::entry::Entry,
+    x: &[f64],
+    p: &[f64],
+    v: &[f64],
+    out: &mut [f64],
+) {
+    eval(dag, &entry.outputs, x, p, v, out);
+    if entry.kind.is_derivative() {
+        for o in out.iter_mut() {
+            *o += 0.0;
+        }
+    }
+}
+
+/// [`eval_err`] for one entry, with the output of a derivative entry stored as in
+/// [`eval_entry`]. The error bound is the one of the raw evaluation.
+pub fn eval_entry_err(
+    dag: &Dag,
+    entry: &crate::entry::Entry,
+    x: &[f64],
+    p: &[f64],
+    v: &[f64],
+    out: &mut [f64],
+    err: &mut [f64],
+) {
+    eval_err(dag, &entry.outputs, x, p, v, out, err);
+    if entry.kind.is_derivative() {
+        for o in out.iter_mut() {
+            *o += 0.0;
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "eval_tests.rs"]
 mod tests;

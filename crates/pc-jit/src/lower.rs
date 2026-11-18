@@ -144,6 +144,9 @@ pub(crate) struct Ctx<'a> {
     pub table_ptrs: &'a HashMap<u32, Option<*const f64>>,
     /// True for a `DirFn` signature (4 parameters).
     pub has_dir: bool,
+    /// True for `JacU`, `JacP` and `Dir` entries: each output is stored as `out + 0.0`, so a
+    /// zero derivative is +0. `F` and `Aux` keep the sign of their values.
+    pub derivative: bool,
     pub ptr: Type,
     pub float: Float,
     pub target: TargetFrontendConfig,
@@ -445,6 +448,14 @@ pub(crate) fn build(
             let r = match vals.get(o.0 as usize).copied().flatten() {
                 Some(v) => v,
                 None => fnan(&mut b, fl),
+            };
+            // The `+ 0.0` has to be a node of the function, not of the DAG: `Dag::add` folds
+            // it away. Cranelift keeps an `fadd` with a zero, since `-0.0 + 0.0` is `+0.0`.
+            let r = if c.derivative {
+                let zero = fconst(&mut b, fl, 0.0);
+                b.ins().fadd(r, zero)
+            } else {
+                r
             };
             store(&mut b, fl, r, out, k);
         }
