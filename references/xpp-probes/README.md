@@ -162,6 +162,9 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `num-leading-dot` | Is .5 a number? | `.5` | 0.5 | no diagnostic; computes 0.5 | matches |
 | `num-trailing-dot` | Is 5. a number? | `5.` | 5 | no diagnostic; computes 5 | matches |
 | `num-underscore` | Is 1_000 accepted? | `1_000` | error (no output) | ODE0001 error, malformed number | matches |
+| `number-n` | Is the one-letter word `n` read as `number` (XPPAUT 8.2.2)? | `n a=2` | 2 | no diagnostic; computes 2 | matches |
+| `number-num` | Is `num` read as `number` (XPPAUT 8.2.2)? | `num a=2` | 2 | no diagnostic; computes 2 | matches |
+| `number-numx` | Is a first word that only starts with `n` read as `number` (XPPAUT 8.2.2)? | `numx a=2` | 2 | no diagnostic; computes 2 | matches |
 | `op-bang` | Is a bare ! accepted (!1)? | `!1` | error (no output) | ODE0007 error, not an operator | matches |
 | `op-ne` | Is != accepted (1!=2)? | `1!=2` | error (no output) | ODE0007 error, not an operator | matches |
 | `op-single-eq` | Is a single = inside a formula accepted (1=2)? | `1=2` | error (no output) | ODE0008 error, write `==` | matches |

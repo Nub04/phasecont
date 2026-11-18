@@ -324,8 +324,20 @@ fn every_keyword_abbreviation() {
             vec![unsupported(Unsupported::Boundary, &format!("{word} x-1"))]
         );
     }
-    // The full-spelling words do not abbreviate.
-    assert_eq!(codes("num c=3"), vec![UNRECOGNIZED_STATEMENT]);
+    // `number` takes only its first letter, like the nine declarations
+    // (measured on XPPAUT 8.2.2: `n`, `nu`, `num`, `numbers`, `numx`, `nx` and
+    // `nuxx` all declare a constant; probes `number-n` and `number-num`).
+    let number = StmtKind::Number {
+        entries: vec![entry("c", Some(num("3")))],
+    };
+    for word in ["n", "nu", "num", "number", "numbers", "numx", "nx", "NUM"] {
+        assert_eq!(clean_one(&format!("{word} c=3")), number, "{word}");
+    }
+    // A name that starts with `n` is still a name before `=` or `(`.
+    assert!(matches!(clean_one("n=1"), StmtKind::Fixed { .. }));
+    assert!(matches!(clean_one("num=1"), StmtKind::Fixed { .. }));
+    assert!(matches!(clean_one("nf(x)=x"), StmtKind::Function { .. }));
+    // The other full-spelling words do not abbreviate.
     assert_eq!(codes("se f {a=1}"), vec![UNRECOGNIZED_STATEMENT]);
 }
 

@@ -28,11 +28,12 @@ Where XPPAUT 8.0 and the manual disagree, the measured behavior wins unless a ru
 The first word of a line decides what the line is.
 
 - A first word is a keyword only when a blank or the end of the line follows it and the next non-blank character is not `=` (manual, measured). So `p a=5` declares a parameter, while `p=5`, `p = 5`, `a = 1`, `w = 1`, `i = 1`, `d = 1`, `g = 1`, `b = 1` and `m = 1` all define fixed quantities.
-- For the nine declarations below, only the first letter is compared, whatever follows (measured: `pzz a=2` declares a parameter). The implementation must not check that the word is a prefix of the full keyword.
+- For the ten declarations below, only the first letter is compared, whatever follows (measured: `pzz a=2` declares a parameter, and on XPPAUT 8.2.2 `n`, `nu`, `num`, `numx` and `nx` declare a constant; probes `number-n`, `number-num` and `number-numx`). The implementation must not check that the word is a prefix of the full keyword.
 
 | First letter | Declaration |
 |---|---|
 | `m` | `markov` |
+| `n` | `number` |
 | `p` | `parameter` |
 | `w` | `wiener` |
 | `t` | `table` |
@@ -43,7 +44,7 @@ The first word of a line decides what the line is.
 | `d` | `done` |
 
 - `solv` is read from its first two letters, case ignored (measured on XPPAUT 8.2.2: `so`, `sol`, `solve`, `solver`, `sozz` and `SOLVE` all declare a solution variable, while `s`, `sa` and `sz` are refused; probes `solv-so`, `solv-solve` and `solv-s`). PhaseCont reads the line as the unsupported algebraic constraint family (ODE0030).
-- These keywords need the full word (manual; XPPAUT 8.2.2 prefixes not measured): `number`, `set`, `options`, `only`, `special`, `export`, `volt`, `hom_bcs`.
+- These keywords need the full word in PhaseCont: `set`, `options`, `only`, `special`, `export`, `volt`, `hom_bcs` (manual). XPPAUT 8.2.2 prefixes: `only` is read from its first two letters (`on`, `onx` and `ONLY` all select output columns; `o`, `op` and `ox` do not), which PhaseCont does not copy. The others show no effect in a headless run, so their prefixes are not measured.
 - Any other line is a formula: an ODE, a map, an initial value, a derived parameter, a fixed quantity or a user function, told apart by the form of its left side.
 
 ## Statement forms

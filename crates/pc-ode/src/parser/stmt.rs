@@ -131,12 +131,11 @@ enum Keyword {
 
 /// The keyword for a lower-case first word. The words in the first group
 /// need the full spelling. `solv` takes its first two letters (`solve` and
-/// `sozz` are `solv`). For the nine declarations only the first letter
-/// counts (`pzz` is `par`).
+/// `sozz` are `solv`). For the ten declarations (`number` among them) only
+/// the first letter counts (`pzz` is `par`, `numx` is `number`).
 fn keyword_of(key: &str) -> Option<Keyword> {
     use Unsupported as U;
     let full = match key {
-        "number" => Some(Keyword::Number),
         "set" => Some(Keyword::Set),
         "options" => Some(Keyword::Unsupported(U::OptionsFile)),
         "only" => Some(Keyword::Unsupported(U::Only)),
@@ -154,6 +153,7 @@ fn keyword_of(key: &str) -> Option<Keyword> {
     }
     match key.as_bytes().first()? {
         b'm' => Some(Keyword::Markov),
+        b'n' => Some(Keyword::Number),
         b'p' => Some(Keyword::Par),
         b'w' => Some(Keyword::Wiener),
         b't' => Some(Keyword::Table),
