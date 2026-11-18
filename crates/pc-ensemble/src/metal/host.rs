@@ -165,6 +165,7 @@ pub fn run_metal(
         device: info.name.clone(),
         driver: info.driver.clone(),
         precision: job.precision,
+        math: job.math,
     };
     guard(|| {
         session(

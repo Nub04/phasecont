@@ -224,8 +224,12 @@ but cannot start; the reason follows).
 `selftest` runs a few small ensembles on one device and prints one JSON object:
 the device, the driver, the precision, the worst error of each tier against its
 limit, whether the device matches the CPU backend bit for bit (`null` for the
-CPU backend itself) and `pass`. The device is the first of the backend unless
---device says otherwise, and the report names the device that ran.
+CPU backend itself), `fma` and `pass`. `fma` is `null` unless the device takes
+the fma tier (CUDA in double precision); there it gives the worst relative
+difference between the fma and exact runs of the bit-exact jobs and the number
+of members whose status differs. It is a report only and never changes `pass`.
+The device is the first of the backend unless --device says otherwise, and the
+report names the device that ran.
 
 options:
   --backend B    cpu, cuda, opencl or metal (required)
@@ -243,7 +247,7 @@ usage: pc-cli ensemble [--] <file.ode> <job.json>
        pc-cli ensemble --bench [--members N,N,...] [--case C,C,...]
 
 Runs many trajectories of one model and prints one JSON object. The job file
-needs every key below except `device`; nothing is filled in for a missing key.
+needs every key below except `device` and `math`; nothing else is filled in.
 
   backend     cpu, cuda, opencl or metal
   device      index among the devices of the backend (default 0)
@@ -257,13 +261,17 @@ needs every key below except `device`; nothing is filled in for a missing key.
   output      \"final\", or {\"samples\": [t, ..]} (increasing, in (t0, t1], last = t1)
   bounds      stop a member when a state leaves [-X, X]; a number or null
   max_steps   most steps (iterates of a map) per member, at least 1
+  math        optional, \"exact\" (the default) or \"fma\": fma lets NVRTC fuse
+              multiplies and adds; cuda in double precision only, and the
+              bits differ from an exact run
 
 The result has members, n, times, status (one of ok, bounds, step_too_small,
 max_steps, nonfinite per member), states[member][sample][state] (null for a
 value that is not finite), t_reached, accepted, rejected and a label with the
-backend, the device, the driver, the precision and single_precision. A result
-with single_precision true is a screening result: run the member again in double
-precision before it feeds continuation, normal forms or Floquet multipliers.
+backend, the device, the driver, the precision, single_precision and math. A
+result with single_precision true, or with math fma, is a screening result: run
+the member again in double precision with math exact before it feeds
+continuation, normal forms or Floquet multipliers.
 
 --bench times built-in cases on every device, in both precisions, at each size
 (default 1000,10000,100000) and prints one row each. The cases (default all of

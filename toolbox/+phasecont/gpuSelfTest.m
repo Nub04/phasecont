@@ -25,7 +25,13 @@ function s = gpuSelfTest(options)
 %   S has the fields Backend, Device, Driver, Precision, SinglePrecision
 %   (what ran, as in EnsembleResult.Label), MaxError (the larger of the two
 %   exact-solution errors), Pass and Checks (a table with one row per
-%   check). The command line tool does the full tiers: pc-cli gpu selftest.
+%   check). FastMath is empty unless the run is on CUDA in double. There it
+%   reports the fma tier (phasecont.ensemble with FastMath = true), which
+%   reruns the rotation and the decay: MaxDifference is the largest
+%   |fma - exact| / (1 + |exact|) over the members whose Status is the same
+%   in both runs, and StatusDiffer counts the members whose Status differs.
+%   The report has no tolerance and does not count in Pass. The command
+%   line tool does the full tiers: pc-cli gpu selftest.
 %
 %   See also phasecont.gpuDevices, phasecont.ensemble.
 arguments
@@ -100,6 +106,23 @@ Tolerance = [tolRotation; tolDecay; 0; 0];
 Pass = MaxError <= Tolerance & all(isfinite(MaxError));
 Checks = table(Name, MaxError, Tolerance, Pass);
 
+% On CUDA in double the fma tier reruns the rotation and the decay. The
+% report has no tolerance and does not count in Pass.
+FastMath = [];
+if r.Label.Backend == "cuda" && r.Label.Precision == "double"
+    state = warning("off", "phasecont:ensemble:fastMath");
+    restore = onCleanup(@() warning(state));
+    rf = phasecont.ensemble(rotation, x0, [], tspan, target{:}, Dt = 0.01, ...
+        FastMath = true);
+    df = phasecont.ensemble(decay, ones(1, members), rates, [0 1 2.5 5], ...
+        target{:}, Rtol = rtol, Atol = atol, FastMath = true);
+    clear restore
+    [m1, n1] = fmaDifference(r, rf);
+    [m2, n2] = fmaDifference(d, df);
+    FastMath = struct("MaxDifference", max(m1, m2, "includenan"), ...
+        "StatusDiffer", n1 + n2);
+end
+
 s = struct( ...
     "Backend", r.Label.Backend, ...
     "Device", r.Label.Device, ...
@@ -108,5 +131,17 @@ s = struct( ...
     "SinglePrecision", r.Label.SinglePrecision, ...
     "MaxError", max(errRotation, errDecay), ...
     "Pass", all(Pass), ...
-    "Checks", Checks);
+    "Checks", Checks, ...
+    "FastMath", FastMath);
+end
+
+function [worst, differ] = fmaDifference(exact, fused)
+% Largest relative difference over the members whose Status is the same in
+% both runs, and the number of members whose Status differs.
+same = exact.Status == fused.Status;
+differ = nnz(~same);
+e = exact.States(:, :, same);
+f = fused.States(:, :, same);
+rel = abs(f - e) ./ (1 + abs(e));
+worst = max([0; rel(:)], [], "includenan");
 end

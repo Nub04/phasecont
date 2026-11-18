@@ -2,10 +2,11 @@
 //!
 //! The job is read by hand from a `serde_json::Value` so that every error can name the key
 //! that is wrong. Nothing is filled in for a missing key, except that `device` is the first
-//! device of the backend when it is left out, and the result names the device that ran.
+//! device of the backend when it is left out, and the result names the device that ran, and
+//! that a missing `math` is `exact`, the rounding every job had before the key existed.
 
 use pc_ensemble::device::{Backend, BackendState, DeviceInfo, DeviceList};
-use pc_ensemble::{Method, Output, Precision};
+use pc_ensemble::{Math, Method, Output, Precision};
 use serde_json::{Map, Value, json};
 
 pub type Parsed<T> = Result<T, String>;
@@ -22,10 +23,11 @@ pub struct Head {
     pub output: Output,
     pub bounds: f64,
     pub max_steps: u32,
+    pub math: Math,
 }
 
 /// The keys `parse_head` reads.
-pub const HEAD_KEYS: [&str; 9] = [
+pub const HEAD_KEYS: [&str; 10] = [
     "backend",
     "device",
     "precision",
@@ -35,6 +37,7 @@ pub const HEAD_KEYS: [&str; 9] = [
     "output",
     "bounds",
     "max_steps",
+    "math",
 ];
 
 pub fn object<'a>(v: &'a Value, key: &str) -> Parsed<&'a Map<String, Value>> {
@@ -157,6 +160,12 @@ pub fn output(v: &Value) -> Parsed<Output> {
     }
 }
 
+/// `exact` or `fma`.
+pub fn math(v: &Value) -> Parsed<Math> {
+    let name = string(v, "math")?;
+    Math::from_name(name).ok_or_else(|| format!("math must be exact or fma, got {name}"))
+}
+
 fn index(v: &Value, key: &str) -> Parsed<usize> {
     v.as_u64()
         .and_then(|n| usize::try_from(n).ok())
@@ -194,6 +203,7 @@ pub fn parse_head(m: &Map<String, Value>) -> Parsed<Head> {
         output: output(get("output")?)?,
         bounds: limit(get("bounds")?, "bounds")?,
         max_steps,
+        math: m.get("math").map_or(Ok(Math::Exact), math)?,
     })
 }
 

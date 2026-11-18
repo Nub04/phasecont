@@ -10,7 +10,7 @@ use common::*;
 use pc_codegen::kernel::Scalar;
 use pc_ensemble::cuda::{compile_ptx_text, compile_ptx_text_in};
 use pc_ensemble::kernel::{Integrator, Layout};
-use pc_ensemble::{EnsembleError, Tape};
+use pc_ensemble::{EnsembleError, Math, Tape};
 
 const VARIANTS: [(Integrator, Scalar); 4] = [
     (Integrator::Rk4, Scalar::F32),
@@ -115,7 +115,7 @@ fn an_unknown_architecture_is_a_compile_error() {
 /// Like [`ptx`], for the kernel that keeps the step arrays in global memory.
 fn global_ptx(src: &str, i: Integrator, s: Scalar, arch: &str) -> Option<String> {
     let tape = Tape::build(&build_model(src)).expect("tape");
-    match compile_ptx_text_in(&tape, i, s, Layout::Global, arch) {
+    match compile_ptx_text_in(&tape, i, s, Layout::Global, arch, Math::Exact) {
         Ok(text) => Some(text),
         Err(EnsembleError::GpuUnavailable(why)) => {
             skip_gpu("nvrtc", &why);
@@ -212,4 +212,39 @@ fn the_maps_compile_with_iter_for_every_architecture_in_both_layouts() {
             );
         }
     }
+}
+
+/// The math tier reaches NVRTC: the fma kernel holds more fused double multiply-adds than
+/// the exact kernel. The exact kernel holds some too, from the explicit `fma` calls inside
+/// the CUDA math library (`pow` in the step control), which `--fmad=false` leaves
+/// alone; those round once by definition, so they do not change the bits.
+#[test]
+fn only_the_fma_tier_fuses() {
+    let tape = Tape::build(&build_model(VDP)).expect("tape");
+    let text = |math| {
+        compile_ptx_text_in(
+            &tape,
+            Integrator::Dp5,
+            Scalar::F64,
+            Layout::Private,
+            "compute_120",
+            math,
+        )
+    };
+    let exact = match text(Math::Exact) {
+        Ok(t) => t,
+        Err(EnsembleError::GpuUnavailable(why)) => {
+            skip_gpu("nvrtc", &why);
+            return;
+        }
+        Err(e) => panic!("exact: {e}"),
+    };
+    let fma = text(Math::Fma).expect("fma");
+    let fused = |t: &str| t.matches("fma.rn.f64").count();
+    assert!(
+        fused(&fma) > fused(&exact),
+        "fma tier {} fused ops, exact tier {}",
+        fused(&fma),
+        fused(&exact)
+    );
 }

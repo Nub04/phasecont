@@ -238,6 +238,7 @@ impl Shim {
             device: "host".into(),
             driver: "cc".into(),
             precision: job.precision,
+            math: job.math,
         };
         p.finish(label).expect("finish")
     }

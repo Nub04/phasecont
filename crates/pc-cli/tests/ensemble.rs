@@ -460,3 +460,72 @@ fn bad_bench_arguments_are_usage_errors() {
         assert_eq!(code(&o), 2, "{args:?}: {}", stderr(&o));
     }
 }
+
+#[test]
+fn the_math_key_defaults_to_exact_and_is_labeled() {
+    let v = ok("math_default", DECAY, &decay_job());
+    assert_eq!(v["label"]["math"], "exact");
+    let mut job = decay_job();
+    job["math"] = json!("exact");
+    let v = ok("math_exact", DECAY, &job);
+    assert_eq!(v["label"]["math"], "exact");
+}
+
+#[test]
+fn a_wrong_math_value_names_the_key() {
+    for (i, bad) in [json!("fast"), json!(null), json!(true)]
+        .into_iter()
+        .enumerate()
+    {
+        let mut job = decay_job();
+        job["math"] = bad;
+        let o = run_job(&format!("math_bad_{i}"), DECAY, &job);
+        assert_eq!(code(&o), 2, "{}", stderr(&o));
+        assert!(stderr(&o).contains("math"), "{}", stderr(&o));
+        assert_eq!(stdout(&o), "");
+    }
+}
+
+#[test]
+fn fma_off_cuda_double_is_a_bad_job_before_any_device_lookup() {
+    // Exit 2 (bad job), not 3 (no device): the tier is checked before the device is looked up,
+    // so the cuda single case gives the same answer on a machine with no CUDA.
+    for (i, (backend, precision)) in [("cpu", "double"), ("opencl", "double"), ("cuda", "single")]
+        .into_iter()
+        .enumerate()
+    {
+        let mut job = decay_job();
+        job["backend"] = json!(backend);
+        job["precision"] = json!(precision);
+        job["math"] = json!("fma");
+        let o = run_job(&format!("math_fma_{i}"), DECAY, &job);
+        assert_eq!(code(&o), 2, "{backend} {precision}: {}", stderr(&o));
+        // Text only the tier check writes, not the parser's "math must be exact or fma".
+        let want = format!("runs only on cuda in double precision, not on {backend}");
+        assert!(stderr(&o).contains(&want), "{}", stderr(&o));
+        assert_eq!(stdout(&o), "");
+    }
+}
+
+#[test]
+fn fma_on_cuda_double_is_accepted() {
+    // With a CUDA device the run is labeled fma; without one it fails at the device lookup
+    // (exit 3), never as a bad job.
+    let mut job = decay_job();
+    job["backend"] = json!("cuda");
+    job["math"] = json!("fma");
+    let o = run_job("math_fma_cuda", DECAY, &job);
+    let has_cuda = pc_ensemble::device::list_devices()
+        .devices
+        .iter()
+        .any(|d| d.backend == pc_ensemble::device::Backend::Cuda);
+    if has_cuda {
+        assert_eq!(code(&o), 0, "{}", stderr(&o));
+        let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+        assert_eq!(v["label"]["math"], "fma");
+        assert_eq!(v["label"]["backend"], "cuda");
+    } else {
+        assert_eq!(code(&o), 3, "{}", stderr(&o));
+        eprintln!("SKIPPED: no CUDA device, so only the exit code was checked");
+    }
+}

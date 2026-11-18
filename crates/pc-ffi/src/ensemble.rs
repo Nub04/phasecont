@@ -15,7 +15,8 @@ use pc_ensemble::device::{Backend, find_device, list_devices};
 use pc_ensemble::job::NativeRhs;
 use pc_ensemble::run::run_on;
 use pc_ensemble::{
-    EnsembleError, EnsembleResult, Job, Label, Params, Precision, Status, Tape, job::validate,
+    EnsembleError, EnsembleResult, Job, Label, Params, Precision, Status, Tape,
+    job::{check_math, validate},
 };
 use pc_ir::IrModel;
 use serde_json::{Value, json};
@@ -149,6 +150,7 @@ fn job_of<'a>(
         bounds: head.bounds,
         max_steps: head.max_steps,
         precision: head.precision,
+        math: head.math,
         native,
     }
 }
@@ -179,6 +181,7 @@ pub(crate) fn start(
     validate(&job_of(
         &model.ir, &head, members, x0, params, per_member, None,
     ))?;
+    check_math(head.backend, head.precision, head.math)?;
     let device = find_device(head.backend, head.device).map_err(Error::GpuUnavailable)?;
     // Only a CPU run calls a compiled `F`, one per precision. The first CPU run of a model in a
     // precision compiles it, after `validate` and only when the tape takes every op of `F`, so
@@ -205,6 +208,7 @@ fn label_json(l: &Label) -> Value {
         "driver": l.driver,
         "precision": l.precision.name(),
         "single_precision": l.single_precision(),
+        "math": l.math.name(),
     })
 }
 

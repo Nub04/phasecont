@@ -7,7 +7,7 @@ use std::sync::atomic::AtomicBool;
 use common::*;
 use pc_ensemble::device::{Backend, BackendState, DeviceInfo, find_device, list_devices};
 use pc_ensemble::run::run_on;
-use pc_ensemble::{EnsembleError, Method, Precision, run_cpu};
+use pc_ensemble::{EnsembleError, Math, Method, Precision, run_cpu};
 
 #[test]
 fn the_cpu_device_is_found() {
@@ -231,4 +231,73 @@ fn run_on_checks_the_job_before_the_backend() {
     let dev = find_device(Backend::Cpu, 0).unwrap();
     let got = run_on(&dev, &j, &AtomicBool::new(false)).unwrap_err();
     assert_eq!(got, want);
+}
+
+#[test]
+fn run_on_refuses_fma_off_cuda_double_before_any_device_is_touched() {
+    // The fake devices do not exist, so a refusal that came after the device lookup would be
+    // GpuUnavailable or Unsupported, not BadJob.
+    let m = build_model(DECAY);
+    let cases = [
+        (Backend::Cpu, Precision::Double),
+        (Backend::Cpu, Precision::Single),
+        (Backend::OpenCl, Precision::Double),
+        (Backend::Metal, Precision::Double),
+        (Backend::Cuda, Precision::Single),
+    ];
+    for (backend, precision) in cases {
+        let mut j = job(
+            &m,
+            1,
+            &[1.0],
+            &[1.0],
+            1.0,
+            Method::Rk4 { dt: 0.01 },
+            precision,
+        );
+        j.math = Math::Fma;
+        let e = run_on(&fake(backend, 9999), &j, &AtomicBool::new(false)).unwrap_err();
+        match e {
+            EnsembleError::BadJob(text) => {
+                assert!(text.contains("fma"), "{backend:?}: {text}");
+                assert!(text.contains(backend.name()), "{backend:?}: {text}");
+            }
+            other => panic!("{backend:?} {precision:?}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn run_on_takes_fma_on_cuda_double() {
+    // Device 9999 does not exist, so the run fails, but at the device and not as a bad job.
+    let m = build_model(DECAY);
+    let mut j = job(
+        &m,
+        1,
+        &[1.0],
+        &[1.0],
+        1.0,
+        Method::Rk4 { dt: 0.01 },
+        Precision::Double,
+    );
+    j.math = Math::Fma;
+    let e = run_on(&fake(Backend::Cuda, 9999), &j, &AtomicBool::new(false)).unwrap_err();
+    assert!(!matches!(e, EnsembleError::BadJob(_)), "{e:?}");
+}
+
+#[test]
+fn an_exact_cpu_run_is_labeled_exact() {
+    let m = build_model(DECAY);
+    let j = job(
+        &m,
+        1,
+        &[1.0],
+        &[1.0],
+        1.0,
+        Method::Rk4 { dt: 0.01 },
+        Precision::Double,
+    );
+    let dev = find_device(Backend::Cpu, 0).unwrap();
+    let r = run_on(&dev, &j, &AtomicBool::new(false)).unwrap();
+    assert_eq!(r.label.math, Math::Exact);
 }

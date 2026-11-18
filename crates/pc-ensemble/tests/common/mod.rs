@@ -119,6 +119,7 @@ pub fn job<'a>(
         bounds: f64::INFINITY,
         max_steps: 10_000_000,
         precision,
+        math: pc_ensemble::Math::Exact,
         native: None,
     }
 }

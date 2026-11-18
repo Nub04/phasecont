@@ -10,7 +10,7 @@ mod common;
 use common::*;
 use pc_ensemble::device::{Backend, BackendState, DeviceInfo, find_device, list_devices};
 use pc_ensemble::run::run_on;
-use pc_ensemble::{EnsembleError, EnsembleResult, Method, Precision};
+use pc_ensemble::{EnsembleError, EnsembleResult, Math, Method, Precision};
 use std::sync::atomic::AtomicBool;
 
 /// The device to test, or `None` after a skip.
@@ -69,11 +69,23 @@ fn try_job_with(
     precision: Precision,
     cancel: &AtomicBool,
 ) -> Result<EnsembleResult, EnsembleError> {
+    try_math(device, src, method, precision, Math::Exact, cancel)
+}
+
+fn try_math(
+    device: &DeviceInfo,
+    src: &str,
+    method: Method,
+    precision: Precision,
+    math: Math,
+    cancel: &AtomicBool,
+) -> Result<EnsembleResult, EnsembleError> {
     let model = build_model(src);
     let members = 64;
     let x0 = vec![0.5; members * model.n()];
     let params = vec![1.0; model.n_p()];
-    let j = job(&model, members, &x0, &params, 1.0, method, precision);
+    let mut j = job(&model, members, &x0, &params, 1.0, method, precision);
+    j.math = math;
     run_on(device, &j, cancel)
 }
 
@@ -137,6 +149,12 @@ fn steps(backend: Backend) {
         assert_eq!(compiles(backend), base + 3, "a new precision compiles");
         run_job(&device, DECAY, DP5_SINGLE, Precision::Single);
         assert_eq!(compiles(backend), base + 3, "and is then kept");
+    }
+
+    // On CUDA in double the math tier is part of the kernel: an fma run must not reuse the
+    // exact kernel, and the exact kernel must still be there after it.
+    if backend == Backend::Cuda && device.fp64 {
+        fma_is_its_own_kernel(&device);
     }
 
     // Past the bound the oldest kernel goes, and the count stays at the bound.
@@ -259,5 +277,36 @@ fn panic_eviction(device: &DeviceInfo, backend: Backend) {
     assert_eq!(
         before.states, after.states,
         "the new context gives the same states"
+    );
+}
+
+/// An exact run, an fma run and an exact run again: the fma run compiles its own kernel, and
+/// the second exact run reuses the first kernel and gives the first states bit for bit.
+fn fma_is_its_own_kernel(device: &DeviceInfo) {
+    let exact = run_job(device, DECAY, DP5_STD, Precision::Double);
+    let warm = compiles(Backend::Cuda);
+    try_math(
+        device,
+        DECAY,
+        DP5_STD,
+        Precision::Double,
+        Math::Fma,
+        &NO_CANCEL(),
+    )
+    .expect("fma run");
+    assert_eq!(
+        compiles(Backend::Cuda),
+        warm + 1,
+        "the fma tier compiles its own kernel"
+    );
+    let again = run_job(device, DECAY, DP5_STD, Precision::Double);
+    assert_eq!(
+        compiles(Backend::Cuda),
+        warm + 1,
+        "the exact kernel is still kept"
+    );
+    assert_eq!(
+        exact.states, again.states,
+        "the exact kernel gives the same states after an fma run"
     );
 }

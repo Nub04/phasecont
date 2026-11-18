@@ -16,8 +16,10 @@
 //! builtins library is loaded by absolute path from the folder of the NVRTC in use, so that
 //! NVRTC's own load of it at the first compile gets that copy.
 //!
-//! The kernel is compiled without fused multiply-add (`--fmad=false`), so a run reproduces
-//! the CPU backend operation for operation. The compile route follows the spike S4 result:
+//! In the default exact tier the kernel is compiled without fused multiply-add
+//! (`--fmad=false`), so a run reproduces the CPU backend operation for operation. The opt-in
+//! fma tier ([`crate::Math::Fma`], double precision only) drops that option, and its results
+//! are not bit-reproducible; the tier is part of the kernel cache key. The compile route follows the spike S4 result:
 //! PTX when the driver is at least as new as NVRTC, a cubin for the exact architecture
 //! when the driver is a 13.x release that is older.
 //!
@@ -42,7 +44,7 @@ use crate::abi::{Packed, integrator_of, pack_in};
 use crate::batch::{members_per_batch, run_batched};
 use crate::device::{Backend, BackendState, DeviceInfo};
 use crate::gpu::{GLOBAL_SCRATCH_FROM, drive, guard, kernel_err};
-use crate::job::{EnsembleError, EnsembleResult, Job, Label, Precision, validate};
+use crate::job::{EnsembleError, EnsembleResult, Job, Label, Math, Precision, validate};
 use crate::kept::{Kept, Lru};
 use crate::kernel::{Integrator, Layout, kernel_source_in, private_reals};
 use crate::real::Real;
@@ -584,22 +586,28 @@ fn c_text(raw: &[c_char]) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-fn options(arch: &str) -> Vec<String> {
+/// The NVRTC options for `arch`. The exact tier turns off fused multiply-add, so a run gives
+/// the same bits as the CPU; the fma tier leaves NVRTC free to fuse.
+fn options(arch: &str, math: Math) -> Vec<String> {
+    let fmad = match math {
+        Math::Exact => "--fmad=false",
+        Math::Fma => "--fmad=true",
+    };
     vec![
         format!("--gpu-architecture={arch}"),
-        "--fmad=false".to_owned(),
+        fmad.to_owned(),
         "--std=c++17".to_owned(),
     ]
 }
 
 /// Compiles `src` to a cubin with `nvrtc::result`, since cudarc's safe API only returns PTX.
 /// The program is destroyed on every way out, including a panic inside cudarc.
-fn compile_cubin(src: &str, arch: &str) -> Result<Vec<u8>, String> {
+fn compile_cubin(src: &str, arch: &str, math: Math) -> Result<Vec<u8>, String> {
     let src = CString::new(src).map_err(|e| format!("source: {e}"))?;
     let prog = nvrtc::result::create_program(&src, None)
         .map_err(|e| format!("create_program: {:?}", e.0))?;
     // SAFETY: `prog` stays live until `destroy_program` below, and `src` outlives it.
-    let built = guard(|| unsafe { cubin_from(prog, arch) });
+    let built = guard(|| unsafe { cubin_from(prog, arch, math) });
     // SAFETY: `prog` came from `create_program` and is destroyed only here.
     let destroyed = unsafe { nvrtc::result::destroy_program(prog) };
     let cubin = built.map_err(|msg| format!("panic: {msg}"))??;
@@ -609,8 +617,8 @@ fn compile_cubin(src: &str, arch: &str) -> Result<Vec<u8>, String> {
 
 /// # Safety
 /// `prog` must come from `create_program` and not be destroyed yet.
-unsafe fn cubin_from(prog: nsys::nvrtcProgram, arch: &str) -> Result<Vec<u8>, String> {
-    let opts = options(arch);
+unsafe fn cubin_from(prog: nsys::nvrtcProgram, arch: &str, math: Math) -> Result<Vec<u8>, String> {
+    let opts = options(arch, math);
     // SAFETY (all blocks): `prog` is live, as the caller promises.
     if let Err(e) = unsafe { nvrtc::result::compile_program(prog, &opts) } {
         let log = match unsafe { nvrtc::result::get_program_log(prog) } {
@@ -630,8 +638,8 @@ unsafe fn cubin_from(prog: nsys::nvrtcProgram, arch: &str) -> Result<Vec<u8>, St
     Ok(cubin)
 }
 
-/// The kernel image for a device of compute capability `cc`.
-fn compile_image(src: &str, p: &Probe, cc: (i32, i32)) -> Result<Ptx, EnsembleError> {
+/// The kernel image for a device of compute capability `cc`, in the math tier `math`.
+fn compile_image(src: &str, p: &Probe, cc: (i32, i32), math: Math) -> Result<Ptx, EnsembleError> {
     let Some(route) = select(p.driver, p.nvrtc.0, p.nvrtc.1) else {
         return Err(EnsembleError::GpuUnavailable(format!(
             "{} is too old: NVRTC output needs a driver of release 13.0 or newer",
@@ -641,12 +649,14 @@ fn compile_image(src: &str, p: &Probe, cc: (i32, i32)) -> Result<Ptx, EnsembleEr
     let compiled = match route {
         Route::Ptx => {
             let opts = CompileOptions {
-                options: options(&format!("compute_{}{}", cc.0, cc.1)),
+                options: options(&format!("compute_{}{}", cc.0, cc.1), math),
                 ..Default::default()
             };
             compile_ptx_with_opts(src, opts).map_err(compile_error)
         }
-        Route::Cubin => compile_cubin(src, &format!("sm_{}{}", cc.0, cc.1)).map(Ptx::from_binary),
+        Route::Cubin => {
+            compile_cubin(src, &format!("sm_{}{}", cc.0, cc.1), math).map(Ptx::from_binary)
+        }
     };
     compiled.map_err(EnsembleError::GpuCompile)
 }
@@ -663,22 +673,23 @@ pub fn compile_ptx_text(
     scalar: Scalar,
     arch: &str,
 ) -> Result<String, EnsembleError> {
-    compile_ptx_text_in(tape, integrator, scalar, Layout::Private, arch)
+    compile_ptx_text_in(tape, integrator, scalar, Layout::Private, arch, Math::Exact)
 }
 
-/// [`compile_ptx_text`] with the scratch of a step in the given layout.
+/// [`compile_ptx_text`] with the scratch of a step in the given layout and the math tier `math`.
 pub fn compile_ptx_text_in(
     tape: &Tape,
     integrator: Integrator,
     scalar: Scalar,
     layout: Layout,
     arch: &str,
+    math: Math,
 ) -> Result<String, EnsembleError> {
     ensure_nvrtc().map_err(EnsembleError::GpuUnavailable)?;
     let src =
         kernel_source_in(tape, integrator, scalar, Dialect::Cuda, layout).map_err(kernel_err)?;
     let opts = CompileOptions {
-        options: options(arch),
+        options: options(arch, math),
         ..Default::default()
     };
     let ptx = guard(|| compile_ptx_with_opts(&src, opts))
@@ -803,8 +814,9 @@ fn capacity_of(entry: &Entry) -> Result<Capacity, EnsembleError> {
     ))
 }
 
-/// The kernel text, the compute capability and the precision of a compiled kernel.
-type KernelKey = (String, (i32, i32), Precision);
+/// The kernel text, the compute capability, the precision and the math tier of a compiled
+/// kernel. The math tier changes the NVRTC options, not the text.
+type KernelKey = (String, (i32, i32), Precision, Math);
 
 /// How many compiled kernels a device keeps.
 const KERNELS_KEPT: usize = 8;
@@ -848,22 +860,24 @@ fn session(
     let cc = ctx
         .compute_capability()
         .map_err(drv("compute capability"))?;
-    let function = entry
-        .kernels
-        .get_or_make((src.to_owned(), cc, job.precision), || {
-            COMPILES.fetch_add(1, Ordering::SeqCst);
-            let image = compile_image(src, p, cc)?;
-            let load = |step: &'static str| {
-                move |e: DriverError| EnsembleError::GpuCompile(drv_text(step, &e))
-            };
-            let module = ctx.load_module(image).map_err(load("load_module"))?;
-            module.load_function(ENTRY).map_err(load("load_function"))
-        })?;
+    let function =
+        entry
+            .kernels
+            .get_or_make((src.to_owned(), cc, job.precision, job.math), || {
+                COMPILES.fetch_add(1, Ordering::SeqCst);
+                let image = compile_image(src, p, cc, job.math)?;
+                let load = |step: &'static str| {
+                    move |e: DriverError| EnsembleError::GpuCompile(drv_text(step, &e))
+                };
+                let module = ctx.load_module(image).map_err(load("load_module"))?;
+                module.load_function(ENTRY).map_err(load("load_function"))
+            })?;
     let label = Label {
         backend: Backend::Cuda.name().into(),
         device: device.name.clone(),
         driver: device.driver.clone(),
         precision: job.precision,
+        math: job.math,
     };
     // The free memory bounds the members of one batch. The private layout takes its local
     // memory first: the driver reserves it for every resident thread, whatever the batch size.
@@ -1023,6 +1037,54 @@ fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
 mod tests {
     use super::*;
     use pc_codegen::kernel::KernelError;
+
+    #[test]
+    fn the_math_tier_sets_the_fmad_option() {
+        let exact = options("sm_120", Math::Exact);
+        let fma = options("sm_120", Math::Fma);
+        assert_eq!(
+            exact,
+            ["--gpu-architecture=sm_120", "--fmad=false", "--std=c++17"]
+        );
+        assert_eq!(
+            fma,
+            ["--gpu-architecture=sm_120", "--fmad=true", "--std=c++17"]
+        );
+    }
+
+    #[test]
+    fn the_cubin_route_builds_each_tier_with_its_own_option() {
+        if let Err(why) = ensure_nvrtc() {
+            let required = std::env::var("PC_REQUIRE_GPU")
+                .map(|v| v.split(',').any(|b| b.trim() == "cuda"))
+                .unwrap_or(false);
+            assert!(
+                !required,
+                "PC_REQUIRE_GPU names cuda, but NVRTC is missing: {why}"
+            );
+            eprintln!("SKIPPED: no NVRTC ({why})");
+            return;
+        }
+        let src = "extern \"C\" __global__ void k(double *a) { a[0] = a[1] * a[2] + a[3]; }";
+        // The PTX route: the fma tier fuses the multiply and the add, the exact tier does not.
+        let ptx = |math| {
+            let opts = CompileOptions {
+                options: options("compute_120", math),
+                ..Default::default()
+            };
+            compile_ptx_with_opts(src, opts).unwrap().to_src()
+        };
+        assert!(!ptx(Math::Exact).contains("fma.rn.f64"));
+        assert!(ptx(Math::Fma).contains("fma.rn.f64"));
+        // The cubin route: a cubin also records its options, so different bytes alone do not
+        // show fusion. They do show that the tier reaches NVRTC, since the same tier compiles
+        // to the same bytes.
+        let exact = compile_cubin(src, "sm_120", Math::Exact).unwrap();
+        let fma = compile_cubin(src, "sm_120", Math::Fma).unwrap();
+        assert!(!exact.is_empty() && !fma.is_empty());
+        assert_ne!(exact, fma);
+        assert_eq!(exact, compile_cubin(src, "sm_120", Math::Exact).unwrap());
+    }
 
     #[test]
     fn the_route_follows_the_driver_and_nvrtc_release() {

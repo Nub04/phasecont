@@ -78,6 +78,8 @@ fn the_cpu_selftest_passes_in_both_precisions() {
         assert_eq!(v["features"]["fp64"], true);
         // The CPU backend is the reference, so it has nothing to compare bits with.
         assert!(v["bit_exact"].is_null(), "{v}");
+        // The CPU backend does not take the fma tier, so the key is there and null.
+        assert!(v.get("fma").is_some_and(|f| f.is_null()), "{v}");
         assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
         let tiers = v["tiers"].as_array().unwrap();
         let names: Vec<&str> = tiers.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -126,6 +128,40 @@ fn an_opencl_selftest_either_finds_no_device_or_reports() {
             assert_eq!(stdout(&o), "");
         }
         0 | 1 => assert_eq!(json(&stdout(&o))["backend"], "opencl"),
+        other => panic!("exit {other}: {}", stderr(&o)),
+    }
+}
+
+/// CUDA double is the one case with an fma report. Without a CUDA device the run is exit 3;
+/// with one, the report has `fma` with both fields and `pass` follows the tiers alone.
+#[test]
+fn a_cuda_double_selftest_either_finds_no_device_or_reports_fma() {
+    let o = run(
+        &scratch(),
+        &[
+            "gpu",
+            "selftest",
+            "--backend",
+            "cuda",
+            "--precision",
+            "double",
+        ],
+    );
+    match code(&o) {
+        3 => assert_eq!(stdout(&o), ""),
+        0 | 1 => {
+            let v = json(&stdout(&o));
+            assert_eq!(v["backend"], "cuda");
+            assert!(v["fma"]["max_difference"].is_f64(), "{v}");
+            assert!(v["fma"]["status_differ"].is_u64(), "{v}");
+            let tiers_pass = v["tiers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|t| t["pass"] == true)
+                && v["bit_exact"] != false;
+            assert_eq!(v["pass"], tiers_pass, "{v}");
+        }
         other => panic!("exit {other}: {}", stderr(&o)),
     }
 }

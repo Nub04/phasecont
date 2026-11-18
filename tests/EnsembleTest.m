@@ -379,13 +379,16 @@ classdef EnsembleTest < matlab.unittest.TestCase
         end
 
         function selfTestPassesOnTheCpu(testCase, GpuPrecision)
-            s = phasecont.gpuSelfTest(Backend = "cpu", Precision = GpuPrecision);
+            s = testCase.verifyWarningFree(@() ...
+                phasecont.gpuSelfTest(Backend = "cpu", Precision = GpuPrecision));
             testCase.verifyTrue(s.Pass, evalc("disp(s.Checks)"));
             testCase.verifyEqual(s.Backend, "cpu");
             testCase.verifyEqual(s.Precision, GpuPrecision);
             testCase.verifyEqual(s.SinglePrecision, GpuPrecision == "single");
             testCase.verifyEqual(height(s.Checks), 4);
             testCase.verifyEqual(s.Checks.MaxError(3:4), [0; 0]);
+            % The CPU does not take the fma tier, so there is no FastMath report.
+            testCase.verifyEmpty(s.FastMath);
         end
 
         function selfTestNeedsAPrecision(testCase)
@@ -415,6 +418,32 @@ classdef EnsembleTest < matlab.unittest.TestCase
             testCase.verifyEqual(s.Backend, GpuBackend);
             testCase.verifyEqual(s.Precision, GpuPrecision);
             testCase.verifyEqual(s.SinglePrecision, GpuPrecision == "single");
+            testCase.verifyEqual(isempty(s.FastMath), ...
+                ~(GpuBackend == "cuda" && GpuPrecision == "double"));
+        end
+
+        function selfTestReportsTheFmaTierOnCudaInDouble(testCase)
+            % The fma tier reruns the rotation and the decay. The report has no
+            % tolerance and does not count in Pass, and the FastMath warning stays
+            % quiet inside the self-test and is back on afterwards.
+            testCase.skipUnlessDevice("cuda", "double");
+            id = "phasecont:ensemble:fastMath";
+            old = warning("on", id);
+            testCase.addTeardown(@() warning(old));
+            s = testCase.verifyWarningFree(@() ...
+                phasecont.gpuSelfTest(Backend = "cuda", Precision = "double"));
+            testCase.verifyTrue(s.Pass, evalc("disp(s.Checks)"));
+            testCase.verifyEqual(height(s.Checks), 4);
+            f = s.FastMath;
+            testCase.verifyEqual(sort(string(fieldnames(f)))', ["MaxDifference" "StatusDiffer"]);
+            testCase.verifyTrue(isfinite(f.MaxDifference) && f.MaxDifference >= 0, ...
+                string(f.MaxDifference));
+            testCase.verifyEqual(f.StatusDiffer, 0);
+            msg = sprintf("cuda double fma: MaxDifference %g, StatusDiffer %d", ...
+                f.MaxDifference, f.StatusDiffer);
+            testCase.log(1, msg);
+            w = warning("query", id);
+            testCase.verifyEqual(string(w.state), "on");
         end
 
         function aGpuResultCanBeRefinedOnTheCpu(testCase, GpuBackend)
@@ -427,6 +456,52 @@ classdef EnsembleTest < matlab.unittest.TestCase
             testCase.verifyFalse(f.Label.SinglePrecision);
             testCase.verifyEqual(f.Label.Backend, "cpu");
             testCase.verifyLessThan(abs(f.Final(1) - cos(3)), 1e-4);
+        end
+
+        function fastMathIsOffByDefault(testCase)
+            m = testCase.model(testCase.Rotation);
+            r = phasecont.ensemble(m, [1; 0], [], [0 1], Backend = "cpu", ...
+                Precision = "double", Dt = 0.01);
+            testCase.verifyEqual(r.Label.Math, "exact");
+            testCase.verifyFalse(r.Job.FastMath);
+        end
+
+        function fastMathRunsOnlyOnCudaInDouble(testCase)
+            % The refusal comes before any run starts, so it needs no GPU. Backend "auto"
+            % picks its device first, but in single precision it picks either the CPU or
+            % a GPU in single precision, and both are refused.
+            m = testCase.model(testCase.Rotation);
+            cases = {{"cpu", "double"}, {"cpu", "single"}, {"cuda", "single"}, ...
+                {"opencl", "double"}, {"metal", "single"}, {"auto", "single"}};
+            for k = 1:numel(cases)
+                c = cases{k};
+                testCase.verifyError(@() phasecont.ensemble(m, [1; 0], [], [0 1], ...
+                    Backend = c{1}, Precision = c{2}, Dt = 0.01, FastMath = true), ...
+                    "phasecont:ensemble:fastMathBackend", c{1} + " " + c{2});
+            end
+        end
+
+        function fastMathOnCudaWarnsAndIsLabelled(testCase)
+            testCase.skipUnlessDevice("cuda", "double");
+            m = testCase.model(testCase.Rotation);
+            run = @(fast) phasecont.ensemble(m, [1 0.5; 0 0], [], [0 3], ...
+                Backend = "cuda", Precision = "double", Rtol = 1e-10, ...
+                Atol = 1e-12, FastMath = fast);
+            exact = run(false);
+            testCase.verifyEqual(exact.Label.Math, "exact");
+            fast = testCase.verifyWarning(@() run(true), "phasecont:ensemble:fastMath");
+            testCase.verifyEqual(fast.Label.Math, "fma");
+            testCase.verifyTrue(fast.Job.FastMath);
+            testCase.verifyEqual(fast.Status, ["ok"; "ok"]);
+            % Both tiers are checked against the closed form at 10 times Rtol, the rule
+            % of the refine test above. That factor is this project's convention, not
+            % a bound on fma: no source gives a bound on fused against unfused results.
+            want = [cos(3) 0.5 * cos(3); -sin(3) -0.5 * sin(3)];
+            testCase.verifyLessThan(max(abs(exact.Final - want), [], "all"), 1e-9);
+            testCase.verifyLessThan(max(abs(fast.Final - want), [], "all"), 1e-9);
+            f = testCase.verifyWarningFree(@() fast.refine(1));
+            testCase.verifyEqual(f.Label.Math, "exact");
+            testCase.verifyEqual(f.Label.Backend, "cpu");
         end
     end
 end

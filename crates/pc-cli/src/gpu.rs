@@ -54,6 +54,10 @@ pub fn report_json(r: &Report) -> Value {
         "features": {"fp32": r.device.fp32, "fp64": r.device.fp64},
         "tiers": tiers,
         "bit_exact": r.bit_exact,
+        "fma": r.fma.as_ref().map(|f| json!({
+            "max_difference": f.max_difference,
+            "status_differ": f.status_differ,
+        })),
         "pass": r.pass,
     })
 }

@@ -2,6 +2,8 @@
 
 use pc_ensemble::Precision;
 use pc_ensemble::device::{Backend, BackendState, list_devices};
+mod common;
+
 use pc_ensemble::selftest::{Selected, SelfTestError, run_selftest};
 
 #[test]
@@ -55,6 +57,8 @@ fn the_cpu_selftest_passes_in_both_precisions() {
         assert_eq!(r.label.precision, p);
         // Comparing the CPU backend with itself proves nothing, so the report says so.
         assert_eq!(r.bit_exact, None);
+        // The CPU backend does not take the fma tier, so there is no fma report.
+        assert_eq!(r.fma, None);
         for t in &r.tiers {
             assert!(t.max_error <= t.limit, "{}: {t:?}", t.name);
             assert!(t.max_error.is_finite(), "{}: {t:?}", t.name);
@@ -62,6 +66,34 @@ fn the_cpu_selftest_passes_in_both_precisions() {
         let names: Vec<&str> = r.tiers.iter().map(|t| t.name).collect();
         for want in ["analytic-rk4", "analytic-dp5", "iterate", "determinism"] {
             assert!(names.contains(&want), "{names:?}");
+        }
+    }
+}
+
+/// On a CUDA device the double report carries the fma comparison, the single report does
+/// not, and the comparison never changes `pass`. The difference is printed, not bounded.
+#[test]
+fn a_cuda_double_selftest_reports_the_fma_tier() {
+    if let Err(why) = pc_ensemble::device::find_device(Backend::Cuda, 0) {
+        common::skip_gpu("cuda", &why);
+        return;
+    }
+    for p in [Precision::Single, Precision::Double] {
+        let r = run_selftest(Selected {
+            backend: Backend::Cuda,
+            device: 0,
+            precision: p,
+        })
+        .expect("cuda self-test");
+        let tiers_pass = r.tiers.iter().all(|t| t.pass()) && r.bit_exact != Some(false);
+        assert_eq!(r.pass, tiers_pass, "{}: {r:#?}", p.name());
+        match p {
+            Precision::Single => assert_eq!(r.fma, None),
+            Precision::Double => {
+                let f = r.fma.clone().expect("an fma report on CUDA double");
+                assert!(f.max_difference.is_finite(), "{f:?}");
+                eprintln!("cuda double fma: {f:?}");
+            }
         }
     }
 }
@@ -132,7 +164,9 @@ mod run_with {
 
     use pc_ensemble::device::{Backend, DeviceInfo};
     use pc_ensemble::selftest::{SelfTestError, run_with};
-    use pc_ensemble::{EnsembleError, EnsembleResult, Job, Label, Method, Precision, run_cpu};
+    use pc_ensemble::{
+        EnsembleError, EnsembleResult, Job, Label, Math, Method, Precision, Status, run_cpu,
+    };
 
     fn device() -> DeviceInfo {
         DeviceInfo {
@@ -152,6 +186,7 @@ mod run_with {
             device: "fake".into(),
             driver: "0".into(),
             precision: p,
+            math: pc_ensemble::Math::Exact,
         }
     }
 
@@ -162,7 +197,7 @@ mod run_with {
     #[test]
     fn a_runner_that_matches_the_cpu_is_bit_exact() {
         for p in [Precision::Single, Precision::Double] {
-            let r = run_with(&cpu, device(), label(p), true).unwrap();
+            let r = run_with(&cpu, device(), label(p), true, false).unwrap();
             assert_eq!(r.bit_exact, Some(true));
             assert!(r.pass, "{:#?}", r.tiers);
         }
@@ -178,7 +213,7 @@ mod run_with {
             r.states[0] = f64::from_bits(b);
             Ok(r)
         };
-        let r = run_with(&flip, device(), label(Precision::Double), true).unwrap();
+        let r = run_with(&flip, device(), label(Precision::Double), true, false).unwrap();
         assert_eq!(r.bit_exact, Some(false));
         assert!(!r.pass);
         assert!(
@@ -191,7 +226,7 @@ mod run_with {
 
     #[test]
     fn the_comparison_is_skipped_when_not_asked_for() {
-        let r = run_with(&cpu, device(), label(Precision::Double), false).unwrap();
+        let r = run_with(&cpu, device(), label(Precision::Double), false, false).unwrap();
         assert_eq!(r.bit_exact, None);
         assert!(r.pass);
     }
@@ -206,7 +241,7 @@ mod run_with {
             }
             Ok(r)
         };
-        let r = run_with(&drift, device(), label(Precision::Double), false).unwrap();
+        let r = run_with(&drift, device(), label(Precision::Double), false, false).unwrap();
         let det = r.tiers.iter().find(|t| t.name == "determinism").unwrap();
         assert!(det.max_error > 0.0, "{det:?}");
         assert!(!r.pass);
@@ -221,7 +256,7 @@ mod run_with {
             }
             Ok(r)
         };
-        let r = run_with(&wrong, device(), label(Precision::Double), false).unwrap();
+        let r = run_with(&wrong, device(), label(Precision::Double), false, false).unwrap();
         assert!(!r.pass);
         assert!(
             r.tiers
@@ -248,7 +283,7 @@ mod run_with {
             })
         };
         for p in [Precision::Single, Precision::Double] {
-            let r = run_with(&flip, device(), label(p), true).unwrap();
+            let r = run_with(&flip, device(), label(p), true, false).unwrap();
             assert_eq!(r.bit_exact, Some(false), "{}", p.name());
             assert!(!r.pass);
             for name in ["analytic-rk4", "analytic-dp5", "iterate"] {
@@ -269,7 +304,7 @@ mod run_with {
                 let odd = j.method == Method::Iter && calls.fetch_add(1, Ordering::SeqCst) % 2 == 1;
                 Ok(if odd { flip_first(r) } else { r })
             };
-            let r = run_with(&drift, device(), label(p), false).unwrap();
+            let r = run_with(&drift, device(), label(p), false, false).unwrap();
             let det = r.tiers.iter().find(|t| t.name == "determinism").unwrap();
             assert!(det.max_error > 0.0, "{}: {det:?}", p.name());
             assert!(!r.pass);
@@ -295,7 +330,7 @@ mod run_with {
             }
         };
         for p in [Precision::Single, Precision::Double] {
-            let r = run_with(&late, device(), label(p), false).unwrap();
+            let r = run_with(&late, device(), label(p), false, false).unwrap();
             assert!(!r.pass);
             for t in &r.tiers {
                 assert_eq!(t.pass(), t.name != "iterate", "{}: {t:?}", p.name());
@@ -306,10 +341,68 @@ mod run_with {
     #[test]
     fn a_runner_error_is_reported_as_an_error_not_a_pass() {
         let fail = |_: &Job| Err(EnsembleError::Cancelled);
-        let e = run_with(&fail, device(), label(Precision::Single), true).unwrap_err();
+        let e = run_with(&fail, device(), label(Precision::Single), true, false).unwrap_err();
         assert!(
             matches!(e, SelfTestError::Run(EnsembleError::Cancelled)),
             "{e:?}"
         );
+    }
+
+    #[test]
+    fn the_fma_report_is_off_unless_asked_for() {
+        let r = run_with(&cpu, device(), label(Precision::Double), true, false).unwrap();
+        assert_eq!(r.fma, None);
+    }
+
+    #[test]
+    fn a_runner_that_ignores_the_tier_reports_no_fma_difference() {
+        let r = run_with(&cpu, device(), label(Precision::Double), true, true).unwrap();
+        let f = r.fma.expect("asked for");
+        assert_eq!((f.max_difference, f.status_differ), (0.0, 0));
+        assert!(r.pass, "{:#?}", r.tiers);
+    }
+
+    /// The fma jobs come back moved by a relative 1e-6, and one of them with a different
+    /// status. The report shows both, and `pass` stays what the exact tiers say.
+    #[test]
+    fn an_fma_difference_is_reported_and_never_fails_the_report() {
+        let nudge = |j: &Job| {
+            let mut r = cpu(j)?;
+            if j.math == Math::Fma {
+                for x in &mut r.states {
+                    *x *= 1.0 + 1e-6;
+                }
+                r.status[0] = Status::Bounds;
+            }
+            Ok(r)
+        };
+        let r = run_with(&nudge, device(), label(Precision::Double), true, true).unwrap();
+        let f = r.fma.expect("asked for");
+        assert_eq!(
+            f.status_differ, 2,
+            "one member of each of the two jobs: {f:?}"
+        );
+        assert!(f.max_difference > 5e-7 && f.max_difference < 1e-6, "{f:?}");
+        assert_eq!(r.bit_exact, Some(true));
+        assert!(r.pass, "{:#?}", r.tiers);
+    }
+
+    #[test]
+    fn a_device_that_refuses_the_fma_jobs_is_an_error() {
+        let refuse = |j: &Job| {
+            if j.math == Math::Fma {
+                Err(EnsembleError::BadJob("no fma".into()))
+            } else {
+                cpu(j)
+            }
+        };
+        let e = run_with(&refuse, device(), label(Precision::Double), true, true).unwrap_err();
+        assert!(
+            matches!(e, SelfTestError::Fma(EnsembleError::BadJob(_))),
+            "{e:?}"
+        );
+        // The message names the tier, so the CLI error (exit 1) says which jobs failed.
+        let text = e.to_string();
+        assert!(text.contains("fma tier"), "{text}");
     }
 }
