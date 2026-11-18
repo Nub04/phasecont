@@ -146,11 +146,18 @@ fn info_row(e: &EntryReport) -> String {
 /// checks failed. The finite-difference rows of `check_model` (labels ending
 /// in `(FD)`) do not count when the model is not smooth, since a kink between
 /// the two sides of a difference makes them unreliable; every other row, and
-/// every JIT row, counts.
+/// every JIT row, counts. A `SKIP` row (an entry over the node limit) is printed
+/// and counted apart: it adds to neither the checks nor the failures.
 fn tally(entries: &[EntryReport], jit: &[Row], smooth: bool) -> (String, usize) {
     let mut s = String::new();
     let (mut counted, mut bad, mut skipped) = (0_usize, 0_usize, 0_usize);
+    let mut too_large = 0_usize;
     for e in entries {
+        if e.skip {
+            too_large += 1;
+            let _ = writeln!(s, "{e}");
+            continue;
+        }
         if !smooth && e.label.ends_with("(FD)") {
             skipped += 1;
             let _ = writeln!(s, "{}", info_row(e));
@@ -161,6 +168,11 @@ fn tally(entries: &[EntryReport], jit: &[Row], smooth: bool) -> (String, usize) 
         let _ = writeln!(s, "{e}");
     }
     for r in jit {
+        if r.skip {
+            too_large += 1;
+            let _ = writeln!(s, "{}", r.text);
+            continue;
+        }
         counted += 1;
         bad += usize::from(!r.pass);
         let _ = writeln!(s, "{}", r.text);
@@ -169,6 +181,9 @@ fn tally(entries: &[EntryReport], jit: &[Row], smooth: bool) -> (String, usize) 
         let _ = write!(s, "all {counted} checks pass");
     } else {
         let _ = write!(s, "{bad} of {counted} checks FAIL");
+    }
+    if too_large > 0 {
+        let _ = write!(s, "; {too_large} skipped (entry too large)");
     }
     if skipped > 0 {
         let _ = write!(
@@ -212,11 +227,53 @@ mod tests {
             p: vec![1.0],
             points: 3,
             note: note.map(str::to_string),
+            skip: false,
         }
     }
 
     fn jit(label: &str, pass: bool, detail: &str) -> Row {
         pc_jit::check::row(RowKind::JitVsDag, label, pass, detail)
+    }
+
+    const TOO_BIG: &str = "entry not built: too big (TooLarge)";
+
+    fn skip(label: &str) -> Row {
+        pc_jit::check::skip_row(RowKind::JitVsDag, label, TOO_BIG)
+    }
+
+    fn skipped_entry(label: &str) -> EntryReport {
+        let mut e = entry(label, true, Some(TOO_BIG));
+        e.skip = true;
+        e
+    }
+
+    #[test]
+    fn skipped_rows_are_printed_but_neither_counted_nor_failed() {
+        let entries = [entry("F", true, None), skipped_entry("JacU")];
+        let rows = [
+            jit("F (JIT vs DAG, 0 ulp)", true, "3 points"),
+            skip("JacU (JIT vs DAG, 0 ulp)"),
+        ];
+        for smooth in [true, false] {
+            let (text, bad) = tally(&entries, &rows, smooth);
+            assert_eq!(bad, 0, "smooth {smooth}: {text}");
+            assert!(text.contains("SKIP"), "{text}");
+            assert!(!text.contains("FAIL"), "{text}");
+            assert!(
+                text.ends_with("all 2 checks pass; 2 skipped (entry too large)\n"),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_real_failure_next_to_skipped_rows_still_fails() {
+        let entries = [entry("F", false, None), skipped_entry("JacU")];
+        let rows = [skip("JacU (JIT vs DAG, 0 ulp)")];
+        let (text, bad) = tally(&entries, &rows, true);
+        assert_eq!(bad, 1, "{text}");
+        assert!(text.contains("1 of 1 checks FAIL"), "{text}");
+        assert!(text.contains("2 skipped (entry too large)"), "{text}");
     }
 
     #[test]

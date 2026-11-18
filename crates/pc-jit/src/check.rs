@@ -7,7 +7,7 @@
 use crate::CompiledModel;
 use pc_ir::check::{Rng, close_err, close_ulps, draw_point, fmt_vec, scale, slot_label};
 use pc_ir::eval::eval_err;
-use pc_ir::{Entry, EntryKind, Fallback, IrModel, Slot};
+use pc_ir::{Entry, EntryKind, Fallback, IrError, IrErrorKind, IrModel, Slot};
 
 fn dir(slots: &[Slot]) -> (EntryKind, String) {
     (EntryKind::Dir(slots.to_vec()), slot_label(slots))
@@ -56,8 +56,11 @@ pub enum RowKind {
 pub struct Row {
     /// Which comparison this line is.
     pub kind: RowKind,
-    /// Whether every value passed.
+    /// Whether every value passed. A skipped row has `pass` set too.
     pub pass: bool,
+    /// The entry was not built because it needs more DAG nodes than the limit, so there
+    /// is nothing to compare. The row is printed as `SKIP` and does not count as a check.
+    pub skip: bool,
     /// The line to print: label, verdict and detail.
     pub text: String,
 }
@@ -68,7 +71,35 @@ pub fn row(kind: RowKind, label: &str, pass: bool, detail: &str) -> Row {
     Row {
         kind,
         pass,
+        skip: false,
         text: format!("{label:<36} {verdict}  {detail}"),
+    }
+}
+
+/// Builds a `SKIP` row: the entry was not built because it is too large.
+pub fn skip_row(kind: RowKind, label: &str, detail: &str) -> Row {
+    Row {
+        kind,
+        pass: true,
+        skip: true,
+        text: format!("{label:<36} SKIP  {detail}"),
+    }
+}
+
+/// The two rows for an entry that could not be built: `SKIP` rows when the DAG
+/// passed its node limit, `FAIL` rows for any other error.
+pub(crate) fn unbuilt_rows(l_dag: &str, l_fb: &str, e: &IrError) -> [Row; 2] {
+    let d = format!("entry not built: {e}");
+    if e.kind == IrErrorKind::TooLarge {
+        [
+            skip_row(RowKind::JitVsDag, l_dag, &d),
+            skip_row(RowKind::JitVsFallback, l_fb, &d),
+        ]
+    } else {
+        [
+            row(RowKind::JitVsDag, l_dag, false, &d),
+            row(RowKind::JitVsFallback, l_fb, false, &d),
+        ]
     }
 }
 
@@ -134,10 +165,10 @@ pub(crate) fn fallback_close(kind: &EntryKind, jit: f64, fb: f64, scale: f64, er
 /// fallback (see [`fallback_close`]), two rows per entry. Points come
 /// from the box of `check_model` with half-width `hw`.
 pub fn jit_rows(mut ir: IrModel, fb: &Fallback, points: usize, seed: u64, hw: f64) -> Vec<Row> {
-    let built: Vec<(EntryKind, String, Result<Entry, String>)> = jit_kinds(&ir)
+    let built: Vec<(EntryKind, String, Result<Entry, IrError>)> = jit_kinds(&ir)
         .into_iter()
         .map(|(k, l)| {
-            let e = ir.entry(&k).map_err(|e| e.to_string());
+            let e = ir.entry(&k);
             (k, l, e)
         })
         .collect();
@@ -149,10 +180,8 @@ pub fn jit_rows(mut ir: IrModel, fb: &Fallback, points: usize, seed: u64, hw: f6
         let l_fb = format!("{label} (JIT vs Fallback)");
         let entry = match entry {
             Ok(e) => e,
-            Err(msg) => {
-                let d = format!("entry not built: {msg}");
-                rows.push(row(RowKind::JitVsDag, &l_dag, false, &d));
-                rows.push(row(RowKind::JitVsFallback, &l_fb, false, &d));
+            Err(e) => {
+                rows.extend(unbuilt_rows(&l_dag, &l_fb, &e));
                 continue;
             }
         };
@@ -238,6 +267,35 @@ mod tests {
             assert!(fallback_close(&kind, f64::NAN, f64::NAN, 1.0, 0.0));
             assert!(fallback_close(&kind, 0.0, -0.0, 1.0, 0.0));
         }
+    }
+
+    #[test]
+    fn a_too_large_entry_gives_two_skip_rows_and_any_other_error_two_fail_rows() {
+        use pc_ir::{IrError, IrErrorKind};
+        let big = IrError::new(
+            IrErrorKind::TooLarge,
+            pc_ode::DUMMY_SPAN,
+            "the derivative needs more nodes than the limit",
+        );
+        let rows = unbuilt_rows("JacU (JIT vs DAG, 0 ulp)", "JacU (JIT vs Fallback)", &big);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].kind, RowKind::JitVsDag);
+        assert_eq!(rows[1].kind, RowKind::JitVsFallback);
+        for r in &rows {
+            assert!(r.skip && r.pass, "{}", r.text);
+            assert!(r.text.contains("SKIP"), "{}", r.text);
+            assert!(
+                r.text.contains("entry not built") && r.text.contains("TooLarge"),
+                "{}",
+                r.text
+            );
+        }
+        let other = IrError::new(IrErrorKind::Unsupported, pc_ode::DUMMY_SPAN, "no rule");
+        for r in unbuilt_rows("a", "b", &other) {
+            assert!(!r.skip && !r.pass, "{}", r.text);
+            assert!(r.text.contains("FAIL"), "{}", r.text);
+        }
+        assert!(!row(RowKind::JitVsDag, "F", true, "ok").skip);
     }
 
     #[test]

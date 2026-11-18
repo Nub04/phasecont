@@ -280,3 +280,47 @@ fn close_ulps_is_four_ulp_with_nan_and_zero_rules() {
     assert!(close(1e-14, 2e-14, 1.0));
     assert!(!close_ulps(1e-14, 2e-14));
 }
+
+/// A model whose derivative entries pass the node limit while `F` still fits.
+fn setup_capped(src: &str) -> (Fallback, IrModel) {
+    let mut map = SourceMap::new();
+    let top = map.add("t.ode", src);
+    let l = load(top, &mut map, &mut MapLoader::new());
+    let full = lower(&l.expanded, &l.info).unwrap().dag.len();
+    let ir = crate::lower::lower_with_cap(&l.expanded, &l.info, full).unwrap();
+    (Fallback::new(&l.expanded, &l.info, &ir), ir)
+}
+
+#[test]
+fn an_entry_over_the_node_limit_is_skipped_and_does_not_fail() {
+    let (fb, mut ir) = setup_capped("x'=sin(x)*cos(x)+x*x\ndone\n");
+    let rep = check_model_with(&mut ir, &fb, &low_order(2, 1, 2));
+    let text = rep.to_string();
+    assert!(rep.passed(), "{text}");
+    assert_eq!(rep.failures().count(), 0, "{text}");
+    for label in ["JacU", "Dir[U]", "Dir[U,U]", "FD"] {
+        let r = rep.find(label).unwrap_or_else(|| panic!("{label}: {text}"));
+        assert!(r.pass, "{label}: {text}");
+        let n = r.note.as_deref().unwrap_or("");
+        assert!(
+            n.contains("entry not built") && n.contains("TooLarge"),
+            "{text}"
+        );
+    }
+    assert!(text.contains("SKIP"), "{text}");
+    assert!(!text.contains("FAIL"), "{text}");
+    assert!(rep.find("F").unwrap().pass);
+}
+
+#[test]
+fn an_entry_that_cannot_be_built_for_another_reason_still_fails() {
+    use crate::error::{IrError, IrErrorKind};
+    let e = IrError::new(IrErrorKind::Unsupported, pc_ode::DUMMY_SPAN, "no rule");
+    let r = EntryReport::unbuilt("Dir[U]".into(), &e);
+    assert!(!r.pass && !r.skip, "{r}");
+    assert!(r.to_string().contains("FAIL"), "{r}");
+    let e = IrError::new(IrErrorKind::TooLarge, pc_ode::DUMMY_SPAN, "too big");
+    let r = EntryReport::unbuilt("Dir[U]".into(), &e);
+    assert!(r.pass && r.skip, "{r}");
+    assert!(r.to_string().contains("SKIP"), "{r}");
+}

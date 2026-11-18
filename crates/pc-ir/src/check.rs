@@ -6,6 +6,7 @@
 //! `pc-cli check-derivs` prints.
 
 use crate::entry::{EntryKind, Slot};
+use crate::error::{IrError, IrErrorKind};
 use crate::eval::{eval, eval_err};
 use crate::interp::Fallback;
 use crate::lower::IrModel;
@@ -156,7 +157,12 @@ pub struct EntryReport {
     /// `F`, `Aux`, `JacU`, `JacP`, `Dir[U,P,Full]`, or `A (FD)`, `f_alpha (FD)`,
     /// `B (FD)`, `C (FD)`.
     pub label: String,
+    /// False when a counted check failed. A skipped entry is not a failure, so `pass` is
+    /// true for it.
     pub pass: bool,
+    /// Set when the entry was not built because it is too large. It was not checked and
+    /// counts neither as a pass nor as a failure; `note` gives the reason.
+    pub skip: bool,
     /// Largest absolute error seen.
     pub worst_err: f64,
     /// Output scale `s` at the point of the worst error.
@@ -177,6 +183,7 @@ impl EntryReport {
         EntryReport {
             label,
             pass: true,
+            skip: false,
             worst_err: 0.0,
             scale: 0.0,
             ratio: 0.0,
@@ -185,6 +192,16 @@ impl EntryReport {
             points: 0,
             note: None,
         }
+    }
+
+    /// The row for an entry that `IrModel::entry` refused. An entry over the node limit is
+    /// skipped, since nothing was built to check; any other refusal is a failure.
+    pub(crate) fn unbuilt(label: String, e: &IrError) -> Self {
+        let mut r = EntryReport::new(label);
+        r.skip = e.kind == IrErrorKind::TooLarge;
+        r.pass = r.skip;
+        r.note = Some(format!("entry not built: {e}"));
+        r
     }
 
     /// Records one output vector. `errs[i]` and `ratios[i]` are per element.
@@ -242,7 +259,13 @@ pub fn fmt_vec(v: &[f64]) -> String {
 
 impl fmt::Display for EntryReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let verdict = if self.pass { "pass" } else { "FAIL" };
+        let verdict = if self.skip {
+            "SKIP"
+        } else if self.pass {
+            "pass"
+        } else {
+            "FAIL"
+        };
         write!(
             f,
             "{:<22} {verdict}  worst {:.3e}  s {:.3e}  ratio {:.3e}",
@@ -269,11 +292,17 @@ impl fmt::Display for Report {
             writeln!(f, "{e}")?;
         }
         let bad = self.failures().count();
+        let skipped = self.entries.iter().filter(|e| e.skip).count();
+        let counted = self.entries.len() - skipped;
         if bad == 0 {
-            write!(f, "all {} checks pass", self.entries.len())
+            write!(f, "all {counted} checks pass")?;
         } else {
-            write!(f, "{bad} of {} checks FAIL", self.entries.len())
+            write!(f, "{bad} of {counted} checks FAIL")?;
         }
+        if skipped > 0 {
+            write!(f, "; {skipped} skipped (entry too large)")?;
+        }
+        Ok(())
     }
 }
 
@@ -347,15 +376,11 @@ fn compare_kind(
     rng: &mut Rng,
     opt: &Options,
 ) -> EntryReport {
-    let mut rep = EntryReport::new(label);
     let entry = match ir.entry(kind) {
         Ok(e) => e,
-        Err(e) => {
-            rep.pass = false;
-            rep.note = Some(format!("entry not built: {e}"));
-            return rep;
-        }
+        Err(e) => return EntryReport::unbuilt(label, &e),
     };
+    let mut rep = EntryReport::new(label);
     let (n, n_p) = (ir.n(), ir.n_p());
     let vlen = match kind {
         EntryKind::Dir(slots) => slots.iter().map(|s| s.len(n, n_p)).sum(),
@@ -479,10 +504,7 @@ fn fd_checks(ir: &mut IrModel, opt: &Options, rng: &mut Rng) -> Vec<EntryReport>
     }
     for k in &need {
         if let Err(e) = ir.entry(k) {
-            let mut r = EntryReport::new("FD".into());
-            r.pass = false;
-            r.note = Some(format!("entry not built: {e}"));
-            return vec![r];
+            return vec![EntryReport::unbuilt("FD".into(), &e)];
         }
     }
     let ir: &IrModel = ir;
