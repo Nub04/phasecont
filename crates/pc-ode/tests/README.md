@@ -70,7 +70,7 @@ Each row of the table and each rule in section 2 of `docs/SPEC.md` is mapped to 
 | Rule | Tests and files |
 |---|---|
 | Keywords: first letter only for the nine declarations | `src/parser/stmt/tests.rs::every_keyword_abbreviation`, `src/parser/stmt/tests.rs::keyword_letter_names_are_formulas`, `round_trip.rs::round_trip_keyword_letter_names` |
-| Keywords: full word for `number`, `set`, `options`, `only`, `special`, `solv`, `export`, `volt`, `hom_bcs`; `p=3` is a fixed quantity | `src/parser/stmt/tests.rs::keyword_letter_names_are_formulas`, `src/parser/stmt/tests.rs::unsupported_families`, `src/parser/stmt/tests.rs::options_and_set`, `corpus/unsupported.ode`, `corpus/sets_include.ode` |
+| Keywords: full word for `number`, `set`, `options`, `only`, `special`, `export`, `volt`, `hom_bcs`, first two letters for `solv`; `p=3` is a fixed quantity | `src/parser/stmt/tests.rs::keyword_letter_names_are_formulas`, `src/parser/stmt/tests.rs::unsupported_families`, `src/parser/stmt/tests.rs::solv_is_the_first_two_letters`, `src/parser/stmt/tests.rs::options_and_set`, `corpus/unsupported.ode`, `corpus/sets_include.ode` |
 | Case is ignored | `src/check/tests.rs::case_is_ignored`, `src/lexer.rs::names_keep_dots_and_fold_case`, `corpus/abbreviations.ode` |
 | Names over 10 characters warn | `src/check/tests.rs::long_names`, `src/check/tests.rs::long_name_notes`, `invalid/ode0013_b.ode` |
 | Line continuation | `src/lexer.rs::continuation_is_a_blank`, `src/parser/stmt/tests.rs::continued_option_is_not_spaced`, `corpus/abbreviations.ode` |

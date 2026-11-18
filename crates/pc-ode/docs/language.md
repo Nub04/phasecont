@@ -42,7 +42,8 @@ The first word of a line decides what the line is.
 | `g` | `global` |
 | `d` | `done` |
 
-- These keywords need the full word (manual): `number`, `set`, `options`, `only`, `special`, `solv`, `export`, `volt`, `hom_bcs`.
+- `solv` is read from its first two letters, case ignored (measured on XPPAUT 8.2.2: `so`, `sol`, `solve`, `solver`, `sozz` and `SOLVE` all declare a solution variable, while `s`, `sa` and `sz` are refused; probes `solv-so`, `solv-solve` and `solv-s`). PhaseCont reads the line as the unsupported algebraic constraint family (ODE0030).
+- These keywords need the full word (manual; XPPAUT 8.2.2 prefixes not measured): `number`, `set`, `options`, `only`, `special`, `export`, `volt`, `hom_bcs`.
 - Any other line is a formula: an ODE, a map, an initial value, a derived parameter, a fixed quantity or a user function, told apart by the form of its left side.
 
 ## Statement forms

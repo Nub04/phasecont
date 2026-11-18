@@ -211,6 +211,9 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `reserved-sin` | Can sin be declared as a parameter? | `par sin=2` | error (no output) | ODE0040 error, reserved name; ODE0049 error, function name without a call | matches |
 | `reserved-t` | Can t be declared as a state? | `t'=0` | error (no output) | ODE0040 error, reserved name | matches |
 | `sign-zero` | What is sign(0)? | `sign(0)` | 0 | no diagnostic; computes 0 | matches |
+| `solv-s` | Is the one-letter word `s` read as `solv` (XPPAUT 8.2.2)? | `s y=-1` | error | ODE0057 warning, ODE0030 warning, ODE0019 error | matches |
+| `solv-so` | Is the two-letter word `so` read as `solv` (XPPAUT 8.2.2)? | `so y=-1` | -1 | ODE0057 and ODE0030 warnings (algebraic constraint kept as raw text) | matches |
+| `solv-solve` | Is the spelled-out word `solve` read as `solv` (XPPAUT 8.2.2)? | `solve y=-1` | -1 | ODE0057 and ODE0030 warnings (algebraic constraint kept as raw text) | matches |
 | `sqrt-neg` | What is sqrt(-1)? | `sqrt(-1)` | nan | no diagnostic; computes nan | matches |
 | `stmt-abbrev` | Does only the first letter of par count (pzz a=2)? | `pzz a=2` | 2 | no diagnostic; computes 2 | matches |
 | `table-inline` | Does table h % 11 0 1 2*t define h(0.5)=1? | `table h % 11 0 1 2*t` | 1 | no diagnostic | matches |

@@ -1,0 +1,10 @@
+# solv-s: Is the one-letter word `s` read as the `solv` statement (XPPAUT 8.2.2)?
+# xpp: error
+# pc: ODE0057,ODE0030,ODE0019
+# ruling: only the first two letters `so` make `solv`; `s` is an unrecognized statement (language.md, Statement classification).
+x'=y
+0=x+y+y^3+y^5
+s y=-1
+x(0)=3
+aux yy=y
+@ total=1,newt_tol=1e-8

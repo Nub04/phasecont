@@ -661,6 +661,35 @@ fn unsupported_families() {
     check_one(text, UNSUPPORTED_DAE, (5, 12), None);
 }
 
+/// XPPAUT 8.2.2 reads any first word that starts with `so` as `solv`
+/// (measured: `solve`, `sol`, `so`, `solver`, `sozz` and `SOLVE` all declare
+/// an algebraic constraint; `s`, `sa` and `sz` are not keywords). The probes
+/// are `references/xpp-probes/solv-*.ode`.
+#[test]
+fn solv_is_the_first_two_letters() {
+    for word in [
+        "solv", "solve", "sol", "so", "solver", "sozz", "SOLVE", "So",
+    ] {
+        let text = format!("{word} z=1");
+        assert_eq!(
+            kinds(&text),
+            vec![unsupported(Unsupported::Dae, &text)],
+            "{text:?}"
+        );
+        check_one(&text, UNSUPPORTED_DAE, (0, text.len()), None);
+    }
+    // One letter, or another second letter, is not the keyword.
+    for text in ["s z=1", "sa z=1", "sz z=1"] {
+        assert_eq!(codes(text), vec![UNRECOGNIZED_STATEMENT], "{text:?}");
+    }
+    // A name that starts with `so` is still a name before `=` or `(`.
+    assert!(matches!(clean_one("sol=1"), StmtKind::Fixed { .. }));
+    assert!(matches!(
+        clean_one("solve(x)=x^2"),
+        StmtKind::Function { .. }
+    ));
+}
+
 #[test]
 fn delay_shift_and_del_shft_stay_calls() {
     assert!(matches!(
