@@ -1,0 +1,10 @@
+# solv-solve: Is the spelled-out word `solve` read as the `solv` statement (XPPAUT 8.2.2)?
+# xpp: -1
+# pc: ODE0057,ODE0030
+# ruling: pc-ode reads any first word that starts with `so` as `solv`; `solv` needs a DAE, which PhaseCont refuses (language.md, Statement classification).
+x'=y
+0=x+y+y^3+y^5
+solve y=-1
+x(0)=3
+aux yy=y
+@ total=1,newt_tol=1e-8

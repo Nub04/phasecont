@@ -67,6 +67,13 @@ fn var(op: IndexOp, n: u32) -> Index {
     }
 }
 
+fn fixed(n: u32) -> Index {
+    Index::Fixed {
+        n,
+        span: DUMMY_SPAN,
+    }
+}
+
 fn range(start: u32, end: u32) -> Index {
     Index::Range {
         start,
@@ -620,6 +627,39 @@ fn index_forms_after_a_name() {
 }
 
 #[test]
+fn constant_index_after_a_name() {
+    assert_eq!(clean("x[3]"), vi("x", fixed(3)));
+    assert_eq!(clean("x[ 3 ]"), vi("x", fixed(3)));
+    // The integer is read, so a leading zero does not make another name.
+    assert_eq!(clean("x[03]"), vi("x", fixed(3)));
+    assert_eq!(clean("x[0]"), vi("x", fixed(0)));
+    assert_eq!(clean("x[4294967295]"), vi("x", fixed(4294967295)));
+    assert_eq!(
+        clean("flux[100]+y[2]"),
+        bin(B::Add, vi("flux", fixed(100)), vi("y", fixed(2)))
+    );
+    assert_eq!(
+        clean("g[2](4)"),
+        Expr::Call {
+            name: ident("g", Some(fixed(2))),
+            args: vec![n("4")],
+            span: DUMMY_SPAN,
+        }
+    );
+    let (e, _) = parse("ab[12]");
+    let Expr::Name(id) = e else { panic!() };
+    assert_eq!(id.span, sp(0, 6));
+    assert_eq!(id.index.unwrap().span(), sp(2, 6));
+}
+
+#[test]
+fn bare_constant_index_is_an_error() {
+    check_one("[3]", UNSUPPORTED_INDEX, (0, 3), None);
+    assert_eq!(tree("[3]"), err());
+    check_one("2*[3]", UNSUPPORTED_INDEX, (2, 5), None);
+}
+
+#[test]
 fn bare_index_forms_are_operands() {
     assert_eq!(clean("[j]"), Expr::Index(var(IndexOp::None, 0)));
     assert_eq!(
@@ -650,6 +690,8 @@ fn unsupported_index_forms() {
         ("x[j+1+2]", 8),
         ("x[1..]", 6),
         ("x[1e2]", 6),
+        ("x[1+1]", 6),
+        ("x[4294967296]", 13),
     ] {
         check_one(text, UNSUPPORTED_INDEX, (1, end), None);
         assert_eq!(tree(text), v("x"), "{text:?}");

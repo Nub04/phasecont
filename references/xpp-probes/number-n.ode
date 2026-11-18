@@ -1,0 +1,9 @@
+# number-n: Is the one-letter word `n` read as the `number` statement (XPPAUT 8.2.2)?
+# xpp: 2
+# pc: ok
+# ruling: `number` takes only its first letter (language.md, Statement classification).
+x'=-a*x
+x(0)=1
+n a=2
+aux aa=a
+@ total=1,dt=0.5

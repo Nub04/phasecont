@@ -284,6 +284,62 @@ fn duplicates() {
     );
 }
 
+/// XPPAUT 8.2.2 accepts `aux f=...` for a name that is also a fixed
+/// quantity, in either order. Every reader of `f` gets the fixed quantity
+/// and the aux column keeps its own formula (`aux-fixed-*` probes).
+#[test]
+fn aux_may_repeat_a_fixed_name() {
+    for text in [
+        "x'=-x+0*f\nf=2*x+1\naux f=7*x",
+        "x'=-x+0*f\naux f=7*x\nf=2*x+1",
+        "x'=-x\nf=2*x+1\naux f=f+1",
+        "x'=-x\naux f=f+1\nf=2*x+1",
+        "x'=-x\nf=2*x+1\naux F=7*x",
+    ] {
+        let info = info(text);
+        // The name resolves to the fixed quantity, so a read of `f` is not
+        // an aux misuse (AUX_IN_FORMULA).
+        assert_eq!(
+            info.symbol("f").unwrap().kind,
+            SymbolKind::Fixed,
+            "{text:?}"
+        );
+        let count = |want: fn(SymbolKind) -> bool| {
+            info.symbols
+                .iter()
+                .filter(|s| s.name.key == "f" && want(s.kind))
+                .count()
+        };
+        assert_eq!(count(|k| k == SymbolKind::Fixed), 1, "{text:?}");
+        assert_eq!(count(|k| k == SymbolKind::Aux), 1, "{text:?}");
+    }
+    // Other formulas read the fixed quantity, whatever the order.
+    clean("x'=-x\ny'=f\naux f=7*x\nf=2*x+1\naux g=f");
+    // Only one aux per fixed name; the repeat is reported as before.
+    for text in [
+        "x'=-x\nf=2*x+1\naux f=1\naux f=2",
+        "x'=-x\naux f=1\nf=2*x+1\naux f=2",
+        "x'=-x\naux f=1\naux f=2\nf=2*x+1",
+    ] {
+        let (_, diags) = run(text);
+        let dups = diags.iter().filter(|d| d.code == DUPLICATE_NAME).count();
+        assert_eq!(dups, 1, "{text:?}: {diags:#?}");
+    }
+    // A second fixed quantity is still a duplicate.
+    for text in ["x'=-x\nf=1\naux f=2\nf=3", "x'=-x\naux f=2\nf=1\nf=3"] {
+        assert_eq!(codes(text), vec![DUPLICATE_NAME], "{text:?}");
+    }
+    // An aux repeating a parameter, a state or a function stays an error.
+    for text in [
+        "x'=-x\npar p=1\naux p=2",
+        "x'=-x\naux x=2",
+        "x'=-x\ng(u)=u\naux g=2",
+        "x'=-x\n!d=2\naux d=2",
+    ] {
+        assert_eq!(codes(text), vec![DUPLICATE_NAME], "{text:?}");
+    }
+}
+
 #[test]
 fn initial_values() {
     clean("x'=1\ny'=1\nx(0)=1\ninit y=2");
@@ -871,6 +927,40 @@ fn global_targets() {
     );
     // The right side is still read.
     assert_eq!(codes("x'=1\nglobal 1 x-1 {x=q}"), vec![UNDEFINED_NAME]);
+}
+
+#[test]
+fn global_arret_and_out_put_are_event_actions() {
+    // XPPAUT 8.2.2 reads `arret=` and `out_put=` in a `global` action list
+    // as stop-the-run and record-a-row (probes global-arret, global-out-put).
+    // The model is a simulation-only model, so the IR refuses it by name.
+    for text in [
+        "x'=1\nglobal 1 x-0.5 {arret=1}",
+        "x'=1\nglobal 1 x-0.5 {out_put=1}",
+        "x'=1\nglobal 1 x-0.5 {ARRET=(x>0.8)}",
+        "x'=1\nglobal 1 x-0.5 {Out_Put=1; x=0}",
+    ] {
+        let (info, diags) = run(text);
+        assert!(diags.is_empty(), "{text:?}: {diags:#?}");
+        assert!(info.simulation_only, "{text:?}");
+    }
+    // A declared parameter or state of that name is an ordinary target
+    // (probes global-arret-par, global-arret-state).
+    clean("par arret=0\nx'=1\nglobal 1 x-0.5 {arret=1}");
+    clean("x'=1\narret'=0\nglobal 1 x-0.5 {arret=1}");
+    // Neither word is a value: XPPAUT refuses a model that reads `arret`.
+    assert_eq!(
+        codes("x'=1\nglobal 1 x-0.5 {arret=1}\naux a=arret"),
+        vec![UNDEFINED_NAME]
+    );
+    // A shorter spelling is still an undeclared target.
+    assert_eq!(codes("x'=1\nglobal 1 x-0.5 {arre=1}"), vec![BAD_TARGET]);
+    assert_eq!(codes("x'=1\nglobal 1 x-0.5 {out_pu=1}"), vec![BAD_TARGET]);
+    // A fixed quantity of that name stays refused.
+    assert_eq!(
+        codes("arret=2\nx'=1\nglobal 1 x-0.5 {arret=1}"),
+        vec![BAD_TARGET]
+    );
 }
 
 #[test]

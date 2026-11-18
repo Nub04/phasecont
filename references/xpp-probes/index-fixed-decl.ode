@@ -1,0 +1,25 @@
+# index-fixed-decl: Does a constant index on a declared name name the numbered symbol (XPPAUT 8.2.2)?
+# xpp: s=14 w=3 e=40 m=18
+# pc: ok
+# states: 3
+# ruling: pc-ode reads `name[n]` on the left of a fixed quantity, `y[n]'`, `dy[n]/dt`, `par`, `init`, `number`, `!`, `aux`, `table`, a function line and a `%[i1..i2]` block as the declaration of `name<n>` (language.md, Arrays).
+y[1]'=1
+dz[2]/dt=2
+q2'=0
+y1(0)=0
+z2(0)=0
+init q[2]=4
+par a[2]=3
+number n[2]=6
+f[3]=7
+!d[2]=n2+1
+g[2](u)=u*4
+table h[2] % 3 0 2 t^2
+aux s=f3+a2+g2(1)+y[1]+z[2]
+aux w[2]=y1+3
+aux e=d2+h2(1)+q[2]+g2(f[3])
+%[1..2]
+v[j]=n[2]*[j]
+%
+aux m=v[2]+v1
+@ total=0,dt=1

@@ -418,6 +418,25 @@ impl<'a> Checker<'a> {
         self.index.get(key).copied()
     }
 
+    /// True when a declaration of kind `kind` may share the name `key` with
+    /// the symbol `first` that holds it: an aux next to a fixed quantity, or
+    /// a fixed quantity after an aux, when no aux and no fixed quantity of
+    /// that name exists yet on the side being added.
+    fn aux_shares_fixed_name(&self, key: &str, kind: SymbolKind, first: usize) -> bool {
+        if !matches!(
+            (kind, self.symbols[first].kind),
+            (SymbolKind::Aux, SymbolKind::Fixed) | (SymbolKind::Fixed, SymbolKind::Aux)
+        ) {
+            return false;
+        }
+        // The index holds the fixed quantity as soon as there is one, so
+        // only the side being added can already have a symbol of that name.
+        !self
+            .symbols
+            .iter()
+            .any(|s| s.name.key == key && s.kind == kind)
+    }
+
     /// Records a declaration. Names with an index are skipped; reserved and
     /// repeated names are reported and not added.
     fn declare(&mut self, name: &'a Ident, kind: SymbolKind, stmt: usize) {
@@ -431,6 +450,21 @@ impl<'a> Checker<'a> {
             return;
         }
         if let Some(first) = self.lookup(&name.key) {
+            if self.aux_shares_fixed_name(&name.key, kind, first) {
+                // XPPAUT 8.2.2 accepts an aux column named like a fixed
+                // quantity, in either order. Formulas read the fixed
+                // quantity, so the name index keeps pointing at it.
+                self.declared.push((self.current, name));
+                if kind == SymbolKind::Fixed {
+                    self.index.insert(name.key.clone(), self.symbols.len());
+                }
+                self.symbols.push(Symbol {
+                    name: name.clone(),
+                    kind,
+                    stmt,
+                });
+                return;
+            }
             let first = &self.symbols[first];
             let mut notes = vec![(
                 first.name.span,
@@ -868,6 +902,14 @@ impl<'a> Checker<'a> {
             return;
         }
         let Some(s) = self.lookup(&id.key) else {
+            // XPPAUT 8.2.2 reads these two undeclared names as event actions
+            // that stop the run and record a row. A declared parameter or
+            // state of that name is an ordinary target (checked above).
+            // Every `global` statement already makes the model simulation
+            // only, so the IR refuses these models by name.
+            if matches!(id.key.as_str(), "arret" | "out_put") {
+                return;
+            }
             if self.suppressed(&id.key) {
                 return;
             }

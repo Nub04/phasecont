@@ -107,12 +107,15 @@ pub enum Index {
     Range { start: u32, end: u32, span: Span },
     /// `[j]` (with `op` `None` and `n` 0), `[j+n]`, `[j-n]` or `[j*n]`.
     Var { op: IndexOp, n: u32, span: Span },
+    /// `[n]`, a constant. XPPAUT reads `f[3]` as the name `f3`; the expansion
+    /// pass makes that name, so no later pass sees this form.
+    Fixed { n: u32, span: Span },
 }
 
 impl Index {
     pub fn span(&self) -> Span {
         match self {
-            Self::Range { span, .. } | Self::Var { span, .. } => *span,
+            Self::Range { span, .. } | Self::Var { span, .. } | Self::Fixed { span, .. } => *span,
         }
     }
 
@@ -126,6 +129,10 @@ impl Index {
             },
             Self::Var { op, n, .. } => Self::Var {
                 op: *op,
+                n: *n,
+                span: DUMMY_SPAN,
+            },
+            Self::Fixed { n, .. } => Self::Fixed {
                 n: *n,
                 span: DUMMY_SPAN,
             },

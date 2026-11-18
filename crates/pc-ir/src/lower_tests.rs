@@ -65,6 +65,16 @@ fn refuses_simulation_only() {
 }
 
 #[test]
+fn refuses_global_event_actions() {
+    // `arret` and `out_put` are event actions in XPPAUT. The model must not
+    // lower, so no path can run it and ignore the action.
+    for action in ["arret=1", "out_put=1"] {
+        let src = format!("x'=1\nx(0)=0\nglobal 1 x-0.5 {{{action}}}\ndone\n");
+        assert_eq!(kinds(&src), vec![K::SimulationOnly], "{action}");
+    }
+}
+
+#[test]
 fn refuses_delay_with_call_span() {
     let src = "x'=-delay(x,1)\ndone\n";
     let e = errs(src);
@@ -268,4 +278,67 @@ fn array_models_lower() {
     assert_eq!(m.n(), 3);
     assert_eq!(m.init, [1.0, 2.0, 3.0]);
     assert_eq!(run(&m, &m.f, &[1.0, 1.0, 1.0], &[0.0]), [0.0, 1.0, 2.0]);
+}
+
+/// A constant index `name[n]` lowers to the symbol `name<n>`. The values are
+/// the ones XPPAUT 8.2.2 wrote for the `index-fixed-*` probes.
+#[test]
+fn constant_index_lowers_to_the_numbered_symbol() {
+    // index-fixed-read: r = 7 + 3 + 8 + 100 = 118.
+    let m = ir("x'=-x\npar a2=3\nf3=7\nk3=100\ng2(u)=u*2\n\
+                aux r=f[3]+a[2]+g[2](4)+k[03]\ndone\n");
+    assert_eq!(m.state_names, ["x"]);
+    assert_eq!(m.param_names, ["a2"]);
+    assert_eq!(m.aux_names, ["r"]);
+    assert_eq!(run(&m, &m.aux, &[1.0], &[3.0]), [118.0]);
+
+    // index-fixed-decl: the declared names are y1, z2, q2, a2, n2, f3, d2, g2,
+    // h2 and v1, v2 (the block).
+    let m = ir(
+        "y[1]'=1\ndz[2]/dt=2\nq2'=0\ny1(0)=0\nz2(0)=0\ninit q[2]=4\npar a[2]=3\n\
+         number n[2]=6\nf[3]=7\n!d[2]=n2+1\ng[2](u)=u*4\ntable h[2] % 3 0 2 t^2\n\
+         aux s=f3+a2+g2(1)+y[1]+z[2]\naux w[2]=y1+3\naux e=d2+h2(1)+q[2]+g2(f[3])\n\
+         %[1..2]\nv[j]=n[2]*[j]\n%\naux m=v[2]+v1\ndone\n",
+    );
+    assert_eq!(m.state_names, ["y1", "z2", "q2"]);
+    assert_eq!(m.param_names, ["a2"]);
+    assert_eq!(m.aux_names, ["s", "w2", "e", "m"]);
+    assert_eq!(run(&m, &m.f, &[0.0, 0.0, 4.0], &[3.0]), [1.0, 2.0, 0.0]);
+    assert_eq!(
+        run(&m, &m.aux, &[0.0, 0.0, 4.0], &[3.0]),
+        [14.0, 3.0, 40.0, 18.0]
+    );
+
+    // index-fixed-range-line: flux[3] is flux3 = 3*x, so y' = -3 at x = 1.
+    let m = ir("flux[1..3]=[j]*x\ny'=-flux[3]\nx'=0\naux r=flux[2]+flux3\ndone\n");
+    assert_eq!(m.state_names, ["y", "x"]);
+    assert_eq!(run(&m, &m.f, &[0.0, 1.0], &[]), [-3.0, 0.0]);
+    assert_eq!(run(&m, &m.aux, &[0.0, 1.0], &[]), [5.0]);
+}
+
+/// An aux that repeats a fixed name keeps its own formula; every other
+/// reader of the name gets the fixed quantity. The values are the ones
+/// XPPAUT 8.2.2 wrote for the `aux-fixed-*` probes at x = 1.
+#[test]
+fn aux_repeating_a_fixed_name_reads_the_fixed_quantity() {
+    // Aux after the fixed quantity, and before it.
+    for src in [
+        "x'=-x\ny'=f\nf=2*x+1\naux f=7*x\naux g=f\ndone\n",
+        "x'=-x\ny'=f\naux f=7*x\nf=2*x+1\naux g=f\ndone\n",
+    ] {
+        let m = ir(src);
+        assert_eq!(m.aux_names, ["f", "g"], "{src:?}");
+        // x' = -1, y' = f = 3; aux f = 7, aux g = f = 3.
+        assert_eq!(run(&m, &m.f, &[1.0, 0.0], &[]), [-1.0, 3.0], "{src:?}");
+        assert_eq!(run(&m, &m.aux, &[1.0, 0.0], &[]), [7.0, 3.0], "{src:?}");
+    }
+    // The aux formula reads the fixed quantity of the same name.
+    for src in [
+        "x'=-x\nf=2*x+1\naux f=f+1\ndone\n",
+        "x'=-x\naux f=f+1\nf=2*x+1\ndone\n",
+    ] {
+        let m = ir(src);
+        assert_eq!(m.aux_names, ["f"], "{src:?}");
+        assert_eq!(run(&m, &m.aux, &[1.0], &[]), [4.0], "{src:?}");
+    }
 }

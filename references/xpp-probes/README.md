@@ -24,6 +24,7 @@ Line 1 of every probe is a `#` comment, `# <id>: <question>`, because XPPAUT 8.0
 | `# xpp: hang` | XPPAUT runs into the 10 s timeout or crashes (an include cycle) |
 | `# xpp: a=1 b=2` | one value per named aux column |
 | `# xpp: v@2=14`, `# xpp: t@2=0.5` | `<column>@N` reads row N of the output instead of row 1 (`t` is the time column) |
+| `# xpp: rows=21` | the output file has exactly that many lines (a stop or a recorded row changes the count) |
 | `# states: N` | number of states, when it is not 1 (columns are `t`, states, then aux in file order) |
 | `# pc: ok` | `pc-cli parse` gives no diagnostic |
 | `# pc: ODE0010,ODE0014` | the diagnostic codes `pc-cli parse` gives, in order of first appearance |
@@ -65,6 +66,11 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `comment-par` | Is a trailing comment after a par list accepted? | `par a=2 # c` | 2 | no diagnostic; computes 2 | matches |
 | `const-e-name` | Is e an ordinary name (par e=2)? | `par e=2`, `aux v=e` | 2 | no diagnostic; computes 2 | matches |
 | `const-pi` | Is pi a constant? | `pi` | 3.1415927 | no diagnostic; computes 3.1415927 | matches |
+| `backslash-blanks` | Does a backslash followed by two blanks continue the line (XPPAUT 8.2.2)? | `x'=1+\` and two blanks, then `2` | v@3=3 | no diagnostic; computes v@3=3 | matches |
+| `backslash-eof` | Is a backslash at the very end of the file, with no newline, accepted (XPPAUT 8.2.2)? | last line `@ total=1,dt=0.5,meth=euler\` | v@3=1 | no diagnostic; computes v@3=1 | matches |
+| `backslash-mixed-blanks` | Does a backslash followed by a space, a tab and a space continue the line (XPPAUT 8.2.2)? | `x'=1+\` and ` \t `, then `2` | v@3=3 | no diagnostic; computes v@3=3 | matches |
+| `backslash-text` | What does XPPAUT 8.2.2 do with text after a backslash (`\5`)? | `x'=1+\5` then `2` | v@3=3 (continues, drops the `5`) | ODE0003 and ODE0019 errors | PhaseCont choice |
+| `backslash-tab` | Does a backslash followed by a tab continue the line (XPPAUT 8.2.2)? | `x'=1+\` and a tab, then `2` | v@3=3 | no diagnostic; computes v@3=3 | matches |
 | `cont-aux` | Does a backslash continue an aux line? | `aux v=1+\` then `2` | 3 | no diagnostic; computes 3 | matches |
 | `cont-ode` | Does a backslash continue an ODE line (not line 1)? | `x'=0+\` then `0` | 13 | no diagnostic; computes 13 | matches |
 | `cont-par` | Does a backslash continue a par line? | `par a=1,\` then `b=2` | va=1 vb=2 | no diagnostic; computes va=1 vb=2 | matches |
@@ -88,6 +94,10 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `eqspace-x0` | Are blanks around = accepted in x(0)=? | `x(0) = 3` | 13 | no diagnostic; computes 13 | matches |
 | `exp-overflow` | What is exp(710)? | `exp(710)` | inf | no diagnostic; computes inf | matches |
 | `fixed-aux-above` | Does an aux above a fixed quantity see its final value? | `aux v=b` above `b=3` | 5 | no diagnostic; computes 5 | matches |
+| `aux-fixed-after` | Can an aux column share its name with an earlier fixed quantity (XPPAUT 8.2.2)? | `f=2*x+1`, `aux f=7*x`, `aux g=f` | f=7 g=3 (the aux column keeps its formula, readers get the fixed value) | no diagnostic; the IR gives the same two values | matches |
+| `aux-fixed-before` | Can an aux column share its name with a later fixed quantity (XPPAUT 8.2.2)? | `aux f=7*x`, `f=2*x+1`, `aux g=f` | f=7 g=3 | no diagnostic; same values | matches |
+| `aux-fixed-self` | Does `aux f=f+1` after a fixed quantity f read the fixed quantity (XPPAUT 8.2.2)? | `f=2*x+1`, `aux f=f+1` | f=4 (at x=1) | no diagnostic; computes 4 | matches |
+| `aux-fixed-self-before` | Does `aux f=f+1` above a fixed quantity f read the fixed quantity (XPPAUT 8.2.2)? | `aux f=f+1`, `f=2*x+1` | f=4 | no diagnostic; computes 4 | matches |
 | `fixed-forward-func` | What does a fixed quantity get from a function that reads a later fixed quantity? | `b=g(1)`, `c=5`, `g(u)=u+c` | 1 (c is still 0) | ODE0042 error | PhaseCont choice |
 | `fixed-forward` | What does a fixed quantity read from a later line? | `b=c+1` above `c=2` | 1 | ODE0042 error, fixed quantity defined on a later line | PhaseCont choice |
 | `fn-atan2` | Which argument order does atan2 use? | `atan2(1,0)`, `atan2(-1,-1)` | v1=1.5707964 v2=-2.3561945 | no diagnostic; computes v1=1.5707964 v2=-2.3561945 | matches |
@@ -107,8 +117,14 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `fn-mod-more` | Does mod follow fmod plus y when the remainder is negative, for more signs and sizes? | `mod(-0.1,1)`, `mod(2.5,-1)`, `mod(-2.5,-1)`, `mod(0,-3)`, `mod(-3,3)`, `mod(123456.75,7)`, `mod(-123456.75,7)`, `mod(0.75,-1)` | v1=0.89999998 v2=0.5 v3=-1.5 v4=0 v5=-0 v6=4.75 v7=2.25 v8=0.75 | no diagnostic; computes the same values with `r = fmod(x, y)`, plus `y` when `r < 0` | matches |
 | `fn-random` | What do ran(0) and poisson(0) give? | `ran(0)`, `poisson(0)` | 0 and 0 | no diagnostic | matches |
 | `fn-shift` | Does shift(x,0) evaluate? | `10*shift(x,0)` | 30 | ODE0055 warning, `shift` unsupported | PhaseCont choice |
+| `global-arre` | Is `arre=1`, a shortened `arret`, a global target XPPAUT refuses (XPPAUT 8.2.2)? | `global 1 x-0.55 {arre=1}` | error | ODE0058 error | matches |
+| `global-arret` | Does `arret=1` in a global action list stop the run (XPPAUT 8.2.2)? | `global 1 x-0.55 {arret=1}` | rows=6 (the run ends at t=0.5 of 2) | no diagnostic; the IR refuses the model as simulation only | matches |
+| `global-arret-par` | Is a declared parameter `arret` an ordinary global target, with no stop (XPPAUT 8.2.2)? | `par arret=0`, `global 1 x-0.55 {arret=1}` | rows=21 | no diagnostic | matches |
+| `global-arret-read` | Can a formula read `arret` when only a global action assigns it (XPPAUT 8.2.2)? | `aux a=arret` | error | ODE0039 error | matches |
+| `global-arret-state` | Is a declared state `arret` an ordinary global target, with no stop (XPPAUT 8.2.2)? | `arret'=0`, `global 1 x-0.55 {arret=1}` | rows=21 | no diagnostic | matches |
 | `global-braces` | Does global 1 {t-0.5} {x=5} work like the form without braces? | `global 1 {t-0.5} {x=5}`, `aux v=x` | v@2=5 | no diagnostic | matches |
 | `global-empty` | Is an empty global list {} accepted? | `global 1 t-0.5 {}` | error ("Bad global") | ODE0020 error | matches |
+| `global-out-put` | Does `out_put=1` in a global action list add an output row at the crossing (XPPAUT 8.2.2)? | `global 1 x-0.55 {out_put=1}`, `nout=5` | t@3=0.55, rows=6 | ODE0024 warning for `nout`; the IR refuses the model as simulation only | matches |
 | `global-par-target` | Can a global event assign a parameter? | `par a=1`, `global 1 t-0.9 {a=5}` | v@1=1 v@2=5 | no diagnostic | matches |
 | `global-plain` | Does global 1 t-0.5 {x=5} set x at the crossing? | `global 1 t-0.5 {x=5}`, `aux v=x` | v@2=5 | no diagnostic | matches |
 | `global-two` | Does global 1 t-0.5 {x=5;y=2} set both states? | `global 1 t-0.5 {x=5;y=2}` | v@2=25 | no diagnostic | matches |
@@ -126,6 +142,11 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `include-ok` | Does #include inc/a.ode load the file? | `#include inc/a.ode` | 3 | no diagnostic; computes 3 | matches |
 | `include-path` | Is an include inside inc/sub/a.ode taken relative to that file? | `#include b.ode` in `inc/sub/a.ode` | error (taken relative to the working directory) | no diagnostic; relative to the including file | PhaseCont choice |
 | `include-quotes` | Does a quoted file name in #include load the file? | `#include "inc/a.ode"` | error (the name is undefined) | ODE0059 error | matches |
+| `index-fixed-bare` | What does a bare `[3]` give (XPPAUT 8.2.2)? | `aux v=[3]` | v=3 | ODE0015, a constant index can only follow a name | PhaseCont choice |
+| `index-fixed-decl` | Does a constant index on a declared name name the numbered symbol (XPPAUT 8.2.2)? | `y[1]'=1`, `dz[2]/dt=2`, `init q[2]=4`, `par a[2]=3`, `number n[2]=6`, `f[3]=7`, `!d[2]=n2+1`, `g[2](u)=u*4`, `table h[2] % 3 0 2 t^2`, `aux w[2]=y1+3`, a `%[1..2]` block with `v[j]=n[2]*[j]` | s=14 w=3 e=40 m=18 | no diagnostic; same values | matches |
+| `index-fixed-initval` | Does the init value `x[1](0)=3` set `x1` (XPPAUT 8.2.2)? | `x1'=1`, `x[1](0)=3`, `aux v=x1` | v=0 (not set) | ODE0015 error | PhaseCont choice |
+| `index-fixed-range-line` | Does a constant index next to a range line read as the numbered name (XPPAUT 8.2.2)? | `flux[1..3]=[j]*x`, `y'=-flux[3]`, `aux r=flux[2]+flux3` | r=5, yy=-3 at t=1 | no diagnostic; same values | matches |
+| `index-fixed-read` | Is `name[n]` read as `name<n>` in a formula (XPPAUT 8.2.2)? | `f3=7`, `par a2=3`, `k3=100`, `g2(u)=u*2`, `aux r=f[3]+a[2]+g[2](4)+k[03]` | r=118 | no diagnostic; computes 118 | matches |
 | `kw-fixed-letters` | Are p=, a=, w=, i=, d=, g=, b=, m= fixed quantities? | `p = 5`, `a = 6`, `w = 7`, `i = 8`, `d = 9`, `g = 10`, `b = 11`, `m = 12` | vp=5 va=6 vw=7 vi=8 vd=9 vg=10 vb=11 vm=12 | no diagnostic; computes vp=5 va=6 vw=7 vi=8 vd=9 vg=10 vb=11 vm=12 | matches |
 | `kw-p-nospace` | Is p=5 (no blanks) a fixed quantity? | `p=5` | 5 | no diagnostic; computes 5 | matches |
 | `kw-p-par` | Does p a=5 declare a parameter? | `p a=5` | 5 | no diagnostic; computes 5 | matches |
@@ -162,6 +183,9 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `num-leading-dot` | Is .5 a number? | `.5` | 0.5 | no diagnostic; computes 0.5 | matches |
 | `num-trailing-dot` | Is 5. a number? | `5.` | 5 | no diagnostic; computes 5 | matches |
 | `num-underscore` | Is 1_000 accepted? | `1_000` | error (no output) | ODE0001 error, malformed number | matches |
+| `number-n` | Is the one-letter word `n` read as `number` (XPPAUT 8.2.2)? | `n a=2` | 2 | no diagnostic; computes 2 | matches |
+| `number-num` | Is `num` read as `number` (XPPAUT 8.2.2)? | `num a=2` | 2 | no diagnostic; computes 2 | matches |
+| `number-numx` | Is a first word that only starts with `n` read as `number` (XPPAUT 8.2.2)? | `numx a=2` | 2 | no diagnostic; computes 2 | matches |
 | `op-bang` | Is a bare ! accepted (!1)? | `!1` | error (no output) | ODE0007 error, not an operator | matches |
 | `op-ne` | Is != accepted (1!=2)? | `1!=2` | error (no output) | ODE0007 error, not an operator | matches |
 | `op-single-eq` | Is a single = inside a formula accepted (1=2)? | `1=2` | error (no output) | ODE0008 error, write `==` | matches |
@@ -211,6 +235,9 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `reserved-sin` | Can sin be declared as a parameter? | `par sin=2` | error (no output) | ODE0040 error, reserved name; ODE0049 error, function name without a call | matches |
 | `reserved-t` | Can t be declared as a state? | `t'=0` | error (no output) | ODE0040 error, reserved name | matches |
 | `sign-zero` | What is sign(0)? | `sign(0)` | 0 | no diagnostic; computes 0 | matches |
+| `solv-s` | Is the one-letter word `s` read as `solv` (XPPAUT 8.2.2)? | `s y=-1` | error | ODE0057 warning, ODE0030 warning, ODE0019 error | matches |
+| `solv-so` | Is the two-letter word `so` read as `solv` (XPPAUT 8.2.2)? | `so y=-1` | -1 | ODE0057 and ODE0030 warnings (algebraic constraint kept as raw text) | matches |
+| `solv-solve` | Is the spelled-out word `solve` read as `solv` (XPPAUT 8.2.2)? | `solve y=-1` | -1 | ODE0057 and ODE0030 warnings (algebraic constraint kept as raw text) | matches |
 | `sqrt-neg` | What is sqrt(-1)? | `sqrt(-1)` | nan | no diagnostic; computes nan | matches |
 | `stmt-abbrev` | Does only the first letter of par count (pzz a=2)? | `pzz a=2` | 2 | no diagnostic; computes 2 | matches |
 | `table-inline` | Does table h % 11 0 1 2*t define h(0.5)=1? | `table h % 11 0 1 2*t` | 1 | no diagnostic | matches |

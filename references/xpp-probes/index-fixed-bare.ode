@@ -1,0 +1,8 @@
+# index-fixed-bare: What does a bare [3] without a name give (XPPAUT 8.2.2)?
+# xpp: v=3
+# pc: ODE0015
+# ruling: pc-ode refuses it (ODE0015): a constant index can only follow a name. XPPAUT reads `[3]` as 3, which PhaseCont does not copy.
+x'=0
+x(0)=1
+aux v=[3]
+@ total=0,dt=1

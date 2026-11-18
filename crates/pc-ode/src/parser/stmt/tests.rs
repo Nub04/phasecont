@@ -231,10 +231,10 @@ fn formulas() {
 }
 
 #[test]
-fn ddt_needs_a_letter_after_d_and_no_index() {
+fn ddt_needs_a_letter_after_d_and_no_j_index() {
     // `d2/dt=1` is not a d/dt form: `d2` is a name and `/` is not a left side.
     assert_eq!(codes("d2/dt=1"), vec![UNRECOGNIZED_STATEMENT]);
-    // `dx[j]/dt` is not a d/dt form either.
+    // `dx[j]/dt` is not a d/dt form either (only a constant `[n]` is read).
     assert_eq!(codes("dx[j]/dt=1"), vec![UNRECOGNIZED_STATEMENT]);
 }
 
@@ -324,8 +324,20 @@ fn every_keyword_abbreviation() {
             vec![unsupported(Unsupported::Boundary, &format!("{word} x-1"))]
         );
     }
-    // The full-spelling words do not abbreviate.
-    assert_eq!(codes("num c=3"), vec![UNRECOGNIZED_STATEMENT]);
+    // `number` takes only its first letter, like the nine declarations
+    // (measured on XPPAUT 8.2.2: `n`, `nu`, `num`, `numbers`, `numx`, `nx` and
+    // `nuxx` all declare a constant; probes `number-n` and `number-num`).
+    let number = StmtKind::Number {
+        entries: vec![entry("c", Some(num("3")))],
+    };
+    for word in ["n", "nu", "num", "number", "numbers", "numx", "nx", "NUM"] {
+        assert_eq!(clean_one(&format!("{word} c=3")), number, "{word}");
+    }
+    // A name that starts with `n` is still a name before `=` or `(`.
+    assert!(matches!(clean_one("n=1"), StmtKind::Fixed { .. }));
+    assert!(matches!(clean_one("num=1"), StmtKind::Fixed { .. }));
+    assert!(matches!(clean_one("nf(x)=x"), StmtKind::Function { .. }));
+    // The other full-spelling words do not abbreviate.
     assert_eq!(codes("se f {a=1}"), vec![UNRECOGNIZED_STATEMENT]);
 }
 
@@ -661,6 +673,50 @@ fn unsupported_families() {
     check_one(text, UNSUPPORTED_DAE, (5, 12), None);
 }
 
+/// XPPAUT 8.2.2 reads any first word that starts with `so` as `solv`
+/// (measured: `solve`, `sol`, `so`, `solver`, `sozz` and `SOLVE` all declare
+/// an algebraic constraint; `s`, `sa` and `sz` are not keywords). The probes
+/// are `references/xpp-probes/solv-*.ode`.
+#[test]
+fn a_backslash_then_blanks_gives_the_same_statements_as_a_plain_backslash() {
+    // XPPAUT 8.2.2 (probes backslash-blanks, backslash-tab,
+    // backslash-mixed-blanks) computes the same model for all of these.
+    let plain = stmts("x'=1+\\\n2\npar a=1,\\\nb=2\n");
+    for gap in [" ", "  ", "\t", " \t "] {
+        let text = format!("x'=1+\\{gap}\n2\npar a=1,\\{gap}\nb=2\n");
+        let (model, diags) = parse_all(&text);
+        assert!(diags.is_empty(), "{text:?}: {diags:#?}");
+        assert_eq!(model.strip_spans().statements, plain, "{text:?}");
+    }
+    // Other text after the backslash is still an error.
+    assert_eq!(codes("x'=1+\\ 2\n"), vec![STRAY_CHARACTER]);
+}
+
+#[test]
+fn solv_is_the_first_two_letters() {
+    for word in [
+        "solv", "solve", "sol", "so", "solver", "sozz", "SOLVE", "So",
+    ] {
+        let text = format!("{word} z=1");
+        assert_eq!(
+            kinds(&text),
+            vec![unsupported(Unsupported::Dae, &text)],
+            "{text:?}"
+        );
+        check_one(&text, UNSUPPORTED_DAE, (0, text.len()), None);
+    }
+    // One letter, or another second letter, is not the keyword.
+    for text in ["s z=1", "sa z=1", "sz z=1"] {
+        assert_eq!(codes(text), vec![UNRECOGNIZED_STATEMENT], "{text:?}");
+    }
+    // A name that starts with `so` is still a name before `=` or `(`.
+    assert!(matches!(clean_one("sol=1"), StmtKind::Fixed { .. }));
+    assert!(matches!(
+        clean_one("solve(x)=x^2"),
+        StmtKind::Function { .. }
+    ));
+}
+
 #[test]
 fn delay_shift_and_del_shft_stay_calls() {
     assert!(matches!(
@@ -686,6 +742,59 @@ fn unrecognized_statement() {
     check_one("+x=1", UNRECOGNIZED_STATEMENT, (0, 4), None);
     check_one("x y", UNRECOGNIZED_STATEMENT, (0, 3), None);
     check_one("x'=1\n  x y z # c\n", UNRECOGNIZED_STATEMENT, (7, 16), None);
+}
+
+#[test]
+fn constant_index_on_a_left_side() {
+    let two = Index::Fixed {
+        n: 2,
+        span: DUMMY_SPAN,
+    };
+    let id = |text: &str| Ident {
+        index: Some(two.clone()),
+        ..ident(text)
+    };
+    // `dy[2]/dt=` has the name `y[2]`, as `dy/dt=` has the name `y`.
+    assert_eq!(
+        clean_one("dy[2]/dt=1"),
+        StmtKind::Ode {
+            name: id("y"),
+            form: OdeForm::Ddt,
+            rhs: n("1"),
+        }
+    );
+    assert_eq!(
+        clean_one("y[2]'=1"),
+        StmtKind::Ode {
+            name: id("y"),
+            form: OdeForm::Prime,
+            rhs: n("1"),
+        }
+    );
+    assert_eq!(
+        clean_one("f[3]=1"),
+        StmtKind::Fixed {
+            name: Ident {
+                index: Some(Index::Fixed {
+                    n: 3,
+                    span: DUMMY_SPAN
+                }),
+                ..ident("f")
+            },
+            rhs: n("1"),
+        }
+    );
+    // A function name takes the index, too.
+    assert_eq!(clean("g[2](u)=u*2").len(), 1);
+    // The name part of `dy[2]/dt` spans `y[2]`.
+    let (model, _) = parse_all("dy[2]/dt=1");
+    let StmtKind::Ode { name, .. } = &model.statements[0].kind else {
+        panic!("not an ODE");
+    };
+    assert_eq!(name.span, sp(1, 5));
+    // Other index forms are not read on `dx/dt=`.
+    assert_eq!(codes("dy[j]/dt=1"), vec![UNRECOGNIZED_STATEMENT]);
+    assert_eq!(codes("dy[1..2]/dt=1"), vec![UNRECOGNIZED_STATEMENT]);
 }
 
 #[test]

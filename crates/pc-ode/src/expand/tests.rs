@@ -5,6 +5,7 @@ use crate::ast::{Expr, Stmt, StmtKind};
 use crate::check::{AUX_IN_FORMULA, DUPLICATE_NAME, UNDEFINED_NAME};
 use crate::diag::{CODES, Severity};
 use crate::include::{INCLUDE_IN_BLOCK, MapLoader};
+use crate::parser::expr::UNSUPPORTED_INDEX;
 use crate::parser::parse;
 use crate::parser::stmt::{BAD_BLOCK, MALFORMED_STATEMENT};
 use crate::span::{FileId, SourceMap, Span};
@@ -365,6 +366,75 @@ fn index_form_with_no_range() {
     // A block does not reach past its `%`.
     let text = "%[1..2]\nx[j]'=1\n%\ny'=x[j]";
     one(text, INDEX_OUT_OF_SCOPE, "[j]", 1);
+}
+
+#[test]
+fn constant_index_reads_the_numbered_name() {
+    // `f[3]` is `f3` in a read, in every place a name is read.
+    let text = "x'=-flux[100]\naux a=f[3]+g[2](4)\nh=f[03]\nk(u)=u*f[3]";
+    let model = clean(text);
+    let want = flat("x'=-flux100\naux a=f3+g2(4)\nh=f3\nk(u)=u*f3");
+    assert_eq!(plain(&model), want);
+    // No statement is a copy.
+    assert_eq!(indices(&model), vec![None; 4]);
+    // The largest index that fits in 32 bits.
+    let model = clean("x'=f[4294967295]");
+    assert_eq!(plain(&model), flat("x'=f4294967295"));
+}
+
+#[test]
+fn constant_index_names_the_numbered_symbol_in_a_declaration() {
+    let text = "f[3]=7\ny[2]'=1\ndy[2]/dt=1\npar a[2]=3,b[1]=4\ninit y[2]=4\nnumber n[2]=5\n\
+                !d[2]=5\naux w[2]=x+1\ntable h[2] % 3 0 2 t^2\ng[2](u)=u*2";
+    let model = clean(text);
+    let want = flat(
+        "f3=7\ny2'=1\ndy2/dt=1\npar a2=3,b1=4\ninit y2=4\nnumber n2=5\n\
+         !d2=5\naux w2=x+1\ntable h2 % 3 0 2 t^2\ng2(u)=u*2",
+    );
+    assert_eq!(plain(&model), want);
+}
+
+#[test]
+fn constant_index_next_to_a_range_or_a_block() {
+    // A range line keeps the constant name in every copy.
+    let model = clean("y[1..2]'=c[2]*y[j]");
+    assert_eq!(plain(&model), flat("y1'=c2*y1\ny2'=c2*y2"));
+    assert_eq!(indices(&model), vec![Some(1), Some(2)]);
+    // So does a block.
+    let model = clean("%[1..2]\ny[j]'=f[2]\n%");
+    assert_eq!(plain(&model), flat("y1'=f2\ny2'=f2"));
+    // A range line whose range is on the constant name's own line.
+    let model = clean("flux[1..3]=a[j]\nx'=-flux[3]");
+    assert_eq!(
+        plain(&model),
+        flat("flux1=a1\nflux2=a2\nflux3=a3\nx'=-flux3")
+    );
+    // The constant index needs no range, so the index `j` still does.
+    one("x'=f[3]+y[j]", INDEX_OUT_OF_SCOPE, "[j]", 0);
+    one("f[3]=[j]", INDEX_OUT_OF_SCOPE, "[j]", 0);
+    // Two ranges are still two ranges.
+    one("y[1..2]'=a[1..2]+f[3]", MULTIPLE_RANGES, "[1..2]", 1);
+}
+
+#[test]
+fn constant_index_is_refused_where_xpp_does_not_read_it() {
+    // XPPAUT 8.2.2 does not apply `x[1](0)=3` to `x1`.
+    let (model, d) = one("x1'=1\nx[1](0)=3", UNSUPPORTED_INDEX, "[1]", 0);
+    assert_eq!(plain(&model), flat("x1'=1"));
+    assert!(d.message.contains("`x[1]`"), "{d:#?}");
+    assert!(d.message.contains("`x1`"), "{d:#?}");
+    // The other left sides and targets that were not measured.
+    one("x[1](t+1)=2", UNSUPPORTED_INDEX, "[1]", 0);
+    one("wiener w[2]", UNSUPPORTED_INDEX, "[2]", 0);
+    one("global 1 x-1 {y[2]=0}", UNSUPPORTED_INDEX, "[2]", 0);
+    // Inside a block, too.
+    let text = "%[1..2]\nx[1](0)=3\ny[j]'=1\n%";
+    let (model, _) = one(text, UNSUPPORTED_INDEX, "[1]", 0);
+    assert_eq!(plain(&model), flat("y1'=1\ny2'=1"));
+    // A dropped name still keeps the undefined-name cascade quiet.
+    let (model, diags) = run("x1'=1\nx[1](0)=3\naux a=x1");
+    assert_eq!(codes(&diags), vec![UNSUPPORTED_INDEX]);
+    assert_eq!(plain(&model), flat("x1'=1\naux a=x1"));
 }
 
 #[test]

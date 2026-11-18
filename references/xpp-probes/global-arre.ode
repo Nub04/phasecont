@@ -1,0 +1,9 @@
+# global-arre: Is `arre=1`, a shortened `arret`, an undeclared global target XPPAUT refuses (XPPAUT 8.2.2)?
+# xpp: error
+# pc: ODE0058
+# ruling: only the full names `arret` and `out_put` are event actions. Any other undeclared target stays ODE0058 (language.md, Statement details).
+x'=1
+x(0)=0
+aux v=x
+global 1 x-0.55 {arre=1}
+@ total=2,dt=0.1,meth=euler

@@ -1,0 +1,9 @@
+# number-num: Is `num` read as the `number` statement (XPPAUT 8.2.2)?
+# xpp: 2
+# pc: ok
+# ruling: `number` takes only its first letter, so `n`, `nu`, `num` and `numx` all declare a constant (language.md, Statement classification).
+x'=-a*x
+x(0)=1
+num a=2
+aux aa=a
+@ total=1,dt=0.5

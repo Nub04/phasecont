@@ -1,0 +1,9 @@
+# backslash-text: What does XPPAUT 8.2.2 do with text after a backslash (`\5`)?
+# xpp: v@3=3
+# pc: ODE0003,ODE0019
+# ruling: XPPAUT continues the line and drops the `5`. PhaseCont keeps the stray-character error, since dropping text would change the formula without a word (language.md, Lines).
+x'=1+\5
+2
+x(0)=0
+aux v=x
+@ total=1,dt=0.5,meth=euler

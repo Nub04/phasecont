@@ -52,8 +52,10 @@ pub const BLANK_IN_TOKEN: Code = Code(12);
 pub const PORTABILITY: Code = Code(13);
 /// An operator mix that XPPAUT reads differently from C (`2*x>1`).
 pub const PRECEDENCE: Code = Code(14);
-/// An index form other than `[i1..i2]`, `[j]`, `[j+n]`, `[j-n]`, `[j*n]`,
-/// or a range `[i1..i2]` that does not follow a name.
+/// An index form other than `[i1..i2]`, `[j]`, `[j+n]`, `[j-n]`, `[j*n]`
+/// or `[n]`, a range `[i1..i2]` or a constant `[n]` that does not follow a
+/// name, or a constant index where XPPAUT does not read it as part of the
+/// name (the `expand` pass reports that one).
 pub const UNSUPPORTED_INDEX: Code = Code(15);
 /// An `if` that is not `if(c)then(a)else(b)`.
 pub const MALFORMED_IF: Code = Code(16);
@@ -914,6 +916,17 @@ impl Parser<'_, '_> {
                 self.report(UNSUPPORTED_INDEX, range, message, None);
                 Parsed::error(range)
             }
+            Some(index @ Index::Fixed { .. }) => {
+                // XPPAUT 8.2.2 reads a bare `[3]` as the number 3. PhaseCont
+                // does not, since only a name takes a constant index.
+                let fixed = index.span();
+                let message = format!(
+                    "a constant index can only follow a name, as in `x{}`",
+                    self.quote(fixed)
+                );
+                self.report(UNSUPPORTED_INDEX, fixed, message, None);
+                Parsed::error(fixed)
+            }
             Some(index) => Parsed::leaf(Expr::Index(index)),
             None => Parsed::error(span.to(self.prev_end())),
         }
@@ -1183,7 +1196,7 @@ impl Parser<'_, '_> {
             Some(k) => {
                 let span = open.to(self.span_at(k));
                 let message = format!(
-                    "unsupported index form `{}`: use [i1..i2], [j], [j+n], [j-n] or [j*n] \
+                    "unsupported index form `{}`: use [i1..i2], [j], [j+n], [j-n], [j*n] or [n] \
                      with non-negative integers",
                     self.quote(span)
                 );
@@ -1222,6 +1235,10 @@ impl Parser<'_, '_> {
             (*self.kind(k) == RBracket).then(|| open.to(self.span_at(k)))
         };
         if let Some(start) = int(1) {
+            // `[n]`: the integer is read, so `[03]` is 3.
+            if let Some(span) = close(2) {
+                return Some((Index::Fixed { n: start, span }, 3));
+            }
             if *self.kind(2) != DotDot {
                 return None;
             }

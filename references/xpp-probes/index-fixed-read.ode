@@ -1,0 +1,12 @@
+# index-fixed-read: Is a constant index name[n] read as the name followed by n in a formula (XPPAUT 8.2.2)?
+# xpp: r=118
+# pc: ok
+# ruling: pc-ode reads `name[n]` as `name<n>` where a formula reads a name or calls a function; the integer is parsed, so `k[03]` is k3 (language.md, Arrays).
+x'=-x
+x(0)=1
+par a2=3
+f3=7
+k3=100
+g2(u)=u*2
+aux r=f[3]+a[2]+g[2](4)+k[03]
+@ total=1,dt=0.5

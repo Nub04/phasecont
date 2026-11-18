@@ -1,0 +1,8 @@
+# backslash-eof: Is a backslash at the very end of the file, with no newline, accepted (XPPAUT 8.2.2)?
+# xpp: v@3=1
+# pc: ok
+# ruling: a backslash with only blanks after it at the end of the text joins nothing and is not an error (language.md, Lines).
+x'=1
+x(0)=0
+aux v=x
+@ total=1,dt=0.5,meth=euler\

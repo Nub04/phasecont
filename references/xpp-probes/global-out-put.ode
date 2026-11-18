@@ -1,0 +1,9 @@
+# global-out-put: Does `out_put=1` in a global action list add an output row at the crossing (XPPAUT 8.2.2)?
+# xpp: t@3=0.55 rows=6
+# pc: ODE0024
+# ruling: pc-ode accepts `arret` and `out_put` as undeclared global targets. The model is simulation only, so pc-ir refuses it with SimulationOnly (language.md, Statement details). ODE0024 is for `nout`, which XPPAUT 8.2.2 does read (without it the run writes 21 rows) but pc-ode does not know.
+x'=1
+x(0)=0
+aux v=x
+global 1 x-0.55 {out_put=1}
+@ total=2,dt=0.1,meth=euler,nout=5

@@ -129,7 +129,9 @@ pub fn format_number(value: f64) -> String {
 fn stmt(out: &mut String, s: &Stmt) {
     match &s.kind {
         StmtKind::Ode { name, form, rhs } => {
-            if *form == OdeForm::Ddt && name.index.is_none() {
+            // Only a constant index is read after `d`: `dy[2]/dt=`.
+            let ddt_ok = matches!(name.index, None | Some(Index::Fixed { .. }));
+            if *form == OdeForm::Ddt && ddt_ok {
                 out.push('d');
                 out.push_str(&ident(name));
                 out.push_str("/dt=");
@@ -267,15 +269,10 @@ fn stmt(out: &mut String, s: &Stmt) {
         StmtKind::Unsupported { text, .. } => out.push_str(text),
         StmtKind::Done => out.push_str("done"),
     }
-    let ends_in_comment = s.comment.is_some()
-        || matches!(s.kind, StmtKind::Comment(_) | StmtKind::Include { .. })
-        || matches!(&s.kind, StmtKind::Markov { lines, .. }
-            if matches!(lines.last(), Some(MarkovLine::Comment(_))));
     trailing(out, &s.comment);
-    // A backslash right before the newline would join the next line.
-    if !ends_in_comment && out.ends_with('\\') {
-        out.push(' ');
-    }
+    // The parser never keeps a trailing backslash in a statement: it reads
+    // the backslash and any blanks after it as a line continuation, so no
+    // guard is needed here.
     out.push('\n');
 }
 
@@ -328,6 +325,7 @@ fn index(ix: &Index) -> String {
             IndexOp::Sub => format!("[j-{n}]"),
             IndexOp::Mul => format!("[j*{n}]"),
         },
+        Index::Fixed { n, .. } => format!("[{n}]"),
     }
 }
 
