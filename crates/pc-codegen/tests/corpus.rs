@@ -113,6 +113,8 @@ struct Stats {
     counted: usize,
     /// Counted rows by check: fallback/FD, JIT vs DAG, JIT vs fallback.
     by_check: [usize; 3],
+    /// Rows for an entry over the node limit (SKIP): neither counted nor failed.
+    skipped: usize,
     /// Largest ratio of the exact rows and of the FD rows of `check_model`, with labels.
     worst_exact: (f64, String),
     worst_fd: (f64, String),
@@ -248,12 +250,17 @@ fn run_model_inner(name: &str, path: &Path, have_gcc: bool) -> Status {
         smooth,
         counted: 0,
         by_check: [0; 3],
+        skipped: 0,
         worst_exact: (0.0, "-".into()),
         worst_fd: (0.0, "-".into()),
         aot: AotResult::Skipped,
         failures: Vec::new(),
     };
     for e in &report.entries {
+        if e.skip {
+            st.skipped += 1;
+            continue;
+        }
         let is_fd = e.label.ends_with("(FD)");
         let worst = if is_fd {
             &mut st.worst_fd
@@ -274,6 +281,10 @@ fn run_model_inner(name: &str, path: &Path, have_gcc: bool) -> Status {
         }
     }
     for r in jit_rows(ir, &fb, POINTS, SEED, opt.half_width) {
+        if r.skip {
+            st.skipped += 1;
+            continue;
+        }
         st.counted += 1;
         st.by_check[match r.kind {
             RowKind::JitVsDag => 1,
@@ -430,6 +441,7 @@ fn section_3_and_4_checks_pass_on_the_model_set() {
         ));
     }
     let mut totals = [0_usize; 3];
+    let mut skipped = 0_usize;
     let (mut accepted, mut aot_values, mut aot_models) = (0, 0, 0);
     for r in &results {
         match &r.status {
@@ -438,6 +450,7 @@ fn section_3_and_4_checks_pass_on_the_model_set() {
                 for (t, c) in totals.iter_mut().zip(st.by_check) {
                     *t += c;
                 }
+                skipped += st.skipped;
                 if let AotResult::Compared { values, .. } = st.aot {
                     aot_models += 1;
                     aot_values += values;
@@ -455,6 +468,7 @@ fn section_3_and_4_checks_pass_on_the_model_set() {
     );
     println!(
         "counted rows: {} DAG vs fallback and FD, {} JIT vs DAG, {} JIT vs fallback; \
+         {skipped} rows skipped (entry too large); \
          AOT vs JIT: {aot_models} models, {aot_values} values",
         totals[0], totals[1], totals[2]
     );
