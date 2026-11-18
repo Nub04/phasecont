@@ -382,7 +382,11 @@ fn node(out: &mut String, dag: &Dag, id: NodeId, lens: &Lens, table_ok: &dyn Fn(
         Op::Add(a, b) => format!("{} + {}", var(a), var(b)),
         Op::Sub(a, b) => format!("{} - {}", var(a), var(b)),
         Op::Mul(a, b) => format!("{} * {}", var(a), var(b)),
+        // `t == 0.0` gives +0 whatever `p` is; see `Op::ZMul`.
+        Op::ZMul(t, p) => format!("({0} == 0.0) ? 0.0 : {0} * {1}", var(t), var(p)),
         Op::Div(a, b) => format!("{} / {}", var(a), var(b)),
+        // `n == 0.0` gives +0 whatever `d` is; see `Op::ZDiv`.
+        Op::ZDiv(n, d) => format!("({0} == 0.0) ? 0.0 : {0} / {1}", var(n), var(d)),
         Op::PowI(a, n) => {
             powi(out, id, a, n);
             return;

@@ -363,7 +363,11 @@ pub fn emit_rhs(
             Op::Add(a, c) => format!("{} + {}", v(a.0), v(c.0)),
             Op::Sub(a, c) => format!("{} - {}", v(a.0), v(c.0)),
             Op::Mul(a, c) => format!("{} * {}", v(a.0), v(c.0)),
+            // `t == 0` gives +0 whatever `p` is; see `Op::ZMul`.
+            Op::ZMul(t, p) => format!("({0} == PC_ZERO) ? PC_ZERO : {0} * {1}", v(t.0), v(p.0)),
             Op::Div(a, c) => format!("{} / {}", v(a.0), v(c.0)),
+            // `n == 0` gives +0 whatever `d` is; see `Op::ZDiv`.
+            Op::ZDiv(n, d) => format!("({0} == PC_ZERO) ? PC_ZERO : {0} / {1}", v(n.0), v(d.0)),
             Op::PowI(a, n) => {
                 emit_powi(&mut b, i, &v(a.0), n);
                 continue;

@@ -73,7 +73,23 @@ pub enum Op {
     Add(NodeId, NodeId),
     Sub(NodeId, NodeId),
     Mul(NodeId, NodeId),
+    /// `ZMul(t, p)` is `+0.0` when `t == 0.0` (either sign), else exactly `t * p`. A NaN `t`
+    /// is not zero. The derivative rules use it for `tangent * partial` when the partial
+    /// can be infinite or NaN at a finite input: a tangent that is zero at run time then
+    /// contributes `+0` instead of `0 * inf = NaN`, as in the fallback interpreter.
+    ///
+    /// Every evaluator copies this rule bit for bit: compare `t == 0.0`, then select
+    /// between the constant `+0.0` and the product `t * p`.
+    ZMul(NodeId, NodeId),
     Div(NodeId, NodeId),
+    /// `ZDiv(n, d)` is `+0.0` when `n == 0.0` (either sign), else exactly `n / d`. A NaN `n`
+    /// is not zero. The derivative rules use it for `tangent / denominator`: a tangent that
+    /// is zero at run time over a denominator that is also zero (a clamped quotient inside
+    /// `exp`, for example) then contributes `+0` instead of `0 / 0 = NaN`, as in the
+    /// fallback interpreter, which skips a zero tangent.
+    ///
+    /// Every evaluator copies this rule bit for bit, as for [`Op::ZMul`].
+    ZDiv(NodeId, NodeId),
     /// Integer power with `2 <= |n| <= 16` (the constructor folds n = 0 and n = 1 and sends
     /// larger |n| to `Pow`).
     ///
@@ -303,6 +319,43 @@ impl Dag {
         }
         if self.is_one(a) {
             return b;
+        }
+        self.intern(op)
+    }
+
+    /// `t * p` with a zero `t` giving `+0.0` (see [`Op::ZMul`]). A constant zero `t` folds to
+    /// `+0.0` whatever `p` is, and so does a constant zero `p`, as in [`Dag::mul`]. A nonzero
+    /// finite constant `t` cannot be zero at run time, so the node becomes an ordinary
+    /// `mul`. An infinite or NaN constant `t` stays a `ZMul` node. `ZMul` and `Mul` never
+    /// merge, since they differ when `t` is zero and `p` is not finite.
+    pub fn zmul(&mut self, t: NodeId, p: NodeId) -> NodeId {
+        let op = Op::ZMul(t, p);
+        if let Some(c) = self.fold(op, &[t, p]) {
+            return c;
+        }
+        // A static zero factor folds to +0 whatever `t` is, as in `mul`.
+        if self.is_zero(p) {
+            return self.konst(0.0);
+        }
+        match self.cval(t) {
+            Some(0.0) => return self.konst(0.0),
+            Some(c) if c.is_finite() => return self.mul(t, p),
+            _ => {}
+        }
+        self.intern(op)
+    }
+
+    /// `n / d` with a zero `n` giving `+0.0` (see [`Op::ZDiv`]). A constant zero `n` folds to
+    /// `+0.0` whatever `d` is. A `ZDiv` never becomes a `Div` here, not even for `d = 1` or
+    /// a finite constant `d`, since a `-0.0` numerator gives `-0.0` through `Div` and `+0.0`
+    /// through `ZDiv`. `ZDiv` and `Div` never merge for the same reason.
+    pub fn zdiv(&mut self, n: NodeId, d: NodeId) -> NodeId {
+        let op = Op::ZDiv(n, d);
+        if let Some(c) = self.fold(op, &[n, d]) {
+            return c;
+        }
+        if self.is_zero(n) {
+            return self.konst(0.0);
         }
         self.intern(op)
     }

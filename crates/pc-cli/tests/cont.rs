@@ -188,6 +188,67 @@ fn fallback_evaluator_gives_the_same_fold() {
     near(num(&specials(&v, 0, "LP")[0]["alpha"]), 0.0, "LP alpha");
 }
 
+/// `x' = -x + sqrt(max(a - x - 10, 0))`: the clamp is active, so the root sits at 0 where its
+/// slope is infinite, and the tangent of the clamp is zero. The Jacobian is -1 and the branch
+/// runs, with the compiled evaluators and with the fallback alike.
+#[test]
+fn a_clamped_root_does_not_make_the_jacobian_nan() {
+    let ode = scratch().join("sqclamp.ode");
+    std::fs::write(&ode, "x'=-x+sqrt(max(a-x-10,0))\npar a=1\ndone\n").unwrap();
+    let json = scratch().join("sqclamp.json");
+    std::fs::write(
+        &json,
+        r#"{"type":"EP","free":"a","params":{"a":1},"u0":[0],"options":{"max_steps":8}}"#,
+    )
+    .unwrap();
+    for extra in [None, Some("--fallback")] {
+        let mut args = vec!["cont", ode.to_str().unwrap(), json.to_str().unwrap()];
+        args.extend(extra);
+        let o = run(&scratch(), &args);
+        assert_eq!(code(&o), 0, "{extra:?}: {}", stderr(&o));
+        let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+        let points = v["branches"][0]["points"].as_array().unwrap();
+        assert!(points.len() > 2, "{extra:?}: {v}");
+        for pt in points {
+            near(num(&pt["eigenvalues"][0][0]), -1.0, "eigenvalue");
+            near(num(&pt["u"][0]), 0.0, "u");
+        }
+    }
+}
+
+/// A clamped quotient inside `exp`: `x' = -x + exp(-(1 + m) / m)` with `m = max(a - x - 10, 0)`
+/// is 0 at the clamp, and the tangent of `1 + m` is zero there over a zero denominator. The
+/// zero tangent over zero is 0, not NaN, so the Jacobian is -1 as in the fallback.
+#[test]
+fn a_clamped_quotient_does_not_make_the_jacobian_nan() {
+    let json = scratch().join("sqclamp.json");
+    std::fs::write(
+        &json,
+        r#"{"type":"EP","free":"a","params":{"a":1},"u0":[0],"options":{"max_steps":8}}"#,
+    )
+    .unwrap();
+    for (name, rhs) in [
+        ("qclamp", "exp(-(1+max(a-x-10,0))/max(a-x-10,0))"),
+        ("rclamp", "exp(-1/max(a-x-10,0))"),
+    ] {
+        let ode = scratch().join(format!("{name}.ode"));
+        std::fs::write(&ode, format!("x'=-x+{rhs}\npar a=1\ndone\n")).unwrap();
+        for extra in [None, Some("--fallback")] {
+            let mut args = vec!["cont", ode.to_str().unwrap(), json.to_str().unwrap()];
+            args.extend(extra);
+            let o = run(&scratch(), &args);
+            assert_eq!(code(&o), 0, "{name} {extra:?}: {}", stderr(&o));
+            let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+            let points = v["branches"][0]["points"].as_array().unwrap();
+            assert!(points.len() > 2, "{name} {extra:?}: {v}");
+            for pt in points {
+                near(num(&pt["eigenvalues"][0][0]), -1.0, "eigenvalue");
+                near(num(&pt["u"][0]), 0.0, "u");
+            }
+        }
+    }
+}
+
 #[test]
 fn u0_defaults_to_the_model_init() {
     // fold.ode starts at x = 1; the branch still reaches a fold on the other side.

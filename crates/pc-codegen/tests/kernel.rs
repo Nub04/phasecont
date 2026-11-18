@@ -358,6 +358,24 @@ fn a_construct_no_kernel_runs_is_named_once() {
 }
 
 #[test]
+fn a_zero_multiplier_is_tested_before_the_product() {
+    let ops = [Op::Var(0), Op::Var(1), Op::ZMul(n(0), n(1))];
+    for s in [Scalar::F32, Scalar::F64] {
+        let t = emit_rhs(&ops, &[2], 0, s, "rhs").unwrap();
+        assert!(t.contains("(v0 == PC_ZERO) ? PC_ZERO : v0 * v1"), "{t}");
+    }
+}
+
+#[test]
+fn a_zero_numerator_is_tested_before_the_quotient() {
+    let ops = [Op::Var(0), Op::Var(1), Op::ZDiv(n(0), n(1))];
+    for s in [Scalar::F32, Scalar::F64] {
+        let t = emit_rhs(&ops, &[2], 0, s, "rhs").unwrap();
+        assert!(t.contains("(v0 == PC_ZERO) ? PC_ZERO : v0 / v1"), "{t}");
+    }
+}
+
+#[test]
 fn powi_follows_the_documented_multiplication_order() {
     // x^5: m=5 -> acc = x; base = x^2; m=2 -> base = x^4; m=1 -> acc = x * x^4.
     let ops = [Op::Var(0), Op::PowI(n(0), 5)];
