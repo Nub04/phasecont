@@ -1,0 +1,10 @@
+# backslash-active-comment-chain: Does a swallowed line that ends in a backslash swallow the line after it (XPPAUT 8.2.2)?
+"an active comment \
+x'=1 \
+x'=3
+x'=2
+x(0)=0
+aux v=x
+@ total=1,dt=0.5,meth=euler
+# xpp: v@3=2
+# pc: ODE0038,ODE0076

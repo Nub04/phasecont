@@ -120,6 +120,7 @@ pub(crate) fn lex_file(file: FileId, text: &str, main: bool) -> (Vec<Token>, Vec
         pos: 0,
         blank: false,
         first_line_end: 0,
+        active_comment: false,
         tokens: Vec::new(),
         diags: Vec::new(),
     };
@@ -140,6 +141,8 @@ struct Lexer<'a> {
     /// The end of the first line when it is the first line of a main file,
     /// else 0. A comment that starts before it keeps its backslashes.
     first_line_end: usize,
+    /// The current line is an active comment: a line that starts with `"`.
+    active_comment: bool,
     tokens: Vec<Token>,
     diags: Vec<Diagnostic>,
 }
@@ -159,6 +162,7 @@ impl Lexer<'_> {
                 b'\r' => self.single(TokenKind::Newline, 1),
                 b'\n' => self.single(TokenKind::Newline, 1),
                 b'\\' => self.backslash(),
+                b'"' => self.quote(),
                 b'#' => self.comment(),
                 b'0'..=b'9' => self.number(),
                 b'.' => match self.peek(1) {
@@ -206,6 +210,9 @@ impl Lexer<'_> {
 
     /// Adds a token and clears the blank flag.
     fn push(&mut self, kind: TokenKind, start: usize, end: usize) {
+        if kind == TokenKind::Newline {
+            self.active_comment = false;
+        }
         let span = self.span(start, end);
         self.tokens.push(Token {
             kind,
@@ -310,6 +317,10 @@ impl Lexer<'_> {
     fn backslash(&mut self) {
         let start = self.pos;
         let eol = self.line_end(start + 1);
+        if self.active_comment {
+            self.active_comment_backslash(start, eol);
+            return;
+        }
         let term = self.terminator_len(eol);
         if self.bytes[start + 1..eol]
             .iter()
@@ -370,6 +381,34 @@ impl Lexer<'_> {
         self.warn(BACKSLASH_TEXT, start, eol, message, fixes);
         self.pos = eol + term;
         self.blank = true;
+    }
+
+    /// A `"` is an unknown character. As the first token of a line it starts
+    /// an active comment, which the parser reports as unsupported.
+    fn quote(&mut self) {
+        let line_start = self
+            .tokens
+            .last()
+            .is_none_or(|t| t.kind == TokenKind::Newline);
+        self.stray();
+        if line_start {
+            self.active_comment = true;
+        }
+    }
+
+    /// A backslash at `bs` in an active comment line that ends at `eol`. As
+    /// in XPPAUT 8.2.2 it acts as in a `#` comment (probes
+    /// backslash-active-comment, -chain and -blank): the rest of the line
+    /// and the next line are part of the comment and give no tokens, with
+    /// [`BACKSLASH_COMMENT`] for a swallowed line that matters. On the first
+    /// line of a main file the rest of the line is dropped and the next line
+    /// is read (probes backslash-active-comment-line1 and -line1-comment).
+    fn active_comment_backslash(&mut self, bs: usize, eol: usize) {
+        if bs < self.first_line_end {
+            self.pos = eol;
+        } else {
+            self.join_comment_lines(bs, eol);
+        }
     }
 
     /// One unknown character, reported and kept as an `Unknown` token.
@@ -1546,6 +1585,52 @@ mod tests {
         // The second line is not.
         let (_, diags) = lex_file(F, "\n# c \\\nb=2\n", true);
         assert_eq!(diags.len(), 1, "{diags:#?}");
+    }
+
+    #[test]
+    fn an_active_comment_swallows_the_next_line_like_a_comment() {
+        use TokenKind::*;
+        let text = "x\n\"a \\\nb=1\nc";
+        let (tokens, diags) = lex(F, text);
+        // The swallowed line gives no tokens.
+        assert_eq!(
+            kinds_of(&tokens),
+            vec![name("x"), Newline, Unknown, name("a"), Newline, name("c")]
+        );
+        let warn: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == BACKSLASH_COMMENT)
+            .collect();
+        assert_eq!(warn.len(), 1, "{diags:#?}");
+        let d = warn[0];
+        assert_eq!(&text[d.span.start..d.span.end], "\\\nb=1");
+        assert_eq!(
+            titles(d),
+            vec![
+                "Remove the backslash at the end of the comment",
+                "Comment out the next line"
+            ]
+        );
+        assert_eq!(apply(text, &d.fixes[0]), "x\n\"a \nb=1\nc");
+        assert_eq!(apply(text, &d.fixes[1]), "x\n\"a \n# b=1\nc");
+        // No dropped-text warning for text after the backslash.
+        let (_, diags) = lex(F, "x\n\"a \\ b\nc=1\n");
+        assert!(diags.iter().all(|d| d.code != BACKSLASH_TEXT), "{diags:#?}");
+    }
+
+    #[test]
+    fn an_active_comment_on_the_first_line_keeps_the_next_line() {
+        use TokenKind::*;
+        let text = "\"a \\\nb=1\n";
+        let (tokens, diags) = lex_file(F, text, true);
+        assert!(
+            diags.iter().all(|d| d.code != BACKSLASH_COMMENT),
+            "{diags:#?}"
+        );
+        assert_eq!(
+            kinds_of(&tokens),
+            vec![Unknown, name("a"), Newline, name("b"), Eq, n(1.0), Newline]
+        );
     }
 
     #[test]

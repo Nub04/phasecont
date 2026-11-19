@@ -713,7 +713,7 @@ fn a_backslash_warning_survives_inside_raw_text() {
         "@ total=10,\\ dt=1\nmaxstor=5\n",
         "bndry x\\ y\nz\n",
         "x'=1\nset a {x=1,\\ y=2\nz=3}\n",
-        "\"note\\ here\nx'=1\n",
+        "x'=1\n\"note\\ here\ny'=1\n",
         "x'=1\n# c \\\n@ total=5\n",
     ] {
         let codes = codes(text);
@@ -1605,4 +1605,93 @@ fn global_condition_may_be_in_braces() {
     assert_eq!(codes(text), vec![MALFORMED_STATEMENT]);
     // A lone brace list is still an error.
     assert!(codes("global 1 {x=5}").contains(&MALFORMED_STATEMENT));
+}
+
+/// The names of the ODE statements of `text` and its diagnostic codes.
+fn odes_and_codes(text: &str, main: bool) -> (Vec<String>, Vec<Code>) {
+    let (model, diags) = parse_file(text, F, main);
+    let names = model
+        .statements
+        .iter()
+        .filter_map(|s| match &s.kind {
+            StmtKind::Ode { name, .. } => Some(name.key.clone()),
+            _ => None,
+        })
+        .collect();
+    (names, diags.iter().map(|d| d.code).collect())
+}
+
+#[test]
+fn an_active_comment_that_ends_in_a_backslash_swallows_the_next_line() {
+    // XPPAUT 8.2.2 reads the next line as part of the active comment (probe
+    // backslash-active-comment), and a backslash in that line swallows the
+    // line after it (probe backslash-active-comment-chain). PhaseCont warns
+    // once for each swallowed line that holds more than blanks or a comment
+    // (probe backslash-active-comment-blank).
+    let w = BACKSLASH_COMMENT;
+    let ac = UNSUPPORTED_ACTIVE_COMMENT;
+    for (text, odes, want) in [
+        ("x'=1\n\"note \\\ny'=2\nz'=3\n", vec!["x", "z"], vec![ac, w]),
+        (
+            "x'=1\n\"note \\\ny'=1 \\\ny'=3\nz'=2\n",
+            vec!["x", "z"],
+            vec![ac, w, w],
+        ),
+        ("x'=1\n\"note \\\n\ny'=2\n", vec!["x", "y"], vec![ac]),
+        ("x'=1\n\"note \\\n# c\ny'=2\n", vec!["x", "y"], vec![ac]),
+        // Text after the backslash is part of the comment, so only the
+        // swallowed line is reported, not the dropped text.
+        (
+            "x'=1\n\"note \\ more\ny'=2\nz'=3\n",
+            vec!["x", "z"],
+            vec![ac, w],
+        ),
+        // A `#` in the active comment gives the same one warning.
+        (
+            "x'=1\n\"a # b \\\ny'=2\nz'=3\n",
+            vec!["x", "z"],
+            vec![ac, w],
+        ),
+        (
+            "x'=1\n\"note \\\r\ny'=2\r\nz'=3\r\n",
+            vec!["x", "z"],
+            vec![ac, w],
+        ),
+    ] {
+        let (names, codes) = odes_and_codes(text, true);
+        assert_eq!(names, odes, "{text:?}");
+        assert_eq!(codes, want, "{text:?}");
+    }
+    let d = parse_all("x'=1\n\"note \\\ny'=2\n").1;
+    let warn = d.iter().find(|d| d.code == BACKSLASH_COMMENT).unwrap();
+    assert_eq!(warn.severity, Severity::Warning);
+    assert!(warn.message.contains("`y'=2`"), "{}", warn.message);
+}
+
+#[test]
+fn an_active_comment_on_the_first_line_of_a_main_file_does_not_swallow() {
+    // XPPAUT 8.2.2 reads the line after it (probes
+    // backslash-active-comment-line1 and -line1-comment); in an included
+    // file the line is swallowed.
+    let ac = UNSUPPORTED_ACTIVE_COMMENT;
+    for text in ["\"note \\\ny'=2\n", "\"note \\ more\ny'=2\n"] {
+        assert_eq!(
+            odes_and_codes(text, true),
+            (vec!["y".to_string()], vec![ac]),
+            "{text:?}"
+        );
+        assert_eq!(
+            odes_and_codes(text, false),
+            (vec![], vec![ac, BACKSLASH_COMMENT]),
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
+fn a_quote_that_does_not_start_a_line_is_not_an_active_comment() {
+    // After a continuation the quote is in the middle of a statement, and
+    // its backslash continues the line as usual.
+    let codes = codes("x'=1+\\\n\"a \\\n2\n");
+    assert!(!codes.contains(&BACKSLASH_COMMENT), "{codes:?}");
 }

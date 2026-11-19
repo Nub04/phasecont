@@ -15,7 +15,7 @@ references/xpp-probes/run.sh
 
 ## Header format
 
-Line 1 of every probe is a `#` comment, `# <id>: <question>`, because XPPAUT 8.2.2 fails on a continued statement in the first line (`illegal expression`, `ERROR compiling`). The next lines are read by the runner.
+Line 1 of every probe is a `#` comment, `# <id>: <question>`, because XPPAUT 8.2.2 fails on a continued statement in the first line (`illegal expression`, `ERROR compiling`). The next lines are read by the runner. The two `backslash-active-comment-line1` probes test line 1 itself, so it holds the active comment and the header lines come later in the file.
 
 | Line | Meaning |
 |---|---|
@@ -66,7 +66,11 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `comment-par` | Is a trailing comment after a par list accepted? | `par a=2 # c` | 2 | no diagnostic; computes 2 | matches |
 | `const-e-name` | Is e an ordinary name (par e=2)? | `par e=2`, `aux v=e` | 2 | no diagnostic; computes 2 | matches |
 | `const-pi` | Is pi a constant? | `pi` | 3.1415927 | no diagnostic; computes 3.1415927 | matches |
-| `backslash-active-comment` | Does a backslash at the end of an active comment line swallow the next line? | `"an active comment \` then `x'=1`, `x'=2` | v@3=2 (`x'=1` is lost) | ODE0038 warning only; the next line joins the kept text silently (no ODE0076) | PhaseCont choice |
+| `backslash-active-comment` | Does a backslash at the end of an active comment line swallow the next line? | `"an active comment \` then `x'=1`, `x'=2` | v@3=2 (`x'=1` is lost) | ODE0038 and an ODE0076 warning naming `x'=1`; computes v@3=2 | matches |
+| `backslash-active-comment-blank` | Does an active comment backslash followed by a blank line leave the line after the blank intact? | `"an active comment \`, a blank line, `x'=1` | v@3=1 | ODE0038 only; computes v@3=1 | matches |
+| `backslash-active-comment-chain` | Does a swallowed line that ends in a backslash swallow the line after it? | `"an active comment \`, `x'=1 \`, `x'=3`, `x'=2` | v@3=2 (both lines are lost) | ODE0038 and two ODE0076 warnings; computes v@3=2 | matches |
+| `backslash-active-comment-line1` | Does an active comment on line 1 of the main file that ends in a backslash swallow line 2? | `"an active comment on line 1 \` then `x'=1` | v@3=1 | ODE0038 only; computes v@3=1 | matches |
+| `backslash-active-comment-line1-comment` | Is line 3 read when an active comment on line 1 ends in a backslash and line 2 is a comment? | `"note \`, a `#` line, `x'=1` | v@3=1 | ODE0038 only; computes v@3=1 | matches |
 | `backslash-blanks` | Does a backslash followed by two blanks continue the line (XPPAUT 8.2.2)? | `x'=1+\` and two blanks, then `2` | v@3=3 | no diagnostic; computes v@3=3 | matches |
 | `backslash-comment` | Does a backslash at the end of a `#` comment line swallow the next line? | `# a note ... \` then `x'=1`, `x'=2` | v@3=2 (`x'=1` is lost) | ODE0076 warning naming `x'=1`; computes v@3=2 | matches |
 | `backslash-comment-blank` | Does a comment backslash followed by a blank line leave the line after the blank intact? | `# a note \`, a blank line, `x'=1` | v@3=1 | no diagnostic; computes v@3=1 | matches |

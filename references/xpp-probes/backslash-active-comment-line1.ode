@@ -1,0 +1,8 @@
+"an active comment on line 1 \
+x'=1
+x(0)=0
+aux v=x
+@ total=1,dt=0.5,meth=euler
+# backslash-active-comment-line1: Does a backslash at the end of an active comment on line 1 of the main file swallow line 2 (XPPAUT 8.2.2)?
+# xpp: v@3=1
+# pc: ODE0038

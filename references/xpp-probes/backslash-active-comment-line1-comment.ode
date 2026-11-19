@@ -1,0 +1,8 @@
+"note \
+# backslash-active-comment-line1-comment: Is line 3 read when an active comment on line 1 ends in a backslash and line 2 is a comment (XPPAUT 8.2.2)?
+x'=1
+x(0)=0
+aux v=x
+@ total=1,dt=0.5,meth=euler
+# xpp: v@3=1
+# pc: ODE0038
