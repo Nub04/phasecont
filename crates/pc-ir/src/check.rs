@@ -7,7 +7,7 @@
 
 use crate::entry::{EntryKind, Slot};
 use crate::error::{IrError, IrErrorKind};
-use crate::eval::{eval, eval_err};
+use crate::eval::{eval_entry, eval_entry_err};
 use crate::interp::Fallback;
 use crate::lower::IrModel;
 use std::fmt;
@@ -424,7 +424,7 @@ fn run(ir: &IrModel, kind: &EntryKind, x: &[f64], p: &[f64], v: &[f64]) -> Vec<f
     match ir.entries.get(kind) {
         Some(e) => {
             let mut out = vec![f64::NAN; e.outputs.len()];
-            eval(&ir.dag, &e.outputs, x, p, v, &mut out);
+            eval_entry(&ir.dag, e, x, p, v, &mut out);
             out
         }
         None => Vec::new(),
@@ -455,7 +455,7 @@ fn compare_kind(
         let (x, p, v) = (&sample.x, &sample.p, &sample.dirs[0]);
         let mut got = vec![f64::NAN; entry.outputs.len()];
         let mut err = vec![f64::NAN; entry.outputs.len()];
-        eval_err(&ir.dag, &entry.outputs, x, p, v, &mut got, &mut err);
+        eval_entry_err(&ir.dag, &entry, x, p, v, &mut got, &mut err);
         let mut want = vec![f64::NAN; entry.outputs.len()];
         fb.eval(kind, x, p, v, &mut want);
         let s = scale(&want);
@@ -500,7 +500,7 @@ fn non_finite_in_both(ir: &IrModel, fb: &Fallback, x: &[f64], p: &[f64]) -> bool
     }
     let mut got = vec![f64::NAN; entry.outputs.len()];
     let mut err = vec![f64::NAN; entry.outputs.len()];
-    eval_err(&ir.dag, &entry.outputs, x, p, &[], &mut got, &mut err);
+    eval_entry_err(&ir.dag, entry, x, p, &[], &mut got, &mut err);
     let s = scale(&want);
     got.iter()
         .zip(&want)
@@ -550,7 +550,7 @@ fn step(base: f64) -> f64 {
 }
 
 /// Values and running error bounds of the outputs of `kind` at (x, p, v), from
-/// [`eval_err`]; the entry must already be built.
+/// [`eval_entry_err`]; the entry must already be built.
 fn val_err(
     ir: &IrModel,
     kind: &EntryKind,
@@ -562,7 +562,7 @@ fn val_err(
         Some(e) => {
             let mut got = vec![f64::NAN; e.outputs.len()];
             let mut err = vec![f64::NAN; e.outputs.len()];
-            eval_err(&ir.dag, &e.outputs, x, p, v, &mut got, &mut err);
+            eval_entry_err(&ir.dag, e, x, p, v, &mut got, &mut err);
             (got, err)
         }
         None => (Vec::new(), Vec::new()),

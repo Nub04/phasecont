@@ -227,11 +227,10 @@ fn multi_slot_derivatives_with_a_zero_tangent_component_equal_the_fallback_off_t
 /// Smallest case, `x'=-x+exp(-(2+x*x)*(1/max(a-x-10,0)))`, `y'=-y+x`, entry `Dir [U, U]`,
 /// `x=[0.3, 0.2]`, `p=[1.0, 0.5, 0.0]`, `v=[1, 0, 0, 0]` (slot 0 along `(1, 0)`, slot 1
 /// along `(0, 0)`): output 0 is NaN in the DAG and +0 in the interpreter. The operand
-/// `T = 2+x*x` has `T_0 = 0.6` and `T_1 = T_01 = 0`. See item B of
-/// `/home/nub04/xpp82-reports/xpp82-zt2-fix-report.md` for the mechanism and the question
-/// of which side is right (rule 9).
+/// `T = 2+x*x` has `T_0 = 0.6` and `T_1 = T_01 = 0`. Which side is right is an open owner
+/// question (rule 9), kept in docs/STATUS.md as "Multi-slot derivatives on a pole".
 #[test]
-#[ignore = "DAG gives NaN where the interpreter gives 0, owner decision pending: item B of /home/nub04/xpp82-reports/xpp82-zt2-fix-report.md"]
+#[ignore = "DAG gives NaN where the interpreter gives 0, owner question in docs/STATUS.md"]
 fn multi_slot_derivatives_with_a_zero_tangent_component_equal_the_fallback_on_the_pole() {
     check(&POINTS[..6]);
 }
