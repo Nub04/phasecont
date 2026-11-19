@@ -146,6 +146,27 @@ Windows MATLAB loads compiled binaries from the Windows file system, so Windows 
 
 `cmd.exe` cannot use a `\\wsl.localhost\...` path as its working directory. Run from the repo folder, `scripts/matlab-win "[s,o]=system('cd'); disp(o)"` prints `UNC paths are not supported.  Defaulting to Windows directory.` followed by `C:\Windows`. MATLAB code that runs commands with `system` therefore changes to a folder on `C:` first. `mex` is not affected: spike S1 built the gateway from the repo folder with relative source paths, and the build succeeded (`spikes/results/s1_gateway_nodll.txt`).
 
+## Disk use
+
+On 2026-11-18 the C: drive filled up (5.4 GB free of 953 GB) and the PC crashed more than once. The WSL disk image lives on C:, and the space went to Cargo build output under `~/dev` (282 GB in all, measured with `du -xh --max-depth=2 ~/dev`):
+
+| Folder | Size | Contents |
+|---|---|---|
+| `phasecont/target` | 105 GB | 98 GB of it in `target/debug`: test and build output of many commits |
+| `phasecont/.claude/worktrees/*/target` | 134 GB | six agent worktrees, each with its own `target` of 10 to 29 GB |
+| `phasecont-fm/target` | 23 GB | the fast-math worktree |
+| `phasecont/.superpowers/sdd/steady-doodling-wozniak` | 17 GB | scratch of the 2026-11-16 plan, including its own `target` |
+| `phasecont/spikes/target` | 6.3 GB | Phase 0 spikes |
+
+This affects development only. Users install the `.mltbx` (5.3 MB for 1.0.0-preview) with prebuilt binaries and never run Cargo. At run time the JIT compiles in memory. The only files PhaseCont writes on a user's machine are the optional AOT libraries in `tempdir/phasecont-aot` (`aotCacheRoot.m`), which are built only when `mex` finds a compiler. `aotBuild.m` has no size cap and no eviction, so that folder gains one library per model version; a cap is an open item.
+
+Rules that keep the disk in check:
+
+- Run `cargo clean` in a worktree, or remove the worktree, once its branch is merged.
+- Agent worktrees that build in parallel share one target folder through `CARGO_TARGET_DIR`, so they reuse one build cache instead of one each.
+- Check `df -h /mnt/c` before a long multi-agent run.
+- Deleting files inside WSL frees space in the image, but Windows gets it back only when the image is sparse. `sparseVhd=true` in `%USERPROFILE%\.wslconfig` applies to new images. For an existing image, run `wsl --shutdown` and then `wsl --manage <distro> --set-sparse true` in PowerShell, or compact the image with `Optimize-VHD` or `diskpart`.
+
 ## Installed tools and install commands
 
 Phase 0 needed Windows build route 1 (`x86_64-pc-windows-gnu` with MinGW) and `cargo deny check`. These commands were run on 2026-10-21, and `rpm` dates the packages between 16:20:30Z and 16:21:05Z:
