@@ -111,7 +111,7 @@ pub fn lex(file: FileId, text: &str) -> (Vec<Token>, Vec<Diagnostic>) {
 /// (`main` false). XPPAUT 8.2.2 does not apply the backslash rule to the
 /// first line of the main file, so a `#` comment there keeps a backslash
 /// and does not join the next line; an included file has no such line
-/// (probes `backslash-comment-line1` and `backslash-comment-inc-line1`).
+/// (probes `backslash-comment-line1` and `backslash-comment-inc`).
 pub(crate) fn lex_file(file: FileId, text: &str, main: bool) -> (Vec<Token>, Vec<Diagnostic>) {
     let mut lexer = Lexer {
         file,
@@ -304,7 +304,7 @@ impl Lexer<'_> {
     /// the line terminator or the end of the text (XPPAUT 8.2.2 measured:
     /// probes backslash-blanks and backslash-eof). With other text after it
     /// on the line, XPPAUT drops that text and the terminator and joins the
-    /// next line (probes backslash-text, backslash-crlf-text,
+    /// next line (probes backslash-text, backslash-text-crlf,
     /// backslash-eof-text); PhaseCont does the same and gives
     /// [`BACKSLASH_TEXT`] so that the drop is not silent.
     fn backslash(&mut self) {
@@ -915,7 +915,8 @@ mod tests {
     fn backslash_then_blanks_then_a_line_end_continues_the_line() {
         // XPPAUT 8.2.2 joins the lines when only spaces or tabs sit between
         // the backslash and the line end (probes backslash-blanks,
-        // backslash-tab, backslash-mixed-blanks, backslash-blanks-cr).
+        // backslash-tab, backslash-mixed-blanks). The CRLF and lone CR line
+        // ends in this list have no probe of their own.
         for text in [
             "1+\\ \n2",
             "1+\\  \n2",
@@ -1270,7 +1271,7 @@ mod tests {
         use TokenKind::*;
         // XPPAUT 8.2.2 does not join after a comment on the first line of the
         // main file (probe backslash-comment-line1), but does in an included
-        // file (probe backslash-comment-inc-line1).
+        // file (probe backslash-comment-inc).
         let text = "# a \\\nb=1\n";
         let (tokens, diags) = lex_file(F, text, true);
         assert!(diags.is_empty(), "{diags:#?}");
