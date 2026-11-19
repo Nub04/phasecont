@@ -56,6 +56,20 @@ impl IrModel {
     pub fn n_p(&self) -> usize {
         self.param_names.len()
     }
+
+    /// The node limit of the DAG: [`MAX_NODES`] unless [`IrModel::set_node_limit`] changed it.
+    pub fn node_limit(&self) -> usize {
+        self.dag.cap()
+    }
+
+    /// Sets the node limit for the entries built after this call; entries already built
+    /// stay. An entry that needs more nodes than the limit allows is then refused with
+    /// `TooLarge`, and `check_model` reports it as a skipped row. A limit at or below
+    /// `dag.len()` refuses every entry that needs a new node. The default is `MAX_NODES`;
+    /// the hook is for tests of the `TooLarge` path.
+    pub fn set_node_limit(&mut self, limit: usize) {
+        self.dag.set_cap(limit);
+    }
 }
 
 /// Lowers a checked model. `model` is `Loaded::expanded` and `info` is `Loaded::info`.

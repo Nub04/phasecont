@@ -90,20 +90,6 @@ pub fn within(a: f64, b: f64, scale: f64, tol: f64) -> bool {
     (a - b).abs() <= tol * scale
 }
 
-/// How far `a` is from passing [`close_err`]: the ratio of `|a-b|` to the allowed difference.
-/// At most 1 means a pass; infinite when exactly one of the two is NaN or non-finite.
-fn ratio(a: f64, b: f64, scale: f64, err: f64) -> f64 {
-    if a.is_nan() && b.is_nan() || a == b {
-        return 0.0;
-    }
-    let diff = (a - b).abs();
-    if diff.is_nan() {
-        // Exactly one of the two is NaN.
-        return f64::INFINITY;
-    }
-    diff / allowed_diff(a, b, scale, Some(err))
-}
-
 /// SplitMix64: a small deterministic generator, so a seed reproduces a check run.
 #[derive(Clone, Debug)]
 pub struct Rng(pub u64);
@@ -173,13 +159,17 @@ pub struct EntryReport {
     pub x: Vec<f64>,
     /// `p` (with `t` last) where the worst error happened.
     pub p: Vec<f64>,
-    /// Points that were compared.
+    /// Usable sample points that the row ran on. A point is left out only when `f(x, p)` is
+    /// not finite in the fallback and the DAG gives the same value there.
     pub points: usize,
-    /// Sample points left out of a finite-difference row because the model value `f(x, p)`
-    /// there is not finite. Zero for every other row.
+    /// Output values that were compared. An element that is NaN on both sides is an
+    /// agreement but not a compared value, so it is not counted here.
+    pub compared: usize,
+    /// Sample points that were drawn and left out because the model value `f(x, p)` there
+    /// is not finite in the fallback and the DAG gives the same. The row drew
+    /// `points + skipped_points` points in all.
     pub skipped_points: usize,
-    /// Set when the entry could not be built, or when a finite-difference row has no
-    /// usable point.
+    /// Set when the entry could not be built, or when the row compared nothing.
     pub note: Option<String>,
 }
 
@@ -195,6 +185,7 @@ impl EntryReport {
             x: Vec::new(),
             p: Vec::new(),
             points: 0,
+            compared: 0,
             skipped_points: 0,
             note: None,
         }
@@ -210,21 +201,27 @@ impl EntryReport {
         r
     }
 
-    /// Records one output vector. `errs[i]` and `ratios[i]` are per element.
+    /// Records the elements of one output vector at one sample point. An item is
+    /// `Some((err, ratio))` for a compared element and `None` for an element that is NaN on
+    /// both sides: that is an agreement, but nothing was compared, so it neither counts as
+    /// a compared value nor sets the worst error. The first compared element sets the worst
+    /// error even when it is zero; a later one replaces it only with a larger ratio.
     fn record(
         &mut self,
-        errs_ratios: impl Iterator<Item = (f64, f64)>,
+        items: impl Iterator<Item = Option<(f64, f64)>>,
         s: f64,
         x: &[f64],
         p: &[f64],
     ) {
         self.points += 1;
-        for (err, r) in errs_ratios {
+        for (err, r) in items.flatten() {
             let r = if r.is_nan() { f64::INFINITY } else { r };
             if r > 1.0 {
                 self.pass = false;
             }
-            if self.x.is_empty() || r > self.ratio {
+            let first = self.compared == 0;
+            self.compared += 1;
+            if first || r > self.ratio {
                 self.ratio = r;
                 self.worst_err = if err.is_nan() { f64::INFINITY } else { err };
                 self.scale = s;
@@ -233,6 +230,54 @@ impl EntryReport {
             }
         }
     }
+
+    /// Ends a row. A row that compared nothing fails and says so: a pass would claim a
+    /// check that did not happen.
+    fn finish(mut self) -> Self {
+        if self.compared > 0 || self.skip {
+            return self;
+        }
+        self.pass = false;
+        let drawn = self.points + self.skipped_points;
+        let why = if drawn == 0 {
+            "no point was drawn".to_string()
+        } else if self.points == 0 {
+            format!("no usable point, all {drawn} drawn points have a non-finite model value")
+        } else {
+            format!(
+                "every value is NaN on both sides at the {} usable points",
+                self.points
+            )
+        };
+        self.note = Some(format!("nothing was compared: {why}"));
+        self
+    }
+}
+
+/// The comparison of one element for [`EntryReport::record`]: `None` when both sides are
+/// NaN, else the absolute error and its ratio to `allowed`. Equal values, infinities
+/// included, have error and ratio 0. When exactly one side is NaN the error is NaN and
+/// the ratio is infinite.
+fn element(a: f64, b: f64, allowed: f64) -> Option<(f64, f64)> {
+    if a.is_nan() && b.is_nan() {
+        return None;
+    }
+    if a == b {
+        return Some((0.0, 0.0));
+    }
+    let err = (a - b).abs();
+    if err.is_nan() {
+        return Some((err, f64::INFINITY));
+    }
+    Some((err, err / allowed))
+}
+
+/// The comparison of one element of a DAG entry against the fallback, the one every row
+/// against the fallback uses: `a` is the DAG value, `b` the fallback value, `s` the scale of
+/// the fallback's vector and `e` the running error bound of `a`. See [`element`] for the
+/// result.
+fn compare_with_bound(a: f64, b: f64, s: f64, e: f64) -> Option<(f64, f64)> {
+    element(a, b, allowed_diff(a, b, s, Some(e)))
 }
 
 /// All entries checked for one model.
@@ -277,24 +322,21 @@ impl fmt::Display for EntryReport {
             "{:<22} {verdict}  worst {:.3e}  s {:.3e}  ratio {:.3e}",
             self.label, self.worst_err, self.scale, self.ratio
         )?;
-        if let Some(n) = &self.note {
-            write!(f, "  ({n})")?;
-        } else if self.skipped_points > 0 {
+        if !self.skip {
+            write!(f, "  {} points, {} values", self.points, self.compared)?;
+        }
+        if self.skipped_points > 0 && self.points > 0 {
             write!(
                 f,
-                "  ({} of {} points skipped, non-finite model value)",
-                self.skipped_points,
-                self.skipped_points + self.points
+                "  ({} usable of {} drawn, non-finite model value)",
+                self.points,
+                self.points + self.skipped_points
             )?;
-            if !self.pass {
-                write!(
-                    f,
-                    "\n    at x = {}, p = {}",
-                    fmt_vec(&self.x),
-                    fmt_vec(&self.p)
-                )?;
-            }
-        } else if !self.pass {
+        }
+        if let Some(n) = &self.note {
+            write!(f, "  ({n})")?;
+        }
+        if !self.pass && self.compared > 0 {
             write!(
                 f,
                 "\n    at x = {}, p = {}",
@@ -407,63 +449,238 @@ fn compare_kind(
         EntryKind::Dir(slots) => slots.iter().map(|s| s.len(n, n_p)).sum(),
         _ => 0,
     };
-    for _ in 0..opt.points {
-        let (x, p) = draw_point(ir, rng, opt.half_width);
-        let v: Vec<f64> = (0..vlen).map(|_| rng.range(-1.0, 1.0)).collect();
+    let (samples, drawn) = usable_points(ir, fb, rng, opt, &[vlen]);
+    rep.skipped_points = drawn - samples.len();
+    for sample in &samples {
+        let (x, p, v) = (&sample.x, &sample.p, &sample.dirs[0]);
         let mut got = vec![f64::NAN; entry.outputs.len()];
         let mut err = vec![f64::NAN; entry.outputs.len()];
-        eval_err(&ir.dag, &entry.outputs, &x, &p, &v, &mut got, &mut err);
+        eval_err(&ir.dag, &entry.outputs, x, p, v, &mut got, &mut err);
         let mut want = vec![f64::NAN; entry.outputs.len()];
-        fb.eval(kind, &x, &p, &v, &mut want);
+        fb.eval(kind, x, p, v, &mut want);
         let s = scale(&want);
         let it = got
             .iter()
             .zip(&want)
             .zip(&err)
-            .map(|((&a, &b), &e)| ((a - b).abs(), ratio(a, b, s, e)));
-        rep.record(it, s, &x, &p);
+            .map(|((&a, &b), &e)| compare_with_bound(a, b, s, e));
+        rep.record(it, s, x, p);
     }
-    rep
+    rep.finish()
 }
 
-/// Central difference of `g` along unit direction `dir` (length matches `base`), step
-/// `h = eps^(1/3) * max(1, |base_j|)` taken per component `j`.
+/// Sample points drawn per requested point, at most, when the model value is not finite at
+/// some of them.
+pub const MAX_DRAW_FACTOR: usize = 10;
+
+/// One drawn sample point and the direction vectors a row draws with it.
+struct Sample {
+    x: Vec<f64>,
+    p: Vec<f64>,
+    /// One vector per length in the `dir_lens` the row asked for, each entry in [-1, 1).
+    dirs: Vec<Vec<f64>>,
+}
+
+/// Whether the model value `f(x, p)` is not finite and both evaluators say so. The fallback
+/// gives a value that is not finite at some element, and the DAG's `F` agrees with the
+/// fallback at every element under the rule of the `F` row ([`compare_with_bound`]): finite
+/// values within its allowance, NaN with NaN, `+inf` with `+inf`, `-inf` with `-inf`.
+///
+/// A point where the DAG and the fallback disagree is not one of these, even when the DAG's
+/// own value is not finite: the `F` row has to compare it and report the mismatch.
+/// Without a built `F` entry there is nothing to compare, and the answer is false.
+fn non_finite_in_both(ir: &IrModel, fb: &Fallback, x: &[f64], p: &[f64]) -> bool {
+    let Some(entry) = ir.entries.get(&EntryKind::F) else {
+        return false;
+    };
+    let mut want = vec![f64::NAN; entry.outputs.len()];
+    fb.eval(&EntryKind::F, x, p, &[], &mut want);
+    if want.iter().all(|y| y.is_finite()) {
+        return false;
+    }
+    let mut got = vec![f64::NAN; entry.outputs.len()];
+    let mut err = vec![f64::NAN; entry.outputs.len()];
+    eval_err(&ir.dag, &entry.outputs, x, p, &[], &mut got, &mut err);
+    let s = scale(&want);
+    got.iter()
+        .zip(&want)
+        .zip(&err)
+        .all(|((&a, &b), &e)| compare_with_bound(a, b, s, e).is_none_or(|(_, ratio)| ratio <= 1.0))
+}
+
+/// Draws sample points until `opt.points` of them are usable, or until
+/// `MAX_DRAW_FACTOR * opt.points` points have been drawn. A point is not usable when the
+/// model value `f(x, p)` is not finite in the fallback and the DAG gives the same value
+/// ([`non_finite_in_both`]): there is no finite derivative to compare with, so the point is
+/// dropped and the next one is drawn in its place. A point where the DAG's `f` is not finite
+/// and the fallback's is, or where the two differ in any other way, is usable, so the `F`
+/// row compares it and fails. Each draw takes `x` and `p` (as [`draw_point`]) and then one
+/// vector of each length in `dir_lens`, in that order, so a seed reproduces the same points
+/// and when every point is usable the draws are the first `opt.points` ones, as before.
+/// Returns the usable points and the number of points drawn. The `F` entry must already be
+/// built (the `F` row builds it first); without it no point can be tested and none is dropped.
+fn usable_points(
+    ir: &IrModel,
+    fb: &Fallback,
+    rng: &mut Rng,
+    opt: &Options,
+    dir_lens: &[usize],
+) -> (Vec<Sample>, usize) {
+    let cap = opt.points.saturating_mul(MAX_DRAW_FACTOR);
+    let mut found = Vec::with_capacity(opt.points);
+    let mut drawn = 0_usize;
+    while found.len() < opt.points && drawn < cap {
+        let (x, p) = draw_point(ir, rng, opt.half_width);
+        let dirs = dir_lens
+            .iter()
+            .map(|&len| (0..len).map(|_| rng.range(-1.0, 1.0)).collect())
+            .collect();
+        drawn += 1;
+        if !non_finite_in_both(ir, fb, &x, &p) {
+            found.push(Sample { x, p, dirs });
+        }
+    }
+    (found, drawn)
+}
+
+/// Step of the central differences of `A` and `f_alpha`: `h = eps^(1/3) * max(1, |base|)`,
+/// with `base` the component that is shifted.
 fn step(base: f64) -> f64 {
     f64::EPSILON.cbrt() * base.abs().max(1.0)
 }
 
-/// One finite-difference row. `skipped` is the number of sample points that were left
-/// out because the model value there is not finite; a row that left out every point
-/// fails, since it checked nothing.
-fn fd_report(
-    label: &str,
-    tol: f64,
-    skipped: usize,
-    rep_pts: impl Iterator<Item = (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, f64)>,
-) -> EntryReport {
-    // Each item: (x, p, exact, fd, extra scale from a differenced lower-order quantity).
+/// Values and running error bounds of the outputs of `kind` at (x, p, v), from
+/// [`eval_err`]; the entry must already be built.
+fn val_err(
+    ir: &IrModel,
+    kind: &EntryKind,
+    x: &[f64],
+    p: &[f64],
+    v: &[f64],
+) -> (Vec<f64>, Vec<f64>) {
+    match ir.entries.get(kind) {
+        Some(e) => {
+            let mut got = vec![f64::NAN; e.outputs.len()];
+            let mut err = vec![f64::NAN; e.outputs.len()];
+            eval_err(&ir.dag, &e.outputs, x, p, v, &mut got, &mut err);
+            (got, err)
+        }
+        None => (Vec::new(), Vec::new()),
+    }
+}
+
+/// A bound that is NaN or infinite says nothing, so it adds nothing (the rule of
+/// [`close_err`]).
+fn finite_or_zero(v: f64) -> f64 {
+    if v.is_finite() { v } else { 0.0 }
+}
+
+/// The central difference `D = (g+ - g-) / (2 h)` of one output, and the bound `E_D` on its
+/// rounding error in the units of `eval_err`: the error is at most `u E_D` for `u = eps / 2`.
+///
+/// `eval_err` gives `E+` and `E-` with `|computed g(+h) - g(+h)| <= u E+` and the same for
+/// `g(-h)` (Higham, *Accuracy and Stability of Numerical Algorithms*, 2nd ed., section 3.3).
+/// The computed difference is `(g+ - g- + d+ - d-) (1 + t1) (1 + t2) / (2 h)` with
+/// `|d+| <= u E+`, `|d-| <= u E-`, and `|t1|, |t2| <= u` for the subtraction and the
+/// division. To first order in `u` the error is therefore at most
+/// `u (E+ + E-) / (2 h) + 2 u |D|`, so
+/// `E_D = (E+ + E- + |g+ - g-|) / (2 h) + |D|`, since `|g+ - g-| / (2 h) = |D|`.
+///
+/// The shifted point `x + h` is itself rounded, which changes the step actually taken by
+/// at most `u |x + h|`: a relative change of about `eps^(2/3) / 2 = 1e-11` in `D`. That is
+/// five orders below `FD_TOL_FIRST`, and `D` is at most about the output scale `s` that the
+/// tolerance multiplies, so this shift error is left to `tol * s` and is not in `E_D`.
+fn central(gp: f64, gm: f64, ep: f64, em: f64, h: f64) -> (f64, f64) {
+    let d = (gp - gm) / (2.0 * h);
+    let e = (ep + em + (gp - gm).abs()) / (2.0 * h) + d.abs();
+    (d, e)
+}
+
+/// The Richardson value of the central difference of every output of `at(s)` (the values
+/// and `eval_err` bounds of the outputs at the point shifted by `s`), the allowance that
+/// goes with it. Rows `B` and `C` take the same allowance: there is no separate share of the
+/// differenced quantity, since the `eval_err` bounds already follow a cancellation between
+/// `A v` and its shifted value (tests `a_model_with_tiny_second_and_third_derivatives_*`).
+///
+/// `D(h) = g' + c2 h^2 + c4 h^4 + ...` has only even powers of `h`, so
+/// `R = (4 D(h/2) - D(h)) / 3 = D(h/2) + (D(h/2) - D(h)) / 3` has no `h^2` term and the
+/// error `-c4 h^4 / 4`. With `c4 = g^(5) / 5!` and the step `h/2` this is the leading term
+/// `-4 g^(5) (h/2)^4 / 5!` of eq. (21) below.
+///
+/// Sources:
+/// - Lecture notes on numerical differentiation, AMSC466, University of Maryland
+///   (www.math.umd.edu/~mariakc/AMSC466/LectureNotes/differentiation.pdf), section 4:
+///   eq. (15) is the central difference `F(h)`, and eq. (21) is
+///   `F(h, 2h) = (4 F(h) - F(2h)) / 3 = F(h) + (F(h) - F(2h)) / 3 = g' - 4 g^(5) h^4 / 5! + O(h^6)`.
+///   Those notes refer to Dahlquist and Bjorck, *Numerical Methods in Scientific Computing*,
+///   vol. I, SIAM 2008, section 3.4.6.
+/// - Wikipedia, "Richardson extrapolation": `A1(h) = (t^k A0(h/t) - A0(h)) / (t^k - 1)`,
+///   which is the formula above for `t = 2`, `k = 2`.
+///
+/// The allowance beyond `tol * s` has two parts for each element:
+/// - `|D(h) - D(h/2)| / 3`, the correction that Richardson applies, which estimates the
+///   truncation error of `D(h/2)`. It is a conservative bound for the error of `R`, which
+///   is smaller by about `h^2`. It lets a model with strong curvature pass, and a wrong
+///   derivative smaller than this term goes unseen.
+/// - `ERR_FACTOR * eps * E_R`, the rounding of `R` in the form `close_err` uses
+///   (`8 eps E = 16 u E`). `4 D(h/2)` is exact, the subtraction and the division by 3 round
+///   once each, so to first order
+///   `E_R = (4 E_D(h/2) + E_D(h) + |4 D(h/2) - D(h)|) / 3 + |R|`, with `E_D` from [`central`].
+fn richardson(at: impl Fn(f64) -> (Vec<f64>, Vec<f64>), h: f64) -> Fd {
+    let (gp1, ep1) = at(h);
+    let (gm1, em1) = at(-h);
+    let (gp2, ep2) = at(0.5 * h);
+    let (gm2, em2) = at(-0.5 * h);
+    let (value, extra) = (0..gp1.len())
+        .map(|i| {
+            let (d1, e1) = central(gp1[i], gm1[i], ep1[i], em1[i], h);
+            let (d2, e2) = central(gp2[i], gm2[i], ep2[i], em2[i], 0.5 * h);
+            let t = 4.0 * d2 - d1;
+            let r = t / 3.0;
+            let e_r = (4.0 * e2 + e1 + t.abs()) / 3.0 + r.abs();
+            let trunc = (d1 - d2).abs() / 3.0;
+            (
+                r,
+                finite_or_zero(trunc) + ERR_FACTOR * f64::EPSILON * finite_or_zero(e_r),
+            )
+        })
+        .unzip();
+    Fd { value, extra }
+}
+
+/// The result of [`richardson`].
+struct Fd {
+    value: Vec<f64>,
+    /// Allowance for each element on top of `tol * s`.
+    extra: Vec<f64>,
+}
+
+/// One sample point of a finite-difference row.
+struct FdPoint {
+    x: Vec<f64>,
+    p: Vec<f64>,
+    /// The values of the DAG entry under test.
+    exact: Vec<f64>,
+    /// The Richardson values and their allowances.
+    fd: Fd,
+}
+
+/// One finite-difference row. `skipped` is the number of drawn sample points that were left
+/// out because the model value there is not finite; a row that compared nothing fails.
+fn fd_report(label: &str, tol: f64, skipped: usize, pts: Vec<FdPoint>) -> EntryReport {
     let mut rep = EntryReport::new(label.to_string());
     rep.skipped_points = skipped;
-    for (x, p, exact, fd, extra) in rep_pts {
-        let s = scale(&exact).max(extra).max(f64::MIN_POSITIVE);
-        let it = exact.iter().zip(&fd).map(|(&a, &b)| {
-            let err = (a - b).abs();
-            let r = if a.is_nan() && b.is_nan() || a == b {
-                0.0
-            } else {
-                err / (tol * s)
-            };
-            (err, r)
-        });
-        rep.record(it, s, &x, &p);
+    for pt in pts {
+        let s = scale(&pt.exact).max(f64::MIN_POSITIVE);
+        let it = pt
+            .exact
+            .iter()
+            .zip(&pt.fd.value)
+            .zip(&pt.fd.extra)
+            .map(|((&a, &b), &extra)| element(a, b, tol * s + extra));
+        rep.record(it, s, &pt.x, &pt.p);
     }
-    if skipped > 0 && rep.points == 0 {
-        rep.pass = false;
-        rep.note = Some(format!(
-            "no usable point: all {skipped} sample points have a non-finite model value"
-        ));
-    }
-    rep
+    rep.finish()
 }
 
 /// DAG output of `kind` at (x, p, v); the entry must already be built.
@@ -511,7 +728,7 @@ pub fn check_model_with(ir: &mut IrModel, fb: &Fallback, opt: &Options) -> Repor
         }
     }
 
-    entries.extend(fd_checks(ir, opt, &mut rng));
+    entries.extend(fd_checks(ir, fb, opt, &mut rng));
     Report {
         entries,
         points: opt.points,
@@ -519,7 +736,7 @@ pub fn check_model_with(ir: &mut IrModel, fb: &Fallback, opt: &Options) -> Repor
     }
 }
 
-fn fd_checks(ir: &mut IrModel, opt: &Options, rng: &mut Rng) -> Vec<EntryReport> {
+fn fd_checks(ir: &mut IrModel, fb: &Fallback, opt: &Options, rng: &mut Rng) -> Vec<EntryReport> {
     let (n, n_p) = (ir.n(), ir.n_p());
     let u1 = EntryKind::Dir(vec![Slot::U]);
     let u2 = EntryKind::Dir(vec![Slot::U, Slot::U]);
@@ -540,107 +757,96 @@ fn fd_checks(ir: &mut IrModel, opt: &Options, rng: &mut Rng) -> Vec<EntryReport>
         }
     }
     let ir: &IrModel = ir;
-    let f_at = |x: &[f64], p: &[f64]| dag(ir, &EntryKind::F, x, p, &[]);
+    let shift = |x: &[f64], d: &[f64], s: f64| -> Vec<f64> {
+        x.iter().zip(d).map(|(a, b)| a + s * b).collect()
+    };
+    let h_dir = f64::EPSILON.cbrt();
     let mut a_pts = Vec::new();
     let mut fa_pts = Vec::new();
     let mut b_pts = Vec::new();
     let mut c_pts = Vec::new();
-    let mut skipped = 0_usize;
-    for _ in 0..opt.points {
-        let (x, p) = draw_point(ir, rng, opt.half_width);
-        let v: Vec<f64> = (0..n).map(|_| rng.range(-1.0, 1.0)).collect();
-        let w: Vec<f64> = (0..n).map(|_| rng.range(-1.0, 1.0)).collect();
-        let z: Vec<f64> = (0..n).map(|_| rng.range(-1.0, 1.0)).collect();
-        // A point where the model itself is not finite has no finite difference to compare
-        // with. It still draws its directions above, so the later points of a seed are the
-        // same ones as before.
-        if f_at(&x, &p).iter().any(|y| !y.is_finite()) {
-            skipped += 1;
-            continue;
-        }
+    let (samples, drawn) = usable_points(ir, fb, rng, opt, &[n, n, n]);
+    let skipped = drawn - samples.len();
+    for smp in &samples {
+        let (x, p) = (&smp.x, &smp.p);
+        let (v, w, z) = (&smp.dirs[0], &smp.dirs[1], &smp.dirs[2]);
         // A: column j by central differences of f.
-        let exact = dag(ir, &EntryKind::JacU, &x, &p, &[]);
-        let mut fd = vec![0.0; n * n];
+        let exact = dag(ir, &EntryKind::JacU, x, p, &[]);
+        let mut fd = Fd {
+            value: vec![0.0; n * n],
+            extra: vec![0.0; n * n],
+        };
         for j in 0..n {
-            let h = step(x[j]);
-            let (mut xp, mut xm) = (x.clone(), x.clone());
-            xp[j] += h;
-            xm[j] -= h;
-            let (fp, fm) = (f_at(&xp, &p), f_at(&xm, &p));
-            for (i, (a, b)) in fp.iter().zip(&fm).enumerate() {
-                fd[i + n * j] = (a - b) / (2.0 * h);
+            let at = |s: f64| {
+                let mut xs = x.clone();
+                xs[j] += s;
+                val_err(ir, &EntryKind::F, &xs, p, &[])
+            };
+            let col = richardson(at, step(x[j]));
+            for (i, (d, e)) in col.value.iter().zip(&col.extra).enumerate() {
+                fd.value[i + n * j] = *d;
+                fd.extra[i + n * j] = *e;
             }
         }
-        a_pts.push((x.clone(), p.clone(), exact, fd, 0.0));
+        a_pts.push(FdPoint {
+            x: x.clone(),
+            p: p.clone(),
+            exact,
+            fd,
+        });
         // f_alpha.
         if n_p > 0 {
-            let exact = dag(ir, &EntryKind::JacP, &x, &p, &[]);
-            let mut fd = vec![0.0; n * n_p];
+            let exact = dag(ir, &EntryKind::JacP, x, p, &[]);
+            let mut fd = Fd {
+                value: vec![0.0; n * n_p],
+                extra: vec![0.0; n * n_p],
+            };
             for j in 0..n_p {
-                let h = step(p[j]);
-                let (mut pp, mut pm) = (p.clone(), p.clone());
-                pp[j] += h;
-                pm[j] -= h;
-                let (fp, fm) = (f_at(&x, &pp), f_at(&x, &pm));
-                for (i, (a, b)) in fp.iter().zip(&fm).enumerate() {
-                    fd[i + n * j] = (a - b) / (2.0 * h);
+                let at = |s: f64| {
+                    let mut ps = p.clone();
+                    ps[j] += s;
+                    val_err(ir, &EntryKind::F, x, &ps, &[])
+                };
+                let col = richardson(at, step(p[j]));
+                for (i, (d, e)) in col.value.iter().zip(&col.extra).enumerate() {
+                    fd.value[i + n * j] = *d;
+                    fd.extra[i + n * j] = *e;
                 }
             }
-            fa_pts.push((x.clone(), p.clone(), exact, fd, 0.0));
+            fa_pts.push(FdPoint {
+                x: x.clone(),
+                p: p.clone(),
+                exact,
+                fd,
+            });
         }
         // B(v, w) by differencing A v = Dir[U](v) along w.
-        let vw: Vec<f64> = v.iter().chain(&w).copied().collect();
-        let exact_b = dag(ir, &u2, &x, &p, &vw);
-        let h = f64::EPSILON.cbrt();
-        let shift = |x: &[f64], d: &[f64], s: f64| -> Vec<f64> {
-            x.iter().zip(d).map(|(a, b)| a + s * b).collect()
-        };
-        let av_p = dag(ir, &u1, &shift(&x, &w, h), &p, &v);
-        let av_m = dag(ir, &u1, &shift(&x, &w, -h), &p, &v);
-        let fd_b: Vec<f64> = av_p
-            .iter()
-            .zip(&av_m)
-            .map(|(a, b)| (a - b) / (2.0 * h))
-            .collect();
-        // Rounding in A v is about 2e-11 of its size after division by h, so s keeps a
-        // 1e-6 share of |A v|; this matters only where B is much smaller than A.
-        let extra_b = scale(&av_p).max(scale(&av_m)) * 1e-6;
-        b_pts.push((x.clone(), p.clone(), exact_b, fd_b, extra_b));
+        let vw: Vec<f64> = v.iter().chain(w).copied().collect();
+        let exact_b = dag(ir, &u2, x, p, &vw);
+        let fd_b = richardson(|s| val_err(ir, &u1, &shift(x, w, s), p, v), h_dir);
+        b_pts.push(FdPoint {
+            x: x.clone(),
+            p: p.clone(),
+            exact: exact_b,
+            fd: fd_b,
+        });
         // C(v, w, z) by differencing B(v, w) along z.
-        let vwz: Vec<f64> = v.iter().chain(&w).chain(&z).copied().collect();
-        let exact_c = dag(ir, &u3, &x, &p, &vwz);
-        let bp = dag(ir, &u2, &shift(&x, &z, h), &p, &vw);
-        let bm = dag(ir, &u2, &shift(&x, &z, -h), &p, &vw);
-        let fd_c: Vec<f64> = bp
-            .iter()
-            .zip(&bm)
-            .map(|(a, b)| (a - b) / (2.0 * h))
-            .collect();
-        let extra_c = scale(&bp).max(scale(&bm)) * 1e-6;
-        c_pts.push((x.clone(), p.clone(), exact_c, fd_c, extra_c));
+        let vwz: Vec<f64> = v.iter().chain(w).chain(z).copied().collect();
+        let exact_c = dag(ir, &u3, x, p, &vwz);
+        let fd_c = richardson(|s| val_err(ir, &u2, &shift(x, z, s), p, &vw), h_dir);
+        c_pts.push(FdPoint {
+            x: x.clone(),
+            p: p.clone(),
+            exact: exact_c,
+            fd: fd_c,
+        });
     }
-    let mut out = vec![fd_report(
-        "A (FD)",
-        FD_TOL_FIRST,
-        skipped,
-        a_pts.into_iter(),
-    )];
+    let mut out = vec![fd_report("A (FD)", FD_TOL_FIRST, skipped, a_pts)];
     if n_p > 0 {
-        let rows = fa_pts.into_iter();
-        out.push(fd_report("f_alpha (FD)", FD_TOL_FIRST, skipped, rows));
+        out.push(fd_report("f_alpha (FD)", FD_TOL_FIRST, skipped, fa_pts));
     }
-    out.push(fd_report(
-        "B (FD)",
-        FD_TOL_HIGHER,
-        skipped,
-        b_pts.into_iter(),
-    ));
-    out.push(fd_report(
-        "C (FD)",
-        FD_TOL_HIGHER,
-        skipped,
-        c_pts.into_iter(),
-    ));
+    out.push(fd_report("B (FD)", FD_TOL_HIGHER, skipped, b_pts));
+    out.push(fd_report("C (FD)", FD_TOL_HIGHER, skipped, c_pts));
     out
 }
 

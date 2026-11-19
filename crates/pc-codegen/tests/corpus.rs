@@ -203,9 +203,18 @@ fn aot_vs_jit(
     Ok((max_ulp, values))
 }
 
+/// The node limit a model is run with. `AtLoweredSize` calls `IrModel::set_node_limit` with the
+/// size of the lowered DAG, so every entry that needs a new node is too large and its rows are
+/// SKIP rows. No model in the corpus is large enough to reach the real limit.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Limit {
+    Default,
+    AtLoweredSize,
+}
+
 fn run_model(name: &str, path: &Path, have_gcc: bool) -> ModelResult {
     let start = Instant::now();
-    let status = run_model_inner(name, path, have_gcc);
+    let status = run_model_inner(name, path, have_gcc, Limit::Default);
     ModelResult {
         name: name.to_string(),
         status,
@@ -213,7 +222,7 @@ fn run_model(name: &str, path: &Path, have_gcc: bool) -> ModelResult {
     }
 }
 
-fn run_model_inner(name: &str, path: &Path, have_gcc: bool) -> Status {
+fn run_model_inner(name: &str, path: &Path, have_gcc: bool, limit: Limit) -> Status {
     let loaded = match load_path(path) {
         Ok(l) => l,
         Err(e) => return Status::LoadFailed(e),
@@ -240,6 +249,9 @@ fn run_model_inner(name: &str, path: &Path, have_gcc: bool) -> Status {
             return Status::Refused(kinds, format!("{} error(s), first: {first}", errors.len()));
         }
     };
+    if limit == Limit::AtLoweredSize {
+        ir.set_node_limit(ir.dag.len());
+    }
     let fb = Fallback::new(&loaded.expanded, &loaded.info, &ir);
     let opt = Options::new(POINTS, SEED);
     let (n, n_p, smooth) = (ir.n(), ir.n_p(), ir.smooth);
@@ -482,4 +494,27 @@ fn section_3_and_4_checks_pass_on_the_model_set() {
         problems.join("\n")
     );
     assert_eq!(accepted, EXPECTED_ACCEPTED, "accepted model count");
+}
+
+/// The corpus run meets SKIP rows, and the same counting code handles them: with the node
+/// limit set to the size of the lowered DAG, `hopf.ode` keeps its `F` rows and every
+/// derivative row is skipped, in `check_model` and in the JIT rows alike.
+#[test]
+fn a_lowered_node_limit_gives_skip_rows_in_the_corpus_run() {
+    let path = dir("../pc-ir/tests/models/hopf.ode");
+    let st = match run_model_inner("models/hopf.ode", &path, false, Limit::AtLoweredSize) {
+        Status::Accepted(st) => st,
+        Status::Refused(kinds, msg) => panic!("refused: {kinds:?} {msg}"),
+        Status::LoadFailed(msg) => panic!("load failed: {msg}"),
+    };
+    assert!(st.failures.is_empty(), "{}", st.failures.join("\n"));
+    assert!(st.skipped > 0, "no SKIP row");
+    assert!(st.counted > 0, "the F rows are still counted");
+    // Without the limit the same model skips nothing.
+    let st = match run_model_inner("models/hopf.ode", &path, false, Limit::Default) {
+        Status::Accepted(st) => st,
+        _ => panic!("hopf.ode is not accepted"),
+    };
+    assert_eq!(st.skipped, 0);
+    assert!(st.failures.is_empty(), "{}", st.failures.join("\n"));
 }
