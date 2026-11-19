@@ -19,6 +19,15 @@ pub struct FixIt {
     pub replacement: String,
 }
 
+/// One quick fix offered for a diagnostic: a title for a menu and one edit
+/// in the file of the diagnostic. The first quick fix of a diagnostic is the
+/// preferred one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuickFix {
+    pub title: String,
+    pub edit: FixIt,
+}
+
 /// A stable diagnostic code, shown as `ODE` plus four digits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Code(pub u16);
@@ -48,6 +57,9 @@ pub struct Diagnostic {
     pub span: Span,
     pub message: String,
     pub fix_it: Option<FixIt>,
+    /// Titled fixes for an editor menu, for a diagnostic with more than one
+    /// way out. When it is not empty, `fix_it` equals the edit of the first.
+    pub fixes: Vec<QuickFix>,
     pub notes: Vec<(Span, String)>,
 }
 
@@ -60,6 +72,7 @@ impl Diagnostic {
             span,
             message,
             fix_it: None,
+            fixes: Vec::new(),
             notes: Vec::new(),
         }
     }
@@ -340,6 +353,17 @@ pub const CODES: &[(Code, Severity, &str)] = &[
         Code(74),
         Severity::Warning,
         "`meth` option that makes XPPAUT 8.0 iterate an ODE file as a map",
+    ),
+    // Lexer, backslash rules (`lexer.rs`).
+    (
+        Code(75),
+        Severity::Warning,
+        "text after a backslash is dropped, as in XPPAUT",
+    ),
+    (
+        Code(76),
+        Severity::Warning,
+        "a backslash in a comment joins the next line to the comment, as in XPPAUT",
     ),
 ];
 

@@ -1,0 +1,9 @@
+# backslash-comment-inc: Does a comment backslash on line 1 of an included file swallow line 2 (XPPAUT 8.2.2)?
+# xpp: v@3=2
+# pc: ODE0076
+# ruling: only line 1 of the main file is exempt. In the included file the comment swallows `x'=1`, so `x'=2` below is the only equation; PhaseCont matches and warns (language.md, Lines).
+#include inc/bs-comment.ode
+x'=2
+x(0)=0
+aux v=x
+@ total=1,dt=0.5,meth=euler

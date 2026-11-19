@@ -1,0 +1,9 @@
+# backslash-text-crlf: Does a CRLF file behave like an LF file for text after a backslash (XPPAUT 8.2.2)?
+# xpp: v@3=3
+# pc: ODE0075
+# ruling: the carriage return ends the dropped text like a line feed; the next line is joined (language.md, Lines).
+x'=1+\5
+2
+x(0)=0
+aux v=x
+@ total=1,dt=0.5,meth=euler

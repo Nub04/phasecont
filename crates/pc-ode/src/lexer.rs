@@ -9,15 +9,23 @@
 //! Only ASCII letters, digits and `_` can appear in names and numbers, so
 //! every other character outside the punctuation list is a stray character.
 
-use crate::diag::{Code, Diagnostic, Severity};
+use crate::diag::{Code, Diagnostic, FixIt, QuickFix, Severity};
+use crate::parser::expr::clip;
 use crate::span::{FileId, Span};
 
 /// A number that is not well formed, such as `1e2.5`, `0x10` or `1_000`.
 pub const MALFORMED_NUMBER: Code = Code(1);
 /// A number literal that is too large for an `f64`, such as `1e999`.
 pub const NUMBER_TOO_LARGE: Code = Code(2);
-/// A character that cannot start any token, or a misplaced backslash.
+/// A character that cannot start any token.
 pub const STRAY_CHARACTER: Code = Code(3);
+/// A backslash followed by text on the same line. XPPAUT drops the text and
+/// joins the next line; so does PhaseCont, with this warning.
+pub const BACKSLASH_TEXT: Code = Code(75);
+/// A backslash inside a `#` comment. XPPAUT drops the rest of the comment
+/// line and joins the next line to it, so that line is part of the comment;
+/// so does PhaseCont, with this warning.
+pub const BACKSLASH_COMMENT: Code = Code(76);
 
 /// What a token is. Text is not stored, except for names: the spelling comes
 /// from the token's span.
@@ -89,20 +97,35 @@ pub struct Token {
     pub preceded_by_blank: bool,
 }
 
-/// Splits `text` into tokens. The last token is always [`TokenKind::Eof`].
+/// Splits the text of a main file into tokens. The last token is always
+/// [`TokenKind::Eof`].
 ///
 /// Two-character operators (`**`, `<=`, `>=`, `==`, `..`) are formed only
-/// when no blank sits between the characters.
+/// when no blank sits between the characters. A comment on the first line
+/// keeps a backslash as text (see [`lex_file`]).
 pub fn lex(file: FileId, text: &str) -> (Vec<Token>, Vec<Diagnostic>) {
+    lex_file(file, text, true)
+}
+
+/// [`lex`] for the text of a main file (`main` true) or an included file
+/// (`main` false). XPPAUT 8.2.2 does not apply the backslash rule to the
+/// first line of the main file, so a `#` comment there keeps a backslash
+/// and does not join the next line; an included file has no such line
+/// (probes `backslash-comment-line1` and `backslash-comment-inc-line1`).
+pub(crate) fn lex_file(file: FileId, text: &str, main: bool) -> (Vec<Token>, Vec<Diagnostic>) {
     let mut lexer = Lexer {
         file,
         text,
         bytes: text.as_bytes(),
         pos: 0,
         blank: false,
+        first_line_end: 0,
         tokens: Vec::new(),
         diags: Vec::new(),
     };
+    if main {
+        lexer.first_line_end = lexer.line_end(0);
+    }
     lexer.run();
     (lexer.tokens, lexer.diags)
 }
@@ -114,6 +137,9 @@ struct Lexer<'a> {
     pos: usize,
     /// Blanks have been seen since the last token.
     blank: bool,
+    /// The end of the first line when it is the first line of a main file,
+    /// else 0. A comment that starts before it keeps its backslashes.
+    first_line_end: usize,
     tokens: Vec<Token>,
     diags: Vec<Diagnostic>,
 }
@@ -197,6 +223,28 @@ impl Lexer<'_> {
             span,
             message,
             fix_it: None,
+            fixes: Vec::new(),
+            notes: Vec::new(),
+        });
+    }
+
+    /// A warning with quick fixes, the first of them preferred.
+    fn warn(
+        &mut self,
+        code: Code,
+        start: usize,
+        end: usize,
+        message: String,
+        fixes: Vec<QuickFix>,
+    ) {
+        let span = self.span(start, end);
+        self.diags.push(Diagnostic {
+            code,
+            severity: Severity::Warning,
+            span,
+            message,
+            fix_it: fixes.first().map(|f| f.edit.clone()),
+            fixes,
             notes: Vec::new(),
         });
     }
@@ -223,23 +271,103 @@ impl Lexer<'_> {
         }
     }
 
+    /// The end of the line that holds `from`: the offset of the first `\n` or
+    /// `\r` at or after it, or the end of the text.
+    fn line_end(&self, from: usize) -> usize {
+        match self.bytes[from.min(self.bytes.len())..]
+            .iter()
+            .position(|&b| b == b'\n' || b == b'\r')
+        {
+            Some(i) => from + i,
+            None => self.bytes.len(),
+        }
+    }
+
+    /// The length of the line terminator at `at`: 2 for `\r\n`, 1 for `\n` or
+    /// a `\r` that no `\n` follows, 0 at the end of the text.
+    fn terminator_len(&self, at: usize) -> usize {
+        match (self.bytes.get(at), self.bytes.get(at + 1)) {
+            (Some(b'\r'), Some(b'\n')) => 2,
+            (Some(b'\r' | b'\n'), _) => 1,
+            _ => 0,
+        }
+    }
+
+    /// True when a line that starts at `start` holds text that matters to
+    /// the model: something other than blanks or a `#` comment.
+    fn line_has_content(&self, start: usize, end: usize) -> bool {
+        let line = self.text[start..end].trim_matches([' ', '\t']);
+        !line.is_empty() && !line.starts_with('#')
+    }
+
     /// A backslash joins lines when only spaces and tabs sit between it and
     /// the line terminator or the end of the text (XPPAUT 8.2.2 measured:
-    /// probes backslash-blanks and backslash-eof). Anywhere else it is a
-    /// stray character: XPPAUT drops other text after a backslash, and
-    /// PhaseCont refuses that instead of dropping it.
+    /// probes backslash-blanks and backslash-eof). With other text after it
+    /// on the line, XPPAUT drops that text and the terminator and joins the
+    /// next line (probes backslash-text, backslash-crlf-text,
+    /// backslash-eof-text); PhaseCont does the same and gives
+    /// [`BACKSLASH_TEXT`] so that the drop is not silent.
     fn backslash(&mut self) {
-        let mut gap = 1;
-        while matches!(self.peek(gap), Some(b' ' | b'\t')) {
-            gap += 1;
+        let start = self.pos;
+        let eol = self.line_end(start + 1);
+        let term = self.terminator_len(eol);
+        if self.bytes[start + 1..eol]
+            .iter()
+            .all(|b| matches!(b, b' ' | b'\t'))
+        {
+            self.skip_blank(eol + term - start);
+            return;
         }
-        match (self.peek(gap), self.peek(gap + 1)) {
-            (Some(b'\n'), _) => self.skip_blank(gap + 1),
-            (Some(b'\r'), Some(b'\n')) => self.skip_blank(gap + 2),
-            (Some(b'\r'), _) => self.skip_blank(gap + 1),
-            (None, _) => self.skip_blank(gap),
-            _ => self.stray(),
-        }
+        self.drop_text(start, eol, term);
+    }
+
+    /// The backslash at `start` with text after it, up to `eol`, which a
+    /// terminator of `term` bytes follows. Drops the text and the
+    /// terminator, warns, and goes on with the next line.
+    fn drop_text(&mut self, start: usize, eol: usize, term: usize) {
+        let after = &self.text[start + 1..eol];
+        let dropped = after.trim_matches([' ', '\t']);
+        let what = if dropped.starts_with('#') {
+            format!("the comment `{}`", clip(dropped))
+        } else {
+            format!("the text `{}`", clip(dropped))
+        };
+        let joins = term > 0 && eol + term < self.bytes.len();
+        let message = if joins {
+            format!(
+                "XPPAUT drops {what} after this backslash and joins the next line, \
+                 so the model does not contain it"
+            )
+        } else {
+            format!("XPPAUT drops {what} after this backslash, so the model does not contain it")
+        };
+        let delete = QuickFix {
+            title: "Delete the text after the backslash".to_string(),
+            edit: FixIt {
+                span: self.span(start + 1, eol),
+                replacement: String::new(),
+            },
+        };
+        // A backslash moved behind a `#` would sit in a comment and swallow
+        // the next line (BACKSLASH_COMMENT), so text that holds a `#` only
+        // gets the delete.
+        let fixes = if dropped.contains('#') {
+            vec![delete]
+        } else {
+            let mut moved = after.trim_end_matches([' ', '\t']).to_string();
+            moved.push_str(" \\");
+            let mv = QuickFix {
+                title: "Move the backslash to the end of the line".to_string(),
+                edit: FixIt {
+                    span: self.span(start, eol),
+                    replacement: moved,
+                },
+            };
+            vec![mv, delete]
+        };
+        self.warn(BACKSLASH_TEXT, start, eol, message, fixes);
+        self.pos = eol + term;
+        self.blank = true;
     }
 
     /// One unknown character, reported and kept as an `Unknown` token.
@@ -247,26 +375,111 @@ impl Lexer<'_> {
         let start = self.pos;
         let ch = self.text[start..].chars().next().unwrap_or('\0');
         let end = start + ch.len_utf8().max(1);
-        let message = if ch == '\\' {
-            "a backslash must be the last character on a line to continue it".to_string()
-        } else {
-            format!("unexpected character {ch:?}")
-        };
-        self.error(STRAY_CHARACTER, start, end, message);
+        self.error(
+            STRAY_CHARACTER,
+            start,
+            end,
+            format!("unexpected character {ch:?}"),
+        );
         self.pos = end;
         self.push(TokenKind::Unknown, start, end);
     }
 
     /// `#` to the end of the line, not including the line terminator.
+    ///
+    /// A backslash anywhere in a comment ends the comment text there. As in
+    /// XPPAUT 8.2.2 (probes backslash-comment, backslash-comment-mid,
+    /// backslash-comment-chain), the rest of the line, its terminator and
+    /// the whole next line are then part of the comment and give no tokens,
+    /// and a backslash in that next line does the same to the line after it.
+    /// The first line of a main file is not treated so.
     fn comment(&mut self) {
         let start = self.pos;
-        let rest = &self.bytes[start..];
-        let end = match rest.iter().position(|&b| b == b'\n' || b == b'\r') {
-            Some(i) => start + i,
-            None => self.bytes.len(),
+        let eol = self.line_end(start);
+        let backslash = if start < self.first_line_end {
+            None
+        } else {
+            self.bytes[start..eol].iter().position(|&b| b == b'\\')
         };
-        self.pos = end;
-        self.push(TokenKind::Comment, start, end);
+        let Some(i) = backslash else {
+            self.pos = eol;
+            self.push(TokenKind::Comment, start, eol);
+            return;
+        };
+        let first = start + i;
+        self.push(TokenKind::Comment, start, first);
+        self.pos = first;
+        self.join_comment_lines(first, eol);
+    }
+
+    /// The comment line that has its backslash at `bs` and ends at `eol`
+    /// swallows the next line, and the one after it while those have a
+    /// backslash too. Leaves `pos` at the terminator of the last line
+    /// swallowed, or at the end of the text.
+    fn join_comment_lines(&mut self, mut bs: usize, mut eol: usize) {
+        loop {
+            let term = self.terminator_len(eol);
+            let next = eol + term;
+            if term == 0 || next >= self.bytes.len() {
+                // Nothing follows, so nothing is swallowed.
+                self.pos = eol;
+                return;
+            }
+            let next_end = self.line_end(next);
+            if self.line_has_content(next, next_end) {
+                self.warn_swallowed(bs, eol, next, next_end);
+            }
+            eol = next_end;
+            match self.bytes[next..next_end].iter().position(|&b| b == b'\\') {
+                Some(i) => bs = next + i,
+                None => {
+                    self.pos = eol;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// [`BACKSLASH_COMMENT`] for the backslash at `bs` in a comment line that
+    /// ends at `eol`, with the line `next..next_end` swallowed.
+    fn warn_swallowed(&mut self, bs: usize, eol: usize, next: usize, next_end: usize) {
+        let line = self.text[next..next_end].trim_matches([' ', '\t']);
+        let at_end = self.text[bs + 1..eol].trim_matches([' ', '\t']).is_empty();
+        let message = format!(
+            "XPPAUT reads the next line, `{}`, as part of this comment, \
+             so the model does not contain it",
+            clip(line)
+        );
+        let remove = QuickFix {
+            title: if at_end {
+                "Remove the backslash at the end of the comment"
+            } else {
+                "Remove the backslash from the comment"
+            }
+            .to_string(),
+            edit: FixIt {
+                span: self.span(bs, bs + 1),
+                replacement: String::new(),
+            },
+        };
+        // The backslash goes, the rest of the line and its terminator stay,
+        // and the next line gets a `#`.
+        let mut commented = self.text[bs + 1..next].to_string();
+        commented.push_str("# ");
+        let comment_out = QuickFix {
+            title: "Comment out the next line".to_string(),
+            edit: FixIt {
+                span: self.span(bs, next),
+                replacement: commented,
+            },
+        };
+        self.warn(
+            BACKSLASH_COMMENT,
+            bs,
+            next_end,
+            message,
+            vec![remove, comment_out],
+        );
     }
 
     fn is_digit_at(&self, index: usize) -> bool {
@@ -736,14 +949,8 @@ mod tests {
     }
 
     #[test]
-    fn comment_ignores_a_trailing_backslash_and_lone_cr() {
+    fn comment_stops_at_a_lone_cr() {
         use TokenKind::*;
-        let text = "# a \\\nb";
-        let (tokens, diags) = lex(F, text);
-        assert!(diags.is_empty());
-        assert_eq!(kinds_of(&tokens), vec![Comment, Newline, name("b")]);
-        assert_eq!(slice(text, &tokens[0]), "# a \\");
-        // A comment stops at a lone CR, which then ends the line.
         let text = "# a\rb\nc";
         let (tokens, _) = lex(F, text);
         assert_eq!(slice(text, &tokens[0]), "# a");
@@ -751,6 +958,337 @@ mod tests {
             kinds_of(&tokens),
             vec![Comment, Newline, name("b"), Newline, name("c")]
         );
+    }
+
+    /// Applies one fix to `text`.
+    fn apply(text: &str, fix: &QuickFix) -> String {
+        let s = &fix.edit.span;
+        format!(
+            "{}{}{}",
+            &text[..s.start],
+            fix.edit.replacement,
+            &text[s.end..]
+        )
+    }
+
+    /// The titles of the fixes of a diagnostic, preferred first.
+    fn titles(d: &Diagnostic) -> Vec<&str> {
+        d.fixes.iter().map(|f| f.title.as_str()).collect()
+    }
+
+    #[test]
+    fn text_after_a_backslash_is_dropped_with_a_warning() {
+        // XPPAUT 8.2.2 drops the text after a backslash and the line end and
+        // joins the next line (probes backslash-text, backslash-text-crlf).
+        for (text, want) in [
+            ("1+\\ x\n2", vec![n(1.0), TokenKind::Plus, n(2.0)]),
+            ("1+\\5\n2", vec![n(1.0), TokenKind::Plus, n(2.0)]),
+            ("1+\\ x\r\n2", vec![n(1.0), TokenKind::Plus, n(2.0)]),
+            ("1+\\ x\r2", vec![n(1.0), TokenKind::Plus, n(2.0)]),
+            ("1+\\ # c\n2", vec![n(1.0), TokenKind::Plus, n(2.0)]),
+            // Text and a second backslash: the first one decides.
+            ("1+\\ \\\n2", vec![n(1.0), TokenKind::Plus, n(2.0)]),
+            // The next line has its own dropped text: two warnings.
+            (
+                "1+\\ a\n2\\ b\n3",
+                vec![n(1.0), TokenKind::Plus, n(2.0), n(3.0)],
+            ),
+            // The end of the text after the dropped text.
+            ("1+\\ x", vec![n(1.0), TokenKind::Plus]),
+            ("1+\\ x\n", vec![n(1.0), TokenKind::Plus]),
+        ] {
+            let (tokens, diags) = lex(F, text);
+            assert_eq!(kinds_of(&tokens), want, "{text:?}");
+            assert!(!diags.is_empty(), "{text:?}");
+            assert!(
+                diags
+                    .iter()
+                    .all(|d| d.code == BACKSLASH_TEXT && d.severity == Severity::Warning),
+                "{text:?}: {diags:#?}"
+            );
+            // The text and the line end are gone, the next token follows a blank.
+            if let Some(next) = tokens
+                .get(2)
+                .filter(|t| matches!(t.kind, TokenKind::Num(_)))
+            {
+                assert!(next.preceded_by_blank, "{text:?}");
+            }
+        }
+        // Warnings: one per backslash.
+        assert_eq!(lex(F, "1+\\ a\n2\\ b\n3").1.len(), 2);
+    }
+
+    #[test]
+    fn the_text_warning_quotes_the_text_and_says_what_is_lost() {
+        let text = "x'=1+\\ 2*y\nz";
+        let (_, diags) = lex(F, text);
+        assert_eq!(diags.len(), 1);
+        let d = &diags[0];
+        assert_eq!(&text[d.span.start..d.span.end], "\\ 2*y");
+        assert!(d.message.contains("`2*y`"), "{}", d.message);
+        assert!(d.message.contains("next line"), "{}", d.message);
+        assert!(d.message.contains("does not contain"), "{}", d.message);
+        // A long text is cut.
+        let long = format!("1+\\ {}\n2", "abcdefghij".repeat(20));
+        let (_, diags) = lex(F, &long);
+        assert!(diags[0].message.len() < 200, "{}", diags[0].message);
+        assert!(diags[0].message.contains("..."), "{}", diags[0].message);
+        // A dropped comment is named as a comment.
+        let (_, diags) = lex(F, "1+\\ # note\n2");
+        assert!(
+            diags[0].message.contains("comment `# note`"),
+            "{}",
+            diags[0].message
+        );
+        // At the end of the text no line is joined, and the message does not say so.
+        let (_, diags) = lex(F, "1+\\ x");
+        assert!(
+            !diags[0].message.contains("next line"),
+            "{}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn the_text_warning_has_two_fixes() {
+        let text = "x'=a+\\ b\ny=2\n";
+        let (_, diags) = lex(F, text);
+        let d = &diags[0];
+        assert_eq!(
+            titles(d),
+            vec![
+                "Move the backslash to the end of the line",
+                "Delete the text after the backslash"
+            ]
+        );
+        // The preferred fix is the one in `fix_it`.
+        assert_eq!(d.fix_it.as_ref(), Some(&d.fixes[0].edit));
+        // Moving the backslash keeps the text and joins the lines, as the
+        // author most likely meant, and leaves no warning.
+        let moved = apply(text, &d.fixes[0]);
+        assert_eq!(moved, "x'=a+ b \\\ny=2\n");
+        let (tokens, diags) = lex(F, &moved);
+        assert!(diags.is_empty(), "{diags:#?}");
+        assert_eq!(
+            kinds_of(&tokens),
+            vec![
+                name("x"),
+                TokenKind::Quote,
+                TokenKind::Eq,
+                name("a"),
+                TokenKind::Plus,
+                name("b"),
+                name("y"),
+                TokenKind::Eq,
+                n(2.0),
+                TokenKind::Newline
+            ]
+        );
+        // Deleting the text keeps what XPPAUT reads, now without the warning.
+        let deleted = apply(text, &d.fixes[1]);
+        assert_eq!(deleted, "x'=a+\\\ny=2\n");
+        let (tokens, diags) = lex(F, &deleted);
+        assert!(diags.is_empty(), "{diags:#?}");
+        let (want, _) = lex(F, text);
+        assert_eq!(kinds_of(&tokens), kinds_of(&want));
+    }
+
+    #[test]
+    fn a_dropped_comment_only_has_the_delete_fix() {
+        // A backslash moved behind a `#` would sit in a comment.
+        for text in ["1+\\ # note\n2", "1+\\ x # note\n2"] {
+            let (_, diags) = lex(F, text);
+            assert_eq!(
+                titles(&diags[0]),
+                vec!["Delete the text after the backslash"],
+                "{text:?}"
+            );
+            let fixed = apply(text, &diags[0].fixes[0]);
+            let (_, again) = lex(F, &fixed);
+            assert!(again.is_empty(), "{fixed:?}: {again:#?}");
+        }
+    }
+
+    #[test]
+    fn the_move_fix_keeps_the_crlf_and_the_blanks() {
+        for text in ["a+\\  b  \r\nc\r\n", "a+\\b\rc\r"] {
+            let (_, diags) = lex(F, text);
+            let moved = apply(text, &diags[0].fixes[0]);
+            let (_, again) = lex(F, &moved);
+            assert!(again.is_empty(), "{moved:?}: {again:#?}");
+            assert!(moved.contains("b \\"), "{moved:?}");
+        }
+    }
+
+    #[test]
+    fn a_backslash_in_a_comment_joins_the_next_line_to_it() {
+        use TokenKind::*;
+        // Line 2, so that the exemption of the first line does not apply.
+        let text = "x\n# a \\\nb=1\nc";
+        let (tokens, diags) = lex(F, text);
+        assert_eq!(
+            kinds_of(&tokens),
+            vec![name("x"), Newline, Comment, Newline, name("c")]
+        );
+        let comment = tokens.iter().find(|t| t.kind == Comment).unwrap();
+        // The comment text stops before the backslash.
+        assert_eq!(slice(text, comment), "# a ");
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        let d = &diags[0];
+        assert_eq!(d.code, BACKSLASH_COMMENT);
+        assert_eq!(d.severity, Severity::Warning);
+        // The warning starts at the backslash and covers the swallowed line.
+        assert_eq!(&text[d.span.start..d.span.end], "\\\nb=1");
+        assert!(d.message.contains("`b=1`"), "{}", d.message);
+        assert!(d.message.contains("does not contain"), "{}", d.message);
+    }
+
+    #[test]
+    fn a_backslash_in_the_middle_of_a_comment_drops_the_rest_of_it() {
+        let text = "x\n# a \\ b c\nd=1\ne";
+        let (tokens, diags) = lex(F, text);
+        let comment = tokens
+            .iter()
+            .find(|t| t.kind == TokenKind::Comment)
+            .unwrap();
+        assert_eq!(slice(text, comment), "# a ");
+        assert_eq!(diags.len(), 1);
+        assert_eq!(
+            kinds_of(&tokens),
+            vec![
+                name("x"),
+                TokenKind::Newline,
+                TokenKind::Comment,
+                TokenKind::Newline,
+                name("e")
+            ]
+        );
+        assert_eq!(
+            titles(&diags[0]),
+            vec![
+                "Remove the backslash from the comment",
+                "Comment out the next line"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_comment_warning_has_two_fixes() {
+        let text = "x\n# a \\\nb=1\nc\n";
+        let (_, diags) = lex(F, text);
+        let d = &diags[0];
+        assert_eq!(
+            titles(d),
+            vec![
+                "Remove the backslash at the end of the comment",
+                "Comment out the next line"
+            ]
+        );
+        assert_eq!(d.fix_it.as_ref(), Some(&d.fixes[0].edit));
+        // Removing the backslash keeps the next line as a statement.
+        let removed = apply(text, &d.fixes[0]);
+        assert_eq!(removed, "x\n# a \nb=1\nc\n");
+        let (tokens, again) = lex(F, &removed);
+        assert!(again.is_empty(), "{again:#?}");
+        assert!(tokens.iter().any(|t| t.kind == name("b")));
+        // Commenting the line out says in the text what XPPAUT reads: no
+        // warning, and the same tokens as before the fix.
+        let commented = apply(text, &d.fixes[1]);
+        assert_eq!(commented, "x\n# a \n# b=1\nc\n");
+        let (tokens, again) = lex(F, &commented);
+        assert!(again.is_empty(), "{again:#?}");
+        let (before, _) = lex(F, text);
+        let names = |ts: &[Token]| -> Vec<TokenKind> {
+            ts.iter()
+                .map(|t| t.kind.clone())
+                .filter(|k| !matches!(k, TokenKind::Comment | TokenKind::Newline))
+                .collect()
+        };
+        assert_eq!(names(&tokens), names(&before));
+        // With text after the backslash, that text stays in the comment.
+        let text = "x\n# a \\ b\nc=1\n";
+        let (_, diags) = lex(F, text);
+        let commented = apply(text, &diags[0].fixes[1]);
+        assert_eq!(commented, "x\n# a  b\n# c=1\n");
+    }
+
+    #[test]
+    fn comment_backslashes_chain_and_skip_blank_and_comment_lines() {
+        use TokenKind::*;
+        // The swallowed line has a backslash of its own, so it takes the
+        // line after it too.
+        let text = "x\n# a \\\nb \\\nc\nd";
+        let (tokens, diags) = lex(F, text);
+        assert_eq!(
+            kinds_of(&tokens),
+            vec![name("x"), Newline, Comment, Newline, name("d")]
+        );
+        // Both swallowed lines have content, so there are two warnings.
+        assert_eq!(diags.len(), 2, "{diags:#?}");
+        assert!(diags.iter().all(|d| d.code == BACKSLASH_COMMENT));
+        // A blank or comment-only swallowed line loses nothing: no warning.
+        for text in [
+            "x\n# a \\\n\nd",
+            "x\n# a \\\n# more\nd",
+            "x\n# a \\\n   \nd",
+        ] {
+            let (tokens, diags) = lex(F, text);
+            assert!(diags.is_empty(), "{text:?}: {diags:#?}");
+            assert_eq!(
+                kinds_of(&tokens),
+                vec![name("x"), Newline, Comment, Newline, name("d")],
+                "{text:?}"
+            );
+        }
+        // At the end of the text nothing is swallowed.
+        for text in ["x\n# a \\", "x\n# a \\\n", "x\n# a \\ b"] {
+            let (tokens, diags) = lex(F, text);
+            assert!(diags.is_empty(), "{text:?}: {diags:#?}");
+            assert_eq!(kinds_of(&tokens)[..3], [name("x"), Newline, Comment]);
+        }
+    }
+
+    #[test]
+    fn comment_backslash_with_crlf_and_lone_cr() {
+        use TokenKind::*;
+        for text in ["x\r\n# a \\\r\nb=1\r\nc", "x\r# a \\\rb=1\rc"] {
+            let (tokens, diags) = lex(F, text);
+            assert_eq!(
+                kinds_of(&tokens),
+                vec![name("x"), Newline, Comment, Newline, name("c")],
+                "{text:?}"
+            );
+            assert_eq!(diags.len(), 1, "{text:?}");
+            let fixed = apply(text, &diags[0].fixes[1]);
+            let (_, again) = lex(F, &fixed);
+            assert!(again.is_empty(), "{fixed:?}: {again:#?}");
+        }
+    }
+
+    #[test]
+    fn the_first_line_of_a_main_file_keeps_a_backslash_in_a_comment() {
+        use TokenKind::*;
+        // XPPAUT 8.2.2 does not join after a comment on the first line of the
+        // main file (probe backslash-comment-line1), but does in an included
+        // file (probe backslash-comment-inc-line1).
+        let text = "# a \\\nb=1\n";
+        let (tokens, diags) = lex_file(F, text, true);
+        assert!(diags.is_empty(), "{diags:#?}");
+        assert_eq!(slice(text, &tokens[0]), "# a \\");
+        assert_eq!(
+            kinds_of(&tokens),
+            vec![Comment, Newline, name("b"), Eq, n(1.0), Newline]
+        );
+        let (tokens, diags) = lex_file(F, text, false);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        assert_eq!(slice(text, &tokens[0]), "# a ");
+        assert_eq!(kinds_of(&tokens), vec![Comment, Newline]);
+        // A trailing comment on the first line is exempt as well.
+        let (_, diags) = lex_file(F, "a=1 # c \\\nb=2\n", true);
+        assert!(diags.is_empty(), "{diags:#?}");
+        // The second line is not.
+        let (_, diags) = lex_file(F, "\n# c \\\nb=2\n", true);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
     }
 
     #[test]
@@ -874,10 +1412,6 @@ mod tests {
         for (text, bad) in [
             ("$", "$"),
             ("a ? b", "?"),
-            ("a\\ x\nb", "\\"),
-            ("a\\5\nb", "\\"),
-            ("a\\ # c\nb", "\\"),
-            ("a\\ \\\nb", "\\"),
             (".", "."),
             ("é", "é"),
             ("x = Ω", "Ω"),

@@ -5,6 +5,7 @@ use super::*;
 use crate::ast::Stmt;
 use crate::check::{DUPLICATE_NAME, check};
 use crate::diag::{CODES, Severity};
+use crate::parser::parse;
 use crate::parser::stmt::{TRAILING_COMMENT, UNRECOGNIZED_STATEMENT};
 
 /// Parses `top` as `main.ode` and resolves its includes from `files`.

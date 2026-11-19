@@ -1,0 +1,10 @@
+# backslash-trailing-comment-par: What does a trailing # comment ending in a backslash do on a par line (XPPAUT 8.2.2)?
+# xpp: v@3=2
+# pc: ODE0076
+# ruling: XPPAUT joins the next line, `x'=a`, into the par line, so it is not an equation and `x'=2` is the only one. PhaseCont ends the par statement at the `#`, swallows `x'=a` into the comment and warns; the model is the same, the path differs (language.md, Lines).
+par a=1 # note \
+x'=a
+x'=2
+x(0)=0
+aux v=x
+@ total=1,dt=0.5,meth=euler

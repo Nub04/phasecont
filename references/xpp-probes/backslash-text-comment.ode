@@ -1,0 +1,9 @@
+# backslash-text-comment: What does XPPAUT 8.2.2 do with a comment after a backslash?
+# xpp: v@3=3
+# pc: ODE0075
+# ruling: the comment is dropped with the rest of the line and the next line is joined, as for any other text; PhaseCont warns and calls the text a comment (language.md, Lines).
+x'=1+\ # five
+2
+x(0)=0
+aux v=x
+@ total=1,dt=0.5,meth=euler

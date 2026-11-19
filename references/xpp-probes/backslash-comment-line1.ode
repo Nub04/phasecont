@@ -1,0 +1,8 @@
+# backslash-comment-line1: Does a backslash at the end of line 1 of the main file swallow line 2 (XPPAUT 8.2.2)? \
+x'=1
+x(0)=0
+aux v=x
+@ total=1,dt=0.5,meth=euler
+# xpp: v@3=1
+# pc: ok
+# ruling: XPPAUT does not apply the backslash rule to line 1 of the main file, so `x'=1` is read; PhaseCont matches. An included file gets no such exemption (backslash-comment-inc).

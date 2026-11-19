@@ -256,6 +256,38 @@ classdef ModelTest < matlab.unittest.TestCase
             testCase.verifyEqual(string(m.Diagnostics(1).severity), "warning");
         end
 
+        function backslashWarningsAreIssued(testCase)
+            % XPPAUT 8.2.2 drops text after a backslash and joins the next
+            % line, and a backslash in a comment swallows the next line
+            % (probes backslash-text and backslash-comment). The model loads
+            % as XPPAUT reads it and each case raises parseWarning.
+            fText = testCase.write("bs_text.ode", "par a=1" + newline + ...
+                "x'=-a*x+\5" + newline + "1" + newline + ...
+                "init x=1" + newline + "done" + newline);
+            fComment = testCase.write("bs_comment.ode", "par a=1" + newline + ...
+                "x'=-a*x" + newline + "# a note \" + newline + "x'=2" + ...
+                newline + "init x=1" + newline + "done" + newline);
+            for f = [fText fComment]
+                testCase.verifyWarning(@() phasecont.Model(f), ...
+                    "phasecont:model:parseWarning");
+            end
+            w = warning("off", "phasecont:model:parseWarning");
+            restore = onCleanup(@() warning(w));
+            mText = phasecont.Model(fText);
+            mComment = phasecont.Model(fComment);
+            clear restore
+            testCase.verifyEqual(string({mText.Diagnostics.code}), "ODE0075");
+            testCase.verifySubstring(string(mText.Diagnostics(1).message), ...
+                "drops the text `5`");
+            testCase.verifyEqual(string({mComment.Diagnostics.code}), "ODE0076");
+            testCase.verifySubstring(string(mComment.Diagnostics(1).message), ...
+                "`x'=2`");
+            % The text after the backslash is gone, and so is the line after
+            % the comment: x' = -a*x + 1 and x' = -a*x.
+            testCase.verifyEqual(mText.rhs(2, struct(a = 1)), -1, AbsTol = 4*eps);
+            testCase.verifyEqual(mComment.rhs(2, struct(a = 1)), -2, AbsTol = 4*eps);
+        end
+
         function nonAutonomousModel(testCase, Evaluator)
             f = testCase.write("na.ode", "par a=1" + newline + "init x=1" + ...
                 newline + "x'=-a*x+sin(t)" + newline + "done" + newline);

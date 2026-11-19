@@ -66,11 +66,25 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `comment-par` | Is a trailing comment after a par list accepted? | `par a=2 # c` | 2 | no diagnostic; computes 2 | matches |
 | `const-e-name` | Is e an ordinary name (par e=2)? | `par e=2`, `aux v=e` | 2 | no diagnostic; computes 2 | matches |
 | `const-pi` | Is pi a constant? | `pi` | 3.1415927 | no diagnostic; computes 3.1415927 | matches |
+| `backslash-active-comment` | Does a backslash at the end of an active comment line swallow the next line? | `"an active comment \` then `x'=1`, `x'=2` | v@3=2 (`x'=1` is lost) | ODE0038 warning only; the next line joins the kept text silently (no ODE0076) | PhaseCont choice |
 | `backslash-blanks` | Does a backslash followed by two blanks continue the line (XPPAUT 8.2.2)? | `x'=1+\` and two blanks, then `2` | v@3=3 | no diagnostic; computes v@3=3 | matches |
+| `backslash-comment` | Does a backslash at the end of a `#` comment line swallow the next line? | `# a note ... \` then `x'=1`, `x'=2` | v@3=2 (`x'=1` is lost) | ODE0076 warning naming `x'=1`; computes v@3=2 | matches |
+| `backslash-comment-blank` | Does a comment backslash followed by a blank line leave the line after the blank intact? | `# a note \`, a blank line, `x'=1` | v@3=1 | no diagnostic; computes v@3=1 | matches |
+| `backslash-comment-chain` | Does a swallowed comment line that ends in a backslash swallow the line after it? | `# first \`, `# second \`, `x'=1`, `x'=2` | v@3=2 | one ODE0076 warning; computes v@3=2 | matches |
+| `backslash-comment-crlf` | Does a CRLF file behave like an LF file for a comment that ends in a backslash? | the `backslash-comment` file with CRLF line ends | v@3=2 | ODE0076 warning; computes v@3=2 | matches |
+| `backslash-comment-inc` | Does a comment backslash on line 1 of an included file swallow line 2? | `#include inc/bs-comment.ode`, then `x'=2` | v@3=2 (the include's `x'=1` is lost) | ODE0076 warning in the included file; computes v@3=2 | matches |
+| `backslash-comment-line1` | Does a backslash at the end of line 1 of the main file swallow line 2? | line 1 ends in `\`, line 2 is `x'=1` | v@3=1 (line 1 is exempt) | no diagnostic; computes v@3=1 | matches |
+| `backslash-comment-mid` | Does a backslash in the middle of a `#` comment drop the rest of it and swallow the next line? | `# a path like a\b in a comment`, then `x'=1`, `x'=2` | v@3=2 | ODE0076 warning; computes v@3=2 | matches |
 | `backslash-eof` | Is a backslash at the very end of the file, with no newline, accepted (XPPAUT 8.2.2)? | last line `@ total=1,dt=0.5,meth=euler\` | v@3=1 | no diagnostic; computes v@3=1 | matches |
+| `backslash-eof-text` | Is text after a backslash on the last line, with no newline, dropped? | last line `@ total=1,dt=0.5,meth=euler\ junk` | v@3=1 | ODE0075 warning; computes v@3=1 | matches |
+| `backslash-join-digits` | Does a continuation join `1\` and `2` into 12 or into `1 2`? | `x'=1\` then `2` | v@3=12 (no blank at the join) | ODE0012 error (blank between words) | PhaseCont choice |
 | `backslash-mixed-blanks` | Does a backslash followed by a space, a tab and a space continue the line (XPPAUT 8.2.2)? | `x'=1+\` and ` \t `, then `2` | v@3=3 | no diagnostic; computes v@3=3 | matches |
-| `backslash-text` | What does XPPAUT 8.2.2 do with text after a backslash (`\5`)? | `x'=1+\5` then `2` | v@3=3 (continues, drops the `5`) | ODE0003 and ODE0019 errors | PhaseCont choice |
 | `backslash-tab` | Does a backslash followed by a tab continue the line (XPPAUT 8.2.2)? | `x'=1+\` and a tab, then `2` | v@3=3 | no diagnostic; computes v@3=3 | matches |
+| `backslash-text` | What does XPPAUT 8.2.2 do with text after a backslash (`\5`)? | `x'=1+\5` then `2` | v@3=3 (continues, drops the `5`) | ODE0075 warning quoting `5`; computes v@3=3 | matches |
+| `backslash-text-comment` | What does XPPAUT 8.2.2 do with a comment after a backslash? | `x'=1+\ # five` then `2` | v@3=3 | ODE0075 warning that calls the text a comment; computes v@3=3 | matches |
+| `backslash-text-crlf` | Does a CRLF file behave like an LF file for text after a backslash? | the `backslash-text` file with CRLF line ends | v@3=3 | ODE0075 warning; computes v@3=3 | matches |
+| `backslash-trailing-comment-at` | What does a trailing `#` comment ending in a backslash do on an `@` line? | `@ total=1 # note \` then `,dt=0.5,meth=euler` | error | ODE0076 warning; the `@` line reads `@ total=1` | PhaseCont choice |
+| `backslash-trailing-comment-par` | What does a trailing `#` comment ending in a backslash do on a par line? | `par a=1 # note \` then `x'=a`, `x'=2` | v@3=2 (`x'=a` joins the par line) | ODE0076 warning; computes v@3=2 | matches |
 | `cont-aux` | Does a backslash continue an aux line? | `aux v=1+\` then `2` | 3 | no diagnostic; computes 3 | matches |
 | `cont-ode` | Does a backslash continue an ODE line (not line 1)? | `x'=0+\` then `0` | 13 | no diagnostic; computes 13 | matches |
 | `cont-par` | Does a backslash continue a par line? | `par a=1,\` then `b=2` | va=1 vb=2 | no diagnostic; computes va=1 vb=2 | matches |

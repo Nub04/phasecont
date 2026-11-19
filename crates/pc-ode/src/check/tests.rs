@@ -999,6 +999,7 @@ fn delay_with_one_argument() {
                 message: "`delay` is read by `phasecont.continuation` (equilibria, Hopf curves and periodic orbits from a Hopf point) and by `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap`, `dde-zh`, `dde-hh` and `dde-cycle`; simulation and the ODE-only entries do not support it"
                     .to_string(),
                 fix_it: None,
+                fixes: Vec::new(),
                 notes: Vec::new(),
             },
             Diagnostic {
@@ -1007,6 +1008,7 @@ fn delay_with_one_argument() {
                 span: nth(text, "delay(x)", 0),
                 message: "`delay` takes 2 arguments, not 1".to_string(),
                 fix_it: None,
+                fixes: Vec::new(),
                 notes: Vec::new(),
             },
         ]

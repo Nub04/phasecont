@@ -16,3 +16,6 @@ scripts/* text eol=lf
 *.mat binary
 *.fig binary
 *.png binary
+
+# These probes test a CRLF line ending, so git must store them as written.
+references/xpp-probes/*-crlf.ode -text

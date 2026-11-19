@@ -145,6 +145,7 @@ pub(crate) fn parse_expr(c: &mut ExprCursor) -> Expr {
             span,
             message: "expected an expression, found end of the text".to_string(),
             fix_it: None,
+            fixes: Vec::new(),
             notes: Vec::new(),
         });
         return Expr::Error { span };
@@ -403,6 +404,7 @@ impl Parser<'_, '_> {
             span,
             message,
             fix_it,
+            fixes: Vec::new(),
             notes: Vec::new(),
         });
     }

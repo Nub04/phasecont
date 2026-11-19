@@ -1,7 +1,8 @@
 use super::*;
 use crate::ast::{BinaryOp as B, DUMMY_SPAN, Expr, IndexOp};
 use crate::diag::CODES;
-use crate::lexer::STRAY_CHARACTER;
+use crate::diag::Severity;
+use crate::lexer::{BACKSLASH_COMMENT, BACKSLASH_TEXT, STRAY_CHARACTER};
 
 const F: FileId = FileId(0);
 
@@ -688,8 +689,77 @@ fn a_backslash_then_blanks_gives_the_same_statements_as_a_plain_backslash() {
         assert!(diags.is_empty(), "{text:?}: {diags:#?}");
         assert_eq!(model.strip_spans().statements, plain, "{text:?}");
     }
-    // Other text after the backslash is still an error.
-    assert_eq!(codes("x'=1+\\ 2\n"), vec![STRAY_CHARACTER]);
+    // Other text after the backslash is dropped with a warning, and the next
+    // line is joined, as in XPPAUT 8.2.2 (probe backslash-text).
+    assert_eq!(codes("x'=1+\\ 2\n3\n"), vec![BACKSLASH_TEXT]);
+    assert_eq!(stmts("x'=1+\\ 2\n3\n"), stmts("x'=1+3\n"));
+}
+
+#[test]
+fn a_backslash_warning_is_not_an_error() {
+    for text in ["x'=1+\\ 2\n3\n", "x'=1\n# c \\\ny'=2\n"] {
+        let diags = parse_all(text).1;
+        assert_eq!(diags.len(), 1, "{text:?}");
+        assert_eq!(diags[0].severity, Severity::Warning, "{text:?}");
+    }
+}
+
+#[test]
+fn a_backslash_warning_survives_inside_raw_text() {
+    // XPPAUT drops the text in every kind of line, so the warning stays
+    // where the lexer's other diagnostics are dropped: an `@` value, an
+    // unsupported statement, a `set` value and an active comment.
+    for text in [
+        "@ total=10,\\ dt=1\nmaxstor=5\n",
+        "bndry x\\ y\nz\n",
+        "x'=1\nset a {x=1,\\ y=2\nz=3}\n",
+        "\"note\\ here\nx'=1\n",
+        "x'=1\n# c \\\n@ total=5\n",
+    ] {
+        let codes = codes(text);
+        assert!(
+            codes.contains(&BACKSLASH_TEXT) || codes.contains(&BACKSLASH_COMMENT),
+            "{text:?}: {codes:?}"
+        );
+    }
+}
+
+#[test]
+fn a_backslash_warning_is_dropped_where_nothing_is_read() {
+    // After `done` and in an old-style file the text is not read at all.
+    for text in ["x'=1\ndone\ny'=2 \\ zz\n3\n", "x'=1\ndone\n# c \\\ny'=2\n"] {
+        assert!(codes(text).is_empty(), "{text:?}");
+    }
+    assert_eq!(codes("1 2 3\nfoo \\ bar\nbaz\n").len(), 1);
+}
+
+#[test]
+fn a_comment_that_swallows_a_statement_gives_one_warning() {
+    let (model, diags) = parse_all("x'=1\n# c \\\ny'=2\nz'=3\n");
+    assert_eq!(diags.len(), 1, "{diags:#?}");
+    assert_eq!(diags[0].code, BACKSLASH_COMMENT);
+    // `y'=2` is not in the model.
+    let names: Vec<String> = model
+        .statements
+        .iter()
+        .filter_map(|s| match &s.kind {
+            StmtKind::Ode { name, .. } => Some(name.key.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names, vec!["x", "z"]);
+}
+
+#[test]
+fn the_first_line_of_a_main_file_is_exempt_but_an_included_file_is_not() {
+    let text = "# note \\\ny'=2\n";
+    let (model, diags) = parse_file(text, F, true);
+    assert!(diags.is_empty(), "{diags:#?}");
+    assert_eq!(model.statements.len(), 2);
+    let (model, diags) = parse_file(text, F, false);
+    assert_eq!(diags.len(), 1, "{diags:#?}");
+    assert_eq!(diags[0].code, BACKSLASH_COMMENT);
+    assert_eq!(model.statements.len(), 1);
 }
 
 #[test]

@@ -289,6 +289,44 @@ fn rhs_matches_the_engine_on_both_evaluators() {
     assert_eq!(rc, 2);
 }
 
+// XPPAUT 8.2.2 drops text after a backslash and joins the next line, and a backslash in a
+// comment swallows the next line (probes `backslash-text`, `backslash-comment`). The model
+// loads that way and each case comes back as a warning, which the MATLAB front end raises as
+// `phasecont:model:parseWarning` like any other warning.
+#[test]
+fn backslash_warnings_come_back_with_a_model_that_loads_as_xppaut_reads_it() {
+    for (text, code, line, col, quote, want) in [
+        ("x'=-x+\\5\n1\ndone\n", "ODE0075", 1, 7, "`5`", -1.0),
+        (
+            "x'=-x\n# a note \\\nx'=2\ndone\n",
+            "ODE0076",
+            2,
+            10,
+            "`x'=2`",
+            -2.0,
+        ),
+    ] {
+        let (rc, id, diag) = parse(text);
+        assert_eq!(rc, 0, "{}", last_error());
+        let m = Mod(id);
+        let d = diag.unwrap();
+        let list = d["diagnostics"].as_array().unwrap();
+        assert_eq!(list.len(), 1, "{text:?}: {d}");
+        assert_eq!(list[0]["code"], code);
+        assert_eq!(list[0]["severity"], "warning");
+        assert_eq!(
+            (list[0]["line"].as_u64(), list[0]["col"].as_u64()),
+            (Some(line), Some(col))
+        );
+        assert!(list[0]["message"].as_str().unwrap().contains(quote), "{d}");
+        assert_eq!(d["summary"]["errors"], 0);
+        assert_eq!(compile(&m, None), 0);
+        let mut out = [0.0];
+        assert_eq!(rhs(&m, &[2.0], &[], &mut out), 0, "{}", last_error());
+        assert_eq!(out, [want], "{text:?}");
+    }
+}
+
 #[test]
 fn rhs_reports_a_non_finite_output() {
     let m = model("x'=1/x\ndone\n");
