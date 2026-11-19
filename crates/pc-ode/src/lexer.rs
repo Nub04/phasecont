@@ -442,37 +442,63 @@ impl Lexer<'_> {
         }
     }
 
+    /// The lines a comment line that ends at `eol` swallows, as (start, end)
+    /// offsets in order: the next line, and the one after it while a
+    /// swallowed line holds a backslash. Stops where the text ends.
+    fn swallowed_lines(&self, mut eol: usize) -> Vec<(usize, usize)> {
+        let mut lines = Vec::new();
+        loop {
+            let next = eol + self.terminator_len(eol);
+            if next == eol || next >= self.bytes.len() {
+                return lines;
+            }
+            let end = self.line_end(next);
+            lines.push((next, end));
+            if !self.bytes[next..end].contains(&b'\\') {
+                return lines;
+            }
+            eol = end;
+        }
+    }
+
     /// [`BACKSLASH_COMMENT`] for the backslash at `bs` in a comment line that
     /// ends at `eol`, with the line `next..next_end` swallowed.
     fn warn_swallowed(&mut self, bs: usize, eol: usize, next: usize, next_end: usize) {
         let line = self.text[next..next_end].trim_matches([' ', '\t']);
-        let at_end = self.text[bs + 1..eol].trim_matches([' ', '\t']).is_empty();
         let message = format!(
             "XPPAUT reads the next line, `{}`, as part of this comment, \
              so the model does not contain it",
             clip(line)
         );
+        // Every backslash of the line goes: one left behind would swallow
+        // the next line just the same.
+        let last = bs + self.text[bs..eol].rfind('\\').unwrap_or(0);
+        let several = last > bs;
+        let at_end = !several && self.text[bs + 1..eol].trim_matches([' ', '\t']).is_empty();
         let remove = QuickFix {
-            title: if at_end {
+            title: if several {
+                "Remove the backslashes from the comment"
+            } else if at_end {
                 "Remove the backslash at the end of the comment"
             } else {
                 "Remove the backslash from the comment"
             }
             .to_string(),
             edit: FixIt {
-                span: self.span(bs, bs + 1),
-                replacement: String::new(),
+                span: self.span(bs, last + 1),
+                replacement: self.text[bs..=last].replace('\\', ""),
             },
         };
-        // The backslash goes, the rest of the line and its terminator stay,
-        // and the next line gets a `#`.
-        let mut commented = self.text[bs + 1..next].to_string();
-        commented.push_str("# ");
+        let (span_end, replacement, count) = self.comment_out_swallowed(bs, eol);
         let comment_out = QuickFix {
-            title: "Comment out the next line".to_string(),
+            title: if count == 1 {
+                "Comment out the next line".to_string()
+            } else {
+                format!("Comment out the next {count} lines")
+            },
             edit: FixIt {
-                span: self.span(bs, next),
-                replacement: commented,
+                span: self.span(bs, span_end),
+                replacement,
             },
         };
         self.warn(
@@ -482,6 +508,39 @@ impl Lexer<'_> {
             message,
             vec![remove, comment_out],
         );
+    }
+
+    /// The edit that keeps what XPPAUT reads and says it in the text: it
+    /// replaces the text from the backslash at `bs` in the comment line that
+    /// ends at `eol` through the last swallowed line. Gives the end of the
+    /// replaced span, the replacement and the number of lines swallowed.
+    ///
+    /// The comment line and each swallowed line lose their backslashes. A
+    /// swallowed line gets a `# ` unless it is blank or a comment already.
+    /// The last swallowed line has no backslash unless the text ends in it,
+    /// so it stays out of the span and only its `# ` is inserted.
+    fn comment_out_swallowed(&self, bs: usize, eol: usize) -> (usize, String, usize) {
+        let lines = self.swallowed_lines(eol);
+        let mut replacement = self.text[bs + 1..eol].replace('\\', "");
+        let mut prev = eol;
+        let mut span_end = eol;
+        for (i, &(start, end)) in lines.iter().enumerate() {
+            // The terminator that ends the previous line, as written.
+            replacement.push_str(&self.text[prev..start]);
+            let line = &self.text[start..end];
+            let trimmed = line.trim_matches([' ', '\t']);
+            if !(trimmed.is_empty() || trimmed.starts_with('#')) {
+                replacement.push_str("# ");
+            }
+            if i + 1 == lines.len() && !line.contains('\\') {
+                span_end = start;
+            } else {
+                replacement.push_str(&line.replace('\\', ""));
+                span_end = end;
+            }
+            prev = end;
+        }
+        (span_end, replacement, lines.len())
     }
 
     fn is_digit_at(&self, index: usize) -> bool {
@@ -1286,6 +1345,179 @@ mod tests {
             let (_, again) = lex(F, &fixed);
             assert!(again.is_empty(), "{fixed:?}: {again:#?}");
         }
+    }
+
+    /// What the parser gets from `text`: its tokens apart from comments, line
+    /// ends and the final `Eof`.
+    fn meaning(text: &str) -> Vec<TokenKind> {
+        let (tokens, _) = lex(F, text);
+        tokens
+            .iter()
+            .map(|t| t.kind.clone())
+            .filter(|k| !matches!(k, TokenKind::Comment | TokenKind::Newline | TokenKind::Eof))
+            .collect()
+    }
+
+    fn warnings(text: &str) -> usize {
+        lex(F, text).1.len()
+    }
+
+    #[test]
+    fn one_comment_out_covers_every_line_the_comment_swallows() {
+        // `b` and `c` are both part of the comment for XPPAUT: `b` follows the
+        // backslash, and `b` has a backslash of its own.
+        let text = "x\n# a \\\nb \\\nc\nd\n";
+        let (_, diags) = lex(F, text);
+        assert_eq!(diags.len(), 2, "{diags:#?}");
+        assert_eq!(
+            titles(&diags[0]),
+            vec![
+                "Remove the backslash at the end of the comment",
+                "Comment out the next 2 lines"
+            ]
+        );
+        let commented = apply(text, &diags[0].fixes[1]);
+        assert_eq!(commented, "x\n# a \n# b \n# c\nd\n");
+        assert_eq!(warnings(&commented), 0, "{commented:?}");
+        assert_eq!(meaning(&commented), meaning(text));
+        assert_eq!(meaning(text), vec![name("x"), name("d")]);
+        // The second warning is about `c` alone.
+        assert_eq!(
+            titles(&diags[1]),
+            vec![
+                "Remove the backslash at the end of the comment",
+                "Comment out the next line"
+            ]
+        );
+        let commented = apply(text, &diags[1].fixes[1]);
+        assert_eq!(commented, "x\n# a \\\nb \n# c\nd\n");
+    }
+
+    #[test]
+    fn each_fix_of_a_chain_ends_warning_free_or_keeps_the_meaning() {
+        // (warnings left, same meaning as before the fix) for every fix of
+        // every warning of the chain `# a \`, `b \`, `c`.
+        let text = "x\n# a \\\nb \\\nc\nd\n";
+        let (_, diags) = lex(F, text);
+        let before = (warnings(text), meaning(text));
+        assert_eq!(before.0, 2);
+        let mut got = Vec::new();
+        for d in &diags {
+            for fix in &d.fixes {
+                let fixed = apply(text, fix);
+                got.push((warnings(&fixed), meaning(&fixed) == before.1));
+            }
+        }
+        assert_eq!(
+            got,
+            vec![
+                // Remove the backslash of the comment: `b \` and `c` join into
+                // one live statement. No warning, and the meaning changes
+                // because the model now has `b c`.
+                (0, false),
+                // Comment out `b` and `c`: no warning, same meaning.
+                (0, true),
+                // Remove the backslash of `b`, which is itself swallowed: the
+                // first warning stays and `c` becomes live. Fewer warnings and
+                // a different meaning, which fits neither rule (owner question
+                // in the fix report).
+                (1, false),
+                // Comment out `c`: one warning fewer, same meaning.
+                (1, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_comment_out_of_a_chain_drops_the_backslashes_after_the_first() {
+        // Backslashes in the middle of the comment lines go too, so that a
+        // commented line does not swallow the next one again.
+        let text = "x\n# a \\ b\nc \\ d\ne\nf\n";
+        let (_, diags) = lex(F, text);
+        assert_eq!(diags.len(), 2, "{diags:#?}");
+        assert_eq!(titles(&diags[0])[1], "Comment out the next 2 lines");
+        let commented = apply(text, &diags[0].fixes[1]);
+        assert_eq!(commented, "x\n# a  b\n# c  d\n# e\nf\n");
+        assert_eq!(warnings(&commented), 0, "{commented:?}");
+        assert_eq!(meaning(&commented), meaning(text));
+        assert_eq!(meaning(text), vec![name("x"), name("f")]);
+    }
+
+    #[test]
+    fn a_second_backslash_in_the_comment_line_goes_with_the_first() {
+        let text = "x\n# a \\ b \\\nc\nd\n";
+        let (_, diags) = lex(F, text);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        assert_eq!(
+            titles(&diags[0]),
+            vec![
+                "Remove the backslashes from the comment",
+                "Comment out the next line"
+            ]
+        );
+        let removed = apply(text, &diags[0].fixes[0]);
+        assert_eq!(removed, "x\n# a  b \nc\nd\n");
+        assert_eq!(warnings(&removed), 0, "{removed:?}");
+        let commented = apply(text, &diags[0].fixes[1]);
+        assert_eq!(commented, "x\n# a  b \n# c\nd\n");
+        assert_eq!(warnings(&commented), 0, "{commented:?}");
+        assert_eq!(meaning(&commented), meaning(text));
+    }
+
+    #[test]
+    fn the_chain_comment_out_keeps_each_line_end() {
+        for (text, fixed) in [
+            (
+                "x\r\n# a \\\r\nb \\\r\nc\r\nd\r\n",
+                "x\r\n# a \r\n# b \r\n# c\r\nd\r\n",
+            ),
+            ("x\r# a \\\rb \\\rc\rd\r", "x\r# a \r# b \r# c\rd\r"),
+        ] {
+            let (_, diags) = lex(F, text);
+            assert_eq!(diags.len(), 2, "{text:?}: {diags:#?}");
+            let commented = apply(text, &diags[0].fixes[1]);
+            assert_eq!(commented, fixed);
+            assert_eq!(warnings(&commented), 0, "{commented:?}");
+            assert_eq!(meaning(&commented), meaning(text), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn the_chain_comment_out_leaves_blank_and_comment_lines_alone() {
+        // `b \` is swallowed and takes the blank line after it. The blank line
+        // gets no `#`, and `c` stays live.
+        let text = "x\n# a \\\nb \\\n\nc\n";
+        let (_, diags) = lex(F, text);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        assert_eq!(titles(&diags[0])[1], "Comment out the next 2 lines");
+        let commented = apply(text, &diags[0].fixes[1]);
+        assert_eq!(commented, "x\n# a \n# b \n\nc\n");
+        assert_eq!(warnings(&commented), 0, "{commented:?}");
+        assert_eq!(meaning(&commented), meaning(text));
+        assert_eq!(meaning(text), vec![name("x"), name("c")]);
+        // A comment-only line in the chain keeps its `#`, loses its backslash
+        // and passes the chain on to `c`.
+        let text = "x\n# a \\\n# b \\\nc\nd\n";
+        let (_, diags) = lex(F, text);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        let commented = apply(text, &diags[0].fixes[1]);
+        assert_eq!(commented, "x\n# a \\\n# b \n# c\nd\n");
+        assert_eq!(warnings(&commented), 0, "{commented:?}");
+        assert_eq!(meaning(&commented), meaning(text));
+    }
+
+    #[test]
+    fn a_chain_that_runs_into_the_end_of_the_text_is_commented_out_to_its_end() {
+        // The last line has a backslash of its own and nothing after it, so
+        // it is part of the edit and loses the backslash.
+        let text = "x\n# a \\\nb \\";
+        let (_, diags) = lex(F, text);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        assert_eq!(titles(&diags[0])[1], "Comment out the next line");
+        let commented = apply(text, &diags[0].fixes[1]);
+        assert_eq!(commented, "x\n# a \n# b ");
+        assert_eq!(warnings(&commented), 0, "{commented:?}");
+        assert_eq!(meaning(&commented), meaning(text));
     }
 
     #[test]

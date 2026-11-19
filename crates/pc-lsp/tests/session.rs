@@ -307,9 +307,9 @@ fn a_fix_it_comes_back_as_a_quick_fix() {
     c.finish();
 }
 
-/// The code actions the server offers for the diagnostic with `code` in
-/// `text`, as (title, isPreferred, edit text) in the order sent.
-fn actions_for(code: &str, text: &str) -> Vec<(String, Option<bool>, String)> {
+/// The code actions the server offers for the first diagnostic with `code`
+/// in `text`, as the JSON sent, in order.
+fn action_values(code: &str, text: &str) -> Vec<Value> {
     let mut c = Client::plain();
     c.open(URI, 1, text);
     let p = c.diagnostics(URI);
@@ -328,9 +328,15 @@ fn actions_for(code: &str, text: &str) -> Vec<(String, Option<bool>, String)> {
             "context": {"diagnostics": [d]}
         }),
     );
-    let got = actions
-        .as_array()
-        .unwrap()
+    let got = actions.as_array().unwrap().clone();
+    c.finish();
+    got
+}
+
+/// The code actions the server offers for the diagnostic with `code` in
+/// `text`, as (title, isPreferred, edit text) in the order sent.
+fn actions_for(code: &str, text: &str) -> Vec<(String, Option<bool>, String)> {
+    action_values(code, text)
         .iter()
         .map(|a| {
             (
@@ -342,9 +348,7 @@ fn actions_for(code: &str, text: &str) -> Vec<(String, Option<bool>, String)> {
                     .to_string(),
             )
         })
-        .collect();
-    c.finish();
-    got
+        .collect()
 }
 
 #[test]
@@ -384,6 +388,37 @@ fn a_comment_that_ends_in_a_backslash_offers_two_quick_fixes() {
                 "\n# ".to_string()
             ),
         ]
+    );
+}
+
+#[test]
+fn a_comment_chain_offers_one_action_per_fix_and_the_comment_out_spans_the_lines() {
+    // `b \` is swallowed by the comment and swallows `x'=-a*x` in turn.
+    let text = "par a=1\n# a note \\\nb \\\nx'=-a*x\ninit x=1\ndone\n";
+    let actions = action_values("ODE0076", text);
+    let got: Vec<_> = actions
+        .iter()
+        .map(|a| (a["title"].as_str().unwrap(), a["isPreferred"].as_bool()))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("Remove the backslash at the end of the comment", Some(true)),
+            ("Comment out the next 2 lines", Some(false)),
+        ]
+    );
+    let edit = |i: usize| &actions[i]["edit"]["changes"][URI][0];
+    assert_eq!(edit(0)["newText"], "");
+    assert_eq!(
+        edit(0)["range"],
+        json!({"start": {"line": 1, "character": 9}, "end": {"line": 1, "character": 10}})
+    );
+    // The edit runs from the backslash on line 1 to the start of the last
+    // swallowed line, line 3, which only gets a `# `.
+    assert_eq!(edit(1)["newText"], "\n# b \n# ");
+    assert_eq!(
+        edit(1)["range"],
+        json!({"start": {"line": 1, "character": 9}, "end": {"line": 3, "character": 0}})
     );
 }
 
