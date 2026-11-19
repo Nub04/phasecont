@@ -1,0 +1,10 @@
+# kw-options-full: Does an options line that names a missing file load (XPPAUT 8.2.2)?
+# xpp: 5
+# pc: ODE0034
+# ruling: XPPAUT prints Loading new options file:<none.opt> and goes on (run.sh does not check the message). The file is read after the defaults are set, so it changes nothing in a headless run.
+x'=0
+x(0)=3
+par a=5
+aux v=a
+options none.opt
+@ total=0,dt=1

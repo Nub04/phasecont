@@ -17,7 +17,7 @@ use crate::ast::{
     Stmt, StmtKind, Unsupported, Value,
 };
 use crate::diag::{Code, Diagnostic, FixIt};
-use crate::lexer::{Token, TokenKind, lex};
+use crate::lexer::{BACKSLASH_COMMENT, BACKSLASH_TEXT, Token, TokenKind, lex_file};
 use crate::options::is_known_option;
 use crate::parser::expr::{UNSUPPORTED_INDEX, clip};
 use crate::parser::{ExprCursor, parse_expr, parse_index, parse_name};
@@ -171,10 +171,22 @@ fn keyword_of(key: &str) -> Option<Keyword> {
 ///
 /// Lexer diagnostics inside text kept raw (an `@` or `set` value, an active
 /// comment, an unsupported statement) or after `done` are dropped, since
-/// that text is not read as tokens. An old-style file gives one error and an
-/// empty model.
+/// that text is not read as tokens. The two backslash warnings
+/// ([`BACKSLASH_TEXT`], [`BACKSLASH_COMMENT`]) are the exception: they stay
+/// inside raw text, because XPPAUT drops the text there too, and go only
+/// after `done` and in an old-style file, where nothing is read. An
+/// old-style file gives one error and an empty model.
+///
+/// The text is taken as a main file, so a comment on its first line keeps a
+/// backslash as text (see [`crate::lexer::lex_file`]).
 pub fn parse(src: &str, file: FileId) -> (Model, Vec<Diagnostic>) {
-    let (tokens, lex_diags) = lex(file, src);
+    parse_file(src, file, true)
+}
+
+/// [`parse`] for the text of a main file (`main` true) or of an included
+/// file (`main` false).
+pub(crate) fn parse_file(src: &str, file: FileId, main: bool) -> (Model, Vec<Diagnostic>) {
+    let (tokens, lex_diags) = lex_file(file, src, main);
     let mut p = StmtParser {
         file,
         text: src,
@@ -182,12 +194,21 @@ pub fn parse(src: &str, file: FileId) -> (Model, Vec<Diagnostic>) {
         pos: 0,
         diags: Vec::new(),
         raw: Vec::new(),
+        dead: Vec::new(),
     };
     let model = p.run();
     let raw = merge_ranges(std::mem::take(&mut p.raw));
+    let dead = merge_ranges(std::mem::take(&mut p.dead));
     let mut diags: Vec<Diagnostic> = lex_diags
         .into_iter()
-        .filter(|d| !in_ranges(&raw, d.span.start))
+        .filter(|d| {
+            let start = d.span.start;
+            if matches!(d.code, BACKSLASH_TEXT | BACKSLASH_COMMENT) {
+                !in_ranges(&dead, start)
+            } else {
+                !in_ranges(&raw, start)
+            }
+        })
         .collect();
     diags.extend(p.diags);
     diags.sort_by_key(|d| d.span.start);
@@ -235,8 +256,12 @@ struct StmtParser<'a> {
     /// Index of the current token.
     pos: usize,
     diags: Vec<Diagnostic>,
-    /// Byte ranges kept as raw text, where lexer diagnostics are dropped.
+    /// Byte ranges kept as raw text, where lexer diagnostics are dropped,
+    /// except the backslash warnings.
     raw: Vec<(usize, usize)>,
+    /// Byte ranges that are not read at all (after `done`, an old-style
+    /// file), where every lexer diagnostic is dropped.
+    dead: Vec<(usize, usize)>,
 }
 
 static EOF: TokenKind = TokenKind::Eof;
@@ -322,6 +347,7 @@ impl StmtParser<'_> {
             span,
             message,
             fix_it,
+            fixes: Vec::new(),
             notes: Vec::new(),
         });
     }
@@ -590,6 +616,7 @@ impl StmtParser<'_> {
             .to_string();
         self.report(OLD_STYLE_FILE, span, message, None);
         self.raw.push((0, self.text.len() + 1));
+        self.dead.push((0, self.text.len() + 1));
         true
     }
 
@@ -811,6 +838,7 @@ impl StmtParser<'_> {
                     span = word.to(at);
                 }
                 self.raw.push((span.end, self.text.len() + 1));
+                self.dead.push((span.end, self.text.len() + 1));
                 self.pos = self.tokens.len().saturating_sub(1);
                 Some(Stmt {
                     kind: StmtKind::Done,

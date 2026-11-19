@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs every probe in this directory through XPPAUT 8.0 (when present) and
+# Runs every probe in this directory through XPPAUT 8.2.2 (when present) and
 # through pc-cli, and compares the results with the header lines of the probe.
 #
 #   XPPAUT=/path/to/xppaut   XPPAUT program (default: xppaut on PATH)
@@ -92,12 +92,14 @@ run_xpp() {
   (cd "$dir" && timeout 10 "$xpp_bin" p.ode -silent -outfile o.dat >out.txt 2>&1) 2>/dev/null || xrc=$?
 }
 
-# XPPAUT 8.0 refuses a bad file with exit status 0, no output file and a
+# XPPAUT 8.2.2 refuses a bad file with exit status 0, no output file and a
 # message on stdout (measured: "illegal expression", "Illegal syntax", "... is
-# a duplicate name", "ERROR compiling", "Must have at least one equation", "Bad
-# global"). A probe marked "# xpp: hang" passes when XPPAUT runs into the 10 s
-# timeout or dies from a signal (an include cycle recurses until it crashes).
-error_re='illegal|duplicate|error|must have|probably not|no variable|bad global'
+# a duplicate name", "ERROR compiling", "Bad global", "Cant export ... -
+# non existent!"). XPPAUT 8.0 also printed "Must have at least one equation",
+# which the pattern below still matches. A probe marked "# xpp: hang"
+# passes when XPPAUT runs into the 10 s timeout or dies from a signal (an
+# include cycle recurses until it crashes).
+error_re='illegal|duplicate|error|must have|probably not|no variable|bad global|non existent'
 
 # ---------------------------------------------------------------- XPPAUT half
 sanity_xpp() {

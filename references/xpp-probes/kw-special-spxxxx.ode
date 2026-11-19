@@ -1,0 +1,9 @@
+# kw-special-spxxxx: Does the word spxxxx, with no A in sixth place, stay out of the special-function parser (XPPAUT 8.2.2)?
+# xpp: 5
+# pc: ODE0019
+x'=0
+x(0)=3
+par a=5
+aux v=a
+spxxxx f=zz
+@ total=0,dt=1

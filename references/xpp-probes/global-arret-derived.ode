@@ -1,0 +1,9 @@
+# global-arret-derived: Does a derived parameter named arret leave the arret action as the stop (XPPAUT 8.2.2)?
+# xpp: rows=6
+# pc: ODE0058
+x'=1
+x(0)=0
+par a=2
+!arret=a+1
+global 1 x-0.55 {arret=1}
+@ total=2,dt=0.1,meth=euler

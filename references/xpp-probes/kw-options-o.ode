@@ -1,0 +1,10 @@
+# kw-options-o: Is o, one letter, still an options line (XPPAUT 8.2.2)?
+# xpp: 5
+# pc: ODE0019
+# ruling: XPPAUT prints Loading new options file:<none.opt> for it too. Only the printed message shows it, and run.sh does not check that, so no output value tells the two apart.
+x'=0
+x(0)=3
+par a=5
+aux v=a
+o none.opt
+@ total=0,dt=1

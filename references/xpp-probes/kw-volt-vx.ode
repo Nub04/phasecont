@@ -1,0 +1,10 @@
+# kw-volt-vx: Does vx w=x+1, a word that only starts with v, add a state column w (XPPAUT 8.2.2)?
+# xpp: v=5
+# states: 2
+# pc: ODE0019
+x'=0
+x(0)=3
+par a=5
+aux v=a
+vx w=x+1
+@ total=0,dt=1

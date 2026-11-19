@@ -1,0 +1,9 @@
+# aux-param-self: Does `aux a=7*a` read the parameter a (XPPAUT 8.2.2)?
+# xpp: a=14
+# pc: ok
+# ruling: pc-ode accepts it. The `a` on the right side is the parameter, so the column is 14 (language.md, Names and order).
+x'=-x
+x(0)=1
+par a=2
+aux a=7*a
+@ total=1,dt=0.5

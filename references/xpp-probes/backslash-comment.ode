@@ -1,0 +1,10 @@
+# backslash-comment: Does a backslash at the end of a # comment line swallow the next line (XPPAUT 8.2.2)?
+# xpp: v@3=2
+# pc: ODE0076
+# ruling: XPPAUT joins the next line to the comment, so `x'=1` is not read and `x'=2` is the only equation. PhaseCont does the same and warns (ODE0076) with the swallowed line (language.md, Lines).
+# a note that ends in a backslash \
+x'=1
+x'=2
+x(0)=0
+aux v=x
+@ total=1,dt=0.5,meth=euler

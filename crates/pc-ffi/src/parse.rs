@@ -75,7 +75,10 @@ fn first_error(v: &Value) -> String {
 
 /// The `@` options as (lower-case name, value) pairs in the order the names first appear, with the
 /// last value winning. XPPAUT 8.0 ignores an option that has a blank around `=`, so the parser
-/// warns about it, marks it `spaced`, and this list leaves it out. Unknown names stay.
+/// warns about it, marks it `spaced`, and this list leaves it out. Unknown names stay. XPPAUT
+/// 8.2.2 reads `nout`, and any key that starts with `nout` or `njmp`, as `njmp` (probes
+/// `opt-nout-*`, `opt-njmpx*` and `opt-nout-njmpx-*`), so those keys are listed as `njmp` and
+/// the last of them wins.
 fn option_pairs(model: &pc_ode::Model) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     for stmt in &model.statements {
@@ -86,9 +89,14 @@ fn option_pairs(model: &pc_ode::Model) -> Vec<(String, String)> {
             if e.spaced {
                 continue;
             }
-            match out.iter_mut().find(|(k, _)| *k == e.name.key) {
+            let key = if e.name.key.starts_with("nout") || e.name.key.starts_with("njmp") {
+                "njmp"
+            } else {
+                e.name.key.as_str()
+            };
+            match out.iter_mut().find(|(k, _)| k == key) {
                 Some(slot) => slot.1 = e.value.clone(),
-                None => out.push((e.name.key.clone(), e.value.clone())),
+                None => out.push((key.to_string(), e.value.clone())),
             }
         }
     }

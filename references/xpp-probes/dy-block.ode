@@ -1,0 +1,10 @@
+# dy-block: Does dy[j]/dt inside a %[1..2] block declare the derivatives of y1 and y2 (XPPAUT 8.2.2)?
+# xpp: s@2=1
+# states: 2
+# pc: ODE0019,ODE0044,ODE0039
+%[1..2]
+dy[j]/dt=-y[j]
+y[j](0)=1
+%
+aux s=y1+y2
+@ total=1,dt=0.5,meth=euler

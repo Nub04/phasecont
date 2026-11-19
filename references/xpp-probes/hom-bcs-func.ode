@@ -1,0 +1,8 @@
+# hom-bcs-func: Is hom_bcs a one-argument function that returns 0 (XPPAUT 8.2.2)?
+# xpp: h=0
+# pc: ODE0039
+# ruling: XPPAUT keeps hom_bcs as a deprecated builtin that returns 0 for any argument.
+x'=0
+x(0)=3
+aux h=hom_bcs(3)
+@ total=0,dt=1

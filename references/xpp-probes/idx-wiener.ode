@@ -1,0 +1,9 @@
+# idx-wiener: Is a wiener name w[1] the variable w1 (XPPAUT 8.2.2)?
+# xpp: v=5
+# pc: ODE0015
+# ruling: XPPAUT reads the constant index as part of the name. A formula can read w1, and the bare name w stays undefined.
+x'=0
+x(0)=1
+wiener w[1]
+aux v=0*w1+5
+@ total=0,dt=1

@@ -1,0 +1,11 @@
+# kw-volt-full: Does volt w=x+1 add a state column w (XPPAUT 8.2.2)?
+# xpp: v=5
+# states: 2
+# pc: ODE0028
+# ruling: The extra column w is the Volterra state, which starts at 0.
+x'=0
+x(0)=3
+par a=5
+aux v=a
+volt w=x+1
+@ total=0,dt=1

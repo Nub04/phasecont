@@ -1,0 +1,9 @@
+# kw-export-ex: Is ex, the first two letters of export, still an export statement (XPPAUT 8.2.2)?
+# xpp: error
+# pc: ODE0019
+x'=0
+x(0)=3
+par a=5
+aux v=a
+ex {zz} {yy}
+@ total=0,dt=1

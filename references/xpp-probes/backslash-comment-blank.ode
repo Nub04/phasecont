@@ -1,0 +1,10 @@
+# backslash-comment-blank: Does a comment backslash followed by a blank line leave the line after the blank intact (XPPAUT 8.2.2)?
+# xpp: v@3=1
+# pc: ok
+# ruling: the blank line is the one swallowed, so `x'=1` survives. Nothing the author wrote is lost, so PhaseCont gives no warning (language.md, Lines).
+# a note \
+
+x'=1
+x(0)=0
+aux v=x
+@ total=1,dt=0.5,meth=euler

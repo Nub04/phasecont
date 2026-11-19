@@ -1,0 +1,10 @@
+# kw-volt-vector: Does vector w=x+1 add a state column w like volt (XPPAUT 8.2.2)?
+# xpp: hang
+# pc: ODE0019
+# ruling: XPPAUT reads vector as a vectorizer statement. It prints Adding vectorizer w and In vector w , is not valid variable, then dies with a segmentation fault (exit status 139), which run.sh passes as hang. A word that starts with ve and has r in sixth place is read this way (kw-volt-vecxxr), any other ve word is volt (kw-volt-vecxxx).
+x'=0
+x(0)=3
+par a=5
+aux v=a
+vector w=x+1
+@ total=0,dt=1

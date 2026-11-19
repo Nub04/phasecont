@@ -1,0 +1,9 @@
+# backslash-trailing-comment-at: What does a trailing # comment ending in a backslash do on an @ line (XPPAUT 8.2.2)?
+# xpp: error
+# pc: ODE0076
+# ruling: XPPAUT reads the `#` as part of the @ list, joins the next line and refuses the result. PhaseCont ends the @ statement at the `#`, so the comment swallows `,dt=0.5` and the line reads `@ total=1`; the warning says what was lost (language.md, Lines).
+x'=1
+x(0)=0
+aux v=x
+@ total=1 # note \
+,dt=0.5,meth=euler

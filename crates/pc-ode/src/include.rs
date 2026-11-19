@@ -17,8 +17,8 @@ use std::rc::Rc;
 
 use crate::ast::{Model, Stmt, StmtKind};
 use crate::diag::{Code, Diagnostic, FixIt, Sink, with_summary};
-use crate::parser::parse;
 use crate::parser::stmt::MALFORMED_STATEMENT;
+use crate::parser::stmt::parse_file;
 use crate::span::{FileId, SourceMap, Span};
 
 /// An `#include` file name in quotes.
@@ -489,7 +489,7 @@ impl Resolver<'_> {
         }
         if !self.parsed.contains_key(&key) {
             let id = self.map.add(name.clone(), text);
-            let (mut model, diags) = parse(self.map.text(id), id);
+            let (mut model, diags) = parse_file(self.map.text(id), id, false);
             for d in diags {
                 self.diags.push(d);
             }

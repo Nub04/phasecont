@@ -419,22 +419,32 @@ impl<'a> Checker<'a> {
     }
 
     /// True when a declaration of kind `kind` may share the name `key` with
-    /// the symbol `first` that holds it: an aux next to a fixed quantity, or
-    /// a fixed quantity after an aux, when no aux and no fixed quantity of
-    /// that name exists yet on the side being added.
-    fn aux_shares_fixed_name(&self, key: &str, kind: SymbolKind, first: usize) -> bool {
-        if !matches!(
-            (kind, self.symbols[first].kind),
-            (SymbolKind::Aux, SymbolKind::Fixed) | (SymbolKind::Fixed, SymbolKind::Aux)
-        ) {
+    /// the symbol `first` that holds it: an aux next to a fixed quantity or a
+    /// parameter, or a fixed quantity or a parameter after an aux, when no
+    /// aux and no fixed quantity or parameter of that name exists yet on the
+    /// side being added.
+    fn aux_shares_name(&self, key: &str, kind: SymbolKind, first: usize) -> bool {
+        let partner = |k: SymbolKind| matches!(k, SymbolKind::Fixed | SymbolKind::Parameter);
+        let first_kind = self.symbols[first].kind;
+        let allowed = match (kind, first_kind) {
+            (SymbolKind::Aux, other) | (other, SymbolKind::Aux) => partner(other),
+            _ => false,
+        };
+        if !allowed {
             return false;
         }
-        // The index holds the fixed quantity as soon as there is one, so
-        // only the side being added can already have a symbol of that name.
-        !self
-            .symbols
-            .iter()
-            .any(|s| s.name.key == key && s.kind == kind)
+        // The index holds the fixed quantity or parameter as soon as there
+        // is one, so only the side being added can already have a symbol of
+        // that name.
+        let adding_aux = kind == SymbolKind::Aux;
+        !self.symbols.iter().any(|s| {
+            s.name.key == key
+                && if adding_aux {
+                    s.kind == SymbolKind::Aux
+                } else {
+                    partner(s.kind)
+                }
+        })
     }
 
     /// Records a declaration. Names with an index are skipped; reserved and
@@ -450,12 +460,13 @@ impl<'a> Checker<'a> {
             return;
         }
         if let Some(first) = self.lookup(&name.key) {
-            if self.aux_shares_fixed_name(&name.key, kind, first) {
+            if self.aux_shares_name(&name.key, kind, first) {
                 // XPPAUT 8.2.2 accepts an aux column named like a fixed
-                // quantity, in either order. Formulas read the fixed
-                // quantity, so the name index keeps pointing at it.
+                // quantity or a parameter, in either order. Formulas read the
+                // fixed quantity or the parameter, so the name index keeps
+                // pointing at it.
                 self.declared.push((self.current, name));
-                if kind == SymbolKind::Fixed {
+                if kind != SymbolKind::Aux {
                     self.index.insert(name.key.clone(), self.symbols.len());
                 }
                 self.symbols.push(Symbol {

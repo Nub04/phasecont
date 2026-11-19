@@ -1,0 +1,8 @@
+# opt-nout-short: Does nou, a key shorter than nout, set the output step (XPPAUT 8.2.2)?
+# xpp: rows=9
+# pc: ODE0024
+# ruling: matches: nou sets nothing in XPPAUT, so the file keeps a row at every step, and PhaseCont reports nou as unknown
+x'=1
+x(0)=0
+aux v=x
+@ total=4,dt=0.5,meth=euler,nou=2

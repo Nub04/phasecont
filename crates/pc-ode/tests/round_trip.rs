@@ -584,13 +584,66 @@ fn a_backslash_then_blanks_continues_the_line() {
         let (back, _) = parse(&text, FILE);
         assert_eq!(back.strip_spans(), m.strip_spans(), "{src:?}");
     }
-    // A `#` comment never continues, so it keeps its text as it is. An
-    // `#include` line is a comment token too.
-    let src = "# ends in \\\npar a=1 # also \\\n#include foo\\\nx'=1\n";
-    let m = parse_ok(src);
-    assert_eq!(m.statements.len(), 4);
+}
+
+#[test]
+fn a_comment_with_a_backslash_ends_there_and_joins_the_next_line() {
+    // XPPAUT 8.2.2 reads a backslash in a comment as a line join: the rest of
+    // the comment line is dropped and the next line becomes part of the
+    // comment, except on the first line of the main file (probes
+    // backslash-comment, backslash-comment-line1).
+    let src = "# first line \\\npar a=1 # note\nx'=a\n";
+    let (m, diags) = parse(src, FILE);
+    assert!(diags.is_empty(), "{diags:#?}");
+    // The first line keeps its backslash and does not join the next one.
+    assert_eq!(m.statements.len(), 3, "{m:#?}");
+    let StmtKind::Comment(c) = &m.statements[0].kind else {
+        panic!("{m:#?}")
+    };
+    assert_eq!(c.text, "# first line \\");
     assert_eq!(write(&m), src);
-    assert_round_trip(&m);
+
+    // Later in the file the backslash ends the comment text and the next
+    // line, `x'=a`, goes with it, with a warning that names it.
+    let src = "#\npar a=1 # note \\\nx'=a\ny'=2\n";
+    let (m, diags) = parse(src, FILE);
+    let codes: Vec<Code> = diags.iter().map(|d| d.code).collect();
+    assert_eq!(codes, vec![Code(76)], "{diags:#?}");
+    assert_eq!(diags[0].severity, Severity::Warning);
+    // The comment, `par a=1` with its comment, and `y'=2`.
+    assert_eq!(m.statements.len(), 3, "{m:#?}");
+    let text = write(&m);
+    assert_eq!(text, "#\npar a=1 # note \ny'=2\n");
+    let back = parse_ok(&text);
+    assert_eq!(back.strip_spans(), m.strip_spans(), "text:\n{text}");
+}
+
+#[test]
+fn a_hand_built_comment_that_ends_in_a_backslash_is_cut() {
+    // Hand-built only: the parser keeps a backslash in a comment on the
+    // first line of the main file and nowhere else.
+    let ode = |src: &str| parse_ok(src).statements.remove(0);
+    let comment = |text: &str| {
+        stmt(StmtKind::Comment(Comment {
+            text: text.to_string(),
+            span: DUMMY_SPAN,
+        }))
+    };
+    let m = model(vec![
+        ode("x'=1\n"),
+        comment("# ends in \\"),
+        ode("y'=2\n"),
+        comment("# in the middle \\ of it"),
+        ode("z'=3\n"),
+    ]);
+    let text = write(&m);
+    assert_eq!(text, "x'=1\n# ends in\ny'=2\n# in the middle\nz'=3\n");
+    assert_eq!(parse_ok(&text).statements.len(), 5);
+    // On the first line the text goes out as it is, and the next line stays.
+    let m = model(vec![comment("# first \\"), ode("y'=2\n")]);
+    let text = write(&m);
+    assert_eq!(text, "# first \\\ny'=2\n");
+    assert_eq!(parse_ok(&text).statements.len(), 2);
 }
 
 #[test]
@@ -2111,6 +2164,45 @@ const SOUP: &[&str] = &[
     "only",
 ];
 
+/// Comment texts that hold a backslash, which only a hand-built model or the
+/// first line of a main file can carry.
+const BACKSLASH_COMMENTS: &[&str] = &["# a \\", "#\\", "# a \\ b", "# par a=1 \\", "# x \\ "];
+
+/// A model of six statements with comments that hold a backslash added as
+/// standalone comment lines (`at` picks the place) and as trailing comments
+/// of the `par` and `@` lines.
+fn model_with_backslash_comments(places: &[(usize, usize, bool)]) -> (Model, usize) {
+    let (mut m, _) = parse("par a=1\npar b=2\nx'=a\ny'=b\n@ total=10\nz'=y\n", FILE);
+    for &(at, which, trailing) in places {
+        let text = BACKSLASH_COMMENTS[which % BACKSLASH_COMMENTS.len()].to_string();
+        let comment = Comment {
+            text,
+            span: DUMMY_SPAN,
+        };
+        if trailing {
+            // Only a `par`, `number` or `@` line takes a trailing comment.
+            let ok: Vec<usize> = (0..m.statements.len())
+                .filter(|&i| {
+                    matches!(
+                        m.statements[i].kind,
+                        StmtKind::Par { .. } | StmtKind::Number { .. } | StmtKind::Options { .. }
+                    )
+                })
+                .collect();
+            m.statements[ok[at % ok.len()]].comment = Some(comment);
+        } else {
+            let i = at % (m.statements.len() + 1);
+            m.statements.insert(i, stmt(StmtKind::Comment(comment)));
+        }
+    }
+    let real = m
+        .statements
+        .iter()
+        .filter(|s| !matches!(s.kind, StmtKind::Comment(_)))
+        .count();
+    (m, real)
+}
+
 proptest! {
     // Failures are reported, not stored: an integration test has no
     // `lib.rs` next to it for the default persistence file. Copy the
@@ -2157,6 +2249,29 @@ proptest! {
         bytes in prop::collection::vec(any::<u8>(), 0..200),
     ) {
         check_robust(&String::from_utf8_lossy(&bytes));
+    }
+
+    #[test]
+    fn a_comment_with_a_backslash_never_swallows_a_line_after_a_write(
+        places in prop::collection::vec((0..8usize, 0..5usize, any::<bool>()), 1..6),
+    ) {
+        let (m, real) = model_with_backslash_comments(&places);
+        let text = write(&m);
+        // Only the first line may hold a backslash.
+        prop_assert!(
+            !text.lines().skip(1).any(|l| l.contains('\\')),
+            "{:?}", text
+        );
+        let (back, diags) = parse(&text, FILE);
+        prop_assert!(diags.is_empty(), "{:?} {:#?}", text, diags);
+        let back_real = back
+            .statements
+            .iter()
+            .filter(|s| !matches!(s.kind, StmtKind::Comment(_)))
+            .count();
+        prop_assert_eq!(back_real, real, "{:?}", text);
+        // A second write gives the same text.
+        prop_assert_eq!(write(&back), text);
     }
 
     #[test]

@@ -36,8 +36,13 @@
 //!   statements are written as their raw text.
 //! - A text whose first line would start with a digit (`0=x-y`) gets a
 //!   blank first line, since that digit marks an old-format file.
-//! - A line that would end in `\` outside a `#` comment (raw text, an `@`
-//!   value) gets a blank after it, so that it does not continue the line.
+//! - A comment is never written with a backslash after the first line of the
+//!   output, because XPPAUT 8.2.2 and the parser read a backslash in a
+//!   comment as a join with the next line. The parser keeps one only in a
+//!   comment on the first line of a main file; the writer cuts a comment
+//!   before its first backslash anywhere else (hand-built models only).
+//!   A statement never ends in a backslash, since the parser reads one as a
+//!   join or as text to drop.
 //!
 //! Limitations of the round trip:
 //!
@@ -240,7 +245,7 @@ fn stmt(out: &mut String, s: &Stmt) {
                         }
                         trailing(out, &row.comment);
                     }
-                    MarkovLine::Comment(c) => out.push_str(&c.text),
+                    MarkovLine::Comment(c) => push_comment(out, &c.text),
                 }
             }
         }
@@ -265,21 +270,35 @@ fn stmt(out: &mut String, s: &Stmt) {
             }
             out.push('%');
         }
-        StmtKind::Comment(c) => out.push_str(&c.text),
+        StmtKind::Comment(c) => push_comment(out, &c.text),
         StmtKind::Unsupported { text, .. } => out.push_str(text),
         StmtKind::Done => out.push_str("done"),
     }
     trailing(out, &s.comment);
     // The parser never keeps a trailing backslash in a statement: it reads
     // the backslash and any blanks after it as a line continuation, so no
-    // guard is needed here.
+    // guard is needed here. A comment is guarded by `push_comment`.
     out.push('\n');
 }
 
 fn trailing(out: &mut String, comment: &Option<Comment>) {
     if let Some(c) = comment {
         out.push(' ');
-        out.push_str(&c.text);
+        push_comment(out, &c.text);
+    }
+}
+
+/// Appends the text of a comment. XPPAUT 8.2.2 reads a backslash in a
+/// comment as a line join, so the rest of the comment line and the whole
+/// next line are lost, except on the first line of a main file. The parser
+/// keeps a backslash in a comment only on that first line, and a comment
+/// that holds one goes back out verbatim only while the output is still on
+/// its first line. Anywhere else the comment is cut before the backslash, so
+/// that it never ends in a backslash and the next line stays a line.
+fn push_comment(out: &mut String, text: &str) {
+    match text.find('\\') {
+        Some(i) if out.contains('\n') => out.push_str(text[..i].trim_end_matches([' ', '\t'])),
+        _ => out.push_str(text),
     }
 }
 

@@ -1,0 +1,9 @@
+# backslash-join-digits: Does a continuation join `1\` and `2` into 12 or into `1 2` (XPPAUT 8.2.2)?
+# xpp: v@3=12
+# pc: ODE0012
+# ruling: XPPAUT puts no blank at the join, so the digits run together into 12. PhaseCont joins with a blank, so `1 2` gets the blank-between-words error (ODE0012), which names the problem; kept, since a number split across two lines is more likely a slip than a plan (language.md, Lines).
+x'=1\
+2
+x(0)=0
+aux v=x
+@ total=1,dt=0.5,meth=euler

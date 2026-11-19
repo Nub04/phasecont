@@ -277,11 +277,18 @@ fn duplicates() {
     ] {
         assert_eq!(codes(text), vec![DUPLICATE_NAME], "{text:?}");
     }
-    // The first declaration wins.
-    assert_eq!(
-        run("par a=1\nx'=a\naux a=1").0.symbol("a").unwrap().kind,
-        SymbolKind::Parameter
-    );
+    // A second aux of one parameter name is a duplicate, and so is a second
+    // parameter or a fixed quantity next to an aux that shares the name.
+    for text in [
+        "x'=-x\npar p=1\naux p=1\naux p=2",
+        "x'=-x\naux p=1\npar p=1\naux p=2",
+        "x'=-x\npar p=1\naux p=1\np=3",
+        "x'=-x\naux p=1\npar p=1\npar p=2",
+        "x'=-x\npar p=1\naux p=1\npar p=2",
+        "x'=-x\naux p=1\npar p=1\np=3",
+    ] {
+        assert_eq!(codes(text), vec![DUPLICATE_NAME], "{text:?}");
+    }
 }
 
 /// XPPAUT 8.2.2 accepts `aux f=...` for a name that is also a fixed
@@ -329,15 +336,54 @@ fn aux_may_repeat_a_fixed_name() {
     for text in ["x'=-x\nf=1\naux f=2\nf=3", "x'=-x\naux f=2\nf=1\nf=3"] {
         assert_eq!(codes(text), vec![DUPLICATE_NAME], "{text:?}");
     }
-    // An aux repeating a parameter, a state or a function stays an error.
+    // An aux repeating a state, a function or a derived parameter stays an
+    // error.
     for text in [
-        "x'=-x\npar p=1\naux p=2",
         "x'=-x\naux x=2",
         "x'=-x\ng(u)=u\naux g=2",
         "x'=-x\n!d=2\naux d=2",
     ] {
         assert_eq!(codes(text), vec![DUPLICATE_NAME], "{text:?}");
     }
+}
+
+/// XPPAUT 8.2.2 accepts `aux p=...` for a name that is also a parameter, in
+/// either order. Every reader of `p` gets the parameter and the aux column
+/// keeps its own formula (`aux-param-*` probes).
+#[test]
+fn aux_may_repeat_a_parameter_name() {
+    for text in [
+        "x'=-x*p\npar p=2\naux p=7*x",
+        "x'=-x*p\naux p=7*x\npar p=2",
+        "x'=-x\npar p=2\naux p=7*p",
+        "x'=-x\naux p=7*p\npar p=2",
+        "x'=-x\npar p=2\naux P=7*x",
+        "x'=-x\npar p=2\nq=p\naux p=q",
+        "x'=-x\npar p=2\naux p=7*x\naux g=p",
+    ] {
+        let info = info(text);
+        // The name resolves to the parameter, so a read of `p` is not an aux
+        // misuse (AUX_IN_FORMULA).
+        assert_eq!(
+            info.symbol("p").unwrap().kind,
+            SymbolKind::Parameter,
+            "{text:?}"
+        );
+        let count = |want: SymbolKind| {
+            info.symbols
+                .iter()
+                .filter(|s| s.name.key == "p" && s.kind == want)
+                .count()
+        };
+        assert_eq!(count(SymbolKind::Parameter), 1, "{text:?}");
+        assert_eq!(count(SymbolKind::Aux), 1, "{text:?}");
+    }
+    // A reader of the name gets the parameter, whatever the order.
+    clean("x'=-x\ny'=p\naux p=7*x\npar p=2\naux g=p");
+    // A global target of that name is the parameter.
+    clean("x'=-x\npar p=2\naux p=7*x\nglobal 1 t-0.5 {p=3}");
+    // A parameter and a fixed quantity of one name stay a duplicate.
+    assert_eq!(codes("x'=-x\npar p=2\np=1"), vec![DUPLICATE_NAME]);
 }
 
 #[test]
@@ -999,6 +1045,7 @@ fn delay_with_one_argument() {
                 message: "`delay` is read by `phasecont.continuation` (equilibria, Hopf curves and periodic orbits from a Hopf point) and by `pc-cli dde-eq`, `dde-branch`, `dde-hopf`, `dde-lyap`, `dde-zh`, `dde-hh` and `dde-cycle`; simulation and the ODE-only entries do not support it"
                     .to_string(),
                 fix_it: None,
+                fixes: Vec::new(),
                 notes: Vec::new(),
             },
             Diagnostic {
@@ -1007,6 +1054,7 @@ fn delay_with_one_argument() {
                 span: nth(text, "delay(x)", 0),
                 message: "`delay` takes 2 arguments, not 1".to_string(),
                 fix_it: None,
+                fixes: Vec::new(),
                 notes: Vec::new(),
             },
         ]

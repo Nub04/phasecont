@@ -1,0 +1,8 @@
+# opt-nout: Does nout=2 set the output step like njmp=2 (XPPAUT 8.2.2)?
+# xpp: t@2=1
+# pc: ok
+# ruling: matches: nout is the old name of njmp (crates/pc-ode/docs/language.md, Lists). Without it the output file has a row every 0.5 (t@2=0.5).
+x'=1
+x(0)=0
+aux v=x
+@ total=4,dt=0.5,meth=euler,nout=2

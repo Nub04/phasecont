@@ -1,0 +1,10 @@
+# backslash-active-comment: Does a backslash at the end of an active comment line swallow the next line (XPPAUT 8.2.2)?
+# xpp: v@3=2
+# pc: ODE0038
+# ruling: the active comment line joins the next line like any other; `x'=1` is lost and `x'=2` stays. PhaseCont keeps the active comment as raw text with the unsupported warning and joins the next line into it the same way, but gives no ODE0076 for the swallowed line (language.md, Lines).
+"an active comment \
+x'=1
+x'=2
+x(0)=0
+aux v=x
+@ total=1,dt=0.5,meth=euler

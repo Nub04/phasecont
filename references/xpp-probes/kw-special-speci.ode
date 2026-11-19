@@ -1,0 +1,9 @@
+# kw-special-speci: Is speci, five letters, still a special-function statement (XPPAUT 8.2.2)?
+# xpp: 5
+# pc: ODE0019
+x'=0
+x(0)=3
+par a=5
+aux v=a
+speci f=zz
+@ total=0,dt=1

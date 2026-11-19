@@ -1,0 +1,11 @@
+# kw-volt-vecxxx: Does vecxxx, a ve word with no r in sixth place, add a state column w like volt (XPPAUT 8.2.2)?
+# xpp: v=5
+# states: 2
+# pc: ODE0019
+# ruling: The extra column w is the Volterra state, as for volt (kw-volt-full).
+x'=0
+x(0)=3
+par a=5
+aux v=a
+vecxxx w=x+1
+@ total=0,dt=1

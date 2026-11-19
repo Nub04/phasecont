@@ -1,0 +1,10 @@
+# kw-special-conv: Does special f=conv(zz) load in XPPAUT 8.2.2?
+# xpp: hang
+# pc: ODE0031
+# ruling: XPPAUT prints netrhs = |CONV(ZZ)| and Adding net f 0, then dies with a segmentation fault (exit status 139), which run.sh passes as hang. PhaseCont keeps the line as raw text with the ODE0031 warning.
+x'=0
+x(0)=3
+par a=5
+aux v=a
+special f=conv(zz)
+@ total=0,dt=1

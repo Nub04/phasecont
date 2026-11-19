@@ -1,0 +1,9 @@
+# idx-option-total: Is an option name total[1] read as total1, which sets total (XPPAUT 8.2.2)?
+# xpp: rows=3
+# pc: ODE0020
+# ruling: XPPAUT folds the index into the key, and a key that starts with total sets total (opt-prefix-total).
+x'=0
+x(0)=3
+par a=5
+aux v=a
+@ total[1]=2,dt=1

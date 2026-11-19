@@ -5,7 +5,9 @@
 //! information. A fix-it in the same file as its diagnostic travels in the
 //! diagnostic's `data` as `{"fix": {"range": ..., "newText": ...}}`, so a code
 //! action request, which echoes the diagnostics back, can offer it without
-//! another analysis.
+//! another analysis. A diagnostic with several titled fixes also carries
+//! `"fixes": [{"title": ..., "range": ..., "newText": ...}, ...]`, the
+//! preferred one first; `fix` stays the first of them.
 
 use lsp_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location, NumberOrString, Uri,
@@ -60,7 +62,20 @@ pub fn to_lsp(
                 return None;
             }
             let r = range(fix.span)?;
-            Some(json!({ "fix": { "range": r, "newText": fix.replacement } }))
+            let fixes: Vec<_> = d
+                .fixes
+                .iter()
+                .filter(|f| f.edit.span.file == d.span.file)
+                .filter_map(|f| {
+                    let r = range(f.edit.span)?;
+                    Some(json!({ "title": f.title, "range": r, "newText": f.edit.replacement }))
+                })
+                .collect();
+            let mut data = json!({ "fix": { "range": r, "newText": fix.replacement } });
+            if !fixes.is_empty() {
+                data["fixes"] = json!(fixes);
+            }
+            Some(data)
         });
         out.push((
             uri,

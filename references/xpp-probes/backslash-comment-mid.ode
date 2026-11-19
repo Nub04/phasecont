@@ -1,0 +1,10 @@
+# backslash-comment-mid: Does a backslash in the middle of a # comment drop the rest of the comment and swallow the next line (XPPAUT 8.2.2)?
+# xpp: v@3=2
+# pc: ODE0076
+# ruling: the first backslash ends the comment text and joins the next line, wherever it stands in the comment (language.md, Lines).
+# a path like a\b in a comment
+x'=1
+x'=2
+x(0)=0
+aux v=x
+@ total=1,dt=0.5,meth=euler

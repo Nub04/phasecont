@@ -1,0 +1,8 @@
+# opt-njmpx: Does njmpx=2, a key that starts with njmp, set the output step like njmp=2 (XPPAUT 8.2.2)?
+# xpp: t@2=1
+# pc: ok
+# ruling: matches: a key that starts with njmp is njmp, the same prefix rule as for nout (crates/pc-ode/docs/language.md, Lists). Without it the output file has a row every 0.5 (t@2=0.5). PhaseCont lists the key as njmp in the model info.
+x'=1
+x(0)=0
+aux v=x
+@ total=4,dt=0.5,meth=euler,njmpx=2

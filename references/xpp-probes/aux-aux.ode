@@ -1,0 +1,10 @@
+# aux-aux: Can two aux quantities share a name (XPPAUT 8.2.2)?
+# xpp: q=2 z=9
+# pc: ODE0041
+# ruling: PhaseCont choice. XPPAUT prints "duplicate name" but loads it and writes both columns (q is 2*x, then 3*x, and z is the fifth column of the row). pc-ode keeps ODE0041, because the output would have two columns with one name.
+x'=-x
+x(0)=1
+aux q=2*x
+aux q=3*x
+aux z=9
+@ total=1,dt=0.5

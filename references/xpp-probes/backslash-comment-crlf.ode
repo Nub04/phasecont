@@ -1,0 +1,10 @@
+# backslash-comment-crlf: Does a CRLF file behave like an LF file for a comment that ends in a backslash (XPPAUT 8.2.2)?
+# xpp: v@3=2
+# pc: ODE0076
+# ruling: the carriage return is part of the line end; the next line is swallowed as in an LF file (language.md, Lines).
+# a note \
+x'=1
+x'=2
+x(0)=0
+aux v=x
+@ total=1,dt=0.5,meth=euler

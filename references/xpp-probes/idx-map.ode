@@ -1,0 +1,8 @@
+# idx-map: Is a map target x[1](t+1) the map variable x1 (XPPAUT 8.2.2)?
+# xpp: v@4=3
+# pc: ODE0015,ODE0044
+# ruling: XPPAUT reads the constant index as part of the name. The map x[1](t+1)=x1+1 iterates x1 like the same line written x1(t+1).
+x[1](t+1)=x1+1
+init x1=0
+aux v=x1
+@ total=3

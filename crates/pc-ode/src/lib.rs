@@ -31,7 +31,9 @@ pub use ast::{
     Value,
 };
 pub use check::{ModelInfo, ModelKind, StateKind, Symbol, SymbolKind, check};
-pub use diag::{CODES, Code, Diagnostic, FixIt, MAX_DIAGNOSTICS, Severity, TOO_MANY_DIAGNOSTICS};
+pub use diag::{
+    CODES, Code, Diagnostic, FixIt, MAX_DIAGNOSTICS, QuickFix, Severity, TOO_MANY_DIAGNOSTICS,
+};
 pub use expand::{MAX_ARRAY_COPIES, MAX_ARRAY_WORK, MAX_INDEX, expand};
 pub use include::{
     FsLoader, MAX_INCLUDE_DEPTH, MAX_INCLUDED_BYTES, MAX_INCLUDED_STATEMENTS, MAX_INCLUDES,

@@ -1,0 +1,10 @@
+# idx-set: Does a set line whose name carries an index load (XPPAUT 8.2.2)?
+# xpp: 5
+# pc: ODE0015
+# ruling: A set changes nothing in a headless run, so this probe shows only that the line is accepted.
+x'=0
+x(0)=3
+par a=5
+aux v=a
+set s[1] {a=7}
+@ total=0,dt=1

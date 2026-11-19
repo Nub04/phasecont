@@ -1,0 +1,9 @@
+# opt-nout-njmpx-last: nout=2 and then njmpx=4 on a later @ line, which one wins (XPPAUT 8.2.2)?
+# xpp: rows=3
+# pc: ok
+# ruling: matches: nout, njmp and a key that starts with njmp set one value, so the last entry wins across @ lines; here njmpx=4 (crates/pc-ode/docs/language.md, Lists). PhaseCont lists both as njmp in the model info, with the last value.
+x'=1
+x(0)=0
+aux v=x
+@ total=4,dt=0.5,meth=euler,nout=2
+@ njmpx=4

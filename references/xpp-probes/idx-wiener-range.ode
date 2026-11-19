@@ -1,0 +1,8 @@
+# idx-wiener-range: Does a wiener range w[1..2] declare w1 and w2 (XPPAUT 8.2.2)?
+# xpp: v=5
+# pc: ok
+x'=0
+x(0)=1
+wiener w[1..2]
+aux v=0*w2+5
+@ total=0,dt=1

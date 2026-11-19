@@ -1,0 +1,9 @@
+# global-arret-fixed: Is a fixed quantity named arret a global target, so that the action does not stop the run (XPPAUT 8.2.2)?
+# xpp: rows=6
+# pc: ODE0058
+# ruling: A fixed quantity cannot be assigned, so the name keeps its meaning as the stop action.
+x'=1
+x(0)=0
+arret=x+1
+global 1 x-0.55 {arret=1}
+@ total=2,dt=0.1,meth=euler

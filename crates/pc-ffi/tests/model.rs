@@ -289,6 +289,89 @@ fn rhs_matches_the_engine_on_both_evaluators() {
     assert_eq!(rc, 2);
 }
 
+// XPPAUT 8.2.2 drops text after a backslash and joins the next line, and a backslash in a
+// comment swallows the next line (probes `backslash-text`, `backslash-comment`). The model
+// loads that way and each case comes back as a warning, which the MATLAB front end raises as
+// `phasecont:model:parseWarning` like any other warning.
+#[test]
+fn backslash_warnings_come_back_with_a_model_that_loads_as_xppaut_reads_it() {
+    for (text, code, line, col, quote, want) in [
+        ("x'=-x+\\5\n1\ndone\n", "ODE0075", 1, 7, "`5`", -1.0),
+        (
+            "x'=-x\n# a note \\\nx'=2\ndone\n",
+            "ODE0076",
+            2,
+            10,
+            "`x'=2`",
+            -2.0,
+        ),
+    ] {
+        let (rc, id, diag) = parse(text);
+        assert_eq!(rc, 0, "{}", last_error());
+        let m = Mod(id);
+        let d = diag.unwrap();
+        let list = d["diagnostics"].as_array().unwrap();
+        assert_eq!(list.len(), 1, "{text:?}: {d}");
+        assert_eq!(list[0]["code"], code);
+        assert_eq!(list[0]["severity"], "warning");
+        assert_eq!(
+            (list[0]["line"].as_u64(), list[0]["col"].as_u64()),
+            (Some(line), Some(col))
+        );
+        assert!(list[0]["message"].as_str().unwrap().contains(quote), "{d}");
+        assert_eq!(d["summary"]["errors"], 0);
+        assert_eq!(compile(&m, None), 0);
+        let mut out = [0.0];
+        assert_eq!(rhs(&m, &[2.0], &[], &mut out), 0, "{}", last_error());
+        assert_eq!(out, [want], "{text:?}");
+    }
+}
+
+// XPPAUT 8.2.2 accepts `aux a=...` for a name that is also a parameter, in either order (probes
+// `aux-param-after`, `aux-param-before`, `aux-param-self`). The aux column keeps its own formula
+// and every reader of `a` gets the parameter. The IR gives the values XPPAUT wrote at x = 1,
+// a = 2, and the model info lists the name as a parameter and as an aux column.
+#[test]
+fn an_aux_may_repeat_a_parameter_name() {
+    for text in [
+        "x'=-x*a\npar a=2\naux a=7*x\naux g=a\ndone\n",
+        "x'=-x*a\naux a=7*x\naux g=a\npar a=2\ndone\n",
+    ] {
+        let (rc, id, diag) = parse(text);
+        assert_eq!(rc, 0, "{text:?}: {}", last_error());
+        let m = Mod(id);
+        assert_eq!(diag.unwrap()["summary"]["errors"], 0, "{text:?}");
+        let v = info(&m);
+        assert_eq!(v["parameters"], serde_json::json!(["a"]), "{text:?}");
+        assert_eq!(v["aux"], serde_json::json!(["a", "g"]), "{text:?}");
+        let (model, info) = loaded(text);
+        let ir = pc_ir::lower(&model, &info).unwrap();
+        let eval = |outs: &[pc_ir::dag::NodeId]| {
+            let mut out = vec![0.0; outs.len()];
+            pc_ir::eval::eval(&ir.dag, outs, &[1.0], &[2.0], &[], &mut out);
+            out
+        };
+        // x' reads the parameter, not the aux column.
+        assert_eq!(eval(&ir.f), [-2.0], "{text:?}");
+        assert_eq!(eval(&ir.aux), [7.0, 2.0], "{text:?}");
+    }
+    let text = "x'=-x\npar a=2\naux a=7*a\ndone\n";
+    let (model, info) = loaded(text);
+    let ir = pc_ir::lower(&model, &info).unwrap();
+    let mut out = [0.0];
+    pc_ir::eval::eval(&ir.dag, &ir.aux, &[1.0], &[2.0], &[], &mut out);
+    assert_eq!(out, [14.0]);
+    // An aux that repeats a state or another aux is still refused.
+    for text in [
+        "x'=-x\naux x=7*x\ndone\n",
+        "x'=-x\naux q=1\naux q=2\ndone\n",
+    ] {
+        let (rc, _, diag) = parse(text);
+        assert_ne!(rc, 0, "{text:?}");
+        assert_eq!(diag.unwrap()["diagnostics"][0]["code"], "ODE0041");
+    }
+}
+
 #[test]
 fn rhs_reports_a_non_finite_output() {
     let m = model("x'=1/x\ndone\n");
@@ -738,6 +821,46 @@ fn info_reports_the_at_options() {
 fn a_repeated_option_keeps_its_first_place_and_its_last_value() {
     let m = model("x'=-x\n@ XP=a, total=5\n@ xp=b\n@ Total=7\ndone\n");
     assert_eq!(options_of(&m), pairs(&[("xp", "b"), ("total", "7")]));
+}
+
+// XPPAUT 8.2.2 reads `nout` as `njmp` (probes `opt-nout-*`): both set one value and the last
+// one wins, also across `@` lines and for a key that starts with `nout`.
+#[test]
+fn nout_is_listed_as_njmp_and_the_last_of_the_two_wins() {
+    let m = model("x'=-x\n@ total=4,nout=2\n@ njmp=4\ndone\n");
+    assert_eq!(options_of(&m), pairs(&[("total", "4"), ("njmp", "4")]));
+    let m = model("x'=-x\n@ njmp=4,nout=2\ndone\n");
+    assert_eq!(options_of(&m), pairs(&[("njmp", "2")]));
+    let m = model("x'=-x\n@ NOUTX=3\ndone\n");
+    assert_eq!(options_of(&m), pairs(&[("njmp", "3")]));
+}
+
+// XPPAUT 8.2.2 reads `njmpx`, a key that starts with `njmp`, as `njmp` too (probes `opt-njmpx*`
+// and `opt-nout-njmpx-*`): `nout`, `njmp` and `njmpx` set one value and the last of them wins,
+// across `@` lines and inside one list, in either order.
+#[test]
+fn njmpx_is_listed_as_njmp_and_the_last_of_nout_njmp_and_njmpx_wins() {
+    // One name alone.
+    let m = model("x'=-x\n@ total=4,njmpx=2\ndone\n");
+    assert_eq!(options_of(&m), pairs(&[("total", "4"), ("njmp", "2")]));
+    // The four orders of the probes: nout then njmpx and the reverse, on two
+    // lines and in one list.
+    for (text, want) in [
+        ("@ total=4,nout=2\n@ njmpx=4\n", "4"),
+        ("@ total=4,njmpx=4\n@ nout=2\n", "2"),
+        ("@ total=4,nout=2,njmpx=4\n", "4"),
+        ("@ total=4,njmpx=4,nout=2\n", "2"),
+    ] {
+        let m = model(&format!("x'=-x\n{text}done\n"));
+        assert_eq!(
+            options_of(&m),
+            pairs(&[("total", "4"), ("njmp", want)]),
+            "{text:?}"
+        );
+    }
+    // Any spelling of the three, with the first place kept.
+    let m = model("x'=-x\n@ NJMPX=1, xp=v, njmp=2, Nout=3, njmpx=5\ndone\n");
+    assert_eq!(options_of(&m), pairs(&[("njmp", "5"), ("xp", "v")]));
 }
 
 // XPPAUT 8.0 ignores an option with blanks around `=` (the parser warns about it), so the

@@ -1,0 +1,9 @@
+# kw-export-e: Is e, one letter, still an export statement (XPPAUT 8.2.2)?
+# xpp: 5
+# pc: ODE0019
+x'=0
+x(0)=3
+par a=5
+aux v=a
+e {zz} {yy}
+@ total=0,dt=1

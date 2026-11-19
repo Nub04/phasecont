@@ -1,0 +1,11 @@
+# idx-markov-range: Does a markov range z[1..2] declare z1 and z2, both with the one set of rows (XPPAUT 8.2.2)?
+# xpp: v@2=1 v@3=0
+# states: 3
+# pc: ODE0070
+x'=0
+x(0)=0
+markov z[1..2] 2
+{0} {1}
+{1} {0}
+aux v=z2
+@ total=3,dt=1
