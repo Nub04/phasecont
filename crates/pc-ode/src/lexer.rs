@@ -1394,9 +1394,11 @@ mod tests {
     }
 
     #[test]
-    fn each_fix_of_a_chain_ends_warning_free_or_keeps_the_meaning() {
+    fn the_outcome_of_each_fix_of_a_chain_is_pinned() {
         // (warnings left, same meaning as before the fix) for every fix of
-        // every warning of the chain `# a \`, `b \`, `c`.
+        // every warning of the chain `# a \`, `b \`, `c`. Three of the four
+        // fixes end warning free or keep the meaning; the third does neither
+        // and is pinned as it is.
         let text = "x\n# a \\\nb \\\nc\nd\n";
         let (_, diags) = lex(F, text);
         let before = (warnings(text), meaning(text));
@@ -1419,8 +1421,8 @@ mod tests {
                 (0, true),
                 // Remove the backslash of `b`, which is itself swallowed: the
                 // first warning stays and `c` becomes live. Fewer warnings and
-                // a different meaning, which fits neither rule (owner question
-                // in the fix report).
+                // a different meaning, which fits neither rule (kept for now,
+                // see the ODE0076 entry in `crates/pc-ode/docs/language.md`).
                 (1, false),
                 // Comment out `c`: one warning fewer, same meaning.
                 (1, true),
