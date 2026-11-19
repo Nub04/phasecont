@@ -1,6 +1,7 @@
 # kw-set-malformed: Does a set line with an unclosed brace stop the load (XPPAUT 8.2.2)?
 # xpp: 5
 # pc: ODE0020
+# ruling: XPPAUT prints added s doing $ zz and loads, so the unclosed brace is not an error. No output value shows it, and run.sh does not check that message. PhaseCont rejects the line.
 x'=0
 x(0)=3
 par a=5

@@ -1,0 +1,10 @@
+# kw-volt-vecxxr: Does vecxxr, a word with ve at the start and r in sixth place, reach the vectorizer like vector (XPPAUT 8.2.2)?
+# xpp: hang
+# pc: ODE0019
+# ruling: Same message and the same segmentation fault as kw-volt-vector, so only ve and the sixth letter r are compared.
+x'=0
+x(0)=3
+par a=5
+aux v=a
+vecxxr w=x+1
+@ total=0,dt=1

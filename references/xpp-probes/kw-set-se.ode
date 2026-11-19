@@ -1,7 +1,7 @@
 # kw-set-se: Does se s {a=7}, a prefix of set, change the parameter a (XPPAUT 8.2.2)?
 # xpp: 5
 # pc: ODE0019
-# ruling: A set only adds a named parameter set to the GUI, so no headless output shows whether the keyword was read, and even a broken set body loads (kw-set-malformed).
+# ruling: XPPAUT prints added s doing $ a=7 for this line, as it does for set, so se is read as set. A set only adds a named parameter set to the GUI, so no output value shows whether the keyword was read, and run.sh does not check that message. Even a broken set body loads (kw-set-malformed).
 x'=0
 x(0)=3
 par a=5
