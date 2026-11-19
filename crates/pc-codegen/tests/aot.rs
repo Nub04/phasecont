@@ -363,8 +363,13 @@ fn a_derivative_entry_stores_plus_zero_in_aot() {
         .collect();
     let c = emit_c(&ir, &named).expect("emit");
     assert!(c.contains(" + 0.0;"), "no normalized store in the C");
+    let ccs = compilers();
+    if ccs.is_empty() {
+        println!("skip: no usable gcc or clang, AOT +0 store test not compiled");
+        return;
+    }
     let mut raw_minus_zeros = 0;
-    for cc in compilers() {
+    for cc in ccs {
         let aot = compile_c(cc, "plus_zero", &c);
         for (i, e) in es.iter().enumerate() {
             let is_dir = matches!(e.kind, EntryKind::Dir(_));
