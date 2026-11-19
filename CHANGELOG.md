@@ -26,6 +26,7 @@ This release is 1.0.0. The release of 2026-11-04, first published as 1.0.0, is n
 - Data fitting: `phasecont.fit` fits chosen parameters of an ODE model to trajectory data with the Levenberg-Marquardt method, with one `ensemble` call per iteration in double precision on the CPU, and returns a `phasecont.FitResult` with the estimate, the residual, the Jacobian and the history of the iterations. The difference step, the damping and the stopping rules have no default.
 - `Point.Stable`: an `"EP"` Point from `equilibrium` or a session says whether the equilibrium or the fixed point is stable, from its eigenvalues or multipliers. It is empty at a special point such as LP, PD or H, where the linear test decides nothing. It is not stored, so session files do not change.
 - A language server (`pc-lsp`) and a VS Code extension for `.ode` files. The extension is built as a `.vsix` file and is not on the Marketplace. It needs VS Code 1.146 or newer.
+- A line that has text after a backslash loads as XPPAUT 8.2.2 loads it, with the text dropped and the next line joined, and gets the warning ODE0075, which quotes the dropped text. A `#` comment line that ends in a backslash swallows the next line, as in XPPAUT, and gets the warning ODE0076, except on line 1 of the main file. The language server offers two quick fixes for each warning. The `.ode` writer cuts a comment before its first backslash.
 
 ### Security
 
@@ -47,20 +48,21 @@ This release is 1.0.0. The release of 2026-11-04, first published as 1.0.0, is n
 - Rows of LPC, PD and NS curves have more `Tests` columns, one per new codim-2 test. Code that reads these columns by position needs the new widths.
 - `shift` and `del_shft` are now refused with a message that names the function, instead of an error about the number of arguments.
 - The VS Code extension uses `vscode-languageclient` 11. `phasecont.trace.server` now logs only while the log level of the PhaseCont output channel is Trace (`Developer: Set Log Level...`), and at Trace its `off` value logs the messages, the same as `messages`.
-- The `.ode` reader follows XPPAUT 8.2.2 in six more places:
+- The `.ode` reader follows XPPAUT 8.2.2 in seven more places:
   - any first word that starts with `n` declares a constant, as `number` does;
   - any first word that starts with `so` is read as `solv`, which is still refused with the DAE message ODE0030;
   - a backslash followed by blanks at the end of a line continues the line, as a bare backslash already did;
   - `name[n]` with a whole number n is read as `name<n>`, in formulas and in declarations, so `k[03]` is `k3`;
-  - an `aux` may have the name of a fixed quantity. The aux column keeps its own formula and every other reader of the name gets the fixed quantity. A second aux of that name is still ODE0041;
-  - on a `global` line, `arret` and `out_put` are read as event actions. A `global` model is still refused as simulation only.
-- `pc-cli check-derivs` reports an entry too large to build as SKIP instead of failing on it. The finite-difference rows leave out sample points where the model value is not finite and give the count. A row that left out every point fails.
+  - an `aux` may have the name of a fixed quantity or a parameter. The aux column keeps its own formula and every other reader of the name gets the fixed quantity or the parameter. A second aux of that name, or an aux with the name of a state, is still ODE0041;
+  - on a `global` line, `arret` and `out_put` are read as event actions. A `global` model is still refused as simulation only;
+  - `nout` and `njmpx` in an `@` line are read as `njmp`, and the last of the three names wins.
+- `pc-cli check-derivs` reports an entry too large to build as SKIP instead of failing on it. The finite-difference rows use Richardson extrapolation of the central differences and allow for the rounding of the model values, so a model with a tiny derivative next to a large value (for example `x' = -x + y^q/(y^q + 1)` with `q` near 4) no longer fails through rounding. They leave out sample points only where the model value is not finite in the fallback and the DAG gives the same value there. A point where the DAG is not finite and the fallback is, or where the two differ in another way, is compared and fails. Each row prints how many points and values it compared, and a row that compared no value fails.
 
 ### Fixed
 
 - Models built with the AOT evaluator run LPC, PD and NS curves. The AOT library had no `F_up` entry, which those curves use, so they stopped with "AOT library has no entry d_up".
 - Maps built with the AOT evaluator run LP, PD and NS curves at `Iterate` 2 or more, and EP branches there refine their LP and BP points. The k-th iterate asks for the directional derivative of the whole map, which the AOT library did not hold, so those curves stopped with "AOT library has no entry d_f" and EP branches warned "could not refine LP near point ..." and left the point unrefined. Adding the entry changes the tag of every AOT library, so a cached library is built again on first use.
-- Jacobians and directional derivatives no longer give NaN at a point where a clamped term such as `sqrt(max(a-x,0))` or `exp(-1/max(a-x,0))` sits at its clamp. A tangent that is zero at run time now adds +0 even where the partial derivative is infinite or NaN, so the derivative of `sqrt(u^2)` at u = 0 is 0. Elsewhere the only change is the sign of some zero entries (-0 against +0). The ensemble benchmark results do not change.
+- Jacobians and directional derivatives no longer give NaN at a point where a clamped term such as `sqrt(max(a-x,0))` or `exp(-1/max(a-x,0))` sits at its clamp. A tangent that is zero at run time now adds +0 even where the partial derivative is infinite or NaN, so the derivative of `sqrt(u^2)` at u = 0 is 0. Every stored zero derivative is +0 in every evaluator (the DAG, the interpreter, the JIT and the AOT C). Product terms and chain terms of a call whose other factor or argument can be non-finite are guarded the same way, for example in `exp(-c*(1/max(a-x-10,0)))` and `exp(-(1/max(a-x-10,0))^2)`. Elsewhere the only change is the sign of some zero entries (-0 against +0). The ensemble benchmark results do not change.
 
 ### Compatibility
 
