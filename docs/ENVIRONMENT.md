@@ -33,6 +33,8 @@ The toolchain comes from Fedora packages, from the `updates-testing` repo, which
 
 Discovery found the set at `1.99.0-1.fc45` with only the host std. Fedora offered the Windows std (`rust-std-static-x86_64-pc-windows-gnu`) only at 1.98.1 in `fedora` and 1.99.1 in `updates-testing`, and a target std must come from the same build as `rustc`. The install therefore moved the whole set to 1.99.1. Spike results from WSL record the `rustc` of each run, and runs before 16:20Z used 1.99.0.
 
+By 2026-11-18 a Fedora update had moved the whole set to `1.100.0-1.fc45` (rustfmt 1.11.0, clippy 0.1.100), the Windows std included, so `rustc -vV` and the Windows std still match. CI still pins 1.99.1. Clippy 0.1.100 flags `needless_range_loop` in ten test loops that 0.1.99 accepted; those loops now use iterators. The table above records the 1.99.1 install.
+
 `updates-testing` also has 1.99.1 std packages for `i686-pc-windows-gnu`, `wasm32-unknown-unknown`, `wasm32-wasip1`, `x86_64-unknown-none`, `x86_64-unknown-uefi`, `aarch64-unknown-uefi` and `aarch64-unknown-none-softfloat`.
 
 Commands: `rustc -vV`, `cargo -V`, `rustfmt -V`, `cargo clippy -V`, `rust-analyzer --version`, `rpm -q rust cargo rust-std-static rust-std-static-x86_64-pc-windows-gnu rust-src rustfmt clippy rust-analyzer`, `dnf list --installed 'rust-std-static*'`, and `dnf list --available --showduplicates --enablerepo=updates-testing 'rust-std-static*'`.
