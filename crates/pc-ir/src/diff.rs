@@ -11,10 +11,13 @@
 //! partial)` instead of `Mul` (see [`zterm`]). A zero tangent then contributes `+0`, as in
 //! the interpreter. The first term of the quotient rule, `tangent / denominator`, is a
 //! `ZDiv` (see [`quotient_term`]): a zero tangent over a zero denominator, as in a clamped
-//! `max(m, 0)` inside `exp(-1 / m)`, is +0 and not `0 / 0`. The rules left on a plain `Mul`
-//! have partials that are finite wherever their argument is finite: `sin`, `cos`, `tan`,
-//! `atan`, `sinh`, `cosh`, `tanh`, `exp`, `abs` (through `sign`), `erf`, `erfc`, an integer
-//! power `n >= 1`, table slopes and `pow` with a constant integer exponent `>= 1`. The
+//! `max(m, 0)` inside `exp(-1 / m)`, is +0 and not `0 / 0`. The calls whose partials are
+//! finite wherever their argument is finite are `sin`, `cos`, `tan`, `atan`, `sinh`, `cosh`,
+//! `tanh`, `exp`, `abs` (through `sign`), `erf`, `erfc`, an integer power `n >= 1`, table
+//! slopes and `pow` with a constant integer exponent `>= 1`. Their term is a plain `Mul`
+//! unless [`Dag::may_be_nonfinite`] flags the argument (see [`call_term`]), because an
+//! infinite argument gives an infinite or NaN partial: the derivative of
+//! `cosh(1 / max(a - x - 10, 0))` along a zero tangent is +0 in the interpreter. The
 //! product rule multiplies each tangent by the other operand of the model, which can be
 //! infinite as well: `exp(-c * (1 / m))` with a clamped `c` and a zero `m` has a finite
 //! model value, since `exp(-inf)` is 0, and a zero tangent of `c` times the infinite `1 / m`
@@ -87,6 +90,24 @@ pub(crate) fn product_term(dag: &mut Dag, tangent: NodeId, other: NodeId) -> Nod
         zterm(dag, tangent, |_| other)
     } else {
         term(dag, tangent, |_| other)
+    }
+}
+
+/// `tangent * partial()` for a call whose partial is finite for every finite argument: the
+/// term is a `ZMul` when [`Dag::may_be_nonfinite`] flags the argument `arg`, because an
+/// infinite or NaN argument gives an infinite or NaN partial (`cosh(1/m)` has the partial
+/// `sinh(1/m)`), and a zero tangent must still give +0. A plain `mul` otherwise, so a model
+/// whose arguments are never flagged gets no new guard.
+fn call_term(
+    dag: &mut Dag,
+    tangent: NodeId,
+    arg: NodeId,
+    partial: impl FnOnce(&mut Dag) -> NodeId,
+) -> NodeId {
+    if dag.may_be_nonfinite(arg) {
+        zterm(dag, tangent, partial)
+    } else {
+        term(dag, tangent, partial)
     }
 }
 
@@ -260,7 +281,7 @@ fn rule(dag: &mut Dag, memo: &HashMap<(NodeId, Wrt), NodeId>, node: NodeId, wrt:
             if n < 0 {
                 zterm(dag, da, slope)
             } else {
-                term(dag, da, slope)
+                call_term(dag, da, a, slope)
             }
         }
         Op::Call1(f, a) => {
@@ -278,7 +299,7 @@ fn rule(dag: &mut Dag, memo: &HashMap<(NodeId, Wrt), NodeId>, node: NodeId, wrt:
         }
         Op::Table(id, a) => {
             let da = dc(dag, a);
-            term(dag, da, |g| g.table_slope(id, a))
+            call_term(dag, da, a, |g| g.table_slope(id, a))
         }
     }
 }
@@ -303,12 +324,12 @@ fn inv_sqrt_1m_sq(g: &mut Dag, x: NodeId) -> NodeId {
 
 fn call1_rule(dag: &mut Dag, f: Fn1, node: NodeId, a: NodeId, da: NodeId) -> NodeId {
     match f {
-        Fn1::Sin => term(dag, da, |g| g.call1(Fn1::Cos, a)),
-        Fn1::Cos => term(dag, da, |g| {
+        Fn1::Sin => call_term(dag, da, a, |g| g.call1(Fn1::Cos, a)),
+        Fn1::Cos => call_term(dag, da, a, |g| {
             let s = g.call1(Fn1::Sin, a);
             g.neg(s)
         }),
-        Fn1::Tan => term(dag, da, |g| {
+        Fn1::Tan => call_term(dag, da, a, |g| {
             let one = g.konst(1.0);
             let tt = g.mul(node, node);
             g.add(one, tt)
@@ -318,20 +339,20 @@ fn call1_rule(dag: &mut Dag, f: Fn1, node: NodeId, a: NodeId, da: NodeId) -> Nod
             let r = inv_sqrt_1m_sq(g, a);
             g.neg(r)
         }),
-        Fn1::Atan => term(dag, da, |g| {
+        Fn1::Atan => call_term(dag, da, a, |g| {
             let one = g.konst(1.0);
             let aa = g.mul(a, a);
             let s = g.add(one, aa);
             g.div(one, s)
         }),
-        Fn1::Sinh => term(dag, da, |g| g.call1(Fn1::Cosh, a)),
-        Fn1::Cosh => term(dag, da, |g| g.call1(Fn1::Sinh, a)),
-        Fn1::Tanh => term(dag, da, |g| {
+        Fn1::Sinh => call_term(dag, da, a, |g| g.call1(Fn1::Cosh, a)),
+        Fn1::Cosh => call_term(dag, da, a, |g| g.call1(Fn1::Sinh, a)),
+        Fn1::Tanh => call_term(dag, da, a, |g| {
             let one = g.konst(1.0);
             let tt = g.mul(node, node);
             g.sub(one, tt)
         }),
-        Fn1::Exp => term(dag, da, |_| node),
+        Fn1::Exp => call_term(dag, da, a, |_| node),
         Fn1::Ln => zterm(dag, da, |g| {
             let one = g.konst(1.0);
             g.div(one, a)
@@ -348,9 +369,9 @@ fn call1_rule(dag: &mut Dag, f: Fn1, node: NodeId, a: NodeId, da: NodeId) -> Nod
             let s = g.mul(two, node);
             g.div(one, s)
         }),
-        Fn1::Abs => term(dag, da, |g| g.call1(Fn1::Sign, a)),
-        Fn1::Erf => term(dag, da, |g| erf_slope(g, a)),
-        Fn1::Erfc => term(dag, da, |g| {
+        Fn1::Abs => call_term(dag, da, a, |g| g.call1(Fn1::Sign, a)),
+        Fn1::Erf => call_term(dag, da, a, |g| erf_slope(g, a)),
+        Fn1::Erfc => call_term(dag, da, a, |g| {
             let s = erf_slope(g, a);
             g.neg(s)
         }),
@@ -394,7 +415,7 @@ fn call2_rule(
             };
             let finite_slope = !partial_may_be_nonfinite(dag, &Op::Call2(Fn2::Pow, a, b));
             let dx = if finite_slope {
-                term(dag, da, slope)
+                call_term(dag, da, a, slope)
             } else {
                 zterm(dag, da, slope)
             };

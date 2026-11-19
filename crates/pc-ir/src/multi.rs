@@ -83,8 +83,9 @@ struct Faa {
     done: HashMap<(usize, usize), NodeId>,
     sub: HashMap<NodeId, NodeId>,
     sums: [NodeId; 2],
-    /// The partials of this call can be infinite or NaN at a finite input, so a product
-    /// that is zero at run time must give +0 (see [`Op::ZMul`]).
+    /// The partials of this call can be infinite or NaN (at a finite input, or because an
+    /// argument is flagged by [`Dag::may_be_nonfinite`]), so a product that is zero at run
+    /// time must give +0 (see [`Op::ZMul`]).
     guard: bool,
 }
 
@@ -354,6 +355,11 @@ impl<'a> Builder<'a> {
                 sub.insert(place(self.dag, j), a);
             }
         }
+        // The partials are finite for a finite argument unless `partial_may_be_nonfinite` says
+        // otherwise, but an argument that can be infinite or NaN gives such a partial for any
+        // call (`cosh(1/m)` has the partial `sinh(1/m)`).
+        let guard = partial_may_be_nonfinite(self.dag, &op)
+            || args.iter().any(|&a| self.dag.may_be_nonfinite(a));
         let mut ctx = Faa {
             args: args.to_vec(),
             comps,
@@ -363,7 +369,7 @@ impl<'a> Builder<'a> {
             done: HashMap::new(),
             sub,
             sums: [self.zero; 2],
-            guard: partial_may_be_nonfinite(self.dag, &op),
+            guard,
         };
         let is_pow = matches!(op, Op::Call2(Fn2::Pow, ..));
         for (s, slot) in c.iter_mut().enumerate().skip(1) {

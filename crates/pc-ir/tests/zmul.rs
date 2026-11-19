@@ -402,23 +402,29 @@ fn packed(kind: &EntryKind, n: usize, n_p: usize) -> usize {
     }
 }
 
-#[test]
-fn a_clamped_factor_times_a_non_finite_one_gives_the_fallback_derivatives_bit_for_bit() {
+/// Runs every entry kind of `product_kinds` on every form at the `PRODUCT_POINTS` and the
+/// `PRODUCT_DIRS` and lists the values where the DAG and the fallback differ in bits (NaN
+/// equals NaN). `finite_value` asserts that the model value is finite at every point.
+fn against_the_fallback(
+    forms: Vec<(&'static str, String)>,
+    finite_value: bool,
+) -> (usize, Vec<String>) {
     let mut bad = Vec::new();
     let mut compared = 0usize;
-    for (what, rhs) in product_forms() {
+    for (what, rhs) in forms {
         let src = format!("par a=1\ninit x=0, y=0\nx'=-x+{rhs}\ny'=-y+x\ndone\n");
         let (mut ir, fb) = build(&src);
         let (n, n_p) = (ir.n(), ir.n_p());
-        // The model value is finite at every point: the infinite factor sits inside exp.
-        let ef = ir.entry(&EntryKind::F).expect("F");
-        for (x, a) in PRODUCT_POINTS {
-            let mut f = [f64::MAX; 2];
-            eval_entry(&ir.dag, &ef, &x, &a, &[], &mut f);
-            assert!(
-                f.iter().all(|v| v.is_finite()),
-                "{what}: F is {f:?} at {x:?}"
-            );
+        if finite_value {
+            let ef = ir.entry(&EntryKind::F).expect("F");
+            for (x, a) in PRODUCT_POINTS {
+                let mut f = [f64::MAX; 2];
+                eval_entry(&ir.dag, &ef, &x, &a, &[], &mut f);
+                assert!(
+                    f.iter().all(|v| v.is_finite()),
+                    "{what}: F is {f:?} at {x:?}"
+                );
+            }
         }
         for (name, kind) in product_kinds() {
             let entry = ir.entry(&kind).expect("entry");
@@ -451,7 +457,38 @@ fn a_clamped_factor_times_a_non_finite_one_gives_the_fallback_derivatives_bit_fo
             }
         }
     }
+    (compared, bad)
+}
+
+#[test]
+fn a_clamped_factor_times_a_non_finite_one_gives_the_fallback_derivatives_bit_for_bit() {
+    // The model value is finite at every point: the infinite factor sits inside exp.
+    let (compared, bad) = against_the_fallback(product_forms(), true);
     assert!(compared > 2_000, "only {compared} values compared");
+    assert!(
+        bad.is_empty(),
+        "{} of {compared} values differ, first: {:#?}",
+        bad.len(),
+        &bad[..bad.len().min(10)]
+    );
+}
+
+/// An infinite argument of a call whose own partial is finite for finite arguments: `exp`
+/// of a power of `1/m`, and `cosh` of `1/m`, where `m` is 0. The tangent of `1/m` is a
+/// zero at run time (the clamp has a zero tangent), and the partial of the call (`2*w` of
+/// the square, `sinh` of `cosh`) is infinite there. The fallback skips the zero tangent.
+fn non_finite_argument_forms() -> Vec<(&'static str, String)> {
+    let m = M;
+    vec![
+        ("exp of a squared reciprocal", format!("exp(-(1/{m})^2)")),
+        ("cosh of a reciprocal", format!("cosh(1/{m})")),
+    ]
+}
+
+#[test]
+fn a_zero_tangent_into_a_call_of_a_non_finite_argument_gives_the_fallback_derivatives() {
+    let (compared, bad) = against_the_fallback(non_finite_argument_forms(), false);
+    assert!(compared > 500, "only {compared} values compared");
     assert!(
         bad.is_empty(),
         "{} of {compared} values differ, first: {:#?}",

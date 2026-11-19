@@ -783,6 +783,84 @@ fn guarded_product_terms_match_eval_bit_for_bit() {
     assert!(zmuls > 0, "no derivative holds a ZMul");
 }
 
+/// `exp` of a power of `1/m` and `cosh` of `1/m`, where the clamp `m` is 0: the argument is
+/// infinite and has a zero tangent at run time. The fallback skips that tangent, so every
+/// derivative entry is +0. The JIT gives the fallback's bits and no NaN.
+#[test]
+fn a_zero_tangent_into_a_call_of_an_infinite_argument_gives_the_fallback_values() {
+    use pc_ir::Fallback;
+    use pc_ode::{MapLoader, Severity, SourceMap, load};
+    let m = "max(a-x-10,0)";
+    let forms = [format!("exp(-(1/{m})^2)"), format!("cosh(1/{m})")];
+    let kinds = [
+        EntryKind::JacU,
+        EntryKind::JacP,
+        EntryKind::Dir(vec![Slot::U]),
+        EntryKind::Dir(vec![Slot::P]),
+        EntryKind::Dir(vec![Slot::U, Slot::U]),
+        EntryKind::Dir(vec![Slot::U, Slot::P]),
+        EntryKind::Dir(vec![Slot::U, Slot::U, Slot::U]),
+        EntryKind::Dir(vec![Slot::Full, Slot::U]),
+    ];
+    let points = [
+        ([0.0], [1.0, 0.0]),
+        ([0.3], [1.0, 0.0]),
+        ([-0.4], [0.5, 0.0]),
+    ];
+    let dirs = [[1.0, 1.0, 1.0, 1.0], [1.0, 0.0, -0.5, 2.0]];
+    let mut compared = 0;
+    for rhs in &forms {
+        let src = format!("par a=1\ninit x=0\nx'={rhs}\ndone\n");
+        let mut map = SourceMap::new();
+        let top = map.add("t.ode", &src);
+        let l = load(top, &mut map, &mut MapLoader::new());
+        assert!(
+            l.diagnostics.iter().all(|d| d.severity != Severity::Error),
+            "{:?}",
+            l.diagnostics
+        );
+        let mut ir = lower(&l.expanded, &l.info).expect("lower");
+        let fb = Fallback::new(&l.expanded, &l.info, &ir);
+        let (n, n_p) = (ir.n(), ir.n_p());
+        let es: Vec<Entry> = kinds.iter().map(|k| ir.entry(k).expect("entry")).collect();
+        let pairs: Vec<(EntryKind, &Entry)> = kinds.iter().cloned().zip(es.iter()).collect();
+        let jit = compile(&pairs, &ir.dag).expect("compile");
+        for (kind, e) in &pairs {
+            let len: usize = match kind {
+                EntryKind::Dir(slots) => slots.iter().map(|s| s.len(n, n_p)).sum(),
+                _ => 0,
+            };
+            for (x, p) in points {
+                for dir in dirs.iter().take(if len == 0 { 1 } else { 2 }) {
+                    let v = &dir[..len];
+                    let mut want = vec![f64::NAN; e.outputs.len()];
+                    fb.eval(kind, &x, &p, v, &mut want);
+                    let mut got = vec![f64::MAX; e.outputs.len()];
+                    if matches!(kind, EntryKind::Dir(_)) {
+                        let f: DirFn = jit.dir(kind).expect("dir fn");
+                        // SAFETY: x has n, p has n_p + 1, v has len and got has one value.
+                        unsafe { f(x.as_ptr(), p.as_ptr(), v.as_ptr(), got.as_mut_ptr()) };
+                    } else {
+                        let f: PlainFn = jit.plain(kind).expect("plain fn");
+                        // SAFETY: lengths follow the entry contract.
+                        unsafe { f(x.as_ptr(), p.as_ptr(), got.as_mut_ptr()) };
+                    }
+                    for (k, (a, b)) in got.iter().zip(&want).enumerate() {
+                        compared += 1;
+                        assert_eq!(b.to_bits(), 0.0f64.to_bits(), "fallback {rhs} {kind:?}");
+                        assert!(
+                            same(*a, *b),
+                            "{rhs} {kind:?} x={x:?} out {k}: jit {a:?} vs fallback {b:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    // Two forms, eight entries, three points; the direction entries run two directions.
+    assert_eq!(compared, 84, "values compared");
+}
+
 fn kind_len(kind: &EntryKind) -> usize {
     match kind {
         EntryKind::Dir(slots) => slots.len(),

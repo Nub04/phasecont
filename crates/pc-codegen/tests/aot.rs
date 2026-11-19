@@ -399,6 +399,75 @@ fn a_derivative_entry_stores_plus_zero_in_aot() {
     assert!(raw_minus_zeros >= 1, "the raw DAG gave no -0");
 }
 
+/// `exp` of a power of `1/m` and `cosh` of `1/m`, where the clamp `m` is 0: the argument is
+/// infinite and its tangent is a zero at run time, so the fallback gives +0 for every
+/// derivative entry (the test `a_zero_tangent_into_a_call_of_a_non_finite_argument_gives_the_fallback_derivatives`
+/// in pc-ir shows that). The AOT C gives +0 and no NaN.
+#[test]
+fn a_zero_tangent_into_a_call_of_an_infinite_argument_gives_plus_zero_in_aot() {
+    let m = "max(a-x-10,0)";
+    let forms = [format!("exp(-(1/{m})^2)"), format!("cosh(1/{m})")];
+    let kinds = [
+        EntryKind::JacU,
+        EntryKind::JacP,
+        EntryKind::Dir(vec![Slot::U]),
+        EntryKind::Dir(vec![Slot::P]),
+        EntryKind::Dir(vec![Slot::U, Slot::U]),
+        EntryKind::Dir(vec![Slot::U, Slot::P]),
+        EntryKind::Dir(vec![Slot::U, Slot::U, Slot::U]),
+        EntryKind::Dir(vec![Slot::Full, Slot::U]),
+    ];
+    let points = [
+        ([0.0], [1.0, 0.0]),
+        ([0.3], [1.0, 0.0]),
+        ([-0.4], [0.5, 0.0]),
+    ];
+    let ccs = compilers();
+    if ccs.is_empty() {
+        println!("skip: no usable gcc or clang, AOT zero-tangent test not compiled");
+        return;
+    }
+    let mut compared = 0;
+    for rhs in &forms {
+        let mut ir = build_model(&format!("par a=1\ninit x=0\nx'={rhs}\ndone\n"));
+        let (n, n_p) = (ir.n(), ir.n_p());
+        let es: Vec<Entry> = kinds.iter().map(|k| ir.entry(k).expect("entry")).collect();
+        let named: Vec<(String, &Entry)> = es
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (format!("ent{i}"), e))
+            .collect();
+        let c = emit_c(&ir, &named).expect("emit");
+        for cc in &ccs {
+            let aot = compile_c(cc, "zero_tangent_call", &c);
+            for (i, e) in es.iter().enumerate() {
+                let len: usize = match &e.kind {
+                    EntryKind::Dir(slots) => slots.iter().map(|s| s.len(n, n_p)).sum(),
+                    _ => 0,
+                };
+                let is_dir = matches!(e.kind, EntryKind::Dir(_));
+                for (x, p) in points {
+                    for v in [[1.0, 1.0, 1.0, 1.0], [1.0, 0.0, -0.5, 2.0]] {
+                        let v = &v[..len];
+                        let mut got = vec![f64::MIN; e.outputs.len()];
+                        aot.call(&format!("ent{i}"), &x, &p, is_dir.then_some(v), &mut got);
+                        for (k, a) in got.iter().enumerate() {
+                            compared += 1;
+                            assert_eq!(
+                                a.to_bits(),
+                                0.0f64.to_bits(),
+                                "{cc} {rhs} {:?} x={x:?} out {k}: aot {a:?}, want +0",
+                                e.kind
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(compared > 100, "only {compared} values compared");
+}
+
 /// A malformed or missing table lowers to NaN and its argument stays dead, so the C has
 /// no unused variable (the tests compile with -Werror).
 #[test]
