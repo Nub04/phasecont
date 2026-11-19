@@ -465,7 +465,9 @@ fn a_zero_tangent_into_a_call_of_an_infinite_argument_gives_plus_zero_in_aot() {
             }
         }
     }
-    assert!(compared > 100, "only {compared} values compared");
+    // 2 forms, 8 entries of one output each, 3 points and 2 directions per compiler. A
+    // runner may have only one compiler (the Windows CI job has gcc alone).
+    assert_eq!(compared, 96 * ccs.len(), "values compared");
 }
 
 /// A malformed or missing table lowers to NaN and its argument stays dead, so the C has
