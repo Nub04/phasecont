@@ -374,10 +374,10 @@ fn the_draws_of_a_model_that_is_finite_everywhere_are_the_old_ones() {
     // `usable_points` draws `x`, `p`, then each direction vector, in this order and from the
     // one generator, so the first `points` draws are exactly what the checks drew before
     // points could be dropped.
-    let (_fb, mut ir) = setup("par a=1.5\ninit x=0.5,y=0.2\nx'=a*x*y\ny'=-y\ndone\n");
+    let (fb, mut ir) = setup("par a=1.5\ninit x=0.5,y=0.2\nx'=a*x*y\ny'=-y\ndone\n");
     ir.entry(&EntryKind::F).unwrap();
     let opt = low_order(6, 7, 1);
-    let (found, drawn) = usable_points(&ir, &mut Rng(7), &opt, &[2, 3]);
+    let (found, drawn) = usable_points(&ir, &fb, &mut Rng(7), &opt, &[2, 3]);
     assert_eq!((found.len(), drawn), (6, 6));
     let mut rng = Rng(7);
     for s in &found {
@@ -390,27 +390,33 @@ fn the_draws_of_a_model_that_is_finite_everywhere_are_the_old_ones() {
 
 #[test]
 fn a_redraw_takes_the_next_draw_and_keeps_the_order_of_the_stream() {
-    let (_fb, mut ir) = setup(NAN_HALF);
+    let (fb, mut ir) = setup(NAN_HALF);
     ir.entry(&EntryKind::F).unwrap();
     let opt = low_order(30, 3, 1);
-    let (found, drawn) = usable_points(&ir, &mut Rng(3), &opt, &[2]);
+    let (found, drawn) = usable_points(&ir, &fb, &mut Rng(3), &opt, &[2]);
     assert_eq!(found.len(), 30);
     assert!(drawn > 30 && drawn <= 300, "{drawn}");
     // The same call again gives the same points.
-    let (again, drawn2) = usable_points(&ir, &mut Rng(3), &opt, &[2]);
+    let (again, drawn2) = usable_points(&ir, &fb, &mut Rng(3), &opt, &[2]);
     assert_eq!(drawn, drawn2);
     for (a, b) in found.iter().zip(&again) {
         assert_eq!((&a.x, &a.p, &a.dirs), (&b.x, &b.p, &b.dirs));
     }
-    // Every kept point has a finite model value, every dropped one does not.
+    // Every kept point has a finite model value in the fallback, every dropped one does not.
+    // Here the DAG and the fallback agree everywhere, so the DAG's value is not finite at
+    // exactly the dropped points too.
     let mut rng = Rng(3);
     let mut kept = 0;
     for _ in 0..drawn {
         let (x, p) = draw_point(&ir, &mut rng, opt.half_width);
         let _dir: Vec<f64> = (0..2).map(|_| rng.range(-1.0, 1.0)).collect();
-        let finite = run(&ir, &EntryKind::F, &x, &p, &[])
+        let mut want = vec![f64::NAN; 2];
+        fb.eval(&EntryKind::F, &x, &p, &[], &mut want);
+        let finite = want.iter().all(|y| y.is_finite());
+        let dag_finite = run(&ir, &EntryKind::F, &x, &p, &[])
             .iter()
             .all(|y| y.is_finite());
+        assert_eq!(finite, dag_finite);
         if finite {
             assert_eq!(found[kept].x, x);
             kept += 1;
@@ -439,6 +445,201 @@ fn a_finite_model_value_with_a_non_finite_derivative_is_compared_and_fails() {
     let a = rep.find("A (FD)").unwrap();
     assert!(!a.pass && a.points == 5 && a.skipped_points == 0, "{rep}");
     assert!(!rep.passed());
+}
+
+/// `F` of the DAG and of the fallback at `x`, with `t = 0`. The tests below use it to check
+/// that the two evaluators differ where a test says they do.
+fn f_pair(ir: &mut IrModel, fb: &Fallback, x: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    ir.entry(&EntryKind::F).unwrap();
+    let p = [0.0];
+    let got = run(ir, &EntryKind::F, x, &p, &[]);
+    let mut want = vec![f64::NAN; got.len()];
+    fb.eval(&EntryKind::F, x, &p, &[], &mut want);
+    (got, want)
+}
+
+/// The `F` row of a check of `dag_src` against the fallback of `fb_src`, as in
+/// `a_wrong_reference_is_reported_with_its_point`.
+fn f_row_of_pair(dag_src: &str, fb_src: &str, points: usize, seed: u64) -> (Report, EntryReport) {
+    let (_, mut ir) = setup(dag_src);
+    let (fb, _) = setup(fb_src);
+    let rep = check_model_with(&mut ir, &fb, &low_order(points, seed, 1));
+    let f = rep.find("F").unwrap().clone();
+    (rep, f)
+}
+
+#[test]
+fn a_dag_value_that_is_nan_where_the_fallback_is_finite_fails_the_f_row() {
+    // The DAG's F is x + 1e-300 * sqrt(x), NaN for x < 0. The fallback's F is x. The two
+    // agree for x >= 0 (the extra term is far below an ulp) and disagree for x < 0, where
+    // x is drawn in [-0.5, 0.5).
+    let dag_src = "init x=0\nx'=x+1e-300*sqrt(x)\ndone\n";
+    let fb_src = "init x=0\nx'=x\ndone\n";
+    let (_, mut ir) = setup(dag_src);
+    let (fb, _) = setup(fb_src);
+    let (got, want) = f_pair(&mut ir, &fb, &[-0.25]);
+    assert!(got[0].is_nan() && want[0] == -0.25, "{got:?} {want:?}");
+    let (got, want) = f_pair(&mut ir, &fb, &[0.25]);
+    assert_eq!(got, want);
+
+    let (rep, f) = f_row_of_pair(dag_src, fb_src, 20, 1);
+    // No draw is dropped: the point where only the DAG is NaN is kept and compared.
+    assert_eq!((f.points, f.skipped_points), (20, 0), "{rep}");
+    assert!(
+        !f.pass && f.compared == 20 && f.ratio.is_infinite(),
+        "{rep}"
+    );
+    assert!(f.x[0] < 0.0, "{rep}");
+    assert!(!rep.passed());
+}
+
+#[test]
+fn a_dag_value_that_is_finite_where_the_fallback_is_nan_fails_the_f_row() {
+    let dag_src = "init x=0\nx'=x\ndone\n";
+    let fb_src = "init x=0\nx'=x+1e-300*sqrt(x)\ndone\n";
+    let (_, mut ir) = setup(dag_src);
+    let (fb, _) = setup(fb_src);
+    let (got, want) = f_pair(&mut ir, &fb, &[-0.25]);
+    assert!(got[0] == -0.25 && want[0].is_nan(), "{got:?} {want:?}");
+
+    let (rep, f) = f_row_of_pair(dag_src, fb_src, 20, 1);
+    assert_eq!((f.points, f.skipped_points), (20, 0), "{rep}");
+    assert!(
+        !f.pass && f.compared == 20 && f.ratio.is_infinite(),
+        "{rep}"
+    );
+    assert!(f.x[0] < 0.0, "{rep}");
+}
+
+#[test]
+fn infinities_of_opposite_sign_fail_the_f_row_and_are_compared() {
+    // exp(1000 + x) overflows at every sample point: +inf in the DAG, -inf in the fallback.
+    let dag_src = "init x=0\nx'=exp(1000+x)\ndone\n";
+    let fb_src = "init x=0\nx'=-exp(1000+x)\ndone\n";
+    let (_, mut ir) = setup(dag_src);
+    let (fb, _) = setup(fb_src);
+    let (got, want) = f_pair(&mut ir, &fb, &[0.1]);
+    assert_eq!((got[0], want[0]), (f64::INFINITY, f64::NEG_INFINITY));
+
+    let (rep, f) = f_row_of_pair(dag_src, fb_src, 12, 1);
+    // The row compared the 12 values and found them different: it did not skip every draw
+    // and fail for having nothing to compare.
+    assert_eq!(
+        (f.points, f.skipped_points, f.compared),
+        (12, 0, 12),
+        "{rep}"
+    );
+    assert!(!f.pass && f.ratio.is_infinite(), "{rep}");
+    let line = f.to_string();
+    assert!(!line.contains("nothing was compared"), "{line}");
+}
+
+#[test]
+fn an_infinity_in_the_dag_against_nan_in_the_fallback_fails_the_f_row() {
+    // The fallback computes inf - inf, which is NaN, where the DAG gives +inf.
+    let dag_src = "init x=0\nx'=exp(1000+x)\ndone\n";
+    let fb_src = "init x=0\nx'=exp(1000+x)-exp(1001+x)\ndone\n";
+    let (_, mut ir) = setup(dag_src);
+    let (fb, _) = setup(fb_src);
+    let (got, want) = f_pair(&mut ir, &fb, &[0.1]);
+    assert!(
+        got[0] == f64::INFINITY && want[0].is_nan(),
+        "{got:?} {want:?}"
+    );
+
+    let (rep, f) = f_row_of_pair(dag_src, fb_src, 12, 1);
+    assert_eq!(
+        (f.points, f.skipped_points, f.compared),
+        (12, 0, 12),
+        "{rep}"
+    );
+    assert!(!f.pass && f.ratio.is_infinite(), "{rep}");
+    let line = f.to_string();
+    assert!(!line.contains("nothing was compared"), "{line}");
+}
+
+#[test]
+fn a_draw_that_is_nan_in_the_dag_and_in_the_fallback_is_skipped_and_counted() {
+    // sqrt(x) in the DAG and x^0.5 in the fallback are NaN for x < 0 and agree within a few
+    // ulps for x >= 0. The draws with x < 0 are dropped, no row fails, and the rows count
+    // what they dropped.
+    let dag_src = "init x=0\nx'=sqrt(x)\ndone\n";
+    let fb_src = "init x=0\nx'=x^0.5\ndone\n";
+    let (_, mut ir) = setup(dag_src);
+    let (fb, _) = setup(fb_src);
+    let (got, want) = f_pair(&mut ir, &fb, &[-0.25]);
+    assert!(got[0].is_nan() && want[0].is_nan(), "{got:?} {want:?}");
+    let (got, want) = f_pair(&mut ir, &fb, &[0.25]);
+    assert_eq!((got[0], want[0]), (0.5, 0.5));
+
+    let (rep, f) = f_row_of_pair(dag_src, fb_src, 20, 1);
+    assert!(f.pass, "{rep}");
+    assert_eq!((f.points, f.compared), (20, 20), "{rep}");
+    assert!(f.skipped_points > 0, "{rep}");
+    let drawn = 20 + f.skipped_points;
+    let line = f.to_string();
+    assert!(
+        line.contains(&format!("(20 usable of {drawn} drawn")),
+        "{line}"
+    );
+}
+
+#[test]
+fn a_nan_shared_by_both_evaluators_does_not_hide_a_finite_mismatch_at_another_element() {
+    // Element 0 is NaN on both sides for x < 0. Element 1 is 2y in the DAG and y in the
+    // fallback, which differ wherever y is not tiny. The draw is kept, so the F row sees
+    // the mismatch at every point, those with x < 0 included.
+    let dag_src = "init x=0,y=0.5\nx'=sqrt(x)\ny'=2*y\ndone\n";
+    let fb_src = "init x=0,y=0.5\nx'=sqrt(x)\ny'=y\ndone\n";
+    let (_, mut ir) = setup(dag_src);
+    let (fb, _) = setup(fb_src);
+    let (got, want) = f_pair(&mut ir, &fb, &[-0.25, 0.5]);
+    assert!(got[0].is_nan() && want[0].is_nan(), "{got:?} {want:?}");
+    assert_eq!((got[1], want[1]), (1.0, 0.5));
+
+    let (rep, f) = f_row_of_pair(dag_src, fb_src, 20, 1);
+    assert_eq!((f.points, f.skipped_points), (20, 0), "{rep}");
+    assert!(!f.pass && f.ratio > 1.0 && f.ratio.is_finite(), "{rep}");
+}
+
+#[test]
+fn the_draws_are_the_same_every_run_when_the_two_evaluators_disagree() {
+    let dag_src = "init x=0\nx'=x+1e-300*sqrt(x)\ndone\n";
+    let fb_src = "init x=0\nx'=x\ndone\n";
+    let (r1, f1) = f_row_of_pair(dag_src, fb_src, 15, 4);
+    let (r2, f2) = f_row_of_pair(dag_src, fb_src, 15, 4);
+    assert_eq!(r1.to_string(), r2.to_string());
+    assert_eq!((f1.x, f1.p), (f2.x, f2.p));
+}
+
+#[test]
+fn usable_points_keeps_every_draw_where_the_two_evaluators_disagree() {
+    // The DAG is NaN for x < 0 and the fallback is finite there. The draws are the first
+    // ones of the stream, none is replaced, and the stream is the one a model that agrees
+    // with its fallback gives.
+    let (_, mut ir) = setup("init x=0\nx'=x+1e-300*sqrt(x)\ndone\n");
+    let (fb, _) = setup("init x=0\nx'=x\ndone\n");
+    ir.entry(&EntryKind::F).unwrap();
+    let opt = low_order(25, 9, 1);
+    let (found, drawn) = usable_points(&ir, &fb, &mut Rng(9), &opt, &[1]);
+    assert_eq!((found.len(), drawn), (25, 25));
+    assert!(found.iter().any(|s| s.x[0] < 0.0));
+    let mut rng = Rng(9);
+    for s in &found {
+        let (x, p) = draw_point(&ir, &mut rng, opt.half_width);
+        let d: Vec<f64> = vec![rng.range(-1.0, 1.0)];
+        assert_eq!((&s.x, &s.p, &s.dirs), (&x, &p, &vec![d]));
+    }
+}
+
+#[test]
+fn usable_points_drops_nothing_when_the_f_entry_is_not_built() {
+    // Without an F entry no point can be tested against it, as before.
+    let (_, ir) = setup(NAN_HALF);
+    let (fb, _) = setup(NAN_HALF);
+    let opt = low_order(10, 3, 1);
+    let (found, drawn) = usable_points(&ir, &fb, &mut Rng(3), &opt, &[2]);
+    assert_eq!((found.len(), drawn), (10, 10));
 }
 
 #[test]

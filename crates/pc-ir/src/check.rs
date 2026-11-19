@@ -159,13 +159,15 @@ pub struct EntryReport {
     pub x: Vec<f64>,
     /// `p` (with `t` last) where the worst error happened.
     pub p: Vec<f64>,
-    /// Usable sample points that the row ran on (the model value `f(x, p)` is finite there).
+    /// Usable sample points that the row ran on. A point is left out only when `f(x, p)` is
+    /// not finite in the fallback and the DAG gives the same value there.
     pub points: usize,
     /// Output values that were compared. An element that is NaN on both sides is an
     /// agreement but not a compared value, so it is not counted here.
     pub compared: usize,
     /// Sample points that were drawn and left out because the model value `f(x, p)` there
-    /// is not finite. The row drew `points + skipped_points` points in all.
+    /// is not finite in the fallback and the DAG gives the same. The row drew
+    /// `points + skipped_points` points in all.
     pub skipped_points: usize,
     /// Set when the entry could not be built, or when the row compared nothing.
     pub note: Option<String>,
@@ -268,6 +270,14 @@ fn element(a: f64, b: f64, allowed: f64) -> Option<(f64, f64)> {
         return Some((err, f64::INFINITY));
     }
     Some((err, err / allowed))
+}
+
+/// The comparison of one element of a DAG entry against the fallback, the one every row
+/// against the fallback uses: `a` is the DAG value, `b` the fallback value, `s` the scale of
+/// the fallback's vector and `e` the running error bound of `a`. See [`element`] for the
+/// result.
+fn compare_with_bound(a: f64, b: f64, s: f64, e: f64) -> Option<(f64, f64)> {
+    element(a, b, allowed_diff(a, b, s, Some(e)))
 }
 
 /// All entries checked for one model.
@@ -439,7 +449,7 @@ fn compare_kind(
         EntryKind::Dir(slots) => slots.iter().map(|s| s.len(n, n_p)).sum(),
         _ => 0,
     };
-    let (samples, drawn) = usable_points(ir, rng, opt, &[vlen]);
+    let (samples, drawn) = usable_points(ir, fb, rng, opt, &[vlen]);
     rep.skipped_points = drawn - samples.len();
     for sample in &samples {
         let (x, p, v) = (&sample.x, &sample.p, &sample.dirs[0]);
@@ -453,7 +463,7 @@ fn compare_kind(
             .iter()
             .zip(&want)
             .zip(&err)
-            .map(|((&a, &b), &e)| element(a, b, allowed_diff(a, b, s, Some(e))));
+            .map(|((&a, &b), &e)| compare_with_bound(a, b, s, e));
         rep.record(it, s, x, p);
     }
     rep.finish()
@@ -471,16 +481,47 @@ struct Sample {
     dirs: Vec<Vec<f64>>,
 }
 
-/// Draws sample points until `opt.points` of them have a finite model value `f(x, p)`, or
-/// until `MAX_DRAW_FACTOR * opt.points` points have been drawn. A point where `f` is not
-/// finite has no finite derivative to compare with, so it is dropped and the next one is
-/// drawn in its place. Each draw takes `x` and `p` (as [`draw_point`]) and then one vector
-/// of each length in `dir_lens`, in that order, so a seed reproduces the same points and
-/// when every point is usable the draws are the first `opt.points` ones, as before.
+/// Whether the model value `f(x, p)` is not finite and both evaluators say so. The fallback
+/// gives a value that is not finite at some element, and the DAG's `F` agrees with the
+/// fallback at every element under the rule of the `F` row ([`compare_with_bound`]): finite
+/// values within its allowance, NaN with NaN, `+inf` with `+inf`, `-inf` with `-inf`.
+///
+/// A point where the DAG and the fallback disagree is not one of these, even when the DAG's
+/// own value is not finite: the `F` row has to compare it and report the mismatch.
+/// Without a built `F` entry there is nothing to compare, and the answer is false.
+fn non_finite_in_both(ir: &IrModel, fb: &Fallback, x: &[f64], p: &[f64]) -> bool {
+    let Some(entry) = ir.entries.get(&EntryKind::F) else {
+        return false;
+    };
+    let mut want = vec![f64::NAN; entry.outputs.len()];
+    fb.eval(&EntryKind::F, x, p, &[], &mut want);
+    if want.iter().all(|y| y.is_finite()) {
+        return false;
+    }
+    let mut got = vec![f64::NAN; entry.outputs.len()];
+    let mut err = vec![f64::NAN; entry.outputs.len()];
+    eval_err(&ir.dag, &entry.outputs, x, p, &[], &mut got, &mut err);
+    let s = scale(&want);
+    got.iter()
+        .zip(&want)
+        .zip(&err)
+        .all(|((&a, &b), &e)| compare_with_bound(a, b, s, e).is_none_or(|(_, ratio)| ratio <= 1.0))
+}
+
+/// Draws sample points until `opt.points` of them are usable, or until
+/// `MAX_DRAW_FACTOR * opt.points` points have been drawn. A point is not usable when the
+/// model value `f(x, p)` is not finite in the fallback and the DAG gives the same value
+/// ([`non_finite_in_both`]): there is no finite derivative to compare with, so the point is
+/// dropped and the next one is drawn in its place. A point where the DAG's `f` is not finite
+/// and the fallback's is, or where the two differ in any other way, is usable, so the `F`
+/// row compares it and fails. Each draw takes `x` and `p` (as [`draw_point`]) and then one
+/// vector of each length in `dir_lens`, in that order, so a seed reproduces the same points
+/// and when every point is usable the draws are the first `opt.points` ones, as before.
 /// Returns the usable points and the number of points drawn. The `F` entry must already be
 /// built (the `F` row builds it first); without it no point can be tested and none is dropped.
 fn usable_points(
     ir: &IrModel,
+    fb: &Fallback,
     rng: &mut Rng,
     opt: &Options,
     dir_lens: &[usize],
@@ -495,10 +536,7 @@ fn usable_points(
             .map(|&len| (0..len).map(|_| rng.range(-1.0, 1.0)).collect())
             .collect();
         drawn += 1;
-        if run(ir, &EntryKind::F, &x, &p, &[])
-            .iter()
-            .all(|y| y.is_finite())
-        {
+        if !non_finite_in_both(ir, fb, &x, &p) {
             found.push(Sample { x, p, dirs });
         }
     }
@@ -690,7 +728,7 @@ pub fn check_model_with(ir: &mut IrModel, fb: &Fallback, opt: &Options) -> Repor
         }
     }
 
-    entries.extend(fd_checks(ir, opt, &mut rng));
+    entries.extend(fd_checks(ir, fb, opt, &mut rng));
     Report {
         entries,
         points: opt.points,
@@ -698,7 +736,7 @@ pub fn check_model_with(ir: &mut IrModel, fb: &Fallback, opt: &Options) -> Repor
     }
 }
 
-fn fd_checks(ir: &mut IrModel, opt: &Options, rng: &mut Rng) -> Vec<EntryReport> {
+fn fd_checks(ir: &mut IrModel, fb: &Fallback, opt: &Options, rng: &mut Rng) -> Vec<EntryReport> {
     let (n, n_p) = (ir.n(), ir.n_p());
     let u1 = EntryKind::Dir(vec![Slot::U]);
     let u2 = EntryKind::Dir(vec![Slot::U, Slot::U]);
@@ -727,7 +765,7 @@ fn fd_checks(ir: &mut IrModel, opt: &Options, rng: &mut Rng) -> Vec<EntryReport>
     let mut fa_pts = Vec::new();
     let mut b_pts = Vec::new();
     let mut c_pts = Vec::new();
-    let (samples, drawn) = usable_points(ir, rng, opt, &[n, n, n]);
+    let (samples, drawn) = usable_points(ir, fb, rng, opt, &[n, n, n]);
     let skipped = drawn - samples.len();
     for smp in &samples {
         let (x, p) = (&smp.x, &smp.p);
