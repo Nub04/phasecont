@@ -349,9 +349,11 @@ impl Lexer<'_> {
             },
         };
         // A backslash moved behind a `#` would sit in a comment and swallow
-        // the next line (BACKSLASH_COMMENT), so text that holds a `#` only
+        // the next line (BACKSLASH_COMMENT). Moved behind text that holds a
+        // backslash, it would leave that backslash in the middle of the line
+        // and still drop what follows it. Text with either character only
         // gets the delete.
-        let fixes = if dropped.contains('#') {
+        let fixes = if dropped.contains(['#', '\\']) {
             vec![delete]
         } else {
             let mut moved = after.trim_end_matches([' ', '\t']).to_string();
@@ -1099,6 +1101,26 @@ mod tests {
         // A backslash moved behind a `#` would sit in a comment.
         for text in ["1+\\ # note\n2", "1+\\ x # note\n2"] {
             let (_, diags) = lex(F, text);
+            assert_eq!(
+                titles(&diags[0]),
+                vec!["Delete the text after the backslash"],
+                "{text:?}"
+            );
+            let fixed = apply(text, &diags[0].fixes[0]);
+            let (_, again) = lex(F, &fixed);
+            assert!(again.is_empty(), "{fixed:?}: {again:#?}");
+        }
+    }
+
+    #[test]
+    fn dropped_text_with_a_backslash_only_has_the_delete_fix() {
+        // The Move fix would put the backslash after text that already holds
+        // one, so the fixed line would still carry a backslash in the middle
+        // of its text (` b \ \`, `C:\dir \`). Only the delete is offered.
+        for text in ["a=1+\\ b \\\nc", "a=1+\\ C:\\dir\nc"] {
+            let (_, diags) = lex(F, text);
+            assert_eq!(diags.len(), 1, "{text:?}: {diags:#?}");
+            assert_eq!(diags[0].code, BACKSLASH_TEXT, "{text:?}");
             assert_eq!(
                 titles(&diags[0]),
                 vec!["Delete the text after the backslash"],
