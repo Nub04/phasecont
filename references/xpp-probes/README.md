@@ -253,9 +253,11 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `op-ne` | Is != accepted (1!=2)? | `1!=2` | error (no output) | ODE0007 error, not an operator | matches |
 | `op-single-eq` | Is a single = inside a formula accepted (1=2)? | `1=2` | error (no output) | ODE0008 error, write `==` | matches |
 | `opt-njmp-last` | njmp=4, then nout=2 on a later @ line: which wins (XPPAUT 8.2.2)? | `@ njmp=4` then `@ nout=2` | rows=5 (nout=2 wins) | no diagnostic; the model info lists njmp=2 | matches |
+| `opt-njmp-same-line` | njmp=4, then nout=2 in the same @ list: which wins (XPPAUT 8.2.2)? | `@ ...,njmp=4,nout=2` | rows=5 (nout=2 wins) | no diagnostic; the model info lists njmp=2 | matches |
 | `opt-nout` | Does nout=2 set the output step like njmp=2 (XPPAUT 8.2.2)? | `@ ...,nout=2` | t@2=1 | no diagnostic; the model info lists njmp=2 | matches |
 | `opt-nout-last` | nout=2, then njmp=4 on a later @ line: which wins (XPPAUT 8.2.2)? | `@ ...,nout=2` then `@ njmp=4` | rows=3 (njmp=4 wins) | no diagnostic; the model info lists njmp=4 | matches |
 | `opt-nout-prefix` | Does a key that starts with nout, such as noutx, set njmp (XPPAUT 8.2.2)? | `@ ...,noutx=2` | t@2=1 | no diagnostic; the model info lists njmp=2 | matches |
+| `opt-nout-same-line` | nout=2, then njmp=4 in the same @ list: which wins (XPPAUT 8.2.2)? | `@ ...,nout=2,njmp=4` | rows=3 (njmp=4 wins) | no diagnostic; the model info lists njmp=4 | matches |
 | `opt-nout-short` | Does nou, a key shorter than nout, set the output step (XPPAUT 8.2.2)? | `@ ...,nou=2` | rows=9 (nothing set) | ODE0024 warning, unknown option | matches |
 | `opt-prefix-dt` | Does a key that starts with dt, such as dtx, set dt? | `@ dtx=0.5,total=1` | t@2=0.5 | no diagnostic | matches |
 | `opt-prefix-short` | Does tot, a key shorter than total, set total? | `@ tot=2,dt=1` | t@21=20 (total stays 20) | ODE0024 warning, unknown option | matches |
