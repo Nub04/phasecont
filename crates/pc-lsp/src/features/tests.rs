@@ -242,6 +242,65 @@ fn an_empty_replacement_is_a_removal() {
     assert_eq!(action.title, "Remove this text");
 }
 
+fn fixes(list: &[(&str, &str)]) -> serde_json::Value {
+    let range = Range::new(Position::new(1, 0), Position::new(1, 3));
+    let entries: Vec<_> = list
+        .iter()
+        .map(|(title, text)| serde_json::json!({ "title": title, "range": range, "newText": text }))
+        .collect();
+    serde_json::json!({
+        "fix": { "range": range, "newText": list[0].1 },
+        "fixes": entries,
+    })
+}
+
+#[test]
+fn several_fixes_give_one_action_each_and_only_the_first_is_preferred() {
+    let uri = uri_from_path(NAME).unwrap();
+    let data = fixes(&[("Move the backslash", "5 \\"), ("Delete the text", "")]);
+    let d = diagnostic_with(Some(data), "phasecont");
+    let actions = code_actions(&uri, &[d]);
+    let got: Vec<(String, Option<bool>, String)> = actions
+        .iter()
+        .map(|a| {
+            let CodeActionOrCommand::CodeAction(a) = a else {
+                panic!("not a code action");
+            };
+            let edits = a.edit.as_ref().unwrap().changes.as_ref().unwrap();
+            (
+                a.title.clone(),
+                a.is_preferred,
+                edits[&uri][0].new_text.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (
+                "Move the backslash".to_string(),
+                Some(true),
+                "5 \\".to_string()
+            ),
+            ("Delete the text".to_string(), Some(false), String::new()),
+        ]
+    );
+}
+
+#[test]
+fn a_fixes_list_that_does_not_read_falls_back_to_the_single_fix() {
+    let uri = uri_from_path(NAME).unwrap();
+    let mut data = fix("par");
+    data["fixes"] = serde_json::json!([{ "title": "no range" }, 3]);
+    let actions = code_actions(&uri, &[diagnostic_with(Some(data), "phasecont")]);
+    assert_eq!(actions.len(), 1);
+    let CodeActionOrCommand::CodeAction(action) = &actions[0] else {
+        panic!("not a code action");
+    };
+    assert_eq!(action.title, "Replace with `par`");
+    assert_eq!(action.is_preferred, Some(true));
+}
+
 #[test]
 fn diagnostics_without_a_fix_or_from_another_source_give_no_action() {
     let uri = uri_from_path(NAME).unwrap();

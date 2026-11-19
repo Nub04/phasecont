@@ -307,6 +307,86 @@ fn a_fix_it_comes_back_as_a_quick_fix() {
     c.finish();
 }
 
+/// The code actions the server offers for the diagnostic with `code` in
+/// `text`, as (title, isPreferred, edit text) in the order sent.
+fn actions_for(code: &str, text: &str) -> Vec<(String, Option<bool>, String)> {
+    let mut c = Client::plain();
+    c.open(URI, 1, text);
+    let p = c.diagnostics(URI);
+    let d = p["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["code"] == code)
+        .unwrap_or_else(|| panic!("no {code} in {p}"))
+        .clone();
+    let actions = c.result(
+        "textDocument/codeAction",
+        json!({
+            "textDocument": {"uri": URI},
+            "range": d["range"],
+            "context": {"diagnostics": [d]}
+        }),
+    );
+    let got = actions
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| {
+            (
+                a["title"].as_str().unwrap().to_string(),
+                a["isPreferred"].as_bool(),
+                a["edit"]["changes"][URI][0]["newText"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+            )
+        })
+        .collect();
+    c.finish();
+    got
+}
+
+#[test]
+fn text_after_a_backslash_offers_two_quick_fixes_and_the_first_is_preferred() {
+    let got = actions_for("ODE0075", "par a=1\nx'=-a*x+\\5\n1\ninit x=1\ndone\n");
+    assert_eq!(
+        got,
+        vec![
+            (
+                "Move the backslash to the end of the line".to_string(),
+                Some(true),
+                "5 \\".to_string()
+            ),
+            (
+                "Delete the text after the backslash".to_string(),
+                Some(false),
+                String::new()
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_comment_that_ends_in_a_backslash_offers_two_quick_fixes() {
+    let got = actions_for("ODE0076", "par a=1\n# a note \\\nx'=-a*x\ninit x=1\ndone\n");
+    assert_eq!(
+        got,
+        vec![
+            (
+                "Remove the backslash at the end of the comment".to_string(),
+                Some(true),
+                String::new()
+            ),
+            (
+                "Comment out the next line".to_string(),
+                Some(false),
+                "\n# ".to_string()
+            ),
+        ]
+    );
+}
+
 #[test]
 fn queued_edits_cost_one_analysis_of_the_last_text() {
     let (server_side, conn) = Connection::memory();

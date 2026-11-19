@@ -196,3 +196,44 @@ fn a_fix_it_in_the_same_file_travels_with_the_diagnostic() {
     assert!(data["fix"]["range"]["start"]["line"].is_number());
     assert!(data["fix"]["newText"].is_string());
 }
+
+/// The titles of the fixes in the data of the first diagnostic with `code`
+/// in the invalid sample `name`, and whether `fix` repeats the first one.
+fn fix_titles(name: &str, code: &str) -> Vec<String> {
+    let path = invalid_dir().join(name);
+    let text = std::fs::read_to_string(&path).unwrap();
+    let a = analysis_of(&path, text);
+    let lsp = to_lsp(&a, &mut |n| name_to_uri(n));
+    let (_, d) = lsp
+        .iter()
+        .find(|(_, d)| d.code == Some(NumberOrString::String(code.to_string())))
+        .unwrap_or_else(|| panic!("{name} gives no {code}"));
+    let data = d.data.as_ref().expect("fix data");
+    let list = data["fixes"].as_array().expect("a fixes list");
+    assert_eq!(
+        data["fix"]["newText"], list[0]["newText"],
+        "`fix` is the first of `fixes`"
+    );
+    assert_eq!(data["fix"]["range"], list[0]["range"]);
+    list.iter()
+        .map(|f| f["title"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn the_backslash_warnings_carry_their_fixes_with_titles_in_order() {
+    assert_eq!(
+        fix_titles("ode0075.ode", "ODE0075"),
+        [
+            "Move the backslash to the end of the line",
+            "Delete the text after the backslash"
+        ]
+    );
+    assert_eq!(
+        fix_titles("ode0076.ode", "ODE0076"),
+        [
+            "Remove the backslash at the end of the comment",
+            "Comment out the next line"
+        ]
+    );
+}

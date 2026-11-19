@@ -245,30 +245,70 @@ pub fn definition(
     Some(Location::new(uri, range))
 }
 
-/// The fix that the server put into a diagnostic's `data`, if it reads as one.
-fn fix_of(d: &Diagnostic) -> Option<(Range, String)> {
-    let fix = d.data.as_ref()?.get("fix")?;
-    let range = serde_json::from_value(fix.get("range")?.clone()).ok()?;
-    let new_text = fix.get("newText")?.as_str()?.to_string();
-    Some((range, new_text))
+/// One fix that the server put into a diagnostic's `data`.
+struct DataFix {
+    /// The title the server chose, if it gave one.
+    title: Option<String>,
+    range: Range,
+    new_text: String,
+}
+
+fn read_fix(value: &serde_json::Value) -> Option<DataFix> {
+    let range = serde_json::from_value(value.get("range")?.clone()).ok()?;
+    let new_text = value.get("newText")?.as_str()?.to_string();
+    let title = value
+        .get("title")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    Some(DataFix {
+        title,
+        range,
+        new_text,
+    })
+}
+
+/// The fixes in a diagnostic's `data`, preferred first: the titled list
+/// `fixes` when it reads as one, else the single `fix`. An entry that does
+/// not read as a fix is left out.
+fn fixes_of(d: &Diagnostic) -> Vec<DataFix> {
+    let Some(data) = d.data.as_ref() else {
+        return Vec::new();
+    };
+    let listed: Vec<DataFix> = data
+        .get("fixes")
+        .and_then(serde_json::Value::as_array)
+        .map(|a| a.iter().filter_map(read_fix).collect())
+        .unwrap_or_default();
+    if !listed.is_empty() {
+        return listed;
+    }
+    data.get("fix").and_then(read_fix).into_iter().collect()
 }
 
 /// Quick fixes for the diagnostics of `uri` that a code action request
-/// echoes back. A diagnostic from another source, one without a fix, and one
-/// whose data does not read as a fix give nothing.
+/// echoes back, one action per fix. The first fix of a diagnostic is the
+/// preferred one. A diagnostic from another source, one without a fix, and
+/// one whose data does not read as a fix give nothing.
 pub fn code_actions(uri: &Uri, diagnostics: &[Diagnostic]) -> Vec<CodeActionOrCommand> {
     diagnostics
         .iter()
         .filter(|d| d.source.as_deref() == Some(SOURCE))
-        .filter_map(|d| {
-            let (range, new_text) = fix_of(d)?;
-            let title = if new_text.is_empty() {
-                "Remove this text".to_string()
-            } else {
-                format!("Replace with `{new_text}`")
-            };
-            let edit = TextEdit::new(range, new_text);
-            Some(CodeActionOrCommand::CodeAction(CodeAction {
+        .flat_map(|d| {
+            fixes_of(d)
+                .into_iter()
+                .enumerate()
+                .map(move |(i, fix)| (d, i, fix))
+        })
+        .map(|(d, i, fix)| {
+            let title = fix.title.unwrap_or_else(|| {
+                if fix.new_text.is_empty() {
+                    "Remove this text".to_string()
+                } else {
+                    format!("Replace with `{}`", fix.new_text)
+                }
+            });
+            let edit = TextEdit::new(fix.range, fix.new_text);
+            CodeActionOrCommand::CodeAction(CodeAction {
                 title,
                 kind: Some(CodeActionKind::QUICKFIX),
                 diagnostics: Some(vec![d.clone()]),
@@ -276,9 +316,9 @@ pub fn code_actions(uri: &Uri, diagnostics: &[Diagnostic]) -> Vec<CodeActionOrCo
                     changes: Some(HashMap::from([(uri.clone(), vec![edit])])),
                     ..WorkspaceEdit::default()
                 }),
-                is_preferred: Some(true),
+                is_preferred: Some(i == 0),
                 ..CodeAction::default()
-            }))
+            })
         })
         .collect()
 }
