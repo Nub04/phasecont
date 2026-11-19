@@ -980,3 +980,50 @@ fn a_ten_percent_error_on_a_steep_model_still_fails() {
         assert!(!r.pass && r.ratio > 1.0, "seed {seed}: {r}");
     }
 }
+
+#[test]
+fn the_node_limit_applies_to_each_directional_mix_on_its_own() {
+    const SRC: &str = "par a=1.5\ninit x=0.5,y=0.2\nx'=a*sin(x)*y\ny'=cos(x)-y*y+exp(a*x)\ndone\n";
+    let base_kinds = [EntryKind::F, EntryKind::JacU, EntryKind::JacP];
+    // The nodes each mix adds to a model that holds only the entries built before the mixes.
+    let mut base = 0;
+    let mut biggest = 0;
+    let together;
+    {
+        let (_, mut all) = setup(SRC);
+        for k in &base_kinds {
+            all.entry(k).unwrap();
+        }
+        for k in 1..=3 {
+            for slots in slot_mixes(k) {
+                let (_, mut ir) = setup(SRC);
+                for b in &base_kinds {
+                    ir.entry(b).unwrap();
+                }
+                base = ir.dag.len();
+                ir.entry(&EntryKind::Dir(slots.clone())).unwrap();
+                biggest = biggest.max(ir.dag.len() - base);
+                all.entry(&EntryKind::Dir(slots)).unwrap();
+            }
+        }
+        together = all.dag.len() - base;
+    }
+    assert!(
+        together > biggest,
+        "the mixes must share too little for the test to bite"
+    );
+    let (fb, mut ir) = setup(SRC);
+    ir.set_node_limit(base + biggest);
+    let rep = check_model_with(&mut ir, &fb, &low_order(3, 1, 3));
+    let text = rep.to_string();
+    let dir_skips: Vec<&str> = rep
+        .entries
+        .iter()
+        .filter(|e| e.skip && e.label.starts_with("Dir"))
+        .map(|e| e.label.as_str())
+        .collect();
+    assert!(dir_skips.is_empty(), "skipped {dir_skips:?}: {text}");
+    assert!(rep.find("Dir[U,U,P]").is_some(), "{text}");
+    // The mixes leave no nodes behind.
+    assert!(ir.dag.len() <= base + biggest, "{text}");
+}

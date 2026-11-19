@@ -6,7 +6,7 @@
 //! `out[i + n*j] = df_i/du_j`, `JacP` gives n*n_p values in the same layout, and
 //! `Dir(slots)` gives n values of `D^k f[(dirs)]` with `k = slots.len()`.
 
-use crate::dag::NodeId;
+use crate::dag::{Checkpoint, NodeId};
 use crate::diff::{Wrt, d};
 use crate::error::{IrError, IrErrorKind};
 use crate::lower::IrModel;
@@ -91,10 +91,7 @@ impl IrModel {
             // Put the model back as it was before this request: drop the nodes it added,
             // the flag, and the memo entries that point past them. Later requests then
             // see the same DAG as on a model that never got this one.
-            self.dag.restore(&cp);
-            let keep = cp.len();
-            self.diff_memo
-                .retain(|&(k, _), v| (k.0 as usize) < keep && (v.0 as usize) < keep);
+            self.rollback(&cp);
             return Err(IrError::new(
                 IrErrorKind::TooLarge,
                 DUMMY_SPAN,
@@ -107,6 +104,18 @@ impl IrModel {
         };
         self.entries.insert(kind.clone(), e.clone());
         Ok(e)
+    }
+
+    /// Puts the model back to `cp`: drops the nodes added since, the exceeded flag, and the
+    /// memo and cached entries that point past them. Hash-consing is canonical, so a later
+    /// request gets the same values as on a model that never saw the dropped nodes.
+    pub(crate) fn rollback(&mut self, cp: &Checkpoint) {
+        self.dag.restore(cp);
+        let keep = cp.len();
+        self.diff_memo
+            .retain(|&(k, _), v| (k.0 as usize) < keep && (v.0 as usize) < keep);
+        self.entries
+            .retain(|_, e| e.outputs.iter().all(|o| (o.0 as usize) < keep));
     }
 
     /// `n` rows by `cols` columns, column major: `out[i + n*j] = df_i/dw_j`.

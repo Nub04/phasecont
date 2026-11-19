@@ -717,6 +717,9 @@ pub fn check_model_with(ir: &mut IrModel, fb: &Fallback, opt: &Options) -> Repor
                 continue;
             }
             let label = slot_label(&slots);
+            // Each mix starts from the DAG as it was before the first mix, so the node
+            // limit applies to one entry at a time rather than to all of them together.
+            let cp = ir.dag.checkpoint();
             entries.push(compare_kind(
                 ir,
                 fb,
@@ -725,6 +728,7 @@ pub fn check_model_with(ir: &mut IrModel, fb: &Fallback, opt: &Options) -> Repor
                 &mut rng,
                 opt,
             ));
+            ir.rollback(&cp);
         }
     }
 
