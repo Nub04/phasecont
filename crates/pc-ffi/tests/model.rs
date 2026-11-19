@@ -835,6 +835,34 @@ fn nout_is_listed_as_njmp_and_the_last_of_the_two_wins() {
     assert_eq!(options_of(&m), pairs(&[("njmp", "3")]));
 }
 
+// XPPAUT 8.2.2 reads `njmpx`, a key that starts with `njmp`, as `njmp` too (probes `opt-njmpx*`
+// and `opt-nout-njmpx-*`): `nout`, `njmp` and `njmpx` set one value and the last of them wins,
+// across `@` lines and inside one list, in either order.
+#[test]
+fn njmpx_is_listed_as_njmp_and_the_last_of_nout_njmp_and_njmpx_wins() {
+    // One name alone.
+    let m = model("x'=-x\n@ total=4,njmpx=2\ndone\n");
+    assert_eq!(options_of(&m), pairs(&[("total", "4"), ("njmp", "2")]));
+    // The four orders of the probes: nout then njmpx and the reverse, on two
+    // lines and in one list.
+    for (text, want) in [
+        ("@ total=4,nout=2\n@ njmpx=4\n", "4"),
+        ("@ total=4,njmpx=4\n@ nout=2\n", "2"),
+        ("@ total=4,nout=2,njmpx=4\n", "4"),
+        ("@ total=4,njmpx=4,nout=2\n", "2"),
+    ] {
+        let m = model(&format!("x'=-x\n{text}done\n"));
+        assert_eq!(
+            options_of(&m),
+            pairs(&[("total", "4"), ("njmp", want)]),
+            "{text:?}"
+        );
+    }
+    // Any spelling of the three, with the first place kept.
+    let m = model("x'=-x\n@ NJMPX=1, xp=v, njmp=2, Nout=3, njmpx=5\ndone\n");
+    assert_eq!(options_of(&m), pairs(&[("njmp", "5"), ("xp", "v")]));
+}
+
 // XPPAUT 8.0 ignores an option with blanks around `=` (the parser warns about it), so the
 // list leaves it out instead of reporting a value XPPAUT would not use.
 #[test]

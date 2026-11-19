@@ -258,8 +258,13 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `op-single-eq` | Is a single = inside a formula accepted (1=2)? | `1=2` | error (no output) | ODE0008 error, write `==` | matches |
 | `opt-njmp-last` | njmp=4, then nout=2 on a later @ line: which wins (XPPAUT 8.2.2)? | `@ njmp=4` then `@ nout=2` | rows=5 (nout=2 wins) | no diagnostic; the model info lists njmp=2 | matches |
 | `opt-njmp-same-line` | njmp=4, then nout=2 in the same @ list: which wins (XPPAUT 8.2.2)? | `@ ...,njmp=4,nout=2` | rows=5 (nout=2 wins) | no diagnostic; the model info lists njmp=2 | matches |
+| `opt-njmpx` | Does njmpx=2, a key that starts with njmp, set the output step like njmp=2 (XPPAUT 8.2.2)? | `@ ...,njmpx=2` | t@2=1 | no diagnostic; the model info lists njmp=2 | matches |
+| `opt-njmpx-nout-last` | njmpx=4, then nout=2 on a later @ line: which wins (XPPAUT 8.2.2)? | `@ ...,njmpx=4` then `@ nout=2` | rows=5 (nout=2 wins) | no diagnostic; the model info lists njmp=2 | matches |
+| `opt-njmpx-nout-same-line` | njmpx=4, then nout=2 in the same @ list: which wins (XPPAUT 8.2.2)? | `@ ...,njmpx=4,nout=2` | rows=5 (nout=2 wins) | no diagnostic; the model info lists njmp=2 | matches |
 | `opt-nout` | Does nout=2 set the output step like njmp=2 (XPPAUT 8.2.2)? | `@ ...,nout=2` | t@2=1 | no diagnostic; the model info lists njmp=2 | matches |
 | `opt-nout-last` | nout=2, then njmp=4 on a later @ line: which wins (XPPAUT 8.2.2)? | `@ ...,nout=2` then `@ njmp=4` | rows=3 (njmp=4 wins) | no diagnostic; the model info lists njmp=4 | matches |
+| `opt-nout-njmpx-last` | nout=2, then njmpx=4 on a later @ line: which wins (XPPAUT 8.2.2)? | `@ ...,nout=2` then `@ njmpx=4` | rows=3 (njmpx=4 wins) | no diagnostic; the model info lists njmp=4 | matches |
+| `opt-nout-njmpx-same-line` | nout=2, then njmpx=4 in the same @ list: which wins (XPPAUT 8.2.2)? | `@ ...,nout=2,njmpx=4` | rows=3 (njmpx=4 wins) | no diagnostic; the model info lists njmp=4 | matches |
 | `opt-nout-prefix` | Does a key that starts with nout, such as noutx, set njmp (XPPAUT 8.2.2)? | `@ ...,noutx=2` | t@2=1 | no diagnostic; the model info lists njmp=2 | matches |
 | `opt-nout-same-line` | nout=2, then njmp=4 in the same @ list: which wins (XPPAUT 8.2.2)? | `@ ...,nout=2,njmp=4` | rows=3 (njmp=4 wins) | no diagnostic; the model info lists njmp=4 | matches |
 | `opt-nout-short` | Does nou, a key shorter than nout, set the output step (XPPAUT 8.2.2)? | `@ ...,nou=2` | rows=9 (nothing set) | ODE0024 warning, unknown option | PhaseCont choice |

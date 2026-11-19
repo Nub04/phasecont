@@ -151,8 +151,9 @@ pub const NUMBERED: &[(&str, u8, u8)] = &[
 /// sets `total`, `dtx` sets `dt`, `t0x` sets `t0`, `method` sets `meth`, and
 /// `transx`, `njmpx`, `boundx`, `tolerx` and `dtminx` act like `trans`,
 /// `njmp`, `bound`, `toler` and `dtmin`. `nout` is the old name of `njmp`:
-/// `nout` and `noutx` set the same value as `njmp` (probes `opt-nout-*`, on
-/// 2026-11-18 with XPPAUT 8.2.2). A shorter key such as `tot` or `met` sets
+/// `nout`, `noutx` and `njmpx` set the same value as `njmp` (probes
+/// `opt-nout-*`, `opt-njmpx*` and `opt-nout-njmpx-*`, on 2026-11-18 with
+/// XPPAUT 8.2.2). A shorter key such as `tot` or `met` sets
 /// nothing. The other names in [`NAMES`] are matched exactly, since no probe
 /// has shown the prefix rule for them.
 pub const PREFIX_NAMES: &[&str] = &[
