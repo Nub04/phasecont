@@ -545,8 +545,8 @@ fn test5_chenciner_ns_curve_at_iterate_2() {
         (-1.0, 1.0),
         &|p, at| {
             let a2 = p.alpha;
-            for i in 0..3 {
-                close(p.u[i], 0.0, 1e-8, &format!("{at} u[{i}]"));
+            for (i, &u) in p.u.iter().enumerate().take(3) {
+                close(u, 0.0, 1e-8, &format!("{at} u[{i}]"));
             }
             close(p.u[3], 2f64.cos(), 1e-8, &format!("{at} kappa"));
             assert_eq!(p.codim2.len(), 8, "{at}");

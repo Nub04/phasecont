@@ -445,8 +445,8 @@ fn hom_jacobian_matches_central_differences_at_random_points() {
         s.params[2] = uniform(-3.0, -0.5);
         s.params[MU] = uniform(-0.2, 0.2);
         s.params[MUT] = uniform(-0.1, 0.1);
-        for k in 5..8 {
-            s.params[k] = uniform(-0.5, 0.5);
+        for v in s.params.iter_mut().take(8).skip(5) {
+            *v = uniform(-0.5, 0.5);
         }
         let mut p = HomProblem::new(m.as_mut(), &s, &Options::default()).unwrap();
         let x: Vec<f64> = p

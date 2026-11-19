@@ -392,8 +392,8 @@ fn test3_generalized_flip() {
         per_direction: None,
         warn: vec![],
         check: Box::new(|p, at| {
-            for i in 0..3 {
-                close(p.u[i], 0.0, 1e-8, &format!("{at} u[{i}]"));
+            for (i, &u) in p.u.iter().enumerate().take(3) {
+                close(u, 0.0, 1e-8, &format!("{at} u[{i}]"));
             }
             has_multipliers(&p.eigenvalues, &[(-1.0, 0.0), (0.5, 0.0)], 1e-8, at);
             close(p.codim2[PD_LPPD], -0.5, 1e-8, &format!("{at} LPPD"));
@@ -425,8 +425,8 @@ fn test3_chenciner() {
         warn: vec![],
         check: Box::new(|p, at| {
             let a2 = p.alpha;
-            for i in 0..3 {
-                close(p.u[i], 0.0, 1e-8, &format!("{at} u[{i}]"));
+            for (i, &u) in p.u.iter().enumerate().take(3) {
+                close(u, 0.0, 1e-8, &format!("{at} u[{i}]"));
             }
             close(p.u[3], 1f64.cos(), 1e-8, &format!("{at} kappa"));
             has_multipliers(&p.eigenvalues, &pair(1.0, 1.0), 1e-8, at);
@@ -456,8 +456,8 @@ fn lpns_lp(k: [f64; 3], want: Vec<(&'static str, f64, f64)>, what: &str) -> Case
         warn: vec![],
         check: Box::new(move |p, at| {
             let a2 = p.alpha;
-            for i in 0..4 {
-                close(p.u[i], 0.0, 1e-8, &format!("{at} u[{i}]"));
+            for (i, &u) in p.u.iter().enumerate().take(4) {
+                close(u, 0.0, 1e-8, &format!("{at} u[{i}]"));
             }
             let [m1, m2] = k_pair(k, 1.0 + a2);
             has_multipliers(&p.eigenvalues, &[(1.0, 0.0), m1, m2], 1e-8, at);
@@ -492,8 +492,8 @@ fn test3_lpns_on_the_ns_curve() {
         check: Box::new(|p, at| {
             let x = p.u[0];
             close(p.alpha, x * x, 1e-8, &format!("{at} a1"));
-            for i in 1..4 {
-                close(p.u[i], 0.0, 1e-8, &format!("{at} u[{i}]"));
+            for (i, &u) in p.u.iter().enumerate().take(4).skip(1) {
+                close(u, 0.0, 1e-8, &format!("{at} u[{i}]"));
             }
             close(p.u[4], 1f64.cos(), 1e-8, &format!("{at} kappa"));
             let [m1, m2] = pair(1.0, 1.0);
@@ -530,8 +530,8 @@ fn pdns_pd(k: [f64; 3], want: Vec<(&'static str, f64, f64)>, what: &str) -> Case
         warn: vec![],
         check: Box::new(move |p, at| {
             let a2 = p.alpha;
-            for i in 0..4 {
-                close(p.u[i], 0.0, 1e-8, &format!("{at} u[{i}]"));
+            for (i, &u) in p.u.iter().enumerate().take(4) {
+                close(u, 0.0, 1e-8, &format!("{at} u[{i}]"));
             }
             let [m1, m2] = k_pair(k, 1.0 + a2);
             has_multipliers(&p.eigenvalues, &[(-1.0, 0.0), m1, m2], 1e-8, at);
@@ -566,8 +566,8 @@ fn test3_pdns_on_the_ns_curve() {
         warn: vec![],
         check: Box::new(|p, at| {
             let a1 = p.alpha;
-            for i in 0..4 {
-                close(p.u[i], 0.0, 1e-8, &format!("{at} u[{i}]"));
+            for (i, &u) in p.u.iter().enumerate().take(4) {
+                close(u, 0.0, 1e-8, &format!("{at} u[{i}]"));
             }
             close(p.u[4], 1f64.cos(), 1e-8, &format!("{at} kappa"));
             let [m1, m2] = pair(1.0, 1.0);
@@ -596,8 +596,8 @@ fn nsns(k: [f64; 3], want: Vec<(&'static str, f64, f64)>, what: &str) -> Case {
         warn: vec![],
         check: Box::new(move |p, at| {
             let a2 = p.alpha;
-            for i in 0..5 {
-                close(p.u[i], 0.0, 1e-8, &format!("{at} u[{i}]"));
+            for (i, &u) in p.u.iter().enumerate().take(5) {
+                close(u, 0.0, 1e-8, &format!("{at} u[{i}]"));
             }
             close(p.u[5], 2f64.cos(), 1e-8, &format!("{at} kappa"));
             let [m1, m2] = pair(1.0, 2.0);

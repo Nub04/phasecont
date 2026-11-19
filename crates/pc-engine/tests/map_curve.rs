@@ -331,8 +331,8 @@ fn test4_ns4_ns_curve_is_a_equal_0() {
             assert!(br.points.len() > 5, "{what}: {} points", br.points.len());
             for p in &br.points {
                 let th = p.alpha;
-                for i in 0..4 {
-                    close(p.u[i], 0.0, 1e-8, &format!("{what} x[{i}] at th = {th}"));
+                for (i, &u) in p.u.iter().enumerate().take(4) {
+                    close(u, 0.0, 1e-8, &format!("{what} x[{i}] at th = {th}"));
                 }
                 close(p.u[4], 0.0, 1e-8, &format!("{what} a at th = {th}"));
                 close(
