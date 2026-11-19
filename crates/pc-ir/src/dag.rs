@@ -143,6 +143,8 @@ impl Checkpoint {
 
 pub struct Dag {
     nodes: Vec<Op>,
+    /// `nonfinite[i]` is [`Dag::may_be_nonfinite`] of node `i`, set when the node is added.
+    nonfinite: Vec<bool>,
     map: HashMap<Op, NodeId>,
     pub tables: Vec<Vec<f64>>,
     cap: usize,
@@ -153,6 +155,7 @@ impl Dag {
     pub fn new(cap: usize) -> Self {
         Dag {
             nodes: Vec::new(),
+            nonfinite: Vec::new(),
             map: HashMap::new(),
             tables: Vec::new(),
             cap,
@@ -181,6 +184,7 @@ impl Dag {
             for op in self.nodes.drain(cp.nodes..) {
                 self.map.remove(&op);
             }
+            self.nonfinite.truncate(cp.nodes);
         }
         self.tables.truncate(cp.tables);
         self.exceeded = cp.exceeded;
@@ -216,9 +220,52 @@ impl Dag {
             self.exceeded = true;
         }
         let id = NodeId(self.nodes.len() as u32);
+        let nonfinite = self.value_may_be_nonfinite(&op);
         self.nodes.push(op);
+        self.nonfinite.push(nonfinite);
         self.map.insert(op, id);
         id
+    }
+
+    /// True when node `id` may be infinite or NaN at finite inputs. The derivative rules use
+    /// it to decide whether a product term needs a [`Op::ZMul`]: a tangent that is zero at
+    /// run time times a factor that is infinite is `0 * inf = NaN`, where the interpreter
+    /// skips the zero tangent. The flag is computed once, when the node is added.
+    ///
+    /// It is true for a constant that is not finite, a division by anything but a nonzero
+    /// finite constant, a call whose partial can be infinite or NaN (the list of
+    /// `diff::partial_may_be_nonfinite`, which here also stands for its value) and a negative
+    /// integer power. A sum, product, selection or other call is flagged when an operand is.
+    /// Variables, parameters, directions, comparisons and the `floor`, `ceil`, `heav` and
+    /// `sign` of a finite argument are not. The overflow of `exp`, `sinh`, `cosh` or a
+    /// product of large finite numbers is not tracked, so a polynomial or an `exp` of
+    /// finite arguments carries no flag and its product terms stay plain products.
+    ///
+    /// An id from another DAG is out of range and is flagged.
+    pub fn may_be_nonfinite(&self, id: NodeId) -> bool {
+        self.nonfinite.get(id.0 as usize).copied().unwrap_or(true)
+    }
+
+    fn value_may_be_nonfinite(&self, op: &Op) -> bool {
+        let nf = |id: NodeId| self.may_be_nonfinite(id);
+        match *op {
+            Op::Const(b) => !f64::from_bits(b).is_finite(),
+            Op::Var(_) | Op::Param(_) | Op::Dir(_) => false,
+            Op::Cmp(..) | Op::And(..) | Op::Or(..) | Op::Not(_) => false,
+            Op::Neg(a) => nf(a),
+            Op::Add(a, b) | Op::Sub(a, b) | Op::Mul(a, b) | Op::ZMul(a, b) => nf(a) || nf(b),
+            Op::Div(a, b) | Op::ZDiv(a, b) => match self.cval(b) {
+                Some(c) if c != 0.0 && c.is_finite() => nf(a),
+                _ => true,
+            },
+            Op::Select(_, a, b) => nf(a) || nf(b),
+            // A finite argument gives a finite value for these four.
+            Op::Call1(Fn1::Floor | Fn1::Ceil | Fn1::Heav | Fn1::Sign, a) => nf(a),
+            Op::Call1(_, a) => crate::diff::partial_may_be_nonfinite(self, op) || nf(a),
+            Op::PowI(a, _) => crate::diff::partial_may_be_nonfinite(self, op) || nf(a),
+            Op::Table(_, a) | Op::TableSlope(_, a) => nf(a),
+            Op::Call2(_, a, b) => crate::diff::partial_may_be_nonfinite(self, op) || nf(a) || nf(b),
+        }
     }
 
     fn cval(&self, id: NodeId) -> Option<f64> {

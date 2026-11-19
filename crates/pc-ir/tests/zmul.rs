@@ -5,10 +5,10 @@
 //! zero tangent). `Op::ZMul(t, p)` is that product: +0.0 when `t == 0.0`, else `t * p`.
 
 use pc_ir::check::check_model;
-use pc_ir::dag::{Dag, NodeId, Op};
+use pc_ir::dag::{Cmp, Dag, Fn1, Fn2, NodeId, Op};
 use pc_ir::diff::{Wrt, d};
-use pc_ir::eval::eval;
-use pc_ir::{Fallback, lower};
+use pc_ir::eval::{eval, eval_entry};
+use pc_ir::{EntryKind, Fallback, IrModel, Slot, lower};
 use pc_ode::{MapLoader, Severity, SourceMap, load};
 use proptest::prelude::*;
 use std::collections::HashMap;
@@ -320,4 +320,306 @@ proptest! {
         let bad: Vec<_> = report.failures().map(|e| e.label.clone()).collect();
         prop_assert!(bad.is_empty(), "{rhs}: {bad:?}");
     }
+}
+
+// ---- Product terms against a non-finite other factor ----------------------------------
+
+/// A clamp whose tangent is zero at run time: `max(1-x, 2)` is 2 for every x above -1.
+const CL: &str = "max(1-x,2)";
+
+/// The same clamp on y.
+const CLY: &str = "max(1-y,2)";
+
+/// Right-hand sides inside `exp`, so the model value is finite (`exp(-inf)` is 0), with a
+/// clamped factor times a factor that is infinite at `m = 0`. The product rule gives
+/// `tangent(CL) * other + CL * tangent(other)`: a plain product has `0 * inf = NaN` where the
+/// fallback skips the zero tangent. Each form has both operand orders, because the
+/// guard is on the tangent and the tangent is the first or the second factor.
+fn product_forms() -> Vec<(&'static str, String)> {
+    let m = M;
+    vec![
+        ("clamp times a reciprocal", format!("exp(-{CL}*(1/{m}))")),
+        ("reciprocal times a clamp", format!("exp(-(1/{m})*{CL})")),
+        ("clamp times a log", format!("exp({CL}*ln({m}))")),
+        ("log times a clamp", format!("exp(ln({m})*{CL})")),
+        (
+            "clamp on y times a reciprocal",
+            format!("exp(-{CLY}*(1/{m}))"),
+        ),
+        (
+            "two clamps and a quotient",
+            format!("exp(-{CL}*{CLY}*(1/{m}))"),
+        ),
+        (
+            "clamp times a log of a power",
+            format!("exp({CL}*ln({m}^3))"),
+        ),
+        (
+            "clamp times a negative power",
+            format!("exp(-{CL}*{m}^(-1))"),
+        ),
+    ]
+}
+
+fn product_kinds() -> Vec<(&'static str, EntryKind)> {
+    use Slot::{Full, P, U};
+    vec![
+        ("JacU", EntryKind::JacU),
+        ("JacP", EntryKind::JacP),
+        ("Dir[U]", EntryKind::Dir(vec![U])),
+        ("Dir[P]", EntryKind::Dir(vec![P])),
+        ("Dir[Full]", EntryKind::Dir(vec![Full])),
+        ("Dir[U,U]", EntryKind::Dir(vec![U, U])),
+        ("Dir[U,P]", EntryKind::Dir(vec![U, P])),
+        ("Dir[U,U,U]", EntryKind::Dir(vec![U, U, U])),
+        ("Dir[Full,U,U]", EntryKind::Dir(vec![Full, U, U])),
+        ("Dir[U,U,U,U]", EntryKind::Dir(vec![U, U, U, U])),
+    ]
+}
+
+/// States x and y with the clamp of `CL` and `CLY` active (|x|, |y| < 1) and `m = 0`
+/// (a - x - 10 < 0), then the parameter a and t.
+const PRODUCT_POINTS: [([f64; 2], [f64; 2]); 6] = [
+    ([0.0, 0.0], [1.0, 0.0]),
+    ([0.3, 0.2], [1.0, 0.0]),
+    ([-0.4, 0.5], [0.95, 0.0]),
+    ([0.5, -0.3], [1.1, 0.0]),
+    ([-0.0, 0.0], [1.0, 0.0]),
+    ([0.1, -0.6], [0.5, 0.0]),
+];
+
+/// Directions with zero entries at run time, as the derivative of a clamp has.
+const PRODUCT_DIRS: [[f64; 8]; 3] = [
+    [1.0, 0.0, -0.5, 0.25, 2.0, 1.0, 0.0, -1.0],
+    [0.0, 1.0, 1.0, 0.0, -1.0, 0.5, 2.0, 0.0],
+    [0.75, -1.5, 0.0, 0.0, 1.0, -0.25, 1.0, 1.0],
+];
+
+fn packed(kind: &EntryKind, n: usize, n_p: usize) -> usize {
+    match kind {
+        EntryKind::Dir(slots) => slots.iter().map(|s| s.len(n, n_p)).sum(),
+        _ => 0,
+    }
+}
+
+#[test]
+fn a_clamped_factor_times_a_non_finite_one_gives_the_fallback_derivatives_bit_for_bit() {
+    let mut bad = Vec::new();
+    let mut compared = 0usize;
+    for (what, rhs) in product_forms() {
+        let src = format!("par a=1\ninit x=0, y=0\nx'=-x+{rhs}\ny'=-y+x\ndone\n");
+        let (mut ir, fb) = build(&src);
+        let (n, n_p) = (ir.n(), ir.n_p());
+        // The model value is finite at every point: the infinite factor sits inside exp.
+        let ef = ir.entry(&EntryKind::F).expect("F");
+        for (x, a) in PRODUCT_POINTS {
+            let mut f = [f64::MAX; 2];
+            eval_entry(&ir.dag, &ef, &x, &a, &[], &mut f);
+            assert!(
+                f.iter().all(|v| v.is_finite()),
+                "{what}: F is {f:?} at {x:?}"
+            );
+        }
+        for (name, kind) in product_kinds() {
+            let entry = ir.entry(&kind).expect("entry");
+            let v_len = packed(&kind, n, n_p);
+            for (x, a) in PRODUCT_POINTS {
+                for (di, dir) in PRODUCT_DIRS.iter().enumerate() {
+                    if v_len == 0 && di > 0 {
+                        continue;
+                    }
+                    let v = &dir[..v_len];
+                    let mut got = vec![f64::MAX; entry.outputs.len()];
+                    eval_entry(&ir.dag, &entry, &x, &a, v, &mut got);
+                    let mut want = vec![f64::MAX; entry.outputs.len()];
+                    fb.eval(&kind, &x, &a, v, &mut want);
+                    for i in 0..got.len() {
+                        compared += 1;
+                        if !same(got[i], want[i]) {
+                            bad.push(format!(
+                                "{what} {name} x={x:?} a={:?} dir {di} out {i}: dag {:?} \
+                                 ({:016x}) fallback {:?} ({:016x})",
+                                a[0],
+                                got[i],
+                                got[i].to_bits(),
+                                want[i],
+                                want[i].to_bits()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(compared > 2_000, "only {compared} values compared");
+    assert!(
+        bad.is_empty(),
+        "{} of {compared} values differ, first: {:#?}",
+        bad.len(),
+        &bad[..bad.len().min(10)]
+    );
+}
+
+// ---- The flag that decides where a product term is guarded -----------------------------
+
+#[test]
+fn the_nonfinite_flag_follows_the_value_of_a_node() {
+    let mut g = Dag::new(1000);
+    let (x, y) = (g.var(0), g.var(1));
+    let (one, two, zero) = (g.konst(1.0), g.konst(2.0), g.konst(0.0));
+    let (inf, nan, three) = (g.konst(f64::INFINITY), g.konst(f64::NAN), g.konst(3.0));
+    let p = g.param(0);
+    let mut yes = Vec::new();
+    let mut no = Vec::new();
+    // Inputs, finite constants and finite arithmetic.
+    no.extend([
+        x,
+        p,
+        one,
+        zero,
+        g.neg(x),
+        g.mul(x, y),
+        g.add(x, y),
+        g.sub(x, two),
+    ]);
+    no.push(g.div(x, two));
+    let xy = g.mul(x, y);
+    no.push(g.div(xy, three));
+    // A non-finite constant, a division by anything else, a negative power.
+    yes.extend([
+        inf,
+        nan,
+        g.div(one, x),
+        g.div(one, zero),
+        g.div(x, inf),
+        g.div(x, nan),
+    ]);
+    yes.push(g.powi(x, -2));
+    // Functions with a pole, a branch point or a boundary.
+    for f in [
+        Fn1::Ln,
+        Fn1::Log10,
+        Fn1::Sqrt,
+        Fn1::Asin,
+        Fn1::Acos,
+        Fn1::Lgamma,
+    ] {
+        yes.push(g.call1(f, x));
+    }
+    // Functions that are finite at every finite argument. Overflow is not tracked.
+    for f in [
+        Fn1::Sin,
+        Fn1::Cos,
+        Fn1::Tan,
+        Fn1::Atan,
+        Fn1::Sinh,
+        Fn1::Cosh,
+        Fn1::Tanh,
+        Fn1::Exp,
+        Fn1::Abs,
+        Fn1::Erf,
+        Fn1::Erfc,
+        Fn1::Floor,
+        Fn1::Ceil,
+        Fn1::Heav,
+        Fn1::Sign,
+    ] {
+        no.push(g.call1(f, x));
+    }
+    no.push(g.powi(x, 3));
+    no.push(g.call2(Fn2::Max, x, y));
+    no.push(g.call2(Fn2::Min, x, two));
+    no.push(g.call2(Fn2::Pow, x, three));
+    yes.push(g.call2(Fn2::Pow, x, y));
+    let half = g.konst(0.5);
+    yes.push(g.call2(Fn2::Pow, x, half));
+    yes.push(g.call2(Fn2::Atan2, x, y));
+    // A comparison is 0 or 1 whatever its operands are.
+    let lnx = g.call1(Fn1::Ln, x);
+    no.push(g.cmp(Cmp::Lt, lnx, y));
+    // The flag spreads to every node that reads a flagged one, except through a comparison
+    // and a finite function of the four that are finite at a finite argument.
+    let rec = g.div(one, x);
+    yes.extend([
+        g.neg(rec),
+        g.mul(y, rec),
+        g.add(rec, y),
+        g.sub(y, rec),
+        g.call1(Fn1::Sin, rec),
+        g.call1(Fn1::Floor, rec),
+        g.powi(rec, 3),
+        g.call2(Fn2::Max, y, rec),
+        g.div(rec, two),
+    ]);
+    let c = g.cmp(Cmp::Gt, x, y);
+    yes.push(g.select(c, rec, y));
+    no.push(g.select(c, x, y));
+    for id in yes {
+        assert!(g.may_be_nonfinite(id), "{:?} should be flagged", g.op(id));
+    }
+    for id in no {
+        assert!(
+            !g.may_be_nonfinite(id),
+            "{:?} should not be flagged",
+            g.op(id)
+        );
+    }
+    // An id from another DAG is out of range and is flagged.
+    assert!(g.may_be_nonfinite(NodeId(u32::MAX)));
+}
+
+#[test]
+fn the_flag_follows_a_checkpoint_and_a_restore() {
+    let mut g = Dag::new(1000);
+    let x = g.var(0);
+    let cp = g.checkpoint();
+    let ln = g.call1(Fn1::Ln, x);
+    assert!(g.may_be_nonfinite(ln));
+    g.restore(&cp);
+    // The next node takes the id of the dropped one, and gets its own flag.
+    let sin = g.call1(Fn1::Sin, x);
+    assert_eq!(sin, ln);
+    assert!(!g.may_be_nonfinite(sin));
+    assert!(g.may_be_nonfinite(NodeId(sin.0 + 1)));
+}
+
+fn guard_nodes(ir: &IrModel) -> usize {
+    (0..ir.dag.len())
+        .filter(|&i| matches!(ir.dag.op(NodeId(i as u32)), Op::ZMul(..) | Op::ZDiv(..)))
+        .count()
+}
+
+/// Models with no division, singular function or non-finite constant get no guard in any
+/// derivative entry: the product terms stay plain products. `exp`, `sin`, an integer power
+/// and a clamp do not set the flag.
+#[test]
+fn models_without_a_pole_get_no_guard_nodes() {
+    let models = [
+        "x'=-x^3+a*x*y+y*max(1-x,2)\ny'=x*y-min(x,0)*max(y,0)",
+        "x'=a*x*(1-x)-x*y*max(x,0)\ny'=-y+x^2*y",
+        "x'=exp(-x)*sin(y)*max(1-x,2)+a\ny'=tanh(x)*cos(y)-y^4",
+        "x'=abs(x)*y-flr(y)*x\ny'=heav(x-y)*x*y+sign(y)",
+    ];
+    use Slot::{Full, P, U};
+    let kinds = [
+        EntryKind::JacU,
+        EntryKind::JacP,
+        EntryKind::Dir(vec![U]),
+        EntryKind::Dir(vec![U, U]),
+        EntryKind::Dir(vec![Full, U, U]),
+        EntryKind::Dir(vec![U, P, U, U]),
+    ];
+    for body in models {
+        let (mut ir, _) = build(&format!("par a=1\ninit x=0, y=0\n{body}\ndone\n"));
+        for k in &kinds {
+            ir.entry(k).expect("entry");
+        }
+        assert_eq!(guard_nodes(&ir), 0, "{body}");
+    }
+    // A reciprocal of a state does set the flag: the same products get a guard.
+    let (mut ir, _) = build("par a=1\ninit x=0, y=0\nx'=y*max(1-x,2)/x\ny'=-y\ndone\n");
+    for k in &kinds {
+        ir.entry(k).expect("entry");
+    }
+    assert!(guard_nodes(&ir) > 0);
 }

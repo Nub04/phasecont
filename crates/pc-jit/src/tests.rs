@@ -707,6 +707,82 @@ fn a_derivative_entry_stores_plus_zero_and_f_keeps_minus_zero() {
     assert!(raw_minus_zeros >= 1, "the raw DAG gave no -0");
 }
 
+/// A clamped factor times a factor that is infinite inside `exp` (so the model value is
+/// finite): the product terms of the derivatives are `ZMul`, and the JIT gives the same bits
+/// as `eval_entry` on each entry kind, with both operand orders, where the clamp is active.
+/// No output is NaN, which is what a plain product of a zero tangent and an infinity gave.
+#[test]
+fn guarded_product_terms_match_eval_bit_for_bit() {
+    let m = "max(a-x-10,0)";
+    let cl = "max(1-x,2)";
+    let forms = [
+        format!("exp(-{cl}*(1/{m}))"),
+        format!("exp(-(1/{m})*{cl})"),
+        format!("exp({cl}*ln({m}))"),
+        format!("exp(ln({m})*{cl})"),
+        format!("exp(-{cl}*max(1-y,2)*(1/{m}))"),
+    ];
+    let kinds = [
+        EntryKind::JacU,
+        EntryKind::JacP,
+        EntryKind::Dir(vec![Slot::U]),
+        EntryKind::Dir(vec![Slot::P]),
+        EntryKind::Dir(vec![Slot::U, Slot::U]),
+        EntryKind::Dir(vec![Slot::U, Slot::P]),
+        EntryKind::Dir(vec![Slot::U, Slot::U, Slot::U]),
+        EntryKind::Dir(vec![Slot::Full, Slot::U, Slot::U]),
+    ];
+    let dirs = [
+        [1.0, 0.0, -0.5, 0.25, 2.0, 1.0, 0.0],
+        [0.0, 1.0, 1.0, 0.0, -1.0, 0.5, 2.0],
+    ];
+    let points = [([0.0, 0.0], [1.0, 0.0]), ([0.3, 0.2], [1.0, 0.0])];
+    let mut zmuls = 0;
+    for rhs in &forms {
+        let src = format!("par a=1\ninit x=0, y=0\nx'=-x+{rhs}\ny'=-y+x\ndone\n");
+        let mut ir = build_model(&src);
+        let (n, n_p) = (ir.n(), ir.n_p());
+        let es: Vec<Entry> = kinds.iter().map(|k| ir.entry(k).expect("entry")).collect();
+        let pairs: Vec<(EntryKind, &Entry)> = kinds.iter().cloned().zip(es.iter()).collect();
+        let jit = compile(&pairs, &ir.dag).expect("compile");
+        zmuls += (0..ir.dag.len())
+            .filter(|&i| matches!(ir.dag.op(NodeId(i as u32)), pc_ir::dag::Op::ZMul(..)))
+            .count();
+        for (kind, e) in &pairs {
+            let len: usize = match kind {
+                EntryKind::Dir(slots) => slots.iter().map(|s| s.len(n, n_p)).sum(),
+                _ => 0,
+            };
+            for (x, p) in points {
+                for dir in dirs.iter().take(if len == 0 { 1 } else { 2 }) {
+                    let v = &dir[..len];
+                    let mut want = vec![f64::NAN; e.outputs.len()];
+                    eval_entry(&ir.dag, e, &x, &p, v, &mut want);
+                    let mut got = vec![f64::MAX; e.outputs.len()];
+                    if matches!(kind, EntryKind::Dir(_)) {
+                        let f: DirFn = jit.dir(kind).expect("dir fn");
+                        // SAFETY: x has n, p has n_p + 1, v has len and got has n values.
+                        unsafe { f(x.as_ptr(), p.as_ptr(), v.as_ptr(), got.as_mut_ptr()) };
+                    } else {
+                        let f: PlainFn = jit.plain(kind).expect("plain fn");
+                        // SAFETY: lengths follow the entry contract.
+                        unsafe { f(x.as_ptr(), p.as_ptr(), got.as_mut_ptr()) };
+                    }
+                    for (k, (a, b)) in got.iter().zip(&want).enumerate() {
+                        assert!(
+                            a.to_bits() == b.to_bits(),
+                            "{rhs} {kind:?} x={x:?} out {k}: jit {a:?} vs dag {b:?}"
+                        );
+                        assert!(!a.is_nan(), "{rhs} {kind:?} x={x:?} out {k} is NaN");
+                    }
+                }
+            }
+        }
+    }
+    // The check would pass vacuously on models whose derivatives hold no guard.
+    assert!(zmuls > 0, "no derivative holds a ZMul");
+}
+
 fn kind_len(kind: &EntryKind) -> usize {
     match kind {
         EntryKind::Dir(slots) => slots.len(),

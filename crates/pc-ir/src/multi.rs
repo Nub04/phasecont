@@ -25,7 +25,10 @@
 //! [`partial_may_be_nonfinite`] says the partial can be non-finite, the product of the
 //! partial and the block components is a `ZMul` that tests the block product first. The
 //! `ZMul` node gets the product rule with `ZMul` terms, and the Div recurrence uses `ZMul` for
-//! each term of `q b = a`. The final quotient `num / b_0` is a `ZDiv`: a numerator that is zero
+//! each term of `q b = a`. A term `a_T b_{S-T}` of a `Mul` is a `ZMul` too when the other
+//! factor can be non-finite (see [`Dag::may_be_nonfinite`]). The interpreter nests one `Dual` per
+//! direction with slot 0 outermost, so the tangent is the factor that holds the lowest slot of
+//! `S`, and it comes first. The final quotient `num / b_0` is a `ZDiv`: a numerator that is zero
 //! at run time over a zero `b_0` gives +0, as the interpreter does by skipping a zero tangent.
 //!
 //! `pow(x, y)`: the interpreter skips every term that carries a `y` derivative when
@@ -213,13 +216,24 @@ impl<'a> Builder<'a> {
                     c[s] = self.dag.sub(a[s], b[s]);
                 }
             }
-            Op::Mul(a, b) => {
-                let (a, b) = (self.get(a), self.get(b));
+            Op::Mul(na, nb) => {
+                let (a, b) = (self.get(na), self.get(nb));
+                let (fa, fb) = (self.dag.may_be_nonfinite(na), self.dag.may_be_nonfinite(nb));
                 for s in 1..self.size {
                     let mut acc = self.zero;
                     let mut t = s;
+                    // The interpreter nests one `Dual` per direction with slot 0 outermost,
+                    // and a `Dual` product tests the tangent of its own level for zero. For
+                    // the slots in `s` that level is the lowest set bit. The factor of a term
+                    // that holds that bit is therefore the guarded first operand of the `ZMul`.
+                    let low = s.isolate_lowest_one();
                     loop {
-                        let m = self.dag.mul(a[t], b[s ^ t]);
+                        let (at, bu) = (a[t], b[s ^ t]);
+                        let m = if t & low != 0 {
+                            self.product_term(at, bu, fb)
+                        } else {
+                            self.product_term(bu, at, fa)
+                        };
                         acc = self.dag.add(acc, m);
                         if t == 0 {
                             break;
@@ -295,6 +309,19 @@ impl<'a> Builder<'a> {
             Op::Const(_) | Op::Dir(_) => {}
         }
         c
+    }
+
+    /// `tangent * other` for one term of a product, with `other_flag` the
+    /// [`Dag::may_be_nonfinite`] of the node that `other` is a component of. A component of a
+    /// node that is not flagged is a polynomial of finite values, so only a flagged node can
+    /// have an infinite or NaN component. A zero `tangent` then gives +0, as in the
+    /// interpreter, and a plain `mul` is used otherwise.
+    fn product_term(&mut self, tangent: NodeId, other: NodeId, other_flag: bool) -> NodeId {
+        if other_flag {
+            self.dag.zmul(tangent, other)
+        } else {
+            self.dag.mul(tangent, other)
+        }
     }
 
     /// Faa di Bruno for the call `op` (node `id`) with argument nodes `args`.

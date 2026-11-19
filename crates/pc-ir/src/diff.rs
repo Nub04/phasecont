@@ -15,11 +15,14 @@
 //! have partials that are finite wherever their argument is finite: `sin`, `cos`, `tan`,
 //! `atan`, `sinh`, `cosh`, `tanh`, `exp`, `abs` (through `sign`), `erf`, `erfc`, an integer
 //! power `n >= 1`, table slopes and `pow` with a constant integer exponent `>= 1`. The
-//! product rule multiplies by another operand of the model and stays a plain `Mul`: a zero
-//! tangent times an infinite operand is NaN, so `exp(-c * (1 / m))` with a clamped `c` and a
-//! zero `m` still gives a NaN Jacobian (the model value is finite there, since `exp(-inf)`
-//! is 0). A zero tangent times an overflowed `exp` or `sinh` is not guarded either. A guarded rule also maps a true singularity, such as the derivative of
-//! `sqrt(u^2)` at `u = 0`, to 0 instead of NaN.
+//! product rule multiplies each tangent by the other operand of the model, which can be
+//! infinite as well: `exp(-c * (1 / m))` with a clamped `c` and a zero `m` has a finite
+//! model value, since `exp(-inf)` is 0, and a zero tangent of `c` times the infinite `1 / m`
+//! is NaN. A product term is therefore a `ZMul(tangent, other)` when [`Dag::may_be_nonfinite`]
+//! flags the other operand (see [`product_term`]), and a plain `Mul` otherwise, so a model
+//! without a division, a singular function or a non-finite constant gets no new guard. A zero
+//! tangent times an overflowed `exp` or `sinh` is not guarded. A guarded rule also maps a true
+//! singularity, such as the derivative of `sqrt(u^2)` at `u = 0`, to 0 instead of NaN.
 //!
 //! `polygamma(m, x)` differentiates to `polygamma(m + 1, x)` for `m` in 0..=3. The math
 //! layer supports `m` up to 4 only, so a derivative that would need `m = 5` (the first
@@ -71,6 +74,19 @@ fn zterm(dag: &mut Dag, tangent: NodeId, partial: impl FnOnce(&mut Dag) -> NodeI
     match cval(dag, p) {
         Some(c) if c.is_finite() => dag.mul(tangent, p),
         _ => dag.zmul(tangent, p),
+    }
+}
+
+/// `tangent * other`, one term of the product rule: `other` is an operand of the model, not
+/// a partial. A tangent that is zero at run time must give +0 where `other` is infinite or
+/// NaN, as the interpreter skips a zero tangent, so the term is a `ZMul` when
+/// [`Dag::may_be_nonfinite`] flags `other` and a plain `mul` when it does not. The zero
+/// constant tangent never builds the term.
+pub(crate) fn product_term(dag: &mut Dag, tangent: NodeId, other: NodeId) -> NodeId {
+    if dag.may_be_nonfinite(other) {
+        zterm(dag, tangent, |_| other)
+    } else {
+        term(dag, tangent, |_| other)
     }
 }
 
@@ -192,8 +208,8 @@ fn rule(dag: &mut Dag, memo: &HashMap<(NodeId, Wrt), NodeId>, node: NodeId, wrt:
         }
         Op::Mul(a, b) => {
             let (da, db) = (dc(dag, a), dc(dag, b));
-            let t1 = term(dag, da, |_| b);
-            let t2 = term(dag, db, |_| a);
+            let t1 = product_term(dag, da, b);
+            let t2 = product_term(dag, db, a);
             dag.add(t1, t2)
         }
         // `ZMul(t, p)` is `t * p` with a zero `t` giving +0, so each term of the product
