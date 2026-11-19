@@ -1,0 +1,10 @@
+# aux-param-after: Can an aux column share its name with an earlier parameter (XPPAUT 8.2.2)?
+# xpp: a=7 g=2
+# pc: ok
+# ruling: pc-ode accepts it, as for a fixed quantity. The aux column keeps its own formula and every formula that reads `a` gets the parameter, so `aux g=a` is 2 and the ODE reads the parameter (language.md, Names and order).
+x'=-x*a
+x(0)=1
+par a=2
+aux a=7*x
+aux g=a
+@ total=1,dt=0.5

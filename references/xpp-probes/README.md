@@ -112,6 +112,12 @@ In the status column, "matches" means PhaseCont agrees with XPPAUT (same value, 
 | `aux-fixed-before` | Can an aux column share its name with a later fixed quantity (XPPAUT 8.2.2)? | `aux f=7*x`, `f=2*x+1`, `aux g=f` | f=7 g=3 | no diagnostic; same values | matches |
 | `aux-fixed-self` | Does `aux f=f+1` after a fixed quantity f read the fixed quantity (XPPAUT 8.2.2)? | `f=2*x+1`, `aux f=f+1` | f=4 (at x=1) | no diagnostic; computes 4 | matches |
 | `aux-fixed-self-before` | Does `aux f=f+1` above a fixed quantity f read the fixed quantity (XPPAUT 8.2.2)? | `aux f=f+1`, `f=2*x+1` | f=4 | no diagnostic; computes 4 | matches |
+| `aux-param-after` | Can an aux column share its name with an earlier parameter (XPPAUT 8.2.2)? | `x'=-x*a`, `par a=2`, `aux a=7*x`, `aux g=a` | a=7 g=2 (prints "duplicate name" and loads; the aux column keeps its formula, readers get the parameter) | no diagnostic; the IR gives the same values (`pc-ffi` test) | matches |
+| `aux-param-before` | Can an aux column share its name with a later parameter (XPPAUT 8.2.2)? | `aux a=7*x`, `aux g=a`, `par a=2` | a=7 g=2 | no diagnostic; same values | matches |
+| `aux-param-self` | Does `aux a=7*a` read the parameter a (XPPAUT 8.2.2)? | `par a=2`, `aux a=7*a` | a=14 | no diagnostic; computes 14 | matches |
+| `aux-state` | Can an aux column share its name with a state (XPPAUT 8.2.2)? | `x'=-x`, `aux x=7*x`, `aux g=x` | x=7 g=1 (prints "duplicate name" and loads; the output file has two columns named x, and a reader gets the state) | ODE0041 error | PhaseCont choice (a table would need two columns with one name; owner question) |
+| `aux-aux` | Can two aux quantities share a name (XPPAUT 8.2.2)? | `aux q=2*x`, `aux q=3*x`, `aux z=9` | q=2 z=9 (both q columns are written, z is the fifth column) | ODE0041 error | PhaseCont choice (same reason; owner question) |
+| `aux-read-aux` | Can a formula read an aux quantity by name (XPPAUT 8.2.2)? | `aux q=2*x`, `aux g=q` | error ("illegal expression", no output) | ODE0051 error | matches |
 | `fixed-forward-func` | What does a fixed quantity get from a function that reads a later fixed quantity? | `b=g(1)`, `c=5`, `g(u)=u+c` | 1 (c is still 0) | ODE0042 error | PhaseCont choice |
 | `fixed-forward` | What does a fixed quantity read from a later line? | `b=c+1` above `c=2` | 1 | ODE0042 error, fixed quantity defined on a later line | PhaseCont choice |
 | `fn-atan2` | Which argument order does atan2 use? | `atan2(1,0)`, `atan2(-1,-1)` | v1=1.5707964 v2=-2.3561945 | no diagnostic; computes v1=1.5707964 v2=-2.3561945 | matches |

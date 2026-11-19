@@ -327,6 +327,51 @@ fn backslash_warnings_come_back_with_a_model_that_loads_as_xppaut_reads_it() {
     }
 }
 
+// XPPAUT 8.2.2 accepts `aux a=...` for a name that is also a parameter, in either order (probes
+// `aux-param-after`, `aux-param-before`, `aux-param-self`). The aux column keeps its own formula
+// and every reader of `a` gets the parameter. The IR gives the values XPPAUT wrote at x = 1,
+// a = 2, and the model info lists the name as a parameter and as an aux column.
+#[test]
+fn an_aux_may_repeat_a_parameter_name() {
+    for text in [
+        "x'=-x*a\npar a=2\naux a=7*x\naux g=a\ndone\n",
+        "x'=-x*a\naux a=7*x\naux g=a\npar a=2\ndone\n",
+    ] {
+        let (rc, id, diag) = parse(text);
+        assert_eq!(rc, 0, "{text:?}: {}", last_error());
+        let m = Mod(id);
+        assert_eq!(diag.unwrap()["summary"]["errors"], 0, "{text:?}");
+        let v = info(&m);
+        assert_eq!(v["parameters"], serde_json::json!(["a"]), "{text:?}");
+        assert_eq!(v["aux"], serde_json::json!(["a", "g"]), "{text:?}");
+        let (model, info) = loaded(text);
+        let ir = pc_ir::lower(&model, &info).unwrap();
+        let eval = |outs: &[pc_ir::dag::NodeId]| {
+            let mut out = vec![0.0; outs.len()];
+            pc_ir::eval::eval(&ir.dag, outs, &[1.0], &[2.0], &[], &mut out);
+            out
+        };
+        // x' reads the parameter, not the aux column.
+        assert_eq!(eval(&ir.f), [-2.0], "{text:?}");
+        assert_eq!(eval(&ir.aux), [7.0, 2.0], "{text:?}");
+    }
+    let text = "x'=-x\npar a=2\naux a=7*a\ndone\n";
+    let (model, info) = loaded(text);
+    let ir = pc_ir::lower(&model, &info).unwrap();
+    let mut out = [0.0];
+    pc_ir::eval::eval(&ir.dag, &ir.aux, &[1.0], &[2.0], &[], &mut out);
+    assert_eq!(out, [14.0]);
+    // An aux that repeats a state or another aux is still refused.
+    for text in [
+        "x'=-x\naux x=7*x\ndone\n",
+        "x'=-x\naux q=1\naux q=2\ndone\n",
+    ] {
+        let (rc, _, diag) = parse(text);
+        assert_ne!(rc, 0, "{text:?}");
+        assert_eq!(diag.unwrap()["diagnostics"][0]["code"], "ODE0041");
+    }
+}
+
 #[test]
 fn rhs_reports_a_non_finite_output() {
     let m = model("x'=1/x\ndone\n");

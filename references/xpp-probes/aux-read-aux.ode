@@ -1,0 +1,9 @@
+# aux-read-aux: Can a formula read an aux quantity by name (XPPAUT 8.2.2)?
+# xpp: error
+# pc: ODE0051
+# ruling: matches. XPPAUT stops with "illegal expression" and writes nothing. This also holds when the name is declared twice as an aux, so a later reference never reaches an aux column.
+x'=-x
+x(0)=1
+aux q=2*x
+aux g=q
+@ total=1,dt=0.5
