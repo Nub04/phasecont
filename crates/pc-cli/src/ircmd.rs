@@ -136,10 +136,14 @@ pub fn emit_c(file: &Path, target: Option<&Path>) -> ExitCode {
 
 /// One line for a finite-difference row of a model that is not smooth.
 fn info_row(e: &EntryReport) -> String {
-    format!(
-        "{:<22} info (non-smooth, not counted)  worst {:.3e}  s {:.3e}  ratio {:.3e}",
-        e.label, e.worst_err, e.scale, e.ratio
-    )
+    let mut s = format!(
+        "{:<22} info (non-smooth, not counted)  worst {:.3e}  s {:.3e}  ratio {:.3e}  {} points, {} values",
+        e.label, e.worst_err, e.scale, e.ratio, e.points, e.compared
+    );
+    if let Some(n) = &e.note {
+        let _ = write!(s, "  ({n})");
+    }
+    s
 }
 
 /// The printed rows and the final line of `check-derivs`, and how many counted
@@ -226,6 +230,7 @@ mod tests {
             x: vec![0.5],
             p: vec![1.0],
             points: 3,
+            compared: 6,
             note: note.map(str::to_string),
             skip: false,
             skipped_points: 0,
@@ -275,6 +280,37 @@ mod tests {
         assert_eq!(bad, 1, "{text}");
         assert!(text.contains("1 of 1 checks FAIL"), "{text}");
         assert!(text.contains("2 skipped (entry too large)"), "{text}");
+    }
+
+    #[test]
+    fn a_row_that_compared_nothing_fails_and_a_non_smooth_info_row_says_so() {
+        let mut empty = entry(
+            "JacP",
+            false,
+            Some("nothing was compared: no point was drawn"),
+        );
+        empty.points = 0;
+        empty.compared = 0;
+        let (text, bad) = tally(&[empty.clone()], &[], true);
+        assert_eq!(bad, 1, "{text}");
+        assert!(text.contains("FAIL"), "{text}");
+        assert!(text.contains("0 points, 0 values"), "{text}");
+        assert!(text.contains("nothing was compared"), "{text}");
+        assert!(text.ends_with("1 of 1 checks FAIL\n"), "{text}");
+
+        // A finite-difference row of a non-smooth model is printed as info with its counts
+        // and its note, and is not counted.
+        let mut fd = empty;
+        fd.label = "A (FD)".to_string();
+        let (text, bad) = tally(&[fd], &[], false);
+        assert_eq!(bad, 0, "{text}");
+        assert!(text.contains("info (non-smooth, not counted)"), "{text}");
+        assert!(text.contains("0 points, 0 values"), "{text}");
+        assert!(text.contains("nothing was compared"), "{text}");
+
+        let ok = entry("F", true, None);
+        let (text, _) = tally(&[ok], &[], true);
+        assert!(text.contains("3 points, 6 values"), "{text}");
     }
 
     #[test]
