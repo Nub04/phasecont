@@ -95,6 +95,8 @@ $A$ and $f_\alpha$ come from first-order symbolic differentiation. Orders 2 to 5
 
 **Complex directions.** Directional derivatives must accept complex direction vectors, because $q$ and $p$ in the normal forms are complex. PhaseCont splits each complex direction into its real and imaginary parts and uses multilinearity, so an order $k$ form takes at most $2^k$ real evaluations. There is no complex-valued entry point.
 
+**Overflow at a finite argument.** The zero guards (`ZMul` and the guarded chain terms) act only where `may_be_nonfinite` says a factor may be non-finite, and that test does not track overflow. So `exp`, `sinh` and `cosh` at an argument above about 709.78 give `inf` without a guard, and a quotient of two such terms is `inf/inf`. F and its derivatives can then be NaN where the true value is finite. For example, `1/(1+exp(u))` gives F = 0 but NaN for $A$ and for the order 2 directional derivative at u = 710 and u = 800. A model that needs these regions should be written so that no intermediate term overflows, for example `exp(-u)/(1+exp(-u))` for large positive u.
+
 **Validation uses two independent evaluators:**
 1. A tree-walking dual-number interpreter on the AST, using nested dual numbers up to depth 5. Its results must match the generated derivatives to within 4 ulp per entry, or $10^{-13}$ relative error. Let $a$ be the value from the DAG (or the JIT) and $b$ the value from the interpreter, and let $s$ be the largest magnitude in that output vector. An entry passes when any of these holds:
    - $a$ and $b$ are both NaN, or $a = b$;
