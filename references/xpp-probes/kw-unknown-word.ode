@@ -1,0 +1,9 @@
+# kw-unknown-word: Is a line with an unknown first word and a number ignored (XPPAUT 8.2.2)?
+# xpp: 5
+# pc: ODE0019
+x'=0
+x(0)=3
+par a=5
+aux v=a
+zzz 1
+@ total=0,dt=1

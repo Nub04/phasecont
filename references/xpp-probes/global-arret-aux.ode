@@ -1,0 +1,9 @@
+# global-arret-aux: Does an aux named arret take the place of the stop action (XPPAUT 8.2.2)?
+# xpp: rows=21
+# pc: ODE0058
+# ruling: The aux name is found as a target, the assignment changes nothing that is kept, and the run goes on.
+x'=1
+x(0)=0
+aux arret=x
+global 1 x-0.55 {arret=1}
+@ total=2,dt=0.1,meth=euler

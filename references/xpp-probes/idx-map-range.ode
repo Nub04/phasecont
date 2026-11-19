@@ -1,0 +1,8 @@
+# idx-map-range: Does a map range line x[1..2](t+1) declare x1 and x2 (XPPAUT 8.2.2)?
+# xpp: v@3=6
+# states: 2
+# pc: ok
+x[1..2](t+1)=x[j]+[j]
+init x1=0,x2=0
+aux v=x1+x2
+@ total=3

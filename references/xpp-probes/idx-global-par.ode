@@ -1,0 +1,10 @@
+# idx-global-par: Is a global target p[1] the parameter p1 (XPPAUT 8.2.2)?
+# xpp: v@7=1
+# pc: ODE0015
+# ruling: XPPAUT reads the constant index as part of the name, so the action sets p1 at the crossing.
+x1'=1
+x1(0)=0
+par p1=0
+aux v=p1
+global 1 x1-0.55 {p[1]=1}
+@ total=1,dt=0.1,meth=euler

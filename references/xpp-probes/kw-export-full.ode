@@ -1,0 +1,10 @@
+# kw-export-full: Does an export line with a name that does not exist stop the load (XPPAUT 8.2.2)?
+# xpp: error
+# pc: ODE0032
+# ruling: XPPAUT prints Cant export ... - non existent! and writes no output, so the line was read as an export statement. run.sh counts non existent as an XPPAUT error message.
+x'=0
+x(0)=3
+par a=5
+aux v=a
+export {zz} {yy}
+@ total=0,dt=1

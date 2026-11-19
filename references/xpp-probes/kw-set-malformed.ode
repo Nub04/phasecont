@@ -1,0 +1,9 @@
+# kw-set-malformed: Does a set line with an unclosed brace stop the load (XPPAUT 8.2.2)?
+# xpp: 5
+# pc: ODE0020
+x'=0
+x(0)=3
+par a=5
+aux v=a
+set s {zz
+@ total=0,dt=1

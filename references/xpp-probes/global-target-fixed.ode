@@ -1,0 +1,8 @@
+# global-target-fixed: Is a fixed quantity a valid global target (XPPAUT 8.2.2)?
+# xpp: error
+# pc: ODE0058
+x'=1
+x(0)=0
+f=x+1
+global 1 x-0.55 {f=1}
+@ total=2,dt=0.1,meth=euler

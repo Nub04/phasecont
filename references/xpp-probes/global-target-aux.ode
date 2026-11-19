@@ -1,0 +1,9 @@
+# global-target-aux: Is an aux a valid global target (XPPAUT 8.2.2)?
+# xpp: rows=21
+# pc: ODE0058
+# ruling: XPPAUT loads the line. The aux is recomputed at each step, so the assignment has no visible effect.
+x'=1
+x(0)=0
+aux w=x
+global 1 x-0.55 {w=1}
+@ total=2,dt=0.1,meth=euler

@@ -1,0 +1,10 @@
+# kw-set-se: Does se s {a=7}, a prefix of set, change the parameter a (XPPAUT 8.2.2)?
+# xpp: 5
+# pc: ODE0019
+# ruling: A set only adds a named parameter set to the GUI, so no headless output shows whether the keyword was read, and even a broken set body loads (kw-set-malformed).
+x'=0
+x(0)=3
+par a=5
+aux v=a
+se s {a=7}
+@ total=0,dt=1

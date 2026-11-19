@@ -1,0 +1,10 @@
+# kw-hom-bcs-prefix: Is hom, a prefix of hom_bcs, an ignored line like hom_bcs itself (XPPAUT 8.2.2)?
+# xpp: 5
+# pc: ODE0019
+# ruling: XPPAUT ignores a line whose first word it does not know (kw-unknown-word), and hom_bcs is not a statement in 8.2.2.
+x'=0
+x(0)=3
+par a=5
+aux v=a
+hom 1
+@ total=0,dt=1

@@ -95,9 +95,10 @@ run_xpp() {
 # XPPAUT 8.0 refuses a bad file with exit status 0, no output file and a
 # message on stdout (measured: "illegal expression", "Illegal syntax", "... is
 # a duplicate name", "ERROR compiling", "Must have at least one equation", "Bad
-# global"). A probe marked "# xpp: hang" passes when XPPAUT runs into the 10 s
-# timeout or dies from a signal (an include cycle recurses until it crashes).
-error_re='illegal|duplicate|error|must have|probably not|no variable|bad global'
+# global", "Cant export ... - non existent!"). A probe marked "# xpp: hang"
+# passes when XPPAUT runs into the 10 s timeout or dies from a signal (an
+# include cycle recurses until it crashes).
+error_re='illegal|duplicate|error|must have|probably not|no variable|bad global|non existent'
 
 # ---------------------------------------------------------------- XPPAUT half
 sanity_xpp() {

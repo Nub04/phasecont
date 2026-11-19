@@ -1,0 +1,9 @@
+# hom-bcs-name: Can a parameter be named hom_bcs (XPPAUT 8.2.2)?
+# xpp: error
+# pc: ok
+# ruling: XPPAUT reports hom_bcs is a duplicate name, since the builtin function holds it.
+x'=0
+x(0)=3
+par hom_bcs=9
+aux v=hom_bcs
+@ total=0,dt=1

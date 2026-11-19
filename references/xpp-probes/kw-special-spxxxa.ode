@@ -1,0 +1,9 @@
+# kw-special-spxxxa: Does the word spxxxa reach the special-function parser, so that only SP and a sixth letter A count (XPPAUT 8.2.2)?
+# xpp: error
+# pc: ODE0019
+x'=0
+x(0)=3
+par a=5
+aux v=a
+spxxxa f=zz
+@ total=0,dt=1

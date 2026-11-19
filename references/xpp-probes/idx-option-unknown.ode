@@ -1,0 +1,10 @@
+# idx-option-unknown: Is an unknown option name xx[1] read as xx1 (XPPAUT 8.2.2)?
+# xpp: rows=3
+# pc: ODE0020
+# ruling: XPPAUT prints Option XX1 not recognized, so the index is folded into the key before the lookup. It still loads the file.
+x'=0
+x(0)=3
+par a=5
+aux v=a
+@ total=2,dt=1
+@ xx[1]=2

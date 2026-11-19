@@ -1,0 +1,10 @@
+# kw-special-full: Does a line that starts with the full word special reach the special-function parser (XPPAUT 8.2.2)?
+# xpp: error
+# pc: ODE0031
+# ruling: XPPAUT stops with Illegal special function ZZ, so the line was read as a special-function statement.
+x'=0
+x(0)=3
+par a=5
+aux v=a
+special f=zz
+@ total=0,dt=1
