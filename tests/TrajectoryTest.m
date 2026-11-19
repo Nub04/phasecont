@@ -314,6 +314,20 @@ classdef TrajectoryTest < matlab.unittest.TestCase
             end
         end
 
+        function aPrefixedOptionIsNamedInTheWarning(testCase)
+            % XPPAUT reads totalx as total and dtx as dt (probes
+            % opt-prefix-*). simulate ignores both and names each key as
+            % the file spells it.
+            m = testCase.model("x'=-x" + newline + "init x=1" + newline + ...
+                "@ totalx=5, dtx=0.1" + newline + "done" + newline);
+            lastwarn("");
+            [~] = evalc("phasecont.simulate(m, 1, [0 1]);");
+            [msg, id] = lastwarn;
+            testCase.verifyEqual(string(id), "phasecont:simulate:ignoredOption");
+            testCase.verifySubstring(string(msg), "totalx");
+            testCase.verifySubstring(string(msg), "dtx");
+        end
+
         function theOptionWarningComesOncePerModel(testCase)
             m = testCase.model(testCase.DecayOpts);
             testCase.verifyWarning(@() phasecont.simulate(m, 1, [0 1]), ...
