@@ -546,7 +546,10 @@ fn values_and_functions_used_the_wrong_way() {
 
 #[test]
 fn arg_names() {
-    clean("f(u,v)=arg2+arg1*u");
+    assert_eq!(
+        codes("f(u,v)=arg2+arg1*u"),
+        vec![POSITIONAL_ARG, POSITIONAL_ARG]
+    );
     let text = "f(u)=arg2";
     let d = check_one(text, BAD_ARG, nth(text, "arg2", 0), &[]);
     assert!(d.message.contains("`arg2`"), "{}", d.message);
@@ -596,8 +599,12 @@ fn a_declared_arg_formal_beyond_the_arity_is_not_an_arity_error() {
 
 #[test]
 fn undeclared_arg_stays_positional_next_to_a_declared_one() {
-    // `arg2` is declared; `arg1` and `arg3` read arguments 1 and 3.
-    clean("g(arg2,v,w)=arg1*100+arg2*10+arg3");
+    // `arg2` is declared; `arg1` and `arg3` read arguments 1 and 3, with
+    // ODE0078 at each.
+    let text = "g(arg2,v,w)=arg1*100+arg2*10+arg3";
+    let spans: Vec<Span> = run(text).1.iter().map(|d| d.span).collect();
+    assert_eq!(spans, vec![nth(text, "arg1", 0), nth(text, "arg3", 0)]);
+    assert_eq!(codes(text), vec![POSITIONAL_ARG, POSITIONAL_ARG]);
     // `arg4` is above the arity of 3.
     assert_eq!(codes("g(arg2,v,w)=arg4"), vec![BAD_ARG]);
     // A declared formal is not a function.
@@ -611,6 +618,29 @@ fn undeclared_arg_stays_positional_next_to_a_declared_one() {
         &[nth(text, "arg1", 0)],
     );
     assert!(d.message.contains("`arg1`"), "{}", d.message);
+}
+
+/// XPPAUT 8.2.2 stops on an `argK` that the function does not declare.
+/// PhaseCont reads it as argument `K` and warns.
+#[test]
+fn an_undeclared_arg_within_the_count_warns() {
+    let text = "f(u)=arg1*2";
+    let d = check_one(text, POSITIONAL_ARG, nth(text, "arg1", 0), &[]);
+    assert_eq!(d.severity, Severity::Warning);
+    assert!(d.message.contains("`arg1`"), "{}", d.message);
+    assert!(d.message.contains("argument 1"), "{}", d.message);
+    assert!(d.message.contains("XPPAUT 8.2.2"), "{}", d.message);
+    let text = "x'=f(x,2)\nf(u,v)=u+arg2";
+    check_one(text, POSITIONAL_ARG, nth(text, "arg2", 0), &[]);
+    // Each use is reported.
+    assert_eq!(
+        codes("f(u)=arg1*arg1"),
+        vec![POSITIONAL_ARG, POSITIONAL_ARG]
+    );
+    // A declared formal named `argK` reads by name and does not warn.
+    clean("f(u,arg1)=u+arg1");
+    // Above the count it is still the error ODE0050, not the warning.
+    assert_eq!(codes("f(u)=arg2"), vec![BAD_ARG]);
 }
 
 #[test]

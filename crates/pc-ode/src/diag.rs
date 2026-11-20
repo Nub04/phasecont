@@ -375,6 +375,12 @@ pub const CODES: &[(Code, Severity, &str)] = &[
         Severity::Warning,
         "a name in an `only` list that is not a state, an aux quantity or `t`, or that repeats, is dropped",
     ),
+    // Function arguments (`check.rs`).
+    (
+        Code(78),
+        Severity::Warning,
+        "an `argK` that the function does not declare is read as argument K; XPPAUT 8.2.2 stops on it",
+    ),
 ];
 
 #[cfg(test)]

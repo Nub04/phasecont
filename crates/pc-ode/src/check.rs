@@ -79,6 +79,9 @@ pub const METH_MAP: Code = Code(74);
 /// A name in an `only` list that is not a state, an `aux` quantity or `t`, or
 /// that repeats. XPPAUT drops it without a word; the name is dropped here too.
 pub const ONLY_DROPPED: Code = Code(77);
+/// An `argK` in a function body that the function does not declare, with `K`
+/// up to the parameter count. PhaseCont reads argument `K`; XPPAUT 8.2.2 stops.
+pub const POSITIONAL_ARG: Code = Code(78);
 
 /// Longest name XPPAUT 8.0 keeps whole.
 const XPP_NAME_LEN: usize = 10;
@@ -1059,7 +1062,21 @@ impl<'a> Checker<'a> {
 
     /// A name used as a value.
     fn name_use(&mut self, id: &Ident, owner: Owner<'a>) {
-        if id.index.is_some() || Self::is_param(&id.key, owner) {
+        if id.index.is_some() {
+            return;
+        }
+        if Self::is_param(&id.key, owner) {
+            if let Owner::Function(_, params) = owner
+                && !params.iter().any(|p| p.key == id.key)
+                && let Some(k) = arg_number(&id.key)
+            {
+                let message = format!(
+                    "`{}` is not a parameter name of this function, so PhaseCont reads it as \
+                     argument {k}; XPPAUT 8.2.2 stops on it, so name the parameter instead",
+                    id.text
+                );
+                self.report(POSITIONAL_ARG, id.span, message, Vec::new());
+            }
             return;
         }
         if let Some(k) = arg_number(&id.key) {

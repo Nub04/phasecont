@@ -1,0 +1,3 @@
+# ODE0078 an argK that the function does not declare, read by position
+f(u)=arg1*2
+x'=f(x)
