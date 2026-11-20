@@ -148,13 +148,17 @@ pub struct Unit {
     body: Option<Body>,
 }
 
+const NO_SLOT: u32 = u32::MAX;
+
 #[derive(Clone, Debug)]
 struct Body {
     outputs: Vec<NodeId>,
     /// The frame slot of every node of the body that depends on an `Arg`. A `Call` node
     /// takes `nout` consecutive slots, one per output of its unit, and `Out(call, j)` maps
-    /// to slot `j` of its call.
-    locals: HashMap<NodeId, u32>,
+    /// to slot `j` of its call. Dense over ids `lo..lo + locals.len()`, with `NO_SLOT` for
+    /// ids that have no slot, so a lookup is one bounds check.
+    lo: u32,
+    locals: Vec<u32>,
     nlocal: u32,
     /// The slot of `Arg(k)`, or `None` when the body does not read formal `k`.
     arg_slots: Vec<Option<u32>>,
@@ -168,7 +172,9 @@ impl Unit {
 
     /// The frame slot of node `id`, when `id` depends on an `Arg` and is in the body.
     pub fn local(&self, id: NodeId) -> Option<u32> {
-        self.body.as_ref().and_then(|b| b.locals.get(&id).copied())
+        let b = self.body.as_ref()?;
+        let i = id.0.checked_sub(b.lo)? as usize;
+        b.locals.get(i).copied().filter(|&s| s != NO_SLOT)
     }
 
     /// The number of frame slots of one call.
@@ -455,7 +461,10 @@ impl Dag {
             });
         }
         found.sort_unstable();
-        let mut locals = HashMap::with_capacity(found.len());
+        let lo = found.first().map_or(0, |n| n.0);
+        let span = found.last().map_or(0, |n| (n.0 - lo) as usize + 1);
+        let mut locals = vec![NO_SLOT; span];
+        let at = |id: NodeId| (id.0 - lo) as usize;
         let mut arg_slots = vec![None; arity];
         let mut next = 0u32;
         for id in found {
@@ -464,28 +473,33 @@ impl Dag {
                     if let Some(s) = arg_slots.get_mut(k as usize) {
                         *s = Some(next);
                     }
-                    locals.insert(id, next);
+                    locals[at(id)] = next;
                     next += 1;
                 }
                 Op::Call(c, _) => {
-                    locals.insert(id, next);
+                    locals[at(id)] = next;
                     next += self.units.get(c as usize).map_or(1, |x| x.nout);
                 }
                 // `Out(call, j)` reads slot `j` of its call, which has a smaller id and so
                 // already has its slots.
                 Op::Out(c, j) => {
-                    if let Some(&base) = locals.get(&c) {
-                        locals.insert(id, base + j);
+                    if let Some(&base) =
+                        c.0.checked_sub(lo)
+                            .and_then(|i| locals.get(i as usize))
+                            .filter(|&&b| b != NO_SLOT)
+                    {
+                        locals[at(id)] = base + j;
                     }
                 }
                 _ => {
-                    locals.insert(id, next);
+                    locals[at(id)] = next;
                     next += 1;
                 }
             }
         }
         self.units[u as usize].body = Some(Body {
             outputs: outputs.to_vec(),
+            lo,
             locals,
             nlocal: next,
             arg_slots,

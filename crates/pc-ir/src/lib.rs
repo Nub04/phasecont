@@ -15,6 +15,7 @@ pub mod error;
 pub mod eval;
 pub mod interp;
 pub mod lower;
+pub mod machine;
 pub mod math;
 pub mod multi;
 

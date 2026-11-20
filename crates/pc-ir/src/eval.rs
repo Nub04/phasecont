@@ -207,10 +207,41 @@ pub fn live_set(dag: &Dag, outputs: &[NodeId]) -> Vec<bool> {
     live
 }
 
-/// Evaluates every node reachable from `outputs` in increasing id order and writes
-/// `out[i] = value(outputs[i])`. `p` carries time at index `n_p`. Select evaluates both
-/// branches (no short circuit). Extra `out` slots and out-of-range outputs are NaN.
+/// Evaluates `outputs` and writes `out[i] = value(outputs[i])`. `p` carries time at index
+/// `n_p`. Select evaluates both branches (no short circuit). Extra `out` slots and
+/// out-of-range outputs are NaN.
+///
+/// Outputs that reach no [`Op::Call`] are evaluated eagerly, every reachable node in
+/// increasing id order. Otherwise the frame machine of [`crate::machine`] runs, and an
+/// error there (the depth cap, memory, a malformed DAG) writes NaN into every slot. Use
+/// [`crate::machine::try_eval`] to see the error.
 pub fn eval(dag: &Dag, outputs: &[NodeId], x: &[f64], p: &[f64], v: &[f64], out: &mut [f64]) {
+    if outputs.iter().any(|&o| dag.has_call(o)) {
+        let _ = crate::machine::run(
+            dag,
+            outputs,
+            x,
+            p,
+            v,
+            out,
+            None,
+            crate::machine::MAX_ACTIVE_CALLS,
+        );
+        return;
+    }
+    eval_eager(dag, outputs, x, p, v, out);
+}
+
+/// [`eval`] without the call check: every node reachable from `outputs` in increasing id
+/// order.
+pub(crate) fn eval_eager(
+    dag: &Dag,
+    outputs: &[NodeId],
+    x: &[f64],
+    p: &[f64],
+    v: &[f64],
+    out: &mut [f64],
+) {
     let n = dag.len();
     let live = live_set(dag, outputs);
     let mut vals = vec![f64::NAN; n];
@@ -290,7 +321,7 @@ fn slope2(f: Fn2, a: f64, b: f64) -> (f64, f64) {
 
 /// The running error bound of one op, given its computed value `r`. `val` and `err` give
 /// the value and the bound of a child. See [`eval_err`].
-fn err_op(
+pub(crate) fn err_op(
     dag: &Dag,
     op: &Op,
     r: f64,
@@ -361,7 +392,38 @@ fn err_op(
 /// operands pass through the exact partial derivatives of the operation. Leaves are exact.
 /// A bound that is NaN or infinite says nothing (no extra tolerance). A builtin call adds
 /// `2 |result|`, which allows the shim one ulp of error.
+///
+/// A call of a recursive function adds no term of its own: a formal takes the bound of its
+/// argument and the call the bound of the body output, as if the body were inlined. Outputs
+/// that reach a call run on the frame machine as in [`eval`], and an error there writes NaN
+/// into every `out` and `err` slot.
 pub fn eval_err(
+    dag: &Dag,
+    outputs: &[NodeId],
+    x: &[f64],
+    p: &[f64],
+    v: &[f64],
+    out: &mut [f64],
+    err: &mut [f64],
+) {
+    if outputs.iter().any(|&o| dag.has_call(o)) {
+        let _ = crate::machine::run(
+            dag,
+            outputs,
+            x,
+            p,
+            v,
+            out,
+            Some(err),
+            crate::machine::MAX_ACTIVE_CALLS,
+        );
+        return;
+    }
+    eval_err_eager(dag, outputs, x, p, v, out, err);
+}
+
+/// [`eval_err`] without the call check.
+pub(crate) fn eval_err_eager(
     dag: &Dag,
     outputs: &[NodeId],
     x: &[f64],
@@ -441,6 +503,43 @@ pub fn eval_entry_err(
             *o += 0.0;
         }
     }
+}
+
+/// [`eval_entry`] that returns the error of the frame machine instead of writing NaN.
+pub fn try_eval_entry(
+    dag: &Dag,
+    entry: &crate::entry::Entry,
+    x: &[f64],
+    p: &[f64],
+    v: &[f64],
+    out: &mut [f64],
+) -> Result<crate::machine::EvalStats, crate::machine::EvalError> {
+    let s = crate::machine::try_eval(dag, &entry.outputs, x, p, v, out)?;
+    if entry.kind.is_derivative() {
+        for o in out.iter_mut() {
+            *o += 0.0;
+        }
+    }
+    Ok(s)
+}
+
+/// [`eval_entry_err`] that returns the error of the frame machine instead of writing NaN.
+pub fn try_eval_entry_err(
+    dag: &Dag,
+    entry: &crate::entry::Entry,
+    x: &[f64],
+    p: &[f64],
+    v: &[f64],
+    out: &mut [f64],
+    err: &mut [f64],
+) -> Result<crate::machine::EvalStats, crate::machine::EvalError> {
+    let s = crate::machine::try_eval_err(dag, &entry.outputs, x, p, v, out, err)?;
+    if entry.kind.is_derivative() {
+        for o in out.iter_mut() {
+            *o += 0.0;
+        }
+    }
+    Ok(s)
 }
 
 #[cfg(test)]
