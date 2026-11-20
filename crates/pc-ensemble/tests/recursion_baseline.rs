@@ -74,7 +74,9 @@ fn line(path: &Path) -> (String, String) {
         .strip_prefix(root())
         .unwrap_or(path)
         .display()
-        .to_string();
+        .to_string()
+        // The golden file uses `/` on every host.
+        .replace('\\', "/");
     let mut out = format!("{name}:");
     let mut m = match lower(path) {
         Ok(m) => m,

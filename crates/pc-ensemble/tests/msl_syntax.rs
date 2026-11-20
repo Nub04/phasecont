@@ -65,6 +65,9 @@ fn check(src: &str, name: &str) -> Result<Option<()>, String> {
             "-fsyntax-only",
             "-Wno-unknown-pragmas",
             "-Wno-unknown-attributes",
+            // The shim includes <cmath>. On Windows that is the MSVC STL, which refuses a
+            // clang older than the one it was released with; the shim needs nothing new.
+            "-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH",
         ])
         .arg("-I")
         .arg(&dir)
