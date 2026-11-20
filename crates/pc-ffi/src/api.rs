@@ -352,6 +352,21 @@ pub unsafe extern "C" fn run_copy(
             )));
         }
         let buf = unsafe { f64_out(buf, buf_len, "buf") }?;
+        if what == 0
+            && let Some(rs) = h.run.row_stride(branch as usize)
+        {
+            // An IVP or ITER branch keeps flat rows of [alpha, x, aux] (SPEC 8af-1).
+            if rs != stride {
+                return Err(Error::Internal(format!(
+                    "run_copy: the engine rows have {rs} values, the handle expects {stride}"
+                )));
+            }
+            *out_rows = h
+                .run
+                .copy_rows(branch as usize, start, count, buf)
+                .map_err(|e| Error::Internal(format!("run_copy: {e}")))?;
+            return Ok(());
+        }
         let points = if what == 0 {
             h.run.points(branch as usize, start, count)
         } else {

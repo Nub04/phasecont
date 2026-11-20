@@ -28,6 +28,7 @@ mod palc;
 mod panic;
 mod problem;
 mod refine;
+mod rows;
 mod run;
 mod switch;
 mod tests_fn;

@@ -1356,10 +1356,10 @@ fn an_ivp_run_matches_the_engine_row_for_row() {
         std::thread::sleep(Duration::from_millis(2));
     };
     assert_eq!(status.state, RunState::Done);
-    for p in engine.points(0, 0, status.points[0]) {
-        want.push(p.alpha);
-        want.extend(&p.u);
-    }
+    let stride = engine.row_stride(0).unwrap();
+    want.resize(stride * status.points[0], f64::NAN);
+    let rows = engine.copy_rows(0, 0, status.points[0], &mut want).unwrap();
+    assert_eq!(rows, status.points[0]);
     assert!(same_bits(&got, &want));
 }
 
@@ -1549,12 +1549,11 @@ fn an_ivp_run_with_aux_matches_the_engine_row_for_row() {
         std::thread::sleep(Duration::from_millis(2));
     };
     assert_eq!(status.state, RunState::Done);
-    let mut want = Vec::new();
-    for p in engine.points(0, 0, status.points[0]) {
-        assert_eq!(p.u.len(), 4);
-        want.push(p.alpha);
-        want.extend(&p.u);
-    }
+    // [t, x(2), aux(2)] a row.
+    assert_eq!(engine.row_stride(0), Some(5));
+    let mut want = vec![f64::NAN; 5 * status.points[0]];
+    let rows = engine.copy_rows(0, 0, status.points[0], &mut want).unwrap();
+    assert_eq!(rows, status.points[0]);
     assert!(same_bits(&got, &want));
 }
 

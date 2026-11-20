@@ -7,6 +7,7 @@
 
 use crate::branch::{Branch, Point, StopReason};
 use crate::error::EngineError;
+use crate::ivp::{OnRow, row_point};
 use crate::model::{ModelEval, aux_row};
 use pc_ir::EntryKind;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -40,35 +41,34 @@ pub fn iterate(
     cancel: &AtomicBool,
     on_point: &mut dyn FnMut(&Point),
 ) -> Result<Branch, EngineError> {
+    let mut points = Vec::new();
+    let stop = iterate_rows(model, setup, cancel, &mut |k, x, aux, h| {
+        let p = row_point(k, x, aux, h);
+        on_point(&p);
+        points.push(p);
+    })?;
+    Ok(Branch {
+        points,
+        specials: Vec::new(),
+        stop,
+        warnings: Vec::new(),
+    })
+}
+
+/// [`iterate`] without the points: each row goes to `on_row` as (iterate number, state, aux
+/// values, h), and the result is the reason the run stopped. The rows and the stop reason
+/// are those of [`iterate`], bit for bit.
+pub(crate) fn iterate_rows(
+    model: &mut dyn ModelEval,
+    setup: &IterSetup,
+    cancel: &AtomicBool,
+    on_row: &mut OnRow<'_>,
+) -> Result<StopReason, EngineError> {
     let (n, n_p) = (model.n(), model.n_p());
     check(setup, n, n_p)?;
     if cancel.load(Ordering::Relaxed) {
         return Err(EngineError::Cancelled);
     }
-    let mut branch = Branch {
-        points: Vec::new(),
-        specials: Vec::new(),
-        stop: StopReason::MaxSteps,
-        warnings: Vec::new(),
-    };
-    let mut push = |branch: &mut Branch, k: i64, x: &[f64], aux: &[f64], h: f64| {
-        let mut u = Vec::with_capacity(x.len() + aux.len());
-        u.extend_from_slice(x);
-        u.extend_from_slice(aux);
-        let p = Point {
-            u,
-            alpha: k as f64,
-            tangent: Vec::new(),
-            eigenvalues: Vec::new(),
-            tests: [f64::NAN; 3],
-            codim2: Vec::new(),
-            h,
-            newton_iters: 0,
-            mesh: Vec::new(),
-        };
-        on_point(&p);
-        branch.points.push(p);
-    };
     // The last parameter slot is t, as in the initial value run.
     let mut pbuf = setup.params.clone();
     pbuf.push(0.0);
@@ -78,13 +78,12 @@ pub fn iterate(
     if setup.n_aux > 0 {
         pbuf[n_p] = setup.n0 as f64;
         if let Err(e) = aux_row(model, &x, &pbuf, &mut aux) {
-            branch.stop = StopReason::Error(e);
-            return Ok(branch);
+            return Ok(StopReason::Error(e));
         }
     }
-    push(&mut branch, setup.n0, &x, &aux, 0.0);
+    on_row(setup.n0 as f64, &x, &aux, 0.0);
     let mut k = setup.n0;
-    branch.stop = loop {
+    let stop = loop {
         if k == setup.n1 {
             break StopReason::End;
         }
@@ -103,9 +102,9 @@ pub fn iterate(
                 break StopReason::Error(e);
             }
         }
-        push(&mut branch, k, &x, &aux, 1.0);
+        on_row(k as f64, &x, &aux, 1.0);
     };
-    Ok(branch)
+    Ok(stop)
 }
 
 fn check(setup: &IterSetup, n: usize, n_p: usize) -> Result<(), EngineError> {

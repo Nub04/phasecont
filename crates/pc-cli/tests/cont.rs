@@ -9,7 +9,7 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use common::{code, run, stderr, stdout};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 const TOL: f64 = 1e-9;
 
@@ -752,6 +752,59 @@ fn aux_true_adds_the_aux_values_to_ivp_and_iter_points() {
         let (_, first) = &with[0];
         let want = if n == 2 { 0.5 } else { 0.1 - 0.5 };
         assert_eq!(first[n].to_bits(), f64::to_bits(want), "{tag}");
+    }
+}
+
+/// An IVP or ITER point record has the keys of a continuation point less `h`, with constant
+/// values in all but `alpha` and `u`, and a run of more rows than the CLI reads at a time
+/// prints every row once and in order (SPEC section 8af-1).
+#[test]
+fn ivp_and_iter_points_have_no_h_and_every_row_is_printed_once() {
+    let map = scratch().join("rows_map.ode");
+    std::fs::write(&map, "par r=2.5\ninit x=0.1\nx(t+1)=r*x*(1-x)\ndone\n").unwrap();
+    let path = scratch().join("rows_iter.json");
+    std::fs::write(&path, r#"{"type":"ITER","tspan":[0,9000]}"#).unwrap();
+    let o = run(
+        &scratch(),
+        &["cont", map.to_str().unwrap(), path.to_str().unwrap()],
+    );
+    assert_eq!(code(&o), 0, "{}", stderr(&o));
+    // The keys are written in alphabetical order, as for every other point.
+    let text = stdout(&o);
+    assert!(
+        text.contains(r#"{"alpha":0.0,"codim2":[],"eigenvalues":[],"mesh":[],"newton_iters":0,"tests":[null,null,null],"u":[0.1]}"#),
+        "{}",
+        &text[..text.len().min(300)]
+    );
+    let v: Value = serde_json::from_str(&text).unwrap();
+    let points = v["branches"][0]["points"].as_array().unwrap();
+    assert_eq!(points.len(), 9001);
+    let keys = [
+        "alpha",
+        "codim2",
+        "eigenvalues",
+        "mesh",
+        "newton_iters",
+        "tests",
+        "u",
+    ];
+    let mut x = 0.1_f64;
+    for (k, p) in points.iter().enumerate() {
+        let got: Vec<&str> = p.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(got, keys, "row {k}");
+        assert_eq!(p["alpha"].as_f64().unwrap(), k as f64, "row {k}");
+        assert_eq!(p["u"].as_array().unwrap().len(), 1, "row {k}");
+        assert_eq!(
+            p["u"][0].as_f64().unwrap().to_bits(),
+            x.to_bits(),
+            "row {k}"
+        );
+        assert_eq!(p["codim2"], json!([]));
+        assert_eq!(p["eigenvalues"], json!([]));
+        assert_eq!(p["mesh"], json!([]));
+        assert_eq!(p["newton_iters"], json!(0));
+        assert_eq!(p["tests"], json!([null, null, null]));
+        x = (2.5 * x) * (1.0 - x);
     }
 }
 

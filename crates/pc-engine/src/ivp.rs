@@ -269,6 +269,52 @@ pub fn integrate(
     cancel: &AtomicBool,
     on_point: &mut dyn FnMut(&Point),
 ) -> Result<Branch, EngineError> {
+    let mut points = Vec::new();
+    let stop = integrate_rows(model, setup, opts, cancel, &mut |t, x, aux, h| {
+        let p = row_point(t, x, aux, h);
+        on_point(&p);
+        points.push(p);
+    })?;
+    Ok(Branch {
+        points,
+        specials: Vec::new(),
+        stop,
+        warnings: Vec::new(),
+    })
+}
+
+/// The point of one row: `alpha` the time, `u` the state followed by the aux values.
+/// The callback a row core calls once a row: `(alpha, x, aux, h)`, with `alpha` the time or
+/// the iterate number and `h` the step that reached the row (0 at the start row).
+pub(crate) type OnRow<'a> = dyn FnMut(f64, &[f64], &[f64], f64) + 'a;
+
+pub(crate) fn row_point(alpha: f64, x: &[f64], aux: &[f64], h: f64) -> Point {
+    let mut u = Vec::with_capacity(x.len() + aux.len());
+    u.extend_from_slice(x);
+    u.extend_from_slice(aux);
+    Point {
+        u,
+        alpha,
+        tangent: Vec::new(),
+        eigenvalues: Vec::new(),
+        tests: [f64::NAN; 3],
+        codim2: Vec::new(),
+        h,
+        newton_iters: 0,
+        mesh: Vec::new(),
+    }
+}
+
+/// [`integrate`] without the points: each row goes to `on_row` as (t, state, aux values,
+/// signed step), and the result is the reason the run stopped. The rows and the stop reason
+/// are those of [`integrate`], bit for bit.
+pub(crate) fn integrate_rows(
+    model: &mut dyn ModelEval,
+    setup: &IvpSetup,
+    opts: &IvpOptions,
+    cancel: &AtomicBool,
+    on_row: &mut OnRow<'_>,
+) -> Result<StopReason, EngineError> {
     let (n, n_p) = (model.n(), model.n_p());
     check(setup, opts, n, n_p)?;
     if cancel.load(Ordering::Relaxed) {
@@ -277,41 +323,16 @@ pub fn integrate(
     let mut pbuf = setup.params.clone();
     pbuf.push(setup.t0);
     let mut aux = vec![0.0; setup.n_aux];
-    let mut branch = Branch {
-        points: Vec::new(),
-        specials: Vec::new(),
-        stop: StopReason::MaxSteps,
-        warnings: Vec::new(),
-    };
-    let mut push = |branch: &mut Branch, t: f64, x: &[f64], aux: &[f64], h: f64| {
-        let mut u = Vec::with_capacity(x.len() + aux.len());
-        u.extend_from_slice(x);
-        u.extend_from_slice(aux);
-        let p = Point {
-            u,
-            alpha: t,
-            tangent: Vec::new(),
-            eigenvalues: Vec::new(),
-            tests: [f64::NAN; 3],
-            codim2: Vec::new(),
-            h,
-            newton_iters: 0,
-            mesh: Vec::new(),
-        };
-        on_point(&p);
-        branch.points.push(p);
-    };
 
     let mut x = setup.t0;
     let mut y = setup.x0.clone();
     if setup.n_aux > 0 {
         pbuf[n_p] = x;
         if let Err(e) = aux_row(model, &y, &pbuf, &mut aux) {
-            branch.stop = StopReason::Error(e);
-            return Ok(branch);
+            return Ok(StopReason::Error(e));
         }
     }
-    push(&mut branch, x, &y, &aux, 0.0);
+    on_row(x, &y, &aux, 0.0);
     let mut k: [Vec<f64>; 7] = std::array::from_fn(|_| vec![0.0; n]);
     let mut ytmp = vec![0.0; n];
     let mut y1 = vec![0.0; n];
@@ -329,8 +350,7 @@ pub fn integrate(
     }) {
         Ok(h) => h,
         Err(e) => {
-            branch.stop = StopReason::Error(e);
-            return Ok(branch);
+            return Ok(StopReason::Error(e));
         }
     };
 
@@ -339,7 +359,7 @@ pub fn integrate(
     let mut reject = false;
     let mut last = false;
     let mut accepted = 0usize;
-    branch.stop = loop {
+    let stop = loop {
         if cancel.load(Ordering::Relaxed) {
             break StopReason::Cancelled;
         }
@@ -374,7 +394,7 @@ pub fn integrate(
                     break StopReason::Error(e);
                 }
             }
-            push(&mut branch, x, &y, &aux, h);
+            on_row(x, &y, &aux, h);
             if last {
                 break StopReason::End;
             }
@@ -397,7 +417,7 @@ pub fn integrate(
             h = hnew;
         }
     };
-    Ok(branch)
+    Ok(stop)
 }
 
 #[cfg(test)]

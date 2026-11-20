@@ -169,11 +169,24 @@ fn a_background_run_iterates_a_map_that_uses_t() {
     }
     assert_eq!(run.poll().state, RunState::Done);
     assert_eq!(run.stop(0), Some(StopReason::End));
-    let x: Vec<(f64, f64)> = run
-        .points(0, 0, usize::MAX)
+    // An ITER branch keeps flat rows [k, x] (SPEC 8af-1).
+    assert_eq!(run.row_stride(0), Some(2));
+    let rows = run.poll().points[0];
+    let mut buf = vec![f64::NAN; 2 * rows];
+    assert_eq!(run.copy_rows(0, 0, rows, &mut buf).unwrap(), rows);
+    let x: Vec<(f64, f64)> = buf
+        .as_chunks::<2>()
+        .0
         .iter()
-        .map(|p| (p.alpha, p.u[0]))
+        .map(|r| (r[0], r[1]))
         .collect();
+    // A flat branch has no points to clone, and a wrong buffer or branch is an error.
+    let p = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run.points(0, 0, 1)));
+    assert!(p.is_err(), "points() on a flat branch panics");
+    assert!(run.copy_rows(0, 0, rows, &mut buf[1..]).is_err());
+    assert!(run.copy_rows(1, 0, 0, &mut []).is_err());
+    assert_eq!(run.row_stride(1), None);
+    assert_eq!(run.copy_rows(0, rows, 1, &mut buf[..2]).unwrap(), 0);
     assert_eq!(
         x,
         [

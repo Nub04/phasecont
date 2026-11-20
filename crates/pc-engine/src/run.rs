@@ -30,14 +30,15 @@ use crate::dde::{
 use crate::ep::{EpSetup, continue_ep};
 use crate::error::EngineError;
 use crate::hopfcurve::continue_hopf_curve;
-use crate::iterate::{IterSetup, iterate};
-use crate::ivp::{IvpOptions, IvpSetup, integrate};
+use crate::iterate::{IterSetup, iterate_rows};
+use crate::ivp::{IvpOptions, IvpSetup, integrate_rows};
 use crate::lpcurve::continue_lp_curve;
 use crate::mapcurve::{continue_map_lp_curve, continue_map_ns_curve, continue_map_pd_curve};
 use crate::mapfix::MapAsRoot;
 use crate::mapiter::IteratedMap;
 use crate::model::{Evaluator, build, build_allowing_t, build_dde};
 use crate::panic::{clear_last_panic, install_hook, mark_worker, payload_message, take_last_panic};
+use crate::rows::Rows;
 use crate::switch::{pd_start, special_index, switch_bp, switch_pd};
 use pc_ode::{Model, ModelInfo};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -217,6 +218,9 @@ struct Inner {
     /// The k of `F^k` of each branch of a map `Ep` or map curve run, by branch index;
     /// `None` (or missing) for every other branch.
     iterates: Vec<Option<usize>>,
+    /// The flat rows of each IVP or ITER branch, by branch index (SPEC section 8af-1); `None`
+    /// (or missing) for a branch that keeps its points in `branches`.
+    rows: Vec<Option<Rows>>,
 }
 
 struct Shared {
@@ -323,7 +327,8 @@ fn follow(
                 t1: tspan[1],
                 n_aux: *n_aux,
             };
-            integrate(model, &ivp, opts, &shared.cancel, on_point)
+            let on_row = &mut flat_rows(shared, idx, 1 + model.n() + n_aux);
+            integrate_rows(model, &ivp, opts, &shared.cancel, on_row).map(flat_branch)
         }
         RunKind::Iter { n, n_aux } => {
             let it = IterSetup {
@@ -333,7 +338,8 @@ fn follow(
                 n1: n[1],
                 n_aux: *n_aux,
             };
-            iterate(model, &it, &shared.cancel, on_point)
+            let on_row = &mut flat_rows(shared, idx, 1 + model.n() + n_aux);
+            iterate_rows(model, &it, &shared.cancel, on_row).map(flat_branch)
         }
         RunKind::MapLpCurve(cs) => continue_map_lp_curve(model, cs, opts, &shared.cancel, on_point),
         RunKind::MapPdCurve(cs) => continue_map_pd_curve(model, cs, opts, &shared.cancel, on_point),
@@ -344,6 +350,36 @@ fn follow(
         shared.lock().branches[idx].stop = StopReason::Error(e.clone());
     }
     b
+}
+
+/// Makes branch `idx` a flat branch with rows of `stride` values and returns the callback
+/// that appends one row to it. Each row goes in under one hold of the lock, so a poll sees
+/// whole rows only.
+fn flat_rows(
+    shared: &Shared,
+    idx: usize,
+    stride: usize,
+) -> impl FnMut(f64, &[f64], &[f64], f64) + '_ {
+    {
+        let mut g = shared.lock();
+        if g.rows.len() <= idx {
+            g.rows.resize_with(idx + 1, || None);
+        }
+        g.rows[idx] = Some(Rows::new(stride));
+    }
+    move |alpha, x, aux, _h| {
+        if let Some(r) = shared.lock().rows[idx].as_mut() {
+            r.push(alpha, x, aux);
+        }
+    }
+}
+
+/// The branch a flat run returns: no points, since its rows stay in `Inner::rows`.
+fn flat_branch(stop: StopReason) -> Branch {
+    Branch {
+        stop,
+        ..placeholder()
+    }
 }
 
 /// [`follow`] on the model a run of a map needs: `F^k - x` for an `Ep` run, `F^k` for a
@@ -967,6 +1003,7 @@ impl Run {
                 branches: Vec::new(),
                 state: RunState::Running,
                 iterates: Vec::new(),
+                rows: Vec::new(),
             }),
             cancel: AtomicBool::new(false),
         });
@@ -1000,20 +1037,72 @@ impl Run {
         } else {
             g.state.clone()
         };
+        let count = |(i, b): (usize, &Branch)| match g.rows.get(i) {
+            Some(Some(r)) => r.len(),
+            _ => b.points.len(),
+        };
         Status {
             state,
-            points: g.branches.iter().map(|b| b.points.len()).collect(),
+            points: g.branches.iter().enumerate().map(count).collect(),
             specials: g.branches.iter().map(|b| b.specials.len()).collect(),
         }
     }
 
     /// Up to `count` points of `branch` from index `start`; empty when out of range.
+    ///
+    /// # Panics
+    ///
+    /// On a flat branch (an IVP or ITER run), which keeps rows, not points: read it with
+    /// [`Run::copy_rows`]. [`Run::row_stride`] tells the two kinds apart.
     pub fn points(&self, branch: usize, start: usize, count: usize) -> Vec<Point> {
         let g = self.shared.lock();
+        if matches!(g.rows.get(branch), Some(Some(_))) {
+            drop(g);
+            panic!("branch {branch} holds flat rows; read it with copy_rows");
+        }
         match g.branches.get(branch) {
             Some(b) => b.points.iter().skip(start).take(count).cloned().collect(),
             None => Vec::new(),
         }
+    }
+
+    /// The width of the rows of `branch` when it is a flat branch (an IVP or ITER run,
+    /// SPEC section 8af-1): 1 + n + the number of aux values. `None` for any other branch
+    /// and a missing one.
+    pub fn row_stride(&self, branch: usize) -> Option<usize> {
+        match self.shared.lock().rows.get(branch) {
+            Some(Some(r)) => Some(r.stride()),
+            _ => None,
+        }
+    }
+
+    /// Copies rows `start..start + count` of the flat `branch`, or as many of them as exist,
+    /// into the front of `out` and returns how many it copied. Each row is
+    /// `[alpha, x, aux]`, `alpha` the time or the iterate number.
+    ///
+    /// An error when `branch` is not a flat branch or `out` does not hold `count` rows of
+    /// [`Run::row_stride`] values.
+    pub fn copy_rows(
+        &self,
+        branch: usize,
+        start: usize,
+        count: usize,
+        out: &mut [f64],
+    ) -> Result<usize, EngineError> {
+        let g = self.shared.lock();
+        let Some(Some(r)) = g.rows.get(branch) else {
+            return Err(EngineError::BadProblem(format!(
+                "branch {branch} is not a branch of rows"
+            )));
+        };
+        if count.checked_mul(r.stride()) != Some(out.len()) {
+            return Err(EngineError::BadProblem(format!(
+                "copy_rows: {count} rows of {} values do not fit {} values",
+                r.stride(),
+                out.len()
+            )));
+        }
+        Ok(r.copy(start, count, out))
     }
 
     /// The special points of `branch`; empty until the branch has finished.
@@ -1251,6 +1340,7 @@ mod tests {
                 branches: Vec::new(),
                 state: RunState::Running,
                 iterates: Vec::new(),
+                rows: Vec::new(),
             }),
             cancel: AtomicBool::new(false),
         };
@@ -1287,6 +1377,7 @@ mod tests {
                 branches: Vec::new(),
                 state: RunState::Running,
                 iterates: Vec::new(),
+                rows: Vec::new(),
             }),
             cancel: AtomicBool::new(false),
         }
@@ -1371,6 +1462,7 @@ mod tests {
                 branches: Vec::new(),
                 state: RunState::Running,
                 iterates: Vec::new(),
+                rows: Vec::new(),
             }),
             cancel: AtomicBool::new(false),
         });
@@ -1402,6 +1494,7 @@ mod tests {
                 branches: vec![b, placeholder()],
                 state: RunState::Done,
                 iterates: Vec::new(),
+                rows: Vec::new(),
             }),
             cancel: AtomicBool::new(false),
         });

@@ -40,6 +40,7 @@ This release is 1.0.0. The release of 2026-11-04, first published as 1.0.0, is n
 
 ### Changed
 
+- IVP and ITER runs keep their rows in one flat buffer instead of one continuation point per step, which cuts the memory of a long `simulate` run and drops the second copy held while the run goes. The rows, their bits and the row layout do not change. The point records that `pc-cli cont` writes for an IVP or ITER run no longer have an `h` key, since the store keeps no step size.
 - `pc-cli session replay` refuses a session file whose `model.evaluator` is not `"jit"`, `"fallback"` or `"aot"` and exits 2, as `phasecont.session.replay` already did with `phasecont:session:badFile`. Before, any other value replayed on the JIT without a message.
 - On macOS, `ensemble` with `Backend = "auto"` tries Metal before OpenCL, since Apple deprecated OpenCL in favor of Metal. Windows and Linux keep the order CUDA, OpenCL, Metal, CPU. Pass `Backend = "opencl"` to keep OpenCL on a Mac.
 - The release ships one package per platform, `PhaseCont-<version>-win64.mltbx`, `PhaseCont-<version>-glnxa64.mltbx` and `PhaseCont-<version>-maca64.mltbx`, next to `PhaseCont-<version>.mltbx`, which holds all three platforms as before. All four use the same toolbox identifier, so any of them replaces an installed PhaseCont. A local `buildtool package` now writes `build/PhaseCont-<version>-<arch>.mltbx`.

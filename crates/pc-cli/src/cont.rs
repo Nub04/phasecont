@@ -105,11 +105,15 @@ fn report(run: &Run, state: &RunState) -> ExitCode {
             let _ = write!(text, "\"iterate\":{k},");
         }
         text.extend_from_slice(b"\"points\":[");
-        for (i, p) in run.points(b, 0, n).iter().enumerate() {
-            if i > 0 {
-                text.push(b',');
+        if let Some(stride) = run.row_stride(b) {
+            write_rows(&mut text, run, b, n, stride);
+        } else {
+            for (i, p) in run.points(b, 0, n).iter().enumerate() {
+                if i > 0 {
+                    text.push(b',');
+                }
+                write_point(&mut text, p);
             }
-            write_point(&mut text, p);
         }
         let specials = run.specials(b);
         let stop = run.stop(b);
@@ -159,6 +163,39 @@ fn report(run: &Run, state: &RunState) -> ExitCode {
     };
     to_stderr(&err);
     out(&String::from_utf8_lossy(&text), code)
+}
+
+/// The first `n` rows of the flat branch `b` of an IVP or ITER run (SPEC 8af-1) as point
+/// objects, with the keys of [`write_point`] less `h`. They are read a block at a time so the
+/// run is not copied whole.
+fn write_rows(text: &mut Vec<u8>, run: &Run, b: usize, n: usize, stride: usize) {
+    const BLOCK: usize = 4096;
+    let mut buf = vec![0.0; BLOCK.min(n) * stride];
+    let mut start = 0;
+    while start < n {
+        let count = BLOCK.min(n - start);
+        let got = match run.copy_rows(b, start, count, &mut buf[..count * stride]) {
+            Ok(got) => got,
+            Err(_) => break,
+        };
+        for row in buf[..got * stride].chunks_exact(stride) {
+            if start > 0 {
+                text.push(b',');
+            }
+            start += 1;
+            text.extend_from_slice(b"{\"alpha\":");
+            let _ = serde_json::to_writer(&mut *text, &row[0]);
+            text.extend_from_slice(
+                b",\"codim2\":[],\"eigenvalues\":[],\"mesh\":[],\"newton_iters\":0,\
+                  \"tests\":[null,null,null],\"u\":",
+            );
+            let _ = serde_json::to_writer(&mut *text, &row[1..]);
+            text.push(b'}');
+        }
+        if got < count {
+            break;
+        }
+    }
 }
 
 /// One point as a JSON object with the keys in alphabetical order.
