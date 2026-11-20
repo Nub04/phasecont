@@ -1,0 +1,10 @@
+# Non-recursive user functions with if, nested calls and a captured state.
+# Pins the inlined lowering that P44 must keep.
+par a=0.5, b=2
+clip(u)=if(u>1)then(1)else(if(u<(-1))then(-1)else(u))
+g(u,v)=clip(u*v)+a*x
+h(u)=g(u,b)-g(-u,a)
+x'=h(y)-x^3/3
+y'=-x+if(x>0)then(clip(y))else(b*y)
+init x=0.1, y=0.2
+done
