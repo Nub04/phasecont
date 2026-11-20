@@ -275,6 +275,10 @@ pub struct Problem {
     /// The k of a run on the k-th iterate `F^k` of a map (SPEC 8y), from the key `iterate`.
     /// 1 when the key is missing, which every run that is not a map EP or curve run keeps.
     pub iterate: usize,
+    /// The number of aux values an IVP or ITER row carries after the state: the model's aux
+    /// count when the key `aux` is true, 0 when it is false or missing and for every other
+    /// run (round E, SPEC 10).
+    pub n_aux: usize,
     /// Whether a map EP run starts at a PD point of `F^{iterate/2}` (`"start":"pd"`, SPEC 8y).
     pub pd_start: bool,
 }
@@ -302,9 +306,12 @@ impl Problem {
             (Kind::Ivp, ..) if let Some((tspan, opts)) = &self.ivp => RunKind::Ivp {
                 tspan: *tspan,
                 opts: opts.clone(),
-                n_aux: 0,
+                n_aux: self.n_aux,
             },
-            (Kind::Iter, ..) if let Some(n) = self.iter => RunKind::Iter { n, n_aux: 0 },
+            (Kind::Iter, ..) if let Some(n) = self.iter => RunKind::Iter {
+                n,
+                n_aux: self.n_aux,
+            },
             (Kind::Lp, Some(free), _) => RunKind::LpCurve(curve(free)),
             (Kind::Hopf, Some(free), _) => RunKind::HopfCurve(curve(free)),
             (Kind::MapLp, Some(free), _) => RunKind::MapLpCurve(curve(free)),
@@ -607,6 +614,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
             "bpc",
             "switch_direction",
             "iterate",
+            "aux",
         ],
         "",
     )?;
@@ -671,6 +679,9 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
     };
     if top.contains_key("tspan") {
         return Err("tspan: only an IVP or ITER run takes this key".into());
+    }
+    if top.contains_key("aux") {
+        return Err("aux: only an IVP or ITER run takes this key".into());
     }
     let iterate = parse_iterate(top)?;
     let map_run = matches!(kind, Kind::MapEp | Kind::MapLp | Kind::MapPd | Kind::MapNs);
@@ -983,6 +994,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         switch_direction,
         iterate,
         pd_start,
+        n_aux: 0,
     };
     if mode == Mode::Cli {
         problem.check_u0_len(ir.n(), problem.setup.u0.len())?;
@@ -1226,6 +1238,16 @@ fn refuse_run_keys(top: &Map<String, Value>) -> Result<(), String> {
     Ok(())
 }
 
+/// The key `aux` of an IVP or ITER problem: the number of aux values each row carries after
+/// the state. `true` gives every aux quantity of the model, `false` and a missing key give 0.
+fn parse_aux(top: &Map<String, Value>, ir: &IrModel) -> Result<usize, String> {
+    match top.get("aux") {
+        None | Some(Value::Bool(false)) => Ok(0),
+        Some(Value::Bool(true)) => Ok(ir.aux.len()),
+        Some(_) => Err("aux: expected true or false".into()),
+    }
+}
+
 /// An `IVP` problem: `tspan`, the solver options, and the start state and parameters.
 fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Problem, String> {
     if !ir.delays.is_empty() {
@@ -1253,6 +1275,7 @@ fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Probl
             return Err("params: not allowed here; pass the parameters as a buffer".into());
         }
     }
+    let n_aux = parse_aux(top, ir)?;
     let params = parse_params(top, ir)?;
     let u0 = match top.get("u0") {
         None => ir.init.clone(),
@@ -1282,6 +1305,7 @@ fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Probl
         switch_direction: None,
         iterate: 1,
         pd_start: false,
+        n_aux,
     };
     if mode == Mode::Cli {
         problem.check_u0_len(ir.n(), problem.setup.u0.len())?;
@@ -1363,6 +1387,7 @@ fn parse_iter(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Prob
             return Err("params: not allowed here; pass the parameters as a buffer".into());
         }
     }
+    let n_aux = parse_aux(top, ir)?;
     let params = parse_params(top, ir)?;
     let u0 = match top.get("u0") {
         None => ir.init.clone(),
@@ -1388,6 +1413,7 @@ fn parse_iter(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Prob
         switch_direction: None,
         iterate: 1,
         pd_start: false,
+        n_aux,
     };
     if mode == Mode::Cli {
         problem.check_u0_len(ir.n(), problem.setup.u0.len())?;
@@ -2335,9 +2361,10 @@ mod tests {
         assert_eq!(tspan, [0.0, 5.0]);
         assert_eq!(opts, pc_engine::IvpOptions::default());
         match p.run_kind() {
-            RunKind::Ivp { tspan, opts, .. } => {
+            RunKind::Ivp { tspan, opts, n_aux } => {
                 assert_eq!(tspan, [0.0, 5.0]);
                 assert_eq!(opts, pc_engine::IvpOptions::default());
+                assert_eq!(n_aux, 0);
             }
             other => panic!("{other:?}"),
         }
@@ -2492,7 +2519,7 @@ mod tests {
             assert_eq!(p.iter, Some(n), "{tspan}");
             assert!(p.ivp.is_none());
             match p.run_kind() {
-                RunKind::Iter { n: got, .. } => assert_eq!(got, n),
+                RunKind::Iter { n: got, n_aux } => assert_eq!((got, n_aux), (n, 0)),
                 other => panic!("{other:?}"),
             }
         }
@@ -2506,6 +2533,102 @@ mod tests {
         let p = parse_problem(&v, &ir, Mode::Cli).unwrap();
         assert_eq!(p.setup.u0, vec![0.3]);
         assert_eq!(p.setup.params, vec![3.2]);
+    }
+
+    /// A model with two aux quantities, for the key `aux`.
+    fn aux_model() -> IrModel {
+        let mut map = SourceMap::new();
+        let top = map.add(
+            "t.ode",
+            "x'=a-x\npar a=2\naux e=x^2\naux f=a*x\ninit x=0.5\ndone\n",
+        );
+        let loaded = load(top, &mut map, &mut MapLoader::new());
+        pc_ir::lower(&loaded.expanded, &loaded.info).expect("the aux model lowers")
+    }
+
+    /// A map with one aux quantity.
+    fn aux_map_model() -> IrModel {
+        let mut map = SourceMap::new();
+        let top = map.add(
+            "t.ode",
+            "par r=2.5\ninit x=0.1\nx(t+1)=r*x*(1-x)\naux d=x-0.5\ndone\n",
+        );
+        let loaded = load(top, &mut map, &mut MapLoader::new());
+        pc_ir::lower(&loaded.expanded, &loaded.info).expect("the aux map lowers")
+    }
+
+    fn n_aux_of(p: &Problem) -> usize {
+        match p.run_kind() {
+            RunKind::Ivp { n_aux, .. } | RunKind::Iter { n_aux, .. } => n_aux,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_aux_key_gives_every_aux_quantity_or_none_in_every_mode() {
+        for mode in [Mode::Abi, Mode::Cli] {
+            let ir = aux_model();
+            assert_eq!(ir.aux.len(), 2);
+            for (key, want) in [(None, 0), (Some(false), 0), (Some(true), 2)] {
+                let mut v = ivp();
+                if let Some(b) = key {
+                    v["aux"] = json!(b);
+                }
+                let p = parse_problem(&v, &ir, mode).unwrap();
+                assert_eq!((p.n_aux, n_aux_of(&p)), (want, want), "{v}");
+            }
+            let ir = aux_map_model();
+            for (key, want) in [(None, 0), (Some(false), 0), (Some(true), 1)] {
+                let mut v = iter(json!([0, 4]));
+                if let Some(b) = key {
+                    v["aux"] = json!(b);
+                }
+                let p = parse_problem(&v, &ir, mode).unwrap();
+                assert_eq!((p.n_aux, n_aux_of(&p)), (want, want), "{v}");
+            }
+            // A model without aux quantities has nothing to add.
+            let mut v = ivp();
+            v["aux"] = json!(true);
+            assert_eq!(parse_problem(&v, &model(), mode).unwrap().n_aux, 0);
+        }
+    }
+
+    #[test]
+    fn the_aux_key_must_be_a_boolean_and_other_types_refuse_it() {
+        let (ode, map) = (aux_model(), aux_map_model());
+        for bad in [
+            json!(1),
+            json!("true"),
+            json!(null),
+            json!([true]),
+            json!({}),
+        ] {
+            let mut v = ivp();
+            v["aux"] = bad.clone();
+            assert_eq!(
+                parse_problem(&v, &ode, Mode::Abi).unwrap_err(),
+                "aux: expected true or false",
+                "{bad}"
+            );
+            let mut v = iter(json!([0, 4]));
+            v["aux"] = bad.clone();
+            assert_eq!(
+                parse_problem(&v, &map, Mode::Abi).unwrap_err(),
+                "aux: expected true or false",
+                "{bad}"
+            );
+        }
+        for kind in ["EP", "LP", "H", "LC", "LPC", "PD", "NS", "HOM"] {
+            for mode in [Mode::Abi, Mode::Cli] {
+                let mut v = json!({"type": kind, "free": "a", "aux": true});
+                if matches!(kind, "LC" | "LPC" | "PD" | "NS" | "HOM") {
+                    v["ntst"] = json!(4);
+                    v["ncol"] = json!(3);
+                }
+                let err = parse_problem(&v, &ode, mode).unwrap_err();
+                assert_eq!(err, "aux: only an IVP or ITER run takes this key", "{kind}");
+            }
+        }
     }
 
     #[test]

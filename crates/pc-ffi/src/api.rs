@@ -25,7 +25,7 @@ use crate::latex;
 use crate::model::{Build, DELAY_MODEL, ModelHandle, NOT_COMPILED};
 use crate::parse::{MAX_MODEL_TEXT, parse_model};
 use crate::registry::{self, Handle};
-use crate::run::{RunHandle, pack_row, poll_json, stride};
+use crate::run::{RunHandle, pack_row_aux, poll_json, stride_aux};
 
 fn model_handle(id: u64) -> Result<Arc<ModelHandle>> {
     registry::get::<ModelHandle>(id)
@@ -279,12 +279,15 @@ pub unsafe extern "C" fn run_start(
             return Err(Error::NonAutonomous(EngineError::NonAutonomous.to_string()));
         }
         let kind = problem.kind;
+        // The aux count of the model, or 0 when the key `aux` is off (round E, SPEC 10).
+        let naux = problem.n_aux;
         let spec = problem.into_spec(h.model.clone(), h.info.clone(), evaluator);
         let run = Run::start(spec);
         *out_run = registry::insert(RunHandle {
             run,
             kind,
             n: h.n(),
+            naux,
         });
         Ok(())
     })
@@ -338,7 +341,7 @@ pub unsafe extern "C" fn run_copy(
                 "branch: the run has {branches} branches, got {branch}"
             )));
         }
-        let stride = stride(h.kind, h.n);
+        let stride = stride_aux(h.kind, h.n, h.naux);
         let need = count
             .checked_mul(stride)
             .ok_or_else(|| bad_arg(format!("count: {count} rows is too many")))?;
@@ -361,7 +364,7 @@ pub unsafe extern "C" fn run_copy(
                 .collect()
         };
         for (row, point) in buf.chunks_exact_mut(stride).zip(&points) {
-            pack_row(h.kind, point, h.n, row);
+            pack_row_aux(h.kind, point, h.n, h.naux, row);
         }
         *out_rows = points.len().min(count);
         Ok(())
@@ -723,6 +726,7 @@ pub unsafe extern "C" fn debug_panic(where_: i32, run: *mut u64) -> i32 {
                 run: Run::start_panicking(),
                 kind: Kind::Ep,
                 n: 0,
+                naux: 0,
             });
             Ok(())
         }

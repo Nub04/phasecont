@@ -12,6 +12,9 @@ pub(crate) struct RunHandle {
     pub run: Run,
     pub kind: Kind,
     pub n: usize,
+    /// The aux values after the state in each row of an IVP or ITER run, 0 for none and for
+    /// every other run (round E, SPEC 10).
+    pub naux: usize,
 }
 
 impl Handle for RunHandle {
@@ -41,7 +44,14 @@ impl Handle for RunHandle {
 /// newton_iters, mu_re(c), mu_im(c), trivial_error]`, with `c` the multipliers kept and
 /// NaN where the engine has no value (no `floquet`, or fewer than `c` multipliers). A run with
 /// mesh adaptation appends the mesh, N + 1 values, after `trivial_error` (SPEC 8s, slice 5).
+#[cfg(test)]
 pub(crate) fn stride(kind: Kind, n: usize) -> usize {
+    stride_aux(kind, n, 0)
+}
+
+/// [`stride`] of a run whose IVP or ITER rows carry `naux` aux values after the state:
+/// `[t, x(n), aux(naux)]`. No other row has aux values, so `naux` does not change them.
+pub(crate) fn stride_aux(kind: Kind, n: usize, naux: usize) -> usize {
     match kind {
         Kind::Ep => 3 * n + 6,
         // [alpha, u(n), mu_re(n), mu_im(n), psi_LP, psi_BP, psi_PD, psi_NS, h, iters]
@@ -52,8 +62,8 @@ pub(crate) fn stride(kind: Kind, n: usize) -> usize {
         Kind::DdeHopf => n + 5,
         // [alpha, u(n (N m + 1)), T, h, iters, mu_re(c), mu_im(c), trivial_error]
         Kind::DdeLc { .. } => cycle_stride(kind, n).unwrap_or(usize::MAX),
-        // [t, x(n)], or [k, x(n)] for an iteration run
-        Kind::Ivp | Kind::Iter => n + 1,
+        // [t, x(n), aux(naux)], or [k, x(n), aux(naux)] for an iteration run
+        Kind::Ivp | Kind::Iter => n.saturating_add(1).saturating_add(naux),
         Kind::Lp => 1 + (n + 1) + 2 * n + kind.labels().len() + 2,
         Kind::Hopf => 1 + (n + 2) + 2 * n + kind.labels().len() + 2,
         // [a2, x(n), a1, mu_re(n), mu_im(n), codim2, h, iters] on the LP and PD curves of a
@@ -71,8 +81,15 @@ pub(crate) fn stride(kind: Kind, n: usize) -> usize {
 
 /// Writes one row into `out`, which holds `stride(kind, n)` values. Missing state, mesh,
 /// eigenvalue or codim-2 entries are NaN.
+#[cfg(test)]
 pub(crate) fn pack_row(kind: Kind, p: &Point, n: usize, out: &mut [f64]) {
-    debug_assert_eq!(out.len(), stride(kind, n));
+    pack_row_aux(kind, p, n, 0, out);
+}
+
+/// [`pack_row`] for a run whose IVP or ITER rows carry `naux` aux values: `out` holds
+/// `stride_aux(kind, n, naux)` values and the row is `[t, x(n), aux(naux)]`, all of `p.u`.
+pub(crate) fn pack_row_aux(kind: Kind, p: &Point, n: usize, naux: usize, out: &mut [f64]) {
+    debug_assert_eq!(out.len(), stride_aux(kind, n, naux));
     let nan = f64::NAN;
     out[0] = p.alpha;
     if kind == Kind::DdeHopf {
@@ -121,11 +138,13 @@ pub(crate) fn pack_row(kind: Kind, p: &Point, n: usize, out: &mut [f64]) {
         return;
     }
     if matches!(kind, Kind::Ivp | Kind::Iter | Kind::DdeEp) {
-        for i in 0..n {
+        // The IVP and ITER rows end with the state and then the aux values, which the engine
+        // keeps after the state in `u`. A delay equilibrium row adds the root count that the
+        // engine keeps in `tests[0]` (SPEC 8s).
+        let width = if kind == Kind::DdeEp { n } else { n + naux };
+        for i in 0..width {
             out[1 + i] = p.u.get(i).copied().unwrap_or(nan);
         }
-        // The IVP and ITER rows end with the state. A delay equilibrium row adds the root count that the
-        // engine keeps in `tests[0]` (SPEC 8s).
         if kind == Kind::DdeEp {
             out[n + 1] = p.tests[0];
         }
@@ -279,7 +298,7 @@ pub(crate) fn poll_json(h: &RunHandle, st: &Status) -> Result<Value> {
         "kind": h.kind.name(),
         "codim2_labels": h.kind.labels(),
         "n": h.n,
-        "stride": stride(h.kind, h.n),
+        "stride": stride_aux(h.kind, h.n, h.naux),
         "branches": branches,
     });
     if let Some((ntst, ncol)) = h.kind.mesh_size() {

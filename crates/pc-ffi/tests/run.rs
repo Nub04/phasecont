@@ -1438,3 +1438,159 @@ fn wait_raw_failed(run: &Id) -> i32 {
         std::thread::sleep(Duration::from_millis(5));
     }
 }
+
+/// A damped oscillator with two aux quantities, one of which reads t (round E, SPEC 10).
+const AUX_OSC: &str =
+    "par a=0.1\nx'=y\ny'=-x-a*y\naux energy=(x^2+y^2)/2\naux tx=t*x\ninit x=1,y=0\ndone\n";
+
+/// Starts a run that has to finish and returns it with its status and the rows of branch 0.
+fn finished_rows(m: &Id, json: &str, u0: &[f64], p: &[f64]) -> (Id, Value, Vec<f64>) {
+    let (rc, run) = start_with(m, json, u0, p);
+    assert_eq!(rc, 0, "{json}: {}", last_error());
+    let run = Id(run);
+    let st = wait(&run);
+    assert_eq!(st["state"], "done", "{st}");
+    let stride = st["stride"].as_u64().unwrap() as usize;
+    let count = st["branches"][0]["points"].as_u64().unwrap() as usize;
+    let (rc, rows, v) = copy(run.0, 0, 0, 0, count, stride);
+    assert_eq!((rc, rows), (0, count), "{}", last_error());
+    (run, st, v)
+}
+
+/// `"aux": true` makes an IVP row `[t, x(n), aux(naux)]`. The first `n + 1` entries are the
+/// rows without the key, bit for bit, and the others are the aux quantities at the row's t
+/// and state (SPEC 10, test 2).
+#[test]
+fn an_ivp_run_with_aux_true_appends_the_aux_values_to_each_row() {
+    for evaluator in ["jit", "fallback"] {
+        let m = parse(AUX_OSC);
+        compile(&m, evaluator);
+        let (_, st, plain) = finished_rows(&m, &ivp_problem("[0,6]", ""), &[1.0, 0.0], &[0.1]);
+        assert_eq!(st["stride"], 3);
+        let json = r#"{"type":"IVP","tspan":[0,6],"aux":true}"#;
+        let (run, st, rows) = finished_rows(&m, json, &[1.0, 0.0], &[0.1]);
+        assert_eq!(st["stride"], 5, "{evaluator}");
+        assert_eq!(st["n"], 2);
+        let count = st["branches"][0]["points"].as_u64().unwrap() as usize;
+        assert_eq!(plain.len(), 3 * count, "{evaluator}");
+        assert_eq!(rows.len(), 5 * count, "{evaluator}");
+        for (i, (a, p)) in rows.chunks(5).zip(plain.chunks(3)).enumerate() {
+            assert!(same_bits(&a[..3], p), "{evaluator} row {i}");
+            let (t, x, y) = (a[0], a[1], a[2]);
+            let energy = (x * x + y * y) / 2.0;
+            assert!(
+                (a[3] - energy).abs() <= 1e-14 * (1.0 + energy.abs()),
+                "{evaluator} row {i}: {} vs {energy}",
+                a[3]
+            );
+            assert_eq!(a[4].to_bits(), (t * x).to_bits(), "{evaluator} row {i}");
+        }
+        // The first row is the start: t = 0, so tx = 0 and energy = 1/2.
+        assert_eq!(&rows[..5], [0.0, 1.0, 0.0, 0.5, 0.0]);
+        // A copy with the stride of a run without the key is refused.
+        let (rc, _, _) = copy(run.0, 0, 0, 0, count, 3);
+        assert_eq!(rc, 2, "{evaluator}");
+        assert!(
+            last_error().contains("expected count * stride"),
+            "{}",
+            last_error()
+        );
+        // `false` is the same as no key.
+        let json = r#"{"type":"IVP","tspan":[0,6],"aux":false}"#;
+        let (_, st, off) = finished_rows(&m, json, &[1.0, 0.0], &[0.1]);
+        assert_eq!(st["stride"], 3);
+        assert!(same_bits(&off, &plain), "{evaluator}");
+    }
+}
+
+/// A model without aux quantities has nothing to append, so `"aux": true` keeps the stride.
+#[test]
+fn aux_true_on_a_model_without_aux_quantities_keeps_the_stride() {
+    let m = parse(ROTATION);
+    compile(&m, "jit");
+    let (_, st, plain) = finished_rows(&m, &ivp_problem("[0,2]", ""), &[1.0, 0.0], &[]);
+    let json = r#"{"type":"IVP","tspan":[0,2],"aux":true}"#;
+    let (_, st_aux, rows) = finished_rows(&m, json, &[1.0, 0.0], &[]);
+    assert_eq!(
+        (st["stride"].as_u64(), st_aux["stride"].as_u64()),
+        (Some(3), Some(3))
+    );
+    assert!(same_bits(&rows, &plain));
+}
+
+/// The rows with `"aux": true` equal the engine's own, which carry the aux values in `u`.
+#[test]
+fn an_ivp_run_with_aux_matches_the_engine_row_for_row() {
+    let m = parse(AUX_OSC);
+    compile(&m, "jit");
+    let json = r#"{"type":"IVP","tspan":[0,3],"aux":true}"#;
+    let (_, _, got) = finished_rows(&m, json, &[1.0, 0.0], &[0.1]);
+    let mut map = SourceMap::new();
+    let top = map.add("aux_osc.ode", AUX_OSC);
+    let loaded = load(top, &mut map, &mut MapLoader::new());
+    let mut spec = RunSpec::new(
+        loaded.expanded,
+        loaded.info,
+        Evaluator::Jit,
+        EpSetup::new(0, vec![0.1], vec![1.0, 0.0]),
+        Options::default(),
+    );
+    spec.kind = RunKind::Ivp {
+        tspan: [0.0, 3.0],
+        opts: pc_engine::IvpOptions::default(),
+        n_aux: 2,
+    };
+    let engine = Run::start(spec);
+    let status = loop {
+        let st = engine.poll();
+        if st.state != RunState::Running {
+            break st;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    assert_eq!(status.state, RunState::Done);
+    let mut want = Vec::new();
+    for p in engine.points(0, 0, status.points[0]) {
+        assert_eq!(p.u.len(), 4);
+        want.push(p.alpha);
+        want.extend(&p.u);
+    }
+    assert!(same_bits(&got, &want));
+}
+
+/// The key is refused on every type but IVP and ITER, and a value that is not a boolean is a
+/// bad problem that names the key.
+#[test]
+fn the_aux_key_is_refused_on_every_other_type_and_must_be_a_boolean() {
+    let m = compiled(BRUSS);
+    let (u0, p) = ([1.0, 2.0], [1.0, 2.0]);
+    let mesh = r#""ntst":4,"ncol":3"#;
+    let cases = [
+        r#"{"type":"EP","free":"b","aux":true}"#.to_string(),
+        r#"{"type":"EP","free":"b","aux":false}"#.to_string(),
+        r#"{"type":"LP","free":"b","aux":true}"#.to_string(),
+        r#"{"type":"H","free":"b","aux":true}"#.to_string(),
+        format!(r#"{{"type":"LC","free":"b",{mesh},"start":"hopf","aux":true}}"#),
+        format!(r#"{{"type":"LPC","free":"b",{mesh},"aux":true}}"#),
+        format!(r#"{{"type":"PD","free":"b",{mesh},"aux":true}}"#),
+        format!(r#"{{"type":"NS","free":"b",{mesh},"aux":true}}"#),
+        format!(r#"{{"type":"HOM","free":"b",{mesh},"aux":true}}"#),
+    ];
+    for json in &cases {
+        let (rc, run) = start_with(&m, json, &u0, &p);
+        assert_eq!((rc, run), (6, 0), "{json}");
+        assert_eq!(
+            last_error(),
+            "aux: only an IVP or ITER run takes this key",
+            "{json}"
+        );
+    }
+    let m = parse(AUX_OSC);
+    compile(&m, "jit");
+    for value in ["1", r#""true""#, "null", "[true]", "{}"] {
+        let json = format!(r#"{{"type":"IVP","tspan":[0,1],"aux":{value}}}"#);
+        let (rc, run) = start_with(&m, &json, &[1.0, 0.0], &[0.1]);
+        assert_eq!((rc, run), (6, 0), "{json}");
+        assert_eq!(last_error(), "aux: expected true or false", "{json}");
+    }
+}

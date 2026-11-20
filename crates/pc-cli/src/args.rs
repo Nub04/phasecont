@@ -404,6 +404,9 @@ IVP and ITER only:
   tspan     for IVP [t0, t1], the time span; for ITER [n0, n1], the first and
             last iterate, integers with n0 < n1 and at most 1000000 iterates
             (required). ITER refuses options
+  aux       true to add the values of the model's aux quantities after the
+            state in every row, at that row's time (or iterate); default
+            false
 
 HOM only:
   ntst      number of mesh intervals N of the curve, at least 1 (required)

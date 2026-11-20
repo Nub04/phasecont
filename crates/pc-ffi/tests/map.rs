@@ -1105,3 +1105,76 @@ fn model_equilibrium_takes_the_iterate_of_a_map() {
     assert_eq!(rc, 0, "{}", last_error());
     close(u[0], 1.0, 1e-12, "ODE equilibrium x = 1");
 }
+
+/// A map with two aux quantities: the distance to 1/2, and one that reads the iterate number
+/// and one that is NaN for the first iterates (SPEC section 10, round E).
+const AUX_MAP: &str = "par r=2.5\ninit x=0.1\nx(t+1)=r*x*(1-x)\naux dist=x-0.5\n\
+     aux kx=t*x\naux lg=ln(x-0.4)\ndone\n";
+
+/// `"aux": true` makes an ITER row `[k, x, aux(3)]`. The first two entries are the rows
+/// without the key, bit for bit, and the others are the aux quantities at the row's iterate
+/// number and state. A NaN aux value is kept in its row and the run goes on.
+#[test]
+fn iter_with_aux_true_appends_the_aux_values_at_the_iterate_number() {
+    let m = compiled(AUX_MAP);
+    assert_eq!(info(&m)["aux"], serde_json::json!(["dist", "kx", "lg"]));
+    let (st, plain) = iterate(&m, [0, 12], &[0.1], &[2.5]);
+    assert_eq!(st["stride"], 2);
+    let (rc, run) = start_with(
+        &m,
+        r#"{"type":"ITER","tspan":[0,12],"aux":true}"#,
+        &[0.1],
+        &[2.5],
+    );
+    assert_eq!(rc, 0, "{}", last_error());
+    let run = Id(run);
+    let st = wait(&run);
+    assert_eq!(st["state"], "done", "{st}");
+    assert_eq!(
+        (st["stride"].as_u64(), st["n"].as_u64()),
+        (Some(5), Some(1))
+    );
+    assert_eq!(st["branches"][0]["stop"], "End");
+    assert_eq!(st["branches"][0]["points"], 13);
+    let v = rows(&run, &st);
+    assert_eq!(v.len(), 13 * 5);
+    for (k, (row, base)) in v.chunks(5).zip(plain.chunks(2)).enumerate() {
+        assert_eq!(bits(&row[..2]), bits(base), "row {k}");
+        let (t, x) = (row[0], row[1]);
+        assert_eq!(t, k as f64);
+        assert_eq!(row[2].to_bits(), (x - 0.5).to_bits(), "dist, row {k}");
+        assert_eq!(row[3].to_bits(), (t * x).to_bits(), "kx, row {k}");
+        // x runs 0.1, 0.225, ...; ln(x - 0.4) is NaN while x < 0.4 and finite after.
+        assert_eq!(row[4].is_nan(), x < 0.4, "lg, row {k}: x = {x}");
+        if x >= 0.4 {
+            close(row[4], (x - 0.4).ln(), 1e-14, "lg");
+        }
+    }
+    // The rows of a run with `"aux": false` are the plain rows.
+    let (rc, run) = start_with(
+        &m,
+        r#"{"type":"ITER","tspan":[0,12],"aux":false}"#,
+        &[0.1],
+        &[2.5],
+    );
+    assert_eq!(rc, 0, "{}", last_error());
+    let run = Id(run);
+    let st = wait(&run);
+    assert_eq!(st["stride"], 2);
+    assert_eq!(bits(&rows(&run, &st)), bits(&plain));
+}
+
+/// The key must be a boolean on an ITER problem, and an EP problem on a map refuses it.
+#[test]
+fn iter_takes_the_aux_key_as_a_boolean_only() {
+    let m = compiled(AUX_MAP);
+    for value in ["1", r#""true""#, "null"] {
+        let json = format!(r#"{{"type":"ITER","tspan":[0,4],"aux":{value}}}"#);
+        let (rc, run) = start_with(&m, &json, &[0.1], &[2.5]);
+        assert_eq!((rc, run), (BAD_PROBLEM, 0), "{json}");
+        assert_eq!(last_error(), "aux: expected true or false", "{json}");
+    }
+    let (rc, run) = start_with(&m, r#"{"type":"EP","free":"r","aux":true}"#, &[0.1], &[2.5]);
+    assert_eq!((rc, run), (BAD_PROBLEM, 0));
+    assert_eq!(last_error(), "aux: only an IVP or ITER run takes this key");
+}

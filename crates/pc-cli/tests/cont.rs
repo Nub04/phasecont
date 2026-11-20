@@ -683,6 +683,78 @@ fn a_map_runs_an_iter_problem() {
     assert_eq!(got, want);
 }
 
+/// `"aux": true` puts the aux values after the state in the `u` of every IVP and ITER point,
+/// at the point's own time or iterate number, and leaves the state as it is without the key
+/// (SPEC section 10, round E).
+#[test]
+fn aux_true_adds_the_aux_values_to_ivp_and_iter_points() {
+    let ode = scratch().join("aux_osc.ode");
+    std::fs::write(
+        &ode,
+        "par a=0.1\nx'=y\ny'=-x-a*y\naux energy=(x^2+y^2)/2\naux tx=t*x\ninit x=1,y=0\ndone\n",
+    )
+    .unwrap();
+    let map = scratch().join("aux_map.ode");
+    std::fs::write(
+        &map,
+        "par r=2.5\ninit x=0.1\nx(t+1)=r*x*(1-x)\naux dist=x-0.5\naux kx=t*x\ndone\n",
+    )
+    .unwrap();
+    let points = |file: &Path, problem: &str, tag: &str| -> Vec<(f64, Vec<f64>)> {
+        let path = scratch().join(format!("aux_{tag}.json"));
+        std::fs::write(&path, problem).unwrap();
+        let o = run(
+            &scratch(),
+            &["cont", file.to_str().unwrap(), path.to_str().unwrap()],
+        );
+        assert_eq!(code(&o), 0, "{tag}: {}", stderr(&o));
+        let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+        v["branches"][0]["points"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| {
+                let u = p["u"].as_array().unwrap();
+                (
+                    p["alpha"].as_f64().unwrap(),
+                    u.iter().map(|x| x.as_f64().unwrap()).collect(),
+                )
+            })
+            .collect()
+    };
+    let cases = [
+        (&ode, r#""type":"IVP","tspan":[0,4]"#, 2, "ivp"),
+        (&map, r#""type":"ITER","tspan":[0,6]"#, 1, "iter"),
+    ];
+    for (file, head, n, tag) in cases {
+        let plain = points(file, &format!("{{{head}}}"), &format!("{tag}_plain"));
+        let off = points(
+            file,
+            &format!(r#"{{{head},"aux":false}}"#),
+            &format!("{tag}_off"),
+        );
+        let with = points(
+            file,
+            &format!(r#"{{{head},"aux":true}}"#),
+            &format!("{tag}_on"),
+        );
+        assert_eq!(off, plain, "{tag}: aux false is the plain run");
+        assert_eq!(with.len(), plain.len(), "{tag}");
+        for (i, ((t, u), (t0, u0))) in with.iter().zip(&plain).enumerate() {
+            assert_eq!(t.to_bits(), t0.to_bits(), "{tag} row {i}");
+            assert_eq!(u0.len(), n, "{tag} row {i}");
+            assert_eq!(u.len(), n + 2, "{tag} row {i}");
+            assert_eq!(u[..n], u0[..], "{tag} row {i}");
+            // The second aux quantity of both models is t * x.
+            assert_eq!(u[n + 1].to_bits(), (t * u[0]).to_bits(), "{tag} row {i}");
+        }
+        // The first aux value: the energy of the oscillator, the distance of the map to 1/2.
+        let (_, first) = &with[0];
+        let want = if n == 2 { 0.5 } else { 0.1 - 0.5 };
+        assert_eq!(first[n].to_bits(), f64::to_bits(want), "{tag}");
+    }
+}
+
 /// A map runs an EP problem: the BP of the logistic map at r = 1, the switch to
 /// x = 1 - 1/r and the PD at r = 3 with b = 9. The points equal the rows that the API
 /// table gives for the same problem, bit for bit (SPEC 8v, test 9).
