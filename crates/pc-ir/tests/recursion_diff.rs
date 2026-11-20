@@ -661,8 +661,8 @@ fn missing_body_gives_nan_without_caching_it() {
     assert_eq!(run(&g, dx, &[1.5], &[]), (3.0, 2));
 }
 
-/// The activity of a unit is recomputed after its body changes, whether by a second
-/// `set_body` or by a restore that drops the body.
+/// A body is set once, so a derivative built from it cannot go stale; a restore that
+/// drops the body lets a new one be set, and the activity follows the new body.
 #[test]
 fn activity_follows_a_new_body() {
     let mut g = Dag::new(10_000);
@@ -674,13 +674,13 @@ fn activity_follows_a_new_body() {
     let mut memo = HashMap::new();
     let d0 = d(&mut g, &mut memo, o, Wrt::U(0));
     assert!(is_zero(&g, d0), "k(p) = p does not depend on x");
-    // k(a) = x a now reads x.
+    // A second body, k(a) = x a, is refused and k keeps the first one.
     let x = g.var(0);
     let xa = g.mul(x, a);
-    assert!(g.set_body(k, &[xa]));
+    assert!(!g.set_body(k, &[xa]));
     let mut memo = HashMap::new();
     let d1 = d(&mut g, &mut memo, o, Wrt::U(0));
-    assert_eq!(run(&g, d1, &[2.0], &[0.5]), (0.5, 1));
+    assert!(is_zero(&g, d1));
 
     // Restore drops a body that reads a node added after the checkpoint.
     let mut g = Dag::new(10_000);

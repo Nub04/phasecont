@@ -6,7 +6,7 @@
 //! `out[i + n*j] = df_i/du_j`, `JacP` gives n*n_p values in the same layout, and
 //! `Dir(slots)` gives n values of `D^k f[(dirs)]` with `k = slots.len()`.
 
-use crate::dag::{Checkpoint, NodeId};
+use crate::dag::{Checkpoint, NoDerivative, NodeId};
 use crate::diff::{Wrt, d};
 use crate::error::{IrError, IrErrorKind};
 use crate::lower::IrModel;
@@ -64,14 +64,16 @@ impl IrModel {
     /// lowered right sides; `JacU` and `JacP` differentiate them symbolically, column by
     /// column. `Dir` builds the multilinear form (see `multi`) and refuses a slot count
     /// outside 1..=5 with an `Unsupported` error. The error is `TooLarge` when the DAG
-    /// passes its node limit, and `Unsupported` when a derivative reaches a function whose
-    /// body is not set (its derivative would be NaN); both leave the model as it was.
+    /// passes its node limit, and `Unsupported` when the derivative is refused (see
+    /// [`NoDerivative`]): it reaches a function whose body is not set, goes through a
+    /// function with more than one output, or meets a formal outside its body. A refused
+    /// derivative would be NaN; the error leaves the model as it was.
     pub fn entry(&mut self, kind: &EntryKind) -> Result<Entry, IrError> {
         if let Some(e) = self.entries.get(kind) {
             return Ok(e.clone());
         }
         let cp = self.dag.checkpoint();
-        let hits0 = self.dag.missing_hits();
+        let hits0 = self.dag.refusal_hits();
         let outputs = match kind {
             EntryKind::F => self.f.clone(),
             EntryKind::Aux => self.aux.clone(),
@@ -110,21 +112,31 @@ impl IrModel {
                 "the derivative needs more nodes than the limit",
             ));
         }
-        if self.dag.missing_hits() != hits0 {
-            let name = self
-                .dag
-                .missing_body()
-                .and_then(|u| self.dag.unit(u))
-                .map_or_else(|| "?".to_string(), |u| u.name.clone());
-            self.rollback(&cp);
-            return Err(IrError::new(
-                IrErrorKind::Unsupported,
-                DUMMY_SPAN,
-                format!(
-                    "the derivative calls function `{name}`, whose body is not set; \
-                     every function body must be set before a derivative is built"
+        if self.dag.refusal_hits() != hits0 {
+            let why = self.dag.refusal().unwrap_or(NoDerivative::NoRule);
+            let name = |u: u32| {
+                self.dag
+                    .unit(u)
+                    .map_or("?", |x| x.name.as_str())
+                    .to_string()
+            };
+            let msg = match why {
+                NoDerivative::MissingBody(u) => format!(
+                    "the derivative calls function `{}`, whose body is not set; every \
+                     function body must be set before a derivative is built",
+                    name(u)
                 ),
-            ));
+                NoDerivative::SeveralOutputs(u) => format!(
+                    "the derivative goes through function `{}`, which has more than one \
+                     output; derivatives through such a function are not supported yet",
+                    name(u)
+                ),
+                NoDerivative::NoRule => "the derivative meets a node that has no derivative \
+                     rule (a function argument outside its function, or an internal error)"
+                    .to_string(),
+            };
+            self.rollback(&cp);
+            return Err(IrError::new(IrErrorKind::Unsupported, DUMMY_SPAN, msg));
         }
         let e = Entry {
             kind: kind.clone(),
@@ -160,7 +172,10 @@ impl IrModel {
                 let fi = self.f.get(i).copied();
                 let di = match fi {
                     Some(fi) => d(&mut self.dag, &mut self.diff_memo, fi, w),
-                    None => self.dag.konst(f64::NAN),
+                    None => {
+                        self.dag.note_refusal(NoDerivative::NoRule);
+                        self.dag.konst(f64::NAN)
+                    }
                 };
                 out.push(di);
             }

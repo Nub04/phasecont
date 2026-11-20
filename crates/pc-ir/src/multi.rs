@@ -35,7 +35,7 @@
 //! `pow(x, y)` is 0 (it would meet `0 * ln 0`), so those terms are wrapped in a select on
 //! `pow(x, y) == 0`.
 
-use crate::dag::{Cmp, Dag, Fn1, Fn2, NodeId, Op};
+use crate::dag::{Cmp, Dag, Fn1, Fn2, NoDerivative, NodeId, Op};
 use crate::diff::{Wrt, d, diff_children, partial_may_be_nonfinite};
 use crate::entry::Slot;
 use std::collections::HashMap;
@@ -151,7 +151,14 @@ impl<'a> Builder<'a> {
             let r = self.comps.get(&fi).and_then(|c| c.get(top)).copied();
             out.push(match r {
                 Some(r) if !self.dag.exceeded() => r,
-                _ => self.dag.konst(f64::NAN),
+                // Past the node limit `entry` reports `TooLarge`; otherwise every root has
+                // components, so a missing one is a broken invariant and is refused.
+                _ => {
+                    if !self.dag.exceeded() {
+                        self.dag.note_refusal(NoDerivative::NoRule);
+                    }
+                    self.dag.konst(f64::NAN)
+                }
             });
         }
         out
@@ -308,8 +315,11 @@ impl<'a> Builder<'a> {
             }
             Op::Call2(_, a, b) => self.faa(id, op, &[a, b], &mut c),
             Op::Const(_) | Op::Dir(_) => {}
-            // STAGE1-WIP: jet units replace this.
+            // The jet units of a call are not built yet, and `entry` refuses a directional
+            // entry of a model with a call; a formal outside its body has no rule. Each is
+            // refused, so `entry` returns an error instead of this NaN.
             Op::Arg(_) | Op::Call(..) | Op::Out(..) => {
+                self.dag.note_refusal(NoDerivative::NoRule);
                 let nan = self.dag.konst(f64::NAN);
                 for x in c.iter_mut().skip(1) {
                     *x = nan;

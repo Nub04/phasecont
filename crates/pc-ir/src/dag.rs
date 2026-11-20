@@ -234,12 +234,35 @@ pub struct Dag {
     /// Each [`Dag::set_derived`] in order, with the value its key had before, so
     /// [`Dag::restore`] can undo the entries set after a checkpoint.
     derived_log: Vec<(Vec<u32>, Option<u32>)>,
-    /// The activity of each unit whose closure is complete (see `diff::activity`). A new
-    /// body for a unit that had one, and every restore, clear it.
+    /// The activity of each unit whose closure is complete (see `diff::activity`). Every
+    /// restore clears it.
     activity: HashMap<u32, Arc<Activity>>,
-    /// How many times a derivative met a unit with no body, and the last such unit.
-    missing_hits: u64,
-    missing_last: Option<u32>,
+    /// How many times a derivative was refused, and the reason of the last refusal.
+    refused_hits: u64,
+    refused_last: Option<NoDerivative>,
+}
+
+/// Why a derivative could not be built (SPEC section 8af-5). The builder then puts a NaN
+/// placeholder in the derivative and records the reason on the DAG, and
+/// [`crate::IrModel::entry`] turns it into an error, so the NaN never reaches a caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoDerivative {
+    /// The derivative calls this unit, whose body is not set.
+    MissingBody(u32),
+    /// The derivative goes through a call of this unit, which has more than one output.
+    SeveralOutputs(u32),
+    /// The derivative meets a node with no rule: a formal outside its body, an unknown
+    /// unit, or a broken internal invariant.
+    NoRule,
+}
+
+impl NoDerivative {
+    fn unit(self) -> Option<u32> {
+        match self {
+            NoDerivative::MissingBody(u) | NoDerivative::SeveralOutputs(u) => Some(u),
+            NoDerivative::NoRule => None,
+        }
+    }
 }
 
 impl Dag {
@@ -259,8 +282,8 @@ impl Dag {
             derived: HashMap::new(),
             derived_log: Vec::new(),
             activity: HashMap::new(),
-            missing_hits: 0,
-            missing_last: None,
+            refused_hits: 0,
+            refused_last: None,
         }
     }
 
@@ -323,11 +346,9 @@ impl Dag {
         self.tables.truncate(cp.tables);
         self.exceeded = cp.exceeded;
         self.activity.clear();
-        if self
-            .missing_last
-            .is_some_and(|u| u as usize >= self.units.len())
-        {
-            self.missing_last = None;
+        let gone = |w: NoDerivative| w.unit().is_some_and(|u| u as usize >= self.units.len());
+        if self.refused_last.is_some_and(gone) {
+            self.refused_last = None;
         }
     }
 
@@ -458,20 +479,29 @@ impl Dag {
         self.derived_log.push((key, old));
     }
 
-    /// The unit without a body that the last failed derivative met, if its body is still
+    /// The unit without a body that the last refused derivative met, if its body is still
     /// unset: a call into a function whose body, or the body of a function it calls, is
-    /// missing has a NaN derivative (SPEC section 8af-5).
+    /// missing has no derivative (SPEC section 8af-5).
     pub fn missing_body(&self) -> Option<u32> {
-        self.missing_last
+        match self.refused_last {
+            Some(NoDerivative::MissingBody(u)) => Some(u),
+            _ => None,
+        }
     }
 
-    pub(crate) fn note_missing_body(&mut self, u: u32) {
-        self.missing_hits += 1;
-        self.missing_last = Some(u);
+    /// The reason of the last refused derivative (see [`NoDerivative`]).
+    pub fn refusal(&self) -> Option<NoDerivative> {
+        self.refused_last
     }
 
-    pub(crate) fn missing_hits(&self) -> u64 {
-        self.missing_hits
+    pub(crate) fn note_refusal(&mut self, why: NoDerivative) {
+        self.refused_hits += 1;
+        self.refused_last = Some(why);
+    }
+
+    /// How many derivatives were refused so far; a builder compares it before and after.
+    pub(crate) fn refusal_hits(&self) -> u64 {
+        self.refused_hits
     }
 
     pub(crate) fn cached_activity(&self, u: u32) -> Option<Arc<Activity>> {
@@ -486,25 +516,25 @@ impl Dag {
     /// and assigns a frame slot to every node of the body that depends on an `Arg`. A `Call`
     /// node takes one slot per output of its unit, and `Out(call, j)` reads slot `j` of its
     /// call instead of taking one. Returns false, and leaves the unit as it
-    /// was, for an unknown unit, a wrong number of outputs or an id outside the DAG.
+    /// was, for an unknown unit, a unit that has a body already, a wrong number of outputs
+    /// or an id outside the DAG. A body is set once: derivatives, tangent units and cached
+    /// entries built from it would go stale if it changed. A body that a
+    /// [`Dag::restore`] dropped can be set again.
     pub fn set_body(&mut self, u: u32, outputs: &[NodeId]) -> bool {
         let Some(unit) = self.units.get(u as usize) else {
             return false;
         };
-        if outputs.len() != unit.nout as usize
+        if unit.body.is_some()
+            || outputs.len() != unit.nout as usize
             || outputs.iter().any(|o| o.0 as usize >= self.nodes.len())
         {
             return false;
         }
         let arity = unit.arity as usize;
-        // A unit's activity depends on the bodies of every unit it calls, so a new body for
-        // a unit that had one drops the cached activities. A first body cannot change a
-        // cached one, since a closure that meets a unit without a body is never cached.
-        if unit.body.is_some() {
-            self.activity.clear();
-        }
-        if self.missing_last == Some(u) {
-            self.missing_last = None;
+        // A first body cannot change a cached activity, since a closure that meets a unit
+        // without a body is never cached.
+        if self.refused_last == Some(NoDerivative::MissingBody(u)) {
+            self.refused_last = None;
         }
         // Every node of a body has a smaller id than the largest output, so a walk down from
         // the outputs in decreasing id order meets each local once.

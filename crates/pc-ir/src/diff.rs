@@ -32,7 +32,7 @@
 //! derivative of `polygamma(4, x)`, the sixth derivative of `lgamma`) is a NaN constant.
 //! A non-constant `m` gives a NaN constant too.
 
-use crate::dag::{Cmp, Dag, Fn1, Fn2, NodeId, Op};
+use crate::dag::{Cmp, Dag, Fn1, Fn2, NoDerivative, NodeId, Op};
 use crate::eval::children;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -188,10 +188,12 @@ pub(crate) fn diff_children(op: &Op, f: &mut dyn FnMut(NodeId)) {
 /// calls, has derivative 0 and makes no call. The units are cached in the derived map of
 /// the DAG, so a second derivative request reuses them.
 ///
-/// A call into a function whose body, or the body of a function it calls, is not set
-/// yet has a NaN derivative. That result is not cached in `memo` or in the DAG, so the
-/// same request after the body is set gives the derivative; [`Dag::missing_body`] names
-/// the unit.
+/// A derivative that cannot be built is refused: a call into a function whose body, or
+/// the body of a function it calls, is not set; a derivative through a function with more
+/// than one output; or a formal outside its body. The result is then a NaN placeholder
+/// that is not cached in `memo` or in the DAG, and the reason is recorded on the DAG (see
+/// [`Dag::refusal`]), so [`crate::IrModel::entry`] returns an error instead of the NaN.
+/// The same request after a missing body is set gives the derivative.
 pub fn d(
     dag: &mut Dag,
     memo: &mut HashMap<(NodeId, Wrt), NodeId>,
@@ -201,7 +203,7 @@ pub fn d(
     if let Some(&r) = memo.get(&(node, wrt)) {
         return r;
     }
-    let hits0 = dag.missing_hits();
+    let hits0 = dag.refusal_hits();
     let mut seen = HashSet::new();
     let mut stack = vec![node];
     while let Some(id) = stack.pop() {
@@ -249,20 +251,26 @@ pub fn d(
                         // that needs the value and the derivative makes about 2(n + 1) calls.
                         call_tangent(dag, memo, &a, g, &args, &targs, wrt).1
                     } else {
-                        dag.konst(f64::NAN)
+                        // The walk above put every active argument before its call.
+                        refuse(dag, NoDerivative::NoRule)
                     }
                 }
             },
             // An output j > 0 of a call and a formal outside a unit have no tangent here.
-            Op::Out(..) | Op::Arg(_) => dag.konst(f64::NAN),
+            Op::Out(c, _) => {
+                let why = out_refusal(dag, c);
+                refuse(dag, why)
+            }
+            Op::Arg(_) => refuse(dag, NoDerivative::NoRule),
             _ => rule(dag, &|c| memo.get(&(c, wrt)).copied(), id, wrt),
         };
         memo.insert((id, wrt), r);
         added.push(id);
     }
-    if dag.missing_hits() != hits0 {
-        // A missing body: drop what this request cached, so it is rebuilt once the body is
-        // set. Entries from nested requests read no call and stay valid.
+    if dag.refusal_hits() != hits0 {
+        // A refusal: drop what this request cached, so a later request (after a missing
+        // body is set) builds it again. Entries from nested requests read no call and stay
+        // valid.
         for id in added {
             memo.remove(&(id, wrt));
         }
@@ -270,7 +278,21 @@ pub fn d(
     }
     match memo.get(&(node, wrt)) {
         Some(&r) => r,
-        None => dag.konst(f64::NAN),
+        None => refuse(dag, NoDerivative::NoRule),
+    }
+}
+
+/// Records `why` on the DAG and returns the NaN placeholder of a refused derivative.
+fn refuse(dag: &mut Dag, why: NoDerivative) -> NodeId {
+    dag.note_refusal(why);
+    dag.konst(f64::NAN)
+}
+
+/// The refusal for `Out(c, j)`: the unit of the call `c` has more than one output.
+fn out_refusal(dag: &Dag, c: NodeId) -> NoDerivative {
+    match *dag.op(c) {
+        Op::Call(g, _) => NoDerivative::SeveralOutputs(g),
+        _ => NoDerivative::NoRule,
     }
 }
 
@@ -279,17 +301,16 @@ const TANGENT_TAG: u32 = 0;
 
 /// The derivative structure of a unit with one output, along the edges a derivative
 /// follows (those of [`diff_children`], plus each active argument of a call): `act[k]`
-/// when a derivative can flow from formal `k` to the output, `reads` the states and
-/// parameters met on those edges, and `all` when the edges meet a call that cannot be
-/// differentiated (a unit with more than one output, an output `j > 0` or an unknown unit),
-/// which then counts as reading every variable. It is the least fixpoint over the units the
-/// body reaches through calls, so mutual recursion settles; it is computed when the
-/// derivative is built and never tested at run time.
+/// when a derivative can flow from formal `k` to the output, and `reads` the states and
+/// parameters met on those edges. It is the least fixpoint over the units the body reaches
+/// through calls, so mutual recursion settles; it is computed when the derivative is built
+/// and never tested at run time. A unit whose edges meet a call that cannot be
+/// differentiated (a unit with more than one output, an output `j > 0` or an unknown unit)
+/// has no activity, and its derivative is refused.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct Activity {
     act: Vec<bool>,
     reads: HashSet<Wrt>,
-    all: bool,
 }
 
 impl Activity {
@@ -307,33 +328,32 @@ fn push_active(dag: &Dag, a: &Activity, l: u32, stack: &mut Vec<NodeId>) {
     }
 }
 
-/// The activity of a call of unit `g`, or `None` when the call has no derivative: an
-/// unknown unit, a unit with more than one output, or a unit whose body, or the body of a
-/// unit it calls, is not set. The last case is recorded on the DAG.
+/// The activity of a call of unit `g`, or `None`, with the reason recorded on the DAG,
+/// when the call has no derivative: an unknown unit, a unit with more than one output, a
+/// unit whose body, or the body of a unit it calls, is not set, or a body whose derivative
+/// goes through a call with more than one output.
 fn call_act(dag: &mut Dag, g: u32) -> Option<Arc<Activity>> {
-    let (nout, has_body) = dag.unit(g).map(|u| (u.nout, u.outputs().is_some()))?;
-    if nout != 1 {
-        return None;
-    }
-    if !has_body {
-        dag.note_missing_body(g);
-        return None;
-    }
-    match activity(dag, g) {
-        Ok(a) => Some(a),
-        Err(m) => {
-            dag.note_missing_body(m);
-            None
-        }
-    }
+    let why = match dag.unit(g).map(|u| (u.nout, u.outputs().is_some())) {
+        None => NoDerivative::NoRule,
+        Some((nout, _)) if nout != 1 => NoDerivative::SeveralOutputs(g),
+        Some((_, false)) => NoDerivative::MissingBody(g),
+        Some(_) => match activity(dag, g) {
+            Ok(a) => return Some(a),
+            Err(why) => why,
+        },
+    };
+    dag.note_refusal(why);
+    None
 }
 
 /// The [`Activity`] of unit `g`, which has one output and a body. Collects the units with
 /// one output that the bodies reach through calls on any edge, then iterates from all
 /// formals inactive until nothing changes. A unit whose activity is already cached is a
-/// fixed point and is not walked again. Returns the first unit without a body, if any,
-/// and caches nothing then.
-fn activity(dag: &mut Dag, g: u32) -> Result<Arc<Activity>, u32> {
+/// fixed point and is not walked again. Returns the reason, and caches nothing, when a
+/// reached unit has no body or a derivative edge meets a call that cannot be
+/// differentiated. An edge into a condition is not a derivative edge, so a call with
+/// several outputs that feeds only a condition is fine.
+fn activity(dag: &mut Dag, g: u32) -> Result<Arc<Activity>, NoDerivative> {
     if let Some(a) = dag.cached_activity(g) {
         return Ok(a);
     }
@@ -351,11 +371,11 @@ fn activity(dag: &mut Dag, g: u32) -> Result<Arc<Activity>, u32> {
             continue;
         }
         let Some(unit) = dag.unit(u) else {
-            return Err(u);
+            return Err(NoDerivative::NoRule);
         };
         let arity = unit.arity as usize;
         let Some(outs) = unit.outputs() else {
-            return Err(u);
+            return Err(NoDerivative::MissingBody(u));
         };
         state.push(Activity {
             act: vec![false; arity],
@@ -389,7 +409,7 @@ fn activity(dag: &mut Dag, g: u32) -> Result<Arc<Activity>, u32> {
             }
             let out0 = match dag.unit(units[k]).and_then(|x| x.outputs()) {
                 Some(o) => o[0],
-                None => return Err(units[k]),
+                None => return Err(NoDerivative::MissingBody(units[k])),
             };
             let mut next = state[k].clone();
             let mut seen = HashSet::new();
@@ -416,17 +436,16 @@ fn activity(dag: &mut Dag, g: u32) -> Result<Arc<Activity>, u32> {
                             let s = &state[m];
                             push_active(dag, s, l, &mut stack);
                             next.reads.extend(s.reads.iter().copied());
-                            next.all |= s.all;
                         }
+                        // Only units with one output are walked.
                         None => {
-                            next.all = true;
-                            stack.extend_from_slice(dag.args(l));
+                            return Err(match dag.unit(h) {
+                                Some(_) => NoDerivative::SeveralOutputs(h),
+                                None => NoDerivative::NoRule,
+                            });
                         }
                     },
-                    Op::Out(c, _) => {
-                        next.all = true;
-                        stack.push(c);
-                    }
+                    Op::Out(c, _) => return Err(out_refusal(dag, c)),
                     _ => diff_children(&op, &mut |c| stack.push(c)),
                 }
             }
@@ -470,7 +489,7 @@ fn call_tangent(
     let mask: Vec<u32> = (0..targs.len() as u32)
         .filter(|&i| a.active(i as usize) && !is_zero(dag, targs[i as usize]))
         .collect();
-    let r = a.all || a.reads.contains(&wrt);
+    let r = a.reads.contains(&wrt);
     if mask.is_empty() && !r {
         let c = dag.call(g, args);
         return (c, dag.konst(0.0));
@@ -583,7 +602,8 @@ fn tangent_unit(
                         p
                     }
                     // A call that cannot be differentiated keeps its value and has a NaN
-                    // tangent.
+                    // tangent; `call_act` recorded the refusal. The activity of `f` refuses
+                    // such a call first, so this arm is not reached.
                     Some(None) => {
                         let p = dag.call(g, &args);
                         let nan = dag.konst(f64::NAN);
@@ -607,7 +627,7 @@ fn tangent_unit(
 /// The tangent of `node` inside a unit body, with the tangents of the formals and of the
 /// tangent calls already in `tan`. A node that reads no formal and no call is the same in
 /// every frame, so its tangent comes from [`d`] along `w`, or is 0 for a unit that reads no
-/// variable. A call or a call output missing from `tan` has a NaN tangent.
+/// variable. A call or a call output missing from `tan` is refused with a NaN tangent.
 fn local_tangent(
     dag: &mut Dag,
     memo: &mut HashMap<(NodeId, Wrt), NodeId>,
@@ -644,7 +664,11 @@ fn local_tangent(
             }
         } else {
             match *dag.op(id) {
-                Op::Call(..) | Op::Out(..) | Op::Arg(_) => dag.konst(f64::NAN),
+                Op::Out(c, _) => {
+                    let why = out_refusal(dag, c);
+                    refuse(dag, why)
+                }
+                Op::Call(..) | Op::Arg(_) => refuse(dag, NoDerivative::NoRule),
                 _ => rule(dag, &|c| tan.get(&c).copied(), id, wrt),
             }
         };
@@ -658,6 +682,8 @@ fn rule(dag: &mut Dag, look: &dyn Fn(NodeId) -> Option<NodeId>, node: NodeId, wr
     let mut nan = None;
     let mut dc = |dag: &mut Dag, c: NodeId| match look(c) {
         Some(r) => r,
+        // A child that `diff_children` skips (the argument of `floor`, the order of a
+        // Bessel function) has no tangent; its rule never reads this placeholder.
         None => *nan.get_or_insert_with(|| dag.konst(f64::NAN)),
     };
     let op = *dag.op(node);
@@ -753,7 +779,7 @@ fn rule(dag: &mut Dag, look: &dyn Fn(NodeId) -> Option<NodeId>, node: NodeId, wr
             call_term(dag, da, a, |g| g.table_slope(id, a))
         }
         // `d` and `local_tangent` handle formals and calls before they reach a rule.
-        Op::Arg(_) | Op::Call(..) | Op::Out(..) => dag.konst(f64::NAN),
+        Op::Arg(_) | Op::Call(..) | Op::Out(..) => refuse(dag, NoDerivative::NoRule),
     }
 }
 
