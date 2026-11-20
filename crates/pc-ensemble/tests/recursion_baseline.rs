@@ -1,7 +1,7 @@
 //! The lowering of models without recursion, pinned before recursive functions land (SPEC
 //! section 8af-5, P44). For every test model of `pc-ode`, `pc-ir` and `pc-engine`, the golden
 //! file records the DAG node count and a hash of its ops after each entry, a hash of the
-//! emitted C, the JIT frame size, the tape length and hashes of two GPU kernel texts. A
+//! emitted C, the JIT code and frame sizes, the tape length and hashes of two GPU kernel texts. A
 //! model that does not call a recursive function must keep every value.
 //!
 //! `PC_BLESS=1 cargo test -p pc-ensemble --test recursion_baseline` rewrites the golden
@@ -67,7 +67,9 @@ fn ops_hash(m: &IrModel) -> u64 {
     fnv1a64(s.as_bytes())
 }
 
-fn line(path: &Path) -> String {
+/// The baseline line of one model, and its JIT code and frame sizes, which depend on the
+/// host (see `jit_golden`).
+fn line(path: &Path) -> (String, String) {
     let name = path
         .strip_prefix(root())
         .unwrap_or(path)
@@ -79,7 +81,7 @@ fn line(path: &Path) -> String {
         Err(e) => {
             // Only the first word: the debug text of an error is not part of the baseline.
             let w = e.split([' ', '(', '{']).next().unwrap_or("").to_string();
-            return format!("{out} skipped ({w})");
+            return (format!("{out} skipped ({w})"), format!("{out} skipped"));
         }
     };
     let mut kinds = vec![("f", EntryKind::F)];
@@ -117,12 +119,10 @@ fn line(path: &Path) -> String {
         .filter(|(_, e)| !matches!(e.kind, EntryKind::Dir(_)))
         .map(|(_, e)| (e.kind.clone(), e))
         .collect();
-    match pc_jit::compile(&plain, &m.dag) {
-        Ok(j) => {
-            let _ = write!(out, " jit={}", j.frame());
-        }
-        Err(_) => out.push_str(" jit=err"),
-    }
+    let jit = match pc_jit::compile(&plain, &m.dag) {
+        Ok(j) => format!("{name}: code={} frame={}", j.code_size(), j.frame()),
+        Err(_) => format!("{name}: err"),
+    };
     match Tape::build(&m) {
         Ok(t) => {
             let _ = write!(out, " tape={}", t.len());
@@ -142,25 +142,51 @@ fn line(path: &Path) -> String {
         }
         Err(_) => out.push_str(" tape=err"),
     }
-    out
+    (out, jit)
+}
+
+fn compare(golden: &Path, text: &str) {
+    if std::env::var_os("PC_BLESS").is_some_and(|v| v == "1") {
+        std::fs::write(golden, text).expect("write golden");
+        return;
+    }
+    let want = std::fs::read_to_string(golden).unwrap_or_else(|_| {
+        panic!(
+            "{} is missing (run with PC_BLESS=1 to create it)",
+            golden.display()
+        )
+    });
+    for (i, (w, g)) in want.lines().zip(text.lines()).enumerate() {
+        assert_eq!(w, g, "{} line {} differs", golden.display(), i + 1);
+    }
+    assert_eq!(want.lines().count(), text.lines().count(), "model count");
 }
 
 #[test]
 fn models_without_recursion_keep_their_lowering() {
+    let host = pc_jit::host_fingerprint().expect("host ISA");
     let mut text = String::new();
+    let mut jit = format!("host: {host}\n");
     for p in models() {
-        text.push_str(&line(&p));
+        let (l, j) = line(&p);
+        text.push_str(&l);
         text.push('\n');
+        jit.push_str(&j);
+        jit.push('\n');
     }
-    let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recursion_baseline.golden");
-    if std::env::var_os("PC_BLESS").is_some_and(|v| v == "1") {
-        std::fs::write(&golden, &text).expect("write golden");
-        return;
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    compare(&dir.join("recursion_baseline.golden"), &text);
+    // The JIT sizes depend on the host's ISA flags and calling convention, so they are
+    // checked only on a host with the fingerprint the golden file was blessed on.
+    let jit_golden = dir.join("recursion_baseline_jit.golden");
+    let blessed = std::fs::read_to_string(&jit_golden).ok();
+    let same_host = blessed
+        .as_deref()
+        .and_then(|b| b.lines().next())
+        .is_some_and(|first| first == format!("host: {host}"));
+    if same_host || std::env::var_os("PC_BLESS").is_some_and(|v| v == "1") {
+        compare(&jit_golden, &jit);
+    } else {
+        eprintln!("JIT sizes not checked: this host is not the one the golden file names");
     }
-    let want = std::fs::read_to_string(&golden)
-        .expect("golden file is missing (run with PC_BLESS=1 to create it)");
-    for (i, (w, g)) in want.lines().zip(text.lines()).enumerate() {
-        assert_eq!(w, g, "line {} differs", i + 1);
-    }
-    assert_eq!(want.lines().count(), text.lines().count(), "model count");
 }

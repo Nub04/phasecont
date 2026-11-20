@@ -8,6 +8,7 @@
 pub mod check;
 mod compiled;
 mod flags;
+pub use flags::host_fingerprint;
 mod lower;
 mod module;
 
@@ -132,6 +133,7 @@ fn compile_as(
         tables,
         fns,
         frame,
+        code,
         ..
     } = &mut je;
     let Some(module) = module.as_mut() else {
@@ -215,6 +217,9 @@ fn compile_as(
             },
         )?;
         cl(&name, module.define_function(id, &mut ctx))?;
+        if let Some(c) = ctx.compiled_code() {
+            *code = code.saturating_add(c.code_info().total_size);
+        }
         if let Some(fl) = ctx.compiled_code().and_then(|c| c.buffer.frame_layout()) {
             module::MAX_FRAME.with(|m| m.set(m.get().max(fl.frame_to_fp_offset)));
             *frame = (*frame).max(fl.frame_to_fp_offset);

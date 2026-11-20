@@ -25,3 +25,15 @@ pub(crate) fn host_isa() -> Result<OwnedTargetIsa, JitError> {
     let isa = cl("host ISA", cranelift_native::builder())?;
     cl("ISA flags", isa.finish(settings::Flags::new(fb)))
 }
+
+/// The target triple and the ISA flags that `host_isa` picks on this machine, one string.
+/// Code and frame sizes are only comparable between hosts with the same fingerprint.
+pub fn host_fingerprint() -> Result<String, JitError> {
+    let isa = host_isa()?;
+    let mut s = isa.triple().to_string();
+    for v in isa.isa_flags() {
+        s.push(' ');
+        s.push_str(&v.to_string());
+    }
+    Ok(s)
+}

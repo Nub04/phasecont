@@ -30,6 +30,8 @@ pub struct JitEntries {
     pub(crate) fns: Vec<(EntryKind, *const u8)>,
     /// The largest frame (bytes below the frame pointer) among these entries.
     pub(crate) frame: u32,
+    /// The machine code size, in bytes, summed over these entries.
+    pub(crate) code: u32,
     /// The float type of every entry.
     pub(crate) float: Float,
 }
@@ -54,6 +56,7 @@ impl JitEntries {
             tables: Vec::new(),
             fns: Vec::new(),
             frame: 0,
+            code: 0,
             float,
         })
     }
@@ -87,6 +90,11 @@ impl JitEntries {
     /// high-water mark over every compile on the thread; this one belongs to these entries.
     pub fn frame(&self) -> u32 {
         self.frame
+    }
+
+    /// The machine code size, in bytes, summed over the entries in this value.
+    pub fn code_size(&self) -> u32 {
+        self.code
     }
 
     /// The function of a `Dir` entry, or `None` for another kind or a missing entry.
