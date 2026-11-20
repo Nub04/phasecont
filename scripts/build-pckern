@@ -34,6 +34,9 @@ fi
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo"
 
+# Any failure from here on leaves the DLL that was staged before, so say so.
+trap 'echo "build-pckern: failed; $stage/pckern.dll was not replaced" >&2' ERR
+
 # Cargo writes to CARGO_TARGET_DIR or to build.target-dir from a config file when
 # either is set, so ask it where the output goes instead of assuming ./target.
 target_dir="$(cargo metadata --no-deps --locked --format-version 1 | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"
@@ -43,11 +46,17 @@ if [[ -z "$target_dir" || "$target_dir" == *\\* ]]; then
 fi
 
 export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="${CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER:-x86_64-w64-mingw32-gcc}"
-# Replace the repo and cargo home paths in panic messages and debug info, so
-# the DLL holds no path of this machine. The flags apply to the Windows target
-# only, so the host build of pc-cli keeps its cache.
+# Replace the repo, cargo home and target paths in panic messages and debug
+# info, so the DLL holds no path of this machine. A target directory outside
+# the repo (CARGO_TARGET_DIR in a shell profile) holds the build-script output
+# that cranelift-codegen includes, so it needs its own prefix. The flags apply
+# to the Windows target only, so the host build of pc-cli keeps its cache.
 cargo_home="${CARGO_HOME:-$HOME/.cargo}"
-export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS="--remap-path-prefix=$repo=/src --remap-path-prefix=$cargo_home=/cargo ${CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS:-}"
+remap="--remap-path-prefix=$repo=/src --remap-path-prefix=$cargo_home=/cargo"
+if [[ "$target_dir" != "$repo" && "$target_dir" != "$repo"/* ]]; then
+  remap="$remap --remap-path-prefix=$target_dir=/target"
+fi
+export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS="$remap ${CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS:-}"
 cargo build --release --locked --target x86_64-pc-windows-gnu -p pc-ffi
 
 dll="$target_dir/x86_64-pc-windows-gnu/release/pckern.dll"
