@@ -14,6 +14,7 @@
 use crate::delays::{self, DelaySlot, Names, SlotKey};
 use crate::entry::{EntryKind, Slot};
 use crate::lower::IrModel;
+use crate::machine::{EvalError, MAX_ACTIVE_CALLS};
 use crate::math;
 use pc_ode::{BinaryOp, Expr, Ident, Model, ModelInfo, Stmt, StmtKind, UnaryOp, Value};
 use std::collections::{HashMap, HashSet};
@@ -570,6 +571,14 @@ impl<T: Nest> Nest for Dual<T> {
 
 // ---------------------------------------------------------------------------
 
+/// A user function: its formals, its body and whether it is in a recursive component.
+struct FuncDef {
+    name: String,
+    params: Vec<String>,
+    body: Expr,
+    recursive: bool,
+}
+
 /// Owns copies of everything the walker reads, so it outlives the parsed model.
 pub struct Interp {
     n: usize,
@@ -579,7 +588,10 @@ pub struct Interp {
     numbers: HashMap<String, f64>,
     /// Derived parameters and fixed quantities.
     named: HashMap<String, Expr>,
-    funcs: HashMap<String, (Vec<String>, Expr)>,
+    funcs: HashMap<String, FuncDef>,
+    /// True when some function is recursive: then every evaluation runs on the heap
+    /// machine ([`Machine`]), so a deep recursion never touches the native stack.
+    has_recursive: bool,
     table_ids: HashMap<String, usize>,
     tables: Vec<Vec<f64>>,
     f: Vec<Expr>,
@@ -624,7 +636,7 @@ impl Interp {
     /// of the same model. The tables come from `ir.dag.tables` (they were baked from the
     /// parameter defaults and initial values at lowering), and `ir` also fixes `n` and
     /// `n_p`.
-    pub fn new(model: &Model, _info: &ModelInfo, ir: &IrModel) -> Self {
+    pub fn new(model: &Model, info: &ModelInfo, ir: &IrModel) -> Self {
         let mut stmts = Vec::new();
         flatten(&model.statements, &mut stmts);
         let mut it = Interp {
@@ -635,6 +647,7 @@ impl Interp {
             numbers: HashMap::new(),
             named: HashMap::new(),
             funcs: HashMap::new(),
+            has_recursive: !info.recursive.is_empty(),
             table_ids: HashMap::new(),
             tables: ir.dag.tables.clone(),
             f: Vec::new(),
@@ -669,8 +682,13 @@ impl Interp {
                 }
                 StmtKind::Aux { rhs, .. } => it.aux.push(rhs.clone()),
                 StmtKind::Function { name, params, rhs } => {
-                    let keys = params.iter().map(|p| p.key.clone()).collect();
-                    it.funcs.insert(name.key.clone(), (keys, rhs.clone()));
+                    let def = FuncDef {
+                        name: name.text.clone(),
+                        params: params.iter().map(|p| p.key.clone()).collect(),
+                        body: rhs.clone(),
+                        recursive: info.recursive.contains(&name.key),
+                    };
+                    it.funcs.insert(name.key.clone(), def);
                 }
                 StmtKind::Table { name, .. } => {
                     it.table_ids.insert(name.key.clone(), n_tables);
@@ -696,14 +714,48 @@ impl Interp {
 
     /// Evaluates the state right sides into `out_f` and the `aux` quantities into
     /// `out_aux`. `x` has length n and `p` has length n_p + 1 (the last slot is `t`). A
-    /// short input, a model nested past the depth limit or an unknown name gives NaN in
-    /// the affected outputs; extra output slots are NaN.
+    /// short input, a model nested past the depth limit, an unknown name or an error of
+    /// [`Interp::try_eval`] gives NaN in the affected outputs; extra output slots are NaN.
     pub fn eval<S: Scalar>(&self, x: &[S], p: &[S], out_f: &mut [S], out_aux: &mut [S]) {
+        // The error has already filled the outputs with NaN.
+        let _ = self.try_eval(x, p, out_f, out_aux);
+    }
+
+    /// [`Interp::eval`], but a call of a recursive function that would make more than
+    /// [`MAX_ACTIVE_CALLS`] of them active at once is an error ([`EvalError::Depth`]), as
+    /// is a stack of the heap machine that cannot grow ([`EvalError::OutOfMemory`]). On
+    /// an error every output is NaN.
+    pub fn try_eval<S: Scalar>(
+        &self,
+        x: &[S],
+        p: &[S],
+        out_f: &mut [S],
+        out_aux: &mut [S],
+    ) -> Result<(), EvalError> {
+        self.try_eval_capped(x, p, out_f, out_aux, MAX_ACTIVE_CALLS)
+    }
+
+    fn try_eval_capped<S: Scalar>(
+        &self,
+        x: &[S],
+        p: &[S],
+        out_f: &mut [S],
+        out_aux: &mut [S],
+        cap: usize,
+    ) -> Result<(), EvalError> {
         let nan = S::nan();
         if x.len() < self.n || p.len() <= self.n_p {
             out_f.fill(nan);
             out_aux.fill(nan);
-            return;
+            return Ok(());
+        }
+        if self.has_recursive {
+            let r = Machine::new(self, x, p, cap).run_all(out_f, out_aux);
+            if r.is_err() {
+                out_f.fill(nan);
+                out_aux.fill(nan);
+            }
+            return r;
         }
         let mut cx = Ctx {
             it: self,
@@ -732,6 +784,7 @@ impl Interp {
             out_f.fill(nan);
             out_aux.fill(nan);
         }
+        Ok(())
     }
 }
 
@@ -816,26 +869,7 @@ impl<'a, S: Scalar> Ctx<'a, S> {
     fn binary(&mut self, op: BinaryOp, l: &'a Expr, r: &'a Expr) -> V<S> {
         let (a, ca) = self.ev(l);
         let (b, cb) = self.ev(r);
-        let (x, y) = (a.value(), b.value());
-        let flag = |t: bool| S::from_f64(b2f(t));
-        let v = match op {
-            BinaryOp::Add => a + b,
-            BinaryOp::Sub => a - b,
-            BinaryOp::Mul => a * b,
-            BinaryOp::Div => a / b,
-            BinaryOp::Pow | BinaryOp::StarStar => match small_int(y) {
-                Some(n) if cb => a.powi(n),
-                _ => a.pow(b),
-            },
-            BinaryOp::Lt => flag(x < y),
-            BinaryOp::Gt => flag(x > y),
-            BinaryOp::Le => flag(x <= y),
-            BinaryOp::Ge => flag(x >= y),
-            BinaryOp::Eq => flag(x == y),
-            BinaryOp::And => flag(x != 0.0 && y != 0.0),
-            BinaryOp::Or => flag(x != 0.0 || y != 0.0),
-        };
-        (v, ca && cb)
+        (binary_value(op, a, b, cb), ca && cb)
     }
 
     #[inline(never)]
@@ -908,7 +942,7 @@ impl<'a, S: Scalar> Ctx<'a, S> {
     fn call(&mut self, name: &'a Ident, args: &'a [Expr]) -> V<S> {
         let key = name.key.as_str();
         let it = self.it;
-        if let Some((params, body)) = it.funcs.get(key) {
+        if let Some(FuncDef { params, body, .. }) = it.funcs.get(key) {
             if params.len() != args.len() {
                 return Self::nan();
             }
@@ -951,6 +985,381 @@ impl<'a, S: Scalar> Ctx<'a, S> {
             }
             _ => Self::nan(),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+/// A pending step of the heap machine. Each one runs on the values that the steps pushed
+/// after it left on the value stack.
+#[derive(Clone, Copy)]
+enum Task<'a> {
+    /// Push the value of an expression.
+    Eval(&'a Expr),
+    Unary(UnaryOp),
+    Binary(BinaryOp),
+    /// The condition is on top: evaluate one arm, then join.
+    Pick(&'a Expr, &'a Expr),
+    /// The arm is on top; the flag is the constness of the condition.
+    Join(bool),
+    /// The arguments are the top `params.len()` values: open a frame over them.
+    Enter(&'a FuncDef),
+    /// The body is on top: close the frame and drop its arguments.
+    Leave,
+    Table(usize),
+    Builtin1(&'a str),
+    Builtin2(&'a str),
+    /// A fixed quantity or derived parameter is on top: close its scope and cache it.
+    Named(&'a str),
+}
+
+/// A frame of a user function over the value stack, or (with `def` empty) the global
+/// scope of a fixed quantity.
+#[derive(Clone, Copy)]
+struct MFrame<'a> {
+    def: Option<&'a FuncDef>,
+    /// Index of the first argument on the value stack.
+    base: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test hook: the next growth of a machine stack fails as if memory ran out.
+    static FAIL_GROW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_grow() {
+    FAIL_GROW.with(|f| f.set(true));
+}
+
+/// Pushes onto a machine stack; growth goes through `try_reserve`, so running out of
+/// memory is an error and never an abort.
+fn push<T>(v: &mut Vec<T>, x: T) -> Result<(), EvalError> {
+    if v.len() == v.capacity() {
+        #[cfg(test)]
+        if FAIL_GROW.with(|f| f.replace(false)) {
+            return Err(EvalError::OutOfMemory);
+        }
+        v.try_reserve(1).map_err(|_| EvalError::OutOfMemory)?;
+    }
+    v.push(x);
+    Ok(())
+}
+
+/// The walker of [`Ctx`] with its recursion moved onto heap stacks: a task stack, a value
+/// stack and a frame stack. It computes the same values and constness in the same order,
+/// for models with a recursive function. Only frames of recursive functions count toward
+/// the cap; a non-recursive call chain is bounded by the number of functions.
+struct Machine<'a, S: Scalar> {
+    it: &'a Interp,
+    x: &'a [S],
+    p: &'a [S],
+    tasks: Vec<Task<'a>>,
+    vals: Vec<V<S>>,
+    frames: Vec<MFrame<'a>>,
+    cache: HashMap<&'a str, V<S>>,
+    visiting: HashSet<&'a str>,
+    /// Frames of recursive functions open now.
+    active: usize,
+    cap: usize,
+}
+
+impl<'a, S: Scalar> Machine<'a, S> {
+    fn new(it: &'a Interp, x: &'a [S], p: &'a [S], cap: usize) -> Self {
+        Machine {
+            it,
+            x,
+            p,
+            tasks: Vec::new(),
+            vals: Vec::new(),
+            frames: Vec::new(),
+            cache: HashMap::new(),
+            visiting: HashSet::new(),
+            active: 0,
+            cap,
+        }
+    }
+
+    fn run_all(&mut self, out_f: &mut [S], out_aux: &mut [S]) -> Result<(), EvalError> {
+        let it = self.it;
+        for (i, o) in out_f.iter_mut().enumerate() {
+            *o = match it.f.get(i) {
+                Some(e) => self.value(e)?,
+                None => S::nan(),
+            };
+        }
+        for (i, o) in out_aux.iter_mut().enumerate() {
+            *o = match it.aux.get(i) {
+                Some(e) => self.value(e)?,
+                None => S::nan(),
+            };
+        }
+        Ok(())
+    }
+
+    /// The value of one top-level expression.
+    fn value(&mut self, e: &'a Expr) -> Result<S, EvalError> {
+        push(&mut self.tasks, Task::Eval(e))?;
+        while let Some(t) = self.tasks.pop() {
+            self.step(t)?;
+        }
+        let v = self.vals.pop().map_or(S::nan(), |v| v.0);
+        self.vals.clear();
+        Ok(v)
+    }
+
+    fn pop(&mut self) -> V<S> {
+        self.vals.pop().unwrap_or((S::nan(), true))
+    }
+
+    fn put(&mut self, v: V<S>) -> Result<(), EvalError> {
+        push(&mut self.vals, v)
+    }
+
+    fn task(&mut self, t: Task<'a>) -> Result<(), EvalError> {
+        push(&mut self.tasks, t)
+    }
+
+    fn nan(&mut self) -> Result<(), EvalError> {
+        self.put((S::nan(), true))
+    }
+
+    fn step(&mut self, t: Task<'a>) -> Result<(), EvalError> {
+        match t {
+            Task::Eval(e) => self.eval(e),
+            Task::Unary(op) => {
+                let (a, c) = self.pop();
+                self.put(match op {
+                    UnaryOp::Neg => (-a, c),
+                    UnaryOp::Not => (S::from_f64(b2f(a.value() == 0.0)), c),
+                })
+            }
+            Task::Binary(op) => {
+                let (b, cb) = self.pop();
+                let (a, ca) = self.pop();
+                self.put((binary_value(op, a, b, cb), ca && cb))
+            }
+            Task::Pick(then, else_) => {
+                let (c, cc) = self.pop();
+                self.task(Task::Join(cc))?;
+                self.task(Task::Eval(if c.value() != 0.0 { then } else { else_ }))
+            }
+            Task::Join(cc) => {
+                let (v, vc) = self.pop();
+                self.put((v, cc && vc))
+            }
+            Task::Enter(def) => {
+                if def.recursive {
+                    if self.active >= self.cap {
+                        return Err(EvalError::Depth {
+                            func: def.name.clone(),
+                            cap: self.cap,
+                        });
+                    }
+                    self.active += 1;
+                }
+                let base = self.vals.len().saturating_sub(def.params.len());
+                push(
+                    &mut self.frames,
+                    MFrame {
+                        def: Some(def),
+                        base,
+                    },
+                )?;
+                self.task(Task::Leave)?;
+                self.task(Task::Eval(&def.body))
+            }
+            Task::Leave => {
+                let v = self.pop();
+                if let Some(fr) = self.frames.pop() {
+                    if fr.def.is_some_and(|d| d.recursive) {
+                        self.active -= 1;
+                    }
+                    self.vals.truncate(fr.base);
+                }
+                self.put(v)
+            }
+            Task::Table(id) => {
+                let (x, c) = self.pop();
+                let data = self.it.tables.get(id).map(Vec::as_slice).unwrap_or(&[]);
+                self.put((x.table(data), c))
+            }
+            Task::Builtin1(key) => {
+                let (x, c) = self.pop();
+                match call1(key, x) {
+                    Some(r) => self.put((r, c)),
+                    None => self.nan(),
+                }
+            }
+            Task::Builtin2(key) => {
+                let (y, cb) = self.pop();
+                let (x, ca) = self.pop();
+                match call2(key, x, y) {
+                    Some(r) => self.put((r, ca && cb)),
+                    None => self.nan(),
+                }
+            }
+            Task::Named(key) => {
+                let v = self.pop();
+                self.frames.pop();
+                self.visiting.remove(key);
+                self.cache.insert(key, v);
+                self.put(v)
+            }
+        }
+    }
+
+    fn eval(&mut self, e: &'a Expr) -> Result<(), EvalError> {
+        match e {
+            Expr::Num { value, .. } => self.put((S::from_f64(*value), true)),
+            Expr::Name(id) => self.name(id),
+            Expr::Index(_) | Expr::Error { .. } => self.nan(),
+            Expr::Unary { op, operand, .. } => {
+                self.task(Task::Unary(*op))?;
+                self.task(Task::Eval(operand))
+            }
+            Expr::Binary { op, lhs, rhs, .. } => {
+                self.task(Task::Binary(*op))?;
+                self.task(Task::Eval(rhs))?;
+                self.task(Task::Eval(lhs))
+            }
+            Expr::If {
+                cond, then, else_, ..
+            } => {
+                self.task(Task::Pick(then, else_))?;
+                self.task(Task::Eval(cond))
+            }
+            Expr::Call { name, args, .. } => self.call(name, args),
+        }
+    }
+
+    /// The formals of the innermost frame and their values, if it is a function frame.
+    fn frame_args(&self) -> Option<(&'a [String], &[V<S>])> {
+        let fr = self.frames.last()?;
+        let def = fr.def?;
+        Some((&def.params, self.vals.get(fr.base..).unwrap_or(&[])))
+    }
+
+    fn name(&mut self, id: &'a Ident) -> Result<(), EvalError> {
+        let key = id.key.as_str();
+        let it = self.it;
+        if let Some((params, args)) = self.frame_args() {
+            // The same order as `Ctx::name`.
+            if let Some(pos) = params.iter().position(|p| p == key) {
+                let v = args.get(pos).copied().unwrap_or((S::nan(), true));
+                return self.put(v);
+            }
+            if let Some(k) = key.strip_prefix("arg")
+                && let Ok(k @ 1..=9) = k.parse::<usize>()
+                && k <= params.len()
+                && let Some(&v) = args.get(k - 1)
+            {
+                return self.put(v);
+            }
+        }
+        if key == "t" {
+            return self.put((self.p.get(it.n_p).copied().unwrap_or(S::nan()), false));
+        }
+        if key == "pi" {
+            return self.put((S::from_f64(std::f64::consts::PI), true));
+        }
+        if let Some(&i) = it.states.get(key) {
+            return self.put((self.x.get(i).copied().unwrap_or(S::nan()), false));
+        }
+        if let Some(&j) = it.params.get(key) {
+            return self.put((self.p.get(j).copied().unwrap_or(S::nan()), false));
+        }
+        if let Some(&v) = it.numbers.get(key) {
+            return self.put((S::from_f64(v), true));
+        }
+        if let Some((k, rhs)) = it.named.get_key_value(key) {
+            let k = k.as_str();
+            if let Some(&v) = self.cache.get(k) {
+                return self.put(v);
+            }
+            if !self.visiting.insert(k) {
+                return self.nan();
+            }
+            // A scope frame with no formals: the quantity sees only global names.
+            let base = self.vals.len();
+            push(&mut self.frames, MFrame { def: None, base })?;
+            self.task(Task::Named(k))?;
+            return self.task(Task::Eval(rhs));
+        }
+        self.nan()
+    }
+
+    fn delay(&mut self, args: &'a [Expr]) -> Result<(), EvalError> {
+        let it = self.it;
+        let formals = self.frame_args().map_or(&[][..], |(f, _)| f);
+        let idx = delays::classify(args, formals, it)
+            .ok()
+            .and_then(|(state, time)| it.delay_slots.get(&DelaySlot { state, time }.key()));
+        match idx {
+            Some(&j) => self.put((self.p.get(j).copied().unwrap_or(S::nan()), false)),
+            None => self.nan(),
+        }
+    }
+
+    fn call(&mut self, name: &'a Ident, args: &'a [Expr]) -> Result<(), EvalError> {
+        let key = name.key.as_str();
+        let it = self.it;
+        if let Some(def) = it.funcs.get(key) {
+            if def.params.len() != args.len() {
+                return self.nan();
+            }
+            self.task(Task::Enter(def))?;
+            for a in args.iter().rev() {
+                self.task(Task::Eval(a))?;
+            }
+            return Ok(());
+        }
+        if let Some(&id) = it.table_ids.get(key) {
+            let [a] = args else {
+                return self.nan();
+            };
+            self.task(Task::Table(id))?;
+            return self.task(Task::Eval(a));
+        }
+        if key == "delay" {
+            return self.delay(args);
+        }
+        match args {
+            [a] => {
+                self.task(Task::Builtin1(key))?;
+                self.task(Task::Eval(a))
+            }
+            [a, b] => {
+                self.task(Task::Builtin2(key))?;
+                self.task(Task::Eval(b))?;
+                self.task(Task::Eval(a))
+            }
+            _ => self.nan(),
+        }
+    }
+}
+
+/// The value of a binary operator, shared by the walker and the machine.
+fn binary_value<S: Scalar>(op: BinaryOp, a: S, b: S, cb: bool) -> S {
+    let (x, y) = (a.value(), b.value());
+    let flag = |t: bool| S::from_f64(b2f(t));
+    match op {
+        BinaryOp::Add => a + b,
+        BinaryOp::Sub => a - b,
+        BinaryOp::Mul => a * b,
+        BinaryOp::Div => a / b,
+        BinaryOp::Pow | BinaryOp::StarStar => match small_int(y) {
+            Some(n) if cb => a.powi(n),
+            _ => a.pow(b),
+        },
+        BinaryOp::Lt => flag(x < y),
+        BinaryOp::Gt => flag(x > y),
+        BinaryOp::Le => flag(x <= y),
+        BinaryOp::Ge => flag(x >= y),
+        BinaryOp::Eq => flag(x == y),
+        BinaryOp::And => flag(x != 0.0 && y != 0.0),
+        BinaryOp::Or => flag(x != 0.0 || y != 0.0),
     }
 }
 
@@ -1020,24 +1429,57 @@ impl Fallback {
     }
 
     /// Evaluates one entry. Inputs and outputs follow the contract in [`crate::entry`].
-    /// A wrong input length or a bad slot count fills the outputs with NaN.
+    /// A wrong input length, a bad slot count or an error of [`Fallback::try_eval`] fills
+    /// the outputs with NaN.
     pub fn eval(&self, kind: &EntryKind, x: &[f64], p: &[f64], v: &[f64], out: &mut [f64]) {
+        // The error has already filled the outputs with NaN.
+        let _ = self.try_eval(kind, x, p, v, out);
+    }
+
+    /// [`Fallback::eval`], but the errors of [`Interp::try_eval`] (the cap on active
+    /// calls of recursive functions, and memory) are returned. On an error every output
+    /// is NaN.
+    pub fn try_eval(
+        &self,
+        kind: &EntryKind,
+        x: &[f64],
+        p: &[f64],
+        v: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), EvalError> {
+        let r = self.try_eval_inner(kind, x, p, v, out);
+        if r.is_err() {
+            out.fill(f64::NAN);
+        }
+        r
+    }
+
+    fn try_eval_inner(
+        &self,
+        kind: &EntryKind,
+        x: &[f64],
+        p: &[f64],
+        v: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), EvalError> {
         if x.len() < self.n || p.len() <= self.n_p {
             out.fill(f64::NAN);
-            return;
+            return Ok(());
         }
         match kind {
             EntryKind::F => {
                 let mut aux = vec![0.0; self.n_aux];
                 let mut f = vec![0.0; self.n];
-                self.interp.eval(x, p, &mut f, &mut aux);
+                self.interp.try_eval(x, p, &mut f, &mut aux)?;
                 copy_out(out, &f);
+                Ok(())
             }
             EntryKind::Aux => {
                 let mut aux = vec![0.0; self.n_aux];
                 let mut f = vec![0.0; self.n];
-                self.interp.eval(x, p, &mut f, &mut aux);
+                self.interp.try_eval(x, p, &mut f, &mut aux)?;
                 copy_out(out, &aux);
+                Ok(())
             }
             EntryKind::JacU => self.jac(x, p, out, self.n, true),
             EntryKind::JacP => self.jac(x, p, out, self.n_p, false),
@@ -1047,13 +1489,23 @@ impl Fallback {
                 3 => self.dir::<Dual<Dual<Dual<f64>>>>(slots, x, p, v, out),
                 4 => self.dir::<Dual<Dual<Dual<Dual<f64>>>>>(slots, x, p, v, out),
                 5 => self.dir::<Dual<Dual<Dual<Dual<Dual<f64>>>>>>(slots, x, p, v, out),
-                _ => out.fill(f64::NAN),
+                _ => {
+                    out.fill(f64::NAN);
+                    Ok(())
+                }
             },
         }
     }
 
     /// Columns of the Jacobian with respect to the states (`wrt_u`) or the parameters.
-    fn jac(&self, x: &[f64], p: &[f64], out: &mut [f64], cols: usize, wrt_u: bool) {
+    fn jac(
+        &self,
+        x: &[f64],
+        p: &[f64],
+        out: &mut [f64],
+        cols: usize,
+        wrt_u: bool,
+    ) -> Result<(), EvalError> {
         out.fill(0.0);
         let c = |v: f64| Dual { re: v, eps: 0.0 };
         let mut xs: Vec<Dual<f64>> = x.iter().take(self.n).map(|&v| c(v)).collect();
@@ -1065,7 +1517,7 @@ impl Fallback {
             if let Some(s) = slot {
                 s.eps = 1.0;
             }
-            self.interp.eval(&xs, &ps, &mut f, &mut aux);
+            self.interp.try_eval(&xs, &ps, &mut f, &mut aux)?;
             let slot = if wrt_u { xs.get_mut(j) } else { ps.get_mut(j) };
             if let Some(s) = slot {
                 s.eps = 0.0;
@@ -1077,14 +1529,22 @@ impl Fallback {
                 }
             }
         }
+        Ok(())
     }
 
-    fn dir<S: Nest>(&self, slots: &[Slot], x: &[f64], p: &[f64], v: &[f64], out: &mut [f64]) {
+    fn dir<S: Nest>(
+        &self,
+        slots: &[Slot],
+        x: &[f64],
+        p: &[f64],
+        v: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), EvalError> {
         let (n, n_p) = (self.n, self.n_p);
         let total: usize = slots.iter().map(|s| s.len(n, n_p)).sum();
         if v.len() < total {
             out.fill(f64::NAN);
-            return;
+            return Ok(());
         }
         // dirs[i][s]: component of slot s's direction along variable i (u, then p).
         let mut dirs = vec![[0.0f64; 5]; n + n_p];
@@ -1124,10 +1584,11 @@ impl Fallback {
         ps.push(S::seed(p.get(n_p).copied().unwrap_or(f64::NAN), &[]));
         let mut f = vec![S::from_f64(0.0); n];
         let mut aux = vec![S::from_f64(0.0); self.n_aux];
-        self.interp.eval(&xs, &ps, &mut f, &mut aux);
+        self.interp.try_eval(&xs, &ps, &mut f, &mut aux)?;
         // `+ 0.0`: a zero derivative is +0, as in `eval::eval_entry`.
         let vals: Vec<f64> = f.iter().map(|fi| fi.top() + 0.0).collect();
         copy_out(out, &vals);
+        Ok(())
     }
 }
 

@@ -127,7 +127,7 @@ impl ModelEval for FallbackEval {
                 )));
             }
         }
-        self.fb.eval(kind, x, p, v, out);
+        self.fb.try_eval(kind, x, p, v, out)?;
         check_finite(kind, out)
     }
 }
