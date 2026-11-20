@@ -33,7 +33,8 @@ use crate::span::{FileId, Span};
 
 /// A name that is used but never declared.
 pub const UNDEFINED_NAME: Code = Code(39);
-/// A declaration of `t`, `pi`, a builtin, `arg1`..`arg9` or a keyword word.
+/// A declaration of `t`, `pi`, a builtin, `arg1`..`arg9` or a keyword word. A function
+/// parameter may be `arg1`..`arg9` (it binds by name) but not the other reserved names.
 pub const RESERVED_NAME: Code = Code(40);
 /// A name declared twice, including a repeated `par` or function parameter.
 pub const DUPLICATE_NAME: Code = Code(41);
@@ -53,7 +54,8 @@ pub const RECURSIVE_FUNCTION: Code = Code(47);
 pub const WRONG_ARITY: Code = Code(48);
 /// A function used as a value, or a value called as a function.
 pub const NOT_CALLABLE: Code = Code(49);
-/// `argK` outside a function with at least `K` parameters.
+/// `argK` outside a function with at least `K` parameters that does not declare it as a
+/// parameter name.
 pub const BAD_ARG: Code = Code(50);
 /// An `aux` quantity used in a formula.
 pub const AUX_IN_FORMULA: Code = Code(51);
@@ -157,6 +159,19 @@ fn reserved_reason(key: &str) -> Option<&'static str> {
         _ if arg_number(key).is_some() => Some("names a function argument"),
         _ if builtin(key).is_some() => Some("is a builtin function"),
         _ => None,
+    }
+}
+
+/// Why `key` cannot be the name of a function parameter, or `None` when it can.
+///
+/// XPPAUT binds a declared formal named `arg1` to `arg9` by name, so `f(u,arg1)=u+arg1` takes
+/// `arg1` as its second argument. Those names are allowed here, although they cannot be declared
+/// as anything else. Every other reserved name is refused as a formal.
+fn formal_reserved_reason(key: &str) -> Option<&'static str> {
+    if arg_number(key).is_some() {
+        None
+    } else {
+        reserved_reason(key)
     }
 }
 
@@ -655,7 +670,7 @@ impl<'a> Checker<'a> {
         }
         let mut group = Vec::new();
         for (k, p) in params.iter().enumerate() {
-            if let Some(reason) = reserved_reason(&p.key) {
+            if let Some(reason) = formal_reserved_reason(&p.key) {
                 let message = format!("`{}` {reason} and cannot be a parameter name", p.text);
                 self.report(RESERVED_NAME, p.span, message, Vec::new());
             } else if let Some(first) = params[..k].iter().find(|q| q.key == p.key) {
@@ -861,8 +876,9 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// True when `key` is a parameter of the function `owner` is in, by
-    /// name or as `argK`.
+    /// True when `key` is a parameter of the function `owner` is in: a
+    /// declared formal of that name (`arg3` included, whatever the parameter
+    /// count), or an undeclared `argK` with `K` up to the parameter count.
     fn is_param(key: &str, owner: Owner<'a>) -> bool {
         match owner {
             Owner::Function(_, params) => {

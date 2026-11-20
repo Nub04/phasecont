@@ -213,7 +213,8 @@ fn reserved_names() {
         ("x'=1\nwiener poisson", "poisson"),
         ("!shift=1", "shift"),
         ("f(u,sin)=u", "sin"),
-        ("f(arg1)=1", "arg1"),
+        ("f(u,t)=u", "t"),
+        ("f(u,pi)=u", "pi"),
     ] {
         let (_, diags) = run(text);
         assert_eq!(diags.len(), 1, "{text:?}: {diags:#?}");
@@ -550,6 +551,104 @@ fn arg_names() {
     let d = check_one(text, BAD_ARG, nth(text, "arg2", 0), &[]);
     assert!(d.message.contains("`arg2`"), "{}", d.message);
     assert_eq!(codes("x'=arg1"), vec![BAD_ARG]);
+}
+
+/// XPPAUT binds a declared formal named `argK` by name, so `f(u,arg1)` has
+/// `arg1` as its second argument. The declaration is allowed and wins over the
+/// positional meaning inside that function.
+#[test]
+fn a_declared_arg_formal_is_accepted() {
+    clean("f(u,arg1)=u+arg1");
+    clean("f(arg2,arg1)=arg1-arg2");
+    clean("f(arg1)=1");
+    clean("f(arg9)=arg9*2");
+    clean("f(arg1,arg2,arg3,arg4,arg5,arg6,arg7,arg8,arg9)=arg9-arg1");
+    // The formal is not a global symbol.
+    let i = info("f(u,arg1)=u+arg1");
+    assert!(i.symbol("arg1").is_none());
+    // A call of the function checks the count as usual.
+    clean("x'=f(x,2)\nf(u,arg1)=u+arg1");
+    assert_eq!(codes("x'=f(x)\nf(u,arg1)=u+arg1"), vec![WRONG_ARITY]);
+}
+
+#[test]
+fn a_declared_arg_formal_beyond_the_arity_is_not_an_arity_error() {
+    // `arg3` is declared, so it is the second parameter and not argument 3.
+    clean("f(u,arg3)=u+arg3");
+    clean("f(arg5)=arg5");
+    // An `argK` that is not declared and exceeds the arity is still ODE0050.
+    let text = "f(u,v)=arg3";
+    let d = check_one(text, BAD_ARG, nth(text, "arg3", 0), &[]);
+    assert!(d.message.contains("`arg3`"), "{}", d.message);
+    // A declared `arg3` does not make the other `argK` valid.
+    let text = "f(u,arg3)=arg4";
+    check_one(text, BAD_ARG, nth(text, "arg4", 0), &[]);
+    // The declaration is local to its function.
+    let text = "f(u,arg3)=u+arg3\ng(u,v)=arg3";
+    check_one(text, BAD_ARG, nth(text, "arg3", 2), &[]);
+    // Outside every function it stays an error, and so does a call.
+    assert_eq!(
+        codes("f(u,arg1)=u+arg1\nx'=arg1"),
+        vec![BAD_ARG],
+        "global use of arg1"
+    );
+}
+
+#[test]
+fn undeclared_arg_stays_positional_next_to_a_declared_one() {
+    // `arg2` is declared; `arg1` and `arg3` read arguments 1 and 3.
+    clean("g(arg2,v,w)=arg1*100+arg2*10+arg3");
+    // `arg4` is above the arity of 3.
+    assert_eq!(codes("g(arg2,v,w)=arg4"), vec![BAD_ARG]);
+    // A declared formal is not a function.
+    assert_eq!(codes("f(u,arg3)=arg3(1)"), vec![NOT_CALLABLE]);
+    // A repeated formal is still a duplicate.
+    let text = "f(arg1,arg1)=1";
+    let d = check_one(
+        text,
+        DUPLICATE_NAME,
+        nth(text, "arg1", 1),
+        &[nth(text, "arg1", 0)],
+    );
+    assert!(d.message.contains("`arg1`"), "{}", d.message);
+}
+
+#[test]
+fn every_other_declaration_of_an_arg_name_is_still_reserved() {
+    for (text, name) in [
+        ("par arg1=1\nx'=-x", "arg1"),
+        ("par a=1, arg9=2\nx'=-x", "arg9"),
+        ("aux arg1=2\nx'=-x", "arg1"),
+        ("number arg3=2\nx'=-x", "arg3"),
+        ("arg2=3\nx'=-x", "arg2"),
+        ("!arg4=3\nx'=-x", "arg4"),
+        ("arg1'=1", "arg1"),
+        ("arg1(u)=u", "arg1"),
+    ] {
+        let (_, diags) = run(text);
+        let reserved: Vec<&Diagnostic> = diags.iter().filter(|d| d.code == RESERVED_NAME).collect();
+        assert_eq!(reserved.len(), 1, "{text:?}: {diags:#?}");
+        assert!(
+            reserved[0].message.contains(&format!("`{name}`")),
+            "{}",
+            reserved[0].message
+        );
+        assert!(
+            reserved[0].message.contains("names a function argument"),
+            "{}",
+            reserved[0].message
+        );
+    }
+}
+
+#[test]
+fn the_other_reserved_names_are_still_refused_as_formals() {
+    for (text, name) in [("f(u,t)=u", "t"), ("f(pi)=1", "pi"), ("f(u,sin)=u", "sin")] {
+        let (_, diags) = run(text);
+        assert_eq!(diags.len(), 1, "{text:?}: {diags:#?}");
+        assert_eq!(diags[0].code, RESERVED_NAME, "{text:?}");
+        assert!(diags[0].message.contains(&format!("`{name}`")), "{text:?}");
+    }
 }
 
 #[test]

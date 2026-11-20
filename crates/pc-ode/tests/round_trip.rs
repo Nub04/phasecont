@@ -237,6 +237,59 @@ fn empty_literal_text_falls_back_to_the_canonical_form() {
     assert_eq!(write(&m), "par a=-0.25\n");
 }
 
+/// Loads `src` (parse, expand, check) and returns the load result; the test fails on an
+/// error-severity diagnostic.
+fn load_ok(src: &str) -> pc_ode::Loaded {
+    let mut map = SourceMap::new();
+    let top = map.add("t.ode", src);
+    let loaded = load(top, &mut map, &mut MapLoader::new());
+    let errors: Vec<_> = loaded
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "errors in\n{src}\n{errors:#?}");
+    loaded
+}
+
+/// A formal named `argK` is a parameter name like any other: the writer keeps it, the written
+/// text loads without an error, and the formals come back in the same order.
+#[test]
+fn a_declared_arg_formal_round_trips() {
+    let src = "par a=5, b=3\nf(arg2,arg1)=arg1-arg2\ng(u,arg3)=u*10+arg3\n\
+               h(arg2,v,w)=arg1*100+arg2*10+arg3\nx'=f(a,b)+g(a,b)+h(1,2,3)\ndone\n";
+    let first = load_ok(src);
+    let text = write(&first.template);
+    assert!(text.contains("f(arg2,arg1)=arg1 - arg2"), "text:\n{text}");
+    assert!(text.contains("g(u,arg3)=u*10 + arg3"), "text:\n{text}");
+    assert!(
+        text.contains("h(arg2,v,w)=arg1*100 + arg2*10 + arg3"),
+        "text:\n{text}"
+    );
+    assert_round_trip(&parse_ok(src));
+    // The written text is loaded again by the checker, which keeps both declarations.
+    let second = load_ok(&text);
+    assert_eq!(second.template.strip_spans(), first.template.strip_spans());
+    let formals = |l: &pc_ode::Loaded, name: &str| -> Vec<String> {
+        l.expanded
+            .statements
+            .iter()
+            .find_map(|s| match &s.kind {
+                StmtKind::Function {
+                    name: n, params, ..
+                } if n.key == name => Some(params.iter().map(|p| p.key.clone()).collect()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no function {name}"))
+    };
+    assert_eq!(formals(&second, "f"), ["arg2", "arg1"]);
+    assert_eq!(formals(&second, "g"), ["u", "arg3"]);
+    // The expanded writer keeps them too.
+    let flat = write_expanded(&first.expanded);
+    assert!(flat.contains("f(arg2,arg1)=arg1 - arg2"), "text:\n{flat}");
+    load_ok(&flat);
+}
+
 // ---------------------------------------------------------------------
 // Precedence and parentheses (ruling j)
 // ---------------------------------------------------------------------
