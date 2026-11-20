@@ -22,7 +22,11 @@ fn model() -> (IrModel, u32) {
 #[test]
 fn jacobian_of_a_call_without_a_body_is_an_error() {
     let (mut ir, mb) = model();
-    for kind in [EntryKind::JacU, EntryKind::JacP] {
+    for kind in [
+        EntryKind::JacU,
+        EntryKind::JacP,
+        EntryKind::Dir(vec![Slot::U, Slot::U]),
+    ] {
         let e = ir
             .entry(&kind)
             .expect_err("a missing body must not give NaN");
@@ -42,18 +46,19 @@ fn jacobian_of_a_call_without_a_body_is_an_error() {
     assert_eq!(out[0], 6.0);
 }
 
-/// Until the jet units exist, a directional entry of a model with a call is refused, with
-/// or without a body, instead of giving a NaN form.
+/// A directional entry of a model with a call builds through the jet units once the body
+/// is set: `mb(x) = x*x` gives `2 x` along `[U]` and 2 along `[U, U]`.
 #[test]
-fn directional_entry_with_a_call_is_refused_not_nan() {
+fn directional_entry_with_a_call_builds() {
     let (mut ir, mb) = model();
     let a = ir.dag.arg(0);
     let sq = ir.dag.mul(a, a);
     assert!(ir.dag.set_body(mb, &[sq]));
-    for slots in [vec![Slot::U], vec![Slot::U, Slot::P]] {
-        let e = ir.entry(&EntryKind::Dir(slots)).expect_err("no NaN form");
-        assert_eq!(e.kind, IrErrorKind::Unsupported);
-        assert!(e.message.contains("user function"), "{}", e.message);
+    for (slots, want) in [(vec![Slot::U], 6.0), (vec![Slot::U, Slot::U], 2.0)] {
+        let e = ir.entry(&EntryKind::Dir(slots)).expect("jet units");
+        let mut out = [f64::NAN];
+        eval(&ir.dag, &e.outputs, &[3.0], &[0.0], &[1.0, 1.0], &mut out);
+        assert_eq!(out[0], want);
     }
 }
 
@@ -89,7 +94,12 @@ fn with_m2(body: bool) -> (IrModel, u32) {
 
 /// Each derivative entry is refused, twice, with an error that names `m2`.
 fn refused_twice(ir: &mut IrModel, what: &str) {
-    for kind in [EntryKind::JacU, EntryKind::JacP] {
+    for kind in [
+        EntryKind::JacU,
+        EntryKind::JacP,
+        EntryKind::Dir(vec![Slot::U]),
+        EntryKind::Dir(vec![Slot::U, Slot::P]),
+    ] {
         for _ in 0..2 {
             let e = ir.entry(&kind).expect_err(what);
             assert_eq!(e.kind, IrErrorKind::Unsupported, "{what}");

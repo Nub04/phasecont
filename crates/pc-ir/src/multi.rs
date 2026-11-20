@@ -34,14 +34,26 @@
 //! `pow(x, y)`: the interpreter skips every term that carries a `y` derivative when
 //! `pow(x, y)` is 0 (it would meet `0 * ln 0`), so those terms are wrapped in a select on
 //! `pow(x, y) == 0`.
+//!
+//! A call `g(args)` of a user function goes through a jet unit of `g` (SPEC section 8af-5):
+//! a unit that takes the arguments and the nonzero components of its active formals and
+//! returns the value (output 0) and every component `S` (output `S`). Its body is the body
+//! of `g` built with these rules, each call inside it replaced by its own jet call, so one
+//! frame runs each recursive call once. The value of the jet call replaces the primal call
+//! everywhere in the form, so an entry makes one call per frame.
 
 use crate::dag::{Cmp, Dag, Fn1, Fn2, NoDerivative, NodeId, Op};
-use crate::diff::{Wrt, d, diff_children, partial_may_be_nonfinite};
+use crate::diff::{
+    Activity, Wrt, call_act, d, diff_children, out_refusal, partial_may_be_nonfinite, push_active,
+};
 use crate::entry::Slot;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const PA: u32 = u32::MAX;
 const PB: u32 = u32::MAX - 1;
+
+/// The derived-map tag of a jet unit (the tangent units of `diff.rs` use 0).
+const JET_TAG: u32 = 1;
 
 type Memo = HashMap<(NodeId, Wrt), NodeId>;
 
@@ -71,6 +83,11 @@ struct Builder<'a> {
     size: usize,
     zero: NodeId,
     comps: HashMap<NodeId, Vec<NodeId>>,
+    /// Inside a jet body, the components of each formal; `None` at the top level.
+    args: Option<Vec<Vec<NodeId>>>,
+    /// The rebuilt value of each node that reaches a call: a needed call is replaced by its
+    /// jet call, whose output 0 is the value, so the value and the components share a call.
+    prim: HashMap<NodeId, NodeId>,
 }
 
 /// State for one call node: argument components, the placeholder expression and caches.
@@ -114,7 +131,14 @@ impl<'a> Builder<'a> {
             size: 1 << slots.len(),
             zero,
             comps: HashMap::new(),
+            args: None,
+            prim: HashMap::new(),
         }
+    }
+
+    /// The rebuilt value of `id` (itself when it reaches no call).
+    fn p(&self, id: NodeId) -> NodeId {
+        self.prim.get(&id).copied().unwrap_or(id)
     }
 
     fn is_zero(&self, id: NodeId) -> bool {
@@ -125,26 +149,247 @@ impl<'a> Builder<'a> {
         c.iter().skip(1).all(|&x| self.is_zero(x))
     }
 
-    fn run(&mut self, f: &[NodeId]) -> Vec<NodeId> {
-        // Reachable nodes through the children the rules read, in id order.
-        let mut seen = std::collections::HashSet::new();
-        let mut stack: Vec<NodeId> = f.to_vec();
+    /// Components of the nodes the rules read from `roots`, and the rebuilt values of the
+    /// nodes that reach a call, in id order (an operand has a smaller id than its user).
+    fn walk(&mut self, roots: &[NodeId]) {
+        // The nodes whose components the rules read. `diff_children` does not visit the
+        // arguments of a call, so the active ones are pushed here.
+        let mut needed = HashSet::new();
+        let mut stack: Vec<NodeId> = roots.to_vec();
         while let Some(id) = stack.pop() {
-            if !seen.insert(id) {
+            if !needed.insert(id) {
                 continue;
             }
             let op = *self.dag.op(id);
-            diff_children(&op, &mut |c| stack.push(c));
+            match op {
+                Op::Call(g, l) => {
+                    if let Some(a) = call_act(self.dag, g) {
+                        push_active(self.dag, &a, l, &mut stack);
+                    }
+                }
+                Op::Out(..) | Op::Arg(_) => {}
+                _ => diff_children(&op, &mut |c| stack.push(c)),
+            }
         }
-        let mut order: Vec<NodeId> = seen.into_iter().collect();
+        // The nodes whose value changes when the needed calls become jet calls.
+        let mut order: Vec<NodeId> = needed.iter().copied().collect();
+        let mut seen = HashSet::new();
+        let mut stack: Vec<NodeId> = roots.to_vec();
+        while let Some(id) = stack.pop() {
+            if !self.dag.has_call(id) || !seen.insert(id) {
+                continue;
+            }
+            if !needed.contains(&id) {
+                order.push(id);
+            }
+            let op = *self.dag.op(id);
+            self.dag.operands(&op, &mut |c| stack.push(c));
+        }
         order.sort_unstable();
         for id in order {
-            let c = self.node(id);
-            self.comps.insert(id, c);
+            let need = needed.contains(&id);
+            let op = *self.dag.op(id);
+            if let Op::Call(g, l) = op {
+                self.call(id, g, l, need);
+            } else {
+                if self.dag.has_call(id) {
+                    let prim = &self.prim;
+                    let p = self
+                        .dag
+                        .rebuild(&op, &|c| prim.get(&c).copied().unwrap_or(c));
+                    self.prim.insert(id, p);
+                }
+                if need {
+                    let c = self.node(id);
+                    self.comps.insert(id, c);
+                }
+            }
             if self.dag.exceeded() {
                 break;
             }
         }
+    }
+
+    /// The call `id = g(args)` with argument list `l`. A needed call whose active formals
+    /// have nonzero components, or whose unit reads a direction, becomes a jet call; any
+    /// other call stays a primal call on the rebuilt arguments.
+    fn call(&mut self, id: NodeId, g: u32, l: u32, need: bool) {
+        let args: Vec<NodeId> = self.dag.args(l).iter().map(|&a| self.p(a)).collect();
+        let act = if need { call_act(self.dag, g) } else { None };
+        let Some(a) = act else {
+            let p = self.dag.call(g, &args);
+            self.prim.insert(id, p);
+            if need {
+                // `call_act` recorded the refusal, so `entry` returns an error.
+                let nan = self.dag.konst(f64::NAN);
+                let mut c = vec![nan; self.size];
+                c[0] = p;
+                self.comps.insert(id, c);
+            }
+            return;
+        };
+        let l_args: Vec<NodeId> = self.dag.args(l).to_vec();
+        let mut masks = Vec::with_capacity(args.len());
+        let mut extra = Vec::new();
+        for (i, &x) in l_args.iter().enumerate() {
+            let mut m = 0u32;
+            if a.active(i) {
+                let cx = self.get(x);
+                for (s, &cs) in cx.iter().enumerate().skip(1) {
+                    if !self.is_zero(cs) {
+                        m |= 1 << (s - 1);
+                        extra.push(cs);
+                    }
+                }
+            }
+            masks.push(m);
+        }
+        let cover = self.slot_cover(&a);
+        if masks.iter().all(|&m| m == 0) && cover == 0 {
+            let p = self.dag.call(g, &args);
+            self.prim.insert(id, p);
+            self.comps.insert(id, self.leaf(p));
+            return;
+        }
+        let closure = self.closure(&masks, cover);
+        let t = self.jet_unit(g, &masks, cover, &closure);
+        let mut v = args;
+        v.extend(extra);
+        let jc = self.dag.call(t, &v);
+        self.prim.insert(id, jc);
+        let mut c = self.leaf(jc);
+        for (s, x) in c.iter_mut().enumerate().skip(1) {
+            if closure[s] {
+                *x = self.dag.out(jc, s as u32);
+            }
+        }
+        self.comps.insert(id, c);
+    }
+
+    /// Bit `s` is set when slot `s` covers a state or a parameter that a unit with
+    /// activity `a` reads on its derivative edges.
+    fn slot_cover(&self, a: &Activity) -> u32 {
+        let mut cover = 0;
+        for (s, slot) in self.slots.iter().enumerate() {
+            let hit = a.reads.iter().any(|w| match (*w, slot) {
+                (Wrt::U(v), Slot::U | Slot::Full) => (v as usize) < self.n,
+                (Wrt::P(p), Slot::P | Slot::Full) => (p as usize) < self.n_p,
+                _ => false,
+            });
+            if hit {
+                cover |= 1 << s;
+            }
+        }
+        cover
+    }
+
+    /// `closure[S]` when the output component `S` of a jet call can be nonzero: `S` is a
+    /// disjoint union of atoms, the subsets in some formal mask (bit `S - 1` of `masks[i]`)
+    /// and the single slots in `cover`. Every rule builds a nonzero component only from
+    /// nonzero components on disjoint subsets, so any other output is 0.
+    fn closure(&self, masks: &[u32], cover: u32) -> Vec<bool> {
+        let mut atom = vec![false; self.size];
+        for &m in masks {
+            for (s, x) in atom.iter_mut().enumerate().skip(1) {
+                *x |= m & (1 << (s - 1)) != 0;
+            }
+        }
+        for s in 0..self.slots.len() {
+            if cover & (1 << s) != 0 {
+                atom[1 << s] = true;
+            }
+        }
+        let mut reach = vec![false; self.size];
+        reach[0] = true;
+        for s in 1..self.size {
+            let low = s.isolate_lowest_one();
+            // Subsets of s that hold its lowest bit.
+            let rest = s ^ low;
+            let mut t = rest;
+            loop {
+                let block = low | t;
+                if atom[block] && reach[s ^ block] {
+                    reach[s] = true;
+                    break;
+                }
+                if t == 0 {
+                    break;
+                }
+                t = (t - 1) & rest;
+            }
+        }
+        reach
+    }
+
+    /// The jet unit of `g` for the formal masks `masks` and the covering slots `cover`.
+    /// The key holds `g`, the order, whether a slot covers a read (and then the kind of
+    /// every slot, since the body reads the directions) and the masks. The unit is
+    /// registered before its body is built, so a recursive call inside the body finds it.
+    fn jet_unit(&mut self, g: u32, masks: &[u32], cover: u32, closure: &[bool]) -> u32 {
+        let k = self.slots.len() as u32;
+        let mut key = vec![JET_TAG, g, k, u32::from(cover != 0)];
+        if cover != 0 {
+            key.extend(self.slots.iter().map(|s| match s {
+                Slot::U => 1,
+                Slot::P => 2,
+                Slot::Full => 3,
+            }));
+        }
+        key.extend_from_slice(masks);
+        if let Some(t) = self.dag.derived(&key) {
+            return t;
+        }
+        let unit = self.dag.unit(g).expect("call_act checked the unit");
+        let (name, arity) = (unit.name.clone(), unit.arity);
+        let out0 = unit.outputs().expect("call_act checked the body")[0];
+        let extra: u32 = masks.iter().map(|m| m.count_ones()).sum();
+        let t = self.dag.add_unit(&name, arity + extra, self.size as u32);
+        self.dag.set_derived(key, t);
+
+        // Formal i: value `Arg(i)`, then its nonzero components in ascending `S`.
+        let mut fcomps = Vec::with_capacity(arity as usize);
+        let mut next = arity;
+        for (i, &m) in masks.iter().enumerate() {
+            let mut c = vec![self.zero; self.size];
+            c[0] = self.dag.arg(i as u32);
+            for (s, x) in c.iter_mut().enumerate().skip(1) {
+                if m & (1 << (s - 1)) != 0 {
+                    *x = self.dag.arg(next);
+                    next += 1;
+                }
+            }
+            fcomps.push(c);
+        }
+        let mut body = Builder {
+            dag: &mut *self.dag,
+            memo: &mut *self.memo,
+            n: self.n,
+            n_p: self.n_p,
+            slots: self.slots.clone(),
+            off: self.off.clone(),
+            size: self.size,
+            zero: self.zero,
+            comps: HashMap::new(),
+            args: Some(fcomps),
+            prim: HashMap::new(),
+        };
+        body.walk(&[out0]);
+        if body.dag.exceeded() {
+            return t;
+        }
+        let c = body.get(out0);
+        let outs: Vec<NodeId> = c
+            .iter()
+            .enumerate()
+            .map(|(s, &x)| if s == 0 || closure[s] { x } else { body.zero })
+            .collect();
+        let ok = body.dag.set_body(t, &outs);
+        debug_assert!(ok, "a jet body has 2^k outputs and in-range formals");
+        t
+    }
+
+    fn run(&mut self, f: &[NodeId]) -> Vec<NodeId> {
+        self.walk(f);
         let top = self.size - 1;
         let mut out = Vec::with_capacity(f.len());
         for &fi in f {
@@ -168,7 +413,7 @@ impl<'a> Builder<'a> {
     fn get(&self, id: NodeId) -> Vec<NodeId> {
         match self.comps.get(&id) {
             Some(c) => c.clone(),
-            None => self.leaf(id),
+            None => self.leaf(self.p(id)),
         }
     }
 
@@ -181,7 +426,7 @@ impl<'a> Builder<'a> {
 
     fn node(&mut self, id: NodeId) -> Vec<NodeId> {
         let op = *self.dag.op(id);
-        let mut c = self.leaf(id);
+        let mut c = self.leaf(self.p(id));
         match op {
             Op::Var(i) => {
                 for s in 0..self.slots.len() {
@@ -226,7 +471,10 @@ impl<'a> Builder<'a> {
             }
             Op::Mul(na, nb) => {
                 let (a, b) = (self.get(na), self.get(nb));
-                let (fa, fb) = (self.dag.may_be_nonfinite(na), self.dag.may_be_nonfinite(nb));
+                let (fa, fb) = (
+                    self.dag.may_be_nonfinite(self.p(na)),
+                    self.dag.may_be_nonfinite(self.p(nb)),
+                );
                 for s in 1..self.size {
                     let mut acc = self.zero;
                     let mut t = s;
@@ -296,6 +544,7 @@ impl<'a> Builder<'a> {
             }
             Op::Select(cond, a, b) | Op::If(cond, a, b) => {
                 let (a, b) = (self.get(a), self.get(b));
+                let cond = self.p(cond);
                 for s in 1..self.size {
                     c[s] = self.dag.select(cond, a[s], b[s]);
                 }
@@ -303,7 +552,7 @@ impl<'a> Builder<'a> {
             Op::Call2(f @ (Fn2::Min | Fn2::Max), a, b) => {
                 let (ca, cb) = (self.get(a), self.get(b));
                 let rel = if f == Fn2::Min { Cmp::Lt } else { Cmp::Gt };
-                let cond = self.dag.cmp(rel, a, b);
+                let cond = self.dag.cmp(rel, self.p(a), self.p(b));
                 for s in 1..self.size {
                     c[s] = self.dag.select(cond, ca[s], cb[s]);
                 }
@@ -315,11 +564,20 @@ impl<'a> Builder<'a> {
             }
             Op::Call2(_, a, b) => self.faa(id, op, &[a, b], &mut c),
             Op::Const(_) | Op::Dir(_) => {}
-            // The jet units of a call are not built yet, and `entry` refuses a directional
-            // entry of a model with a call; a formal outside its body has no rule. Each is
-            // refused, so `entry` returns an error instead of this NaN.
+            // A formal inside a jet body takes the components the call passes in.
+            Op::Arg(i) if self.args.is_some() => {
+                let a = self.args.as_ref().expect("checked");
+                return a.get(i as usize).cloned().unwrap_or_else(|| self.leaf(id));
+            }
+            // `walk` handles every call. A formal outside a body has no rule, and an output
+            // `j > 0` belongs to a unit with several outputs; each is refused, so `entry`
+            // returns an error instead of this NaN.
             Op::Arg(_) | Op::Call(..) | Op::Out(..) => {
-                self.dag.note_refusal(NoDerivative::NoRule);
+                let why = match op {
+                    Op::Out(call, _) => out_refusal(self.dag, call),
+                    _ => NoDerivative::NoRule,
+                };
+                self.dag.note_refusal(why);
                 let nan = self.dag.konst(f64::NAN);
                 for x in c.iter_mut().skip(1) {
                     *x = nan;
@@ -355,7 +613,7 @@ impl<'a> Builder<'a> {
                 if active[j] {
                     place(self.dag, j)
                 } else {
-                    args[j]
+                    self.p(args[j])
                 }
             })
             .collect();
@@ -369,14 +627,15 @@ impl<'a> Builder<'a> {
         let mut sub = HashMap::new();
         for (j, &a) in args.iter().enumerate() {
             if active[j] {
-                sub.insert(place(self.dag, j), a);
+                let pa = self.p(a);
+                sub.insert(place(self.dag, j), pa);
             }
         }
         // The partials are finite for a finite argument unless `partial_may_be_nonfinite` says
         // otherwise, but an argument that can be infinite or NaN gives such a partial for any
         // call (`cosh(1/m)` has the partial `sinh(1/m)`).
         let guard = partial_may_be_nonfinite(self.dag, &op)
-            || args.iter().any(|&a| self.dag.may_be_nonfinite(a));
+            || args.iter().any(|&a| self.dag.may_be_nonfinite(self.p(a)));
         let mut ctx = Faa {
             args: args.to_vec(),
             comps,
@@ -396,7 +655,8 @@ impl<'a> Builder<'a> {
             let [s0, s1] = ctx.sums;
             let s1 = if is_pow && !self.is_zero(s1) {
                 let z = self.zero;
-                let cond = self.dag.cmp(Cmp::Eq, id, z);
+                let pid = self.p(id);
+                let cond = self.dag.cmp(Cmp::Eq, pid, z);
                 self.dag.select(cond, z, s1)
             } else {
                 s1

@@ -289,7 +289,7 @@ fn refuse(dag: &mut Dag, why: NoDerivative) -> NodeId {
 }
 
 /// The refusal for `Out(c, j)`: the unit of the call `c` has more than one output.
-fn out_refusal(dag: &Dag, c: NodeId) -> NoDerivative {
+pub(crate) fn out_refusal(dag: &Dag, c: NodeId) -> NoDerivative {
     match *dag.op(c) {
         Op::Call(g, _) => NoDerivative::SeveralOutputs(g),
         _ => NoDerivative::NoRule,
@@ -310,17 +310,17 @@ const TANGENT_TAG: u32 = 0;
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct Activity {
     act: Vec<bool>,
-    reads: HashSet<Wrt>,
+    pub(crate) reads: HashSet<Wrt>,
 }
 
 impl Activity {
-    fn active(&self, k: usize) -> bool {
+    pub(crate) fn active(&self, k: usize) -> bool {
         self.act.get(k).copied().unwrap_or(false)
     }
 }
 
 /// Pushes the arguments of the call with argument list `l` whose formal is active in `a`.
-fn push_active(dag: &Dag, a: &Activity, l: u32, stack: &mut Vec<NodeId>) {
+pub(crate) fn push_active(dag: &Dag, a: &Activity, l: u32, stack: &mut Vec<NodeId>) {
     for (k, &x) in dag.args(l).iter().enumerate() {
         if a.active(k) {
             stack.push(x);
@@ -332,7 +332,7 @@ fn push_active(dag: &Dag, a: &Activity, l: u32, stack: &mut Vec<NodeId>) {
 /// when the call has no derivative: an unknown unit, a unit with more than one output, a
 /// unit whose body, or the body of a unit it calls, is not set, or a body whose derivative
 /// goes through a call with more than one output.
-fn call_act(dag: &mut Dag, g: u32) -> Option<Arc<Activity>> {
+pub(crate) fn call_act(dag: &mut Dag, g: u32) -> Option<Arc<Activity>> {
     let why = match dag.unit(g).map(|u| (u.nout, u.outputs().is_some())) {
         None => NoDerivative::NoRule,
         Some((nout, _)) if nout != 1 => NoDerivative::SeveralOutputs(g),

@@ -87,16 +87,6 @@ impl IrModel {
                         "a directional entry takes 1 to 5 slots",
                     ));
                 }
-                // The jet units that differentiate a call to higher order are not built
-                // yet, so a call would give a NaN form; refuse instead (SPEC section 8af-5).
-                if self.f.iter().any(|&fi| self.dag.has_call(fi)) {
-                    return Err(IrError::new(
-                        IrErrorKind::Unsupported,
-                        DUMMY_SPAN,
-                        "a directional entry of a model that calls a user function is not \
-                         supported yet",
-                    ));
-                }
                 let (n, n_p) = (self.n(), self.n_p());
                 crate::multi::build(&mut self.dag, &mut self.diff_memo, &self.f, n, n_p, slots)
             }
