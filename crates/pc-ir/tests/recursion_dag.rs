@@ -301,17 +301,26 @@ fn restore_drops_arglists_units_derived_and_bodies() {
     let g = d.add_unit("g", 1, 1);
     d.set_derived(vec![g, 0], g);
     d.set_derived(vec![f, 2], f);
+    // A key that names the new unit but maps to an old one, and an overwrite of an entry
+    // made before the checkpoint.
+    d.set_derived(vec![g, 3], f);
+    d.set_derived(vec![f, 1], g);
     let y = d.var(1);
     let cy = d.call(f, &[y]);
     let h = d.add_unit("h", 1, 1);
     assert!(d.set_body(h, &[cy]));
     d.restore(&cp);
     assert_eq!(d.units().len(), 1);
+    // The restore undoes every derived entry set after the checkpoint, whatever unit it
+    // names or maps to, and puts back the entry an overwrite replaced.
     assert_eq!(d.derived(&[f, 1]), Some(f));
     assert_eq!(d.derived(&[g, 0]), None);
-    // An entry added after the checkpoint for a unit made before it stays: the restore
-    // drops derived entries by unit, not by insertion time.
-    assert_eq!(d.derived(&[f, 2]), Some(f));
+    assert_eq!(d.derived(&[f, 2]), None);
+    assert_eq!(d.derived(&[g, 3]), None);
+    // A unit made after the restore reuses the index of `g` and finds no stale entry.
+    let g2 = d.add_unit("g2", 1, 1);
+    assert_eq!(g2, g);
+    assert_eq!(d.derived(&[g2, 3]), None);
     assert!(d.unit(f).unwrap().outputs().is_some());
     // The list of the dropped call is gone; rebuilding it gets the next index again.
     let y2 = d.var(1);

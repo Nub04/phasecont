@@ -198,6 +198,7 @@ pub struct Checkpoint {
     exceeded: bool,
     arglists: usize,
     units: usize,
+    derived_log: usize,
 }
 
 impl Checkpoint {
@@ -228,6 +229,9 @@ pub struct Dag {
     units: Vec<Unit>,
     /// Derived units (tangent and jet units) by the key their builder gives them.
     derived: HashMap<Vec<u32>, u32>,
+    /// Each [`Dag::set_derived`] in order, with the value its key had before, so
+    /// [`Dag::restore`] can undo the entries set after a checkpoint.
+    derived_log: Vec<(Vec<u32>, Option<u32>)>,
 }
 
 impl Dag {
@@ -245,6 +249,7 @@ impl Dag {
             arg_map: HashMap::new(),
             units: Vec::new(),
             derived: HashMap::new(),
+            derived_log: Vec::new(),
         }
     }
 
@@ -260,12 +265,14 @@ impl Dag {
             exceeded: self.exceeded,
             arglists: self.arglists.len(),
             units: self.units.len(),
+            derived_log: self.derived_log.len(),
         }
     }
 
     /// Drops every node, table, argument list and unit added since `cp` and resets the
     /// limit flag to its value then. A unit made before `cp` whose body reads a dropped node
-    /// loses its body, and a derived unit made after `cp` leaves the derived map. Ids
+    /// loses its body, and every derived entry set after `cp` is undone, so an overwritten
+    /// entry gets its old value back. Ids
     /// returned after `cp` are invalid afterwards, and a caller that keeps a memo keyed on
     /// node ids must drop its entries past [`Checkpoint::len`].
     pub fn restore(&mut self, cp: &Checkpoint) {
@@ -284,7 +291,14 @@ impl Dag {
         }
         if cp.units < self.units.len() {
             self.units.truncate(cp.units);
-            self.derived.retain(|_, u| (*u as usize) < cp.units);
+        }
+        // Undo in reverse order, so a key set twice ends at its value before `cp`.
+        while self.derived_log.len() > cp.derived_log {
+            let (key, old) = self.derived_log.pop().expect("log is longer than cp");
+            match old {
+                Some(u) => self.derived.insert(key, u),
+                None => self.derived.remove(&key),
+            };
         }
         let n = cp.nodes;
         for u in &mut self.units {
@@ -419,9 +433,11 @@ impl Dag {
         self.derived.get(key).copied()
     }
 
-    /// Stores derived unit `u` under `key`. [`Dag::restore`] drops the entry with the unit.
+    /// Stores derived unit `u` under `key`. [`Dag::restore`] undoes it if it came after the
+    /// checkpoint.
     pub fn set_derived(&mut self, key: Vec<u32>, u: u32) {
-        self.derived.insert(key, u);
+        let old = self.derived.insert(key.clone(), u);
+        self.derived_log.push((key, old));
     }
 
     /// Sets the body of unit `u` to the output roots `outputs`, one per output of the unit,
