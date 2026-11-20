@@ -176,6 +176,44 @@ fn every_statement_kind() {
     assert_eq!(v[0], -4.0 + 3.0 + 2.0 + 2.5 + 3.0);
 }
 
+/// XPPAUT binds a declared formal named `argK` by name. In `f(arg2,arg1)=arg1-arg2` the name
+/// `arg1` is the second argument, so `f(5,3)` is 3 - 5; positional binding would give 5 - 3.
+#[test]
+fn a_declared_arg_formal_binds_by_name() {
+    let m = ir("f(arg2,arg1)=arg1-arg2\nx'=f(5,3)\ndone\n");
+    assert_eq!(run(&m, &m.f, &[0.0], &[0.0]), [-2.0]);
+    // The same through parameters, so nothing folds.
+    let m = ir("par a=5, b=3\nf(arg2,arg1)=arg1-arg2\nx'=f(a,b)\ndone\n");
+    assert_eq!(run(&m, &m.f, &[0.0], &[5.0, 3.0, 0.0]), [-2.0]);
+    assert_eq!(run(&m, &m.f, &[0.0], &[1.0, 4.0, 0.0]), [3.0]);
+    // `arg1` is the second argument (2 + 3, not 2 + 2).
+    let m = ir("par a=2, b=3\nf(u,arg1)=u+arg1\nx'=f(a,b)\ndone\n");
+    assert_eq!(run(&m, &m.f, &[0.0], &[2.0, 3.0, 0.0]), [5.0]);
+}
+
+#[test]
+fn a_declared_arg_formal_beyond_the_arity_binds_by_name() {
+    let m = ir("par a=2, b=3\nf(u,arg3)=u*10+arg3\nx'=f(a,b)\ndone\n");
+    assert_eq!(run(&m, &m.f, &[0.0], &[2.0, 3.0, 0.0]), [23.0]);
+}
+
+#[test]
+fn an_undeclared_arg_stays_positional_next_to_a_declared_one() {
+    // `arg1` and `arg3` are arguments 1 and 3; `arg2` is the declared first formal.
+    let src = "par a=1, b=2, c=3\ng(arg2,v,w)=arg1*100+arg2*10+arg3\nx'=g(a,b,c)\ndone\n";
+    let m = ir(src);
+    assert_eq!(run(&m, &m.f, &[0.0], &[1.0, 2.0, 3.0, 0.0]), [113.0]);
+}
+
+#[test]
+fn a_declared_arg_formal_does_not_leak_into_the_caller() {
+    // Inside `k`, `arg1` is argument 1 of `k`. The call of `h` binds its own formals, and
+    // the frame of `k` is back when it returns: h(2,1) = 1 - 2, then 10 * -1 + arg1 = -10 + 1.
+    let src = "h(arg2,arg1)=arg1-arg2\nk(u,v)=h(v,u)*10+arg1\nx'=k(1,2)\ndone\n";
+    let m = ir(src);
+    assert_eq!(run(&m, &m.f, &[0.0], &[0.0]), [-9.0]);
+}
+
 #[test]
 fn map_model() {
     let m = ir("par r=3\nx(t+1)=r*x*(1-x)\nx(0)=0.5\ndone\n");

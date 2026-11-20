@@ -843,6 +843,7 @@ impl<'a, S: Scalar> Ctx<'a, S> {
         let key = id.key.as_str();
         let it = self.it;
         if let Some(fr) = self.frames.last() {
+            // The same order as `lower`: a declared formal wins, even one named `argK`.
             if let Some(pos) = fr.params.iter().position(|p| p == key) {
                 return fr.args.get(pos).copied().unwrap_or_else(Self::nan);
             }

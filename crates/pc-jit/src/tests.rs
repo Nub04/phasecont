@@ -1160,6 +1160,30 @@ mod compiled {
         vs_fallback(TABLES, 3);
     }
 
+    /// Formals named `argK` bind by name: `f(a,b)` of `f(arg2,arg1)=arg1-arg2` is b - a, and an
+    /// undeclared `argK` stays positional next to a declared one.
+    const ARG_FORMALS: &str = "par a=5, b=3\ninit x=0.4, y=0.3\n\
+        f(arg2,arg1)=arg1-arg2\ng(u,arg3)=u*10+arg3\nh(arg2,v,w)=arg1*100+arg2*10+arg3\n\
+        x'=f(a,b)\ny'=g(a,b)+h(1,2,3)\naux s=f(x,y)\ndone\n";
+
+    #[test]
+    fn jit_binds_declared_arg_formals_by_name() {
+        let (mut cm, fb) = setup(ARG_FORMALS);
+        let (x, p) = ([0.4, 0.3], [5.0, 3.0, 0.0]);
+        let mut got = [f64::MAX; 2];
+        cm.call(&EntryKind::F, &x, &p, &[], &mut got).expect("call");
+        // x' = 3 - 5; y' = 5 * 10 + 3 + 113.
+        assert_eq!(got, [-2.0, 166.0]);
+        let mut want = [f64::NAN; 2];
+        fb.eval(&EntryKind::F, &x, &p, &[], &mut want);
+        assert_eq!(got, want);
+        let mut aux = [f64::MAX];
+        cm.call(&EntryKind::Aux, &x, &p, &[], &mut aux)
+            .expect("call");
+        assert_eq!(aux, [0.3 - 0.4]);
+        vs_fallback(ARG_FORMALS, 4);
+    }
+
     /// Models whose clamp is active at every sample point: the argument of the root or the
     /// fractional power is the constant-zero branch of a `max` or `heav`, so its tangent is zero
     /// at run time while the partial of the outer function is infinite at the value 0.

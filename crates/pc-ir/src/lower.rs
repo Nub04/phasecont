@@ -245,6 +245,8 @@ impl<'e, 'a> Lw<'e, 'a> {
     fn name(&mut self, id: &'a Ident) -> NodeId {
         let key = id.key.as_str();
         if let Some(fr) = self.frames.last() {
+            // A declared formal wins, even one named `argK`: in `f(arg2,arg1)` the name
+            // `arg1` is the second argument. Only an undeclared `argK` reads position K.
             if let Some(pos) = fr.params.iter().position(|p| p == key)
                 && let Some(&n) = fr.args.get(pos)
             {
