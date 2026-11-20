@@ -1,0 +1,163 @@
+{
+  "created": "2026-11-01T00:00:00Z",
+  "engine": {
+    "name": "pckern",
+    "version": "0.0.0"
+  },
+  "format": "phasecont-session",
+  "items": [
+    {
+      "branch": 0,
+      "run": 1
+    },
+    {
+      "branch": 1,
+      "run": 2
+    },
+    {
+      "branch": 1,
+      "run": 3
+    }
+  ],
+  "matlab": "none",
+  "model": {
+    "evaluator": "jit",
+    "name": "morris_lecar.ode",
+    "sha256": "47cf08eefec873a8b4ccff58a846f5950a1d2d50b36caa7e2f216b0b03d8de1e",
+    "source": "# Morris-Lecar model with the type II parameter set of crates/pc-ode/tests/corpus,\n# with I and phi first so that they are parameters 0 and 1. The rest state loses\n# stability in a Hopf point and the stable cycle ends in a fold of cycles below it.\npar I=100,phi=0.04\npar C=20,gL=2,gK=8,gCa=4.4\npar vL=-60,vK=-84,vCa=120\npar v1=-1.2,v2=18,v3=2,v4=30\nminf=0.5*(1+tanh((v-v1)/v2))\nwinf=0.5*(1+tanh((v-v3)/v4))\ntauw=1/cosh((v-v3)/(2*v4))\nv'=(I-gL*(v-vL)-gK*w*(v-vK)-gCa*minf*(v-vCa))/C\nw'=phi*(winf-w)/tauw\ninit v=-20,w=0.1\ndone\n"
+  },
+  "platform": "rust-test",
+  "precision": "f64",
+  "runs": [
+    {
+      "free": [],
+      "grid": [],
+      "kind": "equilibrium",
+      "n": 2,
+      "p": {
+        "shape": [
+          1,
+          13
+        ],
+        "xor1": "BkBOAD+keuFHrhR7BkA0B0AGQCAAQBGZmZmZmZoGwE4GwFUGQF4Av/MzMzMzMzMGQDIHQAZAPg=="
+      },
+      "problem": "{\"max_newton\":50,\"tol_x\":1e-10,\"tol_f\":1e-10}",
+      "result": {
+        "eig_im": {
+          "f64le": "TuWRVwQcsD9O5ZFXBBywvw==",
+          "shape": [
+            1,
+            2
+          ]
+        },
+        "eig_re": {
+          "f64le": "pjy8yqohrL+mPLzKqiGsvw==",
+          "shape": [
+            1,
+            2
+          ]
+        },
+        "u": {
+          "f64le": "LcuyXptgQsDQxJCkgfixPw==",
+          "shape": [
+            1,
+            2
+          ]
+        }
+      },
+      "type": "",
+      "u0": {
+        "shape": [
+          1,
+          2
+        ],
+        "xor1": "BsA+AD+5mZmZmZma"
+      }
+    },
+    {
+      "free": [
+        "I"
+      ],
+      "grid": [],
+      "kind": "continuation",
+      "n": 2,
+      "p": {
+        "shape": [
+          1,
+          13
+        ],
+        "xor1": "BkBOAD+keuFHrhR7BkA0B0AGQCAAQBGZmZmZmZoGwE4GwFUGQF4Av/MzMzMzMzMGQDIHQAZAPg=="
+      },
+      "problem": "{\"type\":\"EP\",\"free\":\"I\",\"start_is_special\":false,\"options\":{\"direction\":1,\"bounds\":[60.0,100.0],\"max_steps\":100,\"hmax\":2.0,\"h0\":0.5,\"detect\":{\"lp\":true,\"bp\":true,\"h\":true}}}",
+      "rows": [
+        {
+          "shape": [
+            25,
+            12
+          ],
+          "xor1": "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"
+        }
+      ],
+      "specials": [
+        {
+          "shape": [
+            1,
+            12
+          ],
+          "xor1": "AEBXduM4LOZfAMA5RSWX6EwyAD/B4M+jngtxBTw7RQU8O0UAP7RscqundS0Av7RscqundS0AP+46rzD3ZnMAP3uY7GMYjLIEvKmS9QA/9f600S+x+QZACA=="
+        }
+      ],
+      "status": "{\"branches\":[{\"points\":25,\"specials\":[{\"coefficient\":0.006543186721673547,\"coefficient2\":null,\"coefficients\":{},\"index\":21,\"label\":\"H\",\"normalization\":\"<q,q>=1, <p,q>=1\",\"omega\":0.07977978411459635,\"refined\":true}],\"stop\":\"Bounds\",\"warnings\":[]}],\"codim2_labels\":[],\"kind\":\"EP\",\"n\":2,\"state\":\"done\",\"stride\":12}",
+      "type": "EP",
+      "u0": {
+        "f64le": "LcuyXptgQsDQxJCkgfixPw==",
+        "shape": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "free": [],
+      "grid": [],
+      "kind": "simulate",
+      "n": 2,
+      "p": {
+        "shape": [
+          1,
+          13
+        ],
+        "xor1": "BkBZAD+keuFHrhR7BkA0B0AGQCAAQBGZmZmZmZoGwE4GwFUGQF4Av/MzMzMzMzMGQDIHQAZAPg=="
+      },
+      "problem": "{\"type\":\"IVP\",\"tspan\":[0.0,12.0],\"options\":{\"rtol\":1e-6,\"atol\":1e-9,\"max_steps\":1000}}",
+      "rows": [
+        {
+          "shape": [
+            21,
+            3
+          ],
+          "xor1": "gAA/pG4ZLL7XehBoeXuxOL89EBIGmDAHDrkgWwCZyPbFEAGA7C9hnhkQAXCvK4sOYSCP5+5DSBsQAfefzCLwvCC1+bdS1x8gPUc6fNN8EAGoexv5JVkQAYle1Sws6CAXo8/qTyoQP86gpfdQUSBNlp1ocvwQAdIRn7iYRSB12gBFO5wgFISXvDoBIAGwOgMw7xABU0QFKQxuBsA0EAftOZw2BOYg9kY3yWZjEAK7m88j3vYQBxMGcDzSaxADt7K3CP/9ICxllTWVViBNs9Sg3YMQA5yeyv2KYBAPlHOIpz5gIOKt+VjQuBA98Xr1vpI3EAXUKlZuji4QAbIC6d7xjSBlR14FkBcQAf16EPbLnyDfm8LpWiYQAxWe7PWexyCa1lQWqiMQA5t8TdioxyBuRN0YPjAAP7mZmZmZmZogOv8Y1XBVEAOl3Cl63qAQASQbQB94oSBO8BN0WXwgesnwYtS1IGgeFCUrrCAI8zFGVUggCUwBYQYSIAhvqrCvdSAJzTEtBusgVwaXzC2CIJl3AXcv0CAxkPQp5ZkgYI9lD0nbEAGyGh7XsdcQA500p7u+NyB73O4U+/sgPOTHr5C1IBIJnIAsuxAHSbQpjTzI"
+        }
+      ],
+      "specials": [
+        {
+          "f64le": "",
+          "shape": [
+            0,
+            3
+          ]
+        }
+      ],
+      "status": "{\"branches\":[{\"points\":21,\"specials\":[],\"stop\":\"End\",\"warnings\":[]}],\"codim2_labels\":[],\"kind\":\"IVP\",\"n\":2,\"state\":\"done\",\"stride\":3}",
+      "type": "IVP",
+      "u0": {
+        "shape": [
+          1,
+          2
+        ],
+        "xor1": "BsA0AD+5mZmZmZma"
+      }
+    }
+  ],
+  "version": 2
+}

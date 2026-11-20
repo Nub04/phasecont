@@ -1,8 +1,8 @@
 classdef sessionCodec
     % Array blocks of the session file. Internal.
     %
-    %   s = phasecont.internal.sessionCodec.encode(a)   % struct for jsonencode
-    %   a = phasecont.internal.sessionCodec.decode(s)   % back to a matrix
+    %   [s, coded] = phasecont.internal.sessionCodec.encode(a, compress)
+    %   a = phasecont.internal.sessionCodec.decode(s, version)
     %   c = phasecont.internal.sessionCodec.elements(v) % jsondecode list to cell
     %
     % A block is {"shape":[r,c],"f64le":"<base64>"}: the r-by-c matrix as
@@ -11,13 +11,37 @@ classdef sessionCodec
     % subnormals, and the Rust reader sees the same bits. MATLAB runs
     % little-endian on every platform the toolbox supports, so typecast needs
     % no byte swap.
+    %
+    % Version 2 also allows {"shape":[r,c],"xor1":"<base64>"}: the values
+    % column by column (MATLAB order), each coded against the one before it
+    % (SPEC 8af-4). The engine codes and decodes it through
+    % pckern("codec", ...), so the bits are the ones the Rust reader gets. A
+    % block is written as xor1 only when that takes fewer than 8*r*c bytes.
+
+    properties (Constant)
+        % The newest session version this build reads and writes.
+        Version = 2
+    end
 
     methods (Static)
-        function s = encode(a)
+        function [s, coded] = encode(a, compress)
+            % S is the block of A. With COMPRESS true, S is an "xor1" block
+            % when that is shorter than the "f64le" one, and CODED says so.
             arguments
                 a (:,:) double
+                compress (1,1) logical = false
             end
             [r, c] = size(a);
+            coded = false;
+            if compress && ~isempty(a)
+                b = pckern("codec", "encode", a);
+                if numel(b) < 8*numel(a)
+                    s = struct("shape", [r c], ...
+                        "xor1", string(matlab.net.base64encode(b)));
+                    coded = true;
+                    return
+                end
+            end
             bytes = typecast(reshape(a.', 1, []), "uint8");
             if isempty(bytes)
                 text = "";
@@ -27,39 +51,30 @@ classdef sessionCodec
             s = struct("shape", [r c], "f64le", text);
         end
 
-        function a = decode(s)
-            if ~(isstruct(s) && isscalar(s) && isfield(s, "shape") && isfield(s, "f64le"))
-                error("phasecont:session:badFile", ...
-                    "An array block needs ""shape"" and ""f64le"".");
+        function a = decode(s, version)
+            % A is the matrix of the block S, read from a file of VERSION.
+            arguments
+                s
+                version (1,1) double = phasecont.internal.sessionCodec.Version
             end
-            shape = double(s.shape(:)).';
-            if numel(shape) ~= 2 || ~all(isfinite(shape)) || any(shape < 0) ...
-                    || any(shape ~= fix(shape))
+            if ~(isstruct(s) && isscalar(s) && isfield(s, "shape"))
                 error("phasecont:session:badFile", ...
-                    "An array block needs a shape of two counts, [rows,cols].");
+                    "An array block needs ""shape"" and ""f64le"" or ""xor1"".");
             end
-            if ~(ischar(s.f64le) || (isstring(s.f64le) && isscalar(s.f64le)))
-                error("phasecont:session:badFile", ...
-                    "The ""f64le"" of an array block must be a string.");
-            end
-            text = char(s.f64le);
-            if isempty(text)
-                bytes = zeros(1, 0, "uint8");
-            else
-                % RFC 4648 as the Rust reader takes it: only the alphabet, full
-                % padding and zero trailing bits. base64decode is more lenient,
-                % so the text must survive an encode of the decoded bytes.
-                try
-                    bytes = matlab.net.base64decode(text);
-                    canonical = isequal(char(matlab.net.base64encode(bytes)), text);
-                catch
-                    canonical = false;
-                end
-                if ~canonical
+            if isfield(s, "xor1")
+                if isfield(s, "f64le")
                     error("phasecont:session:badFile", ...
-                        "The ""f64le"" of an array block is not valid base64.");
+                        "An array block holds ""f64le"" or ""xor1"", not both.");
                 end
+                a = phasecont.internal.sessionCodec.decodeXor1(s, version);
+                return
             end
+            if ~isfield(s, "f64le")
+                error("phasecont:session:badFile", ...
+                    "An array block needs ""shape"" and ""f64le"" or ""xor1"".");
+            end
+            shape = phasecont.internal.sessionCodec.shapeOf(s);
+            bytes = phasecont.internal.sessionCodec.base64(s.f64le, "f64le");
             if numel(bytes) ~= 8*prod(shape)
                 error("phasecont:session:badFile", ...
                     "An array block of shape [%d,%d] needs %d bytes, not %d.", ...
@@ -87,10 +102,19 @@ classdef sessionCodec
             end
         end
 
-        function s = runStruct(rec)
+        function [s, coded] = runStruct(rec, compress)
             % The JSON struct of one RunRecord. Lists are cell arrays so that
-            % jsonencode writes arrays for one entry and for none.
-            enc = @phasecont.internal.sessionCodec.encode;
+            % jsonencode writes arrays for one entry and for none. With
+            % COMPRESS true a block may be xor1; CODED says whether one is.
+            arguments
+                rec
+                compress (1,1) logical = false
+            end
+            coded = false;
+            function b = enc(a)
+                [b, k] = phasecont.internal.sessionCodec.encode(a, compress);
+                coded = coded || k;
+            end
             s = struct("kind", rec.Kind, "problem", rec.Problem, ...
                 "type", rec.Type, "free", {cellstr(rec.Free)}, ...
                 "grid", {num2cell(rec.Grid)}, "n", rec.N, ...
@@ -122,21 +146,39 @@ classdef sessionCodec
             s.specials = sp;
         end
 
-        function writeFile(file, header, model, records, items)
-            % Write a version 1 session file.
-            %   header  struct: Created, EngineName, EngineVersion, Platform, Matlab
-            %   model   struct: Name, Source, Sha256, Evaluator
-            %   records cell of RunRecord
-            %   items   k-by-2 [run branch], counted from 1; an equilibrium has branch 0
+        function writeFile(file, header, model, records, items, compress)
+            % Write a session file.
+            %   header   struct: Created, EngineName, EngineVersion, Platform, Matlab
+            %   model    struct: Name, Source, Sha256, Evaluator
+            %   records  cell of RunRecord
+            %   items    k-by-2 [run branch], counted from 1; an equilibrium has branch 0
+            %   compress true writes xor1 blocks where they are shorter
+            % The file is version 2 when some block is xor1 and version 1
+            % otherwise, so a reader of version 1 still reads it.
+            arguments
+                file
+                header
+                model
+                records
+                items
+                compress (1,1) logical = false
+            end
             runs = cell(1, numel(records));
+            any_coded = false;
             for k = 1:numel(records)
-                runs{k} = phasecont.internal.sessionCodec.runStruct(records{k});
+                [runs{k}, coded] = phasecont.internal.sessionCodec.runStruct( ...
+                    records{k}, compress);
+                any_coded = any_coded || coded;
+            end
+            version = 1;
+            if any_coded
+                version = phasecont.internal.sessionCodec.Version;
             end
             list = cell(1, size(items, 1));
             for k = 1:size(items, 1)
                 list{k} = struct("run", items(k, 1), "branch", items(k, 2));
             end
-            s = struct("format", "phasecont-session", "version", 1, ...
+            s = struct("format", "phasecont-session", "version", version, ...
                 "created", header.Created, ...
                 "engine", struct("name", header.EngineName, "version", header.EngineVersion), ...
                 "platform", header.Platform, "matlab", header.Matlab, ...
@@ -156,7 +198,7 @@ classdef sessionCodec
         end
 
         function S = readFile(file)
-            % Read and check a version 1 session file. S has the fields
+            % Read and check a session file of version 1 or 2. S has the fields
             % Created, EngineName, EngineVersion, Platform, Matlab, Model
             % (Name, Source, Sha256, Evaluator), Records (cell of RunRecord)
             % and Items (k-by-2). Every error is phasecont:session:badFile.
@@ -193,10 +235,11 @@ classdef sessionCodec
             if ~isfield(v, "version") || ~(isnumeric(v.version) && isscalar(v.version))
                 sessionCodec.fail("version: expected a count.");
             end
-            if v.version ~= 1
-                sessionCodec.fail("unsupported session version %g; this build reads version 1", ...
+            if ~any(v.version == 1:sessionCodec.Version)
+                sessionCodec.fail("unsupported session version %g; this build reads versions 1 and 2", ...
                     v.version);
             end
+            version = double(v.version);
             if sessionCodec.str(v, "precision", "session") ~= "f64"
                 sessionCodec.fail("precision: only ""f64"" is supported.");
             end
@@ -221,7 +264,7 @@ classdef sessionCodec
             S.Records = cell(1, numel(runs));
             for k = 1:numel(runs)
                 S.Records{k} = sessionCodec.parseRun(runs{k}, ...
-                    sprintf("runs[%d]", k - 1), S.Model.Sha256);
+                    sprintf("runs[%d]", k - 1), S.Model.Sha256, version);
             end
             items = sessionCodec.list(v, "items", "session");
             S.Items = zeros(numel(items), 2);
@@ -250,8 +293,8 @@ classdef sessionCodec
             end
         end
 
-        function rec = parseRun(r, ctx, sha)
-            % One run object of the file as a RunRecord.
+        function rec = parseRun(r, ctx, sha, version)
+            % One run object of a file of VERSION as a RunRecord.
             import phasecont.internal.sessionCodec
             if ~(isstruct(r) && isscalar(r))
                 sessionCodec.fail("%s: expected an object.", ctx);
@@ -266,8 +309,8 @@ classdef sessionCodec
                 "Free", sessionCodec.strings(r, "free", ctx), ...
                 "Grid", sessionCodec.counts(r, "grid", ctx), ...
                 "N", sessionCodec.count(r, "n", ctx), "ModelSha", sha);
-            f.U0 = sessionCodec.block(r, "u0", ctx);
-            f.P = sessionCodec.block(r, "p", ctx);
+            f.U0 = sessionCodec.block(r, "u0", ctx, version);
+            f.P = sessionCodec.block(r, "p", ctx, version);
             f.U0 = f.U0(:);
             f.P = f.P(:);
             if kind == "equilibrium"
@@ -275,9 +318,9 @@ classdef sessionCodec
                 if ~isfield(r, "result") || ~(isstruct(r.result) && isscalar(r.result))
                     sessionCodec.fail("%s: expected an object.", rctx);
                 end
-                u = sessionCodec.block(r.result, "u", rctx);
-                re = sessionCodec.block(r.result, "eig_re", rctx);
-                im = sessionCodec.block(r.result, "eig_im", rctx);
+                u = sessionCodec.block(r.result, "u", rctx, version);
+                re = sessionCodec.block(r.result, "eig_re", rctx, version);
+                im = sessionCodec.block(r.result, "eig_im", rctx, version);
                 if numel(re) ~= numel(im)
                     sessionCodec.fail("%s: eig_re and eig_im differ in length.", rctx);
                 end
@@ -296,8 +339,8 @@ classdef sessionCodec
                     || (~isempty(st.branches) && ~all(isfield(st.branches, ["points" "specials"])))
                 sessionCodec.fail("%s.status: missing stride, kind, n, state or branch fields.", ctx);
             end
-            rows = sessionCodec.blocks(r, "rows", ctx);
-            sp = sessionCodec.blocks(r, "specials", ctx);
+            rows = sessionCodec.blocks(r, "rows", ctx, version);
+            sp = sessionCodec.blocks(r, "specials", ctx, version);
             if numel(rows) ~= numel(sp)
                 sessionCodec.fail("%s: %d row blocks but %d special blocks.", ...
                     ctx, numel(rows), numel(sp));
@@ -534,25 +577,97 @@ classdef sessionCodec
             end
         end
 
-        function a = block(s, key, ctx)
+        function a = block(s, key, ctx, version)
             x = phasecont.internal.sessionCodec.field(s, key, ctx);
             try
-                a = phasecont.internal.sessionCodec.decode(x);
+                a = phasecont.internal.sessionCodec.decode(x, version);
             catch err
-                phasecont.internal.sessionCodec.fail("%s.%s: %s", ctx, key, err.message);
+                phasecont.internal.sessionCodec.refail(err, "%s.%s", ctx, key);
             end
         end
 
-        function c = blocks(s, key, ctx)
+        function c = blocks(s, key, ctx, version)
             e = phasecont.internal.sessionCodec.list(s, key, ctx);
             c = cell(1, numel(e));
             for k = 1:numel(e)
                 try
-                    c{k} = phasecont.internal.sessionCodec.decode(e{k});
+                    c{k} = phasecont.internal.sessionCodec.decode(e{k}, version);
                 catch err
-                    phasecont.internal.sessionCodec.fail("%s.%s[%d]: %s", ...
-                        ctx, key, k - 1, err.message);
+                    phasecont.internal.sessionCodec.refail(err, "%s.%s[%d]", ...
+                        ctx, key, k - 1);
                 end
+            end
+        end
+
+        function refail(err, fmt, varargin)
+            % Raise ERR as a bad file with the place in front, except an
+            % engine that cannot run the codec, which is not the file's fault.
+            if err.identifier == "phasecont:engine:load"
+                rethrow(err);
+            end
+            phasecont.internal.sessionCodec.fail("%s: %s", ...
+                sprintf(fmt, varargin{:}), err.message);
+        end
+
+        function shape = shapeOf(s)
+            shape = double(s.shape(:)).';
+            if ~isnumeric(s.shape) || numel(shape) ~= 2 || ~all(isfinite(shape)) ...
+                    || any(shape < 0) || any(shape ~= fix(shape))
+                error("phasecont:session:badFile", ...
+                    "An array block needs a shape of two counts, [rows,cols].");
+            end
+        end
+
+        function bytes = base64(t, key)
+            % The bytes of the base64 text T of the field KEY of a block.
+            if ~(ischar(t) || (isstring(t) && isscalar(t)))
+                error("phasecont:session:badFile", ...
+                    "The ""%s"" of an array block must be a string.", key);
+            end
+            text = char(t);
+            if isempty(text)
+                bytes = zeros(1, 0, "uint8");
+                return
+            end
+            % RFC 4648 as the Rust reader takes it: only the alphabet, full
+            % padding and zero trailing bits. base64decode is more lenient,
+            % so the text must survive an encode of the decoded bytes.
+            try
+                bytes = matlab.net.base64decode(text);
+                canonical = isequal(char(matlab.net.base64encode(bytes)), text);
+            catch
+                canonical = false;
+            end
+            if ~canonical
+                error("phasecont:session:badFile", ...
+                    "The ""%s"" of an array block is not valid base64.", key);
+            end
+            bytes = reshape(bytes, 1, []);
+        end
+
+        function a = decodeXor1(s, version)
+            % The matrix of an xor1 block (SPEC 8af-4).
+            if version < 2
+                error("phasecont:session:badFile", ...
+                    "an ""xor1"" block needs version 2, and this file is version %g", version);
+            end
+            shape = phasecont.internal.sessionCodec.shapeOf(s);
+            bytes = phasecont.internal.sessionCodec.base64(s.xor1, "xor1");
+            n = prod(shape);
+            % Each value takes 1 to 9 bytes; check before the engine allocates.
+            if numel(bytes) < n || numel(bytes) > 9*n
+                error("phasecont:session:badFile", ...
+                    "An xor1 block of shape [%d,%d] needs %d to %d bytes, not %d.", ...
+                    shape(1), shape(2), n, 9*n, numel(bytes));
+            end
+            try
+                a = pckern("codec", "decode", bytes, shape(1), shape(2));
+            catch err
+                if err.identifier == "phasecont:engine:load"
+                    rethrow(err);
+                end
+                error("phasecont:session:badFile", ...
+                    "The ""xor1"" of an array block is not valid: %s", err.message);
             end
         end
     end

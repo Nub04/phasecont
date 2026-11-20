@@ -61,12 +61,19 @@ classdef Session
             obj.Items = items;
         end
 
-        function save(obj, file)
+        function save(obj, file, options)
             % SAVE(S, FILE) writes the session to FILE as JSON. The usual
             % extension is .pcsession.json.
+            %
+            % SAVE(S, FILE, Compress=false) writes every array as plain
+            % binary64 and the file as version 1, for a reader that does
+            % not know "xor1". By default (Compress=true) an array
+            % is written as "xor1" where that is shorter, and a file with
+            % such an array is version 2. Both keep every bit (SPEC 8af-4).
             arguments
                 obj (1,1) phasecont.Session
                 file (1,1) string
+                options.Compress (1,1) logical = true
             end
             m = obj.Model;
             records = {};
@@ -96,7 +103,7 @@ classdef Session
             model = struct("Name", name, "Source", m.Source, ...
                 "Sha256", m.SourceSha256, "Evaluator", m.Evaluator);
             phasecont.internal.sessionCodec.writeFile(file, header, model, ...
-                records, items);
+                records, items, options.Compress);
         end
     end
 

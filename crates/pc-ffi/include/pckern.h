@@ -295,7 +295,24 @@ typedef struct pc_api_v1_t {
   int32_t (*model_jacobian)(uint64_t model, const double *u, size_t nu,
                             const double *p, size_t np, const char *opts_json,
                             double *jac_out, size_t njac);
+
+  /* Encodes or decodes one rows-by-cols block of doubles in the xor1 session
+   * format (SPEC 8af-4). values holds the rows*cols values column by column,
+   * and n_values must equal rows*cols. op PC_CODEC_ENCODE reads values,
+   * writes the encoded bytes to bytes (n_bytes is the room there; 9*rows*cols
+   * is always enough) and sets *used to the number written; too little room
+   * is PC_ERR_BAD_ARG. op PC_CODEC_DECODE reads n_bytes bytes and writes the
+   * values; bytes that are not one canonical xor1 block of that shape are
+   * PC_ERR_BAD_ARG with a message that starts with "xor1:", and used is NULL
+   * or gets n_bytes. values and bytes must not overlap. Loaders built before
+   * this field existed see a smaller struct_size and must not read it. */
+  int32_t (*codec)(uint32_t op, size_t rows, size_t cols, double *values,
+                   size_t n_values, uint8_t *bytes, size_t n_bytes,
+                   size_t *used);
 } pc_api_v1_t;
+
+#define PC_CODEC_ENCODE 0
+#define PC_CODEC_DECODE 1
 
 #define PC_IMPORT_SBML 1
 #define PC_IMPORT_MATLAB 2
@@ -310,7 +327,7 @@ typedef struct pc_api_v1_t {
 typedef const pc_api_v1_t *(*pc_api_v1_fn)(void);
 
 /* Layout of pc_api_v1_t on 64-bit targets, in bytes. */
-#define PC_API_V1_SIZE 192
+#define PC_API_V1_SIZE 200
 #define PC_API_V1_OFFSET_ABI_VERSION 0
 #define PC_API_V1_OFFSET_STRUCT_SIZE 4
 #define PC_API_V1_OFFSET_MODEL_FROM_ODE 8
@@ -336,6 +353,7 @@ typedef const pc_api_v1_t *(*pc_api_v1_fn)(void);
 #define PC_API_V1_OFFSET_ENS_CANCEL 168
 #define PC_API_V1_OFFSET_LATEX_RENDER 176
 #define PC_API_V1_OFFSET_MODEL_JACOBIAN 184
+#define PC_API_V1_OFFSET_CODEC 192
 
 #ifndef PCKERN_NO_LAYOUT_CHECK
 /* C89 negative-array checks: _Static_assert needs /std:c11 on MSVC. */
@@ -368,6 +386,7 @@ PC_CHECK_OFFSET(ens_copy, PC_API_V1_OFFSET_ENS_COPY);
 PC_CHECK_OFFSET(ens_cancel, PC_API_V1_OFFSET_ENS_CANCEL);
 PC_CHECK_OFFSET(latex_render, PC_API_V1_OFFSET_LATEX_RENDER);
 PC_CHECK_OFFSET(model_jacobian, PC_API_V1_OFFSET_MODEL_JACOBIAN);
+PC_CHECK_OFFSET(codec, PC_API_V1_OFFSET_CODEC);
 #endif
 
 #ifdef __cplusplus

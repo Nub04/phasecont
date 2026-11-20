@@ -59,6 +59,7 @@ fields!(
     ens_cancel,
     latex_render,
     model_jacobian,
+    codec,
 );
 
 #[test]
@@ -155,6 +156,8 @@ fn codes_match() {
     }
     assert_eq!(need("PC_COPY_POINTS"), 0);
     assert_eq!(need("PC_COPY_SPECIALS"), 1);
+    assert_eq!(need("PC_CODEC_ENCODE"), pckern::CODEC_ENCODE as u64);
+    assert_eq!(need("PC_CODEC_DECODE"), pckern::CODEC_DECODE as u64);
 }
 
 #[test]

@@ -174,6 +174,18 @@ pub(crate) unsafe fn f64_out<'a>(p: *mut f64, len: usize, what: &str) -> Result<
     Ok(unsafe { std::slice::from_raw_parts_mut(p, len) })
 }
 
+/// Borrows `len` bytes for writing. NULL with `len > 0` is an error; `len == 0` gives `&mut []`.
+///
+/// # Safety
+/// A non-NULL `p` must be valid for writes of `len` bytes for `'a`, with no other access.
+pub(crate) unsafe fn bytes_out<'a>(p: *mut u8, len: usize, what: &str) -> Result<&'a mut [u8]> {
+    check_slice(p, len, what)?;
+    if len == 0 {
+        return Ok(&mut []);
+    }
+    Ok(unsafe { std::slice::from_raw_parts_mut(p, len) })
+}
+
 /// Checks an output pointer and returns it as a reference. NULL and a pointer
 /// that is not aligned for `T` are errors.
 ///

@@ -220,6 +220,138 @@ classdef SessionTest < matlab.unittest.TestCase
             end
         end
 
+        function aCompressedSaveKeepsEveryBit(testCase)
+            % SPEC 8af-4: Compress=true (the default) writes xor1 blocks
+            % and version 2; Compress=false writes f64le and version 1.
+            % Both read back to the same bits.
+            [m, items] = testCase.diagram("jit");
+            s = phasecont.Session(m, items);
+            packed = fullfile(testCase.Dir, "ml_xor1.pcsession.json");
+            plain = fullfile(testCase.Dir, "ml_f64le.pcsession.json");
+            save(s, packed);
+            save(s, plain, Compress = false);
+            tp = string(fileread(packed));
+            tf = string(fileread(plain));
+            testCase.verifySubstring(tp, '"xor1"');
+            testCase.verifySubstring(tp, '"version": 2');
+            testCase.verifyFalse(contains(tf, '"xor1"'));
+            testCase.verifySubstring(tf, '"version": 1');
+            testCase.verifyLessThan(strlength(tp), strlength(tf));
+
+            a = phasecont.internal.sessionCodec.readFile(packed);
+            b = phasecont.internal.sessionCodec.readFile(plain);
+            bits = @(x) typecast(x(:), "uint64");
+            testCase.verifyEqual(numel(a.Records), numel(b.Records));
+            for k = 1:numel(a.Records)
+                ra = a.Records{k};
+                rb = b.Records{k};
+                testCase.verifyEqual(bits(ra.U0), bits(rb.U0));
+                testCase.verifyEqual(bits(ra.P), bits(rb.P));
+                if ra.Kind == "equilibrium"
+                    testCase.verifyEqual(bits(ra.Result.U), bits(rb.Result.U));
+                    testCase.verifyEqual(bits(real(ra.Result.Eigenvalues)), ...
+                        bits(real(rb.Result.Eigenvalues)));
+                    testCase.verifyEqual(bits(imag(ra.Result.Eigenvalues)), ...
+                        bits(imag(rb.Result.Eigenvalues)));
+                    continue
+                end
+                for j = 1:numel(rb.Points)
+                    testCase.verifyEqual(size(ra.Points{j}), size(rb.Points{j}));
+                    testCase.verifyEqual(bits(ra.Points{j}), bits(rb.Points{j}));
+                    testCase.verifyEqual(bits(ra.Specials{j}), bits(rb.Specials{j}));
+                end
+            end
+
+            back = phasecont.Session.load(packed);
+            testCase.addTeardown(@() delete(back.Model));
+            for k = 1:numel(items)
+                testCase.verifySameItem(items{k}, back.Items{k});
+            end
+        end
+
+        function anXor1BlockInVersion1IsABadFile(testCase)
+            m = testCase.model(testCase.Decay, "jit");
+            tr = phasecont.simulate(m, 1, [0 2]);
+            file = fullfile(testCase.Dir, "xor1_v1.pcsession.json");
+            save(phasecont.Session(m, {tr}), file);
+            text = string(fileread(file, Encoding = "UTF-8"));
+            testCase.assertSubstring(text, '"xor1"');
+            text = replace(text, '"version": 2', '"version": 1');
+            fid = fopen(file, "w", "n", "UTF-8");
+            fwrite(fid, char(text), "char");
+            fclose(fid);
+            try
+                phasecont.internal.sessionCodec.readFile(file);
+                testCase.verifyFail("readFile accepted xor1 in version 1");
+            catch err
+                testCase.verifyEqual(string(err.identifier), "phasecont:session:badFile");
+                testCase.verifySubstring(err.message, ...
+                    'an "xor1" block needs version 2, and this file is version 1');
+            end
+        end
+
+        function theSharedXor1FixtureReadsTheSameAsInRust(testCase)
+            % tests/+fixtures/xor1_block.json was written by pc-cli; the
+            % Rust test the_shared_xor1_fixture_is_what_both_sides_write
+            % reads the same file. Distinct columns catch a transposed side.
+            root = fileparts(fileparts(mfilename("fullpath")));
+            fx = jsondecode(fileread(fullfile(root, "tests", "+fixtures", ...
+                "xor1_block.json")));
+            want = [1 10 100; 2 20 200];
+            got = phasecont.internal.sessionCodec.decode(fx, 2);
+            testCase.verifyEqual(typecast(got(:), "uint64"), typecast(want(:), "uint64"));
+            testCase.verifySize(got, [2 3]);
+            [s, coded] = phasecont.internal.sessionCodec.encode(want, true);
+            testCase.verifyTrue(coded);
+            testCase.verifyEqual(s.shape, [2 3]);
+            testCase.verifyEqual(s.xor1, string(fx.xor1));
+            testCase.verifyError(@() phasecont.internal.sessionCodec.decode(fx, 1), ...
+                "phasecont:session:badFile");
+        end
+
+        function badXor1BytesAreABadFile(testCase)
+            % Strict decoding (SPEC 8af-4): trailing bytes, a truncated
+            % value and a byte count outside n..9n are refused.
+            good = phasecont.internal.sessionCodec.encode([1 2 3; 4 5 6], true);
+            bytes = matlab.net.base64decode(char(good.xor1));
+            cases = {[bytes uint8(0)], bytes(1:end-1), zeros(1, 5, "uint8"), ...
+                zeros(1, 55, "uint8")};
+            for k = 1:numel(cases)
+                s = struct("shape", [2 3], ...
+                    "xor1", string(matlab.net.base64encode(cases{k})));
+                testCase.verifyError(@() phasecont.internal.sessionCodec.decode(s, 2), ...
+                    "phasecont:session:badFile", sprintf("case %d", k));
+            end
+            both = good;
+            both.f64le = "";
+            testCase.verifyError(@() phasecont.internal.sessionCodec.decode(both, 2), ...
+                "phasecont:session:badFile");
+        end
+
+        function aLibraryWithoutTheCodecIsALoadError(testCase)
+            % A table that ends before codec, as an older pckern library
+            % would have. debug_struct_size makes the gateway see the table
+            % that short; it tests the gateway's check, not a real old
+            % library. 192 is offsetof(pc_api_v1_t, codec) in pckern.h.
+            m = testCase.model(testCase.Decay, "jit");
+            tr = phasecont.simulate(m, 1, [0 2]);
+            s = phasecont.Session(m, {tr});
+            packed = fullfile(testCase.Dir, "old_lib.pcsession.json");
+            save(s, packed);
+            pckern("debug_struct_size", 192);
+            testCase.addTeardown(@() pckern("debug_struct_size", 0));
+            testCase.verifyError(@() pckern("codec", "encode", 1), ...
+                "phasecont:engine:load");
+            testCase.verifyError(@() save(s, fullfile(testCase.Dir, "x.json")), ...
+                "phasecont:engine:load");
+            testCase.verifyError(@() phasecont.internal.sessionCodec.readFile(packed), ...
+                "phasecont:engine:load");
+            plain = fullfile(testCase.Dir, "old_lib_plain.pcsession.json");
+            save(s, plain, Compress = false);
+            S = phasecont.internal.sessionCodec.readFile(plain);
+            testCase.verifyNumElements(S.Records, 1);
+        end
+
         function replayReproducesEveryRun(testCase, Evaluator)
             [m, items] = testCase.diagram(Evaluator);
             file = fullfile(testCase.Dir, "replay_" + Evaluator + ".pcsession.json");

@@ -13,7 +13,7 @@ use pc_engine::{EngineError, EpSetup, Evaluator, Options, Run};
 use serde_json::{Value, json};
 
 use crate::barrier::{
-    barrier, bytes_arg, f64_arg, f64_out, into_c_string, out_ptr, ptr_barrier, str_arg,
+    barrier, bytes_arg, bytes_out, f64_arg, f64_out, into_c_string, out_ptr, ptr_barrier, str_arg,
 };
 use crate::ensemble::{self, EnsHandle};
 use crate::error::{Error, Result, bad_arg};
@@ -26,6 +26,7 @@ use crate::model::{Build, DELAY_MODEL, ModelHandle, NOT_COMPILED};
 use crate::parse::{MAX_MODEL_TEXT, parse_model};
 use crate::registry::{self, Handle};
 use crate::run::{RunHandle, pack_row_aux, poll_json, stride_aux};
+use crate::xor1;
 
 fn model_handle(id: u64) -> Result<Arc<ModelHandle>> {
     registry::get::<ModelHandle>(id)
@@ -767,6 +768,86 @@ impl Handle for DebugEntry {
 #[doc(hidden)]
 pub fn debug_handle() -> u64 {
     registry::insert(DebugEntry)
+}
+
+/// `codec` op that encodes a block (SPEC 8af-4).
+pub const CODEC_ENCODE: u32 = 0;
+/// `codec` op that decodes a block (SPEC 8af-4).
+pub const CODEC_DECODE: u32 = 1;
+
+/// True when two byte ranges share a byte.
+fn bytes_overlap(a: usize, a_len: usize, b: usize, b_len: usize) -> bool {
+    a_len != 0 && b_len != 0 && a < b.saturating_add(b_len) && b < a.saturating_add(a_len)
+}
+
+/// Encodes or decodes one `rows` by `cols` block of doubles in the `xor1` session format
+/// (SPEC 8af-4). `values` holds the `rows*cols` values column by column and `n_values` must
+/// equal `rows*cols`.
+///
+/// `op` 0 (encode) reads `values` and writes the encoded bytes to `bytes`; `n_bytes` is the
+/// room there, and `9*rows*cols` is always enough. `used` gets the number of bytes written.
+/// Too little room is `PC_ERR_BAD_ARG` and writes no bytes.
+///
+/// `op` 1 (decode) reads `n_bytes` bytes and writes `rows*cols` values. Bytes that are not
+/// one canonical `xor1` block of that shape are `PC_ERR_BAD_ARG` with a message that starts
+/// with `xor1:`. `used` is NULL or gets `n_bytes`.
+///
+/// # Safety
+/// `values` must be valid for `n_values` reads (encode) or writes (decode), `bytes` for
+/// `n_bytes` writes (encode) or reads (decode), and `used` NULL (decode only) or valid for
+/// one write.
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn codec(
+    op: u32,
+    rows: usize,
+    cols: usize,
+    values: *mut f64,
+    n_values: usize,
+    bytes: *mut u8,
+    n_bytes: usize,
+    used: *mut usize,
+) -> i32 {
+    barrier(|| {
+        let n = rows
+            .checked_mul(cols)
+            .ok_or_else(|| bad_arg("codec: rows*cols overflows"))?;
+        expect_len("values", n, n_values)?;
+        let value_bytes = n_values
+            .checked_mul(size_of::<f64>())
+            .ok_or_else(|| bad_arg("values: length is too large"))?;
+        if bytes_overlap(values as usize, value_bytes, bytes as usize, n_bytes) {
+            return Err(bad_arg("values and bytes overlap"));
+        }
+        match op {
+            CODEC_ENCODE => {
+                let slot = unsafe { out_ptr(used, "used") }?;
+                *slot = 0;
+                let v = unsafe { f64_arg(values, n_values, "values") }?;
+                let enc = xor1::encode(rows, cols, v);
+                if enc.len() > n_bytes {
+                    return Err(bad_arg(format!(
+                        "bytes: the block needs {} bytes but {n_bytes} were given",
+                        enc.len()
+                    )));
+                }
+                let out = unsafe { bytes_out(bytes, enc.len(), "bytes") }?;
+                out.copy_from_slice(&enc);
+                *slot = enc.len();
+                Ok(())
+            }
+            CODEC_DECODE => {
+                let b =
+                    unsafe { bytes_arg(bytes.cast_const().cast::<c_char>(), n_bytes, "bytes") }?;
+                let out = unsafe { f64_out(values, n_values, "values") }?;
+                xor1::decode_into(rows, cols, b, out).map_err(|e| bad_arg(format!("xor1: {e}")))?;
+                if !used.is_null() {
+                    *unsafe { out_ptr(used, "used") }? = n_bytes;
+                }
+                Ok(())
+            }
+            _ => Err(bad_arg(format!("codec: unknown op {op}"))),
+        }
+    })
 }
 
 #[cfg(test)]

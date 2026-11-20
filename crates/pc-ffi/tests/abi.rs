@@ -138,3 +138,139 @@ fn a_debug_handle_passed_as_a_model_is_a_bad_handle() {
     );
     assert_eq!((api().free_handle)(id), 0);
 }
+
+fn encode(rows: usize, cols: usize, values: &[f64]) -> Vec<u8> {
+    let mut v = values.to_vec();
+    let mut b = vec![0u8; 9 * v.len()];
+    let mut used = usize::MAX;
+    let rc = unsafe {
+        (api().codec)(
+            pckern::CODEC_ENCODE,
+            rows,
+            cols,
+            v.as_mut_ptr(),
+            v.len(),
+            b.as_mut_ptr(),
+            b.len(),
+            &mut used,
+        )
+    };
+    assert_eq!(rc, 0, "{}", last_error());
+    b.truncate(used);
+    b
+}
+
+fn decode(rows: usize, cols: usize, bytes: &[u8]) -> (i32, Vec<f64>) {
+    let mut b = bytes.to_vec();
+    let mut v = vec![f64::NAN; rows * cols];
+    let rc = unsafe {
+        (api().codec)(
+            pckern::CODEC_DECODE,
+            rows,
+            cols,
+            v.as_mut_ptr(),
+            v.len(),
+            b.as_mut_ptr(),
+            b.len(),
+            ptr::null_mut(),
+        )
+    };
+    (rc, v)
+}
+
+#[test]
+fn codec_round_trips_bits_through_the_table() {
+    // A 3 by 2 block, column by column, with values the predictor cannot guess.
+    let vals = [
+        1.0,
+        2.0,
+        3.0,
+        -0.0,
+        f64::INFINITY,
+        f64::from_bits(0x7ff8_0000_dead_beef),
+    ];
+    let b = encode(3, 2, &vals);
+    assert_eq!(&b[..7], &[0x06, 0x3f, 0xf0, 0x06, 0x7f, 0xf0, 0x80]);
+    let (rc, back) = decode(3, 2, &b);
+    assert_eq!(rc, 0, "{}", last_error());
+    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    assert_eq!(bits(&back), bits(&vals));
+    assert_eq!(b, pckern::xor1::encode(3, 2, &vals));
+}
+
+#[test]
+fn codec_refuses_bad_bytes_shapes_room_and_ops() {
+    let t = api();
+    // Trailing byte after a 1 by 1 block.
+    let (rc, _) = decode(1, 1, &[0x80, 0x80]);
+    assert_eq!(rc, 2);
+    assert!(last_error().starts_with("xor1:"), "{}", last_error());
+    // n_values that is not rows*cols.
+    let mut v = [0.0f64; 3];
+    let mut b = [0u8; 27];
+    let mut used = 7usize;
+    let rc = unsafe { (t.codec)(0, 2, 2, v.as_mut_ptr(), 3, b.as_mut_ptr(), 27, &mut used) };
+    assert_eq!(rc, 2);
+    // Too little room writes nothing and reports 0.
+    let mut v = [1.0f64, 7.5, -3.25];
+    let mut b = [0xaau8; 2];
+    let rc = unsafe { (t.codec)(0, 3, 1, v.as_mut_ptr(), 3, b.as_mut_ptr(), 2, &mut used) };
+    assert_eq!(rc, 2);
+    assert_eq!(used, 0);
+    assert_eq!(b, [0xaa, 0xaa]);
+    assert!(last_error().contains("needs"), "{}", last_error());
+    // Unknown op, overflowing shape and a NULL `used` on encode.
+    let rc = unsafe { (t.codec)(9, 0, 0, ptr::null_mut(), 0, ptr::null_mut(), 0, &mut used) };
+    assert_eq!(rc, 2);
+    let rc = unsafe {
+        (t.codec)(
+            0,
+            usize::MAX,
+            2,
+            ptr::null_mut(),
+            0,
+            ptr::null_mut(),
+            0,
+            &mut used,
+        )
+    };
+    assert_eq!(rc, 2);
+    let rc = unsafe {
+        (t.codec)(
+            0,
+            0,
+            0,
+            ptr::null_mut(),
+            0,
+            ptr::null_mut(),
+            0,
+            ptr::null_mut(),
+        )
+    };
+    assert_eq!(rc, 2);
+    // An empty block encodes to no bytes.
+    let rc = unsafe { (t.codec)(0, 0, 4, ptr::null_mut(), 0, ptr::null_mut(), 0, &mut used) };
+    assert_eq!(rc, 0, "{}", last_error());
+    assert_eq!(used, 0);
+}
+
+#[test]
+fn codec_refuses_overlapping_buffers() {
+    let mut buf = [0u64; 4];
+    let p = buf.as_mut_ptr();
+    let mut used = 0usize;
+    let rc = unsafe {
+        (api().codec)(
+            0,
+            1,
+            1,
+            p.cast::<f64>(),
+            1,
+            p.cast::<u8>().add(4),
+            9,
+            &mut used,
+        )
+    };
+    assert_eq!(rc, 2);
+    assert!(last_error().contains("overlap"), "{}", last_error());
+}

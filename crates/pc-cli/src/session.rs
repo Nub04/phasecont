@@ -1,4 +1,4 @@
-//! Session files (format version 1) and their headless replay.
+//! Session files (format versions 1 and 2) and their headless replay.
 //!
 //! A session file holds a model's source text and every run that produced a result: the
 //! exact problem JSON, the starting point, the final status JSON and the rows. `replay`
@@ -9,7 +9,10 @@
 //! Every array of f64 is a block `{"shape":[r,c],"f64le":"<base64>"}`: the r-by-c matrix
 //! as row-major little-endian binary64 in base64 (RFC 4648). The bytes keep NaN payloads,
 //! infinities and -0, so a reader sees the bits the writer had. Row blocks have one row
-//! per point, so their shape is `[count, stride]`. The problem and the status are stored
+//! per point, so their shape is `[count, stride]`. Version 2 adds the block
+//! `{"shape":[r,c],"xor1":"<base64>"}`, the lossless coding of SPEC section 8af-4, which is
+//! written when it is shorter than `f64le`; a version 1 file never holds one. The problem
+//! and the status are stored
 //! as the exact strings the engine took and wrote, because a JSON parse and print can
 //! change digits.
 
@@ -25,8 +28,10 @@ use crate::base64;
 
 /// The `format` key of a session file.
 pub const FORMAT: &str = "phasecont-session";
-/// The only version this build reads and writes.
-pub const VERSION: u64 = 1;
+/// The newest version this build reads, written when a block is coded as `xor1`.
+pub const VERSION: u64 = 2;
+/// The version of a file with no `xor1` block, which a 1.0.0-preview reader also reads.
+pub const VERSION_PLAIN: u64 = 1;
 
 /// A matrix of f64, stored row-major.
 #[derive(Debug, Clone)]
@@ -71,6 +76,7 @@ impl Block {
                 .all(|(a, b)| a.to_bits() == b.to_bits())
     }
 
+    /// The block as `f64le`.
     pub fn to_json(&self) -> Value {
         let mut bytes = Vec::with_capacity(self.data.len() * 8);
         for v in &self.data {
@@ -79,8 +85,35 @@ impl Block {
         json!({ "shape": [self.rows, self.cols], "f64le": base64::encode(&bytes) })
     }
 
-    /// Reads a block. `what` names the key for the error text.
+    /// The values column-major, the order `xor1` codes them in.
+    fn col_major(&self) -> Vec<f64> {
+        let mut out = Vec::with_capacity(self.data.len());
+        for c in 0..self.cols {
+            out.extend((0..self.rows).map(|r| self.data[r * self.cols + c]));
+        }
+        out
+    }
+
+    /// The block as `xor1` when `compress` is set and that coding takes fewer bytes than
+    /// the 8 r c of `f64le`, else as `f64le`. Sets `coded` when it writes `xor1`.
+    pub fn to_json_as(&self, compress: bool, coded: &mut bool) -> Value {
+        if compress && !self.data.is_empty() {
+            let bytes = pckern::xor1::encode(self.rows, self.cols, &self.col_major());
+            if bytes.len() < 8 * self.data.len() {
+                *coded = true;
+                return json!({ "shape": [self.rows, self.cols], "xor1": base64::encode(&bytes) });
+            }
+        }
+        self.to_json()
+    }
+
+    /// Reads a block of a version 2 file. `what` names the key for the error text.
     pub fn from_json(v: &Value, what: &str) -> Result<Self, String> {
+        Self::from_json_in(v, what, VERSION)
+    }
+
+    /// Reads a block of a file of this version: `xor1` is refused in version 1.
+    fn from_json_in(v: &Value, what: &str, version: u64) -> Result<Self, String> {
         let obj = v
             .as_object()
             .ok_or_else(|| format!("{what}: expected an array block"))?;
@@ -93,6 +126,31 @@ impl Block {
         let (Some(rows), Some(cols)) = (dim(&shape[0]), dim(&shape[1])) else {
             return Err(format!("{what}: \"shape\" must hold two counts"));
         };
+        if let Some(x) = obj.get("xor1") {
+            if obj.contains_key("f64le") {
+                return Err(format!(
+                    "{what}: a block holds \"f64le\" or \"xor1\", not both"
+                ));
+            }
+            if version < 2 {
+                return Err(format!(
+                    "{what}: an \"xor1\" block needs version 2, and this file is version {version}"
+                ));
+            }
+            let text = x
+                .as_str()
+                .ok_or_else(|| format!("{what}: \"xor1\" must be a string"))?;
+            let bytes = base64::decode(text).map_err(|e| format!("{what}: \"xor1\": {e}"))?;
+            let cm = pckern::xor1::decode(rows, cols, &bytes)
+                .map_err(|e| format!("{what}: \"xor1\": {e}"))?;
+            let mut data = vec![0.0; cm.len()];
+            for c in 0..cols {
+                for r in 0..rows {
+                    data[r * cols + c] = cm[c * rows + r];
+                }
+            }
+            return Ok(Self { rows, cols, data });
+        }
         let text = obj
             .get("f64le")
             .and_then(Value::as_str)
@@ -180,7 +238,8 @@ pub struct RunRec {
 }
 
 impl RunRec {
-    fn to_json(&self) -> Value {
+    fn to_json(&self, compress: bool, coded: &mut bool) -> Value {
+        let mut b = |x: &Block| x.to_json_as(compress, coded);
         let mut o = Map::new();
         o.insert("kind".into(), json!(self.kind.name()));
         o.insert("problem".into(), json!(self.problem));
@@ -188,16 +247,16 @@ impl RunRec {
         o.insert("free".into(), json!(self.free));
         o.insert("grid".into(), json!(self.grid));
         o.insert("n".into(), json!(self.n));
-        o.insert("u0".into(), self.u0.to_json());
-        o.insert("p".into(), self.p.to_json());
+        o.insert("u0".into(), b(&self.u0));
+        o.insert("p".into(), b(&self.p));
         if self.kind == Kind::Equilibrium {
             if let Some(r) = &self.result {
                 o.insert(
                     "result".into(),
                     json!({
-                        "u": r.u.to_json(),
-                        "eig_re": r.eig_re.to_json(),
-                        "eig_im": r.eig_im.to_json(),
+                        "u": b(&r.u),
+                        "eig_re": b(&r.eig_re),
+                        "eig_im": b(&r.eig_im),
                     }),
                 );
             }
@@ -205,17 +264,19 @@ impl RunRec {
             o.insert("status".into(), json!(self.status));
             o.insert(
                 "rows".into(),
-                Value::Array(self.rows.iter().map(Block::to_json).collect()),
+                Value::Array(self.rows.iter().map(&mut b).collect()),
             );
             o.insert(
                 "specials".into(),
-                Value::Array(self.specials.iter().map(Block::to_json).collect()),
+                Value::Array(self.specials.iter().map(&mut b).collect()),
             );
         }
         Value::Object(o)
     }
 
-    fn from_json(v: &Value, ctx: &str) -> Result<Self, String> {
+    fn from_json(v: &Value, ctx: &str, version: u64) -> Result<Self, String> {
+        let block_field = |o, key, ctx| block_field(o, key, ctx, version);
+        let block_list = |o, key, ctx| block_list(o, key, ctx, version);
         let o = v
             .as_object()
             .ok_or_else(|| format!("{ctx}: expected an object"))?;
@@ -334,25 +395,49 @@ fn count_field(o: &Map<String, Value>, key: &str, ctx: &str) -> Result<usize, St
         .ok_or_else(|| format!("{ctx}.{key}: expected a count"))
 }
 
-fn block_field(o: &Map<String, Value>, key: &str, ctx: &str) -> Result<Block, String> {
-    Block::from_json(field(o, key, ctx)?, &format!("{ctx}.{key}"))
+fn block_field(
+    o: &Map<String, Value>,
+    key: &str,
+    ctx: &str,
+    version: u64,
+) -> Result<Block, String> {
+    Block::from_json_in(field(o, key, ctx)?, &format!("{ctx}.{key}"), version)
 }
 
-fn block_list(o: &Map<String, Value>, key: &str, ctx: &str) -> Result<Vec<Block>, String> {
+fn block_list(
+    o: &Map<String, Value>,
+    key: &str,
+    ctx: &str,
+    version: u64,
+) -> Result<Vec<Block>, String> {
     field(o, key, ctx)?
         .as_array()
         .ok_or_else(|| format!("{ctx}.{key}: expected a list"))?
         .iter()
         .enumerate()
-        .map(|(i, v)| Block::from_json(v, &format!("{ctx}.{key}[{i}]")))
+        .map(|(i, v)| Block::from_json_in(v, &format!("{ctx}.{key}[{i}]"), version))
         .collect()
 }
 
 impl Session {
+    /// The file as JSON, with every block that `xor1` makes shorter coded as `xor1`.
     pub fn to_json(&self) -> Value {
+        self.to_json_as(true)
+    }
+
+    /// The file as JSON. With `compress` off every block is `f64le` and the version is 1,
+    /// which a 1.0.0-preview reader reads. With it on the version is 2 only when a block
+    /// was coded as `xor1`.
+    pub fn to_json_as(&self, compress: bool) -> Value {
+        let mut coded = false;
+        let runs = self
+            .runs
+            .iter()
+            .map(|r| r.to_json(compress, &mut coded))
+            .collect::<Vec<_>>();
         json!({
             "format": FORMAT,
-            "version": VERSION,
+            "version": if coded { VERSION } else { VERSION_PLAIN },
             "created": self.created,
             "engine": { "name": self.engine_name, "version": self.engine_version },
             "platform": self.platform,
@@ -364,7 +449,7 @@ impl Session {
                 "sha256": self.model.sha256,
                 "evaluator": self.model.evaluator,
             },
-            "runs": self.runs.iter().map(RunRec::to_json).collect::<Vec<_>>(),
+            "runs": runs,
             "items": self
                 .items
                 .iter()
@@ -392,9 +477,10 @@ impl Session {
         let version = field(o, "version", "session")?
             .as_u64()
             .ok_or_else(|| "version: expected a count".to_owned())?;
-        if version != VERSION {
+        if !(VERSION_PLAIN..=VERSION).contains(&version) {
             return Err(format!(
-                "unsupported session version {version}; this build reads version {VERSION}"
+                "unsupported session version {version}; this build reads versions \
+                 {VERSION_PLAIN} and {VERSION}"
             ));
         }
         if str_field(o, "precision", "session")? != "f64" {
@@ -412,7 +498,7 @@ impl Session {
             .ok_or_else(|| "runs: expected a list".to_owned())?
             .iter()
             .enumerate()
-            .map(|(i, r)| RunRec::from_json(r, &format!("runs[{i}]")))
+            .map(|(i, r)| RunRec::from_json(r, &format!("runs[{i}]"), version))
             .collect::<Result<Vec<_>, _>>()?;
         let items = field(o, "items", "session")?
             .as_array()
@@ -1202,8 +1288,159 @@ mod tests {
     }
 
     #[test]
+    fn xor1_blocks_keep_every_bit_and_code_column_by_column() {
+        // Distinct columns, so a row-major and a column-major reading differ.
+        let b = Block::new(2, 3, vec![1.0, 10.0, 100.0, 2.0, 20.0, 200.0]);
+        let mut coded = false;
+        let v = b.to_json_as(true, &mut coded);
+        assert!(coded && v.get("f64le").is_none());
+        let bytes = base64::decode(v["xor1"].as_str().unwrap()).unwrap();
+        let cm = [1.0, 2.0, 10.0, 20.0, 100.0, 200.0];
+        assert_eq!(bytes, pckern::xor1::encode(2, 3, &cm));
+        let back = Block::from_json(&v, "b").unwrap();
+        assert!(back.same_bits(&b));
+
+        let s = Block::new(2, 5, SPECIAL.to_vec());
+        let mut coded = false;
+        let v = s.to_json_as(true, &mut coded);
+        assert!(Block::from_json(&v, "b").unwrap().same_bits(&s));
+    }
+
+    #[test]
+    fn the_shared_xor1_fixture_is_what_both_sides_write() {
+        // tests/+fixtures/xor1_block.json holds the 2-by-3 block with rows
+        // [1 10 100] and [2 20 200]. SessionTest reads and writes the same
+        // file from MATLAB, so a change of orientation on either side fails.
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/+fixtures/xor1_block.json"
+        );
+        let text = std::fs::read_to_string(path).unwrap();
+        let v: Value = serde_json::from_str(&text).unwrap();
+        let b = Block::new(2, 3, vec![1.0, 10.0, 100.0, 2.0, 20.0, 200.0]);
+        assert!(Block::from_json(&v, "fixture").unwrap().same_bits(&b));
+        let mut coded = false;
+        assert_eq!(b.to_json_as(true, &mut coded), v);
+        assert!(coded);
+    }
+
+    #[test]
+    fn f64le_is_kept_when_xor1_is_not_shorter() {
+        let mut coded = false;
+        for b in [
+            Block::new(0, 3, vec![]),
+            // Nine bytes each: the residuals have no zero byte at either end.
+            Block::row(vec![f64::from_bits(0x0102_0304_0506_0708)]),
+        ] {
+            let v = b.to_json_as(true, &mut coded);
+            assert!(v.get("f64le").is_some(), "{v}");
+        }
+        assert!(!coded);
+        let v = Block::row(vec![1.0]).to_json_as(false, &mut coded);
+        assert!(v.get("f64le").is_some() && !coded);
+    }
+
+    #[test]
+    fn the_version_says_whether_a_block_is_xor1() {
+        let s = sample();
+        let on = s.to_json();
+        assert_eq!(on["version"], 2);
+        assert!(on.to_string().contains("\"xor1\""));
+        let off = s.to_json_as(false);
+        assert_eq!(off["version"], 1);
+        assert!(!off.to_string().contains("\"xor1\""));
+        for v in [on, off] {
+            let back = Session::parse(&v.to_string()).unwrap();
+            assert!(back.runs[0].rows[0].same_bits(&s.runs[0].rows[0]));
+            assert!(back.runs[0].p.same_bits(&s.runs[0].p));
+        }
+        // Compression on, but nothing shrinks: the file stays version 1.
+        let mut plain = sample();
+        let odd = Block::row(vec![f64::from_bits(0x0102_0304_0506_0708)]);
+        for r in &mut plain.runs {
+            r.u0 = odd.clone();
+            r.p = odd.clone();
+            r.rows.clear();
+            r.specials.clear();
+            if let Some(e) = &mut r.result {
+                e.u = odd.clone();
+                e.eig_re = odd.clone();
+                e.eig_im = odd.clone();
+            }
+        }
+        plain.items = vec![Item { run: 2, branch: 0 }];
+        assert_eq!(plain.to_json()["version"], 1);
+    }
+
+    #[test]
+    fn xor1_is_refused_in_version_1_and_when_malformed() {
+        let mut v = sample().to_json();
+        assert_eq!(v["version"], 2);
+        v["version"] = json!(1);
+        let e = Session::parse(&v.to_string()).unwrap_err();
+        assert!(e.contains("needs version 2"), "{e}");
+
+        let bad = [
+            json!({"shape":[1,1],"xor1":"gA==","f64le":"AAAAAAAAAAA="}),
+            json!({"shape":[1,1],"xor1":7}),
+            json!({"shape":[1,1],"xor1":"gIA="}),
+            json!({"shape":[2,1],"xor1":"gA=="}),
+            json!({"shape":[1,1],"xor1":"BgA="}),
+            json!({"shape":[usize::MAX,2],"xor1":"gA=="}),
+        ];
+        for v in bad {
+            let e = Block::from_json(&v, "runs[0].u0").unwrap_err();
+            assert!(e.starts_with("runs[0].u0"), "{e}");
+        }
+    }
+
+    #[test]
+    fn the_fixture_session_round_trips_compressed() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/+fixtures/ml_small.pcsession.json"
+        );
+        let s = Session::read(Path::new(path)).unwrap();
+        let back = Session::parse(&s.to_text()).unwrap();
+        let blocks = |x: &Session| {
+            x.runs
+                .iter()
+                .flat_map(|r| {
+                    let mut v = vec![r.u0.clone(), r.p.clone()];
+                    v.extend(r.rows.iter().cloned());
+                    v.extend(r.specials.iter().cloned());
+                    if let Some(e) = &r.result {
+                        v.extend([e.u.clone(), e.eig_re.clone(), e.eig_im.clone()]);
+                    }
+                    v
+                })
+                .collect::<Vec<_>>()
+        };
+        let (a, b) = (blocks(&s), blocks(&back));
+        assert_eq!(a.len(), b.len());
+        assert!(a.iter().zip(&b).all(|(x, y)| x.same_bits(y)));
+    }
+
+    #[test]
+    fn the_version_2_fixture_is_the_compressed_version_1_fixture() {
+        // SPEC 8af-4: tests/+fixtures/ml_small_v2.pcsession.json is what the writer makes of
+        // ml_small.pcsession.json with compression on. It is the file a 1.0.0-preview reader
+        // refuses, and both readers here read it to the same bits as the version 1 file.
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/+fixtures/");
+        let v1 = Session::read(&Path::new(dir).join("ml_small.pcsession.json")).unwrap();
+        let text =
+            std::fs::read_to_string(Path::new(dir).join("ml_small_v2.pcsession.json")).unwrap();
+        assert_eq!(v1.to_text(), text);
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["version"], Value::from(VERSION));
+        assert!(text.contains("\"xor1\""));
+        let v2 = Session::parse(&text).unwrap();
+        assert_eq!(v2.to_json_as(false), v1.to_json_as(false));
+    }
+
+    #[test]
     fn the_file_has_the_documented_keys() {
-        let v = sample().to_json();
+        let v = sample().to_json_as(false);
         assert_eq!(v["format"], "phasecont-session");
         assert_eq!(v["version"], 1);
         assert_eq!(v["precision"], "f64");
@@ -1224,7 +1461,8 @@ mod tests {
             f(&mut v);
             Session::parse(&v.to_string()).unwrap_err()
         };
-        assert!(edit(&|v| v["version"] = json!(2)).contains("version 2"));
+        assert!(edit(&|v| v["version"] = json!(3)).contains("version 3"));
+        assert!(edit(&|v| v["version"] = json!(0)).contains("version 0"));
         assert!(edit(&|v| v["format"] = json!("other")).contains("format"));
         assert!(edit(&|v| v["precision"] = json!("f32")).contains("precision"));
         assert!(

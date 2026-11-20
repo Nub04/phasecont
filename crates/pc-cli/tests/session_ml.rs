@@ -500,12 +500,12 @@ fn a_changed_source_is_a_hash_mismatch() {
 #[test]
 fn an_unknown_version_is_a_bad_file() {
     let mut v: Value = serde_json::from_str(diagram_text()).unwrap();
-    v["version"] = Value::from(2);
+    v["version"] = Value::from(3);
     let file = write("version.pcsession.json", &v.to_string());
     let (c, _, err) = replay(&file, &[]);
     assert_eq!(c, 2);
     assert!(
-        err.contains("unsupported session version 2"),
+        err.contains("unsupported session version 3; this build reads versions 1 and 2"),
         "stderr: {err}"
     );
 }

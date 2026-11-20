@@ -33,6 +33,11 @@
  *   json = pckern("latex", kind, doc)      kind "pgfplots" or "table", doc is JSON text;
  *                                          json holds ok, tex and data_files, or the error
  *   pckern("free", h)                      also frees an ensemble handle
+ *   b = pckern("codec", "encode", A)       A real double matrix; b a uint8 row (xor1, SPEC 8af-4)
+ *   A = pckern("codec", "decode", b, r, c) b uint8; A an r-by-c double; bad bytes raise
+ *                                          phasecont:engine:badArg with "xor1:" text
+ *   old = pckern("debug_struct_size", n)   test only: treat the table as n bytes long
+ *                                          (0 restores the library's struct_size)
  *
  * Only this thread (the MATLAB thread) calls mx* and mex* functions. The
  * library returns error codes, and the gateway raises phasecont:engine:<kind>.
@@ -62,6 +67,7 @@ __asm__(".symver dladdr,dladdr@GLIBC_2.2.5");
 #endif
 
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -86,6 +92,9 @@ __asm__(".symver dladdr,dladdr@GLIBC_2.2.5");
 #endif
 
 static const pc_api_v1_t *g_api = NULL;
+/* The table length the gateway trusts: the library's struct_size, or a
+ * smaller value that debug_struct_size set to test the checks below. */
+static uint32_t g_struct_size = 0;
 static char g_lib_path[3 * PC_PATH_MAX]; /* UTF-8 path of the loaded library */
 
 /* Formats the message first and passes it as an argument, so a "%" in it
@@ -282,13 +291,24 @@ static void load_api(void)
     if (!api)
         fail("phasecont:engine:load",
              "%s: pc_api_v1 returned NULL (a panic inside it was caught)", PC_LIB_NAME);
+    /* Members appended after model_jacobian (so far only codec) may be
+     * missing from an older library; the command that uses one checks
+     * has_member first. */
     if (api->abi_version != (uint32_t)PC_ABI_VERSION ||
-        api->struct_size < (uint32_t)sizeof(pc_api_v1_t))
+        api->struct_size < (uint32_t)offsetof(pc_api_v1_t, codec))
         fail("phasecont:engine:load",
              "%s ABI mismatch: abi_version %u, struct_size %u, gateway expects %u and at least %u",
              PC_LIB_NAME, (unsigned)api->abi_version, (unsigned)api->struct_size,
-             (unsigned)PC_ABI_VERSION, (unsigned)sizeof(pc_api_v1_t));
+             (unsigned)PC_ABI_VERSION, (unsigned)offsetof(pc_api_v1_t, codec));
     g_api = api;
+    g_struct_size = api->struct_size;
+}
+
+/* True when the table is long enough to hold the member that ends at
+ * offset `end`. Read a later member only after this check. */
+static int has_member(size_t end)
+{
+    return (size_t)g_struct_size >= end;
 }
 
 /* ---- Argument helpers --------------------------------------------------- */
@@ -923,6 +943,89 @@ static void cmd_free(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 
 typedef void (*cmd_fn)(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[]);
 
+static void cmd_codec(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
+{
+    char *op;
+    int encode;
+    size_t rows, cols, n, nb, used = 0;
+    int32_t rc;
+    need_args(nrhs, 3, 5, "codec");
+    need_outs(nlhs, 1, "codec");
+    if (!has_member(offsetof(pc_api_v1_t, codec) + sizeof g_api->codec) || !g_api->codec)
+        fail("phasecont:engine:load",
+             "%s has no codec entry (struct_size %u): the engine library is older than this "
+             "gateway, so reinstall PhaseCont",
+             PC_LIB_NAME, (unsigned)g_struct_size);
+    op = get_text(prhs[1], "the codec op");
+    encode = strcmp(op, "encode") == 0;
+    if (!encode && strcmp(op, "decode") != 0) {
+        mxFree(op);
+        fail("phasecont:engine:badArg", "the codec op must be \"encode\" or \"decode\"");
+    }
+    mxFree(op);
+    if (encode) {
+        const double *a;
+        uint8_t *buf;
+        mxArray *out;
+        need_args(nrhs, 3, 3, "codec encode");
+        a = get_mat(prhs[2], "the block", &rows, &cols);
+        n = rows * cols;
+        if (n > SIZE_MAX / 9)
+            fail("phasecont:engine:badArg", "the block is too large to encode");
+        /* 9 bytes per value always fit; shrink to what was written. */
+        buf = (uint8_t *)mxMalloc(n ? 9 * n : 1);
+        rc = g_api->codec(PC_CODEC_ENCODE, rows, cols, (double *)a, n, buf, 9 * n, &used);
+        if (rc != PC_OK) {
+            mxFree(buf);
+            check(rc);
+        }
+        buf = (uint8_t *)mxRealloc(buf, used ? used : 1);
+        out = mxCreateNumericMatrix(1, 0, mxUINT8_CLASS, mxREAL);
+        mxFree(mxGetUint8s(out));
+        mxSetUint8s(out, buf);
+        mxSetN(out, used);
+        plhs[0] = out;
+    } else {
+        const mxArray *b;
+        mxArray *out;
+        need_args(nrhs, 5, 5, "codec decode");
+        b = prhs[2];
+        if (!mxIsUint8(b) || mxIsComplex(b) || mxIsSparse(b))
+            bad_arg("%s must be a real uint8 array", "the bytes");
+        nb = mxGetNumberOfElements(b);
+        rows = get_size(prhs[3], "rows");
+        cols = get_size(prhs[4], "cols");
+        if (rows != 0 && cols > SIZE_MAX / rows)
+            fail("phasecont:engine:badArg", "xor1: the shape has more values than memory can hold");
+        n = rows * cols;
+        /* Every value takes at least one byte: refuse before allocating. */
+        if (n > nb)
+            fail("phasecont:engine:badArg", "xor1: %llu bytes cannot code %llu values",
+                 (unsigned long long)nb, (unsigned long long)n);
+        out = mxCreateDoubleMatrix(rows, cols, mxREAL);
+        rc = g_api->codec(PC_CODEC_DECODE, rows, cols, mxGetDoubles(out), n,
+                          (uint8_t *)mxGetUint8s(b), nb, NULL);
+        if (rc != PC_OK) {
+            mxDestroyArray(out);
+            check(rc);
+        }
+        plhs[0] = out;
+    }
+}
+
+static void cmd_debug_struct_size(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
+{
+    uint32_t n, old = g_struct_size;
+    need_args(nrhs, 2, 2, "debug_struct_size");
+    need_outs(nlhs, 1, "debug_struct_size");
+    n = get_u32(prhs[1], "the size");
+    if (n > g_api->struct_size)
+        fail("phasecont:engine:badArg", "the size is larger than the library's struct_size %u",
+             (unsigned)g_api->struct_size);
+    g_struct_size = n ? n : g_api->struct_size;
+    plhs[0] = mxCreateDoubleScalar((double)old);
+}
+
 static const struct {
     const char *name;
     cmd_fn fn;
@@ -949,6 +1052,8 @@ static const struct {
     {"ens_copy", cmd_ens_copy},
     {"ens_cancel", cmd_ens_cancel},
     {"free", cmd_free},
+    {"codec", cmd_codec},
+    {"debug_struct_size", cmd_debug_struct_size},
 };
 
 void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])

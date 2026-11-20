@@ -21,8 +21,9 @@ pub mod parse;
 mod registry;
 mod run;
 mod sha256;
+pub mod xor1;
 
-pub use api::{debug_handle, debug_model_panic};
+pub use api::{CODEC_DECODE, CODEC_ENCODE, debug_handle, debug_model_panic};
 pub use ensemble::debug_ensemble_panic;
 
 pub const PC_ABI_VERSION: u32 = 1;
@@ -105,6 +106,8 @@ pub struct PcApiV1 {
         *mut f64,
         usize,
     ) -> i32,
+    pub codec:
+        unsafe extern "C" fn(u32, usize, usize, *mut f64, usize, *mut u8, usize, *mut usize) -> i32,
 }
 
 static API: PcApiV1 = PcApiV1 {
@@ -133,6 +136,7 @@ static API: PcApiV1 = PcApiV1 {
     ens_cancel: api::ens_cancel,
     latex_render: api::latex_render,
     model_jacobian: api::model_jacobian,
+    codec: api::codec,
 };
 
 /// The only exported symbol. Returns NULL only if a panic was caught.

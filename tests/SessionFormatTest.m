@@ -205,13 +205,16 @@ classdef SessionFormatTest < matlab.unittest.TestCase
 
         function aWrongVersionNamesTheVersion(testCase)
             v = testCase.fixtureStruct();
-            v.version = 2;
-            try
-                phasecont.internal.sessionCodec.parse(v);
-                testCase.verifyFail("parse accepted version 2");
-            catch err
-                testCase.verifyEqual(string(err.identifier), "phasecont:session:badFile");
-                testCase.verifySubstring(err.message, "unsupported session version 2");
+            for bad = [0 3]
+                v.version = bad;
+                try
+                    phasecont.internal.sessionCodec.parse(v);
+                    testCase.verifyFail(sprintf("parse accepted version %d", bad));
+                catch err
+                    testCase.verifyEqual(string(err.identifier), "phasecont:session:badFile");
+                    testCase.verifySubstring(err.message, sprintf( ...
+                        "unsupported session version %d; this build reads versions 1 and 2", bad));
+                end
             end
         end
 
@@ -382,6 +385,22 @@ classdef SessionFormatTest < matlab.unittest.TestCase
             testCase.verifyEmpty(meta.package.fromName("phasecont.session").ClassList);
             testCase.verifyEqual(string({meta.package.fromName("phasecont.session").FunctionList.Name}), ...
                 "replay");
+        end
+
+        function theVersion2FixtureReadsAsTheVersion1Fixture(testCase)
+            % SPEC 8af-4: ml_small_v2 is ml_small written with compression
+            % on by pc-cli. It reads to the same bits: both rewritten as
+            % plain f64le give the same text.
+            v2 = strrep(testCase.fixture(), "ml_small.", "ml_small_v2.");
+            text = string(fileread(v2, Encoding = "UTF-8"));
+            testCase.verifySubstring(text, '"version": 2');
+            testCase.verifySubstring(text, '"xor1"');
+            folder = testCase.tempFolder();
+            a = fullfile(folder, "a.pcsession.json");
+            b = fullfile(folder, "b.pcsession.json");
+            testCase.write(a, phasecont.internal.sessionCodec.readFile(testCase.fixture()));
+            testCase.write(b, phasecont.internal.sessionCodec.readFile(v2));
+            testCase.verifyEqual(string(fileread(b)), string(fileread(a)));
         end
     end
 
