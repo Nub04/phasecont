@@ -64,12 +64,14 @@ impl IrModel {
     /// lowered right sides; `JacU` and `JacP` differentiate them symbolically, column by
     /// column. `Dir` builds the multilinear form (see `multi`) and refuses a slot count
     /// outside 1..=5 with an `Unsupported` error. The error is `TooLarge` when the DAG
-    /// passes its node limit.
+    /// passes its node limit, and `Unsupported` when a derivative reaches a function whose
+    /// body is not set (its derivative would be NaN); both leave the model as it was.
     pub fn entry(&mut self, kind: &EntryKind) -> Result<Entry, IrError> {
         if let Some(e) = self.entries.get(kind) {
             return Ok(e.clone());
         }
         let cp = self.dag.checkpoint();
+        let hits0 = self.dag.missing_hits();
         let outputs = match kind {
             EntryKind::F => self.f.clone(),
             EntryKind::Aux => self.aux.clone(),
@@ -81,6 +83,16 @@ impl IrModel {
                         IrErrorKind::Unsupported,
                         DUMMY_SPAN,
                         "a directional entry takes 1 to 5 slots",
+                    ));
+                }
+                // The jet units that differentiate a call to higher order are not built
+                // yet, so a call would give a NaN form; refuse instead (SPEC section 8af-5).
+                if self.f.iter().any(|&fi| self.dag.has_call(fi)) {
+                    return Err(IrError::new(
+                        IrErrorKind::Unsupported,
+                        DUMMY_SPAN,
+                        "a directional entry of a model that calls a user function is not \
+                         supported yet",
                     ));
                 }
                 let (n, n_p) = (self.n(), self.n_p());
@@ -96,6 +108,22 @@ impl IrModel {
                 IrErrorKind::TooLarge,
                 DUMMY_SPAN,
                 "the derivative needs more nodes than the limit",
+            ));
+        }
+        if self.dag.missing_hits() != hits0 {
+            let name = self
+                .dag
+                .missing_body()
+                .and_then(|u| self.dag.unit(u))
+                .map_or_else(|| "?".to_string(), |u| u.name.clone());
+            self.rollback(&cp);
+            return Err(IrError::new(
+                IrErrorKind::Unsupported,
+                DUMMY_SPAN,
+                format!(
+                    "the derivative calls function `{name}`, whose body is not set; \
+                     every function body must be set before a derivative is built"
+                ),
             ));
         }
         let e = Entry {
