@@ -28,6 +28,14 @@ function br = continuation(m, start, options)
 %   points; LC.cycle(i) returns the orbit at point i. Detect and Switch do
 %   not apply.
 %
+%   LC = phasecont.continuation(M, TR, Type = "LC", Free = "r", NTST = 40,
+%   NCOL = 4) starts from TR, a phasecont.Trajectory from simulate or a
+%   struct with fields t, x and p as for HOM below, whose end lies on or
+%   near a cycle. Without Period the period is the time since the latest
+%   close return of the orbit to its last point, found where the orbit
+%   last crossed the plane through that point normal to f there; a warning
+%   names it. Period = T takes the last T time units of the orbit instead.
+%
 %   C = phasecont.continuation(M, PT, Type = "PD", Free = ["a" "b"])
 %   follows the curve of period-doubling points of cycles through PT, a PD
 %   point of an LC branch, with a the free parameter of that branch. Type =
@@ -200,6 +208,9 @@ function br = continuation(m, start, options)
 %     InclinationFlips  true adds the inclination flips IFS and IFU to the
 %                codim-2 tests of a HOM curve, at the cost of one linear solve
 %                per point (logical scalar, default false); Type "HOM" only
+%     Period     period of the start orbit of an LC run from a Trajectory or
+%                a struct (real scalar above 0, at most the length of the
+%                run); found from the orbit when not given
 %     MeshAdapt  number of continuation steps between two mesh adaptations of
 %                a cycle or homoclinic orbit; 0 keeps the start mesh (integer
 %                of at least 0, engine default 3, and 0 for a delay "LC");
@@ -255,6 +266,7 @@ arguments
     options.Params = []
     options.InclinationFlips = []
     options.MeshAdapt = []
+    options.Period = []
     options.Roots = []
     options.Omega = missing
     options.Lyapunov = missing
@@ -369,6 +381,11 @@ if isDelayCycle
     end
 end
 isCycle = type == "LC";
+if ~isempty(options.Period) && (~isCycle || isDelayCycle)
+    error("phasecont:model:badOption", ...
+        "Period applies to Type = ""LC"" from a Trajectory or a struct only.");
+end
+detected = [];
 % A curve of cycles has two free parameters like an LP or H curve.
 isCycleCurve = ~isMapCurve && (type == "LPC" || type == "PD" || type == "NS");
 isHom = type == "HOM";
@@ -467,7 +484,7 @@ if isDelayCycle
     from = "";
     mesh = [];
 elseif isCycle
-    [u0, p, from, mesh] = cycleStart(m, start, options.Params);
+    [u0, p, from, mesh, detected] = cycleStart(m, start, options, grid);
 elseif isCycleCurve
     [u0, p, mesh, grid] = curveCycleStart(m, start, options.Params, type);
     if ~isempty(options.NTST)
@@ -683,10 +700,19 @@ elseif isCycle
     yrow = 1 + varIdx + n*(0:grid(1)*grid(2));
 end
 lines = gobjects(1, 0);
-if options.Plot
-    out = phasecont.internal.runLoop(m, problem, u0, p, @drawLive);
-else
-    out = phasecont.internal.runLoop(m, problem, u0, p);
+try
+    if options.Plot
+        out = phasecont.internal.runLoop(m, problem, u0, p, @drawLive);
+    else
+        out = phasecont.internal.runLoop(m, problem, u0, p);
+    end
+catch err
+    if isempty(detected) || ~startsWith(err.identifier, "phasecont:engine:")
+        rethrow(err);
+    end
+    error(err.identifier, "%s\nThe start used the detected period T = %.6g. " + ...
+        "Pass Period to give the period, or simulate longer so the orbit " + ...
+        "settles onto the cycle.", err.message, detected.Period);
 end
 st = out.Status;
 nb = numel(st.branches);
@@ -939,11 +965,26 @@ else
 end
 end
 
-function [u0, p, from, mesh] = cycleStart(m, start, params)
+function [u0, p, from, mesh, detected] = cycleStart(m, start, options, grid)
 % Start values of an LC run. A point of a cycle branch (its Data has the
-% period) must be a PD point; anything else goes to startValues and is
-% taken as a Hopf point, which the engine checks.
+% period) must be a PD point. A Trajectory or a struct with fields t, x and
+% p is an orbit (orbitStart). Anything else goes to startValues and is
+% taken as a Hopf point, which the engine checks. DETECTED is empty unless
+% the period was found from the orbit.
+params = options.Params;
 mesh = [];
+detected = [];
+isOrbit = isa(start, "phasecont.Trajectory") || (isstruct(start) ...
+    && isscalar(start) && all(isfield(start, ["t" "x" "p"])));
+if ~isOrbit && ~isempty(options.Period)
+    error("phasecont:model:badOption", ...
+        "Period applies to Type = ""LC"" from a Trajectory or a struct only.");
+end
+if isOrbit
+    [u0, p, detected] = orbitStart(m, start, options, grid);
+    from = "orbit";
+    return
+end
 if isa(start, "phasecont.Point") && isscalar(start) && isstruct(start.Data) ...
         && isfield(start.Data, "period")
     if start.Label ~= "PD"
@@ -1059,16 +1100,200 @@ elseif isstruct(start) && isscalar(start) && all(isfield(start, ["t" "x" "p"]))
     grid = [countOption(options.NTST, "NTST", "HOM from a struct"), ...
         countOption(options.NCOL, "NCOL", "HOM from a struct")];
     period = t(end) - t(1);
-    % A uniform mesh: its base points are equally spaced over [0, 1].
-    tau = (0:grid(1)*grid(2)).' / (grid(1)*grid(2));
-    xs = interp1(t, double(x), t(1) + tau*period, "pchip");
-    u0 = [reshape(xs.', [], 1); period];
+    u0 = [resampleOrbit(t, x, 1, t(1), period, grid); period];
     mesh = [];
     from = "orbit";
 else
     error("phasecont:model:badStart", ...
         "A HOM curve starts from one LC Branch or from a struct with fields t, x and p.");
 end
+end
+
+function [u0, p, detected] = orbitStart(m, start, options, grid)
+% Start values of an LC run from a simulated orbit: a Trajectory, or a
+% struct with fields t, x and p. The start is the last period of the orbit
+% on a uniform mesh, followed by the period. The period is options.Period
+% or, when that is empty, the time since the latest close return of the
+% orbit to its last point (lastReturn). DETECTED is the struct of
+% lastReturn, and is empty with Period.
+n = numel(m.Variables);
+if isa(start, "phasecont.Trajectory")
+    if ~isscalar(start)
+        error("phasecont:model:badStart", "An LC run starts from one Trajectory.");
+    end
+    if ~isempty(start.Model) && start.Model ~= m
+        error("phasecont:model:badStart", ...
+            "The start trajectory belongs to a different model.");
+    end
+    if start.Map
+        error("phasecont:model:badStart", ...
+            "An LC run does not start from the iterates of a map.");
+    end
+    t = start.T;
+    x = start.X;
+    p0 = start.P;
+    if numel(p0) ~= numel(m.Parameters)
+        error("phasecont:model:badStart", ...
+            "The start trajectory needs %d parameters.", numel(m.Parameters));
+    end
+else
+    t = start.t;
+    x = start.x;
+    p0 = [];
+end
+if ~(isnumeric(t) && isreal(t) && isvector(t) && numel(t) >= 2 ...
+        && all(isfinite(t)) && all(diff(t(:)) > 0))
+    error("phasecont:model:badStart", ...
+        "The orbit needs at least two finite, increasing times.");
+end
+t = double(t(:));
+k = numel(t);
+if ~(isnumeric(x) && isreal(x) && isequal(size(x), [k n]) ...
+        && all(isfinite(x), "all"))
+    error("phasecont:model:badStart", ...
+        "The orbit states must be %d-by-%d, one row of finite states per time.", ...
+        k, n);
+end
+if ~isa(x, "double")
+    x = double(x);
+end
+if isempty(p0)
+    if isempty(start.p) && ~isstruct(start.p)
+        error("phasecont:model:badStart", "The field p must hold the parameters.");
+    end
+    p0 = m.paramVector(start.p);
+end
+if ~m.Autonomous
+    error("phasecont:model:badStart", ...
+        "An LC run from an orbit needs a model that does not use t.");
+end
+period = options.Period;
+detected = [];
+if isempty(period)
+    [i, tc, detected] = lastReturn(m, t, x, p0);
+    period = detected.Period;
+    D = detected.Size;
+    msg = sprintf("The LC start uses the detected period T = %.6g: the " + ...
+        "orbit came back to within %.3g (%.2g of its size) of its last " + ...
+        "point at t = %.6g.", period, detected.Distance, ...
+        detected.Distance/D, tc);
+    if ~isempty(detected.Shorter)
+        msg = msg + sprintf(" A later return, T = %.6g, was %.3g (%.2g " + ...
+            "of its size) away and was not taken, so T may be a multiple " + ...
+            "of the period.", detected.Shorter.Period, ...
+            detected.Shorter.Distance, detected.Shorter.Distance/D);
+    end
+    if ~isempty(detected.Closest)
+        msg = msg + sprintf(" The closest return was at T = %.6g, " + ...
+            "%.3g (%.2g of its size) away.", detected.Closest.Period, ...
+            detected.Closest.Distance, detected.Closest.Distance/D);
+    end
+    warning("phasecont:continuation:detectedPeriod", "%s Pass Period " + ...
+        "to set the period.", msg);
+else
+    if ~(isnumeric(period) && isreal(period) && isscalar(period) ...
+            && isfinite(period) && period > 0 && period <= t(k) - t(1))
+        error("phasecont:model:badOption", ...
+            "Period must be a real scalar above 0 and at most %.6g, the " + ...
+            "length of the orbit.", t(k) - t(1));
+    end
+    period = double(period);
+    tc = t(k) - period;
+    i = min(k - 1, max(1, find(t <= tc, 1, "last")));
+end
+u0 = [resampleOrbit(t, x, i, tc, period, grid); period];
+p = overrideParams(m, p0, options.Params);
+end
+
+function [ic, tc, r] = lastReturn(m, t, x, p)
+% The latest close return of the orbit (t, x) to its last point xe. A
+% crossing is an interval [t(i), t(i+1)], i+1 < k, where g = (x - xe)*fe
+% goes from below 0 to at least 0, with fe = f(xe): the orbit passes the
+% plane through xe normal to fe in the direction it has at the end. The
+% crossing times come from bisection on the pchip interpolant. Of the
+% crossings within max(2*dmin, 1e-3*D) of xe, where dmin is the closest
+% and D the largest distance of a row from xe, the latest is taken, so a
+% settled orbit gives one period and not a multiple of it. R has the
+% fields Period, Time, Distance and Size (D) of the pick, Shorter, the
+% latest crossing after the pick (a shorter period that was rejected), and
+% Closest, the crossing at dmin when it is not the pick, as structs with
+% Period and Distance, or [] when there is none. Floor is true when only
+% 1e-3*D, not 2*dmin, admitted the pick.
+k = numel(t);
+xe = x(k, :);
+fe = m.rhs(xe.', p).';
+if ~all(isfinite(fe)) || ~any(fe)
+    error("phasecont:model:badStart", ...
+        "f is zero or not finite at the last point of the orbit, so it " + ...
+        "does not end on a cycle. Pass Period or simulate from another state.");
+end
+% Blocks of rows keep the temporaries small for a long orbit.
+block = 16384;
+g = zeros(k, 1);
+D = 0;
+for a = 1:block:k
+    b = min(k, a + block - 1);
+    dx = x(a:b, :) - xe;
+    g(a:b) = dx*fe.';
+    D = max(D, sqrt(max(sum(dx.^2, 2))));
+end
+cand = find(g(1:k-2) < 0 & g(2:k-1) >= 0);
+if isempty(cand)
+    error("phasecont:model:badStart", ...
+        "The orbit never comes back to the plane through its last point. " + ...
+        "Simulate longer, or pass Period.");
+end
+nc = numel(cand);
+tcs = zeros(nc, 1);
+ds = zeros(nc, 1);
+j = 1;
+while j <= nc
+    % The crossings whose rows fit in one block share one pchip, built on
+    % one row past each end. A pchip slope at an interior node depends only
+    % on its two neighbors, so this equals the pchip of the whole orbit.
+    last = find(cand <= cand(j) + block, 1, "last");
+    sel = j:last;
+    a = max(1, cand(j) - 1);
+    b = min(k, cand(last) + 2);
+    pp = pchip(t(a:b), x(a:b, :).');
+    lo = t(cand(sel)).';
+    hi = t(cand(sel) + 1).';
+    for it = 1:60
+        mid = (lo + hi)/2;
+        up = fe*(ppval(pp, mid) - xe.') >= 0;
+        hi(up) = mid(up);
+        lo(~up) = mid(~up);
+    end
+    tcs(sel) = hi;
+    ds(sel) = sqrt(sum((ppval(pp, hi) - xe.').^2, 1));
+    j = last + 1;
+end
+[dmin, imin] = min(ds);
+pick = find(ds <= max(2*dmin, 1e-3*D), 1, "last");
+ic = cand(pick);
+tc = tcs(pick);
+r = struct("Period", t(k) - tc, "Time", tc, "Distance", ds(pick), ...
+    "Size", D, "Shorter", [], "Closest", [], "Floor", ds(pick) > 2*dmin);
+if pick < nc
+    r.Shorter = struct("Period", t(k) - tcs(nc), "Distance", ds(nc));
+end
+if imin ~= pick
+    r.Closest = struct("Period", t(k) - tcs(imin), "Distance", dmin);
+end
+end
+
+function u = resampleOrbit(t, x, i, tc, period, grid)
+% The orbit from tc, which lies in [t(i), t(i+1)], to tc + period = t(end)
+% at the NTST*NCOL+1 equally spaced base points of a uniform mesh, by pchip,
+% point-major. Only the rows from i-1 on are used, which gives the same
+% values as the pchip of the whole orbit. The last time is t(end) exactly.
+M = grid(1)*grid(2);
+a = max(1, i - 1);
+q = tc + (0:M).'/M*period;
+q(end) = t(end);
+q = min(q, t(end));
+xs = interp1(t(a:end), x(a:end, :), q, "pchip");
+u = reshape(xs.', [], 1);
 end
 
 function p = overrideParams(m, p, params)
