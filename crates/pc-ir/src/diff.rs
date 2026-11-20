@@ -163,7 +163,7 @@ pub(crate) fn diff_children(op: &Op, f: &mut dyn FnMut(NodeId)) {
     match *op {
         Op::Cmp(..) | Op::And(..) | Op::Or(..) | Op::Not(_) | Op::TableSlope(..) => {}
         Op::Call1(Fn1::Floor | Fn1::Ceil | Fn1::Heav | Fn1::Sign, _) => {}
-        Op::Select(_, a, b) => {
+        Op::Select(_, a, b) | Op::If(_, a, b) => {
             f(a);
             f(b);
         }
@@ -293,7 +293,8 @@ fn rule(dag: &mut Dag, memo: &HashMap<(NodeId, Wrt), NodeId>, node: NodeId, wrt:
             call2_rule(dag, f, node, (a, da), (b, db))
         }
         Op::Cmp(..) | Op::And(..) | Op::Or(..) | Op::Not(_) | Op::TableSlope(..) => dag.konst(0.0),
-        Op::Select(c, a, b) => {
+        // `select` makes an `If` again when an arm of the derivative reaches a call.
+        Op::Select(c, a, b) | Op::If(c, a, b) => {
             let (da, db) = (dc(dag, a), dc(dag, b));
             dag.select(c, da, db)
         }
@@ -301,6 +302,8 @@ fn rule(dag: &mut Dag, memo: &HashMap<(NodeId, Wrt), NodeId>, node: NodeId, wrt:
             let da = dc(dag, a);
             call_term(dag, da, a, |g| g.table_slope(id, a))
         }
+        // STAGE1-WIP: tangent units replace this.
+        Op::Arg(_) | Op::Call(..) | Op::Out(..) => dag.konst(f64::NAN),
     }
 }
 

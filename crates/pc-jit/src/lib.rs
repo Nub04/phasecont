@@ -81,6 +81,9 @@ pub enum JitError {
     Ir(pc_ir::IrError),
     /// An argument of `CompiledModel::call` has the wrong length.
     BadLength(String),
+    /// The entry uses a construct that the JIT does not lower yet, such as a recursive
+    /// function call (SPEC 8af-5, stage 2).
+    Unsupported(String),
 }
 
 impl std::fmt::Display for JitError {
@@ -90,6 +93,7 @@ impl std::fmt::Display for JitError {
             JitError::MissingImport(m) => write!(f, "missing import: {m}"),
             JitError::Ir(e) => write!(f, "ir: {e}"),
             JitError::BadLength(m) => write!(f, "bad length: {m}"),
+            JitError::Unsupported(m) => write!(f, "not supported by the JIT: {m}"),
         }
     }
 }
@@ -122,6 +126,12 @@ fn compile_as(
     dag: &Dag,
     float: Float,
 ) -> Result<JitEntries, JitError> {
+    if entries
+        .iter()
+        .any(|(_, e)| e.outputs.iter().any(|&o| dag.has_call(o)))
+    {
+        return Err(JitError::Unsupported("recursive function call".into()));
+    }
     // The guard exists from here on; any `?` below drops it and frees the module.
     let mut je = JitEntries::new(float)?;
     #[cfg(test)]

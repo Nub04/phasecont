@@ -67,6 +67,7 @@ pub fn unsupported_op(op: &Op) -> Option<&'static str> {
         Op::Dir(_) => Some("directional derivative input"),
         Op::Table(..) => Some("table"),
         Op::TableSlope(..) => Some("table slope"),
+        Op::Arg(_) | Op::Call(..) | Op::If(..) | Op::Out(..) => Some("recursive function call"),
         Op::Call1(f, _) => match f {
             Fn1::Erf => Some("erf"),
             Fn1::Erfc => Some("erfc"),
@@ -418,7 +419,13 @@ pub fn emit_rhs(
             ),
             Op::Not(a) => format!("({} == PC_ZERO) ? PC_ONE : PC_ZERO", v(a.0)),
             Op::Select(c, a, d) => format!("({} != PC_ZERO) ? {} : {}", v(c.0), v(a.0), v(d.0)),
-            Op::Dir(_) | Op::Table(..) | Op::TableSlope(..) => unreachable!("refused above"),
+            Op::Dir(_)
+            | Op::Table(..)
+            | Op::TableSlope(..)
+            | Op::Arg(_)
+            | Op::Call(..)
+            | Op::If(..)
+            | Op::Out(..) => unreachable!("refused above"),
         };
         let _ = writeln!(b, "    const pc_real {id} = {expr};");
     }

@@ -144,6 +144,9 @@ pub enum CNameError {
     },
     /// The C identifier of a name is reserved; see [`emit_c`].
     Reserved { name: String, ident: String },
+    /// The entry reads a recursive function call, which the C emitter does not lower yet
+    /// (SPEC 8af-5, stage 3).
+    Recursive { name: String },
 }
 
 impl fmt::Display for CNameError {
@@ -163,6 +166,10 @@ impl fmt::Display for CNameError {
                     "entry {name:?} maps to C name {ident}, which is reserved"
                 )
             }
+            CNameError::Recursive { name } => write!(
+                f,
+                "entry {name:?} calls a recursive function, which compiled C does not support yet"
+            ),
         }
     }
 }
@@ -407,6 +414,8 @@ fn node(out: &mut String, dag: &Dag, id: NodeId, lens: &Lens, table_ok: &dyn Fn(
         Op::Or(a, b) => format!("({} != 0.0 || {} != 0.0) ? 1.0 : 0.0", var(a), var(b)),
         Op::Not(a) => format!("({} == 0.0) ? 1.0 : 0.0", var(a)),
         Op::Select(c, a, b) => format!("({} != 0.0) ? {} : {}", var(c), var(a), var(b)),
+        // `emit_c_tagged` refuses an entry that reads one of these.
+        Op::Arg(_) | Op::Call(..) | Op::If(..) | Op::Out(..) => nan_const(),
         Op::Table(tid, a) if table_ok(tid) => {
             format!("pc_math->table(pc_table_{tid}.d, {})", var(a))
         }
@@ -494,6 +503,12 @@ pub fn emit_c_tagged(ir: &IrModel, entries: &[(String, &Entry)]) -> Result<Emitt
     }
 
     let dag = &ir.dag;
+    if let Some((name, _)) = entries
+        .iter()
+        .find(|(_, e)| e.outputs.iter().any(|&o| dag.has_call(o)))
+    {
+        return Err(CNameError::Recursive { name: name.clone() });
+    }
     let (n, n_p) = (ir.n(), ir.n_p());
     let lives: Vec<Vec<bool>> = entries
         .iter()

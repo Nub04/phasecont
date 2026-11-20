@@ -140,14 +140,27 @@ pub fn eval_op(
         }
         Op::Table(id, a) => math::table(table(id), arg(a)),
         Op::TableSlope(id, a) => math::table_slope(table(id), arg(a)),
+        Op::If(c, a, b) => {
+            if arg(c) != 0.0 {
+                arg(a)
+            } else {
+                arg(b)
+            }
+        }
+        // These take their values from a call frame, which only the frame machine
+        // (`crate::machine`) has.
+        Op::Arg(_) | Op::Call(..) | Op::Out(..) => f64::NAN,
     }
 }
 
 /// Calls `f` on each child of `op`, in operand order.
 pub fn children(op: &Op, f: &mut dyn FnMut(NodeId)) {
     match *op {
-        Op::Const(_) | Op::Var(_) | Op::Param(_) | Op::Dir(_) => {}
+        // A call's operands are its arguments, which live in a side table: see
+        // `Dag::operands`, which visits them.
+        Op::Const(_) | Op::Var(_) | Op::Param(_) | Op::Dir(_) | Op::Arg(_) | Op::Call(..) => {}
         Op::Neg(a)
+        | Op::Out(a, _)
         | Op::PowI(a, _)
         | Op::Call1(_, a)
         | Op::Not(a)
@@ -166,7 +179,7 @@ pub fn children(op: &Op, f: &mut dyn FnMut(NodeId)) {
             f(a);
             f(b);
         }
-        Op::Select(c, a, b) => {
+        Op::Select(c, a, b) | Op::If(c, a, b) => {
             f(c);
             f(a);
             f(b);
@@ -184,7 +197,7 @@ pub fn live_set(dag: &Dag, outputs: &[NodeId]) -> Vec<bool> {
     }
     for i in (0..dag.len()).rev() {
         if live[i] {
-            children(dag.op(NodeId(i as u32)), &mut |c| {
+            dag.operands(dag.op(NodeId(i as u32)), &mut |c| {
                 if let Some(l) = live.get_mut(c.0 as usize) {
                     *l = true;
                 }
@@ -320,13 +333,15 @@ fn err_op(
             mulz(da, err(a)) + mulz(db, err(b)) + 2.0 * ar
         }
         Op::Cmp(..) | Op::And(..) | Op::Or(..) | Op::Not(_) | Op::TableSlope(..) => 0.0,
-        Op::Select(c, a, b) => {
+        Op::Select(c, a, b) | Op::If(c, a, b) => {
             if val(c) != 0.0 {
                 err(a)
             } else {
                 err(b)
             }
         }
+        // The frame machine carries the bounds of these itself.
+        Op::Arg(_) | Op::Call(..) | Op::Out(..) => f64::NAN,
         Op::Table(id, a) => {
             let t = dag
                 .tables

@@ -120,6 +120,67 @@ pub enum Op {
     /// Table id into [`Dag::tables`], then the argument.
     Table(u32, NodeId),
     TableSlope(u32, NodeId),
+    // The four ops of recursive functions (SPEC section 8af-5). They come last so the
+    // `Debug` text of every other op, which the recursion baseline hashes, stays the same.
+    /// Formal `k` of the unit whose body is being evaluated. Bodies of different units share
+    /// these leaves, since every unit reads its own frame.
+    Arg(u32),
+    /// `Call(unit, args)`: a call of unit `unit` (an index into [`Dag::units`]) with the
+    /// argument list `args` (an index into the argument lists, see [`Dag::args`]). Its
+    /// value is output 0 of the unit.
+    Call(u32, u32),
+    /// `cond != 0 ? a : b` that evaluates `cond` and then only the taken arm; a NaN
+    /// condition takes `a`, as in [`Op::Select`]. The builder makes it instead of a
+    /// `Select` exactly when an arm reaches a [`Op::Call`].
+    If(NodeId, NodeId, NodeId),
+    /// Output `j >= 1` of the `Call` node `call`, for a unit with several outputs.
+    Out(NodeId, u32),
+}
+
+/// A callable unit: a recursive function, or a derivative of one built by `diff` or
+/// `multi`. Its body is the list of output roots, set by [`Dag::set_body`].
+#[derive(Clone, Debug)]
+pub struct Unit {
+    /// The function name, for the depth cap message.
+    pub name: String,
+    pub arity: u32,
+    pub nout: u32,
+    body: Option<Body>,
+}
+
+#[derive(Clone, Debug)]
+struct Body {
+    outputs: Vec<NodeId>,
+    /// The frame slot of every node of the body that depends on an `Arg`. A `Call` node
+    /// takes `nout` consecutive slots, one per output of its unit.
+    locals: HashMap<NodeId, u32>,
+    nlocal: u32,
+    /// The slot of `Arg(k)`, or `None` when the body does not read formal `k`.
+    arg_slots: Vec<Option<u32>>,
+}
+
+impl Unit {
+    /// The output roots, or `None` before the body is set.
+    pub fn outputs(&self) -> Option<&[NodeId]> {
+        self.body.as_ref().map(|b| b.outputs.as_slice())
+    }
+
+    /// The frame slot of node `id`, when `id` depends on an `Arg` and is in the body.
+    pub fn local(&self, id: NodeId) -> Option<u32> {
+        self.body.as_ref().and_then(|b| b.locals.get(&id).copied())
+    }
+
+    /// The number of frame slots of one call.
+    pub fn nlocal(&self) -> u32 {
+        self.body.as_ref().map_or(0, |b| b.nlocal)
+    }
+
+    /// The frame slot of formal `k`, when the body reads it.
+    pub fn arg_slot(&self, k: u32) -> Option<u32> {
+        self.body
+            .as_ref()
+            .and_then(|b| b.arg_slots.get(k as usize).copied().flatten())
+    }
 }
 
 /// The size of a [`Dag`] at one moment, from [`Dag::checkpoint`].
@@ -128,6 +189,8 @@ pub struct Checkpoint {
     nodes: usize,
     tables: usize,
     exceeded: bool,
+    arglists: usize,
+    units: usize,
 }
 
 impl Checkpoint {
@@ -149,6 +212,15 @@ pub struct Dag {
     pub tables: Vec<Vec<f64>>,
     cap: usize,
     exceeded: bool,
+    /// `has_call[i]`: node `i` is a `Call` or `Out` or has an operand that has one.
+    has_call: Vec<bool>,
+    /// `arg_dep[i]`: node `i` is an `Arg` or has an operand that depends on one.
+    arg_dep: Vec<bool>,
+    arglists: Vec<Vec<NodeId>>,
+    arg_map: HashMap<Vec<NodeId>, u32>,
+    units: Vec<Unit>,
+    /// Derived units (tangent and jet units) by the key their builder gives them.
+    derived: HashMap<Vec<u32>, u32>,
 }
 
 impl Dag {
@@ -160,6 +232,12 @@ impl Dag {
             tables: Vec::new(),
             cap,
             exceeded: false,
+            has_call: Vec::new(),
+            arg_dep: Vec::new(),
+            arglists: Vec::new(),
+            arg_map: HashMap::new(),
+            units: Vec::new(),
+            derived: HashMap::new(),
         }
     }
 
@@ -173,18 +251,42 @@ impl Dag {
             nodes: self.nodes.len(),
             tables: self.tables.len(),
             exceeded: self.exceeded,
+            arglists: self.arglists.len(),
+            units: self.units.len(),
         }
     }
 
-    /// Drops every node and table added since `cp` and resets the limit flag to its value
-    /// then. Ids returned after `cp` are invalid afterwards, and a caller that keeps a memo
-    /// keyed on node ids must drop its entries past [`Checkpoint::len`].
+    /// Drops every node, table, argument list and unit added since `cp` and resets the
+    /// limit flag to its value then. A unit made before `cp` whose body reads a dropped node
+    /// loses its body, and a derived unit made after `cp` leaves the derived map. Ids
+    /// returned after `cp` are invalid afterwards, and a caller that keeps a memo keyed on
+    /// node ids must drop its entries past [`Checkpoint::len`].
     pub fn restore(&mut self, cp: &Checkpoint) {
         if cp.nodes < self.nodes.len() {
             for op in self.nodes.drain(cp.nodes..) {
                 self.map.remove(&op);
             }
             self.nonfinite.truncate(cp.nodes);
+            self.has_call.truncate(cp.nodes);
+            self.arg_dep.truncate(cp.nodes);
+        }
+        if cp.arglists < self.arglists.len() {
+            for l in self.arglists.drain(cp.arglists..) {
+                self.arg_map.remove(&l);
+            }
+        }
+        if cp.units < self.units.len() {
+            self.units.truncate(cp.units);
+            self.derived.retain(|_, u| (*u as usize) < cp.units);
+        }
+        let n = cp.nodes;
+        for u in &mut self.units {
+            if u.body
+                .as_ref()
+                .is_some_and(|b| b.outputs.iter().any(|o| o.0 as usize >= n))
+            {
+                u.body = None;
+            }
         }
         self.tables.truncate(cp.tables);
         self.exceeded = cp.exceeded;
@@ -235,10 +337,174 @@ impl Dag {
         }
         let id = NodeId(self.nodes.len() as u32);
         let nonfinite = self.value_may_be_nonfinite(&op);
+        let (mut has_call, mut arg_dep) = match op {
+            Op::Call(..) | Op::Out(..) => (true, false),
+            Op::Arg(_) => (false, true),
+            _ => (false, false),
+        };
+        self.operands(&op, &mut |c| {
+            has_call |= self.has_call.get(c.0 as usize).copied().unwrap_or(false);
+            arg_dep |= self.arg_dep.get(c.0 as usize).copied().unwrap_or(false);
+        });
         self.nodes.push(op);
         self.nonfinite.push(nonfinite);
+        self.has_call.push(has_call);
+        self.arg_dep.push(arg_dep);
         self.map.insert(op, id);
         id
+    }
+
+    /// Calls `f` on every operand of `op`, including the arguments of a [`Op::Call`],
+    /// which [`crate::eval::children`] does not visit. The body of a called unit is not an
+    /// operand: a walker that needs it goes through [`Dag::unit`].
+    pub fn operands(&self, op: &Op, f: &mut dyn FnMut(NodeId)) {
+        match *op {
+            Op::Call(_, l) => {
+                for &a in self.args(l) {
+                    f(a);
+                }
+            }
+            _ => crate::eval::children(op, f),
+        }
+    }
+
+    /// True when node `id` is a [`Op::Call`] or [`Op::Out`] or reaches one through its
+    /// operands. An id from another DAG gives false.
+    pub fn has_call(&self, id: NodeId) -> bool {
+        self.has_call.get(id.0 as usize).copied().unwrap_or(false)
+    }
+
+    /// True when node `id` is an [`Op::Arg`] or reaches one through its operands, so its
+    /// value differs from one call frame to the next.
+    pub fn arg_dep(&self, id: NodeId) -> bool {
+        self.arg_dep.get(id.0 as usize).copied().unwrap_or(false)
+    }
+
+    /// The argument list `l`, or an empty list for an unknown index.
+    pub fn args(&self, l: u32) -> &[NodeId] {
+        self.arglists.get(l as usize).map_or(&[], |v| v.as_slice())
+    }
+
+    /// The units, in the order they were added.
+    pub fn units(&self) -> &[Unit] {
+        &self.units
+    }
+
+    /// Unit `u`, or `None` for an unknown index.
+    pub fn unit(&self, u: u32) -> Option<&Unit> {
+        self.units.get(u as usize)
+    }
+
+    /// Adds a unit of `arity` formals and `nout` outputs with no body yet, and returns its
+    /// index. `nout` is at least 1.
+    pub fn add_unit(&mut self, name: &str, arity: u32, nout: u32) -> u32 {
+        self.units.push(Unit {
+            name: name.to_string(),
+            arity,
+            nout: nout.max(1),
+            body: None,
+        });
+        (self.units.len() - 1) as u32
+    }
+
+    /// The derived unit stored under `key`, if any.
+    pub fn derived(&self, key: &[u32]) -> Option<u32> {
+        self.derived.get(key).copied()
+    }
+
+    /// Stores derived unit `u` under `key`. [`Dag::restore`] drops the entry with the unit.
+    pub fn set_derived(&mut self, key: Vec<u32>, u: u32) {
+        self.derived.insert(key, u);
+    }
+
+    /// Sets the body of unit `u` to the output roots `outputs`, one per output of the unit,
+    /// and assigns a frame slot to every node of the body that depends on an `Arg`. A `Call`
+    /// node takes one slot per output of its unit. Returns false, and leaves the unit as it
+    /// was, for an unknown unit, a wrong number of outputs or an id outside the DAG.
+    pub fn set_body(&mut self, u: u32, outputs: &[NodeId]) -> bool {
+        let Some(unit) = self.units.get(u as usize) else {
+            return false;
+        };
+        if outputs.len() != unit.nout as usize
+            || outputs.iter().any(|o| o.0 as usize >= self.nodes.len())
+        {
+            return false;
+        }
+        let arity = unit.arity as usize;
+        // Every node of a body has a smaller id than the largest output, so a walk down from
+        // the outputs in decreasing id order meets each local once.
+        let mut seen = std::collections::HashSet::new();
+        let mut stack: Vec<NodeId> = outputs
+            .iter()
+            .copied()
+            .filter(|&o| self.arg_dep(o))
+            .collect();
+        let mut found = Vec::new();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            found.push(id);
+            let op = *self.op(id);
+            self.operands(&op, &mut |c| {
+                if self.arg_dep(c) && !seen.contains(&c) {
+                    stack.push(c);
+                }
+            });
+        }
+        found.sort_unstable();
+        let mut locals = HashMap::with_capacity(found.len());
+        let mut arg_slots = vec![None; arity];
+        let mut next = 0u32;
+        for id in found {
+            locals.insert(id, next);
+            match *self.op(id) {
+                Op::Arg(k) => {
+                    if let Some(s) = arg_slots.get_mut(k as usize) {
+                        *s = Some(next);
+                    }
+                    next += 1;
+                }
+                Op::Call(c, _) => next += self.units.get(c as usize).map_or(1, |x| x.nout),
+                _ => next += 1,
+            }
+        }
+        self.units[u as usize].body = Some(Body {
+            outputs: outputs.to_vec(),
+            locals,
+            nlocal: next,
+            arg_slots,
+        });
+        true
+    }
+
+    /// Formal `k` of the unit whose body is being built.
+    pub fn arg(&mut self, k: u32) -> NodeId {
+        self.intern(Op::Arg(k))
+    }
+
+    /// A call of unit `u` with the arguments `args`; its value is output 0. A call is never
+    /// folded, not even with constant arguments, since its value comes from the frame
+    /// machine.
+    pub fn call(&mut self, u: u32, args: &[NodeId]) -> NodeId {
+        let l = match self.arg_map.get(args) {
+            Some(&l) => l,
+            None => {
+                self.arglists.push(args.to_vec());
+                let l = (self.arglists.len() - 1) as u32;
+                self.arg_map.insert(args.to_vec(), l);
+                l
+            }
+        };
+        self.intern(Op::Call(u, l))
+    }
+
+    /// Output `j` of the call node `call`. Output 0 is the call node itself.
+    pub fn out(&mut self, call: NodeId, j: u32) -> NodeId {
+        if j == 0 {
+            return call;
+        }
+        self.intern(Op::Out(call, j))
     }
 
     /// True when node `id` may be infinite or NaN at finite inputs. The derivative rules use
@@ -279,6 +545,9 @@ impl Dag {
             Op::PowI(a, _) => crate::diff::partial_may_be_nonfinite(self, op) || nf(a),
             Op::Table(_, a) | Op::TableSlope(_, a) => nf(a),
             Op::Call2(_, a, b) => crate::diff::partial_may_be_nonfinite(self, op) || nf(a) || nf(b),
+            // Nothing is known about a formal or the value of a call.
+            Op::Arg(_) | Op::Call(..) | Op::Out(..) => true,
+            Op::If(_, a, b) => nf(a) || nf(b),
         }
     }
 
@@ -361,7 +630,8 @@ impl Dag {
         if self.is_zero(a) {
             return self.neg(b);
         }
-        if a == b {
+        // `f(n) - f(n)` stays, so a depth cap error inside the call is not folded away.
+        if a == b && !self.has_call(a) {
             return self.konst(0.0);
         }
         self.intern(op)
@@ -372,7 +642,9 @@ impl Dag {
         if let Some(c) = self.fold(op, &[a, b]) {
             return c;
         }
-        if self.is_zero(a) || self.is_zero(b) {
+        // A zero factor folds to +0 unless the other factor reaches a call, whose depth cap
+        // error must not be folded away.
+        if (self.is_zero(a) && !self.has_call(b)) || (self.is_zero(b) && !self.has_call(a)) {
             return self.konst(0.0);
         }
         if self.is_one(b) {
@@ -395,11 +667,12 @@ impl Dag {
             return c;
         }
         // A static zero factor folds to +0 whatever `t` is, as in `mul`.
-        if self.is_zero(p) {
+        if self.is_zero(p) && !self.has_call(t) {
             return self.konst(0.0);
         }
         match self.cval(t) {
-            Some(0.0) => return self.konst(0.0),
+            Some(0.0) if !self.has_call(p) => return self.konst(0.0),
+            Some(0.0) => {}
             Some(c) if c.is_finite() => return self.mul(t, p),
             _ => {}
         }
@@ -415,7 +688,7 @@ impl Dag {
         if let Some(c) = self.fold(op, &[n, d]) {
             return c;
         }
-        if self.is_zero(n) {
+        if self.is_zero(n) && !self.has_call(d) {
             return self.konst(0.0);
         }
         self.intern(op)
@@ -435,6 +708,11 @@ impl Dag {
     /// `a^n` by repeated multiplication (see [`Op::PowI`]). For `|n| > 16` this returns a
     /// `Call2(Pow, a, Const(n as f64))` node instead.
     pub fn powi(&mut self, a: NodeId, n: i32) -> NodeId {
+        if n == 0 && self.has_call(a) {
+            // `a^0` is 1, but the call in `a` still runs so its depth cap error shows.
+            let e = self.konst(0.0);
+            return self.call2(Fn2::Pow, a, e);
+        }
         if n == 0 {
             return self.konst(1.0);
         }
@@ -505,8 +783,12 @@ impl Dag {
             // NaN != 0 is true, so a NaN condition picks `a`.
             return if cv != 0.0 { a } else { b };
         }
-        if a == b {
+        if a == b && !self.has_call(c) {
             return a;
+        }
+        // An arm that reaches a call is evaluated only when it is taken.
+        if self.has_call(a) || self.has_call(b) {
+            return self.intern(Op::If(c, a, b));
         }
         self.intern(Op::Select(c, a, b))
     }

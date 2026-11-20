@@ -287,7 +287,7 @@ impl<'a> Builder<'a> {
                     };
                 }
             }
-            Op::Select(cond, a, b) => {
+            Op::Select(cond, a, b) | Op::If(cond, a, b) => {
                 let (a, b) = (self.get(a), self.get(b));
                 for s in 1..self.size {
                     c[s] = self.dag.select(cond, a[s], b[s]);
@@ -308,6 +308,13 @@ impl<'a> Builder<'a> {
             }
             Op::Call2(_, a, b) => self.faa(id, op, &[a, b], &mut c),
             Op::Const(_) | Op::Dir(_) => {}
+            // STAGE1-WIP: jet units replace this.
+            Op::Arg(_) | Op::Call(..) | Op::Out(..) => {
+                let nan = self.dag.konst(f64::NAN);
+                for x in c.iter_mut().skip(1) {
+                    *x = nan;
+                }
+            }
         }
         c
     }
@@ -540,6 +547,20 @@ fn subst(dag: &mut Dag, node: NodeId, sub: &mut HashMap<NodeId, NodeId>) -> Node
         Op::TableSlope(t, a) => {
             let a = subst(dag, a, sub);
             dag.table_slope(t, a)
+        }
+        Op::If(c, a, b) => {
+            let (c, a, b) = (subst(dag, c, sub), subst(dag, a, sub), subst(dag, b, sub));
+            dag.select(c, a, b)
+        }
+        Op::Arg(_) => node,
+        Op::Call(u, l) => {
+            let args: Vec<NodeId> = dag.args(l).to_vec();
+            let args: Vec<NodeId> = args.into_iter().map(|a| subst(dag, a, sub)).collect();
+            dag.call(u, &args)
+        }
+        Op::Out(c, j) => {
+            let c = subst(dag, c, sub);
+            dag.out(c, j)
         }
     };
     sub.insert(node, r);

@@ -172,6 +172,10 @@ fn rebuild(src: &Dag) -> Result<Dag, String> {
             Op::Select(c, a, b) => dst.select(c, a, b),
             Op::Table(t, x) => dst.table(t, x),
             Op::TableSlope(t, x) => dst.table_slope(t, x),
+            // The generator builds no recursive functions.
+            ref op @ (Op::Arg(_) | Op::Call(..) | Op::If(..) | Op::Out(..)) => {
+                return Err(format!("node {i} {op:?} is not generated"));
+            }
         };
         if new != NodeId(i as u32) {
             return Err(format!(

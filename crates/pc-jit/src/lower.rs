@@ -347,6 +347,8 @@ pub(crate) fn build(
             Op::Var(k) => leaf(&mut b, x, k),
             Op::Param(k) => leaf(&mut b, p, k),
             Op::Dir(k) => leaf(&mut b, v, k),
+            // `compile_as` refuses an entry that reads one of these.
+            Op::Arg(_) | Op::Call(..) | Op::If(..) | Op::Out(..) => fnan(&mut b, fl),
             Op::Neg(a) => {
                 let a = arg(&mut b, &vals, a);
                 b.ins().fneg(a)

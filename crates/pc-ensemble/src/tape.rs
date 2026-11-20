@@ -37,6 +37,8 @@ fn remap(op: &Op, m: &[u32]) -> Op {
     let r = |id: NodeId| NodeId(m[id.0 as usize]);
     match *op {
         Op::Const(_) | Op::Var(_) | Op::Param(_) | Op::Dir(_) => *op,
+        // `Tape::build` refuses these before it remaps anything, and the evaluators give NaN.
+        Op::Arg(_) | Op::Call(..) | Op::If(..) | Op::Out(..) => *op,
         Op::Neg(a) => Op::Neg(r(a)),
         Op::Add(a, b) => Op::Add(r(a), r(b)),
         Op::Sub(a, b) => Op::Sub(r(a), r(b)),
@@ -241,7 +243,13 @@ fn eval_op<T: Real>(op: &Op, v: &[T], x: &[T], p: &[T]) -> T {
         Op::Not(u) => not(a(u)),
         Op::Select(c, u, w) => select(a(c), a(u), a(w)),
         // Refused when the tape is built.
-        Op::Dir(_) | Op::Table(..) | Op::TableSlope(..) => T::NAN,
+        Op::Dir(_)
+        | Op::Table(..)
+        | Op::TableSlope(..)
+        | Op::Arg(_)
+        | Op::Call(..)
+        | Op::If(..)
+        | Op::Out(..) => T::NAN,
     }
 }
 
@@ -432,7 +440,13 @@ impl<T: Real> CpuTape<T> {
             match *op {
                 Op::Const(b) => consts.add(b),
                 Op::PowI(_, k) if k <= 0 => consts.add(ONE_BITS),
-                Op::Dir(_) | Op::Table(..) | Op::TableSlope(..) => consts.add(nan_bits),
+                Op::Dir(_)
+                | Op::Table(..)
+                | Op::TableSlope(..)
+                | Op::Arg(_)
+                | Op::Call(..)
+                | Op::If(..)
+                | Op::Out(..) => consts.add(nan_bits),
                 _ => {}
             }
         }
@@ -460,7 +474,13 @@ impl<T: Real> CpuTape<T> {
                         assert!((j as usize) < np1, "op {i} reads parameter {j} of {np1}");
                         (nc + n + j as usize) as u32
                     }
-                    Op::Dir(_) | Op::Table(..) | Op::TableSlope(..) => consts.at[&nan_bits],
+                    Op::Dir(_)
+                    | Op::Table(..)
+                    | Op::TableSlope(..)
+                    | Op::Arg(_)
+                    | Op::Call(..)
+                    | Op::If(..)
+                    | Op::Out(..) => consts.at[&nan_bits],
                     Op::Neg(a) => lo.emit(Ins::Neg(c(a))),
                     Op::Add(a, b) => lo.emit(Ins::Add(c(a), c(b))),
                     Op::Sub(a, b) => lo.emit(Ins::Sub(c(a), c(b))),
