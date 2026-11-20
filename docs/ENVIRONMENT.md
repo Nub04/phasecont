@@ -121,12 +121,15 @@ Commands: `version`, `matlabroot`, `computer('arch')`, `mex.getCompilerConfigura
 | Driver library | `/usr/lib/wsl/lib/libcuda.so`, `libcuda.so.1`, `libcuda.so.1.1` | installed with the driver |
 | CUDA toolkit | `/usr/local/cuda`, nvcc release 13.4, V13.4.92 | `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4` |
 | NVRTC | `libnvrtc.so.13.4.92` | `bin\x64\nvrtc64_130_0.dll` with `nvrtc-builtins64_134.dll` |
+| Nsight Compute | `/usr/local/cuda/bin/ncu`, 2026.4.0.0 | `C:\Program Files\NVIDIA Corporation\Nsight Compute 2026.4.0` |
+| Nsight Systems | `/usr/local/cuda/bin/nsys`, 2026.5.2.323 | `C:\Program Files\NVIDIA Corporation\Nsight Systems 2026.5.2` |
+| Nsight Visual Studio Edition | none | `C:\Program Files\NVIDIA Corporation\Nsight Visual Studio Edition 2026.4` |
 
 On Windows, `CUDA_PATH` is unset and `CUDA_PATH_V13_4` is `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4`. The toolkit's NVRTC and the copy in MATLAB's `bin\win64` share the file name `nvrtc64_130_0.dll`. Their builtins files (`nvrtc-builtins64_134.dll` and `nvrtc-builtins64_131.dll`) suggest NVRTC 13.4 and 13.1. Spike S4 confirmed both with `nvrtcVersion`: a DLL inside MATLAB that loads the bare name `nvrtc64_130_0.dll` gets MATLAB's copy, NVRTC 13.1, and gets the toolkit's 13.4 only when it loads that file by absolute path first (`spikes/results/s4_matlab.txt`, `spikes/results/s4_matlab_preload.txt`).
 
 `gpuDevice` reports `DeviceSupported` 1 for this compute capability 12.0 card. `gpuArray` still needs Parallel Computing Toolbox, which the toolbox may use only on the optional `gpuArray` route.
 
-Commands: `nvidia-smi --query-gpu=name,compute_cap,driver_version,memory.total --format=csv` and plain `nvidia-smi`, in WSL and as `/mnt/c/Windows/System32/nvidia-smi.exe`; `/usr/local/cuda/bin/nvcc --version`; `cmd.exe /c 'echo %CUDA_PATH% & echo %CUDA_PATH_V13_4%'`; and directory listings of the toolkit and `/usr/lib/wsl/lib`.
+Commands: `nvidia-smi --query-gpu=name,compute_cap,driver_version,memory.total --format=csv` and plain `nvidia-smi`, in WSL and as `/mnt/c/Windows/System32/nvidia-smi.exe`; `/usr/local/cuda/bin/nvcc --version`; `ncu --version` and `nsys --version`; `cmd.exe /c 'echo %CUDA_PATH% & echo %CUDA_PATH_V13_4%'`; and directory listings of the toolkit and `/usr/lib/wsl/lib`.
 
 ## XPPAUT
 
