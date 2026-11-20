@@ -3,7 +3,8 @@
 //! `lower` takes the expanded model and the checker's [`ModelInfo`] and builds one
 //! [`Dag`] that holds the right sides of the states and of the `aux` quantities.
 //! Numbers, derived parameters, fixed quantities and user functions are inlined as
-//! subtrees. A fixed or derived quantity is lowered the first time something reads it,
+//! subtrees, except functions in a recursive component of the call graph: each of those is
+//! a callable unit of the DAG, whose body reads formal k as `Arg(k)` (SPEC section 8af-5). A fixed or derived quantity is lowered the first time something reads it,
 //! so a quantity that nothing reaches adds no node and does not make a model
 //! non-autonomous. The input must have no check errors; surprising input still
 //! produces an [`IrError`], never a panic.
@@ -99,6 +100,9 @@ struct Env<'a> {
     /// Derived parameters and fixed quantities: key to formula.
     named: HashMap<&'a str, &'a Expr>,
     funcs: HashMap<&'a str, (Vec<&'a str>, &'a Expr)>,
+    /// The functions of the recursive components (`ModelInfo::recursive`): key to the
+    /// declared name.
+    recursive: HashMap<&'a str, &'a str>,
     table_ids: HashMap<&'a str, u32>,
     par_values: Vec<f64>,
     init: Vec<f64>,
@@ -124,6 +128,10 @@ struct Lw<'e, 'a> {
     uses_t: bool,
     frames: Vec<Frame>,
     depth: usize,
+    /// The unit of each recursive function that a call reached.
+    units: HashMap<&'a str, u32>,
+    /// Units whose body is not lowered yet.
+    pending: Vec<&'a str>,
 }
 
 fn small_int(v: f64) -> Option<i32> {
@@ -150,6 +158,8 @@ impl<'e, 'a> Lw<'e, 'a> {
             uses_t: false,
             frames: Vec::new(),
             depth: 0,
+            units: HashMap::new(),
+            pending: Vec::new(),
         }
     }
 
@@ -335,6 +345,65 @@ impl<'e, 'a> Lw<'e, 'a> {
         }
     }
 
+    /// A call of the recursive function `key`: a `Call` of its unit, which is registered
+    /// here on the first call and gets its body in [`Lw::lower_bodies`].
+    fn recursive_call(
+        &mut self,
+        key: &'a str,
+        text: &str,
+        arity: usize,
+        args: &[NodeId],
+        span: Span,
+    ) -> NodeId {
+        if self.table_mode {
+            // A table formula renumbers the states, and its scratch DAG is evaluated
+            // once per table node by the eager evaluator.
+            return self.fail(
+                IrErrorKind::BadTable,
+                span,
+                format!("a table formula cannot call the recursive function `{text}`"),
+            );
+        }
+        let u = match self.units.get(key) {
+            Some(&u) => u,
+            None => {
+                let u = self.dag.add_unit(text, arity as u32, 1);
+                self.units.insert(key, u);
+                self.pending.push(key);
+                u
+            }
+        };
+        self.dag.call(u, args)
+    }
+
+    /// Lowers the body of every unit that a call reached, including units that only other
+    /// bodies call. A body reads formal k as `Arg(k)`, and the formals of the caller do not
+    /// leak in. Every body is set before any derivative is built.
+    fn lower_bodies(&mut self) {
+        let env = self.env;
+        while let Some(key) = self.pending.pop() {
+            let (Some(&u), Some((params, body))) = (self.units.get(key), env.funcs.get(key)) else {
+                continue;
+            };
+            let args = (0..params.len() as u32).map(|k| self.dag.arg(k)).collect();
+            let saved = std::mem::take(&mut self.frames);
+            self.frames.push(Frame {
+                params: params.iter().map(|p| (*p).to_string()).collect(),
+                args,
+            });
+            let n = self.expr(body);
+            self.frames = saved;
+            if !self.dag.set_body(u, &[n]) {
+                let name = env.recursive.get(key).copied().unwrap_or(key);
+                self.fail(
+                    IrErrorKind::TooLarge,
+                    body.span(),
+                    format!("the body of `{name}` cannot be built"),
+                );
+            }
+        }
+    }
+
     fn call(&mut self, name: &'a Ident, args: &'a [Expr], span: Span) -> NodeId {
         let key = name.key.as_str();
         let env = self.env;
@@ -347,6 +416,9 @@ impl<'e, 'a> Lw<'e, 'a> {
                 );
             }
             let nodes: Vec<NodeId> = args.iter().map(|a| self.expr(a)).collect();
+            if let Some(&text) = env.recursive.get(key) {
+                return self.recursive_call(key, text, params.len(), &nodes, span);
+            }
             if self.frames.len() >= MAX_DEPTH {
                 return self.fail(
                     IrErrorKind::TooLarge,
@@ -623,6 +695,7 @@ fn lower_impl(
         numbers: HashMap::new(),
         named: HashMap::new(),
         funcs: HashMap::new(),
+        recursive: HashMap::new(),
         table_ids: HashMap::new(),
         par_values: Vec::new(),
         init: Vec::new(),
@@ -669,6 +742,9 @@ fn lower_impl(
             StmtKind::Function { name, params, rhs } => {
                 let keys = params.iter().map(|p| p.key.as_str()).collect();
                 env.funcs.insert(name.key.as_str(), (keys, rhs));
+                if info.recursive.contains(&name.key) {
+                    env.recursive.insert(name.key.as_str(), name.text.as_str());
+                }
             }
             StmtKind::Table { name, rhs, .. } => {
                 env.table_ids.insert(name.key.as_str(), tables.len() as u32);
@@ -749,6 +825,7 @@ fn lower_impl(
 
     let f: Vec<NodeId> = rhs_of_state.iter().map(|e| lw.expr(e)).collect();
     let aux: Vec<NodeId> = aux_decl.iter().map(|(_, e)| lw.expr(e)).collect();
+    lw.lower_bodies();
     errors.append(&mut lw.errors);
     if lw.dag.exceeded() {
         let msg = "the model needs more nodes than the limit";

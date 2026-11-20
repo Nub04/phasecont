@@ -264,7 +264,7 @@ pub const CODES: &[(Code, Severity, &str)] = &[
     ),
     (Code(45), Severity::Error, "initial value given twice"),
     (Code(46), Severity::Error, "more than 9 function parameters"),
-    (Code(47), Severity::Error, "recursive function"),
+    (Code(47), Severity::Warning, "recursive function"),
     (Code(48), Severity::Error, "wrong number of arguments"),
     (
         Code(49),

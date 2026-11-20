@@ -817,11 +817,9 @@ fn jacobian_writes_every_output_slot() {
 /// of the model on the heap machine.
 const RUNAWAY: &str = "zz(n)=zz(n+1)+1\n";
 
-/// Interpreter for `src`, which may hold recursive functions. The check refuses recursion
-/// until the lowering of recursive functions lands, so the lowering of `stand_in` gives the
-/// sizes and tables.
-fn machine_interp(src: &str, stand_in: &str) -> Interp {
-    let (_, ir) = setup(stand_in);
+/// Interpreter for `src`, which may hold recursive functions.
+fn machine_interp(src: &str) -> Interp {
+    let (_, ir) = setup(src);
     let l = loaded(src);
     Interp::new(&l.expanded, &l.info, &ir)
 }
@@ -870,7 +868,7 @@ fn machine_matches_the_walker_bitwise() {
     for src in models {
         let (walker, _) = setup(src);
         assert!(!walker.interp.has_recursive);
-        let machine = Fallback::from_interp(machine_interp(&format!("{RUNAWAY}{src}"), src));
+        let machine = Fallback::from_interp(machine_interp(&format!("{RUNAWAY}{src}")));
         assert!(machine.interp.has_recursive);
         let n = walker.n;
         let kinds = [
@@ -904,7 +902,6 @@ fn machine_matches_the_walker_bitwise() {
 fn sum_interp() -> Interp {
     machine_interp(
         "par k=0\nsum(n)=if(n<=0)then(0)else(n+sum(n-1))\nx'=sum(k)\naux r=sum(k-1)\ndone\n",
-        "par k=0\nx'=-x\naux r=k\ndone\n",
     )
 }
 
@@ -962,10 +959,9 @@ fn recursion_reaches_the_cap_on_a_one_mib_stack() {
 fn deep_recursion_through_wrappers_fits_a_one_mib_stack() {
     on_small_stack(|| {
         for body in ["g(f(n-1))", "max(f(n-1),0)+1", "g(abs(f(n-1)))"] {
-            let it = machine_interp(
-                &format!("par k=0\ng(u)=u+1\nf(n)=if(n<=0)then(0)else({body})\nx'=f(k)\ndone\n"),
-                "par k=0\nx'=-x\ndone\n",
-            );
+            let it = machine_interp(&format!(
+                "par k=0\ng(u)=u+1\nf(n)=if(n<=0)then(0)else({body})\nx'=f(k)\ndone\n"
+            ));
             let mut f = [0.0];
             it.try_eval(&[0.0], &[999_999.0, 0.0], &mut f, &mut [])
                 .unwrap();
@@ -976,10 +972,7 @@ fn deep_recursion_through_wrappers_fits_a_one_mib_stack() {
 
 #[test]
 fn recursion_in_duals_on_the_machine() {
-    let it = machine_interp(
-        "par k=0\npw(x,n)=if(n<1)then(1)else(x*pw(x,n-1))\nx'=pw(x,k)\ndone\n",
-        "par k=0\nx'=-x\ndone\n",
-    );
+    let it = machine_interp("par k=0\npw(x,n)=if(n<1)then(1)else(x*pw(x,n-1))\nx'=pw(x,k)\ndone\n");
     let fb = Fallback::from_interp(it);
     let mut out = [0.0];
     for (x, n) in [(1.01f64, 50.0f64), (0.999, 20_000.0), (-1.2, 7.0)] {
@@ -1026,10 +1019,9 @@ fn running_out_of_memory_is_an_error() {
 
 #[test]
 fn an_untaken_branch_makes_no_call() {
-    let it = machine_interp(
-        &format!("par k=0\n{RUNAWAY}x'=if(k<0)then(0)else(zz(k))\ndone\n"),
-        "par k=0\nx'=-x\ndone\n",
-    );
+    let it = machine_interp(&format!(
+        "par k=0\n{RUNAWAY}x'=if(k<0)then(0)else(zz(k))\ndone\n"
+    ));
     let mut f = [7.0];
     it.try_eval(&[0.0], &[-1.0, 0.0], &mut f, &mut []).unwrap();
     assert_eq!(f[0], 0.0);
@@ -1050,7 +1042,6 @@ fn mutual_recursion_and_named_quantities_on_the_machine() {
     let it = machine_interp(
         "par k=0\nw=x*2\nev(n)=if(n==0)then(1)else(od(n-1))\nod(n)=if(n==0)then(0)else(ev(n-1))\n\
          h(n)=if(n<=0)then(w)else(h(n-1)+1)\nx'=ev(k)\naux o=od(k)\naux q=h(k)\ndone\n",
-        "par k=0\nx'=-x\naux o=k\naux q=k\ndone\n",
     );
     let (mut f, mut aux) = ([0.0], [0.0, 0.0]);
     for n in [0.0, 1.0, 6.0, 7.0, 100_001.0] {
@@ -1060,4 +1051,111 @@ fn mutual_recursion_and_named_quantities_on_the_machine() {
         assert_eq!(aux[0], if even { 0.0 } else { 1.0 }, "od({n})");
         assert_eq!(aux[1], 3.0 + n, "h({n})");
     }
+}
+
+/// Every entry of the fallback against the DAG evaluator, bit for bit, on recursive models
+/// that `lower` turns into units.
+#[test]
+fn machine_matches_the_dag_on_recursive_models() {
+    let models = [
+        "par k=3\npw(x,n)=if(n<1)then(1)else(x*pw(x,n-1))\nx'=pw(x,k)\ndone\n",
+        "par k=3\nf(n)=if(n<1)then(1)else(x*f(n-1))\nx'=f(k)\ndone\n",
+        "par k=4\nfact(n)=if(n<=1)then(1)else(n*fact(n-1))\nx'=fact(k)*x\ndone\n",
+        "par k=5\nev(n)=if(n==0)then(1)else(od(n-1))\nod(n)=if(n==0)then(0)else(ev(n-1)*x)\n\
+         x'=ev(k)+od(k)*x^2\naux q=od(k+1)\ndone\n",
+        "par k=7\nh(n)=if(n<1)then(0)else(if(n>5)then(h(n-1))else(x+h(n-1)))\nx'=h(k)\ndone\n",
+        "par k=6\ng(n)=(if(n>0)then(g(n-1))else(0))+(if(n>5)then(g(n-1))else(sin(x)))\n\
+         x'=g(k)\ndone\n",
+        // A formal used as an exponent: the DAG reads it as `Arg`, never a constant, so
+        // `x^e` is `pow` inside the body even when the caller passes 7. The exponent must
+        // be a small integer (|e| <= 16), or the interpreter takes `pow` either way.
+        "par k=2\nf(e,n)=if(n<=0)then(x^e)else(f(e,n-1))\nx'=f(7,k)+f(7,0)\ndone\n",
+    ];
+    let kinds = [
+        EntryKind::F,
+        EntryKind::Aux,
+        EntryKind::JacU,
+        EntryKind::JacP,
+        EntryKind::Dir(vec![Slot::U, Slot::U]),
+        EntryKind::Dir(vec![Slot::U, Slot::P, Slot::U]),
+    ];
+    for src in models {
+        let (fb, mut ir) = setup(src);
+        assert!(fb.interp.has_recursive, "{src}");
+        assert!(!ir.dag.units().is_empty(), "{src}");
+        for x in [0.7, 1.1, -1.3] {
+            // The declared parameter, then `t`.
+            let p = &[ir_par(&ir, src), 0.0][..];
+            let v: Vec<f64> = (0..3 * (fb.n + fb.n_p)).map(|i| 0.3 + i as f64).collect();
+            for kind in &kinds {
+                if *kind == EntryKind::Aux && fb.n_aux == 0 {
+                    continue;
+                }
+                let len = out_len(&fb, kind);
+                let e = ir
+                    .entry(kind)
+                    .unwrap_or_else(|err| panic!("{kind:?} of {src:?}: {err:?}"));
+                let mut want = vec![0.0; len];
+                crate::eval::try_eval_entry(&ir.dag, &e, &[x], p, &v, &mut want).unwrap();
+                let mut got = vec![0.0; len];
+                fb.try_eval(kind, &[x], p, &v, &mut got).unwrap();
+                // F and the first derivatives agree bit for bit. A Dir row may sum its
+                // terms in another order: the non-recursive `x'=(x*x*x)*x^2` differs by
+                // 2 ulp there too, so the bound is a few ulp, not 0.
+                let ulps = if matches!(kind, EntryKind::Dir(_)) {
+                    4
+                } else {
+                    0
+                };
+                for (i, (g, w)) in got.iter().zip(&want).enumerate() {
+                    assert!(
+                        same(*g, *w) || ulp_gap(*g, *w) <= ulps,
+                        "{kind:?}[{i}] of {src:?} at {x}: {g:?} vs {w:?}"
+                    );
+                }
+            }
+        }
+    }
+    // The exponent case is only a test when the interpreter's `powi` and `pow` differ at
+    // one of the points.
+    assert_ne!(
+        Scalar::powi(0.7f64, 7).to_bits(),
+        0.7f64.powf(7.0).to_bits()
+    );
+}
+
+/// The distance in units in the last place between two finite values of one sign.
+fn ulp_gap(a: f64, b: f64) -> u64 {
+    if !a.is_finite() || !b.is_finite() || a.is_sign_negative() != b.is_sign_negative() {
+        return u64::MAX;
+    }
+    a.to_bits().abs_diff(b.to_bits())
+}
+
+/// The declared value of the one parameter of a test model.
+fn ir_par(ir: &IrModel, src: &str) -> f64 {
+    assert_eq!(ir.n_p(), 1, "{src}");
+    let at = src.find("par k=").unwrap() + 6;
+    src[at..].split('\n').next().unwrap().parse().unwrap()
+}
+
+/// The interpreter evaluates the arguments of a wrapper before its body, while the DAG
+/// inlines the wrapper and evaluates an argument only where the body reads it. In
+/// `g(k, zz(k))` with `g(a,b)=if(a<0)then(0)else(b)` the DAG never calls `zz` at k = -1,
+/// and the interpreter does. An owner item in docs/STATUS.md asks for the SPEC sentence.
+#[test]
+fn wrapper_arguments_are_eager_in_the_interpreter() {
+    let src = format!("par k=0\n{RUNAWAY}g(a,b)=if(a<0)then(0)else(b)\nx'=g(k,zz(k))\ndone\n");
+    let (fb, mut ir) = setup(&src);
+    let e = ir.entry(&EntryKind::F).unwrap();
+    let mut want = [7.0];
+    let st =
+        crate::eval::try_eval_entry(&ir.dag, &e, &[0.0], &[-1.0, 0.0], &[], &mut want).unwrap();
+    assert_eq!((want[0], st.calls), (0.0, 0));
+    let mut got = [7.0];
+    let err = fb
+        .interp
+        .try_eval_capped(&[0.0], &[-1.0, 0.0], &mut got, &mut [], 100)
+        .unwrap_err();
+    assert!(matches!(err, EvalError::Depth { .. }), "{err:?}");
 }

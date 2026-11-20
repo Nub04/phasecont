@@ -1305,8 +1305,16 @@ impl<'a> Checker<'a> {
                 }
             }
             let message = match (is_function, names.len()) {
-                (true, 1) => format!("function `{}` calls itself", names[0]),
-                (true, _) => format!("functions {} call each other", name_list(&names)),
+                (true, 1) => format!(
+                    "function `{}` calls itself; it is evaluated with at most \
+                     1,000,000 active calls",
+                    names[0]
+                ),
+                (true, _) => format!(
+                    "functions {} call each other; they are evaluated with at most \
+                     1,000,000 active calls",
+                    name_list(&names)
+                ),
                 (false, 1) => format!("`{}` is defined in terms of itself", names[0]),
                 (false, _) => format!("{} are defined in terms of each other", name_list(&names)),
             };

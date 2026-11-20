@@ -647,6 +647,19 @@ impl<'a> Builder<'a> {
             sums: [self.zero; 2],
             guard,
         };
+        // In a jet body an inactive argument can read a formal, as the exponent `e` of
+        // `x^e` does. A formal never depends on the placeholders, so its partial with
+        // respect to one is 0; without this seed `d` refuses `Arg`, which has no rule outside
+        // a body. Only jet bodies have formals, so a model without recursion is unchanged.
+        if let Some(n) = self.args.as_ref().map(Vec::len) {
+            let z = self.zero;
+            for k in 0..n {
+                let a = self.dag.arg(k as u32);
+                for w in [PA, PB] {
+                    self.memo.entry((a, Wrt::U(w))).or_insert(z);
+                }
+            }
+        }
         let is_pow = matches!(op, Op::Call2(Fn2::Pow, ..));
         for (s, slot) in c.iter_mut().enumerate().skip(1) {
             ctx.sums = [self.zero; 2];

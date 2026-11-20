@@ -1160,6 +1160,14 @@ impl<'a, S: Scalar> Machine<'a, S> {
                     self.active += 1;
                 }
                 let base = self.vals.len().saturating_sub(def.params.len());
+                if def.recursive {
+                    // The DAG reads a formal of a recursive body as the leaf `Arg(k)`,
+                    // which is never a constant, so `x^e` there is `pow` even when the
+                    // caller passes 7. Clearing the flag keeps the bits of the DAG.
+                    for a in self.vals.get_mut(base..).into_iter().flatten() {
+                        a.1 = false;
+                    }
+                }
                 push(
                     &mut self.frames,
                     MFrame {
@@ -1171,10 +1179,13 @@ impl<'a, S: Scalar> Machine<'a, S> {
                 self.task(Task::Eval(&def.body))
             }
             Task::Leave => {
-                let v = self.pop();
+                let mut v = self.pop();
                 if let Some(fr) = self.frames.pop() {
                     if fr.def.is_some_and(|d| d.recursive) {
                         self.active -= 1;
+                        // A call node of the DAG is never folded, so its value is not a
+                        // constant even when every argument is.
+                        v.1 = false;
                     }
                     self.vals.truncate(fr.base);
                 }

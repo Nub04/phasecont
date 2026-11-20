@@ -493,13 +493,18 @@ fn recursive_functions() {
     let text = "f(u)=f(u)";
     let d = check_one(text, RECURSIVE_FUNCTION, nth(text, "f", 0), &[]);
     assert!(d.message.contains("`f`"), "{}", d.message);
+    // F-4: a warning that names the depth cap, not an error.
+    assert_eq!(d.severity, Severity::Warning);
+    assert!(d.message.contains("1,000,000"), "{}", d.message);
     let text = "f(u)=g(u)\ng(u)=h(u)\nh(u)=f(u)";
-    check_one(
+    let d = check_one(
         text,
         RECURSIVE_FUNCTION,
         nth(text, "f", 0),
         &[nth(text, "g", 1), nth(text, "h", 1)],
     );
+    assert_eq!(d.severity, Severity::Warning);
+    assert!(d.message.contains("1,000,000"), "{}", d.message);
     clean("f(u)=g(u)+g(u)\ng(u)=u");
 }
 

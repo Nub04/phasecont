@@ -176,3 +176,35 @@ fn wrong_length_is_an_error() {
         );
     }
 }
+
+/// Stage 1 of SPEC 8af-5: only the fallback evaluator runs a recursive function. The JIT
+/// and an AOT library refuse at build with `Model`, before any library is opened.
+#[test]
+fn recursive_model_runs_only_on_the_fallback() {
+    // Inline, not in tests/models: the recursion baseline golden lists every file there.
+    let mut map = pc_ode::SourceMap::new();
+    let top = map.add(
+        "pw.ode",
+        "par k=3\npw(x,n)=if(n<1)then(1)else(x*pw(x,n-1))\ninit x=1.5\nx'=pw(x,k)\ndone\n",
+    );
+    let l = pc_ode::load(top, &mut map, &mut pc_ode::MapLoader::new());
+    let (model, info) = (l.expanded, l.info);
+    for which in [
+        Evaluator::Jit,
+        Evaluator::Aot {
+            lib: std::path::PathBuf::from("no-such-library"),
+            tag: 0,
+        },
+    ] {
+        match build(&model, &info, which) {
+            Err(EngineError::Model(m)) => assert!(m.contains("pw"), "{m}"),
+            Err(e) => panic!("{e:?}"),
+            Ok(_) => panic!("a recursive model must be refused"),
+        }
+    }
+    let mut fb = build(&model, &info, Evaluator::Fallback).expect("fallback");
+    let mut out = [f64::NAN];
+    fb.eval(&EntryKind::F, &[1.5], &[3.0, 0.0], &[], &mut out)
+        .expect("evaluates");
+    assert_eq!(out[0], 3.375);
+}

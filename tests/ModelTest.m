@@ -256,6 +256,28 @@ classdef ModelTest < matlab.unittest.TestCase
             testCase.verifyEqual(string(m.Diagnostics(1).severity), "warning");
         end
 
+        function recursiveFunctionWarns(testCase)
+            % F-4 (SPEC 8af-5): a recursive function is ODE0047, a warning that
+            % names the function and the depth cap. Only the fallback evaluator
+            % runs it in stage 1; the JIT refuses with engine:model.
+            f = testCase.write("recursive.ode", "par k=3" + newline + ...
+                "pw(x,n)=if(n<1)then(1)else(x*pw(x,n-1))" + newline + ...
+                "init x=1.5" + newline + "x'=pw(x,k)" + newline + "done" + newline);
+            testCase.verifyWarning(@() phasecont.Model(f, Evaluator = "fallback"), ...
+                "phasecont:model:parseWarning");
+            w = warning("off", "phasecont:model:parseWarning");
+            restore = onCleanup(@() warning(w));
+            m = phasecont.Model(f, Evaluator = "fallback");
+            testCase.verifyEqual(string({m.Diagnostics.code}), "ODE0047");
+            testCase.verifyEqual(string(m.Diagnostics(1).severity), "warning");
+            testCase.verifySubstring(string(m.Diagnostics(1).message), "`pw`");
+            testCase.verifySubstring(string(m.Diagnostics(1).message), "1,000,000");
+            testCase.verifyEqual(m.rhs(1.5), 3.375);
+            testCase.verifyError(@() phasecont.Model(f, Evaluator = "jit"), ...
+                "phasecont:engine:model");
+            clear restore
+        end
+
         function backslashWarningsAreIssued(testCase)
             % XPPAUT 8.2.2 drops text after a backslash and joins the next
             % line, and a backslash in a comment swallows the next line
