@@ -212,6 +212,9 @@ fn finish(
         return Err(EngineError::NonAutonomous);
     }
     check_tables(model, info)?;
+    if !matches!(which, Evaluator::Fallback) {
+        refuse_calls(&ir)?;
+    }
     Ok(match which {
         Evaluator::Jit => Box::new(CompiledModel::new(ir)),
         Evaluator::Aot { lib, tag } => {
@@ -227,6 +230,28 @@ fn finish(
             })
         }
     })
+}
+
+/// Refuses with `Model` an IR that calls a recursive function (SPEC 8af-5, stage 1). The
+/// JIT and the AOT path do not run calls yet, and the JIT compiles an entry on its first
+/// evaluation, so without this check the refusal would surface on a later call instead of
+/// at build. The text names the functions and the evaluator that runs them.
+fn refuse_calls(ir: &IrModel) -> Result<(), EngineError> {
+    let mut names: Vec<&str> = Vec::new();
+    for u in ir.dag.units() {
+        if !names.contains(&u.name.as_str()) {
+            names.push(&u.name);
+        }
+    }
+    if names.is_empty() {
+        return Ok(());
+    }
+    Err(EngineError::Model(format!(
+        "the model calls the recursive function{} {}, which only the fallback evaluator runs \
+         for now; build it with Evaluator = \"fallback\"",
+        if names.len() == 1 { "" } else { "s" },
+        names.join(", ")
+    )))
 }
 
 /// A model with `delay(x,tau)` calls, lowered with hidden parameters (SPEC section 8d).

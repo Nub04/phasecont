@@ -581,7 +581,9 @@ fn emit_model(model: &Model, info: &ModelInfo) -> Result<pc_codegen::EmittedC> {
     }
     let named: Vec<(String, &pc_ir::Entry)> =
         kinds.iter().map(entry_symbol).zip(entries.iter()).collect();
-    pc_codegen::emit_c_tagged(&ir, &named).map_err(|e| Error::Internal(format!("emit_c: {e}")))
+    // Every refusal of the emitter is a property of the model: two names with one C
+    // identifier, a reserved identifier, or a recursive call (SPEC 8af-5).
+    pc_codegen::emit_c_tagged(&ir, &named).map_err(|e| Error::Model(format!("emit_c: {e}")))
 }
 
 /// Writes the C text of the model to `<dir>/pc_model_<hash>.c`, creating `dir` if it is
