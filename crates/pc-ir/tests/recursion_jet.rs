@@ -326,3 +326,34 @@ fn dir_through_several_outputs_is_refused() {
         }
     }
 }
+
+/// The active set alternates down the recursion: `s(a, b, n) = if(n<1)then(a)else(s(b, a,
+/// n-1))` swaps its first two formals, so `x' = s(x*x, 2, m)` needs two jet units per
+/// request, one with the components on `a` and one with them on `b`. The value is `x*x`
+/// for even n and 2 for odd n, with n + 1 calls.
+#[test]
+fn active_set_that_alternates_down_the_recursion() {
+    let mut ir = base();
+    let s = ir.dag.add_unit("s", 3, 1);
+    let (a, b, n) = (ir.dag.arg(0), ir.dag.arg(1), ir.dag.arg(2));
+    let one = ir.dag.konst(1.0);
+    let c = ir.dag.cmp(Cmp::Lt, n, one);
+    let m = ir.dag.sub(n, one);
+    let r = ir.dag.call(s, &[b, a, m]);
+    let body = ir.dag.select(c, a, r);
+    assert!(ir.dag.set_body(s, &[body]));
+    let x = ir.dag.var(0);
+    let xx = ir.dag.mul(x, x);
+    let (two, k) = (ir.dag.konst(2.0), ir.dag.param(1));
+    ir.f[0] = ir.dag.call(s, &[xx, two, k]);
+    for (slots, even) in [(vec![Slot::U], 6.0), (vec![Slot::U, Slot::U], 2.0)] {
+        let units = ir.dag.units().len();
+        for n in 0u32..6 {
+            let want = if n % 2 == 0 { even } else { 0.0 };
+            let v = vec![1.0; vlen(&slots)];
+            let (d, calls) = dir(&mut ir, &slots, 3.0, [0.7, f64::from(n)], &v);
+            assert_eq!((d, calls), (want, u64::from(n) + 1), "{slots:?} n = {n}");
+        }
+        assert_eq!(ir.dag.units().len(), units + 2, "{slots:?}");
+    }
+}
