@@ -504,6 +504,23 @@ fn recursive_functions() {
 }
 
 #[test]
+fn recursive_set_holds_the_cyclic_components_only() {
+    let keys = |text: &str| -> Vec<String> { run(text).0.recursive.into_iter().collect() };
+    assert_eq!(keys("F(u)=f(u)"), ["f"]);
+    assert_eq!(
+        keys("f(u)=g(u)\ng(u)=h(u)\nh(u)=f(u)\nk(u)=f(u)"),
+        ["f", "g", "h"]
+    );
+    assert_eq!(
+        keys("ev(n)=od(n-1)\nod(n)=ev(n-1)\nw(n)=w(n)"),
+        ["ev", "od", "w"]
+    );
+    assert!(keys("f(u)=g(u)+g(u)\ng(u)=u").is_empty());
+    // A cycle through a fixed quantity is ODE0043, not recursion.
+    assert!(keys("a=f(1)\nf(u)=a*u\nx'=a").is_empty());
+}
+
+#[test]
 fn argument_counts() {
     let text = "f(u,v)=u+v\nx'=f(1)";
     let d = check_one(

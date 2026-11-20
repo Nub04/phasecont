@@ -22,7 +22,7 @@
 //! dropped by `expand` would have declared ([`Model::suppressed`]) are not
 //! reported as undefined.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::ast::{Expr, Ident, MarkovLine, Model, StmtKind, UnaryOp, Unsupported};
 use crate::builtins::{Status, builtin};
@@ -151,6 +151,12 @@ pub struct ModelInfo {
     /// a name that is none of these is dropped (ODE0077). Empty when the file
     /// has no `only` line or none of its names is kept.
     pub only: Vec<String>,
+    /// Lower-case names of the functions in a recursive strongly connected
+    /// component of the call graph (ODE0047): a function that calls itself,
+    /// or functions that call each other. Lowering makes these callable units
+    /// and the interpreter runs calls into them on its heap machine; every
+    /// other function stays inlined (SPEC 8af-5).
+    pub recursive: BTreeSet<String>,
     /// Lower-case name to position in `symbols`.
     index: HashMap<String, usize>,
 }
@@ -265,6 +271,7 @@ pub(crate) fn check_counted(model: &Model) -> (ModelInfo, Vec<Diagnostic>, usize
         simulation_only: c.simulation_only,
         symbols: c.symbols,
         only: c.only,
+        recursive: c.recursive,
         index: c.index,
     };
     (info, diags, dropped)
@@ -321,6 +328,9 @@ struct Checker<'a> {
     /// can close a cycle are recorded: among fixed quantities, derived
     /// parameters and functions.
     edges: Vec<(usize, usize, Span)>,
+    /// Keys of the functions in a recursive component, filled by
+    /// `report_graph`.
+    recursive: BTreeSet<String>,
     /// For each function symbol, the first use in its body of `t`, a
     /// state, a fixed quantity or a Wiener variable.
     fn_bad: HashMap<usize, BadUse>,
@@ -358,6 +368,7 @@ impl<'a> Checker<'a> {
             declared: Vec::new(),
             params: Vec::new(),
             edges: Vec::new(),
+            recursive: BTreeSet::new(),
             fn_bad: HashMap::new(),
             current: None,
             seen: HashSet::new(),
@@ -1288,6 +1299,11 @@ impl<'a> Checker<'a> {
                 .map(|&s| self.symbols[s].name.text.as_str())
                 .collect();
             let is_function = g.iter().all(|&s| self.is_function(s));
+            if is_function {
+                for &s in &g {
+                    self.recursive.insert(self.symbols[s].name.key.clone());
+                }
+            }
             let message = match (is_function, names.len()) {
                 (true, 1) => format!("function `{}` calls itself", names[0]),
                 (true, _) => format!("functions {} call each other", name_list(&names)),
