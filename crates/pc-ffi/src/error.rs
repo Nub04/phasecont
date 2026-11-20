@@ -106,7 +106,8 @@ impl From<EngineError> for Error {
             EngineError::NotFinite(_)
             | EngineError::Singular(_)
             | EngineError::NewtonFailed { .. }
-            | EngineError::StepTooSmall { .. } => Error::Numeric(text),
+            | EngineError::StepTooSmall { .. }
+            | EngineError::CallLimit(_) => Error::Numeric(text),
             EngineError::Cancelled => Error::Internal(text),
         }
     }
@@ -158,6 +159,7 @@ mod tests {
             ),
             (EngineError::StepTooSmall { h: 1e-12 }, PC_ERR_NUMERIC),
             (EngineError::Cancelled, PC_ERR_INTERNAL),
+            (EngineError::CallLimit("x".into()), PC_ERR_NUMERIC),
         ];
         for (e, code) in cases {
             let text = e.to_string();

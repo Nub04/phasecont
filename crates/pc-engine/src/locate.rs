@@ -204,10 +204,12 @@ fn refine_zero(
     cancel: &AtomicBool,
     warnings: &mut Vec<String>,
 ) -> Result<Option<Point>, StopReason> {
-    // Any error but a cancel only means that this point stays unrefined.
+    // Any error but a cancel or a recursion limit only means that this point stays
+    // unrefined. A recursion limit stops the run, so it is never hidden as an unrefined point.
     fn give_up<T>(e: EngineError) -> Result<Option<T>, StopReason> {
         match e {
             EngineError::Cancelled => Err(StopReason::Cancelled),
+            e @ EngineError::CallLimit(_) => Err(StopReason::Error(e)),
             _ => Ok(None),
         }
     }
