@@ -70,6 +70,15 @@ classdef Model < handle
             "message", [], "fix_it", [], "notes", []), 0, 1)
     end
 
+    properties (Hidden, SetAccess = private)
+        % Only is the only list of the file (SPEC section 2): the names of
+        % the Output columns of a simulation, in order; empty without one.
+        Only (1,:) string = strings(1,0)
+        % AuxNames lists the aux quantities in the order of the aux
+        % columns of a run (SPEC section 10).
+        AuxNames (1,:) string = strings(1,0)
+    end
+
     properties (Hidden, Transient, SetAccess = private)
         Id (1,1) uint64 = uint64(0)
         % Notices lists the one-time notices already given for this model.
@@ -542,6 +551,12 @@ classdef Model < handle
             obj.IsMap = isfield(info, "map") && logical(info.map);
             obj.SourceSha256 = string(info.source_sha256);
             obj.Options = phasecont.Model.toOptions(info.options);
+            if isfield(info, "aux")
+                obj.AuxNames = phasecont.Model.toNames(info.aux);
+            end
+            if isfield(info, "only")
+                obj.Only = phasecont.Model.toNames(info.only);
+            end
             obj.Diagnostics = entries;
         end
     end

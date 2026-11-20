@@ -45,6 +45,11 @@ function tr = simulate(m, x0, tspan, options)
 %   phasecont:simulate:stoppedEarly and TR holds the steps up to then. A
 %   map run stops with "Error" at the first iterate that is NaN or
 %   infinite and keeps the iterates before it.
+%
+%   A model file with an only line, such as only x,t,w, gives TR.Output:
+%   a table of those columns in that order, where t is TR.T, a state is
+%   its column of TR.X and an aux quantity holds its value at each row. A
+%   non-finite aux value is kept as computed and does not stop the run.
 arguments
     m (1,1) phasecont.Model
     x0
@@ -64,7 +69,7 @@ if m.IsMap
     [u0, p] = startValues(m, x0, options.Params);
     type = "ITER";
     problem = "{""type"":""ITER"",""tspan"":[" + num2json(tspan(1)) + "," ...
-        + num2json(tspan(2)) + "]}";
+        + num2json(tspan(2)) + "]" + auxKey(m) + "}";
 else
     if ~(isnumeric(tspan) && isreal(tspan) && numel(tspan) == 2 ...
             && all(isfinite(tspan)) && tspan(1) ~= tspan(2))
@@ -74,7 +79,7 @@ else
     tspan = double(tspan(:)).';
     [u0, p] = startValues(m, x0, options.Params);
     type = "IVP";
-    problem = ivpProblem(tspan, options);
+    problem = ivpProblem(tspan, options, auxKey(m));
 end
 
 n = numel(m.Variables);
@@ -97,9 +102,10 @@ if isfield(st.branches, "warnings") && ~isempty(st.branches(1).warnings)
     warn = string(st.branches(1).warnings);
 end
 tr = phasecont.Trajectory(struct( ...
-    "T", rows(1, :).', "X", rows(2:end, :).', "X0", u0(:), "TSpan", tspan, ...
+    "T", rows(1, :).', "X", rows(2:n+1, :).', "X0", u0(:), "TSpan", tspan, ...
     "P", p(:), "Stop", stop, "Warnings", warn(:), "Model", m, ...
     "Map", m.IsMap));
+tr.attachAux(rows(n+2:end, :));
 tr.attachRecord(record);
 if stop ~= "End"
     if m.IsMap
@@ -114,7 +120,16 @@ if stop ~= "End"
 end
 end
 
-function problem = ivpProblem(tspan, options)
+function key = auxKey(m)
+% The aux key of the problem: rows carry the aux columns only when the only
+% list names an aux quantity (SPEC section 10).
+key = "";
+if any(ismember(lower(m.Only), lower(m.AuxNames)))
+    key = ",""aux"":true";
+end
+end
+
+function problem = ivpProblem(tspan, options, aux)
 % The IVP problem JSON, with an options entry for each option given.
 import phasecont.internal.num2json
 parts = strings(1, 0);
@@ -133,7 +148,8 @@ if ~isempty(options.Hmax)
 end
 parts = parts(strlength(parts) > 0);
 problem = "{""type"":""IVP"",""tspan"":[" + num2json(tspan(1)) + "," ...
-    + num2json(tspan(2)) + "],""options"":{" + strjoin(parts, ",") + "}}";
+    + num2json(tspan(2)) + "],""options"":{" + strjoin(parts, ",") + "}" ...
+    + aux + "}";
 end
 
 function span = mapSpan(tspan)

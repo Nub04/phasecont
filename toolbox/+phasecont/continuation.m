@@ -241,6 +241,9 @@ function br = continuation(m, start, options)
 %   Options that are not given keep the engine defaults. If START is a
 %   special point (any label except "EP"), the run does not report that
 %   point again at its first step.
+%
+%   The only line of a model file names the Output columns of simulate.
+%   continuation ignores it and warns with phasecont:continuation:onlyIgnored.
 arguments
     m (1,1) phasecont.Model
     start
@@ -276,6 +279,11 @@ arguments
     options.Iterate = []
 end
 import phasecont.internal.num2json
+
+if ~isempty(m.Only)
+    warning("phasecont:continuation:onlyIgnored", ...
+        "The only list of the model applies to simulate; continuation ignores it.");
+end
 
 type = string(options.Type);
 if ~isscalar(type) || ~ismember(type, ["EP" "LP" "H" "LC" "LPC" "PD" "NS" "HOM"])

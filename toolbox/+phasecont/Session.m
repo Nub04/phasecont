@@ -190,10 +190,16 @@ classdef Session
                         warn = string(st.branches(1).warnings);
                     end
                     item = phasecont.Trajectory(struct( ...
-                        "T", rows(1, :).', "X", rows(2:end, :).', "X0", rec.U0, ...
+                        "T", rows(1, :).', "X", rows(2:rec.N+1, :).', "X0", rec.U0, ...
                         "TSpan", reshape(problem.tspan, 1, 2), "P", rec.P, ...
                         "Stop", stop, "Warnings", warn(:), "Model", m, ...
                         "Map", rec.Type == "ITER"));
+                    % Rows of stride N + 1 (a session from before round E,
+                    % or a run without aux columns) leave the store empty.
+                    aux = rows(rec.N+2:end, :);
+                    if size(aux, 1) == numel(m.AuxNames)
+                        item.attachAux(aux);
+                    end
                     item.attachRecord(rec);
                 otherwise
                     st = phasecont.internal.Run.decode(char(rec.Json));

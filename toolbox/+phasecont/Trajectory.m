@@ -24,6 +24,9 @@ classdef Trajectory < handle
     %             ("" when unknown)
     %   Warnings  warning messages from the run
     %   Model     the phasecont.Model the run used
+    %   Output    table of the columns the model's only list names, in that
+    %             order: t, a state or an aux quantity; an empty table (0
+    %             columns, N rows) when the model has no only list
     %
     % Methods
     %   plot
@@ -45,12 +48,37 @@ classdef Trajectory < handle
         % True for the iterates of a map (record Type "ITER"): plot draws
         % them as dots with no line between them.
         Map (1,1) logical = false
+        % The names of the only list and where each Output column comes
+        % from: 0 for T, k > 0 for column k of X, k < 0 for column -k of
+        % AuxStore. AuxPick holds the indices into the model's aux names of
+        % the AuxStore columns.
+        OutputNames (1,:) string = strings(1,0)
+        OutputSource (1,:) double = zeros(1,0)
+        AuxPick (1,:) double = zeros(1,0)
+        % The listed aux columns, N-by-numel(AuxPick); empty when the run
+        % had no aux columns.
+        AuxStore (:,:) double = zeros(0,0)
+    end
+
+    properties (Dependent)
+        Output
     end
 
     methods (Hidden)
         function attachRecord(obj, record)
             % Internal use: remember the run that produced the trajectory.
             obj.Record = record;
+        end
+
+        function attachAux(obj, auxRows)
+            % Internal use: keep the listed aux columns of the run rows.
+            % auxRows is naux-by-N in the order of the model's aux names, or
+            % empty when the rows have no aux columns (a run without the
+            % aux key, or a session from before round E).
+            if isempty(obj.AuxPick) || isempty(auxRows)
+                return
+            end
+            obj.AuxStore = auxRows(obj.AuxPick, :).';
         end
     end
 
@@ -62,6 +90,32 @@ classdef Trajectory < handle
             end
             for name = string(fieldnames(values))'
                 obj.(name) = values.(name);
+            end
+            obj.mapOutput();
+        end
+
+        function t = get.Output(obj)
+            src = obj.OutputSource;
+            if any(src < 0) && isempty(obj.AuxStore)
+                error("phasecont:simulate:noAuxColumns", ...
+                    "The trajectory was stored without its aux columns; " + ...
+                    "run simulate again.");
+            end
+            cols = cell(1, numel(src));
+            for k = 1:numel(src)
+                if src(k) == 0
+                    cols{k} = obj.T;
+                elseif src(k) > 0
+                    cols{k} = obj.X(:, src(k));
+                else
+                    cols{k} = obj.AuxStore(:, -src(k));
+                end
+            end
+            if isempty(cols)
+                t = table('Size', [numel(obj.T) 0], ...
+                    'VariableTypes', strings(1, 0));
+            else
+                t = table(cols{:}, 'VariableNames', cellstr(obj.OutputNames));
             end
         end
 
@@ -101,6 +155,34 @@ classdef Trajectory < handle
     end
 
     methods (Access = private)
+        function mapOutput(obj)
+            % Where each name of the model's only list comes from. Names
+            % match without regard to case, as in the .ode file.
+            m = obj.Model;
+            if isempty(m) || ~isvalid(m) || isempty(m.Only)
+                return
+            end
+            names = m.Only;
+            vars = lower(m.Variables);
+            aux = lower(m.AuxNames);
+            src = zeros(1, numel(names));
+            pick = zeros(1, 0);
+            for k = 1:numel(names)
+                key = lower(names(k));
+                if key == "t"
+                    src(k) = 0;
+                elseif any(vars == key)
+                    src(k) = find(vars == key, 1);
+                else
+                    pick(end+1) = find(aux == key, 1); %#ok<AGROW>
+                    src(k) = -numel(pick);
+                end
+            end
+            obj.OutputNames = names;
+            obj.OutputSource = src;
+            obj.AuxPick = pick;
+        end
+
         function h = drawOne(tr, ax, var)
             % Draw this trajectory on ax: one line and a marker at the start.
             n = size(tr.X, 2);
