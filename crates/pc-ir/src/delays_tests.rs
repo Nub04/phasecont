@@ -220,6 +220,48 @@ fn the_other_refusals_still_apply() {
 
 /// The three evaluators of the lowered model see one parameter vector. Here the DAG and
 /// `Interp` (through `Fallback`) agree on F, JacU and JacP, hidden columns included.
+/// A function with declared `argK` formals reads a delayed state by the same slot rule, and
+/// `arg1` is the second argument: f(a, x) = x - a * delay(x,tau).
+#[test]
+fn a_declared_arg_formal_next_to_a_delay_binds_by_name() {
+    let src = "par a=2, tau=1\nf(arg2,arg1)=arg1-arg2*delay(x,tau)\nx'=f(a,x)\ndone\n";
+    let mut ir = dde(src);
+    assert_eq!(ir.delays.len(), 1);
+    // p = a, tau, the slot of delay(x,tau), t. Named: 0.5 - 2 * 0.3; positional: 2 - 0.5 * 0.3.
+    let p = [2.0, 1.0, 0.3, 0.0];
+    let want = 0.5 - 2.0 * 0.3;
+    let got = run(&ir, &ir.f, &[0.5], &p)[0];
+    assert!((got - want).abs() < 1e-15, "{got} vs {want}");
+    let l = loaded(src);
+    let fb = Fallback::new(&l.expanded, &l.info, &ir);
+    let entry = ir.entry(&EntryKind::F).expect("entry");
+    let mut out = vec![0.0; entry.outputs.len()];
+    fb.eval(&EntryKind::F, &[0.5], &p, &[], &mut out);
+    assert!((out[0] - want).abs() < 1e-15, "{} vs {want}", out[0]);
+}
+
+/// A declared `argK` formal hides nothing a delay can read: it is not a state or a delay time.
+#[test]
+fn a_declared_arg_formal_is_not_a_delay_time() {
+    for (src, call) in [
+        (
+            "f(u,arg1)=delay(x,arg1)*u\nx'=f(x,1)\ndone\n",
+            "delay(x,arg1)",
+        ),
+        (
+            "par tau=1\nf(arg3)=delay(arg3,tau)\nx'=f(x)\ndone\n",
+            "delay(arg3,tau)",
+        ),
+    ] {
+        let e = dde_errs(src);
+        assert!(e.iter().all(|e| e.kind == K::Delay), "{src:?}: {e:?}");
+        assert!(
+            e.iter().any(|e| &src[e.span.start..e.span.end] == call),
+            "{src:?}: no error at {call:?} in {e:?}"
+        );
+    }
+}
+
 #[test]
 fn dag_and_fallback_agree_with_hidden_parameters() {
     let src = "par a=0.7, b=1.3\n\

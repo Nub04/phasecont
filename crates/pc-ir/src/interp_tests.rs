@@ -70,6 +70,50 @@ fn f_matches_eval_every_statement_kind() {
     );
 }
 
+/// The values of F from the fallback at `x` and `p`.
+fn fallback_f(src: &str, x: &[f64], p: &[f64]) -> Vec<f64> {
+    let (fb, ir) = setup(src);
+    let mut got = vec![0.0; ir.f.len()];
+    fb.eval(&EntryKind::F, x, p, &[], &mut got);
+    got
+}
+
+/// A declared formal named `argK` binds by name in the fallback as in the DAG: `f(5,3)` of
+/// `f(arg2,arg1)=arg1-arg2` is -2, where positional binding gives +2.
+#[test]
+fn a_declared_arg_formal_binds_by_name() {
+    assert_eq!(
+        fallback_f("f(arg2,arg1)=arg1-arg2\nx'=f(5,3)\ndone\n", &[0.0], &[0.0]),
+        [-2.0]
+    );
+    let src = "par a=5, b=3\nf(arg2,arg1)=arg1-arg2\nx'=f(a,b)\ndone\n";
+    assert_eq!(fallback_f(src, &[0.0], &[5.0, 3.0, 0.0]), [-2.0]);
+    let src = "par a=2, b=3\nf(u,arg1)=u+arg1\nx'=f(a,b)\ndone\n";
+    assert_eq!(fallback_f(src, &[0.0], &[2.0, 3.0, 0.0]), [5.0]);
+    // A declared `arg3` in a two-argument function.
+    let src = "par a=2, b=3\nf(u,arg3)=u*10+arg3\nx'=f(a,b)\ndone\n";
+    assert_eq!(fallback_f(src, &[0.0], &[2.0, 3.0, 0.0]), [23.0]);
+    // An undeclared `argK` stays positional next to a declared one.
+    let src = "par a=1, b=2, c=3\ng(arg2,v,w)=arg1*100+arg2*10+arg3\nx'=g(a,b,c)\ndone\n";
+    assert_eq!(fallback_f(src, &[0.0], &[1.0, 2.0, 3.0, 0.0]), [113.0]);
+    // The frame of the caller is back after a call that declares its own `argK`.
+    let src = "h(arg2,arg1)=arg1-arg2\nk(u,v)=h(v,u)*10+arg1\nx'=k(1,2)\ndone\n";
+    assert_eq!(fallback_f(src, &[0.0], &[0.0]), [-9.0]);
+}
+
+#[test]
+fn f_matches_eval_with_declared_arg_formals() {
+    compare(
+        "par a=2, b=3\nf(arg2,arg1)=arg1-arg2*a\ng(u,arg3)=u*arg3+arg1\n\
+         h(arg2,v,w)=arg1*v+arg2*w+arg3\nx'=f(x,y)+g(y,x)\ny'=h(x,y,a)*b\n\
+         aux s=f(y,x)\ndone\n",
+        &[
+            (&[1.5, 0.5], &[2.0, 3.0, 0.0]),
+            (&[-0.7, 1.3], &[1.1, 0.2, 2.0]),
+        ],
+    );
+}
+
 #[test]
 fn f_matches_eval_builtins() {
     compare(
