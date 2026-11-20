@@ -97,10 +97,19 @@ pub enum RunKind {
     },
     /// An initial value run over `tspan` from the state `setup.u0` with the parameters
     /// `setup.params`. The model may depend on t.
-    Ivp { tspan: [f64; 2], opts: IvpOptions },
+    Ivp {
+        tspan: [f64; 2],
+        opts: IvpOptions,
+        /// Aux values appended to every row of `u`, 0 for none.
+        n_aux: usize,
+    },
     /// Iteration of a map from iterate `n[0]` to iterate `n[1]` (SPEC section 8u), from
     /// the state `setup.u0` with the parameters `setup.params`. The map may depend on t.
-    Iter { n: [i64; 2] },
+    Iter {
+        n: [i64; 2],
+        /// Aux values appended to every row of `u`, 0 for none.
+        n_aux: usize,
+    },
     /// The LP curve of fixed points of a map through an LP point, in two parameters (SPEC
     /// section 8w). It runs on the map itself, not on `MapAsRoot`.
     MapLpCurve(CurveSetup),
@@ -306,21 +315,23 @@ fn follow(
         RunKind::DdeEq(_) | RunKind::DdeHopf { .. } | RunKind::DdeCycle { .. } => Err(
             EngineError::BadProblem("a delay run has no ODE model to follow".into()),
         ),
-        RunKind::Ivp { tspan, opts } => {
+        RunKind::Ivp { tspan, opts, n_aux } => {
             let ivp = IvpSetup {
                 x0: setup.u0.clone(),
                 params: setup.params.clone(),
                 t0: tspan[0],
                 t1: tspan[1],
+                n_aux: *n_aux,
             };
             integrate(model, &ivp, opts, &shared.cancel, on_point)
         }
-        RunKind::Iter { n } => {
+        RunKind::Iter { n, n_aux } => {
             let it = IterSetup {
                 x0: setup.u0.clone(),
                 params: setup.params.clone(),
                 n0: n[0],
                 n1: n[1],
+                n_aux: *n_aux,
             };
             iterate(model, &it, &shared.cancel, on_point)
         }

@@ -1,0 +1,9 @@
+# Damped oscillator with three aux quantities for the aux column tests. tx reads t, and lnx is NaN wherever x is not positive.
+par a=0.1
+x'=y
+y'=-x-a*y
+aux energy=(x^2+y^2)/2
+aux tx=t*x
+aux lnx=ln(x)
+init x=1,y=0
+done

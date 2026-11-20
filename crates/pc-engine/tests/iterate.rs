@@ -23,6 +23,7 @@ fn setup(x0: &[f64], params: &[f64], n0: i64, n1: i64) -> IterSetup {
         params: params.to_vec(),
         n0,
         n1,
+        n_aux: 0,
     }
 }
 
@@ -156,7 +157,10 @@ fn a_background_run_iterates_a_map_that_uses_t() {
         EpSetup::new(0, Vec::new(), vec![0.0]),
         Options::default(),
     );
-    spec.kind = RunKind::Iter { n: [5, 9] };
+    spec.kind = RunKind::Iter {
+        n: [5, 9],
+        n_aux: 0,
+    };
     let run = Run::start(spec);
     let t0 = Instant::now();
     while run.poll().state == RunState::Running {

@@ -534,3 +534,70 @@ fn map_ep_branch_at_iterate_2_refines_on_aot() {
         }
     }
 }
+
+/// Same points, bit for bit, with NaN equal to NaN.
+fn same_points(a: &pc_engine::Branch, b: &pc_engine::Branch, what: &str) {
+    assert_eq!(a.stop, b.stop, "{what}");
+    assert_eq!(a.points.len(), b.points.len(), "{what}");
+    for (i, (p, q)) in a.points.iter().zip(&b.points).enumerate() {
+        assert!(same(p.alpha, q.alpha), "{what} row {i}: t");
+        assert_eq!(p.u.len(), q.u.len(), "{what} row {i}");
+        for (k, (x, y)) in p.u.iter().zip(&q.u).enumerate() {
+            assert!(same(*x, *y), "{what} row {i}[{k}]: {x:e} vs {y:e}");
+        }
+    }
+}
+
+/// The aux columns of an IVP and of an ITER run (SPEC section 10, round E) come out of an
+/// AOT library bit for bit as they do from the JIT, NaN entries included.
+#[test]
+fn aux_columns_of_ivp_and_iter_runs_match_between_aot_and_jit() {
+    use pc_engine::{IterSetup, IvpOptions, IvpSetup, build_allowing_t, integrate, iterate};
+    use std::sync::atomic::AtomicBool;
+    if gcc_version().is_none() {
+        println!("skip: no usable gcc, AOT aux column test not run");
+        return;
+    }
+    let stop = AtomicBool::new(false);
+    for name in ["ivp_aux", "map_aux"] {
+        let (model, info) = common::load(name);
+        let mut ir = lower(&model, &info).expect("lower");
+        let n_aux = ir.aux.len();
+        assert_eq!(n_aux, 3, "{name}");
+        let tmp = Temp::new("aux_cols");
+        let (c, tag) = emit_all(&mut ir);
+        let so = compile(&tmp, &c).expect("compile");
+        let mut aot =
+            build_allowing_t(&model, &info, Evaluator::Aot { lib: so, tag }).expect("aot");
+        let mut jit = build_allowing_t(&model, &info, Evaluator::Jit).expect("jit");
+        if name == "ivp_aux" {
+            let s = IvpSetup {
+                x0: vec![1.0, 0.0],
+                params: vec![0.1],
+                t0: 0.0,
+                t1: 6.0,
+                n_aux,
+            };
+            let opts = IvpOptions::default();
+            let a = integrate(&mut *aot, &s, &opts, &stop, &mut |_| {}).unwrap();
+            let j = integrate(&mut *jit, &s, &opts, &stop, &mut |_| {}).unwrap();
+            assert!(a.points.iter().all(|p| p.u.len() == 2 + n_aux));
+            // ln(x) is NaN once x is negative, so the run holds NaN aux entries.
+            assert!(a.points.iter().any(|p| p.u[2 + 2].is_nan()));
+            same_points(&a, &j, name);
+        } else {
+            let s = IterSetup {
+                x0: vec![0.1],
+                params: vec![2.5],
+                n0: 0,
+                n1: 12,
+                n_aux,
+            };
+            let a = iterate(&mut *aot, &s, &stop, &mut |_| {}).unwrap();
+            let j = iterate(&mut *jit, &s, &stop, &mut |_| {}).unwrap();
+            assert!(a.points.iter().all(|p| p.u.len() == 1 + n_aux));
+            assert!(a.points.iter().any(|p| p.u[1 + 2].is_nan()));
+            same_points(&a, &j, name);
+        }
+    }
+}

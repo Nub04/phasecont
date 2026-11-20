@@ -187,6 +187,7 @@ fn dp5_matches_the_engine() {
             params: p.clone(),
             t0: 0.0,
             t1,
+            n_aux: 0,
         };
         let opts = IvpOptions {
             rtol: 1e-8,

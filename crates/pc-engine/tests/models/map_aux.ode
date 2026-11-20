@@ -1,0 +1,8 @@
+# Logistic map with three aux quantities for the aux column tests. kx reads the iterate number, and lg is NaN while x is below 0.4.
+par r=2.5
+x(t+1)=r*x*(1-x)
+aux dist=x-0.5
+aux kx=t*x
+aux lg=ln(x-0.4)
+init x=0.1
+done

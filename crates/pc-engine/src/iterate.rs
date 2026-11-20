@@ -7,7 +7,7 @@
 
 use crate::branch::{Branch, Point, StopReason};
 use crate::error::EngineError;
-use crate::model::ModelEval;
+use crate::model::{ModelEval, aux_row};
 use pc_ir::EntryKind;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -20,12 +20,20 @@ pub struct IterSetup {
     pub n0: i64,
     /// Number of the last iterate, greater than `n0`.
     pub n1: i64,
+    /// Number of aux values to append to the state in `Point::u` of every row, evaluated at
+    /// the row's iterate number and state. 0 adds none and leaves the points as they were.
+    pub n_aux: usize,
 }
 
 /// Iterates the map from `setup.x0` at iterate `setup.n0` to iterate `setup.n1`. Every
 /// point goes to `on_point` as soon as it exists. A non-finite value of F ends the run
 /// with `StopReason::Error` and keeps the points before it. A cancel request is checked
 /// before each iterate; a request before the start returns `Err(Cancelled)`.
+///
+/// With `setup.n_aux > 0` each point carries the aux values after the state in `u`, with t
+/// the number of the row's iterate. A non-finite aux value is kept as computed and does
+/// not stop the run. Any other failure of the aux entry ends the run with
+/// `StopReason::Error`, and the row it failed on is not added.
 pub fn iterate(
     model: &mut dyn ModelEval,
     setup: &IterSetup,
@@ -43,9 +51,12 @@ pub fn iterate(
         stop: StopReason::MaxSteps,
         warnings: Vec::new(),
     };
-    let mut push = |branch: &mut Branch, k: i64, x: &[f64], h: f64| {
+    let mut push = |branch: &mut Branch, k: i64, x: &[f64], aux: &[f64], h: f64| {
+        let mut u = Vec::with_capacity(x.len() + aux.len());
+        u.extend_from_slice(x);
+        u.extend_from_slice(aux);
         let p = Point {
-            u: x.to_vec(),
+            u,
             alpha: k as f64,
             tangent: Vec::new(),
             eigenvalues: Vec::new(),
@@ -63,7 +74,15 @@ pub fn iterate(
     pbuf.push(0.0);
     let mut x = setup.x0.clone();
     let mut next = vec![0.0; n];
-    push(&mut branch, setup.n0, &x, 0.0);
+    let mut aux = vec![0.0; setup.n_aux];
+    if setup.n_aux > 0 {
+        pbuf[n_p] = setup.n0 as f64;
+        if let Err(e) = aux_row(model, &x, &pbuf, &mut aux) {
+            branch.stop = StopReason::Error(e);
+            return Ok(branch);
+        }
+    }
+    push(&mut branch, setup.n0, &x, &aux, 0.0);
     let mut k = setup.n0;
     branch.stop = loop {
         if k == setup.n1 {
@@ -78,7 +97,13 @@ pub fn iterate(
         }
         std::mem::swap(&mut x, &mut next);
         k += 1;
-        push(&mut branch, k, &x, 1.0);
+        if setup.n_aux > 0 {
+            pbuf[n_p] = k as f64;
+            if let Err(e) = aux_row(model, &x, &pbuf, &mut aux) {
+                break StopReason::Error(e);
+            }
+        }
+        push(&mut branch, k, &x, &aux, 1.0);
     };
     Ok(branch)
 }
@@ -145,6 +170,7 @@ mod tests {
             params: Vec::new(),
             n0,
             n1,
+            n_aux: 0,
         }
     }
 

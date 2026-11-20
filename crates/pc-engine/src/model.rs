@@ -38,6 +38,22 @@ pub(crate) fn check_finite(kind: &EntryKind, out: &[f64]) -> Result<(), EngineEr
     }
 }
 
+/// Fills `out` with the aux values of one run row: the aux entry at state `x` and the
+/// parameters `p` with the row's time as the last entry. A non-finite value is not an error
+/// here. `eval` has written every output when it reports `NotFinite`, so a row keeps the
+/// value as computed, and any other failure is returned (SPEC 10, aux columns).
+pub(crate) fn aux_row(
+    model: &mut dyn ModelEval,
+    x: &[f64],
+    p: &[f64],
+    out: &mut [f64],
+) -> Result<(), EngineError> {
+    match model.eval(&EntryKind::Aux, x, p, &[], out) {
+        Err(EngineError::NotFinite(_)) => Ok(()),
+        other => other,
+    }
+}
+
 /// Expected length of `out` and `v` for an entry.
 pub(crate) fn lengths(kind: &EntryKind, n: usize, n_p: usize, n_aux: usize) -> (usize, usize) {
     match kind {

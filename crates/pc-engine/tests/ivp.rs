@@ -24,6 +24,7 @@ fn setup(x0: &[f64], params: &[f64], t0: f64, t1: f64) -> IvpSetup {
         params: params.to_vec(),
         t0,
         t1,
+        n_aux: 0,
     }
 }
 

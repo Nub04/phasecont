@@ -302,8 +302,9 @@ impl Problem {
             (Kind::Ivp, ..) if let Some((tspan, opts)) = &self.ivp => RunKind::Ivp {
                 tspan: *tspan,
                 opts: opts.clone(),
+                n_aux: 0,
             },
-            (Kind::Iter, ..) if let Some(n) = self.iter => RunKind::Iter { n },
+            (Kind::Iter, ..) if let Some(n) = self.iter => RunKind::Iter { n, n_aux: 0 },
             (Kind::Lp, Some(free), _) => RunKind::LpCurve(curve(free)),
             (Kind::Hopf, Some(free), _) => RunKind::HopfCurve(curve(free)),
             (Kind::MapLp, Some(free), _) => RunKind::MapLpCurve(curve(free)),
@@ -2334,7 +2335,7 @@ mod tests {
         assert_eq!(tspan, [0.0, 5.0]);
         assert_eq!(opts, pc_engine::IvpOptions::default());
         match p.run_kind() {
-            RunKind::Ivp { tspan, opts } => {
+            RunKind::Ivp { tspan, opts, .. } => {
                 assert_eq!(tspan, [0.0, 5.0]);
                 assert_eq!(opts, pc_engine::IvpOptions::default());
             }
@@ -2491,7 +2492,7 @@ mod tests {
             assert_eq!(p.iter, Some(n), "{tspan}");
             assert!(p.ivp.is_none());
             match p.run_kind() {
-                RunKind::Iter { n: got } => assert_eq!(got, n),
+                RunKind::Iter { n: got, .. } => assert_eq!(got, n),
                 other => panic!("{other:?}"),
             }
         }

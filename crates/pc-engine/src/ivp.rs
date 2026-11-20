@@ -13,7 +13,7 @@
 
 use crate::branch::{Branch, Point, StopReason};
 use crate::error::EngineError;
-use crate::model::ModelEval;
+use crate::model::{ModelEval, aux_row};
 use pc_ir::EntryKind;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -51,6 +51,9 @@ pub struct IvpSetup {
     pub t0: f64,
     /// The end time. A value below `t0` integrates backward.
     pub t1: f64,
+    /// Number of aux values to append to the state in `Point::u` of every row, evaluated at
+    /// the row's time and state. 0 adds none and leaves the points as they were.
+    pub n_aux: usize,
 }
 
 /// Nodes c2 to c7 of the pair.
@@ -236,8 +239,25 @@ fn check(setup: &IvpSetup, opts: &IvpOptions, n: usize, n_p: usize) -> Result<()
     Ok(())
 }
 
+/// The right-hand side at time `t`: the time goes into the last slot of `pbuf`.
+fn rhs_at(
+    model: &mut dyn ModelEval,
+    pbuf: &mut [f64],
+    (t, x): (f64, &[f64]),
+    out: &mut [f64],
+) -> Result<(), EngineError> {
+    let n_p = pbuf.len() - 1;
+    pbuf[n_p] = t;
+    model.eval(&EntryKind::F, x, pbuf, &[], out)
+}
+
 /// Integrates x' = f(t, x) from `setup.t0` to `setup.t1`, calling `on_point` for the start
 /// and for each accepted step. Returns the branch with the reason the run stopped.
+///
+/// With `setup.n_aux > 0` each point carries the aux values after the state in `u`. A
+/// non-finite aux value is kept as computed and does not stop the run. Any other failure of
+/// the aux entry ends the run with `StopReason::Error`, and the row it failed on is not
+/// added.
 ///
 /// Input errors and a cancel before the start are `Err`. After that a failure, such as a
 /// model entry that gives NaN, ends the run with `StopReason::Error` and keeps the points
@@ -256,19 +276,19 @@ pub fn integrate(
     }
     let mut pbuf = setup.params.clone();
     pbuf.push(setup.t0);
-    let mut f = |t: f64, x: &[f64], out: &mut [f64]| -> Result<(), EngineError> {
-        pbuf[n_p] = t;
-        model.eval(&EntryKind::F, x, &pbuf, &[], out)
-    };
+    let mut aux = vec![0.0; setup.n_aux];
     let mut branch = Branch {
         points: Vec::new(),
         specials: Vec::new(),
         stop: StopReason::MaxSteps,
         warnings: Vec::new(),
     };
-    let mut push = |branch: &mut Branch, t: f64, x: &[f64], h: f64| {
+    let mut push = |branch: &mut Branch, t: f64, x: &[f64], aux: &[f64], h: f64| {
+        let mut u = Vec::with_capacity(x.len() + aux.len());
+        u.extend_from_slice(x);
+        u.extend_from_slice(aux);
         let p = Point {
-            u: x.to_vec(),
+            u,
             alpha: t,
             tangent: Vec::new(),
             eigenvalues: Vec::new(),
@@ -284,7 +304,14 @@ pub fn integrate(
 
     let mut x = setup.t0;
     let mut y = setup.x0.clone();
-    push(&mut branch, x, &y, 0.0);
+    if setup.n_aux > 0 {
+        pbuf[n_p] = x;
+        if let Err(e) = aux_row(model, &y, &pbuf, &mut aux) {
+            branch.stop = StopReason::Error(e);
+            return Ok(branch);
+        }
+    }
+    push(&mut branch, x, &y, &aux, 0.0);
     let mut k: [Vec<f64>; 7] = std::array::from_fn(|_| vec![0.0; n]);
     let mut ytmp = vec![0.0; n];
     let mut y1 = vec![0.0; n];
@@ -292,9 +319,9 @@ pub fn integrate(
     let posneg = (xend - x).signum();
     let tols = (opts.rtol, opts.atol);
 
-    let mut h = match f(x, &y, &mut k[0]).and_then(|()| {
+    let mut h = match rhs_at(model, &mut pbuf, (x, &y), &mut k[0]).and_then(|()| {
         initial_step(
-            &mut f,
+            &mut |t, xs, out| rhs_at(model, &mut pbuf, (t, xs), out),
             (x, &y, &k[0]),
             (opts.rtol, opts.atol, opts.hmax),
             posneg,
@@ -326,6 +353,7 @@ pub fn integrate(
             last = true;
         }
         let t_end = if last { xend } else { x + h };
+        let mut f = |t: f64, xs: &[f64], out: &mut [f64]| rhs_at(model, &mut pbuf, (t, xs), out);
         let err = match step(&mut f, (x, &y, h, t_end), &mut k, &mut ytmp, &mut y1, tols) {
             Ok(e) => e,
             Err(e) => break StopReason::Error(e),
@@ -340,7 +368,13 @@ pub fn integrate(
             std::mem::swap(&mut y, &mut y1);
             let (first, rest) = k.split_at_mut(1);
             first[0].copy_from_slice(&rest[5]);
-            push(&mut branch, x, &y, h);
+            if setup.n_aux > 0 {
+                pbuf[n_p] = x;
+                if let Err(e) = aux_row(model, &y, &pbuf, &mut aux) {
+                    break StopReason::Error(e);
+                }
+            }
+            push(&mut branch, x, &y, &aux, h);
             if last {
                 break StopReason::End;
             }
