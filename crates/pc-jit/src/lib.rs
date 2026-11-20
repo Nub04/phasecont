@@ -130,7 +130,10 @@ fn compile_as(
         .iter()
         .any(|(_, e)| e.outputs.iter().any(|&o| dag.has_call(o)))
     {
-        return Err(JitError::Unsupported("recursive function call".into()));
+        return Err(JitError::Unsupported(
+            "recursive function call; only the fallback evaluator runs recursive functions so far"
+                .into(),
+        ));
     }
     // The guard exists from here on; any `?` below drops it and frees the module.
     let mut je = JitEntries::new(float)?;

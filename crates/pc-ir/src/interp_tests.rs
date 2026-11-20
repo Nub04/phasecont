@@ -1118,9 +1118,10 @@ fn machine_matches_the_dag_on_recursive_models() {
     }
     // The exponent case is only a test when the interpreter's `powi` and `pow` differ at
     // one of the points.
-    assert_ne!(
-        Scalar::powi(0.7f64, 7).to_bits(),
-        0.7f64.powf(7.0).to_bits()
+    assert!(
+        [0.7f64, 1.1, -1.3]
+            .iter()
+            .any(|&x| Scalar::powi(x, 7).to_bits() != x.powf(7.0).to_bits())
     );
 }
 

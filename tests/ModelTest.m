@@ -275,6 +275,16 @@ classdef ModelTest < matlab.unittest.TestCase
             testCase.verifyEqual(m.rhs(1.5), 3.375);
             testCase.verifyError(@() phasecont.Model(f, Evaluator = "jit"), ...
                 "phasecont:engine:model");
+            % With no Evaluator the session option decides, "jit" by default:
+            % the refusal names the evaluator that runs the model.
+            testCase.assumeEqual(phasecont.config("Codegen"), "jit");
+            try
+                phasecont.Model(f);
+                testCase.verifyFail("the default evaluator ran a recursive model");
+            catch err
+                testCase.verifyEqual(string(err.identifier), "phasecont:engine:model");
+                testCase.verifySubstring(string(err.message), "fallback");
+            end
             clear restore
         end
 
