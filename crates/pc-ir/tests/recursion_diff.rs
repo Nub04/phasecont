@@ -486,7 +486,9 @@ fn jacp_of_a_body_that_reads_the_parameter() {
     let o = g.call(u, &[k]);
     let mut memo = HashMap::new();
     let dp = d(&mut g, &mut memo, o, Wrt::P(0));
+    let units = g.units().len();
     let dk = d(&mut g, &mut memo, o, Wrt::P(1));
+    assert_eq!(g.units().len(), units, "d/dn adds no unit");
     for n in [0u32, 1, 6, 100] {
         let want = if n == 0 {
             0.0
@@ -498,7 +500,204 @@ fn jacp_of_a_body_that_reads_the_parameter() {
             (want, u64::from(n) + 1)
         );
     }
-    // n only feeds the conditions, so d/dn is 0, but its tangent is not the constant 0,
-    // so the tangent unit runs (SPEC 8af-5 skips only constant-zero tangents).
-    assert_eq!(run(&g, dk, &[], &[0.5, 6.0]), (0.0, 7));
+    // n only feeds the conditions and the counter, so its formal is inactive and the body
+    // does not read p[1]: d/dn is the constant 0 with no call (SPEC 8af-5).
+    assert!(is_zero(&g, dk));
+}
+
+/// A counter formal is inactive even when its argument moves: in `pw(x, x)` the second
+/// formal only feeds the condition and the counter, so the derivative treats n as fixed,
+/// `n x^(n-1)`, and the tangent unit is the one of `pw(x, n)`, with only formal 0.
+#[test]
+fn counter_formal_gets_no_tangent_even_when_its_argument_moves() {
+    let mut g = Dag::new(10_000);
+    let u = pw(&mut g);
+    let x = g.var(0);
+    let o = g.call(u, &[x, x]);
+    let units = g.units().len();
+    let mut memo = HashMap::new();
+    let dx = d(&mut g, &mut memo, o, Wrt::U(0));
+    assert_eq!(g.units().len(), units + 1);
+    assert_eq!(g.derived(&[0, u, 0, 0, 0]), Some(units as u32));
+    assert_eq!(run(&g, dx, &[3.0], &[]), (27.0, 4));
+}
+
+/// A state read only in a condition: `cz(n) = if(x<n)then(1)else(1+cz(n-1))` is piecewise
+/// constant in x, so its derivative along x is the constant 0 with no unit.
+#[test]
+fn state_read_only_in_a_condition_gives_zero_without_a_unit() {
+    let mut g = Dag::new(10_000);
+    let u = g.add_unit("cz", 1, 1);
+    let n = g.arg(0);
+    let x = g.var(0);
+    let one = g.konst(1.0);
+    let c = g.cmp(Cmp::Lt, x, n);
+    let m = g.sub(n, one);
+    let r = g.call(u, &[m]);
+    let s = g.add(one, r);
+    let body = g.select(c, one, s);
+    assert!(g.set_body(u, &[body]));
+    let k = g.param(0);
+    let o = g.call(u, &[k]);
+    let units = g.units().len();
+    let mut memo = HashMap::new();
+    let dx = d(&mut g, &mut memo, o, Wrt::U(0));
+    assert!(is_zero(&g, dx));
+    assert_eq!(g.units().len(), units);
+}
+
+/// `h(a) = if(a<1)then(3)else(h(a-1))`, recursive and active in its formal.
+fn h3(g: &mut Dag) -> u32 {
+    let u = g.add_unit("h", 1, 1);
+    let a = g.arg(0);
+    let (one, three) = (g.konst(1.0), g.konst(3.0));
+    let c = g.cmp(Cmp::Lt, a, one);
+    let m = g.sub(a, one);
+    let r = g.call(u, &[m]);
+    let body = g.select(c, three, r);
+    assert!(g.set_body(u, &[body]));
+    u
+}
+
+/// `pw(x, h(x))`: the argument of the counter formal is a recursive call. Its tangent is
+/// never built, so `h` runs primal only and gets no tangent unit, at the top level and
+/// inside a unit body. At x = 2.5, h(x) = 3 after 3 calls and pw makes 4.
+#[test]
+fn call_in_a_counter_argument_runs_primal_only() {
+    let mut g = Dag::new(10_000);
+    let p = pw(&mut g);
+    let h = h3(&mut g);
+    let x = g.var(0);
+    let hx = g.call(h, &[x]);
+    let o = g.call(p, &[x, hx]);
+    let units = g.units().len();
+    let mut memo = HashMap::new();
+    let dx = d(&mut g, &mut memo, o, Wrt::U(0));
+    assert_eq!(g.units().len(), units + 1, "only pw gets a tangent unit");
+    assert_eq!(run(&g, dx, &[2.5], &[]), (18.75, 4 + 3));
+    assert_eq!(memo.get(&(hx, Wrt::U(0))), None, "no tangent of h(x)");
+
+    // The same inside a unit: f(a) = pw(a, h(a)).
+    let f = g.add_unit("f", 1, 1);
+    let a = g.arg(0);
+    let ha = g.call(h, &[a]);
+    let body = g.call(p, &[a, ha]);
+    assert!(g.set_body(f, &[body]));
+    let o = g.call(f, &[x]);
+    let units = g.units().len();
+    let dx = d(&mut g, &mut memo, o, Wrt::U(0));
+    assert_eq!(g.units().len(), units + 1, "only f gets a new tangent unit");
+    assert_eq!(run(&g, dx, &[2.5], &[]), (18.75, 1 + 4 + 3));
+}
+
+/// Activity through mutual recursion and call arguments: `a(s, n) =
+/// if(n<1)then(s)else(b(n-1, s))` and `b(m, s) = a(s, m)` swap the argument order, so s is
+/// active in formal 0 of `a` and formal 1 of `b`, and the counters are inactive in both.
+#[test]
+fn activity_through_mutual_recursion_and_call_arguments() {
+    let mut g = Dag::new(10_000);
+    let ua = g.add_unit("a", 2, 1);
+    let ub = g.add_unit("b", 2, 1);
+    let (s, n) = (g.arg(0), g.arg(1));
+    let one = g.konst(1.0);
+    let c = g.cmp(Cmp::Lt, n, one);
+    let m = g.sub(n, one);
+    let rb = g.call(ub, &[m, s]);
+    let ba = g.select(c, s, rb);
+    assert!(g.set_body(ua, &[ba]));
+    let (m0, s1) = (g.arg(0), g.arg(1));
+    let bb = g.call(ua, &[s1, m0]);
+    assert!(g.set_body(ub, &[bb]));
+    let (x, k) = (g.var(0), g.param(0));
+    let o = g.call(ua, &[x, k]);
+    let units = g.units().len();
+    let mut memo = HashMap::new();
+    let dx = d(&mut g, &mut memo, o, Wrt::U(0));
+    assert_eq!(g.units().len(), units + 2);
+    assert_eq!(g.derived(&[0, ua, 0, 0, 0]), Some(units as u32));
+    assert_eq!(g.derived(&[0, ub, 0, 0, 1]), Some(units as u32 + 1));
+    for kv in 0u32..5 {
+        assert_eq!(
+            run(&g, dx, &[1.5], &[f64::from(kv)]),
+            (1.0, 2 * u64::from(kv) + 1)
+        );
+    }
+    // With x in the counter slot the derivative is the constant 0.
+    let o2 = g.call(ua, &[k, x]);
+    let units = g.units().len();
+    let d2 = d(&mut g, &mut memo, o2, Wrt::U(0));
+    assert!(is_zero(&g, d2));
+    assert_eq!(g.units().len(), units);
+}
+
+/// A call into a unit with no body, directly or through a unit that calls it, has a NaN
+/// derivative, builds no tangent unit and leaves no memo entry, and the DAG names the
+/// unit. Once the body is set, the same request gives the right derivative.
+#[test]
+fn missing_body_gives_nan_without_caching_it() {
+    let mut g = Dag::new(10_000);
+    let mb = g.add_unit("mb", 1, 1);
+    let f = g.add_unit("f", 1, 1);
+    let a = g.arg(0);
+    let fb = g.call(mb, &[a]);
+    assert!(g.set_body(f, &[fb]));
+    let x = g.var(0);
+    let o = g.call(f, &[x]);
+    let direct = g.call(mb, &[x]);
+    assert_eq!(g.missing_body(), None);
+    let units = g.units().len();
+    let mut memo = HashMap::new();
+    for node in [o, direct] {
+        let dx = d(&mut g, &mut memo, node, Wrt::U(0));
+        assert!(matches!(g.op(dx), Op::Const(b) if f64::from_bits(*b).is_nan()));
+        assert_eq!(g.units().len(), units, "no tangent unit");
+        assert_eq!(memo.get(&(node, Wrt::U(0))), None, "no memo entry");
+        assert_eq!(g.missing_body(), Some(mb));
+    }
+    let sq = g.mul(a, a);
+    assert!(g.set_body(mb, &[sq]));
+    assert_eq!(g.missing_body(), None);
+    let dx = d(&mut g, &mut memo, o, Wrt::U(0));
+    assert_eq!(run(&g, dx, &[1.5], &[]), (3.0, 2));
+}
+
+/// The activity of a unit is recomputed after its body changes, whether by a second
+/// `set_body` or by a restore that drops the body.
+#[test]
+fn activity_follows_a_new_body() {
+    let mut g = Dag::new(10_000);
+    let k = g.add_unit("k", 1, 1);
+    let a = g.arg(0);
+    assert!(g.set_body(k, &[a]));
+    let p = g.param(0);
+    let o = g.call(k, &[p]);
+    let mut memo = HashMap::new();
+    let d0 = d(&mut g, &mut memo, o, Wrt::U(0));
+    assert!(is_zero(&g, d0), "k(p) = p does not depend on x");
+    // k(a) = x a now reads x.
+    let x = g.var(0);
+    let xa = g.mul(x, a);
+    assert!(g.set_body(k, &[xa]));
+    let mut memo = HashMap::new();
+    let d1 = d(&mut g, &mut memo, o, Wrt::U(0));
+    assert_eq!(run(&g, d1, &[2.0], &[0.5]), (0.5, 1));
+
+    // Restore drops a body that reads a node added after the checkpoint.
+    let mut g = Dag::new(10_000);
+    let k = g.add_unit("k", 1, 1);
+    let a = g.arg(0);
+    let p = g.param(0);
+    let o = g.call(k, &[p]);
+    let cp = g.checkpoint();
+    let x = g.var(0);
+    let xa = g.mul(x, a);
+    assert!(g.set_body(k, &[xa]));
+    let mut memo = HashMap::new();
+    let d1 = d(&mut g, &mut memo, o, Wrt::U(0));
+    assert_eq!(run(&g, d1, &[2.0], &[0.5]), (0.5, 1));
+    g.restore(&cp);
+    assert!(g.set_body(k, &[a]));
+    let mut memo = HashMap::new();
+    let d0 = d(&mut g, &mut memo, o, Wrt::U(0));
+    assert!(is_zero(&g, d0));
 }

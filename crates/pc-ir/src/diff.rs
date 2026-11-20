@@ -35,6 +35,7 @@
 use crate::dag::{Cmp, Dag, Fn1, Fn2, NodeId, Op};
 use crate::eval::children;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// The variable a derivative is taken with respect to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -176,13 +177,21 @@ pub(crate) fn diff_children(op: &Op, f: &mut dyn FnMut(NodeId)) {
 /// calls on the same DAG. Walks the needed nodes in id order, so deep DAGs do not recurse.
 ///
 /// A call to a function `f` differentiates through a tangent unit of `f` (SPEC section
-/// 8af-5): a unit that takes the arguments and the tangents of the active formals (those
-/// whose tangent is not the constant 0) and returns the value and the derivative. Its body
-/// is the body of `f` with each call inside it replaced by the matching tangent call, whose
-/// output 0 is the value, so a frame runs each recursive call once. A call whose argument
-/// tangents are all the constant 0, into a function that does not read `wrt` through any
-/// chain of calls, has derivative 0 and makes no call. The units are cached in the derived
-/// map of the DAG, so a second derivative request reuses them.
+/// 8af-5): a unit that takes the arguments and the tangents of the active formals and
+/// returns the value and the derivative. A formal is active when a derivative can flow
+/// from it to the output of `f` through any chain of calls (see [`Activity`]); the
+/// argument of an inactive formal, such as a counter or a value read only in a condition,
+/// gets no tangent at all, so a call inside it runs as a primal call. Its body is the body
+/// of `f` with each call inside it replaced by the matching tangent call, whose output 0
+/// is the value, so a frame runs each recursive call once. A call with no active formal
+/// whose tangent is nonzero, into a function that does not read `wrt` through any chain of
+/// calls, has derivative 0 and makes no call. The units are cached in the derived map of
+/// the DAG, so a second derivative request reuses them.
+///
+/// A call into a function whose body, or the body of a function it calls, is not set
+/// yet has a NaN derivative. That result is not cached in `memo` or in the DAG, so the
+/// same request after the body is set gives the derivative; [`Dag::missing_body`] names
+/// the unit.
 pub fn d(
     dag: &mut Dag,
     memo: &mut HashMap<(NodeId, Wrt), NodeId>,
@@ -192,7 +201,7 @@ pub fn d(
     if let Some(&r) = memo.get(&(node, wrt)) {
         return r;
     }
-    let mut cx = Cx::default();
+    let hits0 = dag.missing_hits();
     let mut seen = HashSet::new();
     let mut stack = vec![node];
     while let Some(id) = stack.pop() {
@@ -202,34 +211,62 @@ pub fn d(
         let op = *dag.op(id);
         match op {
             // `diff_children` does not visit the arguments of a call.
-            Op::Call(_, l) => stack.extend_from_slice(dag.args(l)),
+            Op::Call(g, l) => {
+                if let Some(a) = call_act(dag, g) {
+                    push_active(dag, &a, l, &mut stack);
+                }
+            }
             Op::Out(..) | Op::Arg(_) => {}
             _ => diff_children(&op, &mut |c| stack.push(c)),
         }
     }
     let mut order: Vec<NodeId> = seen.into_iter().collect();
     order.sort_unstable();
+    let mut added = Vec::with_capacity(order.len());
     for id in order {
         let r = match *dag.op(id) {
-            Op::Call(g, l) => {
-                let args = dag.args(l).to_vec();
-                let targs: Vec<NodeId> = args
-                    .iter()
-                    .map(|&a| memo.get(&(a, wrt)).copied().unwrap_or(NodeId(u32::MAX)))
-                    .collect();
-                if targs.iter().any(|t| t.0 == u32::MAX) {
-                    dag.konst(f64::NAN)
-                } else {
-                    // At the top level the primal call stays in the value, so an entry that
-                    // needs the value and the derivative makes about 2(n + 1) calls.
-                    call_tangent(dag, memo, &mut cx, g, &args, &targs, wrt).1
+            Op::Call(g, l) => match call_act(dag, g) {
+                None => dag.konst(f64::NAN),
+                Some(a) => {
+                    let args = dag.args(l).to_vec();
+                    let mut targs = Vec::with_capacity(args.len());
+                    let mut known = true;
+                    for (i, &x) in args.iter().enumerate() {
+                        if a.active(i) {
+                            match memo.get(&(x, wrt)) {
+                                Some(&t) => targs.push(t),
+                                None => {
+                                    known = false;
+                                    break;
+                                }
+                            }
+                        } else {
+                            targs.push(dag.konst(0.0));
+                        }
+                    }
+                    if known {
+                        // At the top level the primal call stays in the value, so an entry
+                        // that needs the value and the derivative makes about 2(n + 1) calls.
+                        call_tangent(dag, memo, &a, g, &args, &targs, wrt).1
+                    } else {
+                        dag.konst(f64::NAN)
+                    }
                 }
-            }
+            },
             // An output j > 0 of a call and a formal outside a unit have no tangent here.
             Op::Out(..) | Op::Arg(_) => dag.konst(f64::NAN),
             _ => rule(dag, &|c| memo.get(&(c, wrt)).copied(), id, wrt),
         };
         memo.insert((id, wrt), r);
+        added.push(id);
+    }
+    if dag.missing_hits() != hits0 {
+        // A missing body: drop what this request cached, so it is rebuilt once the body is
+        // set. Entries from nested requests read no call and stay valid.
+        for id in added {
+            memo.remove(&(id, wrt));
+        }
+        return dag.konst(f64::NAN);
     }
     match memo.get(&(node, wrt)) {
         Some(&r) => r,
@@ -240,98 +277,218 @@ pub fn d(
 /// The derived-map tag of a tangent unit; the jet units of `multi.rs` use other tags.
 const TANGENT_TAG: u32 = 0;
 
-/// State of one [`d`] request: whether a function reads a variable through its calls.
-#[derive(Default)]
-struct Cx {
-    reads: HashMap<(u32, Wrt), bool>,
+/// The derivative structure of a unit with one output, along the edges a derivative
+/// follows (those of [`diff_children`], plus each active argument of a call): `act[k]`
+/// when a derivative can flow from formal `k` to the output, `reads` the states and
+/// parameters met on those edges, and `all` when the edges meet a call that cannot be
+/// differentiated (a unit with more than one output, an output `j > 0` or an unknown unit),
+/// which then counts as reading every variable. It is the least fixpoint over the units the
+/// body reaches through calls, so mutual recursion settles; it is computed when the
+/// derivative is built and never tested at run time.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct Activity {
+    act: Vec<bool>,
+    reads: HashSet<Wrt>,
+    all: bool,
 }
 
-/// Whether the body of unit `g`, or of a unit it calls through any chain of calls, reads
-/// `w`. A unit without a body counts as reading it. The unit graph can be cyclic, so the
-/// walk keeps a visited set of units.
-fn reads(dag: &Dag, cx: &mut Cx, g: u32, w: Wrt) -> bool {
-    if let Some(&r) = cx.reads.get(&(g, w)) {
-        return r;
+impl Activity {
+    fn active(&self, k: usize) -> bool {
+        self.act.get(k).copied().unwrap_or(false)
+    }
+}
+
+/// Pushes the arguments of the call with argument list `l` whose formal is active in `a`.
+fn push_active(dag: &Dag, a: &Activity, l: u32, stack: &mut Vec<NodeId>) {
+    for (k, &x) in dag.args(l).iter().enumerate() {
+        if a.active(k) {
+            stack.push(x);
+        }
+    }
+}
+
+/// The activity of a call of unit `g`, or `None` when the call has no derivative: an
+/// unknown unit, a unit with more than one output, or a unit whose body, or the body of a
+/// unit it calls, is not set. The last case is recorded on the DAG.
+fn call_act(dag: &mut Dag, g: u32) -> Option<Arc<Activity>> {
+    let (nout, has_body) = dag.unit(g).map(|u| (u.nout, u.outputs().is_some()))?;
+    if nout != 1 {
+        return None;
+    }
+    if !has_body {
+        dag.note_missing_body(g);
+        return None;
+    }
+    match activity(dag, g) {
+        Ok(a) => Some(a),
+        Err(m) => {
+            dag.note_missing_body(m);
+            None
+        }
+    }
+}
+
+/// The [`Activity`] of unit `g`, which has one output and a body. Collects the units with
+/// one output that the bodies reach through calls on any edge, then iterates from all
+/// formals inactive until nothing changes. A unit whose activity is already cached is a
+/// fixed point and is not walked again. Returns the first unit without a body, if any,
+/// and caches nothing then.
+fn activity(dag: &mut Dag, g: u32) -> Result<Arc<Activity>, u32> {
+    if let Some(a) = dag.cached_activity(g) {
+        return Ok(a);
     }
     let mut units = vec![g];
-    let mut seen_units = HashSet::from([g]);
-    let mut seen = HashSet::new();
-    let mut found = false;
-    'units: while let Some(u) = units.pop() {
-        let Some(outs) = dag.unit(u).and_then(|x| x.outputs()) else {
-            found = true;
-            break;
+    let mut index = HashMap::from([(g, 0usize)]);
+    let mut state: Vec<Activity> = Vec::new();
+    let mut fixed: Vec<bool> = Vec::new();
+    let mut i = 0;
+    while i < units.len() {
+        let u = units[i];
+        i += 1;
+        if let Some(a) = dag.cached_activity(u) {
+            state.push((*a).clone());
+            fixed.push(true);
+            continue;
+        }
+        let Some(unit) = dag.unit(u) else {
+            return Err(u);
         };
+        let arity = unit.arity as usize;
+        let Some(outs) = unit.outputs() else {
+            return Err(u);
+        };
+        state.push(Activity {
+            act: vec![false; arity],
+            ..Activity::default()
+        });
+        fixed.push(false);
         let mut stack = outs.to_vec();
+        let mut seen = HashSet::new();
         while let Some(id) = stack.pop() {
-            if !seen.insert(id) {
+            if !dag.has_call(id) || !seen.insert(id) {
                 continue;
             }
             let op = *dag.op(id);
-            match op {
-                Op::Var(i) if w == Wrt::U(i) => {
-                    found = true;
-                    break 'units;
-                }
-                Op::Param(j) if w == Wrt::P(j) => {
-                    found = true;
-                    break 'units;
-                }
-                Op::Call(h, _) if seen_units.insert(h) => units.push(h),
-                _ => {}
+            let callee = match op {
+                Op::Call(h, _) => Some(h),
+                _ => None,
+            };
+            let one_out = |h: u32| dag.unit(h).is_some_and(|x| x.nout == 1);
+            if let Some(h) = callee.filter(|&h| one_out(h) && !index.contains_key(&h)) {
+                index.insert(h, units.len());
+                units.push(h);
             }
             dag.operands(&op, &mut |c| stack.push(c));
         }
     }
-    cx.reads.insert((g, w), found);
-    found
+    loop {
+        let mut changed = false;
+        for k in 0..units.len() {
+            if fixed[k] {
+                continue;
+            }
+            let out0 = match dag.unit(units[k]).and_then(|x| x.outputs()) {
+                Some(o) => o[0],
+                None => return Err(units[k]),
+            };
+            let mut next = state[k].clone();
+            let mut seen = HashSet::new();
+            let mut stack = vec![out0];
+            while let Some(id) = stack.pop() {
+                if !seen.insert(id) {
+                    continue;
+                }
+                let op = *dag.op(id);
+                match op {
+                    Op::Arg(j) => {
+                        if let Some(x) = next.act.get_mut(j as usize) {
+                            *x = true;
+                        }
+                    }
+                    Op::Var(v) => {
+                        next.reads.insert(Wrt::U(v));
+                    }
+                    Op::Param(p) => {
+                        next.reads.insert(Wrt::P(p));
+                    }
+                    Op::Call(h, l) => match index.get(&h) {
+                        Some(&m) => {
+                            let s = &state[m];
+                            push_active(dag, s, l, &mut stack);
+                            next.reads.extend(s.reads.iter().copied());
+                            next.all |= s.all;
+                        }
+                        None => {
+                            next.all = true;
+                            stack.extend_from_slice(dag.args(l));
+                        }
+                    },
+                    Op::Out(c, _) => {
+                        next.all = true;
+                        stack.push(c);
+                    }
+                    _ => diff_children(&op, &mut |c| stack.push(c)),
+                }
+            }
+            if next != state[k] {
+                state[k] = next;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut out = None;
+    for (k, s) in state.into_iter().enumerate() {
+        if fixed[k] {
+            continue;
+        }
+        let a = Arc::new(s);
+        if k == 0 {
+            out = Some(a.clone());
+        }
+        dag.cache_activity(units[k], a);
+    }
+    Ok(out.expect("unit g is walked, not fixed"))
 }
 
-/// The value and the derivative along `wrt` of the call `g(args)`, given the tangents
-/// `targs` of the arguments: `(tc, out(tc, 1))` for the tangent call `tc`, whose output 0
-/// is the value, or the primal call and the constant 0 when no tangent is active and `g`
-/// does not read `wrt`. A unit without a body or with more than one output gets the
-/// primal call and a NaN derivative.
+/// The value and the derivative along `wrt` of the call `g(args)` with activity `a`, given
+/// the tangents `targs` of the arguments (the constant 0 for an inactive formal):
+/// `(tc, out(tc, 1))` for the tangent call `tc`, whose output 0 is the value, or the primal
+/// call and the constant 0 when no active formal has a nonzero tangent and `g` does not
+/// read `wrt`.
 fn call_tangent(
     dag: &mut Dag,
     memo: &mut HashMap<(NodeId, Wrt), NodeId>,
-    cx: &mut Cx,
+    a: &Activity,
     g: u32,
     args: &[NodeId],
     targs: &[NodeId],
     wrt: Wrt,
 ) -> (NodeId, NodeId) {
-    let ok = dag
-        .unit(g)
-        .is_some_and(|u| u.nout == 1 && u.outputs().is_some());
-    if !ok {
-        let c = dag.call(g, args);
-        return (c, dag.konst(f64::NAN));
-    }
     let mask: Vec<u32> = (0..targs.len() as u32)
-        .filter(|&i| !is_zero(dag, targs[i as usize]))
+        .filter(|&i| a.active(i as usize) && !is_zero(dag, targs[i as usize]))
         .collect();
-    let r = reads(dag, cx, g, wrt);
+    let r = a.all || a.reads.contains(&wrt);
     if mask.is_empty() && !r {
         let c = dag.call(g, args);
         return (c, dag.konst(0.0));
     }
-    let t = tangent_unit(dag, memo, cx, g, wrt, r, &mask);
-    let mut a = args.to_vec();
-    a.extend(mask.iter().map(|&i| targs[i as usize]));
-    let tc = dag.call(t, &a);
+    let t = tangent_unit(dag, memo, g, wrt, r, &mask);
+    let mut v = args.to_vec();
+    v.extend(mask.iter().map(|&i| targs[i as usize]));
+    let tc = dag.call(t, &v);
     (tc, dag.out(tc, 1))
 }
 
 /// The tangent unit of `f` for the active formals `mask`, along `wrt` when `reads_w` and
 /// with no variable otherwise (a unit that reads no variable is shared by every `wrt`).
 /// The unit is registered before its body is built, so a recursive call inside the body
-/// finds it.
-#[allow(clippy::too_many_arguments)]
+/// finds it. The caller has the activity of `f`, so every unit `f` reaches has a body.
 fn tangent_unit(
     dag: &mut Dag,
     memo: &mut HashMap<(NodeId, Wrt), NodeId>,
-    cx: &mut Cx,
     f: u32,
     wrt: Wrt,
     reads_w: bool,
@@ -354,8 +511,9 @@ fn tangent_unit(
     dag.set_derived(key, t);
 
     // The calls whose tangent the derivative reads: the walk of `d` from the output, plus
-    // the arguments of each call, inside the nodes that depend on a formal or a call. A call
-    // reached only through a condition stays a primal call.
+    // the active arguments of each call, inside the nodes that depend on a formal or a
+    // call. A call reached only through a condition or an inactive argument stays a primal
+    // call.
     let local = |dag: &Dag, id: NodeId| dag.arg_dep(id) || dag.has_call(id);
     let mut needed = HashSet::new();
     let mut stack = vec![out0];
@@ -365,7 +523,11 @@ fn tangent_unit(
         }
         let op = *dag.op(id);
         match op {
-            Op::Call(_, l) => stack.extend_from_slice(dag.args(l)),
+            Op::Call(g, l) => {
+                if let Some(a) = call_act(dag, g) {
+                    push_active(dag, &a, l, &mut stack);
+                }
+            }
             Op::Out(c, _) => stack.push(c),
             Op::Arg(_) => {}
             _ => diff_children(&op, &mut |c| stack.push(c)),
@@ -405,16 +567,30 @@ fn tangent_unit(
                     .iter()
                     .map(|a| prim.get(a).copied().unwrap_or(*a))
                     .collect();
-                if needed.contains(&id) {
-                    let targs: Vec<NodeId> = args
-                        .iter()
-                        .map(|&a| local_tangent(dag, memo, &mut tan, a, w))
-                        .collect();
-                    let (p, tp) = call_tangent(dag, memo, cx, g, &args, &targs, wrt);
-                    tan.insert(p, tp);
-                    p
-                } else {
-                    dag.call(g, &args)
+                match needed.contains(&id).then(|| call_act(dag, g)) {
+                    Some(Some(a)) => {
+                        let mut targs = Vec::with_capacity(args.len());
+                        for (i, &x) in args.iter().enumerate() {
+                            let tx = if a.active(i) {
+                                local_tangent(dag, memo, &mut tan, x, w)
+                            } else {
+                                dag.konst(0.0)
+                            };
+                            targs.push(tx);
+                        }
+                        let (p, tp) = call_tangent(dag, memo, &a, g, &args, &targs, wrt);
+                        tan.insert(p, tp);
+                        p
+                    }
+                    // A call that cannot be differentiated keeps its value and has a NaN
+                    // tangent.
+                    Some(None) => {
+                        let p = dag.call(g, &args);
+                        let nan = dag.konst(f64::NAN);
+                        tan.insert(p, nan);
+                        p
+                    }
+                    None => dag.call(g, &args),
                 }
             }
             _ => dag.rebuild(&op, &|c| prim.get(&c).copied().unwrap_or(c)),

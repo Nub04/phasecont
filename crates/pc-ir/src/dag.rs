@@ -4,8 +4,10 @@
 //! structures share one [`NodeId`]. Children always have smaller ids than their parents.
 //! Folding never reorders or reassociates operands.
 
+use crate::diff::Activity;
 use crate::eval::eval_op;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Default node limit for a model.
 pub const MAX_NODES: usize = 1_000_000;
@@ -232,6 +234,12 @@ pub struct Dag {
     /// Each [`Dag::set_derived`] in order, with the value its key had before, so
     /// [`Dag::restore`] can undo the entries set after a checkpoint.
     derived_log: Vec<(Vec<u32>, Option<u32>)>,
+    /// The activity of each unit whose closure is complete (see `diff::activity`). A new
+    /// body for a unit that had one, and every restore, clear it.
+    activity: HashMap<u32, Arc<Activity>>,
+    /// How many times a derivative met a unit with no body, and the last such unit.
+    missing_hits: u64,
+    missing_last: Option<u32>,
 }
 
 impl Dag {
@@ -250,6 +258,9 @@ impl Dag {
             units: Vec::new(),
             derived: HashMap::new(),
             derived_log: Vec::new(),
+            activity: HashMap::new(),
+            missing_hits: 0,
+            missing_last: None,
         }
     }
 
@@ -311,6 +322,13 @@ impl Dag {
         }
         self.tables.truncate(cp.tables);
         self.exceeded = cp.exceeded;
+        self.activity.clear();
+        if self
+            .missing_last
+            .is_some_and(|u| u as usize >= self.units.len())
+        {
+            self.missing_last = None;
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -440,6 +458,30 @@ impl Dag {
         self.derived_log.push((key, old));
     }
 
+    /// The unit without a body that the last failed derivative met, if its body is still
+    /// unset: a call into a function whose body, or the body of a function it calls, is
+    /// missing has a NaN derivative (SPEC section 8af-5).
+    pub fn missing_body(&self) -> Option<u32> {
+        self.missing_last
+    }
+
+    pub(crate) fn note_missing_body(&mut self, u: u32) {
+        self.missing_hits += 1;
+        self.missing_last = Some(u);
+    }
+
+    pub(crate) fn missing_hits(&self) -> u64 {
+        self.missing_hits
+    }
+
+    pub(crate) fn cached_activity(&self, u: u32) -> Option<Arc<Activity>> {
+        self.activity.get(&u).cloned()
+    }
+
+    pub(crate) fn cache_activity(&mut self, u: u32, a: Arc<Activity>) {
+        self.activity.insert(u, a);
+    }
+
     /// Sets the body of unit `u` to the output roots `outputs`, one per output of the unit,
     /// and assigns a frame slot to every node of the body that depends on an `Arg`. A `Call`
     /// node takes one slot per output of its unit, and `Out(call, j)` reads slot `j` of its
@@ -455,6 +497,15 @@ impl Dag {
             return false;
         }
         let arity = unit.arity as usize;
+        // A unit's activity depends on the bodies of every unit it calls, so a new body for
+        // a unit that had one drops the cached activities. A first body cannot change a
+        // cached one, since a closure that meets a unit without a body is never cached.
+        if unit.body.is_some() {
+            self.activity.clear();
+        }
+        if self.missing_last == Some(u) {
+            self.missing_last = None;
+        }
         // Every node of a body has a smaller id than the largest output, so a walk down from
         // the outputs in decreasing id order meets each local once.
         let mut seen = std::collections::HashSet::new();
