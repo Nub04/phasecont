@@ -231,6 +231,11 @@ classdef Branch < handle
             % takes no Var. An LC branch draws the
             % max and the min of Var over each orbit, both styled by
             % stability, with its special points at the max.
+            % On 2-D axes a line with more rows than 4 times the axes width
+            % in pixels is drawn through the rows that keep it within half
+            % a pixel of every row, again after each zoom, pan or resize.
+            % Each line's UserData.PhaseContRows holds the indices into the
+            % rows of Alpha of its drawn rows (SPEC 8af-3).
             % Without Parent the plot uses newplot, so hold on is respected.
             % H holds the lines, markers and texts as a column vector.
             arguments
@@ -501,6 +506,7 @@ classdef Branch < handle
                 h(end+1, 1) = line(ax, x, y, Color = color, LineStyle = "-", ...
                     Tag = "pc-curve");
             end
+            phasecont.internal.drawThin(h(end), x, y, (1:numel(x)).');
             px = zeros(numel(br.Specials), 1);
             py = px;
             for k = 1:numel(br.Specials)
@@ -576,6 +582,7 @@ if npts == 1
     end
     h(end+1, 1) = line(ax, x, y, Color = color, ...
         LineStyle = "none", Marker = ".", MarkerSize = 12, Tag = tag);
+    h(end).UserData = struct("PhaseContRows", 1);
     return
 end
 change = find(diff(stable) ~= 0);
@@ -592,6 +599,7 @@ for r = 1:numel(first)
     end
     h(end+1, 1) = line(ax, x(rows), y(rows), Color = color, ...
         LineStyle = style, Tag = tag); %#ok<AGROW>
+    phasecont.internal.drawThin(h(end), x(rows), y(rows), rows);
 end
 end
 

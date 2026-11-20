@@ -133,7 +133,12 @@ classdef Trajectory < handle
             % (Tag "pc-start"). Without Parent the plot uses newplot, so
             % hold on is respected. H holds the lines and markers as a
             % column vector. The iterates of a map are drawn as dots with
-            % no line between them, against "n" for one variable.
+            % no line between them, against "n" for one variable. On 2-D
+            % axes a path with more rows than 4 times the axes width in
+            % pixels is drawn through the rows that keep it within half a
+            % pixel of every row, again after each zoom, pan or resize; its
+            % UserData.PhaseContRows holds the indices into T of the drawn
+            % rows (SPEC 8af-3).
             arguments
                 tr phasecont.Trajectory
                 options.Var = []
@@ -221,6 +226,13 @@ classdef Trajectory < handle
                 style = ".";
             end
             line = plot(ax, x, y, style, Color = color, Tag = "pc-trajectory");
+            rows = (1:numel(x)).';
+            if tr.Map
+                % The dots of a map are drawn exact (SPEC 8af-3).
+                line.UserData = struct("PhaseContRows", rows);
+            else
+                phasecont.internal.drawThin(line, x, y, rows);
+            end
             mark = plot(ax, x(1), y(1), "o", Color = color, ...
                 MarkerFaceColor = color, MarkerSize = 5, Tag = "pc-start");
             ax.ColorOrderIndex = after;
