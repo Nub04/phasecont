@@ -1,6 +1,7 @@
 classdef SessionFormatTest < matlab.unittest.TestCase
-    % Tests the array blocks of the session file. No test here calls pckern,
-    % so the suite runs without the MEX binary.
+    % Tests the array blocks of the session file. Only the test that reads an
+    % xor1 block calls pckern; it is filtered when the MEX binary is not built,
+    % so the rest of the suite runs without it.
 
     methods (TestClassSetup)
         function addToolbox(testCase)
@@ -391,6 +392,8 @@ classdef SessionFormatTest < matlab.unittest.TestCase
             % SPEC 8af-4: ml_small_v2 is ml_small written with compression
             % on by pc-cli. It reads to the same bits: both rewritten as
             % plain f64le give the same text.
+            % Decoding xor1 calls pckern("codec", ...).
+            testCase.needPckern();
             v2 = strrep(testCase.fixture(), "ml_small.", "ml_small_v2.");
             text = string(fileread(v2, Encoding = "UTF-8"));
             testCase.verifySubstring(text, '"version": 2');
@@ -405,6 +408,16 @@ classdef SessionFormatTest < matlab.unittest.TestCase
     end
 
     methods (Access = private)
+        function needPckern(testCase)
+            root = fileparts(fileparts(mfilename("fullpath")));
+            testCase.applyFixture( ...
+                matlab.unittest.fixtures.PathFixture(fullfile(root, "tests")));
+            f = testCase.applyFixture(fixtures.BinFixture);
+            testCase.assumeTrue( ...
+                isfile(fullfile(f.Bin, "pckern." + mexext)), ...
+                "pckern has not been built (run buildtool mex)");
+        end
+
         function f = fixture(~)
             root = fileparts(fileparts(mfilename("fullpath")));
             f = fullfile(root, "tests", "+fixtures", "ml_small.pcsession.json");
