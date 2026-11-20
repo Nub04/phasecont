@@ -152,7 +152,8 @@ pub struct Unit {
 struct Body {
     outputs: Vec<NodeId>,
     /// The frame slot of every node of the body that depends on an `Arg`. A `Call` node
-    /// takes `nout` consecutive slots, one per output of its unit.
+    /// takes `nout` consecutive slots, one per output of its unit, and `Out(call, j)` maps
+    /// to slot `j` of its call.
     locals: HashMap<NodeId, u32>,
     nlocal: u32,
     /// The slot of `Arg(k)`, or `None` when the body does not read formal `k`.
@@ -419,7 +420,8 @@ impl Dag {
 
     /// Sets the body of unit `u` to the output roots `outputs`, one per output of the unit,
     /// and assigns a frame slot to every node of the body that depends on an `Arg`. A `Call`
-    /// node takes one slot per output of its unit. Returns false, and leaves the unit as it
+    /// node takes one slot per output of its unit, and `Out(call, j)` reads slot `j` of its
+    /// call instead of taking one. Returns false, and leaves the unit as it
     /// was, for an unknown unit, a wrong number of outputs or an id outside the DAG.
     pub fn set_body(&mut self, u: u32, outputs: &[NodeId]) -> bool {
         let Some(unit) = self.units.get(u as usize) else {
@@ -457,16 +459,29 @@ impl Dag {
         let mut arg_slots = vec![None; arity];
         let mut next = 0u32;
         for id in found {
-            locals.insert(id, next);
             match *self.op(id) {
                 Op::Arg(k) => {
                     if let Some(s) = arg_slots.get_mut(k as usize) {
                         *s = Some(next);
                     }
+                    locals.insert(id, next);
                     next += 1;
                 }
-                Op::Call(c, _) => next += self.units.get(c as usize).map_or(1, |x| x.nout),
-                _ => next += 1,
+                Op::Call(c, _) => {
+                    locals.insert(id, next);
+                    next += self.units.get(c as usize).map_or(1, |x| x.nout);
+                }
+                // `Out(call, j)` reads slot `j` of its call, which has a smaller id and so
+                // already has its slots.
+                Op::Out(c, j) => {
+                    if let Some(&base) = locals.get(&c) {
+                        locals.insert(id, base + j);
+                    }
+                }
+                _ => {
+                    locals.insert(id, next);
+                    next += 1;
+                }
             }
         }
         self.units[u as usize].body = Some(Body {
