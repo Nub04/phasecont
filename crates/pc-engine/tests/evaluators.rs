@@ -208,3 +208,78 @@ fn recursive_model_runs_only_on_the_fallback() {
         .expect("evaluates");
     assert_eq!(out[0], 3.375);
 }
+
+/// Builds an inline model on the fallback evaluator, which runs the interpreter.
+fn fallback_of(src: &str) -> Box<dyn pc_engine::ModelEval> {
+    let mut map = pc_ode::SourceMap::new();
+    let top = map.add("t.ode", src);
+    let l = pc_ode::load(top, &mut map, &mut pc_ode::MapLoader::new());
+    build(&l.expanded, &l.info, Evaluator::Fallback).expect("fallback")
+}
+
+/// SPEC 8af-5: `pw(x, n)` gives x^n, a JacU of n x^(n-1) and a second derivative of
+/// n(n-1) x^(n-2) to 1 ulp on the interpreter too, not only on the DAG evaluator.
+#[test]
+fn interpreter_gives_pw_and_its_derivatives_to_1_ulp() {
+    let mut fb =
+        fallback_of("par k=3\npw(x,n)=if(n<1)then(1)else(x*pw(x,n-1))\nx'=pw(x,k)\ndone\n");
+    for x in [1.5f64, 0.5] {
+        for n in 0..=30i32 {
+            let nf = f64::from(n);
+            let p = [nf, 0.0];
+            let mut f = [f64::NAN];
+            let mut j = [f64::NAN];
+            let mut d = [f64::NAN];
+            fb.eval(&EntryKind::F, &[x], &p, &[], &mut f).unwrap();
+            fb.eval(&EntryKind::JacU, &[x], &p, &[], &mut j).unwrap();
+            fb.eval(
+                &EntryKind::Dir(vec![Slot::U, Slot::U]),
+                &[x],
+                &p,
+                &[1.0, 1.0],
+                &mut d,
+            )
+            .unwrap();
+            // x = 1.5 and 0.5 make every power, and so every closed form below, exact.
+            let w0 = x.powi(n);
+            let w1 = if n >= 1 { nf * x.powi(n - 1) } else { 0.0 };
+            let w2 = if n >= 2 {
+                nf * (nf - 1.0) * x.powi(n - 2)
+            } else {
+                0.0
+            };
+            for (what, g, w) in [("F", f[0], w0), ("JacU", j[0], w1), ("Dir", d[0], w2)] {
+                assert!(
+                    g == w || ulp_dist(g, w) <= 1,
+                    "{what} at x={x} n={n}: {g:?} vs {w:?}"
+                );
+            }
+        }
+    }
+}
+
+/// SPEC 8af-5: on the interpreter, `sum(999999)` runs 1,000,000 active calls and gives
+/// n(n+1)/2, and `sum(1000000)` is the cap error, not a NaN.
+#[test]
+fn interpreter_reaches_the_cap_and_one_more_fails() {
+    // The interpreter keeps its frames on the heap, so a small native stack is enough.
+    std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(|| {
+            let mut fb =
+                fallback_of("par k=3\nsum(n)=if(n<1)then(0)else(n+sum(n-1))\nx'=sum(k)\ndone\n");
+            let mut out = [f64::NAN];
+            fb.eval(&EntryKind::F, &[0.0], &[999_999.0, 0.0], &[], &mut out)
+                .expect("1,000,000 active calls");
+            assert_eq!(out[0], 999_999.0 * 1_000_000.0 / 2.0);
+            match fb.eval(&EntryKind::F, &[0.0], &[1_000_000.0, 0.0], &[], &mut out) {
+                Err(EngineError::CallLimit(m)) => {
+                    assert!(m.contains("sum") && m.contains("1000000"), "{m}")
+                }
+                other => panic!("{other:?}"),
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
