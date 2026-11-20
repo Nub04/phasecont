@@ -103,6 +103,9 @@ pub enum RunKind {
         opts: IvpOptions,
         /// Aux values appended to every row of `u`, 0 for none.
         n_aux: usize,
+        /// The tolerance of the thinning rule of SPEC section 8af-2, `None` to keep every
+        /// row. A thinned run shows no rows until it ends.
+        thin: Option<f64>,
     },
     /// Iteration of a map from iterate `n[0]` to iterate `n[1]` (SPEC section 8u), from
     /// the state `setup.u0` with the parameters `setup.params`. The map may depend on t.
@@ -319,7 +322,12 @@ fn follow(
         RunKind::DdeEq(_) | RunKind::DdeHopf { .. } | RunKind::DdeCycle { .. } => Err(
             EngineError::BadProblem("a delay run has no ODE model to follow".into()),
         ),
-        RunKind::Ivp { tspan, opts, n_aux } => {
+        RunKind::Ivp {
+            tspan,
+            opts,
+            n_aux,
+            thin,
+        } => {
             let ivp = IvpSetup {
                 x0: setup.u0.clone(),
                 params: setup.params.clone(),
@@ -327,8 +335,14 @@ fn follow(
                 t1: tspan[1],
                 n_aux: *n_aux,
             };
-            let on_row = &mut flat_rows(shared, idx, 1 + model.n() + n_aux);
-            integrate_rows(model, &ivp, opts, &shared.cancel, on_row).map(flat_branch)
+            let stride = 1 + model.n() + n_aux;
+            match thin {
+                None => {
+                    let on_row = &mut flat_rows(shared, idx, stride);
+                    integrate_rows(model, &ivp, opts, &shared.cancel, on_row).map(flat_branch)
+                }
+                Some(tol) => thinned_ivp(shared, idx, model, &ivp, opts, stride, *tol),
+            }
         }
         RunKind::Iter { n, n_aux } => {
             let it = IterSetup {
@@ -372,6 +386,35 @@ fn flat_rows(
             r.push(alpha, x, aux);
         }
     }
+}
+
+/// An IVP run with the `thin` key (SPEC section 8af-2). The rows go into a store of the
+/// worker, so the shared slot stays empty and a poll or a copy sees no rows while the run
+/// goes on. On every end the worker returns from (End, MaxSteps, StepTooSmall, an error and
+/// a cancel) it thins the rows and puts the store in the shared slot under one hold of the
+/// lock. A panic unwinds past the swap, so a panicked run shows no rows.
+fn thinned_ivp(
+    shared: &Shared,
+    idx: usize,
+    model: &mut dyn crate::model::ModelEval,
+    ivp: &IvpSetup,
+    opts: &IvpOptions,
+    stride: usize,
+    tol: f64,
+) -> Result<Branch, EngineError> {
+    {
+        let mut g = shared.lock();
+        if g.rows.len() <= idx {
+            g.rows.resize_with(idx + 1, || None);
+        }
+        g.rows[idx] = Some(Rows::new(stride));
+    }
+    let mut rows = Rows::new(stride);
+    let on_row = &mut |alpha: f64, x: &[f64], aux: &[f64], _h: f64| rows.push(alpha, x, aux);
+    let b = integrate_rows(model, ivp, opts, &shared.cancel, on_row).map(flat_branch);
+    rows.thin(tol);
+    shared.lock().rows[idx] = Some(rows);
+    b
 }
 
 /// The branch a flat run returns: no points, since its rows stay in `Inner::rows`.

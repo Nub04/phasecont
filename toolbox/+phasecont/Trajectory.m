@@ -24,6 +24,8 @@ classdef Trajectory < handle
     %             ("" when unknown)
     %   Warnings  warning messages from the run
     %   Model     the phasecont.Model the run used
+    %   Thin      the Thin tolerance of simulate, or [] when the run kept
+    %             every row
     %   Output    table of the columns the model's only list names, in that
     %             order: t, a state or an aux quantity; an empty table (0
     %             columns, N rows) when the model has no only list
@@ -40,6 +42,7 @@ classdef Trajectory < handle
         Stop (1,1) string = ""
         Warnings (:,1) string = strings(0,1)
         Model phasecont.Model {mustBeScalarOrEmpty} = phasecont.Model.empty
+        Thin double {mustBeScalarOrEmpty} = []
     end
 
     properties (SetAccess = private, Hidden)

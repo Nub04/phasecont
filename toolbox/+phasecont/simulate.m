@@ -22,14 +22,26 @@ function tr = simulate(m, x0, tspan, options)
 %     AbsTol    absolute error tolerance, positive (default 1e-10)
 %     MaxSteps  most accepted steps, a positive integer (default 100000)
 %     Hmax      largest step length, positive; Inf means no cap (default)
+%     Thin      tolerance tol with 0 < tol < 1 that keeps fewer rows;
+%               empty keeps every row (default). See below.
+%
+%   TR = phasecont.simulate(M, X0, [0 500], Thin = 1e-3) keeps a row only
+%   when the rows around it cannot stand in for it: a row is dropped when
+%   linear interpolation in t between the kept rows on each side gives
+%   every column (each state and each stored aux column) within tol times
+%   the span of that column over the run. The first and last rows are
+%   kept, and so is a row with a NaN or infinite value together with the
+%   rows next to it. Each kept row is the row of the full run, bit for
+%   bit, and TR.Thin holds tol. A continuation from a thinned Trajectory
+%   runs the integration again without Thin (see phasecont.continuation).
 %
 %   A map, written x(t+1)=... or with @ meth=discrete (M.IsMap is true), is
 %   iterated: TR = phasecont.simulate(M, X0, [N0 N1]) sets x(N0) = X0 and
 %   x(k+1) = F(x(k)) for k = N0, ..., N1-1, with t = k inside F. N0 and N1
 %   are integers with N0 < N1 and magnitude at most flintmax, and one run
 %   makes at most 1000000 iterates. TR.T is (N0:N1)', with one row of TR.X
-%   per iterate. RelTol, AbsTol, MaxSteps and Hmax do not apply to a map,
-%   and each one passed raises phasecont:simulate:mapOption.
+%   per iterate. RelTol, AbsTol, MaxSteps, Hmax and Thin do not apply to a
+%   map, and each one passed raises phasecont:simulate:mapOption.
 %
 %   simulate reads none of the model's @ options (meth, dt, total, bound
 %   and the others), so they do not change the result. The one exception
@@ -59,6 +71,7 @@ arguments
     options.AbsTol = []
     options.MaxSteps = []
     options.Hmax = []
+    options.Thin = []
 end
 import phasecont.internal.num2json
 
@@ -68,6 +81,7 @@ if m.IsMap
     refuseMapOptions(options);
     [u0, p] = startValues(m, x0, options.Params);
     type = "ITER";
+    thin = [];
     problem = "{""type"":""ITER"",""tspan"":[" + num2json(tspan(1)) + "," ...
         + num2json(tspan(2)) + "]" + auxKey(m) + "}";
 else
@@ -79,7 +93,8 @@ else
     tspan = double(tspan(:)).';
     [u0, p] = startValues(m, x0, options.Params);
     type = "IVP";
-    problem = ivpProblem(tspan, options, auxKey(m));
+    thin = thinOption(options.Thin);
+    problem = ivpProblem(tspan, options, auxKey(m), thin);
 end
 
 n = numel(m.Variables);
@@ -104,7 +119,7 @@ end
 tr = phasecont.Trajectory(struct( ...
     "T", rows(1, :).', "X", rows(2:n+1, :).', "X0", u0(:), "TSpan", tspan, ...
     "P", p(:), "Stop", stop, "Warnings", warn(:), "Model", m, ...
-    "Map", m.IsMap));
+    "Map", m.IsMap, "Thin", thin));
 tr.attachAux(rows(n+2:end, :));
 tr.attachRecord(record);
 if stop ~= "End"
@@ -129,8 +144,10 @@ if any(ismember(lower(m.Only), lower(m.AuxNames)))
 end
 end
 
-function problem = ivpProblem(tspan, options, aux)
-% The IVP problem JSON, with an options entry for each option given.
+function problem = ivpProblem(tspan, options, aux, thin)
+% The IVP problem JSON, with an options entry for each option given. The
+% thin key comes last, as ,"thin":<tol>, so that continuation can take it
+% out again by an exact match (thinKey).
 import phasecont.internal.num2json
 parts = strings(1, 0);
 parts(end+1) = numberOption("rtol", options.RelTol, "RelTol", false);
@@ -149,7 +166,21 @@ end
 parts = parts(strlength(parts) > 0);
 problem = "{""type"":""IVP"",""tspan"":[" + num2json(tspan(1)) + "," ...
     + num2json(tspan(2)) + "],""options"":{" + strjoin(parts, ",") + "}" ...
-    + aux + "}";
+    + aux + phasecont.internal.thinKey(thin) + "}";
+end
+
+function tol = thinOption(value)
+% The Thin option as a double, [] when it is not set.
+tol = [];
+if isempty(value) && isnumeric(value)
+    return
+end
+if ~(isnumeric(value) && isreal(value) && isscalar(value) ...
+        && isfinite(value) && value > 0 && value < 1)
+    error("phasecont:model:badOption", ...
+        "Thin must be a finite number greater than 0 and less than 1.");
+end
+tol = double(value);
 end
 
 function span = mapSpan(tspan)
@@ -170,7 +201,7 @@ end
 
 function refuseMapOptions(options)
 % The solver options of an ODE run do not apply to a map.
-for name = ["RelTol" "AbsTol" "MaxSteps" "Hmax"]
+for name = ["RelTol" "AbsTol" "MaxSteps" "Hmax" "Thin"]
     if ~isempty(options.(name))
         error("phasecont:simulate:mapOption", ...
             "%s does not apply to a map: simulate iterates a map from n0 to n1.", ...

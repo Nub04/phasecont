@@ -281,6 +281,9 @@ pub struct Problem {
     pub n_aux: usize,
     /// Whether a map EP run starts at a PD point of `F^{iterate/2}` (`"start":"pd"`, SPEC 8y).
     pub pd_start: bool,
+    /// The tolerance of the `thin` key of an IVP run (SPEC 8af-2), `None` when it keeps
+    /// every row.
+    pub thin: Option<f64>,
 }
 
 impl Problem {
@@ -307,6 +310,7 @@ impl Problem {
                 tspan: *tspan,
                 opts: opts.clone(),
                 n_aux: self.n_aux,
+                thin: self.thin,
             },
             (Kind::Iter, ..) if let Some(n) = self.iter => RunKind::Iter {
                 n,
@@ -615,6 +619,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
             "switch_direction",
             "iterate",
             "aux",
+            "thin",
         ],
         "",
     )?;
@@ -682,6 +687,9 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
     }
     if top.contains_key("aux") {
         return Err("aux: only an IVP or ITER run takes this key".into());
+    }
+    if top.contains_key("thin") {
+        return Err(THIN_REFUSAL.into());
     }
     let iterate = parse_iterate(top)?;
     let map_run = matches!(kind, Kind::MapEp | Kind::MapLp | Kind::MapPd | Kind::MapNs);
@@ -995,6 +1003,7 @@ pub fn parse_problem(v: &Value, ir: &IrModel, mode: Mode) -> Result<Problem, Str
         iterate,
         pd_start,
         n_aux: 0,
+        thin: None,
     };
     if mode == Mode::Cli {
         problem.check_u0_len(ir.n(), problem.setup.u0.len())?;
@@ -1285,6 +1294,10 @@ fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Probl
         None => IvpOptions::default(),
         Some(o) => parse_ivp_options(o)?,
     };
+    let thin = match top.get("thin") {
+        None => None,
+        Some(v) => Some(parse_thin(v)?),
+    };
     let problem = Problem {
         setup: EpSetup::new(0, params, u0),
         opts: Options::default(),
@@ -1306,11 +1319,23 @@ fn parse_ivp(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Probl
         iterate: 1,
         pd_start: false,
         n_aux,
+        thin,
     };
     if mode == Mode::Cli {
         problem.check_u0_len(ir.n(), problem.setup.u0.len())?;
     }
     Ok(problem)
+}
+
+/// The refusal of the `thin` key on every run but IVP (SPEC 8af-2).
+const THIN_REFUSAL: &str = "thin: only an IVP run takes this key";
+
+/// The key `thin` of an IVP run: a finite number with 0 < tol < 1 (SPEC 8af-2).
+fn parse_thin(v: &Value) -> Result<f64, String> {
+    match v.as_f64() {
+        Some(x) if x.is_finite() && x > 0.0 && x < 1.0 => Ok(x),
+        _ => Err("thin: expected a number greater than 0 and less than 1".into()),
+    }
 }
 
 /// The options of an IVP run: `rtol`, `atol`, `max_steps` and `hmax`. Missing ones keep
@@ -1351,6 +1376,9 @@ fn parse_iter(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Prob
     }
     if top.contains_key("start") {
         return Err(MAP_START_REFUSAL.into());
+    }
+    if top.contains_key("thin") {
+        return Err(THIN_REFUSAL.into());
     }
     refuse_run_keys(top)?;
     if top.contains_key("options") {
@@ -1414,6 +1442,7 @@ fn parse_iter(top: &Map<String, Value>, ir: &IrModel, mode: Mode) -> Result<Prob
         iterate: 1,
         pd_start: false,
         n_aux,
+        thin: None,
     };
     if mode == Mode::Cli {
         problem.check_u0_len(ir.n(), problem.setup.u0.len())?;
@@ -2361,7 +2390,13 @@ mod tests {
         assert_eq!(tspan, [0.0, 5.0]);
         assert_eq!(opts, pc_engine::IvpOptions::default());
         match p.run_kind() {
-            RunKind::Ivp { tspan, opts, n_aux } => {
+            RunKind::Ivp {
+                tspan,
+                opts,
+                n_aux,
+                thin,
+            } => {
+                assert_eq!(thin, None);
                 assert_eq!(tspan, [0.0, 5.0]);
                 assert_eq!(opts, pc_engine::IvpOptions::default());
                 assert_eq!(n_aux, 0);

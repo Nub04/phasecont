@@ -1345,6 +1345,7 @@ fn an_ivp_run_matches_the_engine_row_for_row() {
         tspan: [0.0, 2.0],
         opts: pc_engine::IvpOptions::default(),
         n_aux: 0,
+        thin: None,
     };
     let engine = Run::start(spec);
     let mut want = Vec::new();
@@ -1539,6 +1540,7 @@ fn an_ivp_run_with_aux_matches_the_engine_row_for_row() {
         tspan: [0.0, 3.0],
         opts: pc_engine::IvpOptions::default(),
         n_aux: 2,
+        thin: None,
     };
     let engine = Run::start(spec);
     let status = loop {

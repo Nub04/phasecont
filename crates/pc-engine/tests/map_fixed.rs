@@ -728,6 +728,7 @@ fn run_refuses_other_kinds_on_a_map_and_a_map_that_reads_t() {
         tspan: [0.0, 1.0],
         opts: IvpOptions::default(),
         n_aux: 0,
+        thin: None,
     };
     let (_, state) = run_to_end(spec);
     assert!(

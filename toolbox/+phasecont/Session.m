@@ -193,7 +193,7 @@ classdef Session
                         "T", rows(1, :).', "X", rows(2:rec.N+1, :).', "X0", rec.U0, ...
                         "TSpan", reshape(problem.tspan, 1, 2), "P", rec.P, ...
                         "Stop", stop, "Warnings", warn(:), "Model", m, ...
-                        "Map", rec.Type == "ITER"));
+                        "Map", rec.Type == "ITER", "Thin", thinOf(rec.Problem)));
                     % Rows of stride N + 1 (a session from before round E,
                     % or a run without aux columns) leave the store empty.
                     aux = rows(rec.N+2:end, :);
@@ -210,4 +210,15 @@ classdef Session
             end
         end
     end
+end
+
+function tol = thinOf(problem)
+% The thin tolerance of a stored IVP problem, [] when it has none. The
+% number is read from the text that simulate wrote, so that thinKey gives
+% the same text back (SPEC section 8af-2, F-1).
+tol = [];
+tok = regexp(char(problem), ',"thin":([^,}]+)', "tokens", "once");
+if ~isempty(tok)
+    tol = str2double(tok{1});
+end
 end

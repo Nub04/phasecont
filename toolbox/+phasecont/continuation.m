@@ -35,6 +35,9 @@ function br = continuation(m, start, options)
 %   close return of the orbit to its last point, found where the orbit
 %   last crossed the plane through that point normal to f there; a warning
 %   names it. Period = T takes the last T time units of the orbit instead.
+%   A TR from simulate with Thin holds fewer rows than the run made, so the
+%   LC start runs that integration again without Thin, with the warning
+%   phasecont:continuation:thinRerun, and starts from every row.
 %
 %   C = phasecont.continuation(M, PT, Type = "PD", Free = ["a" "b"])
 %   follows the curve of period-doubling points of cycles through PT, a PD
@@ -1144,6 +1147,9 @@ if isa(start, "phasecont.Trajectory")
         error("phasecont:model:badStart", ...
             "The start trajectory needs %d parameters.", numel(m.Parameters));
     end
+    if ~isempty(start.Thin)
+        [t, x] = unthinnedOrbit(m, start);
+    end
 else
     t = start.t;
     x = start.x;
@@ -1219,6 +1225,30 @@ else
 end
 u0 = [resampleOrbit(t, x, i, tc, period, grid); period];
 p = overrideParams(m, p0, options.Params);
+end
+
+function [t, x] = unthinnedOrbit(m, tr)
+% The rows of a thinned Trajectory as the run gave them before thinning
+% (SPEC section 8af-2, F-1). The stored problem is run again without its
+% thin entry, which gives the full rows bit for bit, through the same poll
+% loop and Ctrl+C path as simulate.
+rec = tr.Record;
+key = phasecont.internal.thinKey(tr.Thin);
+if isempty(rec) || count(rec.Problem, key) ~= 1
+    error("phasecont:model:badStart", "The start trajectory was " + ...
+        "thinned (Thin = %.6g) and has no record of its run, so its " + ...
+        "full rows cannot be computed again. Run simulate without Thin " + ...
+        "and start from that Trajectory.", tr.Thin);
+end
+warning("phasecont:continuation:thinRerun", "The start trajectory was " + ...
+    "thinned (Thin = %.6g). The LC start runs the integration again " + ...
+    "without Thin to get every row.", tr.Thin);
+out = phasecont.internal.runLoop(m, replace(rec.Problem, key, ""), ...
+    rec.U0, rec.P);
+rows = out.Points{1};
+n = numel(m.Variables);
+t = rows(1, :).';
+x = rows(2:n+1, :).';
 end
 
 function [ic, tc, r] = lastReturn(m, t, x, p)
