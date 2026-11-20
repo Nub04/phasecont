@@ -679,14 +679,24 @@ fn local_tangent(
 
 /// The first-order rule for `node`, reading the tangents of its children through `look`.
 fn rule(dag: &mut Dag, look: &dyn Fn(NodeId) -> Option<NodeId>, node: NodeId, wrt: Wrt) -> NodeId {
+    let op = *dag.op(node);
     let mut nan = None;
     let mut dc = |dag: &mut Dag, c: NodeId| match look(c) {
         Some(r) => r,
-        // A child that `diff_children` skips (the argument of `floor`, the order of a
-        // Bessel function) has no tangent; its rule never reads this placeholder.
-        None => *nan.get_or_insert_with(|| dag.konst(f64::NAN)),
+        None => {
+            let mut walked = false;
+            diff_children(&op, &mut |x| walked |= x == c);
+            if walked {
+                // Every child that `diff_children` visits gets its tangent before its
+                // user, so a miss is a broken invariant: refuse, never a silent NaN.
+                refuse(dag, NoDerivative::NoRule)
+            } else {
+                // A child that `diff_children` skips (the argument of `floor`, the order
+                // of a Bessel function) has no tangent; its rule never reads this value.
+                *nan.get_or_insert_with(|| dag.konst(f64::NAN))
+            }
+        }
     };
-    let op = *dag.op(node);
     match op {
         Op::Const(_) | Op::Dir(_) => dag.konst(0.0),
         Op::Var(i) => dag.konst(if wrt == Wrt::U(i) { 1.0 } else { 0.0 }),

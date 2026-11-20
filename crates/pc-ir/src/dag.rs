@@ -520,6 +520,7 @@ impl Dag {
     /// or an id outside the DAG. A body is set once: derivatives, tangent units and cached
     /// entries built from it would go stale if it changed. A body that a
     /// [`Dag::restore`] dropped can be set again.
+    #[must_use = "a body that is already set is not replaced"]
     pub fn set_body(&mut self, u: u32, outputs: &[NodeId]) -> bool {
         let Some(unit) = self.units.get(u as usize) else {
             return false;
