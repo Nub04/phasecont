@@ -74,6 +74,26 @@ classdef CycleOrbitTest < matlab.unittest.TestCase
             testCase.verifyEqual(id, 'phasecont:continuation:detectedPeriod');
         end
 
+        function [m, tr] = rossler(testCase, c, tEnd)
+            m = testCase.model(testCase.Rossler);
+            tr = phasecont.simulate(m, [1 1 0], [0 tEnd], ...
+                Params = struct("c", c), RelTol = 1e-10, AbsTol = 1e-12);
+        end
+
+        function msg = refusal(testCase, m, tr)
+            % The message of the badStart error an LC run without Period
+            % gives when the period is not clear.
+            msg = "";
+            try
+                phasecont.continuation(m, tr, "Type", "LC", "Free", "c", ...
+                    "NTST", 40, "NCOL", 4, "MaxSteps", 2);
+                testCase.verifyFail("the run was not refused");
+            catch e
+                testCase.verifyEqual(string(e.identifier), "phasecont:model:badStart");
+                msg = string(e.message);
+            end
+        end
+
         function lc = runLC(~, m, start, varargin)
             lc = phasecont.continuation(m, start, "Type", "LC", "Free", "mu", ...
                 "NTST", 20, "NCOL", 4, "MaxSteps", 8, "Bounds", [0.5 1.5], varargin{:});
@@ -202,27 +222,30 @@ classdef CycleOrbitTest < matlab.unittest.TestCase
             testCase.verifyFalse(contains(msg, "multiple"), msg);
         end
 
-        function aDoubledCycleNamesTheShorterReturn(testCase)
+        function aDoubledCycleIsRefusedWithBothPeriods(testCase)
             % Past the doubling the one-turn return is far from the end, so
-            % the run takes two turns and the warning names the one turn.
-            [lc, msg] = testCase.detect(3.5, 600);
-            testCase.verifyEqual(lc.Period(1), 11.545, AbsTol = 1e-3);
-            testCase.verifySubstring(msg, "may be a multiple");
+            % the two-turn return is the close one. The run stops and names
+            % both periods, and Period picks the two-turn cycle.
+            [m, tr] = testCase.rossler(3.5, 600);
+            msg = testCase.refusal(m, tr);
+            testCase.verifySubstring(msg, "T = 11.54");
             testCase.verifySubstring(msg, "T = 5.");
+            testCase.verifySubstring(msg, "Pass Period = 5.");
+            lc = phasecont.continuation(m, tr, "Type", "LC", "Free", "c", ...
+                "NTST", 40, "NCOL", 4, "MaxSteps", 2, "Period", 11.545);
+            testCase.verifyEqual(lc.Period(1), 11.545, AbsTol = 1e-3);
         end
 
-        function anUnsettledOrbitNearADoublingTakesTwoTurns(testCase)
-            % A known wrong pick: below the doubling the orbit has not settled
-            % by t = 120, the one-turn return is not close enough, and the
-            % run follows the cycle traversed twice. The warning says so,
-            % and Period gives the one-turn cycle.
-            [lc, msg] = testCase.detect(2.7, 120);
-            testCase.verifyEqual(lc.Period(1), 11.52, AbsTol = 1e-2);
-            testCase.verifySubstring(msg, "may be a multiple");
+        function anUnsettledOrbitNearADoublingIsRefused(testCase)
+            % Below the doubling the orbit has not settled by t = 120 and the
+            % one-turn return is not close enough. Without the refusal the
+            % run would follow the cycle traversed twice (T about 11.52).
+            % Period gives the one-turn cycle.
+            [m, tr] = testCase.rossler(2.7, 120);
+            msg = testCase.refusal(m, tr);
+            testCase.verifySubstring(msg, "T = 11.5");
             testCase.verifySubstring(msg, "T = 5.78");
-            m = testCase.model(testCase.Rossler);
-            tr = phasecont.simulate(m, [1 1 0], [0 120], ...
-                Params = struct("c", 2.7), RelTol = 1e-10, AbsTol = 1e-12);
+            testCase.verifySubstring(msg, "Pass Period = 5.78");
             one = phasecont.continuation(m, tr, "Type", "LC", "Free", "c", ...
                 "NTST", 40, "NCOL", 4, "MaxSteps", 2, "Period", 5.79);
             testCase.verifyEqual(one.Period(1), 5.7619, AbsTol = 1e-3);
