@@ -2,7 +2,7 @@
 //! through `diff::d`, their values, and their call counts in the frame machine. The units
 //! are built with the DAG API, since the lowering of `.ode` recursion comes later.
 
-use pc_ir::dag::{Cmp, Dag, NodeId, Op};
+use pc_ir::dag::{Cmp, Dag, Fn1, NodeId, Op};
 use pc_ir::diff::{Wrt, d};
 use pc_ir::machine::try_eval;
 use std::collections::HashMap;
@@ -350,4 +350,155 @@ fn jacp_of_pw() {
     assert_eq!(calls, 6);
     let dn = d(&mut g, &mut memo, o, Wrt::P(1));
     assert_eq!(run(&g, dn, &[], &[2.0, 5.0]).0, 0.0);
+}
+
+/// A rule that reads its own node (exp) inside a recursive body: `e(n) =
+/// if(n<1)then(1)else(exp(x*e(n-1)))`. The derivative follows the dual recursion
+/// `d_k = (v_{k-1} + d_{k-1} x) v_k` with n + 1 calls, so the exp of each frame is the
+/// value output of its tangent call and is not evaluated again.
+#[test]
+fn exp_of_a_recursive_call_reuses_the_frame_value() {
+    let mut g = Dag::new(100_000);
+    let u = g.add_unit("e", 1, 1);
+    let n = g.arg(0);
+    let x = g.var(0);
+    let one = g.konst(1.0);
+    let c = g.cmp(Cmp::Lt, n, one);
+    let m = g.sub(n, one);
+    let r = g.call(u, &[m]);
+    let xr = g.mul(x, r);
+    let e = g.call1(Fn1::Exp, xr);
+    let body = g.select(c, one, e);
+    assert!(g.set_body(u, &[body]));
+    let k = g.param(0);
+    let o = g.call(u, &[k]);
+    let mut memo = HashMap::new();
+    let dx = d(&mut g, &mut memo, o, Wrt::U(0));
+    let xv = 0.1f64;
+    for n in [1u32, 5, 100] {
+        let (mut v, mut dv) = (1.0f64, 0.0f64);
+        for _ in 0..n {
+            let nv = (xv * v).exp();
+            dv = (v + dv * xv) * nv;
+            v = nv;
+        }
+        let (got, calls) = run(&g, dx, &[xv], &[f64::from(n)]);
+        assert_eq!(got.to_bits(), dv.to_bits(), "d e / dx at n = {n}");
+        assert_eq!(calls, u64::from(n) + 1, "calls at n = {n}");
+    }
+}
+
+/// The active set changes down the recursion: in `s(a, b, n) =
+/// if(n<1)then(a)else(s(b, a, n-1))` with only `a` active, the inner call has only `b`
+/// active, and the call after that has `a` again. Two units, n + 1 calls.
+#[test]
+fn active_set_that_alternates_down_the_recursion() {
+    let mut g = Dag::new(10_000);
+    let s = g.add_unit("s", 3, 1);
+    let (a, b, n) = (g.arg(0), g.arg(1), g.arg(2));
+    let one = g.konst(1.0);
+    let c = g.cmp(Cmp::Lt, n, one);
+    let m = g.sub(n, one);
+    let r = g.call(s, &[b, a, m]);
+    let body = g.select(c, a, r);
+    assert!(g.set_body(s, &[body]));
+    let (x, two, k) = (g.var(0), g.konst(2.0), g.param(0));
+    let o = g.call(s, &[x, two, k]);
+    let units = g.units().len();
+    let mut memo = HashMap::new();
+    let dx = d(&mut g, &mut memo, o, Wrt::U(0));
+    assert_eq!(g.units().len(), units + 2);
+    for n in 0u32..6 {
+        let want = if n % 2 == 0 { 1.0 } else { 0.0 };
+        assert_eq!(
+            run(&g, dx, &[3.0], &[f64::from(n)]),
+            (want, u64::from(n) + 1)
+        );
+    }
+}
+
+/// Two calls in one body: `fb(x, n) = if(n<2)then(x)else(fb(x, n-1)+fb(x, n-2))` is x
+/// times the number of leaves, and its derivative makes exactly the primal number of calls.
+#[test]
+fn two_calls_in_one_body() {
+    let mut g = Dag::new(10_000);
+    let f = g.add_unit("fb", 2, 1);
+    let (a, n) = (g.arg(0), g.arg(1));
+    let (one, two) = (g.konst(1.0), g.konst(2.0));
+    let c = g.cmp(Cmp::Lt, n, two);
+    let m1 = g.sub(n, one);
+    let m2 = g.sub(n, two);
+    let r1 = g.call(f, &[a, m1]);
+    let r2 = g.call(f, &[a, m2]);
+    let sm = g.add(r1, r2);
+    let body = g.select(c, a, sm);
+    assert!(g.set_body(f, &[body]));
+    let (x, k) = (g.var(0), g.param(0));
+    let o = g.call(f, &[x, k]);
+    let mut memo = HashMap::new();
+    let dx = d(&mut g, &mut memo, o, Wrt::U(0));
+    let (v, primal) = run(&g, o, &[1.5], &[10.0]);
+    assert_eq!(v, 1.5 * 89.0);
+    assert_eq!(run(&g, dx, &[1.5], &[10.0]), (89.0, primal));
+}
+
+/// A recursive call inside the argument of another call: `g(x, n) =
+/// if(n<1)then(x)else(pw(g(x, n-1), 2))` is `x^(2^n)`. At x = 0.5 and n = 3 the
+/// derivative `8 x^7` is exact, and the tangent makes the primal number of calls.
+#[test]
+fn call_inside_a_call_argument() {
+    let mut g = Dag::new(10_000);
+    let p = pw(&mut g);
+    let q = g.add_unit("g", 2, 1);
+    let (a, n) = (g.arg(0), g.arg(1));
+    let (one, two) = (g.konst(1.0), g.konst(2.0));
+    let c = g.cmp(Cmp::Lt, n, one);
+    let m = g.sub(n, one);
+    let r = g.call(q, &[a, m]);
+    let sq = g.call(p, &[r, two]);
+    let body = g.select(c, a, sq);
+    assert!(g.set_body(q, &[body]));
+    let (x, k) = (g.var(0), g.param(0));
+    let o = g.call(q, &[x, k]);
+    let mut memo = HashMap::new();
+    let dx = d(&mut g, &mut memo, o, Wrt::U(0));
+    let (v, primal) = run(&g, o, &[0.5], &[3.0]);
+    assert_eq!((v, primal), (0.5f64.powi(8), 4 + 3 * 3));
+    assert_eq!(run(&g, dx, &[0.5], &[3.0]), (8.0 * 0.5f64.powi(7), primal));
+}
+
+/// `Wrt::P` with a body that reads the parameter: `f(n) = if(n<1)then(1)else(p*f(n-1))`
+/// gives `n p^(n-1)` with n + 1 calls.
+#[test]
+fn jacp_of_a_body_that_reads_the_parameter() {
+    let mut g = Dag::new(10_000);
+    let u = g.add_unit("f", 1, 1);
+    let n = g.arg(0);
+    let pp = g.param(0);
+    let one = g.konst(1.0);
+    let c = g.cmp(Cmp::Lt, n, one);
+    let m = g.sub(n, one);
+    let r = g.call(u, &[m]);
+    let e = g.mul(pp, r);
+    let body = g.select(c, one, e);
+    assert!(g.set_body(u, &[body]));
+    let k = g.param(1);
+    let o = g.call(u, &[k]);
+    let mut memo = HashMap::new();
+    let dp = d(&mut g, &mut memo, o, Wrt::P(0));
+    let dk = d(&mut g, &mut memo, o, Wrt::P(1));
+    for n in [0u32, 1, 6, 100] {
+        let want = if n == 0 {
+            0.0
+        } else {
+            f64::from(n) * 0.5f64.powi(n as i32 - 1)
+        };
+        assert_eq!(
+            run(&g, dp, &[], &[0.5, f64::from(n)]),
+            (want, u64::from(n) + 1)
+        );
+    }
+    // n only feeds the conditions, so d/dn is 0, but its tangent is not the constant 0,
+    // so the tangent unit runs (SPEC 8af-5 skips only constant-zero tangents).
+    assert_eq!(run(&g, dk, &[], &[0.5, 6.0]), (0.0, 7));
 }
