@@ -198,6 +198,7 @@ fn visit(kind: &mut StmtKind, f: &mut dyn FnMut(Slot)) {
         | StmtKind::Block { .. }
         | StmtKind::BadBlock { .. }
         | StmtKind::Comment(_)
+        | StmtKind::Only { .. }
         | StmtKind::Unsupported { .. }
         | StmtKind::Done => {}
     }

@@ -6,6 +6,10 @@
 //!
 //! - One statement per line, each line ending in `\n`. Keywords are written
 //!   in full and in lower case (`par`, `aux`, `wiener`, `done`).
+//! - An `only` statement is written as `only a,b,c` on one line of its own, the
+//!   words as they were read. A file with several `only` lines gets several
+//!   lines back, so that the output parses to the same statements; the
+//!   kept list of the checker is the same.
 //! - Names keep their spelling (`Ident::text`; the key when the text is
 //!   empty). Number literals keep the text they were written with; a
 //!   literal with empty text is written by [`format_number`].
@@ -253,6 +257,14 @@ fn stmt(out: &mut String, s: &Stmt) {
             let names: Vec<String> = names.iter().map(ident).collect();
             out.push_str("wiener ");
             out.push_str(&names.join(","));
+        }
+        StmtKind::Only { names } => {
+            let names: Vec<String> = names.iter().map(ident).collect();
+            out.push_str("only");
+            if !names.is_empty() {
+                out.push(' ');
+                out.push_str(&names.join(","));
+            }
         }
         StmtKind::Block {
             start, end, body, ..

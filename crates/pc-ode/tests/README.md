@@ -61,6 +61,8 @@ Read the diff before you commit it.
 
 One code, ODE0018 (old-style file), has no file. The check fires only when the first line of the file starts with a digit, and every invalid file must start with its naming comment. The input is built in `invalid.rs` (`BUILT_IN`) instead.
 
+One code, ODE0033, is retired: the parser no longer gives it (`only` lists are read since round E), so it has no file. `invalid.rs` keeps it in `RETIRED`, and the test `a_retired_code_has_no_file_and_its_row_says_so` checks that its row in `docs/language.md` says "no longer issued".
+
 ## Coverage matrix
 
 Each row of the table and each rule in section 2 of `docs/SPEC.md` is mapped to tests. A name of the form `path::test` is a test function in that file. A name in `corpus/` or `invalid/` is a file in this folder. Paths that start with `src/` are unit tests and the others are in `crates/pc-ode/tests/`.
@@ -103,7 +105,8 @@ Each row of the table and each rule in section 2 of `docs/SPEC.md` is mapped to 
 | `delay` | `src/check/tests.rs::delay_shift_and_del_shft`, `src/check/tests.rs::delay_with_one_argument`, `corpus/unsupported.ode`, `invalid/ode0054.ode` |
 | Volterra and boundary value problems | `src/parser/stmt/tests.rs::unsupported_families`, `corpus/unsupported.ode`, `invalid/ode0028.ode`, `invalid/ode0029.ode` |
 | DAEs (`0=`, `solv`) | `src/parser/stmt/tests.rs::unsupported_families`, `corpus/unsupported.ode`, `invalid/ode0030.ode` |
-| Other constructs (`special`, `export`, `only`, `options`, `shift`, `del_shft`, `sum(..)of(..)`, `hom_bcs`) | `src/parser/stmt/tests.rs::unsupported_families`, `src/parser/stmt/tests.rs::delay_shift_and_del_shft_stay_calls`, `src/check/tests.rs::unsupported_statements_that_may_declare_names`, `corpus/unsupported.ode`, `invalid/ode0031.ode` to `invalid/ode0038.ode`, `invalid/ode0055.ode` to `invalid/ode0057.ode` |
+| Other constructs (`special`, `export`, `options`, `shift`, `del_shft`, `sum(..)of(..)`, `hom_bcs`) | `src/parser/stmt/tests.rs::unsupported_families`, `src/parser/stmt/tests.rs::delay_shift_and_del_shft_stay_calls`, `src/check/tests.rs::unsupported_statements_that_may_declare_names`, `corpus/unsupported.ode`, `invalid/ode0031.ode` to `invalid/ode0038.ode`, `invalid/ode0055.ode` to `invalid/ode0057.ode` |
+| `only` lists: words split at commas and blanks, names kept (state, aux, `t`), ODE0077 for the rest, the writer keeps the list | `src/parser/stmt/tests.rs::only_reads_names_split_by_commas_and_blanks`, `src/parser/stmt/tests.rs::only_words_are_raw_text_that_the_check_matches_later`, `src/check/tests.rs::only_keeps_states_aux_and_t_in_order`, `src/check/tests.rs::only_drops_a_name_that_is_not_a_state_an_aux_or_t`, `src/check/tests.rs::only_drops_a_repeat_and_points_at_the_first_use`, `round_trip.rs::only_list_survives_a_write_and_a_reparse`, `corpus/only_list.ode`, `invalid/ode0077.ode` |
 | End (`done`) | `src/parser/stmt/tests.rs::done_ends_the_file`, `src/include/tests.rs::done_ends_the_included_file_only`, `corpus.rs::every_corpus_file_has_a_source_comment_and_ends_with_done` |
 
 ### Expressions

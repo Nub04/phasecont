@@ -211,7 +211,7 @@ fn aot_matches_jit_on_the_corpus() {
         }
         models += 1;
     }
-    assert_eq!(models, 28, "models compared");
+    assert_eq!(models, 29, "models compared");
     println!("aot evaluator: {models} models, {values} values, 0 ulp");
 }
 

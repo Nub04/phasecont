@@ -38,7 +38,7 @@ const SEED: u64 = 1;
 
 /// How many of the models in the two folders `lower` accepts. A new model file, or a model
 /// that starts or stops being refused, changes this and the test says so.
-const EXPECTED_ACCEPTED: usize = 28;
+const EXPECTED_ACCEPTED: usize = 29;
 
 /// The models this test adds under `crates/pc-ir/tests/models/`.
 const REQUIRED_MODELS: [&str; 9] = [

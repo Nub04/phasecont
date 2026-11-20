@@ -76,6 +76,9 @@ pub const MAYBE_UNDEFINED: Code = Code(57);
 pub const BAD_TARGET: Code = Code(58);
 /// An ODE file whose `meth` option makes XPPAUT 8.0 iterate it as a map.
 pub const METH_MAP: Code = Code(74);
+/// A name in an `only` list that is not a state, an `aux` quantity or `t`, or
+/// that repeats. XPPAUT drops it without a word; the name is dropped here too.
+pub const ONLY_DROPPED: Code = Code(77);
 
 /// Longest name XPPAUT 8.0 keeps whole.
 const XPP_NAME_LEN: usize = 10;
@@ -139,6 +142,12 @@ pub struct ModelInfo {
     pub simulation_only: bool,
     /// Declared names in declaration order.
     pub symbols: Vec<Symbol>,
+    /// The `only` list: the names XPPAUT writes to its output file, in the
+    /// order of the file (several `only` lines add to one list). Each is the
+    /// declared spelling of a state or `aux` quantity, or `t`, with no repeat;
+    /// a name that is none of these is dropped (ODE0077). Empty when the file
+    /// has no `only` line or none of its names is kept.
+    pub only: Vec<String>,
     /// Lower-case name to position in `symbols`.
     index: HashMap<String, usize>,
 }
@@ -240,6 +249,8 @@ pub(crate) fn check_counted(model: &Model) -> (ModelInfo, Vec<Diagnostic>, usize
     c.at(None);
     c.resolve_all();
     c.at(None);
+    c.check_only();
+    c.at(None);
     c.report_graph();
     c.report_long_names();
     c.add_collapse_notes();
@@ -250,6 +261,7 @@ pub(crate) fn check_counted(model: &Model) -> (ModelInfo, Vec<Diagnostic>, usize
         smooth: c.smooth,
         simulation_only: c.simulation_only,
         symbols: c.symbols,
+        only: c.only,
         index: c.index,
     };
     (info, diags, dropped)
@@ -323,6 +335,8 @@ struct Checker<'a> {
     suppressed_plain: HashSet<String>,
     /// Roots of indexed names that a dropped statement would have declared.
     suppressed_roots: HashSet<String>,
+    /// The kept `only` names, see [`ModelInfo::only`].
+    only: Vec<String>,
 }
 
 impl<'a> Checker<'a> {
@@ -357,6 +371,7 @@ impl<'a> Checker<'a> {
                 .filter(|s| s.indexed)
                 .map(|s| s.key.clone())
                 .collect(),
+            only: Vec::new(),
         }
     }
 
@@ -781,6 +796,88 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// `only` lists: keeps the words that name a state, an `aux` quantity or
+    /// `t`, once each and in file order, and reports each other word as
+    /// ODE0077 (XPP drops them without a word). The words are raw text, so
+    /// the match is on the lower-case key alone. An `aux` quantity that
+    /// shares its name with a parameter or fixed quantity is found through
+    /// the symbol list, since the name index points at the other one.
+    fn check_only(&mut self) {
+        let model = self.model;
+        let mut outputs: HashMap<String, usize> = HashMap::new();
+        if model
+            .statements
+            .iter()
+            .any(|s| matches!(s.kind, StmtKind::Only { .. }))
+        {
+            for (i, sym) in self.symbols.iter().enumerate() {
+                if matches!(sym.kind, SymbolKind::State(_) | SymbolKind::Aux) {
+                    outputs.entry(sym.name.key.clone()).or_insert(i);
+                }
+            }
+        }
+        let mut first_use: HashMap<&str, Span> = HashMap::new();
+        for (i, stmt) in model.statements.iter().enumerate() {
+            let StmtKind::Only { names } = &stmt.kind else {
+                continue;
+            };
+            self.at(Some(i));
+            // XPP reads the text after a `#` as more names (measured), so
+            // the words from the first `#` on get a hint on how to comment.
+            let comment_from = names
+                .iter()
+                .position(|w| w.text.starts_with('#'))
+                .unwrap_or(names.len());
+            for (j, word) in names.iter().enumerate() {
+                let hint = if j >= comment_from {
+                    "; put the comment on a line of its own"
+                } else {
+                    ""
+                };
+                let key = word.key.as_str();
+                let canonical = if key == "t" {
+                    Some("t".to_string())
+                } else {
+                    outputs.get(key).map(|&s| self.symbols[s].name.text.clone())
+                };
+                if let Some(name) = canonical {
+                    if let Some(&first) = first_use.get(key) {
+                        let message = format!(
+                            "`{}` is already in an `only` list, so this entry is dropped{hint}",
+                            word.text
+                        );
+                        let note = (first, "first listed here".to_string());
+                        self.report(ONLY_DROPPED, word.span, message, vec![note]);
+                    } else {
+                        first_use.insert(key, word.span);
+                        self.only.push(name);
+                    }
+                    continue;
+                }
+                let (message, notes) = match self.lookup(key).map(|s| &self.symbols[s]) {
+                    Some(sym) => (
+                        format!(
+                            "`{}` is {}, not a state, an aux quantity or `t`, so `only` drops it{hint}",
+                            word.text,
+                            noun(sym.kind)
+                        ),
+                        vec![(
+                            sym.name.span,
+                            format!("`{}` is declared here", sym.name.text),
+                        )],
+                    ),
+                    // `expand` already reported why the name was never made.
+                    None if self.suppressed(key) => continue,
+                    None => (
+                        format!("`{}` is not declared, so `only` drops it{hint}", word.text),
+                        Vec::new(),
+                    ),
+                };
+                self.report(ONLY_DROPPED, word.span, message, notes);
             }
         }
     }

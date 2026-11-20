@@ -792,7 +792,6 @@ fn unsupported_statements_that_may_declare_names() {
     for text in [
         "\" {x=1}\nx'=q",
         "x'=q\nbndry x-1",
-        "x'=q\nonly x",
         "x'=q\nexport {x} {y}",
         "x'=q\nhom_bcs 1",
         "x'=q\noptions a.opt",
@@ -1298,4 +1297,179 @@ fn meth_does_not_touch_a_map_a_mixed_file_or_a_file_without_equations() {
         let text = format!("par a=1\n@ {entry}\n");
         assert_eq!(info(&text).kind, ModelKind::None, "{entry}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// `only` lists (round E).
+
+/// The kept `only` list of a model that checks without a diagnostic.
+fn only_list(text: &str) -> Vec<String> {
+    info(text).only
+}
+
+#[test]
+fn only_keeps_states_aux_and_t_in_order() {
+    assert_eq!(
+        only_list("x'=-x\ny'=x\naux a=x+y\nonly a,t,y"),
+        vec!["a", "t", "y"]
+    );
+    // Blanks and commas both separate; two lines add to one list in order.
+    assert_eq!(
+        only_list("x'=-x\ny'=x\naux a=x+y\nonly y a\nonly , x ,t"),
+        vec!["y", "a", "x", "t"]
+    );
+    // A map state is a state too.
+    assert_eq!(only_list("x(t+1)=x/2\nonly x,t"), vec!["x", "t"]);
+}
+
+#[test]
+fn only_matches_names_without_regard_to_case_and_keeps_the_declared_spelling() {
+    assert_eq!(
+        only_list("Xy'=-Xy\naux Qq=Xy\nonly qQ,XY,T"),
+        vec!["Qq", "Xy", "t"]
+    );
+}
+
+#[test]
+fn no_only_line_and_a_bare_only_give_no_list() {
+    assert!(only_list("x'=-x").is_empty());
+    assert!(only_list("x'=-x\nonly").is_empty());
+    assert!(only_list("x'=-x\nonly , ,\nonly").is_empty());
+}
+
+#[test]
+fn only_drops_a_name_that_is_not_a_state_an_aux_or_t() {
+    let cases = [
+        ("par k=1", "k", "a parameter"),
+        ("number k=1", "k", "a number"),
+        ("!k=2*3", "k", "a derived parameter"),
+        ("k=2*x", "k", "a fixed quantity"),
+        ("k(u)=u", "k", "a function"),
+        ("table k % 3 0 1 t", "k", "a table"),
+        ("wiener k", "k", "a Wiener variable"),
+    ];
+    for (decl, name, noun) in cases {
+        let text = format!("x'=-x\n{decl}\nonly x,{name}");
+        let (info, diags) = run(&text);
+        assert_eq!(info.only, vec!["x"], "{text:?}");
+        assert_eq!(diags.len(), 1, "{text:?}: {diags:#?}");
+        let d = &diags[0];
+        assert_eq!(d.code, ONLY_DROPPED, "{text:?}");
+        assert_eq!(d.span, nth(&text, name, 1), "{text:?}: {d:#?}");
+        assert!(d.message.contains(noun), "{text:?}: {}", d.message);
+        assert!(d.message.contains("only"), "{text:?}: {}", d.message);
+    }
+}
+
+#[test]
+fn only_drops_an_unknown_name() {
+    let text = "x'=-x\nonly x,zz";
+    let (info, diags) = run(text);
+    assert_eq!(info.only, vec!["x"]);
+    assert_eq!(diags.len(), 1, "{diags:#?}");
+    assert_eq!(diags[0].code, ONLY_DROPPED);
+    assert_eq!(diags[0].span, nth(text, "zz", 0));
+    assert!(
+        diags[0].message.contains("not declared"),
+        "{}",
+        diags[0].message
+    );
+}
+
+#[test]
+fn only_drops_a_repeat_and_points_at_the_first_use() {
+    for (text, want) in [
+        ("x'=-x\nonly x,x", vec!["x"]),
+        ("x'=-x\nonly x,X", vec!["x"]),
+        ("x'=-x\nonly x\nonly x", vec!["x"]),
+        ("x'=-x\ny'=x\nonly y,x,y", vec!["y", "x"]),
+        ("x'=-x\nonly t,T", vec!["t"]),
+    ] {
+        let (info, diags) = run(text);
+        assert_eq!(info.only, want, "{text:?}");
+        assert_eq!(diags.len(), 1, "{text:?}: {diags:#?}");
+        let d = &diags[0];
+        assert_eq!(d.code, ONLY_DROPPED, "{text:?}");
+        assert!(d.message.contains("already"), "{text:?}: {}", d.message);
+        assert_eq!(d.notes.len(), 1, "{text:?}: {d:#?}");
+        assert!(d.notes[0].0.start < d.span.start, "{text:?}: {d:#?}");
+    }
+}
+
+#[test]
+fn a_list_with_no_name_left_is_no_list() {
+    for text in [
+        "x'=-x\npar k=1\nonly k",
+        "x'=-x\nonly nothing,k",
+        "x'=-x\npar k=1\nonly k\nonly zz",
+    ] {
+        let (info, diags) = run(text);
+        assert!(info.only.is_empty(), "{text:?}");
+        assert!(!diags.is_empty(), "{text:?}");
+        assert!(diags.iter().all(|d| d.code == ONLY_DROPPED), "{diags:#?}");
+    }
+}
+
+#[test]
+fn only_keeps_an_aux_that_shares_its_name_with_a_parameter_or_fixed_quantity() {
+    // XPPAUT 8.2.2 writes the aux column (measured), and the name index of
+    // the checker keeps pointing at the parameter, so the list looks at
+    // every symbol of the name.
+    for text in [
+        "x'=-x\npar a=1\naux a=2*x\nonly a",
+        "x'=-x\naux a=2*x\npar a=1\nonly a",
+        "x'=-x\nf=x\naux f=2*x\nonly f",
+    ] {
+        assert_eq!(only_list(text).len(), 1, "{text:?}");
+    }
+}
+
+#[test]
+fn only_reads_the_text_after_a_hash_as_names() {
+    // XPPAUT 8.2.2 reads it as names (measured). `#` is never a name and
+    // `c` is dropped as unknown, each with the hint; a state named `c` is
+    // kept.
+    let text = "x'=-x\nonly x # c";
+    let (info, diags) = run(text);
+    assert_eq!(info.only, vec!["x"]);
+    assert_eq!(diags.len(), 2, "{diags:#?}");
+    assert_eq!(diags[0].span, nth(text, "#", 0));
+    assert_eq!(diags[1].span, nth(text, "c", 0));
+    for d in &diags {
+        assert_eq!(d.code, ONLY_DROPPED);
+        assert!(
+            d.message.contains("line of its own"),
+            "the hint is missing: {}",
+            d.message
+        );
+    }
+    let text = "x'=-x\nc'=x\nonly x # c";
+    let (info, diags) = run(text);
+    assert_eq!(info.only, vec!["x", "c"]);
+    assert_eq!(diags.len(), 1, "{diags:#?}");
+    assert_eq!(diags[0].span, nth(text, "#", 0));
+}
+
+#[test]
+fn only_is_not_read_as_a_declaration_or_a_use() {
+    // Naming a state does not count as a use, and naming an undefined name
+    // is ODE0077, not ODE0039.
+    assert_eq!(codes("x'=-x\nonly q"), vec![ONLY_DROPPED]);
+    assert!(
+        !info("x'=-x\nonly x")
+            .symbols
+            .iter()
+            .any(|s| s.name.key == "q")
+    );
+}
+
+#[test]
+fn only_keeps_the_list_of_a_model_that_has_other_errors() {
+    // The list follows the declarations that exist, whatever else is wrong.
+    let (info, diags) = run("x'=-x+q\nonly x");
+    assert_eq!(info.only, vec!["x"]);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![UNDEFINED_NAME]
+    );
 }

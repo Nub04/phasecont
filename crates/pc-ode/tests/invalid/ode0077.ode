@@ -1,0 +1,4 @@
+# ODE0077 a name in an only list that is not a state, an aux quantity or t
+x'=-x
+par a=1
+only x,a

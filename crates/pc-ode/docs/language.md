@@ -66,6 +66,7 @@ The first word of a line decides what the line is.
 | Options | `@ total=100,dt=.05` | numerical options | full |
 | Include | `#include other.ode` | include a file | full |
 | Set | `set low {a=1,b=2}` | named parameter set | full |
+| Only | `only x,y` | output columns | full ([The `only` list](#the-only-list)) |
 | Global flag | `global 1 x-1 {x=0}` | event | simulation only |
 | Markov | `markov z 2` plus one line per state | Markov chain | simulation only |
 | Wiener | `wiener w1,w2` | white noise | simulation only |
@@ -73,7 +74,7 @@ The first word of a line decides what the line is.
 | Volterra | `volt` forms, `x(t)=...int...` | integral equation | unsupported, warning |
 | Boundary value | `bndry`, `bdry` | BVP conditions | unsupported, warning |
 | DAE | `0=...`, `solv` | algebraic constraint | unsupported, warning |
-| Others | `special`, `export`, `only`, `options file`, `hom_bcs` | | unsupported, warning |
+| Others | `special`, `export`, `options file`, `hom_bcs` | | unsupported, warning |
 
 Unsupported statements stay in the AST as raw text, so the writer reproduces them.
 
@@ -88,6 +89,15 @@ Unsupported statements stay in the AST as raw text, so the writer reproduces the
 - **The `meth` key.** XPPAUT 8.0 takes any `@` key that starts with `meth`, ignoring case, as the method (measured: probe `meth-method`, where `method=discrete` iterates the file), so PhaseCont knows every such key and gives it no ODE0024 ([Lists](#lists)). The last such entry decides, in file order across `@` lines (measured: probe `meth-last`). An entry with blanks around `=` does not count, since XPPAUT 8.0 ignores it (measured: probe `meth-spaced`).
 - **The `meth` value.** XPPAUT 8.0 reads only the first character of the value, ignoring case (measured: probe `meth-upper`). A value that starts with one of `a b c e g m q r s y 2 5 8 v` names an integrator, and an empty value keeps the default. PhaseCont gives no diagnostic for these and uses neither, since `simulate` integrates with the Dormand-Prince 5(4) pair.
 - **`meth` and maps.** XPPAUT 8.0 iterates an ODE file as a map for a value that starts with any other character (measured: probes `meth-discrete`, `meth-d`, `meth-ode45`). For a value that starts with `d`, the discrete method, PhaseCont reads the file as a map too, with warning ODE0074. For any other such value PhaseCont keeps the ODE and gives warning ODE0074, so that a typo does not turn an ODE into a map (PhaseCont choice). A map file stays a map whatever `meth` says (measured: probe `map-meth-euler`). A file that mixes ODEs and maps and a file with no equation get no ODE0074.
+
+### The `only` list
+
+- **Form.** `only a,b,c` names the columns XPPAUT 8.2.2 writes to its output file, in this order (measured). Words are separated by commas, blanks or both, in any case, and several `only` lines add to one list in file order. A word is read as raw text, so `v;y` is one word and `x[1]` is not the state `x1`. Only the keyword `only` in full starts the statement ([Statement classification](#statement-classification)); `only=3` is a fixed quantity.
+- **Which names are kept.** A word is kept when it names a state, an `aux` quantity or `t` (measured). A parameter, a number, a derived parameter, a fixed quantity, a function, a table, a Wiener variable and a name nothing declares are each dropped, and so is a word that is already in the list. An `aux` quantity that shares its name with a parameter or fixed quantity is kept (measured). When no word is left, there is no list, and XPPAUT writes its usual columns. `check` keeps the list as `ModelInfo::only`, with each name spelled as its declaration spells it, and `t` as `t`.
+- **ODE0077.** Each dropped word gets warning ODE0077 at the word, with a note at the declaration or at the first use of a repeat. XPPAUT drops these words silently; PhaseCont says so (PhaseCont choice).
+- **Text after a `#`.** XPPAUT reads the rest of the `only` line as words, comment included (measured: `only x # c` lists `x`, `#` and `c`, and the last two are dropped). PhaseCont reads it the same way and does not take a trailing `#` as a comment on this line. The dropped words from the first `#` on get the hint "put the comment on a line of its own". A comment word that names a state or an aux quantity is kept without a diagnostic, as XPPAUT keeps it.
+- **Arrays.** An `only` line inside a `%[..]` block is copied unchanged for each index, so the second copy repeats the names of the first and each repeat is dropped with ODE0077.
+- **Writer.** Each `only` statement is written as `only a,b,c` on one line, the words as read, so several `only` lines stay several lines (PhaseCont choice: the output parses to the same statements, and the kept list is the same).
 
 ### Values
 
@@ -340,7 +350,7 @@ Operator semantics (measured):
 - **Spelling kept.** Names keep their spelling. Number literals keep the text they were written with (`1.50E+2`, `.5`). A literal without text gets the shortest digits that read back as the same value, in plain notation when the decimal exponent is in -5..=15 and in `e` notation otherwise.
 - **Implicit multiplication.** Always written as juxtaposition (`2x`, `2(x + 1)`). When the right side would merge with the literal (a number, a bare index, a name that starts with `e`/`E` and a digit, or after an all-zero literal a name that starts with `x`/`X` and a hex digit), the first operand of the right side goes in parentheses: `2(3)`, `2([j])`, `2(e1)^2`, `0(x1)`. The warning-only parentheses are left out of the left side, since `(a<2)x` is not implicit, so `a<2x` is written `a < 2x` with the same precedence warning as the source. Only a hand-built product whose left side does not end with a literal is written with `*`.
 - **Line starts and ends.** A text whose first line would start with a digit (`0=x-y`) gets a blank first line, since a leading digit marks an old-format file. A comment is never written with a backslash after the first line of the output, since a backslash in a comment joins the next line to it ([Lines](#lines)). A parsed comment holds one only on the first line of a main file; the writer cuts a hand-built comment before its first backslash anywhere else. A parsed statement never ends in a backslash.
-- **Kept as written.** `#include` lines, range lines, `%` blocks, comments, trailing comments and unsupported statements (as their raw text).
+- **Kept as written.** `#include` lines, range lines, `%` blocks, comments, trailing comments, `only` lines (one `only a,b,c` line for each statement) and unsupported statements (as their raw text).
 - **Errors.** A model with errors is not guaranteed to round-trip. Error nodes are written as `?`, a malformed `%[..]` line as `%[]`, and a literal that is not finite as `1e999`; each reparses with an error.
 - **Other limits.** A negative `Expr::Num` value (hand-built only) is written as `-2`, or `(-2)` where a prefix needs parentheses, and reparses as `-` of `2`. `format_number(-0.0)` gives `-0`. A comment or include path that ends in a lone `\r` loses it on reparse.
 
@@ -384,7 +394,7 @@ Each pass (include, expand, check) keeps at most 10000 diagnostics (`MAX_DIAGNOS
 | ODE0030 | warning | An algebraic constraint (`0=...`, `solv`), kept as raw text and not supported. |
 | ODE0031 | warning | A `special` statement, kept as raw text and not supported. |
 | ODE0032 | warning | An `export` statement, kept as raw text and not supported. |
-| ODE0033 | warning | An `only` statement, kept as raw text and not supported. |
+| ODE0033 | warning | No longer issued (round E): `only` lists are read ([The `only` list](#the-only-list)). The number stays reserved. |
 | ODE0034 | warning | An `options` file statement, kept as raw text and not supported. |
 | ODE0035 | warning | A `hom_bcs` statement, kept as raw text and not supported. |
 | ODE0036 | warning | A table read from a file, kept as raw text and not supported. |
@@ -428,3 +438,4 @@ Each pass (include, expand, check) keeps at most 10000 diagnostics (`MAX_DIAGNOS
 | ODE0074 | warning | A `meth` option that makes XPPAUT 8.0 iterate an ODE file as a map. A value that starts with `d` makes the file a map; any other value keeps the ODE ([Options](#options)). |
 | ODE0075 | warning | Text after a backslash on the same line. XPPAUT drops it, with the line end, and joins the next line, so the model does not contain it. The message quotes the text. Quick fixes: move the backslash to the end of the line, or delete the text ([Lines](#lines)). |
 | ODE0076 | warning | A backslash in a `#` comment. XPPAUT joins the next line to the comment, so that line is ignored. The message quotes the line. Quick fixes: remove the backslash, or comment out the next line or the chain of lines ([Lines](#lines)). |
+| ODE0077 | warning | A word in an `only` list that is not a state, an `aux` quantity or `t`, or that is already in the list. It is dropped ([The `only` list](#the-only-list)). |

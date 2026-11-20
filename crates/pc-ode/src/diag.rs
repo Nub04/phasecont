@@ -225,7 +225,11 @@ pub const CODES: &[(Code, Severity, &str)] = &[
     ),
     (Code(31), Severity::Warning, "`special` is not supported"),
     (Code(32), Severity::Warning, "`export` is not supported"),
-    (Code(33), Severity::Warning, "`only` is not supported"),
+    (
+        Code(33),
+        Severity::Warning,
+        "no longer issued (round E): `only` lists are read",
+    ),
     (
         Code(34),
         Severity::Warning,
@@ -364,6 +368,12 @@ pub const CODES: &[(Code, Severity, &str)] = &[
         Code(76),
         Severity::Warning,
         "a backslash in a comment joins the next line to the comment, as in XPPAUT",
+    ),
+    // `only` lists (`check.rs`).
+    (
+        Code(77),
+        Severity::Warning,
+        "a name in an `only` list that is not a state, an aux quantity or `t`, or that repeats, is dropped",
     ),
 ];
 

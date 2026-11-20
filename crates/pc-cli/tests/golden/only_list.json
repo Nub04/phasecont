@@ -1,0 +1,71 @@
+{
+  "diagnostics": [
+    {
+      "code": "ODE0077",
+      "col": 8,
+      "end_col": 12,
+      "end_line": 8,
+      "file": "only_list.ode",
+      "fix_it": null,
+      "line": 8,
+      "message": "`damp` is a parameter, not a state, an aux quantity or `t`, so `only` drops it",
+      "notes": [
+        {
+          "col": 5,
+          "end_col": 9,
+          "end_line": 2,
+          "file": "only_list.ode",
+          "line": 2,
+          "message": "`damp` is declared here"
+        }
+      ],
+      "severity": "warning"
+    },
+    {
+      "code": "ODE0077",
+      "col": 13,
+      "end_col": 15,
+      "end_line": 8,
+      "file": "only_list.ode",
+      "fix_it": null,
+      "line": 8,
+      "message": "`zz` is not declared, so `only` drops it",
+      "notes": [],
+      "severity": "warning"
+    },
+    {
+      "code": "ODE0077",
+      "col": 6,
+      "end_col": 7,
+      "end_line": 9,
+      "file": "only_list.ode",
+      "fix_it": null,
+      "line": 9,
+      "message": "`x` is already in an `only` list, so this entry is dropped",
+      "notes": [
+        {
+          "col": 8,
+          "end_col": 9,
+          "end_line": 7,
+          "file": "only_list.ode",
+          "line": 7,
+          "message": "first listed here"
+        }
+      ],
+      "severity": "warning"
+    }
+  ],
+  "file": "only_list.ode",
+  "summary": {
+    "aux": 1,
+    "errors": 0,
+    "fixed": 0,
+    "functions": 0,
+    "kind": "ode",
+    "parameters": 2,
+    "simulation_only": false,
+    "smooth": true,
+    "states": 2,
+    "warnings": 3
+  }
+}

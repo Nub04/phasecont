@@ -28,6 +28,10 @@ const BUILT_IN: &[(u16, &str, &str)] = &[(
     "a file is old style only when its first line starts with a digit, so it cannot start with the naming comment",
 )];
 
+/// Codes that the parser no longer gives. The number stays in `CODES` so that
+/// it is never reused, and the code has no invalid file.
+const RETIRED: &[(u16, &str)] = &[(33, "an `only` statement is read since round E")];
+
 /// The `odeNNNN.ode` and `odeNNNN_b.ode` files in the folder, sorted.
 fn invalid_files() -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(invalid_dir())
@@ -140,6 +144,9 @@ fn every_code_has_an_invalid_file_that_produces_it() {
     }
 
     for (code, _, _) in CODES {
+        if RETIRED.iter().any(|(c, _)| *c == code.0) {
+            continue;
+        }
         if !covered.contains(&code.0) {
             problems.push(format!("{code} has no invalid file that produces it"));
         }
@@ -157,6 +164,36 @@ fn built_in_table_names_only_codes_without_a_file() {
         assert!(
             !has_file,
             "ODE{code:04} has a file, so drop its BUILT_IN row"
+        );
+    }
+}
+
+#[test]
+fn a_retired_code_has_no_file_and_its_row_says_so() {
+    let language =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/language.md"))
+            .expect("cannot read docs/language.md");
+    for (code, reason) in RETIRED {
+        assert!(!reason.is_empty());
+        assert!(
+            CODES.iter().any(|(c, _, _)| c.0 == *code),
+            "ODE{code:04} is retired, so its number must stay in CODES"
+        );
+        let has_file = invalid_files()
+            .iter()
+            .any(|p| code_in_file_name(&p.file_name().unwrap().to_string_lossy()) == Some(*code));
+        assert!(!has_file, "ODE{code:04} is retired and must have no file");
+        assert!(
+            !BUILT_IN.iter().any(|(c, _, _)| c == code),
+            "ODE{code:04} is retired and must have no built-in input"
+        );
+        let row = language
+            .lines()
+            .find(|l| l.starts_with(&format!("| ODE{code:04} |")))
+            .unwrap_or_else(|| panic!("ODE{code:04} has no row in docs/language.md"));
+        assert!(
+            row.to_ascii_lowercase().contains("no longer issued"),
+            "the row of ODE{code:04} must say it is no longer issued: {row}"
         );
     }
 }

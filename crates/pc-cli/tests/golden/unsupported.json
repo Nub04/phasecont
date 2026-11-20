@@ -121,25 +121,13 @@
       "severity": "warning"
     },
     {
-      "code": "ODE0033",
+      "code": "ODE0034",
       "col": 1,
-      "end_col": 9,
+      "end_col": 19,
       "end_line": 13,
       "file": "unsupported.ode",
       "fix_it": null,
       "line": 13,
-      "message": "`only` is not supported; the line is kept as written",
-      "notes": [],
-      "severity": "warning"
-    },
-    {
-      "code": "ODE0034",
-      "col": 1,
-      "end_col": 19,
-      "end_line": 14,
-      "file": "unsupported.ode",
-      "fix_it": null,
-      "line": 14,
       "message": "`options` files are not supported; the line is kept as written",
       "notes": [],
       "severity": "warning"
@@ -148,10 +136,10 @@
       "code": "ODE0035",
       "col": 1,
       "end_col": 10,
-      "end_line": 15,
+      "end_line": 14,
       "file": "unsupported.ode",
       "fix_it": null,
-      "line": 15,
+      "line": 14,
       "message": "`hom_bcs` is not supported; the line is kept as written",
       "notes": [],
       "severity": "warning"
@@ -160,10 +148,10 @@
       "code": "ODE0037",
       "col": 1,
       "end_col": 21,
-      "end_line": 16,
+      "end_line": 15,
       "file": "unsupported.ode",
       "fix_it": null,
-      "line": 16,
+      "line": 15,
       "message": "`sum(..)of(..)` is not supported; the line is kept as written",
       "notes": [],
       "severity": "warning"
@@ -172,10 +160,10 @@
       "code": "ODE0036",
       "col": 1,
       "end_col": 16,
-      "end_line": 17,
+      "end_line": 16,
       "file": "unsupported.ode",
       "fix_it": null,
-      "line": 17,
+      "line": 16,
       "message": "tables read from a file are not supported; the line is kept as written",
       "notes": [],
       "severity": "warning"
@@ -184,10 +172,10 @@
       "code": "ODE0038",
       "col": 1,
       "end_col": 24,
-      "end_line": 18,
+      "end_line": 17,
       "file": "unsupported.ode",
       "fix_it": null,
-      "line": 18,
+      "line": 17,
       "message": "active comments are not supported; the line is kept as written",
       "notes": [],
       "severity": "warning"
@@ -204,6 +192,6 @@
     "simulation_only": false,
     "smooth": false,
     "states": 3,
-    "warnings": 16
+    "warnings": 15
   }
 }

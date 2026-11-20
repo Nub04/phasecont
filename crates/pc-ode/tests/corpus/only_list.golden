@@ -1,0 +1,26 @@
+diagnostics
+only_list.ode:8:8: warning[ODE0077]: `damp` is a parameter, not a state, an aux quantity or `t`, so `only` drops it
+  note: only_list.ode:2:5: `damp` is declared here
+only_list.ode:8:13: warning[ODE0077]: `zz` is not declared, so `only` drops it
+only_list.ode:9:6: warning[ODE0077]: `x` is already in an `only` list, so this entry is dropped
+  note: only_list.ode:7:8: first listed here
+summary
+kind: Ode
+smooth: true
+simulation_only: false
+states: 2
+parameters: 2
+numbers: 0
+derived: 0
+fixed: 0
+functions: 0
+aux: 1
+tables: 0
+wiener: 0
+only: t,x,energy,y
+symbols
+parameter damp
+parameter drive
+state-ode x
+state-ode y
+aux energy

@@ -9,12 +9,11 @@ unsupported.ode:9:1: warning[ODE0030]: algebraic constraints are not supported; 
 unsupported.ode:10:1: warning[ODE0030]: algebraic constraints are not supported; the line is kept as written
 unsupported.ode:11:1: warning[ODE0031]: `special` is not supported; the line is kept as written
 unsupported.ode:12:1: warning[ODE0032]: `export` is not supported; the line is kept as written
-unsupported.ode:13:1: warning[ODE0033]: `only` is not supported; the line is kept as written
-unsupported.ode:14:1: warning[ODE0034]: `options` files are not supported; the line is kept as written
-unsupported.ode:15:1: warning[ODE0035]: `hom_bcs` is not supported; the line is kept as written
-unsupported.ode:16:1: warning[ODE0037]: `sum(..)of(..)` is not supported; the line is kept as written
-unsupported.ode:17:1: warning[ODE0036]: tables read from a file are not supported; the line is kept as written
-unsupported.ode:18:1: warning[ODE0038]: active comments are not supported; the line is kept as written
+unsupported.ode:13:1: warning[ODE0034]: `options` files are not supported; the line is kept as written
+unsupported.ode:14:1: warning[ODE0035]: `hom_bcs` is not supported; the line is kept as written
+unsupported.ode:15:1: warning[ODE0037]: `sum(..)of(..)` is not supported; the line is kept as written
+unsupported.ode:16:1: warning[ODE0036]: tables read from a file are not supported; the line is kept as written
+unsupported.ode:17:1: warning[ODE0038]: active comments are not supported; the line is kept as written
 summary
 kind: Ode
 smooth: false

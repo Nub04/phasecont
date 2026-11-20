@@ -1,0 +1,10 @@
+# Damped pendulum with an only list that names two states, an aux quantity and t. Illustrative model and values; the list also holds one name of each kind that is dropped.
+par damp=0.2,drive=0.1
+x'=y
+y'=-sin(x)-damp*y+drive
+aux energy=y^2/2+1-cos(x)
+init x=1,y=0
+only t,X energy
+only y damp,zz
+only x
+done

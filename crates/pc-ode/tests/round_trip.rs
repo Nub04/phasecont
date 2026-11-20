@@ -881,7 +881,7 @@ fn map_statements_round_trip() {
 
 #[test]
 fn unsupported_statements_are_written_as_raw_text() {
-    let src = "special k=mmult(4,4,w,y)\nexport {x} {y}\nonly x,y\nsolv z=x\n\
+    let src = "special k=mmult(4,4,w,y)\nexport {x} {y}\nsolv z=x\n\
                0=x - y\nhom_bcs 0 x\noptions my.opt\ntable h data.tab\n\
                w(t)=1 + int{exp(-t)}\nz=sum(0,2)of(i')\nbdry x - 1\n";
     let (m, _) = parse(src, FILE);
@@ -890,7 +890,7 @@ fn unsupported_statements_are_written_as_raw_text() {
         .iter()
         .filter(|s| matches!(s.kind, StmtKind::Unsupported { .. }))
         .count();
-    assert_eq!(n, 11, "{m:#?}");
+    assert_eq!(n, 10, "{m:#?}");
     assert_eq!(write(&m), src);
     let (back, _) = parse(&write(&m), FILE);
     assert_eq!(back.strip_spans(), m.strip_spans());
@@ -1403,7 +1403,6 @@ const RAW_VALUES: &[&str] = &["stiff", "0.01", "1e-3", "200", "-5", "x1", "Qrk"]
 const UNSUPPORTED_LINES: &[&str] = &[
     "special k=mmult(4,4,w,y)",
     "export {x} {y}",
-    "only x,y",
     "solv z=x",
     "0=x - y",
     "hom_bcs 0 x",
@@ -1590,6 +1589,17 @@ fn markov_stmt(ctx: Ctx) -> BoxedStrategy<Stmt> {
         .boxed()
 }
 
+/// Words of an `only` line. The parser keeps them as raw text, so the pool
+/// holds names, a mixed-case spelling, `t`, and words that are no name, one of
+/// them a `#` word, which XPP reads as a name too.
+const ONLY_WORDS: &[&str] = &[
+    "x", "Y1", "t", "T", "Qq", "aux_2", "v;y", "x[1]", "1", "#c", "é",
+];
+
+fn only_word() -> BoxedStrategy<Ident> {
+    prop::sample::select(ONLY_WORDS).prop_map(ident).boxed()
+}
+
 /// A top-level statement of any form except `done`.
 fn top_stmt(pool: &'static [&'static str]) -> BoxedStrategy<Stmt> {
     let ctx = Ctx::plain(pool);
@@ -1648,6 +1658,8 @@ fn top_stmt(pool: &'static [&'static str]) -> BoxedStrategy<Stmt> {
         1 => markov_stmt(ctx),
         1 => prop::collection::vec(pool_name(ctx), 1..4)
             .prop_map(|names| stmt(StmtKind::Wiener { names })),
+        1 => prop::collection::vec(only_word(), 0..5)
+            .prop_map(|names| stmt(StmtKind::Only { names })),
         1 => comment_stmt(),
         1 => unsupported_stmt(),
         1 => range_stmt(pool),
@@ -1806,7 +1818,7 @@ fn line_class(kind: &StmtKind) -> LineClass {
         | StmtKind::Include { .. }
         | StmtKind::Block { .. }
         | StmtKind::BadBlock { .. } => LineClass::Raw,
-        StmtKind::Number { .. } => LineClass::Keyword { abbreviate: false },
+        StmtKind::Number { .. } | StmtKind::Only { .. } => LineClass::Keyword { abbreviate: false },
         StmtKind::Par { .. }
         | StmtKind::Init { .. }
         | StmtKind::Aux { .. }
@@ -1970,7 +1982,9 @@ fn norm_stmts(stmts: &mut Vec<Stmt>) {
                     }
                 }
             }
-            StmtKind::Wiener { names } => names.iter_mut().for_each(norm_ident),
+            StmtKind::Wiener { names } | StmtKind::Only { names } => {
+                names.iter_mut().for_each(norm_ident)
+            }
             StmtKind::Block { body, .. } | StmtKind::BadBlock { body } => norm_stmts(body),
             // Raw classes: the noise leaves them alone.
             StmtKind::Options { .. }
@@ -2333,4 +2347,40 @@ proptest! {
     ) {
         check_robust(&parts.concat());
     }
+}
+
+// ---------------------------------------------------------------------
+// `only` lists (round E)
+// ---------------------------------------------------------------------
+
+#[test]
+fn only_statements_are_written_one_per_line_with_the_words_as_read() {
+    let m = parse_ok("only x, Y1 t\nONLY\nOnLy a,,b\n");
+    assert_eq!(write(&m), "only x,Y1,t\nonly\nonly a,b\n");
+    assert_round_trip(&m);
+}
+
+#[test]
+fn only_words_that_are_no_name_round_trip() {
+    // `#` and the words after it are names to XPP; they are not a comment.
+    let m = parse_ok("only x v;y x[1] 1 # c\n");
+    assert_eq!(write(&m), "only x,v;y,x[1],1,#,c\n");
+    assert_round_trip(&m);
+}
+
+#[test]
+fn only_list_survives_a_write_and_a_reparse() {
+    // Names, an aux quantity, `t`, three lines, case, and every kind of drop:
+    // a fixed quantity, an unknown name and two repeats.
+    let src = "x'=-a*x\ny'=x-y\npar a=1\nk=2*x\naux w=x+y\n\
+               only X, w\nonly k,t a zz Y x\nonly T\n";
+    let first = load_ok(src);
+    assert_eq!(first.info.only, vec!["x", "w", "t", "y"]);
+    let dropped = |l: &pc_ode::Loaded| l.diagnostics.iter().filter(|d| d.code == Code(77)).count();
+    assert_eq!(dropped(&first), 5, "{:#?}", first.diagnostics);
+
+    let written = write(&first.template);
+    let again = load_ok(&written);
+    assert_eq!(again.info.only, first.info.only, "{written:?}");
+    assert_eq!(dropped(&again), 5, "{written:?}");
 }

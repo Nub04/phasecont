@@ -52,7 +52,6 @@ pub const UNSUPPORTED_BOUNDARY: Code = Code(29);
 pub const UNSUPPORTED_DAE: Code = Code(30);
 pub const UNSUPPORTED_SPECIAL: Code = Code(31);
 pub const UNSUPPORTED_EXPORT: Code = Code(32);
-pub const UNSUPPORTED_ONLY: Code = Code(33);
 pub const UNSUPPORTED_OPTIONS_FILE: Code = Code(34);
 pub const UNSUPPORTED_HOM_BCS: Code = Code(35);
 /// `table name file`.
@@ -86,10 +85,6 @@ fn unsupported_info(family: Unsupported) -> (Code, &'static str) {
             UNSUPPORTED_EXPORT,
             "`export` is not supported; the line is kept as written",
         ),
-        Only => (
-            UNSUPPORTED_ONLY,
-            "`only` is not supported; the line is kept as written",
-        ),
         OptionsFile => (
             UNSUPPORTED_OPTIONS_FILE,
             "`options` files are not supported; the line is kept as written",
@@ -119,6 +114,7 @@ enum Keyword {
     Markov,
     Par,
     Wiener,
+    Only,
     Table,
     Aux,
     Init,
@@ -138,7 +134,7 @@ fn keyword_of(key: &str) -> Option<Keyword> {
     let full = match key {
         "set" => Some(Keyword::Set),
         "options" => Some(Keyword::Unsupported(U::OptionsFile)),
-        "only" => Some(Keyword::Unsupported(U::Only)),
+        "only" => Some(Keyword::Only),
         "special" => Some(Keyword::Unsupported(U::Special)),
         "export" => Some(Keyword::Unsupported(U::Export)),
         "volt" => Some(Keyword::Unsupported(U::Volterra)),
@@ -232,6 +228,38 @@ fn merge_ranges(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
 fn in_ranges(ranges: &[(usize, usize)], offset: usize) -> bool {
     let after = ranges.partition_point(|&(s, _)| s <= offset);
     after > 0 && offset < ranges[after - 1].1
+}
+
+/// The byte ranges of the words in the text of an `only` line: pieces
+/// separated by commas and blanks (space, tab, line break). A backslash ends
+/// the words of its line and the next line goes on, as the lexer reads it
+/// (XPPAUT drops the text after a backslash, with the line end, and joins the
+/// next line). Every separator is ASCII, so a range never cuts a character.
+fn only_words(text: &str) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut words = Vec::new();
+    let mut start = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'\\' || matches!(b, b',' | b' ' | b'\t' | b'\r' | b'\n') {
+            if let Some(from) = start.take() {
+                words.push((from, i));
+            }
+            if b == b'\\' {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+        } else if start.is_none() {
+            start = Some(i);
+        }
+        i += 1;
+    }
+    if let Some(from) = start {
+        words.push((from, bytes.len()));
+    }
+    words
 }
 
 /// An array block that has been opened and not yet closed.
@@ -881,6 +909,10 @@ impl StmtParser<'_> {
                 let names = self.wiener_names();
                 Some(self.end_statement(start, StmtKind::Wiener { names }, false))
             }
+            Keyword::Only => {
+                self.advance();
+                Some(self.only_statement(start))
+            }
             Keyword::Table => self.table(start),
             Keyword::Global => self.global(start),
             Keyword::Set => self.set(start),
@@ -1092,6 +1124,41 @@ impl StmtParser<'_> {
             self.report(BAD_VALUE, span, message, None);
         }
         Value::Error { span }
+    }
+
+    /// An `only` line, after its keyword. XPPAUT splits the rest of the line at
+    /// blanks and commas and reads every piece as a name, a `#` comment
+    /// included (measured with XPPAUT 8.2.2), so the words are cut from the
+    /// source text and not read as tokens. The text is raw, which drops the
+    /// lexer diagnostics inside it except the backslash warnings; the check
+    /// decides which words name a state, an `aux` quantity or `t`.
+    fn only_statement(&mut self, start: usize) -> Stmt {
+        let rest = self.rest_of_line();
+        let text = self.src(rest);
+        let names = only_words(text)
+            .into_iter()
+            .map(|(from, to)| {
+                let word = &text[from..to];
+                Ident {
+                    text: word.to_string(),
+                    key: word.to_ascii_lowercase(),
+                    index: None,
+                    span: self.span(rest.start + from, rest.start + to),
+                }
+            })
+            .collect();
+        if rest.end > rest.start {
+            self.raw.push((rest.start, rest.end));
+        }
+        self.skip_line();
+        let end = self.prev_end(start);
+        Stmt {
+            kind: StmtKind::Only { names },
+            comment: None,
+            span: self.span(start, end),
+            array_index: None,
+            array_template: None,
+        }
     }
 
     /// The names of a `wiener` line, separated by commas or blanks.

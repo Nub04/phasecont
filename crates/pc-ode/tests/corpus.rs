@@ -104,15 +104,15 @@ const EXPECTED_WARNINGS: &[(&str, &[u16])] = &[
     ("abbreviations.ode", &[13]),
     // One warning per unsupported line: ODE0054 `delay`, 0055 `shift`,
     // 0056 `del_shft`, 0028 Volterra (two lines), 0029 `bndry`, 0030 `0=`
-    // and `solv`, 0031 `special`, 0032 `export`, 0033 `only`, 0034
-    // `options`, 0035 `hom_bcs`, 0037 `sum(..)of(..)`, 0036 file table,
-    // 0038 active comment.
+    // and `solv`, 0031 `special`, 0032 `export`, 0034 `options`, 0035
+    // `hom_bcs`, 0037 `sum(..)of(..)`, 0036 file table, 0038 active comment.
     (
         "unsupported.ode",
-        &[
-            28, 28, 29, 30, 30, 31, 32, 33, 34, 35, 36, 37, 38, 54, 55, 56,
-        ],
+        &[28, 28, 29, 30, 30, 31, 32, 34, 35, 36, 37, 38, 54, 55, 56],
     ),
+    // Three words of the `only` lines are dropped: a parameter, an unknown
+    // name and a repeat (ODE0077).
+    ("only_list.ode", &[77, 77, 77]),
 ];
 
 #[test]
@@ -445,6 +445,9 @@ fn render(map: &SourceMap, loaded: &Loaded, root: &Path) -> String {
         count(|k| matches!(k, SymbolKind::Wiener))
     )
     .unwrap();
+    if !info.only.is_empty() {
+        writeln!(out, "only: {}", info.only.join(",")).unwrap();
+    }
     out.push_str("symbols\n");
     for s in &info.symbols {
         writeln!(out, "{} {}", kind_label(s.kind), s.name.text).unwrap();

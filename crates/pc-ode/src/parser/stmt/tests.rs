@@ -640,7 +640,6 @@ fn unsupported_families() {
             UNSUPPORTED_SPECIAL,
         ),
         ("export {x} {y}", Unsupported::Export, UNSUPPORTED_EXPORT),
-        ("only x y", Unsupported::Only, UNSUPPORTED_ONLY),
         (
             "options my.opt",
             Unsupported::OptionsFile,
@@ -1509,7 +1508,7 @@ fn coverage_gaps() {
 
 #[test]
 fn message_text_per_code() {
-    let cases: [(&str, Code, &str); 21] = [
+    let cases: [(&str, Code, &str); 20] = [
         ("2\n", OLD_STYLE_FILE, "old XPPAUT format"),
         (
             "+x=1",
@@ -1549,7 +1548,6 @@ fn message_text_per_code() {
             UNSUPPORTED_EXPORT,
             "`export` is not supported",
         ),
-        ("only x", UNSUPPORTED_ONLY, "`only` is not supported"),
         (
             "options a.opt",
             UNSUPPORTED_OPTIONS_FILE,
@@ -1694,4 +1692,112 @@ fn a_quote_that_does_not_start_a_line_is_not_an_active_comment() {
     // its backslash continues the line as usual.
     let codes = codes("x'=1+\\\n\"a \\\n2\n");
     assert!(!codes.contains(&BACKSLASH_COMMENT), "{codes:?}");
+}
+
+// ---------------------------------------------------------------------
+// `only` lists (round E)
+// ---------------------------------------------------------------------
+
+fn only(names: &[&str]) -> StmtKind {
+    StmtKind::Only {
+        names: names.iter().map(|n| ident(n)).collect(),
+    }
+}
+
+#[test]
+fn only_reads_names_split_by_commas_and_blanks() {
+    for text in [
+        "only x,y",
+        "only x y",
+        "only x, y",
+        "only  x ,y",
+        "only\tx\t,\ty",
+        "ONLY x,y",
+        "Only x y",
+    ] {
+        assert_eq!(clean_one(text), only(&["x", "y"]), "{text:?}");
+    }
+    // Several lines are several statements; the check joins them.
+    assert_eq!(
+        clean("only x,y\nonly z\n"),
+        vec![only(&["x", "y"]), only(&["z"])]
+    );
+}
+
+#[test]
+fn only_keeps_the_spelling_and_a_lower_case_key() {
+    let StmtKind::Only { names } = clean_one("only Xy,T,aB") else {
+        panic!()
+    };
+    let words: Vec<(&str, &str)> = names
+        .iter()
+        .map(|n| (n.text.as_str(), n.key.as_str()))
+        .collect();
+    assert_eq!(words, vec![("Xy", "xy"), ("T", "t"), ("aB", "ab")]);
+}
+
+#[test]
+fn a_bare_only_is_an_empty_list_without_a_diagnostic() {
+    assert_eq!(clean_one("only"), only(&[]));
+    assert_eq!(clean_one("only  "), only(&[]));
+    assert_eq!(clean_one("only , ,"), only(&[]));
+}
+
+#[test]
+fn only_words_and_statement_carry_spans() {
+    let text = "only x, yy ,zzz";
+    let (model, diags) = parse_all(text);
+    assert!(diags.is_empty(), "{diags:#?}");
+    let s = &model.statements[0];
+    assert_eq!(s.span, sp(0, text.len()));
+    let StmtKind::Only { names } = &s.kind else {
+        panic!("{s:#?}")
+    };
+    let spans: Vec<Span> = names.iter().map(|n| n.span).collect();
+    assert_eq!(spans, vec![sp(5, 6), sp(8, 10), sp(12, 15)]);
+}
+
+#[test]
+fn only_words_are_raw_text_that_the_check_matches_later() {
+    // XPPAUT splits the line at blanks and commas only, so `v;y` is one
+    // word (the check drops it), not two names and not a lexer error.
+    assert_eq!(clean_one("only v;y"), only(&["v;y"]));
+    assert_eq!(clean_one("only x[1],y'"), only(&["x[1]", "y'"]));
+    assert_eq!(clean_one("only 1,é"), only(&["1", "é"]));
+}
+
+#[test]
+fn only_reads_a_trailing_comment_as_words() {
+    // XPPAUT 8.2.2 reads the text after `#` as more names (measured), so a
+    // state named `c` is kept. The parser gives no comment error; the words
+    // are the check's to match and drop.
+    let text = "only x # c";
+    assert_eq!(clean_one(text), only(&["x", "#", "c"]));
+    let (model, _) = parse_all(text);
+    assert!(model.statements[0].comment.is_none());
+}
+
+#[test]
+fn only_joins_a_continued_line() {
+    assert_eq!(clean_one("only x,\\\ny"), only(&["x", "y"]));
+}
+
+#[test]
+fn only_is_not_an_unsupported_statement_any_more() {
+    let (model, diags) = parse_all("only x\n");
+    assert!(
+        !model
+            .statements
+            .iter()
+            .any(|s| matches!(s.kind, StmtKind::Unsupported { .. })),
+        "{model:#?}"
+    );
+    assert!(diags.iter().all(|d| d.code != Code(33)), "{diags:#?}");
+}
+
+#[test]
+fn only_as_a_name_is_still_a_formula() {
+    // `only=3` is a fixed quantity, the way the other keyword words are.
+    let kinds = clean("only=3");
+    assert!(matches!(kinds[0], StmtKind::Fixed { .. }), "{kinds:#?}");
 }

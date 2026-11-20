@@ -519,7 +519,6 @@ pub enum Unsupported {
     Dae,
     Special,
     Export,
-    Only,
     /// `options file`.
     OptionsFile,
     HomBcs,
@@ -594,6 +593,11 @@ pub enum StmtKind {
     },
     /// `wiener w1,w2`.
     Wiener { names: Vec<Ident> },
+    /// `only y,x,w`: the words of the line, split at commas and blanks, as
+    /// written. Each [`Ident`] is a raw word (`Ident::text` is the word and
+    /// `Ident::key` its lower case, with no index form); the check decides
+    /// which words name a state, an `aux` quantity or `t`.
+    Only { names: Vec<Ident> },
     /// `%[start..end]`, the statements, `%`. Blocks do not nest, so `body`
     /// holds no `Block`. Bounds are as written; Task 8 rejects negative ones.
     Block {
@@ -705,6 +709,9 @@ impl StmtKind {
                 body: body.iter().map(Stmt::strip_spans).collect(),
             },
             Self::Wiener { names } => Self::Wiener {
+                names: names.iter().map(Ident::strip_spans).collect(),
+            },
+            Self::Only { names } => Self::Only {
                 names: names.iter().map(Ident::strip_spans).collect(),
             },
             Self::Block {
