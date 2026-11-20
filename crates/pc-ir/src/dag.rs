@@ -823,6 +823,38 @@ impl Dag {
         self.intern(op)
     }
 
+    /// `op` with each operand `c` replaced by `map(c)`, built through the folding
+    /// constructors, so a rebuilt node folds as a freshly built one would. The arguments of
+    /// a call are mapped too. An `If` goes through [`Dag::select`], which makes an `If`
+    /// again exactly when an arm reaches a call.
+    pub fn rebuild(&mut self, op: &Op, map: &dyn Fn(NodeId) -> NodeId) -> NodeId {
+        match *op {
+            Op::Const(_) | Op::Var(_) | Op::Param(_) | Op::Dir(_) | Op::Arg(_) => self.intern(*op),
+            Op::Neg(a) => self.neg(map(a)),
+            Op::Add(a, b) => self.add(map(a), map(b)),
+            Op::Sub(a, b) => self.sub(map(a), map(b)),
+            Op::Mul(a, b) => self.mul(map(a), map(b)),
+            Op::ZMul(a, b) => self.zmul(map(a), map(b)),
+            Op::Div(a, b) => self.div(map(a), map(b)),
+            Op::ZDiv(a, b) => self.zdiv(map(a), map(b)),
+            Op::PowI(a, k) => self.powi(map(a), k),
+            Op::Call1(f, a) => self.call1(f, map(a)),
+            Op::Call2(f, a, b) => self.call2(f, map(a), map(b)),
+            Op::Cmp(k, a, b) => self.cmp(k, map(a), map(b)),
+            Op::And(a, b) => self.and(map(a), map(b)),
+            Op::Or(a, b) => self.or(map(a), map(b)),
+            Op::Not(a) => self.not(map(a)),
+            Op::Select(c, a, b) | Op::If(c, a, b) => self.select(map(c), map(a), map(b)),
+            Op::Table(t, a) => self.table(t, map(a)),
+            Op::TableSlope(t, a) => self.table_slope(t, map(a)),
+            Op::Call(u, l) => {
+                let args: Vec<NodeId> = self.args(l).iter().map(|&a| map(a)).collect();
+                self.call(u, &args)
+            }
+            Op::Out(c, j) => self.out(map(c), j),
+        }
+    }
+
     pub fn select(&mut self, c: NodeId, a: NodeId, b: NodeId) -> NodeId {
         if let Some(cv) = self.cval(c) {
             // NaN != 0 is true, so a NaN condition picks `a`.
