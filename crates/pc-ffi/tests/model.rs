@@ -232,6 +232,27 @@ fn info_before_and_after_compile() {
     assert_eq!(info(&m)["evaluator"], "fallback");
 }
 
+/// `model_info` lists the `only` names in the order of the file, with the declared spelling
+/// of each state and aux quantity, and `[]` when the file has no list or the list keeps no
+/// name (SPEC 2, round E). Names that XPP drops are not listed.
+#[test]
+fn info_lists_the_only_names_in_order_and_an_empty_list_without_one() {
+    assert_eq!(info(&model(LORENZ))["only"], serde_json::json!([]));
+    let text = "par k=2\nx'=y\ny'=-k*x\naux En=x*x+y*y\nonly EN, Y\nonly t x k\ndone\n";
+    let (rc, id, diag) = parse(text);
+    assert_eq!(rc, 0, "{}", last_error());
+    let m = Mod(id);
+    // The parameter in the list is a warning, not an error.
+    assert_eq!(diag.unwrap()["summary"]["errors"], 0);
+    assert_eq!(info(&m)["only"], serde_json::json!(["En", "y", "t", "x"]));
+    // The list does not depend on the compile.
+    assert_eq!(compile(&m, Some(r#"{"evaluator":"fallback"}"#)), 0);
+    assert_eq!(info(&m)["only"], serde_json::json!(["En", "y", "t", "x"]));
+    // A list whose names are all dropped is no list.
+    let m = model("par k=2\nx'=-k*x\nonly k, nothing\ndone\n");
+    assert_eq!(info(&m)["only"], serde_json::json!([]));
+}
+
 #[test]
 fn compile_options() {
     let m = model(LORENZ);

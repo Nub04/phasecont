@@ -34,6 +34,8 @@ pub(crate) struct Names {
     pub states: Vec<String>,
     pub parameters: Vec<String>,
     pub aux: Vec<String>,
+    /// The names of the model's `only` list in the order of the file, empty without one.
+    pub only: Vec<String>,
     pub init: Vec<f64>,
     pub par_values: Vec<f64>,
     pub autonomous: bool,

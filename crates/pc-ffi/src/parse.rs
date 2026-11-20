@@ -128,6 +128,7 @@ fn parse_inline(text: &str) -> Outcome {
                     states: ir.state_names.clone(),
                     parameters: ir.param_names[..n_user].to_vec(),
                     aux: ir.aux_names.clone(),
+                    only: loaded.info.only.clone(),
                     init: ir.init.clone(),
                     par_values: ir.par_values[..n_user].to_vec(),
                     autonomous: ir.autonomous,

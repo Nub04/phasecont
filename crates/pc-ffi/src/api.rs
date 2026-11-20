@@ -406,6 +406,7 @@ pub unsafe extern "C" fn model_info(model: u64, out_json: *mut *mut c_char) -> i
             "values": names.par_values,
             "init": names.init,
             "aux": names.aux,
+            "only": names.only,
             "autonomous": names.autonomous,
             "source_sha256": names.source_sha256,
             "options": names
