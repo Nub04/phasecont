@@ -40,7 +40,8 @@ fn run_as<T: Real>(
 ) -> Result<EnsembleResult, EnsembleError> {
     let checked = validate(job)?;
     let tape = Tape::build(job.model)?;
-    let ctx = Ctx::<T>::new(job, &checked, &tape);
+    let mut ctx = Ctx::<T>::new(job, &checked, &tape);
+    ctx.cancel = Some(cancel);
     let (work_len, out_len) = (ctx.work_len(), ctx.out_len());
     let members = job.members;
 
@@ -64,6 +65,12 @@ fn run_as<T: Real>(
                     }
                 },
             );
+        // A cancel inside a long evaluation of a tape with calls fails that evaluation, so
+        // the member reads `recursion_depth`; the flag is read again before that is taken as
+        // a finished run.
+        if cancel.load(Ordering::Relaxed) {
+            return Err(EnsembleError::Cancelled);
+        }
         if trajs.iter().all(|t| t.status != Status::Running) {
             break;
         }

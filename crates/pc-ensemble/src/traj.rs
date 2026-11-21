@@ -15,6 +15,8 @@
 //! Workspace of a member, `10 n + n_p + 1` values in this order: `y`, `y1`, `yt`, the seven
 //! stages `k0` to `k6`, and the parameters followed by the time.
 
+use std::sync::atomic::AtomicBool;
+
 use crate::job::{Checked, Job, Method, NativeRhs, Params, Status};
 use crate::real::Real;
 use crate::tape::{CpuTape, Slab, Tape};
@@ -183,6 +185,9 @@ pub struct Ctx<'a, T: Real> {
     pub times: Vec<T>,
     pub kind: Kind<T>,
     pub co: Coef<T>,
+    /// The cancel flag of the run, read inside a long evaluation of a tape with calls. None
+    /// from [`Ctx::new`].
+    pub cancel: Option<&'a AtomicBool>,
 }
 
 impl<'a, T: Real> Ctx<'a, T> {
@@ -252,6 +257,7 @@ impl<'a, T: Real> Ctx<'a, T> {
             times,
             kind,
             co,
+            cancel: None,
         }
     }
 
@@ -646,7 +652,7 @@ impl<T: Real> Traj<T> {
 fn eval_at<T: Real>(ctx: &Ctx<T>, x: &[T], t: T, vals: &mut Slab<T>, out: &mut [T]) {
     match ctx.native {
         Some(f) => ctx.rhs.eval_native(f, x, t, vals, out),
-        None => ctx.rhs.eval_xt(x, t, vals, out),
+        None => ctx.rhs.eval_xt_with(x, t, vals, out, ctx.cancel),
     }
 }
 

@@ -207,8 +207,8 @@ pub enum Status {
     NonFinite = 4,
     /// Not finished yet. Never appears in a finished result.
     Running = 5,
-    /// A recursive function call went past the frame cap. The member keeps its last
-    /// accepted state and time, and the other members go on.
+    /// A recursive function call went past the frame cap. The member stops at its last
+    /// accepted time, its states after that time are NaN, and the other members go on.
     RecursionDepth = 6,
 }
 

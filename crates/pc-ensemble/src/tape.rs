@@ -14,6 +14,7 @@
 //! same operations in the same order as [`Tape::eval`], so the two give the same bits.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use pc_codegen::kernel::unsupported_op;
 use pc_ir::IrModel;
@@ -797,6 +798,7 @@ impl<T: Real> CpuTape<T> {
                     flags: vec![0; p.nflag_global],
                     frames: Vec::new(),
                     gosub: Vec::new(),
+                    calls: 0,
                     #[cfg(test)]
                     entered: 0,
                     #[cfg(test)]
@@ -835,8 +837,23 @@ impl<T: Real> CpuTape<T> {
     /// Writes `f(t, x)` to `out`, with the parameters of the last [`CpuTape::bind`] on this
     /// slab. `slab` must come from [`CpuTape::slab`] of this tape.
     pub fn eval_xt(&self, x: &[T], t: T, slab: &mut Slab<T>, out: &mut [T]) {
+        self.eval_xt_with(x, t, slab, out, None);
+    }
+
+    /// [`CpuTape::eval_xt`] that also stops a tape with calls soon after `cancel` is set,
+    /// once every `CANCEL_POLL` frames, and leaves the slab failed as the call limit does.
+    /// The caller tells the two apart by reading the flag. A tape without calls ignores it.
+    #[inline]
+    pub fn eval_xt_with(
+        &self,
+        x: &[T],
+        t: T,
+        slab: &mut Slab<T>,
+        out: &mut [T],
+        cancel: Option<&AtomicBool>,
+    ) {
         if let Some(prog) = &self.prog {
-            return self.eval_calls(prog, x, t, slab, out);
+            return self.eval_calls(prog, x, t, slab, out, cancel);
         }
         let s = slab.v.as_mut_slice();
         assert_eq!(s.len(), self.slab_len(), "the slab is from another tape");
@@ -985,6 +1002,8 @@ struct CallState {
     flags: Vec<u8>,
     frames: Vec<Frame>,
     gosub: Vec<u32>,
+    /// Frames entered in this evaluation, modulo 2^32, for the cancel poll.
+    calls: u32,
     /// Frames entered and the most active at once, for the tests against `EvalStats`.
     #[cfg(test)]
     entered: u64,
@@ -997,7 +1016,13 @@ struct CallState {
 enum Halt {
     Depth,
     Memory,
+    Cancelled,
 }
+
+/// An evaluation reads the cancel flag once every this many frames it enters, about 1 ms of
+/// `sum` frames in release, so a branching recursion such as `fib(60)` stops soon after a
+/// cancel. A tape without calls never reads it.
+const CANCEL_POLL: u32 = 1 << 16;
 
 /// The emitter's view of one function body, or of the global code when `local` is false.
 struct Cx {
@@ -1370,7 +1395,15 @@ impl<T: Real> CpuTape<T> {
 
     /// [`CpuTape::eval_xt`] for a tape with calls. After a failed evaluation the slab stays
     /// failed, and every right-hand side is NaN, until the next [`CpuTape::bind`].
-    fn eval_calls(&self, prog: &Prog, x: &[T], t: T, slab: &mut Slab<T>, out: &mut [T]) {
+    fn eval_calls(
+        &self,
+        prog: &Prog,
+        x: &[T],
+        t: T,
+        slab: &mut Slab<T>,
+        out: &mut [T],
+        cancel: Option<&AtomicBool>,
+    ) {
         assert_eq!(slab.v.len(), prog.glen, "the slab is from another tape");
         let cs = slab.calls.as_mut().expect("a slab of a tape with calls");
         if !slab.failed {
@@ -1389,7 +1422,8 @@ impl<T: Real> CpuTape<T> {
                 }
             }
             cs.flags[..prog.nflag_global].fill(0);
-            if exec(prog, &mut slab.v, cs).is_err() {
+            cs.calls = 0;
+            if exec(prog, &mut slab.v, cs, cancel).is_err() {
                 slab.v.truncate(prog.glen);
                 cs.flags.truncate(prog.nflag_global);
                 cs.frames.clear();
@@ -1408,7 +1442,12 @@ impl<T: Real> CpuTape<T> {
 }
 
 /// Runs `prog` on the global slots in `v`.
-fn exec<T: Real>(prog: &Prog, v: &mut Vec<T>, cs: &mut CallState) -> Result<(), Halt> {
+fn exec<T: Real>(
+    prog: &Prog,
+    v: &mut Vec<T>,
+    cs: &mut CallState,
+    cancel: Option<&AtomicBool>,
+) -> Result<(), Halt> {
     let steps = &prog.steps;
     let (mut pc, mut fb, mut flb) = (prog.entry as usize, 0usize, 0usize);
     loop {
@@ -1450,6 +1489,12 @@ fn exec<T: Real>(prog: &Prog, v: &mut Vec<T>, cs: &mut CallState) -> Result<(), 
             Step::Invoke(u, lo, d) => {
                 if cs.frames.len() >= prog.cap {
                     return Err(Halt::Depth);
+                }
+                cs.calls = cs.calls.wrapping_add(1);
+                if cs.calls.is_multiple_of(CANCEL_POLL)
+                    && cancel.is_some_and(|c| c.load(Ordering::Relaxed))
+                {
+                    return Err(Halt::Cancelled);
                 }
                 let unit = &prog.units[u as usize];
                 let nfb = v.len();
@@ -1743,6 +1788,36 @@ mod tests {
         for k in [0.0, 3.0, 30.0] {
             calls_vs_machine(&ir, &[0.0, 0.0], &[k, 0.0, 0.0], 1000);
         }
+    }
+
+    /// A set cancel flag stops an evaluation that enters more than `CANCEL_POLL` frames, at
+    /// any depth, and leaves the slab failed like the cap; a clear flag changes no bit, and an
+    /// evaluation with fewer frames never reads the flag.
+    #[test]
+    fn a_set_cancel_flag_stops_a_long_evaluation() {
+        use std::sync::atomic::AtomicBool;
+        let tape = Tape::build(&call_model("fib(k)")).expect("tape");
+        let cpu = CpuTape::<f64>::new(&tape);
+        let (clear, set) = (AtomicBool::new(false), AtomicBool::new(true));
+        let mut slab = cpu.slab();
+        let (mut want, mut out) = ([0.0; 2], [0.0; 2]);
+        // fib(25) enters 242,785 frames, at most 25 at once.
+        let p = [25.0, 0.0, 0.0];
+        cpu.eval(&[0.0, 0.0], &p, &mut slab, &mut want);
+        assert_eq!(want[0], 75025.0);
+        cpu.bind(&p, &mut slab);
+        cpu.eval_xt_with(&[0.0, 0.0], 0.0, &mut slab, &mut out, Some(&clear));
+        assert!(!slab.failed());
+        assert_eq!(out.map(f64::to_bits), want.map(f64::to_bits));
+        cpu.eval_xt_with(&[0.0, 0.0], 0.0, &mut slab, &mut out, Some(&set));
+        assert!(slab.failed() && out[0].is_nan());
+        let cs = slab.calls.as_ref().expect("call state");
+        assert!(cs.frames.is_empty() && cs.gosub.is_empty());
+        // fib(10) enters 177 frames, fewer than one poll interval.
+        cpu.bind(&[10.0, 0.0, 0.0], &mut slab);
+        cpu.eval_xt_with(&[0.0, 0.0], 0.0, &mut slab, &mut out, Some(&set));
+        assert!(!slab.failed());
+        assert_eq!(out[0], 55.0);
     }
 
     /// A failed slab gives NaN until the next bind, and then runs again.

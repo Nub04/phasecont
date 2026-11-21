@@ -82,6 +82,47 @@ fn a_member_that_reaches_the_cap_mid_run_keeps_its_last_accepted_state() {
 }
 
 #[test]
+fn a_dp5_member_that_reaches_the_cap_mid_run_is_not_a_rejected_step() {
+    // The same model as above under DP5 with steps of at most 0.05. A stage past x = 2/3
+    // fails; the step must end the member with `recursion_depth`, not count as a rejected
+    // step that shrinks `h` until `step_too_small`, and no NaN may reach a stored sample.
+    let m = build_model("s(n)=if(n<1)then(0)else(1+s(n-1))\nx'=1\ny'=s(x*1.5e6)*0\ndone\n");
+    for (precision, rtol, atol, eps) in [
+        (Precision::Double, 1e-8, 1e-10, 1e-12),
+        (Precision::Single, 1e-4, 1e-6, 1e-6),
+    ] {
+        let what = format!("{precision:?}");
+        let method = Method::Dp5 {
+            rtol,
+            atol,
+            hmax: 0.05,
+        };
+        let mut j = job(&m, 1, &[0.4, 0.0], &[], 1.0, method, precision);
+        j.output = Output::Samples(vec![0.1, 0.2, 0.5, 1.0]);
+        let r = run(&j);
+        assert_eq!(r.status, [Status::RecursionDepth], "{what}");
+        let t = r.t_reached[0];
+        // The last accepted step ends before x = 2/3, and at most one step of 0.05 before.
+        assert!(
+            t > 2.0 / 3.0 - 0.4 - 0.05 - eps && t < 2.0 / 3.0 - 0.4,
+            "{what} {t}"
+        );
+        assert!(r.accepted[0] > 0, "{what}");
+        assert_eq!(r.rejected[0], 0, "{what}");
+        for (s, ts) in [(0, 0.1), (1, 0.2)] {
+            let y = r.state(0, s);
+            assert!(
+                (y[0] - (0.4 + ts)).abs() < eps && y[1] == 0.0,
+                "{what} {s} {y:?}"
+            );
+        }
+        for s in [2, 3] {
+            assert!(r.state(0, s).iter().all(|v| v.is_nan()), "{what} {s}");
+        }
+    }
+}
+
+#[test]
 fn a_map_member_past_the_cap_ends_alone() {
     let calls =
         build_model("par k=3\ns(n)=if(n<1)then(0)else(1+s(n-1))\nx(t+1)=s(k)*x/k/2\ndone\n");
@@ -99,10 +140,102 @@ fn a_map_member_past_the_cap_ends_alone() {
     assert_eq!(r.state(0, 0)[0], 1.0 / 1024.0);
 }
 
+/// A cancel inside one right-hand side that recurses for minutes returns `Cancelled`, not a
+/// result whose members read `recursion_depth`.
+#[test]
+fn a_cancel_inside_a_long_recursive_right_hand_side_returns_cancelled() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+    // fib(60) makes about 3e12 calls, at most 60 frames deep.
+    let m =
+        build_model("par k=60\nfib(n)=if(n<2)then(n)else(fib(n-1)+fib(n-2))\nx'=-fib(k)*x\ndone\n");
+    for members in [1, 4] {
+        let x0 = vec![1.0; members];
+        let j = job(
+            &m,
+            members,
+            &x0,
+            &[60.0],
+            1.0,
+            Method::Rk4 { dt: 0.1 },
+            Precision::Double,
+        );
+        let flag = AtomicBool::new(false);
+        let t0 = Instant::now();
+        let res = std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(100));
+                flag.store(true, Ordering::Relaxed);
+            });
+            pc_ensemble::run_cpu(&j, u64::MAX, &flag)
+        });
+        assert_eq!(
+            res.map(|r| r.status).unwrap_err(),
+            pc_ensemble::EnsembleError::Cancelled,
+            "{members}"
+        );
+        assert!(t0.elapsed() < Duration::from_secs(20), "{:?}", t0.elapsed());
+    }
+}
+
 #[test]
 fn recursion_depth_has_code_six() {
     assert_eq!(Status::RecursionDepth.code(), 6);
     assert_eq!(Status::RecursionDepth.name(), "recursion_depth");
     assert_eq!(Status::from_code(6), Some(Status::RecursionDepth));
     assert_eq!(Status::from_code(7), None);
+}
+
+/// Nanoseconds per right-hand side of the call tape in both precisions against the DAG
+/// evaluator, on the same models as the stage 2 timing in `pc-jit/tests/recursion.rs`. Run in
+/// release with `--ignored --nocapture`.
+#[test]
+#[ignore = "timing"]
+fn timing_of_the_call_tape() {
+    use pc_ensemble::tape::CpuTape;
+    use pc_ir::EntryKind;
+    use pc_ir::eval::try_eval_entry;
+    use std::hint::black_box;
+    use std::time::Instant;
+    const PW: &str = "par k=3\npw(x,n)=if(n<1)then(1)else(x*pw(x,n-1))\nx'=pw(x,k)\ndone\n";
+    const SUM: &str = "par k=3\nsum(n)=if(n<1)then(0)else(n+sum(n-1))\nx'=sum(k)\ndone\n";
+    let cases: [(&str, &str, &[f64]); 2] = [
+        ("pw", PW, &[3.0, 30.0, 300.0, 1000.0]),
+        ("sum", SUM, &[100.0, 10_000.0, 100_000.0]),
+    ];
+    for (name, src, depths) in cases {
+        let mut m = build_model(src);
+        let tape = pc_ensemble::Tape::build(&m).unwrap();
+        let (t64, t32) = (CpuTape::<f64>::new(&tape), CpuTape::<f32>::new(&tape));
+        let (mut s64, mut s32) = (t64.slab(), t32.slab());
+        let e = m.entry(&EntryKind::F).unwrap();
+        for &n in depths {
+            let reps = (20_000_000.0 / n).clamp(20.0, 20_000.0) as u32;
+            let (x, p) = ([1.000_1], [n, 0.0]);
+            let (xf, pf) = ([1.000_1f32], [n as f32, 0.0]);
+            let mut out = [0.0];
+            let mut outf = [0.0f32];
+            let time = |f: &mut dyn FnMut()| {
+                let t = Instant::now();
+                for _ in 0..reps {
+                    f();
+                }
+                t.elapsed().as_secs_f64() / f64::from(reps) * 1e9
+            };
+            let a = time(&mut || {
+                t64.eval(black_box(&x), &p, &mut s64, &mut out);
+                black_box(out);
+            });
+            let b = time(&mut || {
+                t32.eval(black_box(&xf), &pf, &mut s32, &mut outf);
+                black_box(outf);
+            });
+            let c = time(&mut || {
+                try_eval_entry(&m.dag, &e, black_box(&x), &p, &[], &mut out).unwrap();
+                black_box(out);
+            });
+            assert!(!s64.failed() && !s32.failed());
+            println!("{name} n={n:<7} F: tape f64 {a:.0} ns, tape f32 {b:.0} ns, dag {c:.0} ns");
+        }
+    }
 }
