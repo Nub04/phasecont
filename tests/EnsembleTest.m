@@ -310,6 +310,18 @@ classdef EnsembleTest < matlab.unittest.TestCase
             testCase.verifyEqual(r.States(1, end, 1), exp(-1), "RelTol", 1e-8);
         end
 
+        function aGpuBackendRefusesARecursiveModel(testCase)
+            % The engine refuses before it looks for a device, so the ID is the
+            % same on a machine without the GPU.
+            m = testCase.model("s(n)=if(n<1)then(0)else(1+s(n-1))" + newline + ...
+                "x'=-s(1)*x" + newline + "done" + newline);
+            for b = ["cuda" "opencl" "metal"]
+                testCase.verifyError(@() phasecont.ensemble(m, 1, [], [0 1], ...
+                    Backend = b, Precision = "single", Dt = 0.01), ...
+                    "phasecont:engine:model", b);
+            end
+        end
+
         function maxStepsWarnsAndKeepsTheLastState(testCase)
             m = testCase.model(testCase.Rotation);
             launch = @() phasecont.ensemble(m, [1; 0], [], [0 10], Backend = "cpu", ...

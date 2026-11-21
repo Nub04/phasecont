@@ -63,7 +63,8 @@ extern "C" {
 /* Selectors for the "what" argument of ens_copy. Lengths are exact: states is
  * members * samples * n values (member, then sample, then state), times is samples
  * values, and the other four are members values. status holds 0 ok, 1 bounds,
- * 2 step too small, 3 max steps, 4 not finite. */
+ * 2 step too small, 3 max steps, 4 not finite, 6 recursion depth (5 never
+ * appears in a finished run). */
 #define PC_ENS_STATES 0
 #define PC_ENS_TIMES 1
 #define PC_ENS_STATUS 2
@@ -257,7 +258,7 @@ typedef struct pc_api_v1_t {
   /* {"state":"running"} or {"state":"cancelled"}, or on a finished run
    *   {"state":"done","members":M,"n":N,"samples":S,
    *    "counts":{"ok":0,"bounds":0,"step_too_small":0,"max_steps":0,
-   *              "nonfinite":0},
+   *              "nonfinite":0,"recursion_depth":0},
    *    "label":{"backend":"cpu","device":"...","driver":"...",
    *             "precision":"double","single_precision":false}}
    * A run that failed returns its error code here and *status_json stays NULL:

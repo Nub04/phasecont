@@ -15,6 +15,7 @@ const PC_ERR_PANIC: i32 = 1;
 const PC_ERR_BAD_ARG: i32 = 2;
 const PC_ERR_BAD_HANDLE: i32 = 3;
 const PC_ERR_BAD_PROBLEM: i32 = 6;
+const PC_ERR_MODEL: i32 = 5;
 const PC_ERR_GPU_UNAVAILABLE: i32 = 9;
 const PC_ERR_UNSUPPORTED_MODEL: i32 = 13;
 
@@ -279,6 +280,24 @@ fn a_recursive_model_runs_and_counts_the_member_past_the_cap() {
     assert!((s[0] - (-1.0f64).exp()).abs() < 1e-9, "{s:?}");
     assert!(s[1].is_nan(), "{s:?}");
     assert_eq!(copied(ens.0, PC_ENS_STATUS, 2), [0.0, 6.0]);
+}
+
+/// A GPU backend refuses a model with a recursive call with `PC_ERR_MODEL` before it looks for a
+/// device, so the code is the same on a machine without the GPU (SPEC 8af-5).
+#[test]
+fn a_gpu_backend_refuses_a_recursive_model_with_the_model_code() {
+    let m = parse("par k=1\ns(n)=if(n<1)then(0)else(1+s(n-1))\nx'=-s(k)*x\ndone\n");
+    for backend in ["cuda", "opencl", "metal"] {
+        let json = job("").replace("\"cpu\"", &format!("\"{backend}\""));
+        let (rc, ens) = start_with(&m, &json, &[1.0], &[1.0]);
+        assert_eq!(rc, PC_ERR_MODEL, "{backend}: {}", last_error());
+        assert_eq!(ens, 0, "{backend}");
+        let e = last_error();
+        assert!(
+            e.contains("recursive function s") && e.contains(backend),
+            "{e}"
+        );
+    }
 }
 
 #[test]

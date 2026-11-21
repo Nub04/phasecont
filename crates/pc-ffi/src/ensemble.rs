@@ -182,12 +182,25 @@ pub(crate) fn start(
         &model.ir, &head, members, x0, params, per_member, None,
     ))?;
     check_math(head.backend, head.precision, head.math)?;
+    // Only the CPU tape runs recursive calls (SPEC 8af-5). A GPU run of such a model fails here,
+    // before the device probe, so the error is the same on a machine without that GPU.
+    let units = Tape::build(&model.ir).ok().map(|t| t.units);
+    if head.backend != Backend::Cpu
+        && let Some(u) = units.iter().flatten().next()
+    {
+        return Err(Error::Model(format!(
+            "the right-hand side calls the recursive function {}, which only the cpu ensemble \
+             backend runs, not {}",
+            u.name,
+            head.backend.name()
+        )));
+    }
     let device = find_device(head.backend, head.device).map_err(Error::GpuUnavailable)?;
     // Only a CPU run calls a compiled `F`, one per precision. The first CPU run of a model in a
     // precision compiles it, after `validate` and only when the tape takes every op of `F`, so
     // a model the ensemble refuses is never compiled. The refused run fails later, as before.
     // A model with recursive calls runs on the tape, since the compiled `F` has no calls.
-    let call_free = Tape::build(&model.ir).is_ok_and(|t| t.units.is_empty());
+    let call_free = units.is_some_and(|u| u.is_empty());
     let native = if device.backend == Backend::Cpu && call_free {
         model.native_rhs(head.precision)?
     } else {
