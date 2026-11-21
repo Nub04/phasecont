@@ -13,6 +13,7 @@
 //! [`Op::PowI`], and every operand a slot of one scratch slab. Each value goes through the
 //! same operations in the same order as [`Tape::eval`], so the two give the same bits.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -698,6 +699,26 @@ impl Lower {
     }
 }
 
+thread_local! {
+    /// The frame cap a test set for the call tapes this thread builds: 0 for the default.
+    static FORCED_CAP: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Runs `f` with every call tape that this thread builds capped at `cap` frames instead of
+/// `MAX_ACTIVE_CALLS`, then restores the cap, even when `f` panics. The GPU shim tests use it
+/// to compare a kernel with the CPU at the GPU cap of 4,096 frames. It is not part of the API.
+#[doc(hidden)]
+pub fn with_max_calls<R>(cap: usize, f: impl FnOnce() -> R) -> R {
+    struct Restore(usize);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FORCED_CAP.with(|c| c.set(self.0));
+        }
+    }
+    let _restore = Restore(FORCED_CAP.with(|c| c.replace(cap)));
+    f()
+}
+
 impl<T: Real> CpuTape<T> {
     /// Lowers `tape`. Panics when an op reads a slot that is not computed yet, or a state or
     /// parameter the tape does not have; [`Tape::build`] never makes such a tape.
@@ -1377,7 +1398,10 @@ impl<T: Real> CpuTape<T> {
             entry: 0,
             nflag_global: e.nflag_global as usize,
             glen: e.glen as usize,
-            cap: pc_ir::machine::MAX_ACTIVE_CALLS,
+            cap: match FORCED_CAP.with(Cell::get) {
+                0 => pc_ir::machine::MAX_ACTIVE_CALLS,
+                k => k,
+            },
         };
         CpuTape {
             n,

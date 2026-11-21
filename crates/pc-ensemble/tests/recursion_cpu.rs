@@ -239,3 +239,36 @@ fn timing_of_the_call_tape() {
         }
     }
 }
+
+/// Under the GPU cap of 4,096 frames, `s(4095)` takes 4,096 frames and finishes, and `s(4096)`
+/// needs one more and ends with `recursion_depth`. The cap is set for the tapes this thread
+/// builds, so the shim tests of stage 4b can compare a GPU kernel with the CPU at its cap.
+#[test]
+fn the_cap_a_test_sets_admits_exactly_its_frame_count() {
+    let calls = build_model(COUNTED);
+    let plain = build_model(PLAIN);
+    let x0 = [1.0, 2.0, 3.0];
+    let k = [4095.0, 4096.0, 5.0];
+    for precision in [Precision::Double, Precision::Single] {
+        let mut j = job(&calls, 3, &x0, &[], 1.0, Method::Rk4 { dt: 0.1 }, precision);
+        j.params = Params::PerMember(&k);
+        let r = pc_ensemble::tape::with_max_calls(4096, || run(&j));
+        assert_eq!(
+            r.status,
+            [Status::Ok, Status::RecursionDepth, Status::Ok],
+            "{precision:?}"
+        );
+        let mut p = job(&plain, 3, &x0, &[], 1.0, Method::Rk4 { dt: 0.1 }, precision);
+        p.params = Params::PerMember(&k);
+        let want = run(&p);
+        for m in [0, 2] {
+            assert_eq!(
+                bits(r.state(m, 0)),
+                bits(want.state(m, 0)),
+                "{precision:?} {m}"
+            );
+        }
+        // The cap is back to 1,000,000 outside the closure.
+        assert_eq!(run(&j).status, [Status::Ok; 3], "{precision:?}");
+    }
+}
