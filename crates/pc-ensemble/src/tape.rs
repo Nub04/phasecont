@@ -1263,8 +1263,8 @@ impl Emit<'_> {
         }
         cx.refs[unit.out as usize] += 1;
         let entry = self.steps.len() as u32;
-        for i in 0..len {
-            if !mark[i] || self.lazy[i] || !self.argdep[i] {
+        for (i, &reached) in mark.iter().enumerate().take(len) {
+            if !reached || self.lazy[i] || !self.argdep[i] {
                 continue;
             }
             let op = tape.ops[i];
