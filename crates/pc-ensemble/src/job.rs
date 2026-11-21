@@ -207,6 +207,9 @@ pub enum Status {
     NonFinite = 4,
     /// Not finished yet. Never appears in a finished result.
     Running = 5,
+    /// A recursive function call went past the frame cap. The member keeps its last
+    /// accepted state and time, and the other members go on.
+    RecursionDepth = 6,
 }
 
 impl Status {
@@ -218,6 +221,7 @@ impl Status {
             Status::MaxSteps => "max_steps",
             Status::NonFinite => "nonfinite",
             Status::Running => "running",
+            Status::RecursionDepth => "recursion_depth",
         }
     }
 
@@ -234,6 +238,7 @@ impl Status {
             3 => Some(Status::MaxSteps),
             4 => Some(Status::NonFinite),
             5 => Some(Status::Running),
+            6 => Some(Status::RecursionDepth),
             _ => None,
         }
     }

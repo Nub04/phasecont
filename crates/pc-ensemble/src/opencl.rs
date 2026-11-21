@@ -299,6 +299,7 @@ pub fn run_opencl(
         )));
     }
     let tape = Tape::build(job.model)?;
+    tape.refuse_calls()?;
     let scalar = match job.precision {
         Precision::Single => Scalar::F32,
         Precision::Double => Scalar::F64,

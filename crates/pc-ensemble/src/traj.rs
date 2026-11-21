@@ -396,11 +396,17 @@ impl<T: Real> Traj<T> {
             return;
         };
         eval_at(ctx, wk.y, ctx.t0, wk.vals, &mut wk.k[..n]);
+        if self.too_deep(wk.vals) {
+            return;
+        }
         if !all_finite(&wk.k[..n]) {
             self.status = Status::NonFinite;
             return;
         }
         let h = initial_step(ctx, par, wk);
+        if self.too_deep(wk.vals) {
+            return;
+        }
         if !(h.is_finite() && h > T::ZERO) {
             self.status = Status::NonFinite;
             return;
@@ -460,7 +466,7 @@ impl<T: Real> Traj<T> {
                 s = s + k4[j];
                 y1[j] = y[j] + h6 * s;
             }
-            if self.reject_state(ctx, y1) {
+            if self.too_deep(vals) || self.reject_state(ctx, y1) {
                 return;
             }
             y.swap_with_slice(y1);
@@ -499,7 +505,7 @@ impl<T: Real> Traj<T> {
                 seg.a + T::from_u32(i + 1)
             };
             eval_at(ctx, y, ts, vals, y1);
-            if self.reject_state(ctx, y1) {
+            if self.too_deep(vals) || self.reject_state(ctx, y1) {
                 return;
             }
             y.swap_with_slice(y1);
@@ -519,6 +525,17 @@ impl<T: Real> Traj<T> {
                 return;
             }
         }
+    }
+
+    /// Ends the member with [`Status::RecursionDepth`] when a right-hand side since the
+    /// last bind went past the frame cap. Only a tape with calls can fail, and a failed
+    /// slab stays failed until the next bind, so one test after each step covers every stage.
+    fn too_deep(&mut self, vals: &Slab<T>) -> bool {
+        if vals.failed() {
+            self.status = Status::RecursionDepth;
+            return true;
+        }
+        false
     }
 
     /// Sets the status and returns true when the new state `y1` is not finite or leaves the
@@ -569,6 +586,9 @@ impl<T: Real> Traj<T> {
             let last = landing && self.si as usize + 1 == ctx.times.len();
             let t_end = if landing { s } else { self.t + self.h };
             let err = dp5_step(ctx, par, wk, self.t, self.h, t_end);
+            if self.too_deep(wk.vals) {
+                return;
+            }
             let fac11 = err.powf(co.expo1);
             if err <= T::ONE {
                 if self.reject_state(ctx, wk.y1) {

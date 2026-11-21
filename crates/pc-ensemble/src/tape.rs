@@ -21,6 +21,8 @@ use pc_ir::dag::{Cmp, Fn1, Fn2, NodeId, Op};
 use pc_ir::eval::live_set;
 
 use crate::job::{EnsembleError, NativeRhs};
+
+const SEVERAL_OUTPUTS: &str = "function with several outputs";
 use crate::real::Real;
 
 #[derive(Clone, Debug)]
@@ -31,14 +33,31 @@ pub struct Tape {
     pub ops: Vec<Op>,
     /// The slot of each state's right-hand side.
     pub outputs: Vec<u32>,
+    /// The argument lists of the [`Op::Call`] ops, as tape slots: `Call(u, l)` reads list
+    /// `l`. Empty for a tape without calls.
+    pub args: Vec<Vec<u32>>,
+    /// The functions the calls reach: `Call(u, l)` calls unit `u`. Empty for a tape without
+    /// calls, which is the only kind the GPU kernels and [`Tape::eval`] run.
+    pub units: Vec<TapeUnit>,
+}
+
+/// A function of a [`Tape`] with calls (SPEC section 8af-5).
+#[derive(Clone, Debug)]
+pub struct TapeUnit {
+    /// The function name, for messages.
+    pub name: String,
+    pub arity: u32,
+    /// The slot of the body's value. The body reads its formals through [`Op::Arg`].
+    pub out: u32,
 }
 
 fn remap(op: &Op, m: &[u32]) -> Op {
     let r = |id: NodeId| NodeId(m[id.0 as usize]);
     match *op {
         Op::Const(_) | Op::Var(_) | Op::Param(_) | Op::Dir(_) => *op,
-        // `Tape::build` refuses these before it remaps anything, and the evaluators give NaN.
-        Op::Arg(_) | Op::Call(..) | Op::If(..) | Op::Out(..) => *op,
+        // `Tape::build` remaps a call through `build_calls` and refuses `Out`.
+        Op::Arg(_) | Op::Call(..) | Op::Out(..) => *op,
+        Op::If(c, a, b) => Op::If(r(c), r(a), r(b)),
         Op::Neg(a) => Op::Neg(r(a)),
         Op::Add(a, b) => Op::Add(r(a), r(b)),
         Op::Sub(a, b) => Op::Sub(r(a), r(b)),
@@ -61,7 +80,14 @@ fn remap(op: &Op, m: &[u32]) -> Op {
 
 impl Tape {
     /// Builds the tape of `ir.f`, or names the constructs that cannot run.
+    ///
+    /// A right-hand side that calls a recursive function gets the bodies of the functions
+    /// it reaches on the same tape, with [`Tape::units`] and [`Tape::args`] filled in. Only
+    /// the CPU loop runs such a tape; the GPU paths refuse it through [`Tape::refuse_calls`].
     pub fn build(ir: &IrModel) -> Result<Tape, EnsembleError> {
+        if ir.f.iter().any(|&id| ir.dag.has_call(id)) {
+            return Self::build_calls(ir);
+        }
         let live = live_set(&ir.dag, &ir.f);
         let mut map = vec![u32::MAX; ir.dag.len()];
         let mut ops = Vec::new();
@@ -102,7 +128,200 @@ impl Tape {
             n_p: ir.n_p(),
             ops,
             outputs,
+            args: Vec::new(),
+            units: Vec::new(),
         })
+    }
+
+    /// [`Tape::build`] for a right-hand side with calls: the nodes reachable from `ir.f`
+    /// and from the body of every function a reachable call names, in id order.
+    fn build_calls(ir: &IrModel) -> Result<Tape, EnsembleError> {
+        let dag = &ir.dag;
+        let outside = || {
+            EnsembleError::BadJob(
+                "a right-hand side is outside the model's expression graph".into(),
+            )
+        };
+        if ir.f.iter().any(|id| id.0 as usize >= dag.len()) {
+            return Err(outside());
+        }
+        let mut live = vec![false; dag.len()];
+        let mut seen: Vec<bool> = vec![false; dag.units().len()];
+        let mut names: Vec<&'static str> = Vec::new();
+        let mut work: Vec<NodeId> = ir.f.clone();
+        while let Some(id) = work.pop() {
+            let i = id.0 as usize;
+            if i >= dag.len() {
+                return Err(outside());
+            }
+            if std::mem::replace(&mut live[i], true) {
+                continue;
+            }
+            let op = dag.op(id);
+            if let Op::Call(u, l) = *op {
+                let unit = dag.unit(u).ok_or_else(|| {
+                    EnsembleError::BadJob("a call names a function the model does not have".into())
+                })?;
+                let given = dag.args(l).len();
+                if given != unit.arity as usize {
+                    return Err(EnsembleError::BadJob(format!(
+                        "a call passes {given} arguments to function {}, which takes {}",
+                        unit.name, unit.arity
+                    )));
+                }
+                if !std::mem::replace(&mut seen[u as usize], true) {
+                    if unit.nout != 1 && !names.contains(&SEVERAL_OUTPUTS) {
+                        names.push(SEVERAL_OUTPUTS);
+                    }
+                    let body = unit.outputs().ok_or_else(|| {
+                        EnsembleError::BadJob(format!("function {} has no body", unit.name))
+                    })?;
+                    work.extend_from_slice(body);
+                }
+            }
+            dag.operands(op, &mut |c| work.push(c));
+        }
+        for (i, _) in live.iter().enumerate().filter(|(_, l)| **l) {
+            let name = match dag.op(NodeId(i as u32)) {
+                Op::Arg(_) | Op::Call(..) | Op::If(..) => None,
+                Op::Out(..) => Some(SEVERAL_OUTPUTS),
+                op => unsupported_op(op),
+            };
+            if let Some(name) = name
+                && !names.contains(&name)
+            {
+                names.push(name);
+            }
+        }
+        if !names.is_empty() {
+            return Err(EnsembleError::Unsupported(format!(
+                "the right-hand side uses {}, which the ensemble engine cannot run",
+                names.join(", ")
+            )));
+        }
+        // Units keep their order in the DAG.
+        let mut unit_at = vec![u32::MAX; seen.len()];
+        let mut units_src: Vec<u32> = Vec::new();
+        for (u, _) in seen.iter().enumerate().filter(|(_, s)| **s) {
+            unit_at[u] = units_src.len() as u32;
+            units_src.push(u as u32);
+        }
+        let mut map = vec![u32::MAX; dag.len()];
+        let mut ops = Vec::new();
+        let mut args: Vec<Vec<u32>> = Vec::new();
+        for (i, _) in live.iter().enumerate().filter(|(_, l)| **l) {
+            let op = dag.op(NodeId(i as u32));
+            let new = match *op {
+                Op::Call(u, l) => {
+                    let list = dag.args(l).iter().map(|a| map[a.0 as usize]).collect();
+                    args.push(list);
+                    Op::Call(unit_at[u as usize], (args.len() - 1) as u32)
+                }
+                _ => remap(op, &map),
+            };
+            map[i] = ops.len() as u32;
+            ops.push(new);
+        }
+        let units = units_src
+            .iter()
+            .map(|&u| {
+                let unit = &dag.units()[u as usize];
+                let root = unit.outputs().map_or(u32::MAX, |b| map[b[0].0 as usize]);
+                TapeUnit {
+                    name: unit.name.clone(),
+                    arity: unit.arity,
+                    out: root,
+                }
+            })
+            .collect();
+        let outputs = ir.f.iter().map(|id| map[id.0 as usize]).collect();
+        let tape = Tape {
+            n: ir.n(),
+            n_p: ir.n_p(),
+            ops,
+            outputs,
+            args,
+            units,
+        };
+        tape.check_contexts()?;
+        Ok(tape)
+    }
+
+    /// Checks that each formal is read inside a function that has it: an [`Op::Arg`] that
+    /// the right-hand side reaches outside every body, or a formal past the arity of the
+    /// function that reads it, is a malformed job.
+    fn check_contexts(&self) -> Result<(), EnsembleError> {
+        let check = |roots: &[u32], arity: Option<&TapeUnit>| -> Result<(), EnsembleError> {
+            let mark = self.reach(roots);
+            for (i, _) in mark.iter().enumerate().filter(|(_, m)| **m) {
+                if let Op::Arg(k) = self.ops[i] {
+                    match arity {
+                        None => {
+                            return Err(EnsembleError::BadJob(
+                                "a right-hand side reads a function argument outside a function"
+                                    .into(),
+                            ));
+                        }
+                        Some(u) if k >= u.arity => {
+                            return Err(EnsembleError::BadJob(format!(
+                                "function {} reads argument {} of {}",
+                                u.name,
+                                k + 1,
+                                u.arity
+                            )));
+                        }
+                        Some(_) => {}
+                    }
+                }
+            }
+            Ok(())
+        };
+        check(&self.outputs, None)?;
+        for u in &self.units {
+            check(&[u.out], Some(u))?;
+        }
+        Ok(())
+    }
+
+    /// Calls `f` on every operand of `op`, the arguments of a call included. The body of a
+    /// called function is not an operand.
+    pub fn operands(&self, op: &Op, f: &mut dyn FnMut(u32)) {
+        match *op {
+            Op::Call(_, l) => {
+                for &a in &self.args[l as usize] {
+                    f(a);
+                }
+            }
+            _ => pc_ir::eval::children(op, &mut |c| f(c.0)),
+        }
+    }
+
+    /// Marks the ops one frame evaluates for `roots`: those reachable through operands, call
+    /// arguments included, without entering a called body.
+    pub fn reach(&self, roots: &[u32]) -> Vec<bool> {
+        let mut mark = vec![false; self.ops.len()];
+        for &r in roots {
+            mark[r as usize] = true;
+        }
+        for i in (0..self.ops.len()).rev() {
+            if mark[i] {
+                self.operands(&self.ops[i], &mut |c| mark[c as usize] = true);
+            }
+        }
+        mark
+    }
+
+    /// Refuses a tape with calls, for the GPU paths, which run only call-free tapes.
+    pub fn refuse_calls(&self) -> Result<(), EnsembleError> {
+        if self.units.is_empty() {
+            Ok(())
+        } else {
+            Err(EnsembleError::Unsupported(format!(
+                "the right-hand side calls the recursive function {}, which only the CPU \
+                 ensemble backend runs",
+                self.units[0].name
+            )))
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -114,8 +333,13 @@ impl Tape {
     }
 
     /// Writes `f(t, x)` to `out`. `p` holds the `n_p` parameters followed by `t`. `vals` is
-    /// scratch of at least [`Tape::len`] values.
+    /// scratch of at least [`Tape::len`] values. Only a tape without calls runs here; a tape
+    /// with calls runs through [`CpuTape`].
     pub fn eval<T: Real>(&self, x: &[T], p: &[T], vals: &mut [T], out: &mut [T]) {
+        assert!(
+            self.units.is_empty(),
+            "Tape::eval runs only a tape without calls"
+        );
         for (i, op) in self.ops.iter().enumerate() {
             vals[i] = eval_op(op, vals, x, p);
         }
@@ -316,7 +540,12 @@ enum Ins {
 /// against the slab layout, and [`CpuTape::eval_xt`] checks the slab length.
 unsafe fn run<T: Real>(ins: Ins, s: &[T]) -> T {
     // SAFETY: the caller promises every operand slot is in range.
-    let a = |i: u32| unsafe { *s.get_unchecked(i as usize) };
+    apply(ins, |i: u32| unsafe { *s.get_unchecked(i as usize) })
+}
+
+/// Runs one instruction with its operands read through `a`.
+#[inline(always)]
+fn apply<T: Real>(ins: Ins, a: impl Fn(u32) -> T) -> T {
     match ins {
         Ins::Neg(u) => -a(u),
         Ins::Add(u, w) => a(u) + a(w),
@@ -333,6 +562,28 @@ unsafe fn run<T: Real>(ins: Ins, s: &[T]) -> T {
         Ins::Not(u) => not(a(u)),
         Ins::Select(c, u, w) => select(a(c), a(u), a(w)),
     }
+}
+
+/// The instruction of an arithmetic op, with each operand mapped through `s` in order, or
+/// `None` for an op that is not one instruction.
+fn lower_op(op: &Op, s: &mut dyn FnMut(NodeId) -> u32) -> Option<Ins> {
+    Some(match *op {
+        Op::Neg(a) => Ins::Neg(s(a)),
+        Op::Add(a, b) => Ins::Add(s(a), s(b)),
+        Op::Sub(a, b) => Ins::Sub(s(a), s(b)),
+        Op::Mul(a, b) => Ins::Mul(s(a), s(b)),
+        Op::ZMul(a, b) => Ins::ZMul(s(a), s(b)),
+        Op::Div(a, b) => Ins::Div(s(a), s(b)),
+        Op::ZDiv(a, b) => Ins::ZDiv(s(a), s(b)),
+        Op::Call1(f, a) => Ins::Call1(f, s(a)),
+        Op::Call2(f, a, b) => Ins::Call2(f, s(a), s(b)),
+        Op::Cmp(k, a, b) => Ins::Cmp(k, s(a), s(b)),
+        Op::And(a, b) => Ins::And(s(a), s(b)),
+        Op::Or(a, b) => Ins::Or(s(a), s(b)),
+        Op::Not(a) => Ins::Not(s(a)),
+        Op::Select(k, a, b) => Ins::Select(s(k), s(a), s(b)),
+        _ => return None,
+    })
 }
 
 /// Copies `src` to `dst`, which have the same length, one element at a time. The state vector
@@ -360,12 +611,29 @@ pub struct CpuTape<T: Real> {
     ins: Vec<Ins>,
     /// The slot of each state's right-hand side.
     outputs: Vec<u32>,
+    /// The call program of a tape with calls; `ins` is then its global prologue.
+    prog: Option<Box<Prog>>,
 }
 
 /// Scratch of a [`CpuTape`], made by [`CpuTape::slab`] with the constants in place. A slab
 /// belongs to the tape that made it.
 #[derive(Clone, Debug)]
-pub struct Slab<T: Real>(Vec<T>);
+pub struct Slab<T: Real> {
+    v: Vec<T>,
+    /// The stacks of a tape with calls.
+    calls: Option<Box<CallState>>,
+    /// Set when an evaluation since the last [`CpuTape::bind`] passed the call limit or ran
+    /// out of memory for frames. The right-hand sides are then NaN.
+    failed: bool,
+}
+
+impl<T: Real> Slab<T> {
+    /// Whether an evaluation since the last [`CpuTape::bind`] passed the call limit or ran
+    /// out of memory for its frames. The member then stops with status `recursionDepth`.
+    pub fn failed(&self) -> bool {
+        self.failed
+    }
+}
 
 /// The constants of a tape, each bit pattern once, in order of first use.
 #[derive(Default)]
@@ -433,6 +701,9 @@ impl<T: Real> CpuTape<T> {
     /// Lowers `tape`. Panics when an op reads a slot that is not computed yet, or a state or
     /// parameter the tape does not have; [`Tape::build`] never makes such a tape.
     pub fn new(tape: &Tape) -> Self {
+        if !tape.units.is_empty() {
+            return Self::new_calls(tape);
+        }
         let (n, np1) = (tape.n, tape.n_p + 1);
         let nan_bits = f64::NAN.to_bits();
         let mut consts = Consts::default();
@@ -481,21 +752,11 @@ impl<T: Real> CpuTape<T> {
                     | Op::Call(..)
                     | Op::If(..)
                     | Op::Out(..) => consts.at[&nan_bits],
-                    Op::Neg(a) => lo.emit(Ins::Neg(c(a))),
-                    Op::Add(a, b) => lo.emit(Ins::Add(c(a), c(b))),
-                    Op::Sub(a, b) => lo.emit(Ins::Sub(c(a), c(b))),
-                    Op::Mul(a, b) => lo.emit(Ins::Mul(c(a), c(b))),
-                    Op::ZMul(a, b) => lo.emit(Ins::ZMul(c(a), c(b))),
-                    Op::Div(a, b) => lo.emit(Ins::Div(c(a), c(b))),
-                    Op::ZDiv(a, b) => lo.emit(Ins::ZDiv(c(a), c(b))),
                     Op::PowI(a, k) => lo.powi(c(a), k, one),
-                    Op::Call1(f, a) => lo.emit(Ins::Call1(f, c(a))),
-                    Op::Call2(f, a, b) => lo.emit(Ins::Call2(f, c(a), c(b))),
-                    Op::Cmp(k, a, b) => lo.emit(Ins::Cmp(k, c(a), c(b))),
-                    Op::And(a, b) => lo.emit(Ins::And(c(a), c(b))),
-                    Op::Or(a, b) => lo.emit(Ins::Or(c(a), c(b))),
-                    Op::Not(a) => lo.emit(Ins::Not(c(a))),
-                    Op::Select(k, a, b) => lo.emit(Ins::Select(c(k), c(a), c(b))),
+                    _ => {
+                        let ins = lower_op(op, &mut |id| c(id)).expect("an arithmetic op");
+                        lo.emit(ins)
+                    }
                 }
             };
             slot.push(s);
@@ -521,6 +782,7 @@ impl<T: Real> CpuTape<T> {
                 .collect(),
             ins: lo.ins,
             outputs,
+            prog: None,
         }
     }
 
@@ -528,11 +790,37 @@ impl<T: Real> CpuTape<T> {
     pub fn slab(&self) -> Slab<T> {
         let mut v = self.consts.clone();
         v.resize(self.slab_len(), T::ZERO);
-        Slab(v)
+        Slab {
+            v,
+            calls: self.prog.as_ref().map(|p| {
+                Box::new(CallState {
+                    flags: vec![0; p.nflag_global],
+                    frames: Vec::new(),
+                    gosub: Vec::new(),
+                    #[cfg(test)]
+                    entered: 0,
+                    #[cfg(test)]
+                    peak: 0,
+                })
+            }),
+            failed: false,
+        }
     }
 
     fn slab_len(&self) -> usize {
-        self.consts.len() + self.n + self.np1 + self.ins.len()
+        match &self.prog {
+            Some(p) => p.glen,
+            None => self.consts.len() + self.n + self.np1 + self.ins.len(),
+        }
+    }
+
+    /// Sets the most frames a right-hand side of a tape with calls may hold at once, for
+    /// tests of the limit. A tape without calls ignores it.
+    #[cfg(test)]
+    pub(crate) fn set_max_calls(&mut self, cap: usize) {
+        if let Some(p) = &mut self.prog {
+            p.cap = cap;
+        }
     }
 
     /// Loads the parameters into `slab`, once for a run of evaluations. `p` holds the `n_p`
@@ -540,13 +828,17 @@ impl<T: Real> CpuTape<T> {
     pub fn bind(&self, p: &[T], slab: &mut Slab<T>) {
         let ps = self.consts.len() + self.n;
         let np = self.np1 - 1;
-        slab.0[ps..ps + np].copy_from_slice(&p[..np]);
+        slab.v[ps..ps + np].copy_from_slice(&p[..np]);
+        slab.failed = false;
     }
 
     /// Writes `f(t, x)` to `out`, with the parameters of the last [`CpuTape::bind`] on this
     /// slab. `slab` must come from [`CpuTape::slab`] of this tape.
     pub fn eval_xt(&self, x: &[T], t: T, slab: &mut Slab<T>, out: &mut [T]) {
-        let s = slab.0.as_mut_slice();
+        if let Some(prog) = &self.prog {
+            return self.eval_calls(prog, x, t, slab, out);
+        }
+        let s = slab.v.as_mut_slice();
         assert_eq!(s.len(), self.slab_len(), "the slab is from another tape");
         let xs = self.consts.len();
         let ps = xs + self.n;
@@ -584,11 +876,11 @@ impl<T: Real> CpuTape<T> {
     #[inline]
     pub fn eval_native(&self, f: NativeRhs, x: &[T], t: T, slab: &mut Slab<T>, out: &mut [T]) {
         assert_eq!(
-            slab.0.len(),
+            slab.v.len(),
             self.slab_len(),
             "the slab is from another tape"
         );
-        let Some(g) = T::native(f) else {
+        let Some(g) = T::native(f).filter(|_| self.prog.is_none()) else {
             return self.eval_xt(x, t, slab, out);
         };
         assert!(
@@ -604,13 +896,607 @@ impl<T: Real> CpuTape<T> {
             self.outputs.len()
         );
         let ps = self.consts.len() + self.n;
-        let sv = &mut slab.0[ps..];
+        let sv = &mut slab.v[ps..];
         sv[self.np1 - 1] = t;
         // SAFETY: `x` has `n` values and `sv` the `n_p` parameters and `t`, in the order the
         // function reads them; `out` has room for every output. They are three distinct
         // slices, so `out` does not alias an input. The contract of `NativeRhs::new` (or
         // `new_f32`, which `T::native` matched to `T`) covers the rest.
         unsafe { g(x.as_ptr(), sv.as_ptr(), out.as_mut_ptr()) };
+    }
+}
+
+// The call program of a tape with calls (SPEC section 8af-5, stage 4a).
+//
+// Ops without a call below them run eagerly: those that do not read a formal once per
+// right-hand side in the global prologue (`CpuTape::ins`), and those that do once per frame
+// at the entry of their function. An op with a call below it runs only when the evaluation
+// reaches it, in operand order, and at most once: per right-hand side when it reads no
+// formal, per frame otherwise. That is the order and the memo of `pc_ir::machine::run`, so
+// the two make the same calls at the same depths and reach the same values.
+//
+// A slot or flag operand with the `LOCAL` bit set is relative to the current frame.
+
+/// Marks a slot or flag that is relative to the current frame.
+const LOCAL: u32 = 1 << 31;
+
+#[inline(always)]
+fn res(o: u32, base: usize) -> usize {
+    (o & !LOCAL) as usize + (base & 0usize.wrapping_sub((o >> 31) as usize))
+}
+
+/// One step of a [`Prog`]. Jump targets are step indices.
+#[derive(Clone, Copy, Debug)]
+enum Step {
+    /// Writes the instruction's value to the slot.
+    Op(u32, Ins),
+    Move(u32, u32),
+    Jmp(u32),
+    /// Jumps when the slot holds zero. NaN does not jump, the way `If` takes its first arm.
+    JmpIfZero(u32, u32),
+    /// Runs the subroutine at the target unless the flag is set.
+    Sub(u32, u32),
+    /// Sets the flag and returns from a subroutine.
+    Rts(u32),
+    /// Calls the unit with the arguments at `pool[lo..]`, and writes its value to the slot.
+    Invoke(u32, u32, u32),
+    /// Returns the slot's value from a unit.
+    Ret(u32),
+    End,
+}
+
+#[derive(Clone, Debug)]
+struct ProgUnit {
+    entry: u32,
+    arity: u32,
+    /// Slots of a frame: the formals, then the frame's own values.
+    flen: u32,
+    nflags: u32,
+}
+
+#[derive(Clone, Debug)]
+struct Prog {
+    steps: Vec<Step>,
+    /// The argument slots of each `Invoke`.
+    pool: Vec<u32>,
+    units: Vec<ProgUnit>,
+    entry: u32,
+    nflag_global: usize,
+    /// Slots outside every frame: the constants, states, parameters, `t`, the prologue and
+    /// the values that read no formal.
+    glen: usize,
+    /// The most frames one right-hand side may hold at once.
+    cap: usize,
+}
+
+/// One active call: where it returns, the slot its value goes to, and the caller's bases.
+#[derive(Clone, Copy, Debug)]
+struct Frame {
+    ret: u32,
+    dst: u32,
+    fb: u32,
+    flb: u32,
+}
+
+/// The stacks of a [`Slab`] for a tape with calls. They keep their capacity between
+/// evaluations, so a deep member allocates once.
+#[derive(Clone, Debug)]
+struct CallState {
+    flags: Vec<u8>,
+    frames: Vec<Frame>,
+    gosub: Vec<u32>,
+    /// Frames entered and the most active at once, for the tests against `EvalStats`.
+    #[cfg(test)]
+    entered: u64,
+    #[cfg(test)]
+    peak: usize,
+}
+
+/// Why an evaluation stopped.
+#[derive(Debug, PartialEq)]
+enum Halt {
+    Depth,
+    Memory,
+}
+
+/// The emitter's view of one function body, or of the global code when `local` is false.
+struct Cx {
+    local: bool,
+    /// The frame slot of each op that reads a formal.
+    slot: Vec<u32>,
+    /// References to each op from the lazy ops of this body, and from its root.
+    refs: Vec<u32>,
+    flag: Vec<u32>,
+    label: Vec<u32>,
+    nslot: u32,
+    nflag: u32,
+    queue: Vec<u32>,
+}
+
+impl Cx {
+    fn global() -> Self {
+        Cx {
+            local: false,
+            slot: Vec::new(),
+            refs: Vec::new(),
+            flag: Vec::new(),
+            label: Vec::new(),
+            nslot: 0,
+            nflag: 0,
+            queue: Vec::new(),
+        }
+    }
+}
+
+struct Emit<'a> {
+    tape: &'a Tape,
+    /// Ops with a call below them, which run only when reached.
+    lazy: Vec<bool>,
+    /// Ops that read a formal, which run once per frame.
+    argdep: Vec<bool>,
+    gslot: Vec<u32>,
+    gflag: Vec<u32>,
+    glabel: Vec<u32>,
+    gqueue: Vec<u32>,
+    glen: u32,
+    nflag_global: u32,
+    one: u32,
+    steps: Vec<Step>,
+    labels: Vec<u32>,
+    pool: Vec<u32>,
+}
+
+const NONE: u32 = u32::MAX;
+
+impl Emit<'_> {
+    fn label(&mut self) -> u32 {
+        self.labels.push(NONE);
+        (self.labels.len() - 1) as u32
+    }
+
+    fn bind(&mut self, l: u32) {
+        self.labels[l as usize] = self.steps.len() as u32;
+    }
+
+    fn fresh(&mut self, cx: &mut Cx) -> u32 {
+        if cx.local {
+            cx.nslot += 1;
+            assert!(cx.nslot < LOCAL, "a frame of more than 2^31 values");
+            LOCAL | (cx.nslot - 1)
+        } else {
+            self.glen += 1;
+            assert!(self.glen < LOCAL, "more than 2^31 values");
+            self.glen - 1
+        }
+    }
+
+    fn op_into(&mut self, cx: &mut Cx, ins: Ins) -> u32 {
+        let d = self.fresh(cx);
+        self.steps.push(Step::Op(d, ins));
+        d
+    }
+
+    /// `x^k` as the chain of [`powi`], one step per multiply or divide.
+    fn powi(&mut self, cx: &mut Cx, x: u32, k: i32) -> u32 {
+        let mut m = k.unsigned_abs();
+        if m == 0 {
+            return self.one;
+        }
+        let mut base = x;
+        let mut acc: Option<u32> = None;
+        loop {
+            if m & 1 == 1 {
+                acc = Some(match acc {
+                    None => base,
+                    Some(a) => self.op_into(cx, Ins::Mul(a, base)),
+                });
+            }
+            m >>= 1;
+            if m == 0 {
+                break;
+            }
+            base = self.op_into(cx, Ins::Mul(base, base));
+        }
+        let r = acc.expect("m > 0 has a set bit");
+        if k < 0 {
+            let one = self.one;
+            self.op_into(cx, Ins::Div(one, r))
+        } else {
+            r
+        }
+    }
+
+    /// The slot that holds op `c` once the steps emitted here have run.
+    fn use_(&mut self, cx: &mut Cx, c: u32) -> u32 {
+        let i = c as usize;
+        if !self.lazy[i] {
+            return match self.tape.ops[i] {
+                Op::Arg(k) => LOCAL | k,
+                _ if self.argdep[i] => cx.slot[i],
+                _ => self.gslot[i],
+            };
+        }
+        if !self.argdep[i] {
+            if self.glabel[i] == NONE {
+                self.gslot[i] = self.glen;
+                self.glen += 1;
+                self.gflag[i] = self.nflag_global;
+                self.nflag_global += 1;
+                self.glabel[i] = self.label();
+                self.gqueue.push(c);
+            }
+            self.steps.push(Step::Sub(self.gflag[i], self.glabel[i]));
+            return self.gslot[i];
+        }
+        if cx.refs[i] > 1 {
+            if cx.label[i] == NONE {
+                cx.slot[i] = self.fresh(cx);
+                cx.flag[i] = LOCAL | cx.nflag;
+                cx.nflag += 1;
+                cx.label[i] = self.label();
+                cx.queue.push(c);
+            }
+            self.steps.push(Step::Sub(cx.flag[i], cx.label[i]));
+            return cx.slot[i];
+        }
+        let home = self.fresh(cx);
+        cx.slot[i] = home;
+        self.compute(cx, c, home);
+        home
+    }
+
+    /// Emits the steps that compute lazy op `c` into `home`.
+    fn compute(&mut self, cx: &mut Cx, c: u32, home: u32) {
+        let op = self.tape.ops[c as usize];
+        match op {
+            Op::Call(u, l) => {
+                let list = &self.tape.args[l as usize];
+                let mut slots = Vec::with_capacity(list.len());
+                for j in 0..list.len() {
+                    let a = self.tape.args[l as usize][j];
+                    slots.push(self.use_(cx, a));
+                }
+                let lo = self.pool.len() as u32;
+                self.pool.extend_from_slice(&slots);
+                self.steps.push(Step::Invoke(u, lo, home));
+            }
+            Op::If(k, a, b) => {
+                let sk = self.use_(cx, k.0);
+                let (lb, le) = (self.label(), self.label());
+                self.steps.push(Step::JmpIfZero(sk, lb));
+                let sa = self.use_(cx, a.0);
+                self.steps.push(Step::Move(home, sa));
+                self.steps.push(Step::Jmp(le));
+                self.bind(lb);
+                let sb = self.use_(cx, b.0);
+                self.steps.push(Step::Move(home, sb));
+                self.bind(le);
+            }
+            Op::PowI(a, k) => {
+                let sa = self.use_(cx, a.0);
+                let r = self.powi(cx, sa, k);
+                self.steps.push(Step::Move(home, r));
+            }
+            _ => {
+                let ins = lower_op(&op, &mut |id| self.use_(cx, id.0))
+                    .expect("a lazy op is a call, an If, a power or an instruction");
+                self.steps.push(Step::Op(home, ins));
+            }
+        }
+    }
+
+    /// Emits the subroutines queued in `cx`.
+    fn drain(&mut self, cx: &mut Cx) {
+        while let Some(c) = cx.queue.pop() {
+            let i = c as usize;
+            self.bind(cx.label[i]);
+            let home = cx.slot[i];
+            self.compute(cx, c, home);
+            self.steps.push(Step::Rts(cx.flag[i]));
+        }
+    }
+
+    /// Emits the global subroutines queued so far.
+    fn drain_global(&mut self) {
+        let mut g = Cx::global();
+        while let Some(c) = self.gqueue.pop() {
+            let i = c as usize;
+            self.bind(self.glabel[i]);
+            let home = self.gslot[i];
+            self.compute(&mut g, c, home);
+            self.steps.push(Step::Rts(self.gflag[i]));
+        }
+    }
+
+    /// Emits the body of `unit`: the frame's eager ops in id order, then its root.
+    fn unit(&mut self, unit: &TapeUnit) -> ProgUnit {
+        let tape = self.tape;
+        let len = tape.ops.len();
+        let mark = tape.reach(&[unit.out]);
+        let mut cx = Cx {
+            local: true,
+            slot: vec![NONE; len],
+            refs: vec![0; len],
+            flag: vec![NONE; len],
+            label: vec![NONE; len],
+            nslot: unit.arity,
+            nflag: 0,
+            queue: Vec::new(),
+        };
+        for i in (0..len).filter(|&i| mark[i] && self.lazy[i] && self.argdep[i]) {
+            tape.operands(&tape.ops[i], &mut |o| cx.refs[o as usize] += 1);
+        }
+        cx.refs[unit.out as usize] += 1;
+        let entry = self.steps.len() as u32;
+        for i in 0..len {
+            if !mark[i] || self.lazy[i] || !self.argdep[i] {
+                continue;
+            }
+            let op = tape.ops[i];
+            cx.slot[i] = match op {
+                Op::Arg(k) => LOCAL | k,
+                Op::PowI(a, k) => {
+                    let sa = self.use_(&mut cx, a.0);
+                    self.powi(&mut cx, sa, k)
+                }
+                _ => {
+                    let ins = lower_op(&op, &mut |id| self.use_(&mut cx, id.0))
+                        .expect("an op that reads a formal is a formal, a power or an instruction");
+                    self.op_into(&mut cx, ins)
+                }
+            };
+        }
+        let root = self.use_(&mut cx, unit.out);
+        self.steps.push(Step::Ret(root));
+        self.drain(&mut cx);
+        ProgUnit {
+            entry,
+            arity: unit.arity,
+            flen: cx.nslot,
+            nflags: cx.nflag,
+        }
+    }
+}
+
+impl<T: Real> CpuTape<T> {
+    /// [`CpuTape::new`] for a tape with calls.
+    fn new_calls(tape: &Tape) -> Self {
+        let (n, np1) = (tape.n, tape.n_p + 1);
+        let len = tape.ops.len();
+        let mut lazy = vec![false; len];
+        let mut argdep = vec![false; len];
+        for (i, op) in tape.ops.iter().enumerate() {
+            let (mut l, mut a) = (matches!(op, Op::Call(..)), matches!(op, Op::Arg(_)));
+            tape.operands(op, &mut |c| {
+                assert!(
+                    (c as usize) < i,
+                    "op {i} reads slot {c} before it is computed"
+                );
+                l |= lazy[c as usize];
+                a |= argdep[c as usize];
+            });
+            lazy[i] = l;
+            argdep[i] = a;
+        }
+        let mut consts = Consts::default();
+        consts.add(ONE_BITS);
+        for op in &tape.ops {
+            if let Op::Const(b) = *op {
+                consts.add(b);
+            }
+        }
+        let nc = consts.bits.len();
+        let mut lo = Lower {
+            ins: Vec::new(),
+            tb: (nc + n + np1) as u32,
+        };
+        let mut gslot = vec![NONE; len];
+        for (i, op) in tape.ops.iter().enumerate() {
+            if lazy[i] || argdep[i] {
+                continue;
+            }
+            let c = |id: NodeId| gslot[id.0 as usize];
+            gslot[i] = match *op {
+                Op::Const(b) => consts.at[&b],
+                Op::Var(v) => {
+                    assert!((v as usize) < n, "op {i} reads state {v} of {n}");
+                    (nc + v as usize) as u32
+                }
+                Op::Param(j) => {
+                    assert!((j as usize) < np1, "op {i} reads parameter {j} of {np1}");
+                    (nc + n + j as usize) as u32
+                }
+                Op::PowI(a, k) => lo.powi(c(a), k, Some(consts.at[&ONE_BITS])),
+                _ => {
+                    let ins = lower_op(op, &mut |id| c(id))
+                        .expect("Tape::build keeps only ops the CPU tape runs");
+                    lo.emit(ins)
+                }
+            };
+        }
+        let glen = lo.tb + lo.ins.len() as u32;
+        let mut e = Emit {
+            tape,
+            lazy,
+            argdep,
+            gslot,
+            gflag: vec![NONE; len],
+            glabel: vec![NONE; len],
+            gqueue: Vec::new(),
+            glen,
+            nflag_global: 0,
+            one: consts.at[&ONE_BITS],
+            steps: Vec::new(),
+            labels: Vec::new(),
+            pool: Vec::new(),
+        };
+        let mut g = Cx::global();
+        let outputs: Vec<u32> = tape.outputs.iter().map(|&o| e.use_(&mut g, o)).collect();
+        e.steps.push(Step::End);
+        let units: Vec<ProgUnit> = tape.units.iter().map(|u| e.unit(u)).collect();
+        e.drain_global();
+        let labels = e.labels;
+        for s in &mut e.steps {
+            match s {
+                Step::Jmp(t) | Step::JmpIfZero(_, t) | Step::Sub(_, t) => {
+                    *t = labels[*t as usize];
+                    debug_assert_ne!(*t, NONE, "a jump to an unbound label");
+                }
+                _ => {}
+            }
+        }
+        let prog = Prog {
+            steps: e.steps,
+            pool: e.pool,
+            units,
+            entry: 0,
+            nflag_global: e.nflag_global as usize,
+            glen: e.glen as usize,
+            cap: pc_ir::machine::MAX_ACTIVE_CALLS,
+        };
+        CpuTape {
+            n,
+            np1,
+            consts: consts
+                .bits
+                .iter()
+                .map(|&b| T::from_f64(f64::from_bits(b)))
+                .collect(),
+            ins: lo.ins,
+            outputs,
+            prog: Some(Box::new(prog)),
+        }
+    }
+
+    /// [`CpuTape::eval_xt`] for a tape with calls. After a failed evaluation the slab stays
+    /// failed, and every right-hand side is NaN, until the next [`CpuTape::bind`].
+    fn eval_calls(&self, prog: &Prog, x: &[T], t: T, slab: &mut Slab<T>, out: &mut [T]) {
+        assert_eq!(slab.v.len(), prog.glen, "the slab is from another tape");
+        let cs = slab.calls.as_mut().expect("a slab of a tape with calls");
+        if !slab.failed {
+            let s = slab.v.as_mut_slice();
+            let xs = self.consts.len();
+            let ps = xs + self.n;
+            let tb = ps + self.np1;
+            copy_states(&mut s[xs..ps], &x[..self.n]);
+            s[tb - 1] = t;
+            for (k, &ins) in self.ins.iter().enumerate() {
+                // SAFETY: as in `eval_xt`: `new_calls` checked every operand of the prologue,
+                // and the assert above made `s` the length of the global slots.
+                unsafe {
+                    let v = run(ins, s);
+                    *s.get_unchecked_mut(tb + k) = v;
+                }
+            }
+            cs.flags[..prog.nflag_global].fill(0);
+            if exec(prog, &mut slab.v, cs).is_err() {
+                slab.v.truncate(prog.glen);
+                cs.flags.truncate(prog.nflag_global);
+                cs.frames.clear();
+                cs.gosub.clear();
+                slab.failed = true;
+            }
+        }
+        for (o, &i) in out.iter_mut().zip(&self.outputs) {
+            *o = if slab.failed {
+                T::NAN
+            } else {
+                slab.v[i as usize]
+            };
+        }
+    }
+}
+
+/// Runs `prog` on the global slots in `v`.
+fn exec<T: Real>(prog: &Prog, v: &mut Vec<T>, cs: &mut CallState) -> Result<(), Halt> {
+    let steps = &prog.steps;
+    let (mut pc, mut fb, mut flb) = (prog.entry as usize, 0usize, 0usize);
+    loop {
+        match steps[pc] {
+            Step::Op(d, ins) => {
+                let x = apply(ins, |o| v[res(o, fb)]);
+                v[res(d, fb)] = x;
+                pc += 1;
+            }
+            Step::Move(d, s) => {
+                v[res(d, fb)] = v[res(s, fb)];
+                pc += 1;
+            }
+            Step::Jmp(t) => pc = t as usize,
+            Step::JmpIfZero(c, t) => {
+                pc = if v[res(c, fb)] == T::ZERO {
+                    t as usize
+                } else {
+                    pc + 1
+                };
+            }
+            Step::Sub(f, t) => {
+                if cs.flags[res(f, flb)] != 0 {
+                    pc += 1;
+                } else {
+                    cs.gosub.try_reserve(1).map_err(|_| Halt::Memory)?;
+                    cs.gosub.push(pc as u32 + 1);
+                    pc = t as usize;
+                }
+            }
+            Step::Rts(f) => {
+                cs.flags[res(f, flb)] = 1;
+                pc = cs
+                    .gosub
+                    .pop()
+                    .expect("a subroutine returns where it was called")
+                    as usize;
+            }
+            Step::Invoke(u, lo, d) => {
+                if cs.frames.len() >= prog.cap {
+                    return Err(Halt::Depth);
+                }
+                let unit = &prog.units[u as usize];
+                let nfb = v.len();
+                let flen = unit.flen as usize;
+                if nfb + flen > LOCAL as usize {
+                    return Err(Halt::Memory);
+                }
+                v.try_reserve(flen).map_err(|_| Halt::Memory)?;
+                cs.flags
+                    .try_reserve(unit.nflags as usize)
+                    .map_err(|_| Halt::Memory)?;
+                cs.frames.try_reserve(1).map_err(|_| Halt::Memory)?;
+                let lo = lo as usize;
+                for &a in &prog.pool[lo..lo + unit.arity as usize] {
+                    let x = v[res(a, fb)];
+                    v.push(x);
+                }
+                v.resize(nfb + flen, T::ZERO);
+                let nflb = cs.flags.len();
+                cs.flags.resize(nflb + unit.nflags as usize, 0);
+                #[cfg(test)]
+                {
+                    cs.entered += 1;
+                    cs.peak = cs.peak.max(cs.frames.len() + 1);
+                }
+                cs.frames.push(Frame {
+                    ret: pc as u32 + 1,
+                    dst: res(d, fb) as u32,
+                    fb: fb as u32,
+                    flb: flb as u32,
+                });
+                fb = nfb;
+                flb = nflb;
+                pc = unit.entry as usize;
+            }
+            Step::Ret(s) => {
+                let x = v[res(s, fb)];
+                let f = cs.frames.pop().expect("a unit returns to its caller");
+                v.truncate(fb);
+                cs.flags.truncate(flb);
+                fb = f.fb as usize;
+                flb = f.flb as usize;
+                v[f.dst as usize] = x;
+                pc = f.ret as usize;
+            }
+            Step::End => return Ok(()),
+        }
     }
 }
 
@@ -629,6 +1515,365 @@ mod tests {
         let l = load(top, &mut map, &mut MapLoader::new());
         assert!(l.diagnostics.iter().all(|d| d.severity != Severity::Error));
         pc_ir::lower(&l.expanded, &l.info).expect("lower")
+    }
+
+    // Stage 4a (SPEC 8af-5): the CPU tape runs recursive functions. `pc_ir::machine::run` is
+    // the oracle: the same bits, the same frames entered, the same peak depth and the same
+    // depth error.
+
+    /// Runs the call tape of `ir` and the machine at `x`, `p` (with `t` last) under `cap`.
+    /// Returns the tape's outputs, or None when the machine stopped on its cap.
+    fn calls_vs_machine(ir: &IrModel, x: &[f64], p: &[f64], cap: usize) -> Option<Vec<f64>> {
+        let tape = Tape::build(ir).expect("tape");
+        assert!(!tape.units.is_empty(), "the model has calls");
+        let mut cpu = CpuTape::<f64>::new(&tape);
+        cpu.set_max_calls(cap);
+        let mut slab = cpu.slab();
+        let mut got = vec![0.0; ir.f.len()];
+        cpu.eval(x, p, &mut slab, &mut got);
+        let mut want = vec![0.0; ir.f.len()];
+        let r = pc_ir::machine::run(&ir.dag, &ir.f, x, p, &[], &mut want, None, cap);
+        let cs = slab.calls.as_ref().expect("call state");
+        match r {
+            Ok(stats) => {
+                assert!(
+                    !slab.failed(),
+                    "the tape failed where the machine ran: {x:?} {p:?}"
+                );
+                for (i, (g, w)) in got.iter().zip(&want).enumerate() {
+                    assert!(
+                        g.to_bits() == w.to_bits() || (g.is_nan() && w.is_nan()),
+                        "output {i} at x={x:?} p={p:?}: tape {g:?} machine {w:?}"
+                    );
+                }
+                assert_eq!(cs.entered, stats.calls, "frames entered at {x:?} {p:?}");
+                assert_eq!(cs.peak, stats.max_depth, "peak depth at {x:?} {p:?}");
+                Some(got)
+            }
+            Err(pc_ir::machine::EvalError::Depth { .. }) => {
+                assert!(
+                    slab.failed(),
+                    "the machine hit its cap and the tape did not"
+                );
+                assert!(got.iter().all(|g| g.is_nan()));
+                None
+            }
+            Err(e) => panic!("machine: {e:?}"),
+        }
+    }
+
+    const CALL_DEFS: &str = "par k=3, a=0.5\n\
+        pw(x,n)=if(n<1)then(1)else(x*pw(x,n-1))\n\
+        fx(n)=if(n<1)then(1)else(x*fx(n-1))\n\
+        fact(n)=if(n<=1)then(1)else(n*fact(n-1))\n\
+        ev(n)=if(n==0)then(1)else(od(n-1))\n\
+        od(n)=if(n==0)then(0)else(ev(n-1))\n\
+        h(n)=if(n<1)then(0)else(if(n>5)then(h(n-1))else(1+h(n-1)))\n\
+        g(n)=(if(n>0)then(g(n-1))else(0))+(if(n>5)then(g(n-1))else(1))\n\
+        sm(n)=if(n<1)then(0)else(n+sm(n-1))\n\
+        gl(n)=if(n<1)then(0)else(sm(k)+gl(n-1))\n\
+        inc(n)=if(n>100)then(inc(n-1))else(n+1)\n\
+        dbl(n)=if(n>100)then(dbl(n-1))else(n*2)\n\
+        fib(n)=if(n<2)then(n)else(fib(n-1)+fib(n-2))\n";
+
+    const CALL_RHS: &[&str] = &[
+        "pw(x,k)",
+        "fx(k)",
+        "fact(k)",
+        "ev(k)+od(k)",
+        "h(k)",
+        "g(k)",
+        "sm(k)*a",
+        "gl(k)",
+        "inc(k)+dbl(k)",
+        "inc(inc(k))",
+        "pw(x,fact(k))",
+        "if(k<0)then(0)else(fx(k))",
+        "if(a)then(sm(k))else(fact(k))",
+        "(if(k<0)then(0)else(fx(k)))+fx(k)",
+        "if(k<0)then(0)else(if(k>5)then(fx(k)*2)else(fx(k)+1))",
+        "fx(if(k<0)then(0)else(sm(k)))",
+        "(if(k<2)then(sm(k))else(fx(k)))*(if(k>4)then(fx(k))else(sm(k)))",
+        "fib(k)+sin(x)*a",
+    ];
+
+    fn call_model(rhs: &str) -> IrModel {
+        model(&format!("{CALL_DEFS}x'={rhs}\ny'=x-y\ndone\n"))
+    }
+
+    /// The corpus of the stage 2 tests agrees with the machine bit for bit, in its frames and
+    /// in its peak depth, at several states and parameters, including a NaN state and a NaN
+    /// condition, and under a tight cap.
+    #[test]
+    fn call_tapes_match_the_machine() {
+        let pts: &[(f64, f64, f64)] = &[
+            (0.3, 3.0, 0.5),
+            (-1.7, 0.0, 0.0),
+            (2.0, 6.0, -0.25),
+            (0.9, 9.0, f64::NAN),
+            (f64::NAN, 4.0, 1.0),
+            (1.1, -1.0, 2.0),
+            (0.5, 2.5, 1.0),
+        ];
+        for rhs in CALL_RHS {
+            let ir = call_model(rhs);
+            for &(x, k, a) in pts {
+                for cap in [1_000_000, 8, 3, 1, 0] {
+                    calls_vs_machine(&ir, &[x, 0.1], &[k, a, 0.0], cap);
+                }
+            }
+        }
+    }
+
+    /// The f32 tape gives the closed forms where they are exact in single precision.
+    #[test]
+    fn call_tapes_reach_the_closed_forms_in_single_precision() {
+        let ir = call_model("fact(k)+0*pw(x,k)");
+        let tape = Tape::build(&ir).expect("tape");
+        let cpu = CpuTape::<f32>::new(&tape);
+        let mut slab = cpu.slab();
+        let mut out = [0f32; 2];
+        let mut want = 1f32;
+        for n in 1..=10u8 {
+            want *= f32::from(n);
+            cpu.eval(&[0.5, 0.0], &[f32::from(n), 0.0, 0.0], &mut slab, &mut out);
+            assert_eq!(out[0], want, "fact({n})");
+        }
+        for (rhs, k, want) in [
+            ("sm(k)", 100f32, 5050f32),
+            ("ev(k)", 7.0, 0.0),
+            ("od(k)", 7.0, 1.0),
+            ("h(k)", 9.0, 5.0),
+            ("fib(k)", 20.0, 6765.0),
+            ("pw(x,k)", 3.0, 0.125),
+        ] {
+            let tape = Tape::build(&call_model(rhs)).expect("tape");
+            let cpu = CpuTape::<f32>::new(&tape);
+            let mut slab = cpu.slab();
+            cpu.eval(&[0.5, 0.0], &[k, 0.0, 0.0], &mut slab, &mut out);
+            assert_eq!(out[0], want, "{rhs} at k={k}");
+        }
+    }
+
+    /// A call that reaches itself with the same arguments outside any formal never ends: the
+    /// cap stops it, as it stops the machine.
+    #[test]
+    fn a_self_reentrant_global_call_hits_the_cap() {
+        let ir = model("par k=1\nf(n)=n+f(k)\nx'=f(k)\ndone\n");
+        assert!(calls_vs_machine(&ir, &[0.0], &[1.0, 0.0], 50).is_none());
+    }
+
+    /// The cap counts active frames, and the entry has none: `sm(n)` takes `n + 1` frames.
+    #[test]
+    fn the_cap_is_the_number_of_active_frames() {
+        let ir = call_model("sm(k)");
+        for cap in 0..6 {
+            for k in 0..7 {
+                let r = calls_vs_machine(&ir, &[0.0, 0.0], &[f64::from(k), 0.0, 0.0], cap);
+                assert_eq!(r.is_some(), (k as usize) < cap, "k={k} cap={cap}");
+            }
+        }
+    }
+
+    /// The default cap is `MAX_ACTIVE_CALLS`: `sm(999_999)` runs and `sm(1_000_000)` does not.
+    #[test]
+    fn the_default_cap_is_a_million_frames() {
+        let tape = Tape::build(&call_model("sm(k)")).expect("tape");
+        let cpu = CpuTape::<f64>::new(&tape);
+        let mut slab = cpu.slab();
+        let mut out = [0.0; 2];
+        cpu.eval(&[0.0, 0.0], &[999_999.0, 0.0, 0.0], &mut slab, &mut out);
+        assert!(!slab.failed());
+        assert_eq!(out[0], 999_999.0 * 1_000_000.0 / 2.0);
+        cpu.eval(&[0.0, 0.0], &[1_000_000.0, 0.0, 0.0], &mut slab, &mut out);
+        assert!(slab.failed());
+        assert!(out[0].is_nan() && out[1].is_nan());
+    }
+
+    /// Two calls in one body each enter their own frames; a cap below the depth stops them.
+    #[test]
+    fn fib_matches_the_machine_under_a_cap() {
+        let ir = call_model("fib(k)");
+        for k in 0..16 {
+            for cap in [4, 9, 100] {
+                calls_vs_machine(&ir, &[0.0, 0.0], &[f64::from(k), 0.0, 0.0], cap);
+            }
+        }
+    }
+
+    /// `g(n)` names `g(n-1)` twice, so it runs once per frame and `g(60)` takes 61 frames,
+    /// not 2^60.
+    #[test]
+    fn a_call_named_twice_in_a_body_runs_once() {
+        let ir = call_model("g(k)");
+        let got = calls_vs_machine(&ir, &[0.0, 0.0], &[60.0, 0.0, 0.0], 1000).expect("runs");
+        // g(n) = g(n-1) + 1 up to g(5) = 6, then doubles.
+        assert_eq!(got[0], 6.0 * 2f64.powi(55));
+    }
+
+    /// A chain of 24 `If`s that each name the level below in both arms emits a program
+    /// linear in the depth of the chain. Written out as text the chain would double at each
+    /// level, so it is built on the DAG.
+    #[test]
+    fn a_deep_if_chain_stays_linear() {
+        use pc_ir::dag::Cmp;
+        let mut ir = call_model("sm(k)");
+        let d = &mut ir.dag;
+        let u = d.add_unit("chain", 1, 1);
+        let n = d.arg(0);
+        let one = d.konst(1.0);
+        let m = d.sub(n, one);
+        let mut e = d.call(u, &[m]);
+        for i in 0..24 {
+            let ki = d.konst(f64::from(i));
+            let c = d.cmp(Cmp::Gt, n, ki);
+            let e1 = d.add(e, one);
+            e = d.select(c, e, e1);
+        }
+        let zero = d.konst(0.0);
+        let stop = d.cmp(Cmp::Lt, n, one);
+        let body = d.select(stop, zero, e);
+        assert!(d.set_body(u, &[body]));
+        let k = d.param(0);
+        ir.f[0] = d.call(u, &[k]);
+        let tape = Tape::build(&ir).expect("tape");
+        let cpu = CpuTape::<f64>::new(&tape);
+        let steps = cpu.prog.as_ref().expect("prog").steps.len();
+        assert!(steps < 40 * 24, "{steps} steps for 24 levels");
+        for k in [0.0, 3.0, 30.0] {
+            calls_vs_machine(&ir, &[0.0, 0.0], &[k, 0.0, 0.0], 1000);
+        }
+    }
+
+    /// A failed slab gives NaN until the next bind, and then runs again.
+    #[test]
+    fn a_slab_runs_again_after_the_cap() {
+        let tape = Tape::build(&call_model("sm(k)")).expect("tape");
+        let mut cpu = CpuTape::<f64>::new(&tape);
+        cpu.set_max_calls(10);
+        let mut slab = cpu.slab();
+        let mut out = [0.0; 2];
+        cpu.eval(&[0.0, 0.0], &[20.0, 0.0, 0.0], &mut slab, &mut out);
+        assert!(slab.failed() && out[0].is_nan());
+        cpu.eval_xt(&[0.0, 0.0], 0.0, &mut slab, &mut out);
+        assert!(
+            slab.failed() && out[0].is_nan(),
+            "failed until the next bind"
+        );
+        cpu.eval(&[0.0, 0.0], &[4.0, 0.0, 0.0], &mut slab, &mut out);
+        assert!(!slab.failed());
+        assert_eq!(out, [10.0, 0.0]);
+        let cs = slab.calls.as_ref().expect("call state");
+        assert!(cs.frames.is_empty() && cs.gosub.is_empty());
+        assert_eq!(slab.v.len(), cpu.prog.as_ref().expect("prog").glen);
+    }
+
+    /// A call that is never reached enters no frame, even with a cap of zero.
+    #[test]
+    fn an_untaken_arm_makes_no_call() {
+        let ir = call_model("if(k<0)then(0)else(fx(k))");
+        let got = calls_vs_machine(&ir, &[2.0, 0.0], &[-1.0, 0.0, 0.0], 0).expect("runs");
+        assert_eq!(got[0], 0.0);
+        assert!(calls_vs_machine(&ir, &[2.0, 0.0], &[1.0, 0.0, 0.0], 0).is_none());
+    }
+
+    /// A call inside a body that reads no formal runs once per right-hand side.
+    #[test]
+    fn a_global_call_in_a_body_runs_once() {
+        let ir = call_model("gl(k)");
+        let tape = Tape::build(&ir).expect("tape");
+        let cpu = CpuTape::<f64>::new(&tape);
+        let mut slab = cpu.slab();
+        let mut out = [0.0; 2];
+        cpu.eval(&[0.0, 0.0], &[50.0, 0.0, 0.0], &mut slab, &mut out);
+        assert_eq!(out[0], 50.0 * 1275.0);
+        // 51 frames of gl and 51 of sm(50), not 50 * 51.
+        assert_eq!(slab.calls.as_ref().expect("call state").entered, 102);
+    }
+
+    /// The tape refuses a call whose argument count does not match its function.
+    #[test]
+    fn a_call_with_the_wrong_arity_is_refused() {
+        let mut ir = call_model("inc(k)");
+        let u = ir.dag.add_unit("two", 2, 1);
+        let a = ir.dag.arg(0);
+        assert!(ir.dag.set_body(u, &[a]));
+        let x = ir.dag.var(0);
+        ir.f[0] = ir.dag.call(u, &[x]);
+        let Err(EnsembleError::BadJob(m)) = Tape::build(&ir) else {
+            panic!("not refused");
+        };
+        assert!(m.contains("passes 1 arguments to function two"), "{m}");
+    }
+
+    /// A function argument read outside a function is refused.
+    #[test]
+    fn a_formal_outside_a_function_is_refused() {
+        let mut ir = call_model("sm(k)");
+        let a = ir.dag.arg(0);
+        let c = ir.f[0];
+        ir.f[1] = ir.dag.add(a, c);
+        let Err(EnsembleError::BadJob(m)) = Tape::build(&ir) else {
+            panic!("not refused");
+        };
+        assert!(m.contains("outside a function"), "{m}");
+    }
+
+    /// Random bodies over a guarded recursion agree with the machine.
+    fn body_expr(depth: u32) -> BoxedStrategy<String> {
+        let leaf = prop_oneof![
+            Just("@N".to_string()),
+            Just("x".to_string()),
+            Just("a".to_string()),
+            Just("1.5".to_string()),
+            Just("@P".to_string()),
+            Just("@Q".to_string()),
+            Just("@R".to_string()),
+        ];
+        if depth == 0 {
+            return leaf.boxed();
+        }
+        let sub = body_expr(depth - 1);
+        prop_oneof![
+            leaf,
+            (sub.clone(), sub.clone(), 0..4u8).prop_map(|(l, r, o)| {
+                let op = ["+", "-", "*", "/"][o as usize];
+                format!("({l}){op}({r})")
+            }),
+            sub.clone().prop_map(|e| format!("sin({e})")),
+            (sub.clone(), sub.clone(), sub)
+                .prop_map(|(c, l, r)| { format!("if(({c})>0)then({l})else({r})") }),
+        ]
+        .boxed()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        #[test]
+        fn random_call_tapes_match_the_machine(
+            body in body_expr(3),
+            gbody in body_expr(2),
+            rhs in body_expr(2),
+            k in -1.0..7.0f64,
+            a in -2.0..2.0f64,
+            x in -2.0..2.0f64,
+            cap in prop_oneof![Just(1_000usize), 0..6usize],
+        ) {
+            // `@N` is the formal and `@P`, `@Q`, `@R` are calls. `f` runs down to n < 1, and
+            // `g` calls `f` but not itself.
+            let sub = |e: &str, t: [&str; 4]| {
+                e.replace("@N", t[0]).replace("@P", t[1]).replace("@Q", t[2]).replace("@R", t[3])
+            };
+            let body = sub(&body, ["n", "f(n-1)", "f(n-2)", "g(a)"]);
+            let gbody = sub(&gbody, ["m", "f(m)", "f(a)", "f(x)"]);
+            let rhs = sub(&rhs, ["k", "f(k)", "f(x)", "g(a)"]);
+            let src = format!(
+                "par k=3, a=0.5\nf(n)=if(n<1)then(n*x)else({body})\ng(m)={gbody}\nx'={rhs}\ndone\n"
+            );
+            let ir = model(&src);
+            prop_assume!(ir.f.iter().any(|&id| ir.dag.has_call(id)));
+            calls_vs_machine(&ir, &[x], &[k.round(), a, 0.0], cap);
+        }
     }
 
     /// The f64 tape gives the same bits as the DAG interpreter.
@@ -800,6 +2045,8 @@ mod tests {
             n_p,
             ops,
             outputs,
+            args: Vec::new(),
+            units: Vec::new(),
         }
     }
 
@@ -903,6 +2150,8 @@ mod tests {
             n_p,
             ops,
             outputs,
+            args: Vec::new(),
+            units: Vec::new(),
         };
         (dag, tape)
     }
@@ -1191,6 +2440,8 @@ mod tests {
                     Op::ZDiv(NodeId(0), NodeId(1)),
                 ],
                 outputs: vec![2, 3],
+                args: Vec::new(),
+                units: Vec::new(),
             };
             let cpu = CpuTape::<T>::new(&tape);
             let mut slab = cpu.slab();
@@ -1258,6 +2509,8 @@ mod tests {
                 n_p: 0,
                 ops: vec![Op::Var(0), Op::PowI(NodeId(0), k)],
                 outputs: vec![1],
+                args: Vec::new(),
+                units: Vec::new(),
             };
             let cpu = CpuTape::<f64>::new(&tape);
             let mut slab = cpu.slab();
@@ -1283,6 +2536,8 @@ mod tests {
             n_p: 0,
             ops: vec![Op::Neg(NodeId(1)), Op::Var(0)],
             outputs: vec![0],
+            args: Vec::new(),
+            units: Vec::new(),
         };
         let _ = CpuTape::<f64>::new(&tape);
     }

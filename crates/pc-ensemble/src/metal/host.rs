@@ -154,6 +154,7 @@ pub fn run_metal(
         )));
     }
     let tape = Tape::build(job.model)?;
+    tape.refuse_calls()?;
     // Metal has no query for the free memory or the resident threads either, so the layout
     // follows the size of the model only (SPEC 13).
     let integrator = integrator_of(job.method);
