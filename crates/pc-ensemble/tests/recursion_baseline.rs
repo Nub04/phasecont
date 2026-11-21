@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use pc_codegen::fnv1a64;
 use pc_codegen::kernel::{Dialect, Scalar};
 use pc_ensemble::Tape;
-use pc_ensemble::kernel::{Integrator, kernel_source};
+use pc_ensemble::kernel::{Integrator, Layout, kernel_source, kernel_source_in};
 use pc_ir::{EntryKind, IrModel, Slot};
 use pc_ode::{FsLoader, Severity, SourceMap, load};
 
@@ -191,4 +191,55 @@ fn models_without_recursion_keep_their_lowering() {
     } else {
         eprintln!("JIT sizes not checked: this host is not the one the golden file names");
     }
+}
+
+/// The hash of every kernel text of one model in one dialect: each integrator, scalar and
+/// layout in a fixed order, or `err` where the text cannot be built.
+fn kernel_line(path: &Path) -> String {
+    let name = path
+        .strip_prefix(root())
+        .unwrap_or(path)
+        .display()
+        .to_string()
+        .replace('\\', "/");
+    let mut out = format!("{name}:");
+    let tape = match lower(path).ok().and_then(|m| Tape::build(&m).ok()) {
+        Some(t) if t.units.is_empty() => t,
+        Some(_) => return format!("{out} calls"),
+        None => return format!("{out} skipped"),
+    };
+    for (d, tag) in [
+        (Dialect::C, "c"),
+        (Dialect::OpenCl, "cl"),
+        (Dialect::Cuda, "cu"),
+        (Dialect::Msl, "msl"),
+    ] {
+        let mut all = String::new();
+        for i in [Integrator::Rk4, Integrator::Dp5, Integrator::Iter] {
+            for s in [Scalar::F32, Scalar::F64] {
+                for l in [Layout::Private, Layout::Global] {
+                    match kernel_source_in(&tape, i, s, d, l) {
+                        Ok(k) => all.push_str(&k),
+                        Err(_) => all.push_str("err\n"),
+                    }
+                    all.push('\0');
+                }
+            }
+        }
+        let _ = write!(out, " {tag}={:016x}", fnv1a64(all.as_bytes()));
+    }
+    out
+}
+
+/// Every kernel text of the models without recursion, for each dialect, integrator, scalar
+/// and layout, pinned before the call tapes of stage 4b change the integrator text.
+#[test]
+fn models_without_recursion_keep_every_kernel_text() {
+    let mut text = String::new();
+    for p in models() {
+        text.push_str(&kernel_line(&p));
+        text.push('\n');
+    }
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    compare(&dir.join("kernel_baseline.golden"), &text);
 }
