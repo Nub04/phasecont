@@ -17,7 +17,9 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use pc_codegen::kernel::unsupported_op;
+use std::fmt::Write as _;
+
+use pc_codegen::kernel::{KernelError, Scalar, float_literal, op_expr, unsupported_op};
 use pc_ir::IrModel;
 use pc_ir::dag::{Cmp, Fn1, Fn2, NodeId, Op};
 use pc_ir::eval::live_set;
@@ -1567,6 +1569,308 @@ fn exec<T: Real>(
             Step::End => return Ok(()),
         }
     }
+}
+
+// The kernel text of a call tape (SPEC section 8af-5, stage 4b). OpenCL C 1.2 and the Metal
+// Shading Language have no recursion, and a CUDA thread's own stack is small, so every
+// dialect runs the steps of the same `Prog` the CPU runs: one `switch` on the step index
+// inside a loop, with the frames of each member on a stack in global memory. A frame is
+// `stride` reals: the return label, the formals and frame values, then the frame's flags
+// from the top down. The labels fit in a `float`, so the frames hold them as reals.
+
+/// Frames on the per-member stack of a GPU kernel. A call past it ends the member with
+/// `recursion_depth`, as a CPU call past `MAX_ACTIVE_CALLS` does.
+pub const KERNEL_FRAMES: usize = 4096;
+
+/// The instruction of `ins` as an op whose node ids are its operand slots, `LOCAL` bit
+/// included, for [`op_expr`].
+fn ins_op(ins: Ins) -> Op {
+    let s = NodeId;
+    match ins {
+        Ins::Neg(a) => Op::Neg(s(a)),
+        Ins::Add(a, b) => Op::Add(s(a), s(b)),
+        Ins::Sub(a, b) => Op::Sub(s(a), s(b)),
+        Ins::Mul(a, b) => Op::Mul(s(a), s(b)),
+        Ins::ZMul(a, b) => Op::ZMul(s(a), s(b)),
+        Ins::Div(a, b) => Op::Div(s(a), s(b)),
+        Ins::ZDiv(a, b) => Op::ZDiv(s(a), s(b)),
+        Ins::Call1(f, a) => Op::Call1(f, s(a)),
+        Ins::Call2(f, a, b) => Op::Call2(f, s(a), s(b)),
+        Ins::Cmp(c, a, b) => Op::Cmp(c, s(a), s(b)),
+        Ins::And(a, b) => Op::And(s(a), s(b)),
+        Ins::Or(a, b) => Op::Or(s(a), s(b)),
+        Ins::Not(a) => Op::Not(s(a)),
+        Ins::Select(c, a, b) => Op::Select(s(c), s(a), s(b)),
+    }
+}
+
+/// Reals per frame of the kernel stack of `tape`: the largest frame of its functions, or 0
+/// for a tape without calls.
+#[doc(hidden)]
+pub fn kernel_stride(tape: &Tape) -> usize {
+    if tape.units.is_empty() {
+        return 0;
+    }
+    let prog = CpuTape::<f64>::new_calls(tape)
+        .prog
+        .expect("a call program");
+    stride_of(&prog)
+}
+
+fn stride_of(prog: &Prog) -> usize {
+    prog.units
+        .iter()
+        .map(|u| 1 + u.flen as usize + u.nflags as usize)
+        .max()
+        .unwrap_or(1)
+}
+
+/// The kernel function `pc_rhs` of a tape with calls, and the reals per frame of its stack.
+/// It takes the arguments of [`emit_rhs`](pc_codegen::kernel::emit_rhs), then the member's
+/// stack and its error word: a call past [`KERNEL_FRAMES`] sets the word, and every
+/// right-hand side is NaN from then on.
+#[doc(hidden)]
+pub fn emit_calls_rhs(tape: &Tape, scalar: Scalar) -> Result<(String, usize), KernelError> {
+    let mut names: Vec<&'static str> = Vec::new();
+    for op in &tape.ops {
+        if matches!(op, Op::Arg(_) | Op::Call(..) | Op::If(..) | Op::Out(..)) {
+            continue;
+        }
+        if let Some(n) = unsupported_op(op)
+            && !names.contains(&n)
+        {
+            names.push(n);
+        }
+    }
+    if !names.is_empty() {
+        return Err(KernelError::Unsupported(names.join(", ")));
+    }
+    let cpu = CpuTape::<f64>::new_calls(tape);
+    let prog = cpu.prog.as_deref().expect("a call program");
+    let stride = stride_of(prog);
+    let ninvoke = prog
+        .steps
+        .iter()
+        .filter(|s| matches!(s, Step::Invoke(..)))
+        .count();
+    // Labels are exact in a `float`, and a stack index fits in 31 bits.
+    if prog.steps.len() + ninvoke >= 1 << 24 || stride * KERNEL_FRAMES >= 1 << 31 {
+        return Err(KernelError::Unsupported(
+            "recursive functions too large for a kernel".into(),
+        ));
+    }
+    let (n, n_p) = (tape.n, tape.n_p);
+    let nc = cpu.consts.len();
+    let tb = nc + n + n_p + 1;
+    let name = |o: u32| -> String {
+        if o & LOCAL != 0 {
+            return format!("stk[fb + {}u]", 1 + (o & !LOCAL));
+        }
+        let o = o as usize;
+        if o < nc {
+            format!("c{o}")
+        } else if o < nc + n {
+            format!("x[{}]", o - nc)
+        } else if o < tb {
+            match o - nc - n {
+                j if j == n_p => "t".to_string(),
+                j => format!("p[{j}]"),
+            }
+        } else {
+            format!("g{o}")
+        }
+    };
+    let flag = |f: u32| -> String {
+        if f & LOCAL != 0 {
+            format!("stk[fb + {}u]", stride as u32 - 1 - (f & !LOCAL))
+        } else {
+            format!("gf{f}")
+        }
+    };
+    let mut b = String::new();
+    b.push_str(
+        "PC_FN void pc_rhs(pc_real t, PC_SCR const pc_real *x, PC_IN pc_real *p, PC_SCR pc_real *out,\n\
+         \x20                 PC_GLOBAL pc_real *stk, PC_PRIV pc_uint *cerr) {\n",
+    );
+    b.push_str("    (void)t;\n    (void)x;\n    (void)p;\n");
+    b.push_str("    if (*cerr != 0u) {\n");
+    for k in 0..n {
+        let _ = writeln!(b, "        out[{k}] = PC_NAN;");
+    }
+    b.push_str("        return;\n    }\n");
+    for (k, &c) in cpu.consts.iter().enumerate() {
+        let lit = float_literal(c, scalar);
+        let _ = writeln!(b, "    const pc_real c{k} = {lit};\n    (void)c{k};");
+    }
+    for (k, &ins) in cpu.ins.iter().enumerate() {
+        let id = format!("g{}", tb + k);
+        let expr = op_expr(
+            &ins_op(ins),
+            &mut |a| name(a.0),
+            n_p,
+            scalar,
+            &format!("q{k}"),
+            &mut b,
+        );
+        let _ = writeln!(b, "    const pc_real {id} = {expr};\n    (void){id};");
+    }
+    for k in tb + cpu.ins.len()..prog.glen {
+        let _ = writeln!(b, "    pc_real g{k} = PC_ZERO;\n    (void)g{k};");
+    }
+    for f in 0..prog.nflag_global {
+        let _ = writeln!(b, "    int gf{f} = 0;\n    (void)gf{f};");
+    }
+    b.push_str(
+        "    pc_real rv = PC_ZERO;\n    pc_uint depth = 0u, fb = 0u, nfb = 0u;\n    int pc = 0;\n\
+         \x20   (void)rv;\n    (void)depth;\n    (void)fb;\n    (void)nfb;\n",
+    );
+    // A case label at every step a jump, a return or a resume reaches.
+    let mut label = vec![false; prog.steps.len()];
+    label[prog.entry as usize] = true;
+    for u in &prog.units {
+        label[u.entry as usize] = true;
+    }
+    for (s, step) in prog.steps.iter().enumerate() {
+        match *step {
+            Step::Jmp(t) | Step::JmpIfZero(_, t) => label[t as usize] = true,
+            Step::Sub(_, t) => {
+                label[t as usize] = true;
+                if s + 1 < label.len() {
+                    label[s + 1] = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    b.push_str("    while (pc >= 0) {\n        switch (pc) {\n");
+    let mut resume = prog.steps.len();
+    for (s, step) in prog.steps.iter().enumerate() {
+        if label[s] {
+            if s > 0 {
+                b.push_str("        /* fallthrough */\n");
+            }
+            let _ = writeln!(b, "        case {s}:");
+        }
+        b.push_str("        {\n");
+        match *step {
+            Step::Op(d, ins) => {
+                let mut pre = String::new();
+                let expr = op_expr(
+                    &ins_op(ins),
+                    &mut |a| name(a.0),
+                    n_p,
+                    scalar,
+                    &format!("m{s}"),
+                    &mut pre,
+                );
+                for l in pre.lines() {
+                    let _ = writeln!(b, "        {l}");
+                }
+                let _ = writeln!(b, "            {} = {expr};", name(d));
+            }
+            Step::Move(d, a) => {
+                let _ = writeln!(b, "            {} = {};", name(d), name(a));
+            }
+            Step::Jmp(t) => {
+                let _ = writeln!(b, "            pc = {t};\n            continue;");
+            }
+            Step::JmpIfZero(c, t) => {
+                let _ = writeln!(
+                    b,
+                    "            if ({} == PC_ZERO) {{\n                pc = {t};\n                continue;\n            }}",
+                    name(c)
+                );
+            }
+            Step::Sub(f, t) if f & LOCAL == 0 => {
+                // The flag holds 0 before the subroutine runs, its return label while it
+                // runs and -1 after. A subroutine that reaches itself through a call never
+                // ends on the CPU either, which stops at its frame cap.
+                let g = flag(f);
+                let _ = writeln!(
+                    b,
+                    "            if ({g} == 0) {{\n                {g} = {};\n                pc = {t};\n                continue;\n            }}\n\
+                     \x20           if ({g} > 0) {{\n                *cerr = 1u;\n                pc = -1;\n                continue;\n            }}",
+                    s + 1
+                );
+            }
+            Step::Sub(f, t) => {
+                let g = flag(f);
+                let _ = writeln!(
+                    b,
+                    "            if ({g} == PC_ZERO) {{\n                {g} = (pc_real){};\n                pc = {t};\n                continue;\n            }}",
+                    s + 1
+                );
+            }
+            Step::Rts(f) if f & LOCAL == 0 => {
+                let g = flag(f);
+                let _ = writeln!(
+                    b,
+                    "            pc = {g};\n            {g} = -1;\n            continue;"
+                );
+            }
+            Step::Rts(f) => {
+                let g = flag(f);
+                let _ = writeln!(
+                    b,
+                    "            pc = (int){g};\n            {g} = -PC_ONE;\n            continue;"
+                );
+            }
+            Step::Invoke(u, lo, d) => {
+                let unit = &prog.units[u as usize];
+                let _ = writeln!(
+                    b,
+                    "            if (depth >= {KERNEL_FRAMES}u) {{\n                *cerr = 1u;\n                pc = -1;\n                continue;\n            }}\n\
+                     \x20           nfb = depth * {stride}u;"
+                );
+                let lo = lo as usize;
+                for (j, &a) in prog.pool[lo..lo + unit.arity as usize].iter().enumerate() {
+                    let _ = writeln!(b, "            stk[nfb + {}u] = {};", 1 + j, name(a));
+                }
+                for f in 0..unit.nflags {
+                    let _ = writeln!(
+                        b,
+                        "            stk[nfb + {}u] = PC_ZERO;",
+                        stride as u32 - 1 - f
+                    );
+                }
+                let _ = writeln!(
+                    b,
+                    "            stk[nfb] = (pc_real){resume};\n            fb = nfb;\n            depth++;\n\
+                     \x20           pc = {};\n            continue;\n        }}\n        /* fallthrough */\n\
+                     \x20       case {resume}:\n        {{\n            {} = rv;",
+                    unit.entry,
+                    name(d)
+                );
+                resume += 1;
+            }
+            Step::Ret(a) => {
+                let _ = writeln!(
+                    b,
+                    "            rv = {};\n            pc = (int)stk[fb];\n            depth--;\n\
+                     \x20           fb -= {stride}u;\n            continue;",
+                    name(a)
+                );
+            }
+            Step::End => {
+                b.push_str("            pc = -1;\n            continue;\n");
+            }
+        }
+        b.push_str("        }\n");
+    }
+    b.push_str(
+        "        /* fallthrough */\n        default:\n            *cerr = 1u;\n            pc = -1;\n\
+         \x20           continue;\n        }\n    }\n",
+    );
+    b.push_str("    if (*cerr != 0u) {\n");
+    for k in 0..n {
+        let _ = writeln!(b, "        out[{k}] = PC_NAN;");
+    }
+    b.push_str("    } else {\n");
+    for (k, &o) in cpu.outputs.iter().enumerate() {
+        let _ = writeln!(b, "        out[{k}] = {};", name(o));
+    }
+    b.push_str("    }\n}\n");
+    Ok((b, stride))
 }
 
 #[cfg(test)]

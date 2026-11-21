@@ -14,7 +14,7 @@ mod cc_check;
 use pc_codegen::kernel::{Dialect, Scalar};
 use pc_ensemble::abi::pack_in;
 use pc_ensemble::job::{Job, Label, Method, Precision, validate};
-use pc_ensemble::kernel::{Integrator, Layout, kernel_source_in};
+use pc_ensemble::kernel::{Integrator, Layout, kernel_source_in, stack_len};
 use pc_ensemble::real::Real;
 use pc_ensemble::{EnsembleResult, Tape};
 
@@ -133,6 +133,23 @@ type Ens<T> = unsafe extern "C" fn(
     u64,
 );
 
+/// The entry of a tape with calls, which takes the members' stacks last.
+type EnsStk<T> = unsafe extern "C" fn(
+    *const T,
+    *const u64,
+    *const T,
+    *const T,
+    *mut T,
+    *mut T,
+    *mut u32,
+    u64,
+    u64,
+    u32,
+    u32,
+    u64,
+    *mut T,
+);
+
 impl Shim {
     /// Builds the kernel for the model, method and precision of `job`. `None` after a loud
     /// skip when there is no C compiler.
@@ -211,10 +228,39 @@ impl Shim {
         };
         // SAFETY: `tbl` outlives the run and `pc_shim_init` copies it.
         unsafe { init(&tbl) };
+        // A tape with calls gets one stack per member, NaN-filled so a read of a slot the
+        // kernel never wrote shows up in the bits; it is kept across launches like a device
+        // buffer.
+        let len = stack_len(&tape);
+        let mut stk = vec![T::NAN; p.members * len];
+        // SAFETY: a tape with calls defines `pc_ens` with the stack argument last.
+        let ens_stk: Option<Symbol<EnsStk<T>>> =
+            (len > 0).then(|| unsafe { self.lib.get(b"pc_ens").expect("pc_ens") });
         let mut launches = 0;
         while !p.done() {
             launches += 1;
             assert!(launches <= LAUNCH_LIMIT, "the kernel never finished");
+            if let Some(e) = &ens_stk {
+                // SAFETY: as below, and `stk` holds `stack_len` reals per member.
+                unsafe {
+                    e(
+                        p.rc.as_ptr(),
+                        p.segm.as_ptr(),
+                        p.x0.as_ptr(),
+                        p.par.as_ptr(),
+                        p.work.as_mut_ptr(),
+                        p.out.as_mut_ptr(),
+                        p.ctl.as_mut_ptr(),
+                        p.members as u64,
+                        steps,
+                        p.max_steps,
+                        p.ns as u32,
+                        p.pstride as u64,
+                        stk.as_mut_ptr(),
+                    );
+                }
+                continue;
+            }
             // SAFETY: every buffer is sized by `pack` for `members` members and `ns` samples.
             unsafe {
                 ens(
