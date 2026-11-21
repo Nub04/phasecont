@@ -286,17 +286,24 @@ fn a_recursive_model_runs_and_counts_the_member_past_the_cap() {
 /// device, so the code is the same on a machine without the GPU (SPEC 8af-5).
 #[test]
 fn a_gpu_backend_refuses_a_recursive_model_with_the_model_code() {
-    let m = parse("par k=1\ns(n)=if(n<1)then(0)else(1+s(n-1))\nx'=-s(k)*x\ndone\n");
-    for backend in ["cuda", "opencl", "metal"] {
-        let json = job("").replace("\"cpu\"", &format!("\"{backend}\""));
-        let (rc, ens) = start_with(&m, &json, &[1.0], &[1.0]);
-        assert_eq!(rc, PC_ERR_MODEL, "{backend}: {}", last_error());
-        assert_eq!(ens, 0, "{backend}");
-        let e = last_error();
-        assert!(
-            e.contains("recursive function s") && e.contains(backend),
-            "{e}"
-        );
+    // The second model also uses erf, which the tape does not run, so `Tape::build` fails
+    // on it; the refusal must not depend on the tape.
+    for src in [
+        "par k=1\ns(n)=if(n<1)then(0)else(1+s(n-1))\nx'=-s(k)*x\ndone\n",
+        "par k=1\ns(n)=if(n<1)then(0)else(1+s(n-1))\nx'=-s(k)*x+erf(x)\ndone\n",
+    ] {
+        let m = parse(src);
+        for backend in ["cuda", "opencl", "metal"] {
+            let json = job("").replace("\"cpu\"", &format!("\"{backend}\""));
+            let (rc, ens) = start_with(&m, &json, &[1.0], &[1.0]);
+            assert_eq!(rc, PC_ERR_MODEL, "{backend} {src}: {}", last_error());
+            assert_eq!(ens, 0, "{backend}");
+            let e = last_error();
+            assert!(
+                e.contains("recursive function s") && e.contains(backend),
+                "{e}"
+            );
+        }
     }
 }
 

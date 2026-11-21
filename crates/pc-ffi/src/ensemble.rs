@@ -184,14 +184,22 @@ pub(crate) fn start(
     check_math(head.backend, head.precision, head.math)?;
     // Only the CPU tape runs recursive calls (SPEC 8af-5). A GPU run of such a model fails here,
     // before the device probe, so the error is the same on a machine without that GPU.
-    let units = Tape::build(&model.ir).ok().map(|t| t.units);
-    if head.backend != Backend::Cpu
-        && let Some(u) = units.iter().flatten().next()
-    {
+    // The test reads the DAG, not the tape, so a model the tape rejects for another reason
+    // gets the same error. The name comes from the tape when it builds (a function the
+    // right-hand side reaches), else from the first function of the DAG.
+    let ir = &model.ir;
+    let units = Tape::build(ir).ok().map(|t| t.units);
+    if head.backend != Backend::Cpu && ir.f.iter().any(|&id| ir.dag.has_call(id)) {
+        let name = units
+            .iter()
+            .flatten()
+            .map(|u| u.name.as_str())
+            .chain(ir.dag.units().iter().map(|u| u.name.as_str()))
+            .next()
+            .unwrap_or("");
         return Err(Error::Model(format!(
-            "the right-hand side calls the recursive function {}, which only the cpu ensemble \
-             backend runs, not {}",
-            u.name,
+            "the right-hand side calls the recursive function {name}, which only the cpu \
+             ensemble backend runs, not {}",
             head.backend.name()
         )));
     }
