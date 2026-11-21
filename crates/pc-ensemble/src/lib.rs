@@ -13,6 +13,7 @@ pub mod kept;
 pub mod kernel;
 pub mod metal;
 pub mod opencl;
+pub mod order;
 pub mod real;
 pub mod run;
 pub mod selftest;

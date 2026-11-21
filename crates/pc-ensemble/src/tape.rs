@@ -624,6 +624,13 @@ impl<T: Real> Slab<T> {
     pub fn failed(&self) -> bool {
         self.failed
     }
+
+    /// The frames entered and the most frames active at once in the last evaluation of a
+    /// tape with calls, or `None` for a tape without calls. An evaluation that failed reports
+    /// the counts at the point it stopped.
+    pub fn depth(&self) -> Option<(u64, u32)> {
+        self.calls.as_ref().map(|c| (c.calls, c.depth))
+    }
 }
 
 /// The constants of a tape, each bit pattern once, in order of first use.
@@ -809,6 +816,7 @@ impl<T: Real> CpuTape<T> {
                     frames: Vec::new(),
                     gosub: Vec::new(),
                     calls: 0,
+                    depth: 0,
                     #[cfg(test)]
                     entered: 0,
                     #[cfg(test)]
@@ -826,9 +834,9 @@ impl<T: Real> CpuTape<T> {
         }
     }
 
-    /// Sets the most frames a right-hand side of a tape with calls may hold at once, for
-    /// tests of the limit. A tape without calls ignores it.
-    #[cfg(test)]
+    /// Sets the most frames a right-hand side of a tape with calls may hold at once: the
+    /// kernel cap for the depth keys, or a small cap in tests of the limit. A tape without
+    /// calls ignores it.
     pub(crate) fn set_max_calls(&mut self, cap: usize) {
         if let Some(p) = &mut self.prog {
             p.cap = cap;
@@ -1012,8 +1020,10 @@ struct CallState {
     flags: Vec<u8>,
     frames: Vec<Frame>,
     gosub: Vec<u32>,
-    /// Frames entered in this evaluation, modulo 2^32, for the cancel poll.
-    calls: u32,
+    /// Frames entered in this evaluation, for the cancel poll and the depth keys.
+    calls: u64,
+    /// The most frames active at once in this evaluation, for the depth keys.
+    depth: u32,
     /// Frames entered and the most active at once, for the tests against `EvalStats`.
     #[cfg(test)]
     entered: u64,
@@ -1032,7 +1042,7 @@ enum Halt {
 /// An evaluation reads the cancel flag once every this many frames it enters, about 1 ms of
 /// `sum` frames in release, so a branching recursion such as `fib(60)` stops soon after a
 /// cancel. A tape without calls never reads it.
-const CANCEL_POLL: u32 = 1 << 16;
+const CANCEL_POLL: u64 = 1 << 16;
 
 /// The emitter's view of one function body, or of the global code when `local` is false.
 struct Cx {
@@ -1436,6 +1446,7 @@ impl<T: Real> CpuTape<T> {
             }
             cs.flags[..prog.nflag_global].fill(0);
             cs.calls = 0;
+            cs.depth = 0;
             if exec(prog, &mut slab.v, cs, cancel).is_err() {
                 slab.v.truncate(prog.glen);
                 cs.flags.truncate(prog.nflag_global);
@@ -1503,7 +1514,7 @@ fn exec<T: Real>(
                 if cs.frames.len() >= prog.cap {
                     return Err(Halt::Depth);
                 }
-                cs.calls = cs.calls.wrapping_add(1);
+                cs.calls += 1;
                 if cs.calls.is_multiple_of(CANCEL_POLL)
                     && cancel.is_some_and(|c| c.load(Ordering::Relaxed))
                 {
@@ -1528,6 +1539,7 @@ fn exec<T: Real>(
                 v.resize(nfb + flen, T::ZERO);
                 let nflb = cs.flags.len();
                 cs.flags.resize(nflb + unit.nflags as usize, 0);
+                cs.depth = cs.depth.max(cs.frames.len() as u32 + 1);
                 #[cfg(test)]
                 {
                     cs.entered += 1;
