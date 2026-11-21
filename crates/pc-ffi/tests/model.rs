@@ -891,3 +891,22 @@ fn an_option_with_blanks_around_the_equals_sign_is_left_out() {
     let m = model("x'=-x\n@ total = 100, xp=v, yp =w, xlo= 1, ylo=2\ndone\n");
     assert_eq!(options_of(&m), pairs(&[("xp", "v"), ("ylo", "2")]));
 }
+
+/// `model_info` lists the recursive functions the model reaches, once each, before any
+/// compile, so the front end can pick the JIT over AOT C (SPEC 8af-5, F-5). A recursive
+/// function that no entry calls is not listed.
+#[test]
+fn info_lists_the_reached_recursive_functions() {
+    let m = model(
+        "par n=5\n\
+         f(k)=if(k<1)then(1)else(k*f(k-1))\n\
+         g(k)=if(k<1)then(0)else(g(k-1)+1)\n\
+         x'=-x+0*f(n)\n\
+         aux a=f(2)+f(3)\n\
+         done\n",
+    );
+    let v = info(&m);
+    assert!(v["evaluator"].is_null());
+    assert_eq!(v["recursive"], serde_json::json!(["f"]));
+    assert_eq!(info(&model(LORENZ))["recursive"], serde_json::json!([]));
+}

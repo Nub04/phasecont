@@ -15,6 +15,9 @@ classdef AotTest < matlab.unittest.TestCase
         Henon = "par a=1.4, b=0.3" + newline + "init x=0, y=0" + newline + ...
             "x(t+1)=1-a*x^2+y" + newline + "y(t+1)=b*x" + newline + ...
             "done" + newline
+        Recursive = "par k=5" + newline + ...
+            "s(n)=if(n<1)then(0)else(n+s(n-1))" + newline + ...
+            "init x=1" + newline + "x'=-x+0.01*s(k)" + newline + "done" + newline
     end
 
     properties
@@ -330,6 +333,59 @@ classdef AotTest < matlab.unittest.TestCase
             testCase.verifyEqual(m.AotInfo.Compiler, "");
             testCase.verifyEqual(m.rhs([0.3 0.9]), ...
                 phasecont.Model(ff).rhs([0.3 0.9]));
+        end
+
+        function recursiveModelRunsOnTheJitWithOneNote(testCase)
+            % Compiled C does not run recursive calls, so Evaluator "aot"
+            % builds a recursive model on the JIT with one note per Model,
+            % before any compile starts (SPEC 8af-5, F-5). No compiler is
+            % needed: the hook errors if a build starts.
+            import matlab.unittest.constraints.IssuesWarnings
+            w = warning("off", "phasecont:model:parseWarning");
+            restore = onCleanup(@() warning(w));
+            f = testCase.write("rec.ode", testCase.Recursive);
+            phasecont.internal.aotHook(@(~) error("AotTest:aotBuild", "an AOT build started"));
+            testCase.verifyThat(@() phasecont.Model(f, Evaluator = "aot"), ...
+                IssuesWarnings("phasecont:aot:recursive", Exactly = true));
+            [~, id] = lastwarn;
+            testCase.verifyEqual(string(id), "phasecont:aot:recursive");
+            m = testCase.verifyWarning(@() phasecont.Model(f, Evaluator = "aot"), ...
+                "phasecont:aot:recursive");
+            [msg, ~] = lastwarn;
+            testCase.verifySubstring(string(msg), "(s)");
+            testCase.verifySubstring(string(msg), "using the JIT");
+            testCase.verifyEqual(m.Evaluator, "jit");
+            testCase.verifyEqual(m.AotInfo.Library, "");
+            j = phasecont.Model(f);
+            x = testCase.verifyWarningFree(@() m.rhs(0.4));
+            testCase.verifyEqual(x, j.rhs(0.4));
+            tm = testCase.verifyWarningFree(@() phasecont.simulate(m, 0.4, [0 1]));
+            tj = phasecont.simulate(j, 0.4, [0 1]);
+            testCase.verifyEqual(tm.X, tj.X);
+            phasecont.config("Codegen", "aot");
+            c = testCase.verifyWarning(@() phasecont.Model(f), "phasecont:aot:recursive");
+            testCase.verifyEqual(c.Evaluator, "jit");
+        end
+
+        function recursiveSessionRecordsAndReplaysOnTheJit(testCase)
+            % The file records the evaluator the model was built with, so a
+            % recursive model asked for as "aot" is recorded as "jit", and a
+            % replay that asks for "aot" runs on the JIT with the note.
+            w = warning("off", "phasecont:model:parseWarning");
+            restore = onCleanup(@() warning(w));
+            f = testCase.write("rec.ode", testCase.Recursive);
+            phasecont.internal.aotHook(@(~) error("AotTest:aotBuild", "an AOT build started"));
+            m = testCase.verifyWarning(@() phasecont.Model(f, Evaluator = "aot"), ...
+                "phasecont:aot:recursive");
+            tr = phasecont.simulate(m, 0.4, [0 1]);
+            file = fullfile(testCase.Dir, "rec.pcsession.json");
+            save(phasecont.Session(m, {tr}), file);
+            S = phasecont.internal.sessionCodec.readFile(file);
+            testCase.verifyEqual(S.Model.Evaluator, "jit");
+            r = testCase.verifyWarning(@() phasecont.session.replay(file, Evaluator = "aot"), ...
+                "phasecont:aot:recursive");
+            testCase.verifyTrue(all([r.Pass]));
+            testCase.verifyTrue(all([r.Identical]));
         end
     end
 end

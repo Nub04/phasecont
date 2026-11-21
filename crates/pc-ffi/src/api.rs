@@ -414,6 +414,14 @@ pub unsafe extern "C" fn model_info(model: u64, out_json: *mut *mut c_char) -> i
             _ => None,
         };
         let c_file = h.c_file().map(|p| p.to_string_lossy().into_owned());
+        // The recursive functions the lowered model reaches, once each in first-use order
+        // (SPEC 8af-5, F-5). A declared function that no entry calls makes no unit.
+        let mut recursive: Vec<&str> = Vec::new();
+        for u in h.ir.dag.units() {
+            if !recursive.contains(&u.name.as_str()) {
+                recursive.push(&u.name);
+            }
+        }
         let names = &h.names;
         let v = json!({
             "n": h.n(),
@@ -437,6 +445,7 @@ pub unsafe extern "C" fn model_info(model: u64, out_json: *mut *mut c_char) -> i
             "aot_lib": aot_lib,
             "c_file": c_file,
             "jit_max_frame": h.max_frame(),
+            "recursive": recursive,
         });
         let s =
             serde_json::to_string(&v).map_err(|e| Error::Internal(format!("info JSON: {e}")))?;

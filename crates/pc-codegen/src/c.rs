@@ -144,8 +144,8 @@ pub enum CNameError {
     },
     /// The C identifier of a name is reserved; see [`emit_c`].
     Reserved { name: String, ident: String },
-    /// The entry reads a recursive function call, which the C emitter does not lower yet
-    /// (SPEC 8af-5, stage 3).
+    /// The entry reads a recursive function call, which the C emitter does not lower. The
+    /// front end builds such a model on the JIT instead (SPEC 8af-5, F-5).
     Recursive { name: String },
 }
 
@@ -168,7 +168,7 @@ impl fmt::Display for CNameError {
             }
             CNameError::Recursive { name } => write!(
                 f,
-                "entry {name:?} calls a recursive function, which compiled C does not support yet"
+                "entry {name:?} calls a recursive function, which compiled C does not run; the JIT runs the model"
             ),
         }
     }

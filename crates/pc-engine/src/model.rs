@@ -233,8 +233,8 @@ fn finish(
 }
 
 /// Refuses with `Model` an IR that calls a recursive function, for the AOT path, which does
-/// not run calls yet (SPEC 8af-5, stage 3). The JIT and the fallback run them. The text
-/// names the functions and the evaluators that run them.
+/// not run calls (SPEC 8af-5, F-5). The JIT and the fallback run them, and the front end
+/// picks the JIT for such a model. The text names the functions and those evaluators.
 fn refuse_calls(ir: &IrModel) -> Result<(), EngineError> {
     let mut names: Vec<&str> = Vec::new();
     for u in ir.dag.units() {
@@ -246,8 +246,8 @@ fn refuse_calls(ir: &IrModel) -> Result<(), EngineError> {
         return Ok(());
     }
     Err(EngineError::Model(format!(
-        "the model calls the recursive function{} {}, which the AOT path does not run \
-         yet; build it with Evaluator = \"jit\" or \"fallback\"",
+        "the model calls the recursive function{} {}, which the AOT path does not \
+         run; the JIT and the fallback evaluator run it",
         if names.len() == 1 { "" } else { "s" },
         names.join(", ")
     )))

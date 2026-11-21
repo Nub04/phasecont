@@ -15,7 +15,15 @@ fn emit_c_refuses_a_recursive_call() {
     let mut ir = lower(&l.expanded, &l.info).expect("lower");
     let f = ir.entry(&EntryKind::F).unwrap();
     match emit_c(&ir, &[("f".to_string(), &f)]) {
-        Err(CNameError::Recursive { name }) => assert_eq!(name, "f"),
+        Err(e @ CNameError::Recursive { .. }) => {
+            let CNameError::Recursive { name } = &e else {
+                unreachable!()
+            };
+            assert_eq!(name, "f");
+            // The text says which evaluator runs the model instead.
+            let text = e.to_string();
+            assert!(text.contains("the JIT runs"), "{text}");
+        }
         other => panic!("expected Recursive, got {:?}", other.map(|s| s.len())),
     }
 }

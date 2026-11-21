@@ -29,7 +29,9 @@ classdef Model < handle
     %               chosen with mex -setup C. If the build or the load
     %               fails, the model runs on the JIT and a warning with an
     %               identifier phasecont:aot:* says so. A delay model
-    %               always uses the JIT.
+    %               always uses the JIT. A model that calls a recursive
+    %               function uses the JIT too, with the note
+    %               phasecont:aot:recursive once per model.
     % With no Evaluator argument, or Evaluator = "", the session option
     % phasecont.config("Codegen") decides; it is "jit" until it is set.
     % Model.Evaluator holds the evaluator the model runs on, and
@@ -506,6 +508,17 @@ classdef Model < handle
                 if isDelay && obj.Evaluator == "aot"
                     obj.Evaluator = "jit";
                 end
+                % Compiled C does not run recursive calls, so a model that
+                % reaches a recursive function uses the JIT, with one note
+                % per model (SPEC 8af-5, F-5).
+                recursive = strings(1, 0);
+                if isfield(first, "recursive")
+                    recursive = reshape(string(first.recursive), 1, []);
+                end
+                noteRecursive = ~isempty(recursive) && obj.Evaluator == "aot";
+                if noteRecursive
+                    obj.Evaluator = "jit";
+                end
                 if obj.Evaluator == "aot"
                     [ok, aot] = phasecont.Model.compileAot(id);
                     if ~ok
@@ -539,6 +552,11 @@ classdef Model < handle
                     warning("phasecont:model:parseWarning", "%s", ...
                         sprintf("%s:%d:%d: %s", file, e.line, e.col, e.message));
                 end
+            end
+            if noteRecursive && obj.firstNotice("aotRecursive")
+                warning("phasecont:aot:recursive", ...
+                    "Compiled C does not run recursive functions (%s), using the JIT.", ...
+                    strjoin(recursive, ", "));
             end
             obj.Variables = phasecont.Model.toNames(info.variables);
             obj.Parameters = phasecont.Model.toNames(info.parameters);
