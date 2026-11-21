@@ -11,11 +11,11 @@
 //! * `determinism`: the same job twice, one member alone, and the members in reverse order
 //!   must give the same bits. The number of values that differ is the error, the limit is 0.
 //!   The jobs are RK4 and Dormand-Prince on a model of `+ - * /` and the Henon map with `iter`.
-//! * `recursion`, on a backend that runs function calls: `x' = -s(k)*x/k` with the recursive
-//!   `s(n) = n` under RK4 against `x0*exp(-t)`, at depths up to 4,096 frames, error scaled by
-//!   `1 + |exact|`. One more member asks for exactly the frames of the backend's cap and
-//!   must end with `recursion_depth` while the others finish; if it does not, the error is
-//!   infinite. The limit is that of `analytic-rk4`.
+//! * `recursion`: `x' = -s(k)*x/k` with the recursive `s(n) = n` under RK4 against
+//!   `x0*exp(-t)`, at depths up to 4,096 frames, error scaled by `1 + |exact|`. One more
+//!   member asks for exactly the frames of the backend's cap and must end with
+//!   `recursion_depth` while the others finish; if it does not, the error is infinite. The
+//!   limit is that of `analytic-rk4`.
 //! * Bit-exactness: for a backend that is not the CPU reference, fixed-step RK4 on a model
 //!   of `+ - * /` only and the Henon map with `iter` must match the CPU backend in the same
 //!   precision bit for bit. The CPU backend is the reference, so its report says `None`.
@@ -514,7 +514,7 @@ pub fn run_with(
     let precision = label.precision;
     let (m4, l4) = rk4(precision);
     let (m5, l5) = dp5(precision);
-    let mut tiers = vec![
+    let tiers = vec![
         Tier {
             name: "analytic-rk4",
             max_error: analytic(run, m4, precision)?,
@@ -535,14 +535,12 @@ pub fn run_with(
             max_error: determinism(run, precision)?,
             limit: 0.0,
         },
-    ];
-    if let Some(frames) = device.backend.call_frames() {
-        tiers.push(Tier {
+        Tier {
             name: "recursion",
-            max_error: recursion(run, precision, frames)?,
+            max_error: recursion(run, precision, device.backend.call_frames())?,
             limit: l4,
-        });
-    }
+        },
+    ];
     let bit_exact = if compare_bits {
         Some(bit_exact(run, precision)?)
     } else {

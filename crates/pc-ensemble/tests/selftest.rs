@@ -219,15 +219,8 @@ mod run_with {
     }
 
     #[test]
-    fn a_backend_that_does_not_run_calls_has_no_recursion_tier() {
-        let d = DeviceInfo {
-            backend: Backend::Metal,
-            ..device()
-        };
-        let r = run_with(&cpu, d, label(Precision::Single), false, false).unwrap();
-        assert!(r.pass, "{:#?}", r.tiers);
-        assert!(r.tiers.iter().all(|t| t.name != "recursion"));
-        for b in [Backend::Cuda, Backend::OpenCl] {
+    fn every_gpu_backend_has_a_recursion_tier() {
+        for b in [Backend::Cuda, Backend::OpenCl, Backend::Metal] {
             let d = DeviceInfo {
                 backend: b,
                 ..device()

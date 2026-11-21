@@ -20,7 +20,7 @@ classdef EnsembleTest < matlab.unittest.TestCase
         GpuBackend = {"cuda", "opencl", "metal"}
         GpuPrecision = {"single", "double"}
         % The GPU backends that run recursive calls (SPEC 8af-5).
-        CallBackend = {"cuda", "opencl"}
+        CallBackend = {"cuda", "opencl", "metal"}
     end
 
     methods (TestClassSetup)
@@ -312,12 +312,13 @@ classdef EnsembleTest < matlab.unittest.TestCase
             testCase.verifyEqual(r.States(1, end, 1), exp(-1), "RelTol", 1e-8);
         end
 
-        function aGpuBackendRefusesARecursiveModel(testCase)
-            % Metal does not run calls yet. The engine refuses before it looks for a
-            % device, so the ID is the same on a machine without the GPU.
+        function aGpuBackendRefusesARecursiveModelTheTapeCannotRun(testCase)
+            % A GPU kernel is emitted from the tape, which has no erf. The engine
+            % refuses before it looks for a device, so the ID is the same on a
+            % machine without the GPU.
             m = testCase.model("s(n)=if(n<1)then(0)else(1+s(n-1))" + newline + ...
-                "x'=-s(1)*x" + newline + "done" + newline);
-            for b = "metal"
+                "x'=-s(1)*x+erf(x)" + newline + "done" + newline);
+            for b = ["cuda", "opencl", "metal"]
                 testCase.verifyError(@() phasecont.ensemble(m, 1, [], [0 1], ...
                     Backend = b, Precision = "single", Dt = 0.01), ...
                     "phasecont:engine:model", b);

@@ -86,8 +86,8 @@ impl Tape {
     /// Builds the tape of `ir.f`, or names the constructs that cannot run.
     ///
     /// A right-hand side that calls a recursive function gets the bodies of the functions
-    /// it reaches on the same tape, with [`Tape::units`] and [`Tape::args`] filled in. Only
-    /// the CPU loop runs such a tape; the GPU paths refuse it through [`Tape::refuse_calls`].
+    /// it reaches on the same tape, with [`Tape::units`] and [`Tape::args`] filled in. The
+    /// CPU loop and the GPU kernels run such a tape.
     pub fn build(ir: &IrModel) -> Result<Tape, EnsembleError> {
         if ir.f.iter().any(|&id| ir.dag.has_call(id)) {
             return Self::build_calls(ir);
@@ -313,19 +313,6 @@ impl Tape {
             }
         }
         mark
-    }
-
-    /// Refuses a tape with calls, for the GPU paths, which run only call-free tapes.
-    pub fn refuse_calls(&self) -> Result<(), EnsembleError> {
-        if self.units.is_empty() {
-            Ok(())
-        } else {
-            Err(EnsembleError::Unsupported(format!(
-                "the right-hand side calls the recursive function {}, which only the CPU \
-                 ensemble backend runs",
-                self.units[0].name
-            )))
-        }
     }
 
     pub fn len(&self) -> usize {

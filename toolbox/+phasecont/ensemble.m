@@ -69,7 +69,8 @@ function r = ensemble(m, x0, p, tspan, options)
 %   "recursionDepth" is reported with the warning ID
 %   phasecont:ensemble:memberStopped. A member ends with "recursionDepth"
 %   when a recursive function call in its right-hand side needs more than
-%   1,000,000 active frames; the other members go on. The
+%   1,000,000 active frames on the CPU or 4,096 on a GPU backend; the other
+%   members go on. The
 %   call blocks while the engine runs and polls it, first after 1 ms and then
 %   at growing intervals up to 50 ms, so a short run returns within a few
 %   milliseconds. Ctrl+C cancels the run.

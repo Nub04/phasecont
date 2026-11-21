@@ -393,10 +393,10 @@ jobs:
             echo "== $f"
             xcrun -sdk macosx metal -c "$f" -o /dev/null
           done
-      - name: Run the self-test on the Metal and OpenCL devices
+      - name: Run the self-test and the recursion cases on the Metal and OpenCL devices
         env:
           PC_REQUIRE_GPU: metal
-        run: cargo test --locked --no-fail-fast -p pc-ensemble --test device_selftest -- --include-ignored --nocapture
+        run: cargo test --locked --no-fail-fast -p pc-ensemble --test device_selftest --test recursion_metal -- --include-ignored --nocapture
       - name: Run the command-line self-test on Metal
         run: cargo run --locked -q -p pc-cli -- gpu selftest --backend metal --precision single
 

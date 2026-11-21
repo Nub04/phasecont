@@ -182,44 +182,27 @@ pub(crate) fn start(
         &model.ir, &head, members, x0, params, per_member, None,
     ))?;
     check_math(head.backend, head.precision, head.math)?;
-    // The cpu, cuda and opencl backends run recursive calls (SPEC 8af-5); Metal does not yet.
-    // A run of such a model on another backend fails here, before the device probe, so the
-    // error is the same on a machine without that GPU. The test reads the DAG, not the tape,
-    // so a model the tape rejects for another reason gets the same code on every GPU backend,
-    // cuda included; its message then adds the tape's reason, since the cpu backend refuses
-    // that model too. The name comes from the tape when it builds (a function the right-hand
-    // side reaches), else from the first function of the DAG.
+    // Every backend runs recursive calls (SPEC 8af-5), but a GPU kernel is emitted from the
+    // tape, so a GPU run of a model with calls that the tape rejects fails here, before the
+    // device probe, and the error is the same on a machine without that GPU. The message adds
+    // the tape's reason, since the cpu backend refuses that model too, and names the first
+    // function of the DAG.
     let ir = &model.ir;
     let tape = Tape::build(ir);
-    let runs_calls = match head.backend {
-        Backend::Cpu => true,
-        b => b.call_frames().is_some() && tape.is_ok(),
-    };
-    if !runs_calls && ir.f.iter().any(|&id| ir.dag.has_call(id)) {
-        let name = tape
-            .iter()
-            .flat_map(|t| &t.units)
-            .map(|u| u.name.as_str())
-            .chain(ir.dag.units().iter().map(|u| u.name.as_str()))
-            .next()
-            .unwrap_or("");
+    if head.backend != Backend::Cpu
+        && ir.f.iter().any(|&id| ir.dag.has_call(id))
+        && let Err(e) = &tape
+    {
+        let name = ir.dag.units().first().map_or("", |u| u.name.as_str());
         let backend = head.backend.name();
-        return Err(Error::Model(match &tape {
-            Ok(_) => format!(
-                "the right-hand side calls the recursive function {name}, which only the cpu, \
-                 cuda and opencl ensemble backends run, not {backend}"
-            ),
-            Err(e) => {
-                let why = match e {
-                    pc_ensemble::EnsembleError::Unsupported(m) => m.clone(),
-                    e => e.to_string(),
-                };
-                format!(
-                    "the right-hand side calls the recursive function {name}, which the \
-                     {backend} ensemble backend does not run, and {why}"
-                )
-            }
-        }));
+        let why = match e {
+            pc_ensemble::EnsembleError::Unsupported(m) => m.clone(),
+            e => e.to_string(),
+        };
+        return Err(Error::Model(format!(
+            "the right-hand side calls the recursive function {name}, which the {backend} \
+             ensemble backend does not run, and {why}"
+        )));
     }
     let device = find_device(head.backend, head.device).map_err(Error::GpuUnavailable)?;
     // Only a CPU run calls a compiled `F`, one per precision. The first CPU run of a model in a

@@ -27,7 +27,8 @@ classdef EnsembleResult < handle
     %   Status      M-by-1 string: "ok", "bounds", "stepTooSmall",
     %               "maxSteps", "notFinite" or "recursionDepth" (a
     %               recursive call needed more than 1,000,000 active
-    %               frames). For a member that did not end
+    %               frames on the CPU or 4,096 on a GPU). For a member
+    %               that did not end
     %               "ok", TReached is the time it got to and States is NaN at
     %               the output times after TReached
     %   StatusCode  the same as numbers 0 to 4, and 6 for "recursionDepth"
