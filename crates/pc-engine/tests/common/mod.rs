@@ -6,6 +6,8 @@ use pc_ir::EntryKind;
 use pc_ode::{FsLoader, Model, ModelInfo, Severity, SourceMap, load as ode_load};
 use std::path::Path;
 
+pub mod inject;
+
 /// One RK4 step of x' = T f(x) in rescaled time.
 pub fn rk4(m: &mut dyn ModelEval, p: &[f64], t: f64, x: &mut [f64], dt: f64) {
     let n = x.len();
