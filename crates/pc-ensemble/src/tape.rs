@@ -24,7 +24,7 @@ use pc_ir::IrModel;
 use pc_ir::dag::{Cmp, Fn1, Fn2, NodeId, Op};
 use pc_ir::eval::live_set;
 
-use crate::job::{EnsembleError, NativeRhs};
+use crate::job::{EnsembleError, NativeRhs, StackLayout};
 
 const SEVERAL_OUTPUTS: &str = "function with several outputs";
 use crate::real::Real;
@@ -1631,7 +1631,11 @@ fn stride_of(prog: &Prog) -> usize {
 /// stack and its error word: a call past [`KERNEL_FRAMES`] sets the word, and every
 /// right-hand side is NaN from then on.
 #[doc(hidden)]
-pub fn emit_calls_rhs(tape: &Tape, scalar: Scalar) -> Result<(String, usize), KernelError> {
+pub fn emit_calls_rhs(
+    tape: &Tape,
+    scalar: Scalar,
+    stack: StackLayout,
+) -> Result<(String, usize), KernelError> {
     let mut names: Vec<&'static str> = Vec::new();
     for op in &tape.ops {
         if matches!(op, Op::Arg(_) | Op::Call(..) | Op::If(..) | Op::Out(..)) {
@@ -1660,12 +1664,26 @@ pub fn emit_calls_rhs(tape: &Tape, scalar: Scalar) -> Result<(String, usize), Ke
             "recursive functions too large for a kernel".into(),
         ));
     }
+    // The warp layout scales every slot index by the group of 32 members.
+    if stack == StackLayout::Warp && stride * KERNEL_FRAMES * 32 >= 1 << 31 {
+        return Err(KernelError::Unsupported(
+            "recursive functions too large for the warp stack layout; use stack member".into(),
+        ));
+    }
+    // Slot `e` of this member's stack. `stk` already points at the member (member layout) or
+    // at its lane of the group (warp layout, where slot e of the 32 lanes sits side by side).
+    let at = |e: String| -> String {
+        match stack {
+            StackLayout::Member => format!("stk[{e}]"),
+            StackLayout::Warp => format!("stk[({e}) * 32u]"),
+        }
+    };
     let (n, n_p) = (tape.n, tape.n_p);
     let nc = cpu.consts.len();
     let tb = nc + n + n_p + 1;
     let name = |o: u32| -> String {
         if o & LOCAL != 0 {
-            return format!("stk[fb + {}u]", 1 + (o & !LOCAL));
+            return at(format!("fb + {}u", 1 + (o & !LOCAL)));
         }
         let o = o as usize;
         if o < nc {
@@ -1683,7 +1701,7 @@ pub fn emit_calls_rhs(tape: &Tape, scalar: Scalar) -> Result<(String, usize), Ke
     };
     let flag = |f: u32| -> String {
         if f & LOCAL != 0 {
-            format!("stk[fb + {}u]", stride as u32 - 1 - (f & !LOCAL))
+            at(format!("fb + {}u", stride as u32 - 1 - (f & !LOCAL)))
         } else {
             format!("gf{f}")
         }
@@ -1825,20 +1843,26 @@ pub fn emit_calls_rhs(tape: &Tape, scalar: Scalar) -> Result<(String, usize), Ke
                 );
                 let lo = lo as usize;
                 for (j, &a) in prog.pool[lo..lo + unit.arity as usize].iter().enumerate() {
-                    let _ = writeln!(b, "            stk[nfb + {}u] = {};", 1 + j, name(a));
+                    let _ = writeln!(
+                        b,
+                        "            {} = {};",
+                        at(format!("nfb + {}u", 1 + j)),
+                        name(a)
+                    );
                 }
                 for f in 0..unit.nflags {
                     let _ = writeln!(
                         b,
-                        "            stk[nfb + {}u] = PC_ZERO;",
-                        stride as u32 - 1 - f
+                        "            {} = PC_ZERO;",
+                        at(format!("nfb + {}u", stride as u32 - 1 - f))
                     );
                 }
                 let _ = writeln!(
                     b,
-                    "            stk[nfb] = (pc_real){resume};\n            fb = nfb;\n            depth++;\n\
+                    "            {} = (pc_real){resume};\n            fb = nfb;\n            depth++;\n\
                      \x20           pc = {};\n            continue;\n        }}\n        /* fallthrough */\n\
                      \x20       case {resume}:\n        {{\n            {} = rv;",
+                    at("nfb".into()),
                     unit.entry,
                     name(d)
                 );
@@ -1847,9 +1871,10 @@ pub fn emit_calls_rhs(tape: &Tape, scalar: Scalar) -> Result<(String, usize), Ke
             Step::Ret(a) => {
                 let _ = writeln!(
                     b,
-                    "            rv = {};\n            pc = (int)stk[fb];\n            depth--;\n\
+                    "            rv = {};\n            pc = (int){};\n            depth--;\n\
                      \x20           fb -= {stride}u;\n            continue;",
-                    name(a)
+                    name(a),
+                    at("fb".into())
                 );
             }
             Step::End => {

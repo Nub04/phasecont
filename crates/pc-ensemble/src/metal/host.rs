@@ -21,8 +21,10 @@ use crate::abi::{Packed, integrator_of, pack_in};
 use crate::batch::{half_budget, members_per_batch, run_batched};
 use crate::device::{Backend, BackendState, DeviceInfo};
 use crate::gpu::{check_alloc, drive, global_size, guard, kernel_err, layout_by_size};
-use crate::job::{Checked, EnsembleError, EnsembleResult, Job, Label, Precision, validate};
-use crate::kernel::{Layout, Stack, kernel_source_in, stack_of};
+use crate::job::{
+    Checked, EnsembleError, EnsembleResult, Job, Label, Precision, StackLayout, validate,
+};
+use crate::kernel::{Layout, Stack, kernel_source_with, stack_of};
 use crate::tape::Tape;
 
 type Dev = ProtocolObject<dyn MTLDevice>;
@@ -158,14 +160,22 @@ pub fn run_metal(
     // follows the size of the model only (SPEC 13).
     let integrator = integrator_of(job.method);
     let layout = layout_by_size(forced_layout(), checked.n, integrator, size_of::<f32>());
-    let src = kernel_source_in(&tape, integrator, Scalar::F32, Dialect::Msl, layout)
-        .map_err(kernel_err)?;
+    let src = kernel_source_with(
+        &tape,
+        integrator,
+        Scalar::F32,
+        Dialect::Msl,
+        layout,
+        job.stack,
+    )
+    .map_err(kernel_err)?;
     let label = Label {
         backend: Backend::Metal.name().into(),
         device: info.name.clone(),
         driver: info.driver.clone(),
         precision: job.precision,
         math: job.math,
+        stack: job.stack,
     };
     guard(|| {
         session(
@@ -251,7 +261,13 @@ fn session(
                 &dev,
                 &queue,
                 &pipeline,
-                (group, handle.max_alloc, info.memory_bytes, stack_len),
+                (
+                    group,
+                    handle.max_alloc,
+                    info.memory_bytes,
+                    stack_len,
+                    job.stack,
+                ),
                 pack_in::<f32>(sub, checked, tape, layout),
                 cancel,
             )
@@ -322,12 +338,13 @@ fn set_value<T>(enc: &ProtocolObject<dyn MTLComputeCommandEncoder>, value: &T, i
 }
 
 /// Uploads the buffers, launches until no member is running and downloads the result.
-/// `stack_len` is the reals of the stack of one member, 0 for a kernel without calls.
+/// `stack_len` is the reals of the stack of one member, 0 for a kernel without calls, and
+/// `stack` its layout, which pads the buffer to whole groups of 32 members.
 fn launch_all(
     dev: &Dev,
     queue: &ProtocolObject<dyn MTLCommandQueue>,
     pipeline: &Pipeline,
-    (group, max_alloc, memory, stack_len): (usize, u64, Option<u64>, usize),
+    (group, max_alloc, memory, stack_len, stack): (usize, u64, Option<u64>, usize, StackLayout),
     mut packed: Packed<f32>,
     cancel: &AtomicBool,
 ) -> Result<Packed<f32>, EnsembleError> {
@@ -341,7 +358,10 @@ fn launch_all(
             ("work", size(packed.work.len(), 4)),
             ("out", size(packed.out.len(), 4)),
             ("ctl", size(packed.ctl.len(), 4)),
-            ("stk", size(packed.members.saturating_mul(stack_len), 4)),
+            (
+                "stk",
+                size(stack.buffer_reals(packed.members, stack_len), 4),
+            ),
         ],
         max_alloc,
         memory,
@@ -360,7 +380,7 @@ fn launch_all(
         0 => None,
         len => Some(allocate(
             dev,
-            packed.members.saturating_mul(len).saturating_mul(4),
+            stack.buffer_reals(packed.members, len).saturating_mul(4),
             "allocate the call stack on the device",
         )?),
     };

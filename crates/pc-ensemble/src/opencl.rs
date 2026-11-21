@@ -44,9 +44,11 @@ use crate::device::{Backend, BackendState, DeviceInfo};
 use crate::gpu::{
     ForcedLayout, Quiet, check_alloc, drive, global_size, guard, kernel_err, layout_by_size,
 };
-use crate::job::{Checked, EnsembleError, EnsembleResult, Job, Label, Precision, validate};
+use crate::job::{
+    Checked, EnsembleError, EnsembleResult, Job, Label, Precision, StackLayout, validate,
+};
 use crate::kept::{Kept, Lru};
-use crate::kernel::{Layout, Stack, kernel_source_in, stack_of};
+use crate::kernel::{Layout, Stack, kernel_source_with, stack_of};
 use crate::real::Real;
 use crate::tape::Tape;
 use crate::winload::{self, NoCwdSearch};
@@ -312,8 +314,15 @@ pub fn run_opencl(
         Precision::Double => size_of::<f64>(),
     };
     let layout = layout_by_size(forced_layout(), checked.n, integrator, real_bytes);
-    let src =
-        kernel_source_in(&tape, integrator, scalar, Dialect::OpenCl, layout).map_err(kernel_err)?;
+    let src = kernel_source_with(
+        &tape,
+        integrator,
+        scalar,
+        Dialect::OpenCl,
+        layout,
+        job.stack,
+    )
+    .map_err(kernel_err)?;
     if src.contains('\0') {
         return Err(EnsembleError::Unsupported(
             "the generated kernel contains a NUL character".into(),
@@ -325,6 +334,7 @@ pub fn run_opencl(
         driver: info.driver.clone(),
         precision: job.precision,
         math: job.math,
+        stack: job.stack,
     };
     // The entry this run used, so that a failure removes that one and not a newer one.
     let mut used: Option<Arc<Shared>> = None;
@@ -475,7 +485,7 @@ fn session(
             ctx,
             queue,
             &kernel,
-            (group, handle.max_alloc, memory, stack_len),
+            (group, handle.max_alloc, memory, stack_len, job.stack),
             pack_in::<f32>(sub, checked, tape, layout),
             cancel,
         )
@@ -484,7 +494,7 @@ fn session(
             ctx,
             queue,
             &kernel,
-            (group, handle.max_alloc, memory, stack_len),
+            (group, handle.max_alloc, memory, stack_len, job.stack),
             pack_in::<f64>(sub, checked, tape, layout),
             cancel,
         )
@@ -576,12 +586,13 @@ fn set<T>(
 }
 
 /// Uploads the buffers, launches until no member is running and downloads the result.
-/// `stack_len` is the reals of the stack of one member, 0 for a kernel without calls.
+/// `stack_len` is the reals of the stack of one member, 0 for a kernel without calls, and
+/// `stack` its layout, which pads the buffer to whole groups of 32 members.
 fn launch_all<T: Real>(
     ctx: &Context,
     queue: &CommandQueue,
     kernel: &Kernel,
-    (group, max_alloc, memory, stack_len): (usize, u64, Option<u64>, usize),
+    (group, max_alloc, memory, stack_len, stack): (usize, u64, Option<u64>, usize, StackLayout),
     mut packed: Packed<T>,
     cancel: &AtomicBool,
 ) -> Result<Packed<T>, EnsembleError> {
@@ -596,7 +607,10 @@ fn launch_all<T: Real>(
             ("work", size(packed.work.len(), t)),
             ("out", size(packed.out.len(), t)),
             ("ctl", size(packed.ctl.len(), 4)),
-            ("stk", size(packed.members.saturating_mul(stack_len), t)),
+            (
+                "stk",
+                size(stack.buffer_reals(packed.members, stack_len), t),
+            ),
         ],
         max_alloc,
         memory,
@@ -615,7 +629,7 @@ fn launch_all<T: Real>(
         len => Some(zeroed::<T>(
             ctx,
             queue,
-            packed.members.saturating_mul(len),
+            stack.buffer_reals(packed.members, len),
             "allocate the call stack on the device",
         )?),
     };

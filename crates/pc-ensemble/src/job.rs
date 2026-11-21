@@ -53,6 +53,49 @@ impl Math {
     }
 }
 
+/// Where a GPU kernel with calls keeps real e of the stack of member m (SPEC section 8af-5).
+/// Only addresses change, so both layouts give the same bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StackLayout {
+    /// One block of `PC_STK` reals per member, at m · `PC_STK`.
+    Member,
+    /// Groups of 32 members: real e of member m at (m / 32) · 32 · `PC_STK` + 32 e + m mod 32,
+    /// so the lanes of a warp at the same depth touch adjacent reals.
+    Warp,
+}
+
+impl StackLayout {
+    pub fn name(self) -> &'static str {
+        match self {
+            StackLayout::Member => "member",
+            StackLayout::Warp => "warp",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<StackLayout> {
+        [StackLayout::Member, StackLayout::Warp]
+            .into_iter()
+            .find(|m| m.name() == name)
+    }
+
+    /// Members of one group: 1 for [`StackLayout::Member`], 32 for [`StackLayout::Warp`].
+    pub fn group(self) -> usize {
+        match self {
+            StackLayout::Member => 1,
+            StackLayout::Warp => 32,
+        }
+    }
+
+    /// Reals of the stack buffer of `members` members whose stacks hold `len` reals each: the
+    /// member count rounded up to whole groups.
+    pub fn buffer_reals(self, members: usize, len: usize) -> usize {
+        members
+            .div_ceil(self.group())
+            .saturating_mul(self.group())
+            .saturating_mul(len)
+    }
+}
+
 /// Refuses a math tier the backend and precision do not take. Only CUDA in double precision
 /// takes [`Math::Fma`]: it is the one case where the fused tier measured faster, and every
 /// other backend refuses it instead of running exact under an fma label.
@@ -187,6 +230,9 @@ pub struct Job<'a> {
     /// The rounding the device compiler may use. [`check_math`] says which backends take
     /// [`Math::Fma`]; [`run_on`](crate::run::run_on) refuses the rest.
     pub math: Math,
+    /// Where a GPU kernel with calls keeps its stack. The CPU and kernels without calls
+    /// ignore it.
+    pub stack: StackLayout,
     /// A compiled right-hand side for a CPU run of its precision. A run of the other precision
     /// and GPU runs ignore it. `None` runs the tape interpreter, which gives the same bits.
     pub native: Option<NativeRhs>,
@@ -253,6 +299,7 @@ pub struct Label {
     pub driver: String,
     pub precision: Precision,
     pub math: Math,
+    pub stack: StackLayout,
 }
 
 impl Label {

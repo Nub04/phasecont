@@ -9,12 +9,15 @@ use common::shim::check_in;
 use common::*;
 use pc_ensemble::kernel::Layout;
 use pc_ensemble::tape::with_max_calls;
-use pc_ensemble::{EnsembleResult, Job, Method, Output, Params, Precision, Status};
+use pc_ensemble::{EnsembleResult, Job, Method, Output, Params, Precision, StackLayout, Status};
 
 /// The frames of the GPU stack, which the CPU tape takes as its cap in these tests.
 const FRAMES: usize = 4096;
 
 const BOTH: [Precision; 2] = [Precision::Single, Precision::Double];
+
+/// Both stack layouts, which must give the same bits.
+const STACKS: [StackLayout; 2] = [StackLayout::Member, StackLayout::Warp];
 
 fn methods(p: Precision) -> [Method; 2] {
     let dp5 = match p {
@@ -24,7 +27,7 @@ fn methods(p: Precision) -> [Method; 2] {
     [Method::Rk4 { dt: 0.05 }, dp5]
 }
 
-fn tag(name: &str, p: Precision, m: Method, l: Layout) -> String {
+fn tag(name: &str, p: Precision, m: Method, l: Layout, st: StackLayout) -> String {
     let kind = match m {
         Method::Rk4 { .. } => "rk4",
         Method::Dp5 { .. } => "dp5",
@@ -34,7 +37,7 @@ fn tag(name: &str, p: Precision, m: Method, l: Layout) -> String {
         Layout::Private => "priv",
         Layout::Global => "glob",
     };
-    format!("{name}-{}-{kind}-{l}", p.name())
+    format!("{name}-{}-{kind}-{l}-{}", p.name(), st.name())
 }
 
 /// The kernel against the CPU tape at the GPU cap. `None` after a loud skip.
@@ -42,20 +45,23 @@ fn same(what: &str, j: &Job, l: Layout) -> Option<EnsembleResult> {
     with_max_calls(FRAMES, || check_in(what, j, l))
 }
 
-/// Runs one model with per-member `k` under RK4 and DP5 in both precisions and both
-/// layouts, and returns the statuses of each run.
+/// Runs one model with per-member `k` under RK4 and DP5 in both precisions, both memory
+/// layouts and both stack layouts, and returns the statuses of each run.
 fn each(name: &str, src: &str, x0: &[f64], k: &[f64]) -> Vec<Vec<Status>> {
     let m = build_model(src);
     let mut seen = Vec::new();
     for p in BOTH {
         for method in methods(p) {
             for l in [Layout::Private, Layout::Global] {
-                let mut j = job(&m, k.len(), x0, &[], 1.0, method, p);
-                j.params = Params::PerMember(k);
-                let Some(r) = same(&tag(name, p, method, l), &j, l) else {
-                    return seen;
-                };
-                seen.push(r.status);
+                for st in STACKS {
+                    let mut j = job(&m, k.len(), x0, &[], 1.0, method, p);
+                    j.params = Params::PerMember(k);
+                    j.stack = st;
+                    let Some(r) = same(&tag(name, p, method, l, st), &j, l) else {
+                        return seen;
+                    };
+                    seen.push(r.status);
+                }
             }
         }
     }
@@ -152,15 +158,18 @@ fn a_dp5_member_that_reaches_the_cap_mid_run_matches_the_cpu() {
             hmax: 0.05,
         };
         for l in [Layout::Private, Layout::Global] {
-            let mut j = job(&m, 2, &[0.4, 0.0, 0.1, 0.0], &[], 0.5, method, p);
-            j.output = Output::Samples(vec![0.1, 0.2, 0.5]);
-            let what = tag("midrun", p, method, l);
-            let Some(r) = same(&what, &j, l) else {
-                return;
-            };
-            assert_eq!(r.status, [Status::RecursionDepth, Status::Ok], "{what}");
-            assert_eq!(r.rejected[0], 0, "{what}");
-            assert!(r.accepted[0] > 0, "{what}");
+            for st in STACKS {
+                let mut j = job(&m, 2, &[0.4, 0.0, 0.1, 0.0], &[], 0.5, method, p);
+                j.output = Output::Samples(vec![0.1, 0.2, 0.5]);
+                j.stack = st;
+                let what = tag("midrun", p, method, l, st);
+                let Some(r) = same(&what, &j, l) else {
+                    return;
+                };
+                assert_eq!(r.status, [Status::RecursionDepth, Status::Ok], "{what}");
+                assert_eq!(r.rejected[0], 0, "{what}");
+                assert!(r.accepted[0] > 0, "{what}");
+            }
         }
         // RK4 reaches the cap inside a step too.
         let mut j = job(
@@ -173,7 +182,7 @@ fn a_dp5_member_that_reaches_the_cap_mid_run_matches_the_cpu() {
             p,
         );
         j.output = Output::Samples(vec![0.1, 0.2, 0.5]);
-        let what = tag("midrun", p, j.method, Layout::Private);
+        let what = tag("midrun", p, j.method, Layout::Private, StackLayout::Member);
         let Some(r) = same(&what, &j, Layout::Private) else {
             return;
         };
@@ -188,17 +197,58 @@ fn a_map_member_past_the_cap_matches_the_cpu() {
     let k = [3.0, 5000.0, 4095.0];
     for p in BOTH {
         for l in [Layout::Private, Layout::Global] {
-            let mut j = job(&m, 3, &[1.0, 2.0, 3.0], &[], 10.0, Method::Iter, p);
-            j.params = Params::PerMember(&k);
-            let what = tag("map", p, Method::Iter, l);
-            let Some(r) = same(&what, &j, l) else {
-                return;
-            };
-            assert_eq!(
-                r.status,
-                [Status::Ok, Status::RecursionDepth, Status::Ok],
-                "{what}"
-            );
+            for st in STACKS {
+                let mut j = job(&m, 3, &[1.0, 2.0, 3.0], &[], 10.0, Method::Iter, p);
+                j.params = Params::PerMember(&k);
+                j.stack = st;
+                let what = tag("map", p, Method::Iter, l, st);
+                let Some(r) = same(&what, &j, l) else {
+                    return;
+                };
+                assert_eq!(
+                    r.status,
+                    [Status::Ok, Status::RecursionDepth, Status::Ok],
+                    "{what}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_warp_stack_layout_runs_members_past_one_group() {
+    // 70 members are two whole groups of 32 and a partial one of 6, at depths that differ
+    // inside each group. One member past the cap ends alone.
+    let m = build_model("par k=3\ns(n)=if(n<1)then(0)else(1+s(n-1))\nx'=-s(k)*x/(k+1)\ndone\n");
+    let k: Vec<f64> = (0..70)
+        .map(|i| {
+            if i == 37 {
+                4096.0
+            } else {
+                ((i * 37) % 61) as f64
+            }
+        })
+        .collect();
+    let x0: Vec<f64> = (0..70).map(|i| 1.0 + i as f64 / 70.0).collect();
+    for p in BOTH {
+        for l in [Layout::Private, Layout::Global] {
+            for st in STACKS {
+                let mut j = job(&m, 70, &x0, &[], 1.0, Method::Rk4 { dt: 0.1 }, p);
+                j.params = Params::PerMember(&k);
+                j.stack = st;
+                let what = tag("groups", p, j.method, l, st);
+                let Some(r) = same(&what, &j, l) else {
+                    return;
+                };
+                for (i, s) in r.status.iter().enumerate() {
+                    let want = if i == 37 {
+                        Status::RecursionDepth
+                    } else {
+                        Status::Ok
+                    };
+                    assert_eq!(*s, want, "{what}: member {i}");
+                }
+            }
         }
     }
 }

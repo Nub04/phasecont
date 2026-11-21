@@ -121,6 +121,7 @@ pub fn job<'a>(
         precision,
         math: pc_ensemble::Math::Exact,
         native: None,
+        stack: pc_ensemble::StackLayout::Member,
     }
 }
 

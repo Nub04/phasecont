@@ -22,6 +22,7 @@
 
 use pc_codegen::kernel::{Dialect, KernelError, Scalar, emit_rhs, float_literal, prelude};
 
+use crate::job::StackLayout;
 use crate::real::Real;
 use crate::tape::{KERNEL_FRAMES, Tape, emit_calls_rhs, kernel_frame, kernel_stride};
 use crate::traj::Coef;
@@ -106,6 +107,26 @@ pub fn kernel_source_in(
     dialect: Dialect,
     layout: Layout,
 ) -> Result<String, KernelError> {
+    kernel_source_with(
+        tape,
+        integrator,
+        scalar,
+        dialect,
+        layout,
+        StackLayout::Member,
+    )
+}
+
+/// [`kernel_source_in`] with the call stack in `stack`. A tape without calls gives the same
+/// text under either stack layout.
+pub fn kernel_source_with(
+    tape: &Tape,
+    integrator: Integrator,
+    scalar: Scalar,
+    dialect: Dialect,
+    layout: Layout,
+    stack: StackLayout,
+) -> Result<String, KernelError> {
     // The prelude comes first so that a dialect without the scalar reports that first.
     let mut s = prelude(dialect, scalar)?;
     let entry = match dialect {
@@ -156,12 +177,12 @@ pub fn kernel_source_in(
         s.push_str(entry);
     } else {
         // A tape with calls runs its functions on a stack of `PC_STK` reals per member.
-        let (rhs, stride) = emit_calls_rhs(tape, scalar)?;
+        let (rhs, stride) = emit_calls_rhs(tape, scalar, stack)?;
         s.push_str("#define PC_RECURSION_DEPTH 6u\n");
         s.push_str(&format!("#define PC_STK {}u\n", KERNEL_FRAMES * stride));
         s.push_str(&rhs);
         s.push_str(BAD_STATE);
-        s.push_str(&with_calls(integrator, &body, entry));
+        s.push_str(&with_calls(integrator, &body, entry, stack));
     }
     Ok(s)
 }
@@ -208,7 +229,7 @@ fn swap(s: &str, from: &str, to: &str, count: usize) -> String {
 /// member's stack and error word, and a set word ends the member with `PC_RECURSION_DEPTH`
 /// where the CPU backend tests its slab, before the state checks and before a DP5 step is
 /// judged, so a failed stage is never a rejected step.
-fn with_calls(integrator: Integrator, body: &str, entry: &str) -> String {
+fn with_calls(integrator: Integrator, body: &str, entry: &str, stack: StackLayout) -> String {
     let mut b = String::new();
     for line in body.split_inclusive('\n') {
         let call = ["pc_rhs(", "pc_hinit(", "pc_dp5_step("]
@@ -270,10 +291,17 @@ fn with_calls(integrator: Integrator, body: &str, entry: &str) -> String {
             );
         }
     }
+    // Member layout: each member owns PC_STK consecutive reals. Warp layout: a group of 32
+    // members owns 32 * PC_STK reals, and slot e of lane l sits at e * 32 + l, so the lanes
+    // of a warp that touch the same slot touch adjacent reals.
+    let base = match stack {
+        StackLayout::Member => "stk + m * PC_STK",
+        StackLayout::Warp => "stk + (m / 32u) * (32u * (pc_ulong)PC_STK) + (m % 32u)",
+    };
     let e = swap(
         entry,
         "ctl + m * PC_CTL, steps, max_steps, ns);\n",
-        "ctl + m * PC_CTL, steps, max_steps, ns,\n              stk + m * PC_STK);\n",
+        &format!("ctl + m * PC_CTL, steps, max_steps, ns,\n              {base});\n"),
         1,
     );
     let e = if e.contains("[[buffer(11)]]") {

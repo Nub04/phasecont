@@ -688,6 +688,7 @@ mod tests {
             precision,
             math: pc_ensemble::Math::Exact,
             native,
+            stack: pc_ensemble::StackLayout::Member,
         };
         let device = find_device(Backend::Cpu, 0).unwrap();
         run_on(&device, &job, &AtomicBool::new(false)).unwrap()
@@ -831,6 +832,7 @@ done\n";
             precision,
             math: pc_ensemble::Math::Exact,
             native,
+            stack: pc_ensemble::StackLayout::Member,
         };
         let device = find_device(Backend::Cpu, 0).unwrap();
         run_on(&device, &job, &AtomicBool::new(false)).unwrap()

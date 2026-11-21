@@ -540,6 +540,26 @@ fn math_is_exact_when_left_out_and_fma_runs_only_on_cuda_double() {
 }
 
 #[test]
+fn stack_is_member_when_left_out_and_rejects_unknown_names() {
+    let m = parse(DECAY);
+    let v = wait(&start(&m, &job(""), &[1.0], &[1.0]));
+    assert_eq!(v["label"]["stack"], "member");
+    // The CPU keeps no GPU call stack, so a warp request runs and its label names the
+    // layout that ran.
+    let v = wait(&start(&m, &job(r#","stack":"warp""#), &[1.0], &[1.0]));
+    assert_eq!(v["counts"]["ok"], 1);
+    assert_eq!(v["label"]["stack"], "member");
+    let (rc, ens) = start_with(&m, &job(r#","stack":"bogus""#), &[1.0], &[1.0]);
+    assert_eq!(rc, PC_ERR_BAD_PROBLEM);
+    assert_eq!(ens, 0);
+    assert!(
+        last_error().contains("stack must be member or warp, got bogus"),
+        "{}",
+        last_error()
+    );
+}
+
+#[test]
 fn job_keys_are_checked_by_name() {
     let m = parse(DECAY);
     let cases = [

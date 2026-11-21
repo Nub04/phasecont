@@ -14,7 +14,7 @@ mod cc_check;
 use pc_codegen::kernel::{Dialect, Scalar};
 use pc_ensemble::abi::pack_in;
 use pc_ensemble::job::{Job, Label, Method, Precision, validate};
-use pc_ensemble::kernel::{Integrator, Layout, kernel_source_in, stack_len};
+use pc_ensemble::kernel::{Integrator, Layout, kernel_source_with, stack_len};
 use pc_ensemble::real::Real;
 use pc_ensemble::{EnsembleResult, Tape};
 
@@ -177,8 +177,8 @@ impl Shim {
             Precision::Single => Scalar::F32,
             Precision::Double => Scalar::F64,
         };
-        let source =
-            kernel_source_in(&tape, integrator, scalar, Dialect::C, layout).expect("kernel source");
+        let source = kernel_source_with(&tape, integrator, scalar, Dialect::C, layout, job.stack)
+            .expect("kernel source");
         let dir = Dir::new(tag);
         let src = dir.0.join("k.c");
         let so = dir.0.join("k.so");
@@ -232,7 +232,7 @@ impl Shim {
         // kernel never wrote shows up in the bits; it is kept across launches like a device
         // buffer.
         let len = stack_len(&tape);
-        let mut stk = vec![T::NAN; p.members * len];
+        let mut stk = vec![T::NAN; job.stack.buffer_reals(p.members, len)];
         // SAFETY: a tape with calls defines `pc_ens` with the stack argument last.
         let ens_stk: Option<Symbol<EnsStk<T>>> =
             (len > 0).then(|| unsafe { self.lib.get(b"pc_ens").expect("pc_ens") });
@@ -285,6 +285,7 @@ impl Shim {
             driver: "cc".into(),
             precision: job.precision,
             math: job.math,
+            stack: job.stack,
         };
         p.finish(label).expect("finish")
     }

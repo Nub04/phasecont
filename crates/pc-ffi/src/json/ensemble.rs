@@ -3,10 +3,11 @@
 //! The job is read by hand from a `serde_json::Value` so that every error can name the key
 //! that is wrong. Nothing is filled in for a missing key, except that `device` is the first
 //! device of the backend when it is left out, and the result names the device that ran, and
-//! that a missing `math` is `exact`, the rounding every job had before the key existed.
+//! that a missing `math` is `exact`, the rounding every job had before the key existed, and a
+//! missing `stack` is `member`, the call-stack layout every job had before that key existed.
 
 use pc_ensemble::device::{Backend, BackendState, DeviceInfo, DeviceList};
-use pc_ensemble::{Math, Method, Output, Precision};
+use pc_ensemble::{Math, Method, Output, Precision, StackLayout};
 use serde_json::{Map, Value, json};
 
 pub type Parsed<T> = Result<T, String>;
@@ -24,10 +25,11 @@ pub struct Head {
     pub bounds: f64,
     pub max_steps: u32,
     pub math: Math,
+    pub stack: StackLayout,
 }
 
 /// The keys `parse_head` reads.
-pub const HEAD_KEYS: [&str; 10] = [
+pub const HEAD_KEYS: [&str; 11] = [
     "backend",
     "device",
     "precision",
@@ -38,6 +40,7 @@ pub const HEAD_KEYS: [&str; 10] = [
     "bounds",
     "max_steps",
     "math",
+    "stack",
 ];
 
 pub fn object<'a>(v: &'a Value, key: &str) -> Parsed<&'a Map<String, Value>> {
@@ -166,6 +169,12 @@ pub fn math(v: &Value) -> Parsed<Math> {
     Math::from_name(name).ok_or_else(|| format!("math must be exact or fma, got {name}"))
 }
 
+/// `member` or `warp`.
+pub fn stack(v: &Value) -> Parsed<StackLayout> {
+    let name = string(v, "stack")?;
+    StackLayout::from_name(name).ok_or_else(|| format!("stack must be member or warp, got {name}"))
+}
+
 fn index(v: &Value, key: &str) -> Parsed<usize> {
     v.as_u64()
         .and_then(|n| usize::try_from(n).ok())
@@ -204,6 +213,7 @@ pub fn parse_head(m: &Map<String, Value>) -> Parsed<Head> {
         bounds: limit(get("bounds")?, "bounds")?,
         max_steps,
         math: m.get("math").map_or(Ok(Math::Exact), math)?,
+        stack: m.get("stack").map_or(Ok(StackLayout::Member), stack)?,
     })
 }
 

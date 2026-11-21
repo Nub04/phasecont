@@ -241,6 +241,7 @@ mod tests {
             driver: String::new(),
             precision: Precision::Double,
             math: crate::job::Math::Exact,
+            stack: crate::job::StackLayout::Member,
         }
     }
 

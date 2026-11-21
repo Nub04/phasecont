@@ -101,6 +101,7 @@ fn run_as<T: Real>(
             driver: format!("pc-ensemble {}", env!("CARGO_PKG_VERSION")),
             precision: job.precision,
             math: job.math,
+            stack: crate::job::StackLayout::Member,
         },
     })
 }

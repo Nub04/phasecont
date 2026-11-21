@@ -27,8 +27,8 @@ use pc_ir::IrModel;
 use crate::cpu::run_cpu;
 use crate::device::{Backend, DeviceInfo, find_device};
 use crate::job::{
-    EnsembleError, EnsembleResult, Job, Label, Math, Method, Output, Params, Precision, Status,
-    check_math,
+    EnsembleError, EnsembleResult, Job, Label, Math, Method, Output, Params, Precision,
+    StackLayout, Status, check_math,
 };
 use crate::run::run_on;
 
@@ -223,6 +223,7 @@ fn job_in<'a>(
         precision,
         math,
         native: None,
+        stack: StackLayout::Member,
     }
 }
 
@@ -572,6 +573,7 @@ pub fn run_selftest(sel: Selected) -> Result<Report, SelfTestError> {
         driver: device.driver.clone(),
         precision: sel.precision,
         math: Math::Exact,
+        stack: StackLayout::Member,
     };
     let cancel = AtomicBool::new(false);
     let on = device.clone();

@@ -152,6 +152,7 @@ fn job_of<'a>(
         precision: head.precision,
         math: head.math,
         native,
+        stack: head.stack,
     }
 }
 
@@ -233,6 +234,7 @@ fn label_json(l: &Label) -> Value {
         "precision": l.precision.name(),
         "single_precision": l.single_precision(),
         "math": l.math.name(),
+        "stack": l.stack.name(),
     })
 }
 

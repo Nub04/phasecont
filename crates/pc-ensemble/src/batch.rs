@@ -150,6 +150,39 @@ pub fn plan_batches(
     Ok(most as usize)
 }
 
+/// [`plan_batches`] for a stack layout that pads the stack buffer of a batch to whole groups
+/// of `group` members ([`StackLayout::buffer_reals`](crate::job::StackLayout::buffer_reals)).
+/// The padding of up to `group - 1` stacks comes out of the budget, and the padded buffer must
+/// fit in one allocation. A `group` of 1 is plain [`plan_batches`].
+fn plan_grouped(
+    members: usize,
+    mut costs: Costs,
+    budget: u64,
+    max_alloc: u64,
+    group: u64,
+) -> Result<usize, EnsembleError> {
+    let group = group.max(1);
+    let stack_bytes = costs.per_member[5].1;
+    costs.fixed = costs
+        .fixed
+        .saturating_add((group - 1).saturating_mul(stack_bytes));
+    let planned = plan_batches(members, &costs, budget, max_alloc)?;
+    if group == 1 || stack_bytes == 0 || max_alloc == 0 {
+        return Ok(planned);
+    }
+    // A batch of k members fits in one allocation when k, rounded up to a whole group, does.
+    let whole = (max_alloc / stack_bytes) / group * group;
+    if whole == 0 {
+        return Err(EnsembleError::GpuLaunch(format!(
+            "{}: the warp stack layout needs {} bytes for a group of {group} members and the \
+             device allows {max_alloc} bytes in one buffer; use stack member",
+            costs.stack.as_ref().map_or(String::new(), StackCost::text),
+            stack_bytes.saturating_mul(group)
+        )));
+    }
+    Ok(planned.min(usize::try_from(whole).unwrap_or(usize::MAX)))
+}
+
 /// The members per batch for a GPU run, from the memory the backend can use (`budget`, from
 /// its free-memory query or a fraction of its total) and the largest buffer it allows.
 /// [`force_members`] lowers the result.
@@ -171,7 +204,13 @@ pub fn members_per_batch(
         stack,
         real_bytes,
     );
-    let planned = plan_batches(job.members, &costs, budget.unwrap_or(0), max_alloc)?;
+    let planned = plan_grouped(
+        job.members,
+        costs,
+        budget.unwrap_or(0),
+        max_alloc,
+        job.stack.group() as u64,
+    )?;
     Ok(match forced_members() {
         Some(k) => planned.min(k),
         None => planned,
@@ -370,6 +409,45 @@ mod tests {
             EnsembleError::BadJob(t) => t,
             other => panic!("expected BadJob, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_group_of_one_plans_like_plan_batches() {
+        let c = with_stack([16, 0, 100, 0, 0], 50, 4096, 24);
+        for (budget, max_alloc) in [(0, 0), (1 << 26, 0), (1 << 30, 1 << 22)] {
+            assert_eq!(
+                plan_grouped(1000, c.clone(), budget, max_alloc, 1),
+                plan_batches(1000, &c, budget, max_alloc)
+            );
+        }
+    }
+
+    #[test]
+    fn the_warp_padding_comes_out_of_the_budget() {
+        // 116 + 4096 * 24 bytes a member; the padding of 31 stacks is fixed.
+        let stack = 4096 * 24;
+        let each = 116 + stack;
+        let c = with_stack([16, 0, 100, 0, 0], 50, 4096, 24);
+        let budget = 50 + 31 * stack + 40 * each;
+        assert_eq!(plan_grouped(1000, c.clone(), budget, 0, 32), Ok(40));
+        assert_eq!(plan_grouped(1000, c.clone(), budget - 1, 0, 32), Ok(39));
+        // The plain layout gets the padding as members.
+        assert!(plan_grouped(1000, c, budget, 0, 1).unwrap() > 40);
+    }
+
+    #[test]
+    fn the_padded_warp_stack_fits_one_allocation() {
+        let stack: u64 = 4096 * 24;
+        let c = with_stack([16, 0, 100, 0, 0], 0, 4096, 24);
+        // 70 stacks fit in one buffer, so 64 members (two whole groups) do when padded.
+        assert_eq!(plan_grouped(1000, c.clone(), 0, 70 * stack, 32), Ok(64));
+        assert_eq!(plan_grouped(1000, c.clone(), 0, 70 * stack, 1), Ok(70));
+        // A batch of fewer members than one group still pads to a whole group.
+        assert_eq!(plan_grouped(10, c.clone(), 0, 32 * stack, 32), Ok(10));
+        let e = launch_text(plan_grouped(1000, c, 0, 31 * stack, 32).unwrap_err());
+        assert!(e.contains("warp stack layout"), "{e}");
+        assert!(e.contains("use stack member"), "{e}");
+        assert!(e.contains("fib"), "{e}");
     }
 
     #[test]

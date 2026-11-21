@@ -18,7 +18,7 @@ use pc_ensemble::device::{Backend, BackendState, DeviceInfo, find_device, list_d
 use pc_ensemble::kernel::Layout;
 use pc_ensemble::run::run_on;
 use pc_ensemble::tape::with_max_calls;
-use pc_ensemble::{EnsembleResult, Job, Method, Output, Params, Precision, Status};
+use pc_ensemble::{EnsembleResult, Job, Method, Output, Params, Precision, StackLayout, Status};
 
 /// A model run per member: name, source, start states, `k` per member and the statuses.
 type Case<'a> = (&'a str, &'a str, &'a [f64], &'a [f64], &'a [Status]);
@@ -48,6 +48,44 @@ fn same(device: &DeviceInfo, what: &str, j: &Job, l: Layout) -> EnsembleResult {
     force_layout(None);
     assert_eq!(got.label.backend, "cuda", "{what}");
     assert_eq!(want.status, got.status, "{what}: status");
+    // The other stack layout runs the same arithmetic in another memory order, so it gives
+    // the same bits as this one, Dormand-Prince included.
+    let other = match j.stack {
+        StackLayout::Member => StackLayout::Warp,
+        StackLayout::Warp => StackLayout::Member,
+    };
+    let mut o = j.clone();
+    o.stack = other;
+    force_layout(Some(l));
+    let alt = run_on(device, &o, &AtomicBool::new(false))
+        .unwrap_or_else(|e| panic!("{what} {}: the device run failed: {e}", other.name()));
+    force_layout(None);
+    assert_eq!(alt.label.stack, other, "{what}");
+    assert_eq!(got.status, alt.status, "{what} {}: status", other.name());
+    assert_eq!(
+        bits(&got.states),
+        bits(&alt.states),
+        "{what} {}: states",
+        other.name()
+    );
+    assert_eq!(
+        bits(&got.t_reached),
+        bits(&alt.t_reached),
+        "{what} {}: t",
+        other.name()
+    );
+    assert_eq!(
+        got.accepted,
+        alt.accepted,
+        "{what} {}: accepted",
+        other.name()
+    );
+    assert_eq!(
+        got.rejected,
+        alt.rejected,
+        "{what} {}: rejected",
+        other.name()
+    );
     match j.method {
         Method::Dp5 { .. } => {
             let rel = match j.precision {
@@ -243,5 +281,31 @@ fn recursive_models_run_on_a_cuda_device() {
         assert_eq!(bits(&whole.states), bits(&parts.states), "{what}");
         assert_eq!(whole.status, parts.status, "{what}");
         assert_eq!(parts.status[1], Status::RecursionDepth, "{what}");
+    }
+
+    // 70 members in batches of 33 under the warp layout: each batch has one whole group and
+    // a partial one, at depths that differ inside each group.
+    let k: Vec<f64> = (0..70)
+        .map(|i| {
+            if i == 37 {
+                4096.0
+            } else {
+                ((i * 37) % 61) as f64
+            }
+        })
+        .collect();
+    let x0: Vec<f64> = (0..70).map(|i| 1.0 + i as f64 / 70.0).collect();
+    for &p in &precisions {
+        let mut j = job(&m, 70, &x0, &[], 1.0, Method::Rk4 { dt: 0.1 }, p);
+        j.params = Params::PerMember(&k);
+        j.stack = StackLayout::Warp;
+        let whole = run_on(&device, &j, &AtomicBool::new(false)).expect("one launch");
+        force_members(Some(33));
+        let what = format!("warp batches {}", p.name());
+        let parts = same(&device, &what, &j, Layout::Private);
+        force_members(None);
+        assert_eq!(bits(&whole.states), bits(&parts.states), "{what}");
+        assert_eq!(whole.status, parts.status, "{what}");
+        assert_eq!(parts.status[37], Status::RecursionDepth, "{what}");
     }
 }

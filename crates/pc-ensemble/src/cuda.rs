@@ -44,9 +44,13 @@ use crate::abi::{Packed, integrator_of, pack_in};
 use crate::batch::{members_per_batch, run_batched};
 use crate::device::{Backend, BackendState, DeviceInfo};
 use crate::gpu::{GLOBAL_SCRATCH_FROM, drive, guard, kernel_err};
-use crate::job::{EnsembleError, EnsembleResult, Job, Label, Math, Precision, validate};
+use crate::job::{
+    EnsembleError, EnsembleResult, Job, Label, Math, Precision, StackLayout, validate,
+};
 use crate::kept::{Kept, Lru};
-use crate::kernel::{Integrator, Layout, Stack, kernel_source_in, private_reals, stack_of};
+use crate::kernel::{
+    Integrator, Layout, Stack, kernel_source_in, kernel_source_with, private_reals, stack_of,
+};
 use crate::real::Real;
 use crate::tape::Tape;
 use crate::winload::{self, NoCwdSearch};
@@ -752,7 +756,7 @@ pub fn run_cuda(
         // is picked here, where the context exists, and it decides the kernel text.
         let capacity = capacity_of(entry)?;
         let layout = pick(forced_layout(), tape.n, integrator, real_bytes, capacity);
-        let src = kernel_source_in(&tape, integrator, scalar, Dialect::Cuda, layout)
+        let src = kernel_source_with(&tape, integrator, scalar, Dialect::Cuda, layout, job.stack)
             .map_err(kernel_err)?;
         let run = Run {
             layout,
@@ -879,6 +883,7 @@ fn session(
         driver: device.driver.clone(),
         precision: job.precision,
         math: job.math,
+        stack: job.stack,
     };
     // The free memory bounds the members of one batch. The private layout takes its local
     // memory first: the driver reserves it for every resident thread, whatever the batch size.
@@ -911,7 +916,7 @@ fn session(
             ctx,
             &function,
             pack_in::<f32>(sub, checked, tape, layout),
-            (layout, stack_len),
+            (layout, stack_len, job.stack),
             cancel,
         )
         .and_then(|packed| packed.finish(label.clone())),
@@ -919,7 +924,7 @@ fn session(
             ctx,
             &function,
             pack_in::<f64>(sub, checked, tape, layout),
-            (layout, stack_len),
+            (layout, stack_len, job.stack),
             cancel,
         )
         .and_then(|packed| packed.finish(label.clone())),
@@ -935,12 +940,13 @@ fn session(
 }
 
 /// Uploads the buffers, launches until no member is running and downloads the result.
-/// `stack_len` is the reals of the stack of one member, 0 for a kernel without calls.
+/// `stack_len` is the reals of the stack of one member, 0 for a kernel without calls, and
+/// `stack` its layout, which pads the buffer to whole groups of 32 members.
 fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
     ctx: &Arc<CudaContext>,
     function: &CudaFunction,
     mut packed: Packed<T>,
-    (layout, stack_len): (Layout, usize),
+    (layout, stack_len, stack): (Layout, usize, StackLayout),
     cancel: &AtomicBool,
 ) -> Result<Packed<T>, EnsembleError> {
     let stream = ctx.default_stream();
@@ -974,7 +980,7 @@ fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
         0 => None,
         len => Some(
             stream
-                .alloc_zeros::<T>(packed.members.saturating_mul(len))
+                .alloc_zeros::<T>(stack.buffer_reals(packed.members, len))
                 .map_err(drv("allocate the call stack on the device"))?,
         ),
     };

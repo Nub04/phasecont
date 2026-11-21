@@ -194,6 +194,7 @@ mod run_with {
             driver: "0".into(),
             precision: p,
             math: pc_ensemble::Math::Exact,
+            stack: pc_ensemble::StackLayout::Member,
         }
     }
 
