@@ -46,7 +46,7 @@ use crate::gpu::{
 };
 use crate::job::{Checked, EnsembleError, EnsembleResult, Job, Label, Precision, validate};
 use crate::kept::{Kept, Lru};
-use crate::kernel::{Layout, kernel_source_in, stack_of};
+use crate::kernel::{Layout, Stack, kernel_source_in, stack_of};
 use crate::real::Real;
 use crate::tape::Tape;
 use crate::winload::{self, NoCwdSearch};
@@ -298,8 +298,8 @@ pub fn run_opencl(
             info.name
         )));
     }
+    // A tape with calls runs on a per-member stack in global memory (SPEC section 8af-5).
     let tape = Tape::build(job.model)?;
-    tape.refuse_calls()?;
     let scalar = match job.precision {
         Precision::Single => Scalar::F32,
         Precision::Double => Scalar::F64,
@@ -458,11 +458,14 @@ fn session(
         },
         layout.work_len(checked.n, integrator_of(job.method)),
     );
+    // A kernel with calls also takes its stack, a member buffer outside the scratch rule.
+    let stack = stack_of(tape);
+    let stack_len = stack.as_ref().map_or(0, Stack::reals);
     let size = members_per_batch(
         job,
         checked.times.len(),
         work_len,
-        stack_of(tape).as_ref(),
+        stack.as_ref(),
         real_bytes,
         memory.map(half_budget),
         handle.max_alloc,
@@ -472,7 +475,7 @@ fn session(
             ctx,
             queue,
             &kernel,
-            (group, handle.max_alloc, memory),
+            (group, handle.max_alloc, memory, stack_len),
             pack_in::<f32>(sub, checked, tape, layout),
             cancel,
         )
@@ -481,7 +484,7 @@ fn session(
             ctx,
             queue,
             &kernel,
-            (group, handle.max_alloc, memory),
+            (group, handle.max_alloc, memory, stack_len),
             pack_in::<f64>(sub, checked, tape, layout),
             cancel,
         )
@@ -573,11 +576,12 @@ fn set<T>(
 }
 
 /// Uploads the buffers, launches until no member is running and downloads the result.
+/// `stack_len` is the reals of the stack of one member, 0 for a kernel without calls.
 fn launch_all<T: Real>(
     ctx: &Context,
     queue: &CommandQueue,
     kernel: &Kernel,
-    (group, max_alloc, memory): (usize, u64, Option<u64>),
+    (group, max_alloc, memory, stack_len): (usize, u64, Option<u64>, usize),
     mut packed: Packed<T>,
     cancel: &AtomicBool,
 ) -> Result<Packed<T>, EnsembleError> {
@@ -592,6 +596,7 @@ fn launch_all<T: Real>(
             ("work", size(packed.work.len(), t)),
             ("out", size(packed.out.len(), t)),
             ("ctl", size(packed.ctl.len(), 4)),
+            ("stk", size(packed.members.saturating_mul(stack_len), t)),
         ],
         max_alloc,
         memory,
@@ -603,6 +608,17 @@ fn launch_all<T: Real>(
     let work = zeroed::<T>(ctx, queue, packed.work.len(), "clear work on device")?;
     let out = upload(ctx, queue, &packed.out, "copy out to device")?;
     let ctl_d = upload(ctx, queue, &packed.ctl, "copy ctl to device")?;
+    // The kernel writes a frame before it reads it; the clear runs on the device. A kernel
+    // without calls takes no stack argument.
+    let stk = match stack_len {
+        0 => None,
+        len => Some(zeroed::<T>(
+            ctx,
+            queue,
+            packed.members.saturating_mul(len),
+            "allocate the call stack on the device",
+        )?),
+    };
 
     let members = packed.members as cl_ulong;
     let max_steps: cl_uint = packed.max_steps;
@@ -624,6 +640,9 @@ fn launch_all<T: Real>(
     set(kernel, 9, &max_steps, "set max_steps")?;
     set(kernel, 10, &ns, "set ns")?;
     set(kernel, 11, &pstride, "set pstride")?;
+    if let Some(stk) = &stk {
+        set(kernel, 12, &stk.get(), "set the call stack")?;
+    }
 
     let global = [global_size(packed.members, group)];
     let local = [group];
@@ -644,7 +663,8 @@ fn launch_all<T: Real>(
         let steps: cl_ulong = steps;
         set(kernel, 8, &steps, "set steps")?;
         // SAFETY: the arguments follow the signature of `pc_ens` in order and type, the
-        // buffers have the sizes `crate::abi` documents, `global` is a multiple of `local`,
+        // buffers have the sizes `crate::abi` documents, the stack has `PC_STK` reals per
+        // member, `global` is a multiple of `local`,
         // and the kernel returns early for a work-item past the last member.
         unsafe {
             queue.enqueue_nd_range_kernel(

@@ -31,8 +31,8 @@ impl Backend {
     pub fn call_frames(self) -> Option<usize> {
         match self {
             Backend::Cpu => Some(pc_ir::machine::MAX_ACTIVE_CALLS),
-            Backend::Cuda => Some(crate::tape::KERNEL_FRAMES),
-            Backend::OpenCl | Backend::Metal => None,
+            Backend::Cuda | Backend::OpenCl => Some(crate::tape::KERNEL_FRAMES),
+            Backend::Metal => None,
         }
     }
 }

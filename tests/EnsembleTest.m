@@ -19,6 +19,8 @@ classdef EnsembleTest < matlab.unittest.TestCase
     properties (TestParameter)
         GpuBackend = {"cuda", "opencl", "metal"}
         GpuPrecision = {"single", "double"}
+        % The GPU backends that run recursive calls (SPEC 8af-5).
+        CallBackend = {"cuda", "opencl"}
     end
 
     methods (TestClassSetup)
@@ -311,26 +313,26 @@ classdef EnsembleTest < matlab.unittest.TestCase
         end
 
         function aGpuBackendRefusesARecursiveModel(testCase)
-            % OpenCL and Metal do not run calls yet. The engine refuses before it
-            % looks for a device, so the ID is the same on a machine without the GPU.
+            % Metal does not run calls yet. The engine refuses before it looks for a
+            % device, so the ID is the same on a machine without the GPU.
             m = testCase.model("s(n)=if(n<1)then(0)else(1+s(n-1))" + newline + ...
                 "x'=-s(1)*x" + newline + "done" + newline);
-            for b = ["opencl" "metal"]
+            for b = "metal"
                 testCase.verifyError(@() phasecont.ensemble(m, 1, [], [0 1], ...
                     Backend = b, Precision = "single", Dt = 0.01), ...
                     "phasecont:engine:model", b);
             end
         end
 
-        function cudaStopsAMemberPastTheKernelStack(testCase)
-            % The CUDA kernel holds 4,096 call frames per member: s(4095) takes all
+        function aGpuStopsAMemberPastTheKernelStack(testCase, CallBackend)
+            % The GPU kernel holds 4,096 call frames per member: s(4095) takes all
             % of them and s(4096) one more, so only the second member stops.
-            testCase.skipUnlessDevice("cuda", "single");
+            testCase.skipUnlessDevice(CallBackend, "single");
             m = testCase.model("par k=3" + newline + ...
                 "s(n)=if(n<1)then(0)else(1+s(n-1))" + newline + ...
                 "x'=-s(k)*x/k" + newline + "done" + newline);
             launch = @() phasecont.ensemble(m, [1 2], [4095 4096], [0 1], ...
-                Backend = "cuda", Precision = "single", Dt = 0.01);
+                Backend = CallBackend, Precision = "single", Dt = 0.01);
             testCase.verifyWarning(launch, "phasecont:ensemble:memberStopped");
             state = warning("off", "phasecont:ensemble:memberStopped");
             testCase.addTeardown(@() warning(state));

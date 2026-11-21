@@ -182,7 +182,7 @@ pub(crate) fn start(
         &model.ir, &head, members, x0, params, per_member, None,
     ))?;
     check_math(head.backend, head.precision, head.math)?;
-    // The cpu and cuda backends run recursive calls (SPEC 8af-5); OpenCL and Metal do not yet.
+    // The cpu, cuda and opencl backends run recursive calls (SPEC 8af-5); Metal does not yet.
     // A run of such a model on another backend fails here, before the device probe, so the
     // error is the same on a machine without that GPU. The test reads the DAG, not the tape,
     // so a model the tape rejects for another reason gets the same code on every GPU backend,
@@ -206,8 +206,8 @@ pub(crate) fn start(
         let backend = head.backend.name();
         return Err(Error::Model(match &tape {
             Ok(_) => format!(
-                "the right-hand side calls the recursive function {name}, which only the cpu \
-                 and cuda ensemble backends run, not {backend}"
+                "the right-hand side calls the recursive function {name}, which only the cpu, \
+                 cuda and opencl ensemble backends run, not {backend}"
             ),
             Err(e) => {
                 let why = match e {

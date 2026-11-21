@@ -220,17 +220,22 @@ mod run_with {
 
     #[test]
     fn a_backend_that_does_not_run_calls_has_no_recursion_tier() {
-        for b in [Backend::OpenCl, Backend::Metal] {
+        let d = DeviceInfo {
+            backend: Backend::Metal,
+            ..device()
+        };
+        let r = run_with(&cpu, d, label(Precision::Single), false, false).unwrap();
+        assert!(r.pass, "{:#?}", r.tiers);
+        assert!(r.tiers.iter().all(|t| t.name != "recursion"));
+        for b in [Backend::Cuda, Backend::OpenCl] {
             let d = DeviceInfo {
                 backend: b,
                 ..device()
             };
             let r = run_with(&cpu, d, label(Precision::Single), false, false).unwrap();
             assert!(r.pass, "{b:?}: {:#?}", r.tiers);
-            assert!(r.tiers.iter().all(|t| t.name != "recursion"), "{b:?}");
+            assert!(r.tiers.iter().any(|t| t.name == "recursion"), "{b:?}");
         }
-        let r = run_with(&cpu, device(), label(Precision::Single), false, false).unwrap();
-        assert!(r.tiers.iter().any(|t| t.name == "recursion"));
     }
 
     #[test]
