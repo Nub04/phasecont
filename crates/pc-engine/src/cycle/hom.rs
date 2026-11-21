@@ -20,7 +20,7 @@ use super::mesh;
 use super::problem::{CycleProblem, CycleSetup, Extra, check_dims};
 use crate::branch::{Branch, Options, Point};
 use crate::ep::{EpSetup, equilibrium};
-use crate::error::EngineError;
+use crate::error::{EngineError, keep_call_limit};
 use crate::model::ModelEval;
 use crate::problem::Problem;
 use pc_ir::EntryKind;
@@ -507,18 +507,20 @@ impl<'a> HomProblem<'a> {
     }
 
     /// IFS and IFU at x, NaN with the key off or when the solve fails (SPEC §8b-3). The
-    /// result stays in `self.flips` for `accept`.
-    fn flip_tests(&mut self, x: &[f64], a: &[f64]) -> (f64, f64) {
+    /// result stays in `self.flips` for `accept`. A recursion cap error is returned and never
+    /// becomes NaN (SPEC 8af-5).
+    fn flip_tests(&mut self, x: &[f64], a: &[f64]) -> Result<(f64, f64), EngineError> {
         if !self.inclination_flips {
-            return (f64::NAN, f64::NAN);
+            return Ok((f64::NAN, f64::NAN));
         }
         if let Some(c) = self.flips.as_ref().filter(|c| c.x == x) {
-            return (c.ifs, c.ifu);
+            return Ok((c.ifs, c.ifu));
         }
-        self.flips = self.solve_flips(x, a).ok();
-        self.flips
+        self.flips = keep_call_limit(self.solve_flips(x, a).map(Some), |_| None)?;
+        Ok(self
+            .flips
             .as_ref()
-            .map_or((f64::NAN, f64::NAN), |c| (c.ifs, c.ifu))
+            .map_or((f64::NAN, f64::NAN), |c| (c.ifs, c.ifu)))
     }
 
     /// The HOM tests at x from the eigenvalues `eigs` of A.
@@ -569,7 +571,7 @@ impl<'a> HomProblem<'a> {
             f64::NAN
         };
         let (ifs, ifu) = if ns >= 1 && ns < n {
-            self.flip_tests(x, &a)
+            self.flip_tests(x, &a)?
         } else {
             (f64::NAN, f64::NAN)
         };
@@ -700,17 +702,19 @@ impl Problem for HomProblem<'_> {
 
     /// Makes x the reference of the phase row, checks the eigenvalue counts, and keeps the
     /// bases and the left eigenvectors of x for the next step.
-    fn accept(&mut self, x: &[f64]) {
-        self.outer.accept(x);
+    fn accept(&mut self, x: &[f64]) -> Result<(), EngineError> {
+        self.outer.accept(x)?;
         if self.stop.is_some() {
-            return;
+            return Ok(());
         }
         let n = self.n;
-        let Ok(a) = self.saddle_jacobian(x) else {
-            return;
+        // A recursion cap error ends the run (SPEC 8af-5); any other error leaves the bases
+        // and eigenvectors of the last accepted point, as before.
+        let Some(a) = keep_call_limit(self.saddle_jacobian(x).map(Some), |_| None)? else {
+            return Ok(());
         };
         let Ok(lam) = eigenvalues(&a, n) else {
-            return;
+            return Ok(());
         };
         let ns = lam.iter().filter(|l| l.0 < 0.0).count();
         if ns != self.ns || lam.iter().any(|l| l.0 == 0.0) {
@@ -721,9 +725,9 @@ impl Problem for HomProblem<'_> {
                 n - self.ns,
                 n - ns
             ));
-            return;
+            return Ok(());
         }
-        if let Ok(pair) = self.bases(x) {
+        if let Some(pair) = keep_call_limit(self.bases(x).map(Some), |_| None)? {
             self.tracker.set(BasisOf::Transpose, pair);
         }
         let lam = ascending(&lam);
@@ -736,12 +740,16 @@ impl Problem for HomProblem<'_> {
             };
         }
         if self.inclination_flips {
-            self.flip_tests(x, &a);
+            // The point was just evaluated, so this is usually a cache hit. Only a recursion
+            // cap error comes back; another error leaves the cache empty for the next
+            // evaluation, which meets the same call.
+            self.flip_tests(x, &a)?;
             if let Some(c) = self.flips.as_ref().filter(|c| c.x == x) {
                 self.phi_prev = Some(c.phi.clone());
                 self.v_prev = c.vectors.clone();
             }
         }
+        Ok(())
     }
 
     fn mesh(&self) -> Vec<f64> {

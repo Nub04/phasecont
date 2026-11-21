@@ -843,9 +843,10 @@ impl Problem for CycleProblem<'_> {
         nearest_pair_is_complex(&nontrivial(eigs)).then_some("NS")
     }
 
-    fn accept(&mut self, x: &[f64]) {
+    fn accept(&mut self, x: &[f64]) -> Result<(), EngineError> {
         let k = self.profile_len();
         self.set_reference(&x[..k]);
+        Ok(())
     }
 
     /// The N + 1 mesh points.

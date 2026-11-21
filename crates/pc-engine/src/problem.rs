@@ -86,8 +86,12 @@ pub trait Problem {
 
     /// Called with each accepted point that the next step starts from: the first point,
     /// and each later point once the specials of the step that reached it are located.
-    /// The default does nothing.
-    fn accept(&mut self, _x: &[f64]) {}
+    /// The default does nothing. An implementation that evaluates the model returns the
+    /// recursion cap error, which the run ends with (SPEC 8af-5, Errors), and handles every
+    /// other error itself.
+    fn accept(&mut self, _x: &[f64]) -> Result<(), EngineError> {
+        Ok(())
+    }
 
     /// The mesh that the unknowns live on, stored with each point; empty for a problem
     /// without one.

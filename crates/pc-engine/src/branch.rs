@@ -93,6 +93,26 @@ pub struct Branch {
     pub warnings: Vec<String>,
 }
 
+/// Ends a run whose pass after the last step returned `e` (SPEC 8af-5, Errors). The stop
+/// becomes `Error(e)`, so a recursion cap hit after a normal end (`MaxSteps`, `Bounds` and the
+/// rest) is never hidden. A cancelled run stays cancelled and an earlier error stays the stop;
+/// `e` is then kept as a warning.
+pub(crate) fn end_with_error(stop: &mut StopReason, warnings: &mut Vec<String>, e: EngineError) {
+    match stop {
+        StopReason::Cancelled | StopReason::Error(_) => {
+            warnings.push(format!("the pass after the run stopped: {e}"));
+        }
+        _ => *stop = StopReason::Error(e),
+    }
+}
+
+impl Branch {
+    /// [`end_with_error`] on this branch.
+    pub(crate) fn end_with_error(&mut self, e: EngineError) {
+        end_with_error(&mut self.stop, &mut self.warnings, e);
+    }
+}
+
 /// Settings of a continuation run.
 #[derive(Clone, Debug)]
 pub struct Options {
@@ -150,5 +170,46 @@ impl Default for Options {
             tol_refine: 1e-12,
             mesh_adapt: 3,
         }
+    }
+}
+
+#[cfg(test)]
+mod end_with_error_tests {
+    use super::*;
+
+    fn cap() -> EngineError {
+        EngineError::CallLimit("test: sum, cap 1000000".into())
+    }
+
+    #[test]
+    fn a_normal_end_becomes_the_error() {
+        for before in [
+            StopReason::MaxSteps,
+            StopReason::Bounds,
+            StopReason::StepTooSmall,
+        ] {
+            let (mut stop, mut warnings) = (before, Vec::new());
+            end_with_error(&mut stop, &mut warnings, cap());
+            assert_eq!(stop, StopReason::Error(cap()));
+            assert!(warnings.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_cancelled_run_stays_cancelled_and_keeps_the_error_as_a_warning() {
+        let (mut stop, mut warnings) = (StopReason::Cancelled, Vec::new());
+        end_with_error(&mut stop, &mut warnings, cap());
+        assert_eq!(stop, StopReason::Cancelled);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("cap 1000000"), "{}", warnings[0]);
+    }
+
+    #[test]
+    fn an_earlier_error_stays_the_stop() {
+        let first = EngineError::Singular("first".into());
+        let (mut stop, mut warnings) = (StopReason::Error(first.clone()), Vec::new());
+        end_with_error(&mut stop, &mut warnings, cap());
+        assert_eq!(stop, StopReason::Error(first));
+        assert_eq!(warnings.len(), 1);
     }
 }

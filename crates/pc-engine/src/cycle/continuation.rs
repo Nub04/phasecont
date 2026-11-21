@@ -191,7 +191,10 @@ pub fn continue_cycle(
         CycleStart::Hopf(h) => (h.free, &h.params, h.ncol),
         CycleStart::Pd(s) => (s.free, &s.params, s.ncol),
     };
-    normal::attach_coefficients(model, &mut branch, free, params, ncol);
+    // A recursion cap error in the coefficients ends the run with that error (SPEC 8af-5).
+    if let Err(e) = normal::attach_coefficients(model, &mut branch, free, params, ncol) {
+        branch.end_with_error(e);
+    }
     floquet_warning(&mut branch, 1);
     Ok(branch)
 }
@@ -656,9 +659,9 @@ impl<P: Problem> Problem for Scaled<P> {
         self.inner.crossing_ok(i, a, b)
     }
 
-    fn accept(&mut self, x: &[f64]) {
+    fn accept(&mut self, x: &[f64]) -> Result<(), EngineError> {
         self.load(x);
-        self.inner.accept(&self.xp);
+        self.inner.accept(&self.xp)
     }
 
     fn mesh(&self) -> Vec<f64> {

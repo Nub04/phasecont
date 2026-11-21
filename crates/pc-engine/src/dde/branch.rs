@@ -172,13 +172,16 @@ impl Ctx<'_> {
     }
 
     /// The imaginary part below which a crossing at `x = (u, alpha)` counts as real.
-    fn omega_floor(&mut self, x: &[f64]) -> f64 {
+    /// A recursion cap error is returned, as by the other evaluations of this pass (SPEC 8af-5);
+    /// any other error gives the constant floor.
+    fn omega_floor(&mut self, x: &[f64]) -> Result<f64, EngineError> {
         let n = x.len() - 1;
         let mut p = self.setup.params.clone();
         p[self.setup.free] = x[n];
         match linearize(self.m, &x[..n], &p).map(|lin| matrix_size(&lin)) {
-            Ok(size) if size > 0.0 => OMEGA_MIN * size,
-            _ => OMEGA_MIN,
+            Ok(size) if size > 0.0 => Ok(OMEGA_MIN * size),
+            Err(e) if e.is_call_limit() => Err(e),
+            _ => Ok(OMEGA_MIN),
         }
     }
 
@@ -412,7 +415,7 @@ pub fn continue_equilibrium(
             };
             let set = ctx.roots_at(&x_end, "a classification point")?;
             let lead = leading_positive(&set);
-            let floor = ctx.omega_floor(&x_end);
+            let floor = ctx.omega_floor(&x_end)?;
             match lead {
                 Some(r) if r.im.abs() > floor => {
                     let n = x_end.len() - 1;

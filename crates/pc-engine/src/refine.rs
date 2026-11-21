@@ -724,9 +724,11 @@ pub fn refine_special(
 /// `(u, alpha)` and the eigenvalues of A there, and gets `refined = true` (and `omega`
 /// for H); its tangent and tests stay those of the located point. A failure keeps the
 /// located point and pushes "could not refine <label> near point <index>" to
-/// `branch.warnings`. A result that moved the point by more than twice the step length
-/// (the larger of the located point's and the step that reached it) counts as a failure,
-/// since Newton then found a different solution. `Cancelled` sets `branch.stop` to
+/// `branch.warnings`. A recursion cap error (SPEC 8af-5) is no failure of one point: it sets
+/// `branch.stop` to `Error` and ends the loop, keeping the points and the specials. A result
+/// that moved the point by more than twice the step length (the larger of the located
+/// point's and the step that reached it) counts as a failure, since Newton then found a
+/// different solution. `Cancelled` sets `branch.stop` to
 /// `Cancelled` and ends the loop.
 pub fn refine_specials(
     model: &mut dyn ModelEval,
@@ -780,6 +782,11 @@ pub fn refine_specials(
                         branch.stop = StopReason::Cancelled;
                         return;
                     }
+                    // A recursion cap error ends the run, never a warning (SPEC 8af-5).
+                    Err(e) if e.is_call_limit() => {
+                        branch.end_with_error(e);
+                        return;
+                    }
                     Err(_) => {
                         let msg = format!(
                             "could not compute the <a|l1> coefficient near point {}",
@@ -792,6 +799,10 @@ pub fn refine_specials(
             Ok(None) => {}
             Err(EngineError::Cancelled) => {
                 branch.stop = StopReason::Cancelled;
+                return;
+            }
+            Err(e) if e.is_call_limit() => {
+                branch.end_with_error(e);
                 return;
             }
             Err(_) => {

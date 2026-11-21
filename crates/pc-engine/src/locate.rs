@@ -41,7 +41,8 @@ enum Trial {
 
 /// Corrects at `s` on the step and evaluates the tests there. A cancel is a `Stop`. A
 /// failed corrector, a failed tangent or a NaN value of test `t` is `Failed`, and so is
-/// any other error: a locate failure never stops the run.
+/// any other error: a locate failure never stops the run. A recursion cap error is a `Stop`
+/// too, so it is never hidden as a failed trial (SPEC 8af-5).
 fn trial(
     p: &mut dyn Problem,
     st: &Step,
@@ -61,6 +62,8 @@ fn trial(
         Corrected::Done { x, iters } => (x, iters),
         Corrected::Failed => return Trial::Failed,
         Corrected::Stop(StopReason::Cancelled) => return Trial::Stop(StopReason::Cancelled),
+        // A recursion cap hit stops the run, so it is never a failed trial (SPEC 8af-5).
+        Corrected::Stop(r @ StopReason::Error(EngineError::CallLimit(_))) => return Trial::Stop(r),
         // Any other stop reason is a failure of this trial only (ruling: never stop the run
         // because of a locate failure).
         Corrected::Stop(_) => return Trial::Failed,
@@ -83,6 +86,7 @@ fn trial(
             })
         }
         Err(EngineError::Cancelled) => Trial::Stop(StopReason::Cancelled),
+        Err(e) if e.is_call_limit() => Trial::Stop(StopReason::Error(e)),
         _ => Trial::Failed,
     }
 }
@@ -194,7 +198,8 @@ fn locate_one(
 /// point, and the run ends when a step is shorter than `tol_x` (scaled by 1 + |x|). The
 /// result is `Ok(None)`, and the caller keeps `pt`, when the test is undefined or flat
 /// nearby, a step is longer than the step being searched, the corrector fails, the point
-/// leaves the step, or the iteration does not converge. Only a cancel is an `Err`.
+/// leaves the step, or the iteration does not converge. Only a cancel or a recursion cap
+/// error is an `Err`.
 fn refine_zero(
     p: &mut dyn Problem,
     st: &Step,
@@ -239,6 +244,7 @@ fn refine_zero(
         let (xn, iters) = match correct(p, &x, &tau, ds, start, opts, cancel) {
             Corrected::Done { x, iters } => (x, iters),
             Corrected::Stop(StopReason::Cancelled) => return Err(StopReason::Cancelled),
+            Corrected::Stop(r @ StopReason::Error(EngineError::CallLimit(_))) => return Err(r),
             Corrected::Failed | Corrected::Stop(_) => return Ok(None),
         };
         let (tn, dn) = match tangent_or_kernel(p, &xn, &tau) {
@@ -284,8 +290,8 @@ fn refine_zero(
 /// Looks for sign changes of the enabled tests between the last two points of `points`
 /// (points k and k+1, with k = len - 2) and appends the special points found, ordered by
 /// s, to `specials`. `xk`, `v` and `h` describe the step that reached point k+1: the
-/// start, its tangent and the length of the step. Only a cancel is returned as an `Err`;
-/// a failed search pushes a warning.
+/// start, its tangent and the length of the step. Only a cancel or a recursion cap error is
+/// returned as an `Err`; a failed search pushes a warning.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn detect_step(
     p: &mut dyn Problem,

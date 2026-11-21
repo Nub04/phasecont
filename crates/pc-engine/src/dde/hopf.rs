@@ -52,7 +52,7 @@ use super::roots::{CharRoot, LinearDde, RootOptions, RootSet, SHIFT, characteris
 use super::zerohopf::zero_hopf;
 use crate::branch::{Options, Point, StopReason};
 use crate::curve2::start_tangent;
-use crate::error::EngineError;
+use crate::error::{EngineError, keep_call_limit};
 use crate::model::DdeModel;
 use crate::palc::run_branch;
 use crate::problem::Problem;
@@ -324,31 +324,35 @@ impl HopfProblem<'_> {
 
     /// `l1` at `x`; NaN for `kappa <= 0` and where `lyapunov` refuses the point: `omega`
     /// near 0, a null pair that does not normalise, or a singular `Delta(2 i omega)` or
-    /// `Delta(0)`.
-    fn l1_at(&mut self, x: &[f64]) -> f64 {
+    /// `Delta(0)`. A recursion cap error is returned and never becomes NaN (SPEC 8af-5).
+    fn l1_at(&mut self, x: &[f64]) -> Result<f64, EngineError> {
         let n = self.n;
         let kappa = x[3 * n + 1];
         if kappa.is_nan() || kappa <= 0.0 {
-            return f64::NAN;
+            return Ok(f64::NAN);
         }
         let p = self.declared(x[3 * n], x[3 * n + 2]);
-        match lyapunov(self.m, &x[..n], &p, kappa.sqrt()) {
-            Ok(l) => l.l1,
-            Err(_) => f64::NAN,
-        }
+        keep_call_limit(
+            lyapunov(self.m, &x[..n], &p, kappa.sqrt()).map(|l| l.l1),
+            |_| f64::NAN,
+        )
     }
 
     /// `l2` at a located `GH` point; `None` for `kappa <= 0` and where `lyapunov2` returns an
-    /// error (a refusal is the usual case, for example a 1:3 resonance).
-    fn l2_at(&mut self, alpha: [f64; 2], x: &[f64], kappa: f64) -> Option<f64> {
+    /// error (a refusal is the usual case, for example a 1:3 resonance). A recursion cap error
+    /// is returned (SPEC 8af-5).
+    fn l2_at(
+        &mut self,
+        alpha: [f64; 2],
+        x: &[f64],
+        kappa: f64,
+    ) -> Result<Option<f64>, EngineError> {
         if kappa.is_nan() || kappa <= 0.0 {
-            return None;
+            return Ok(None);
         }
         let p = self.declared(alpha[0], alpha[1]);
-        lyapunov2(self.m, x, &p, kappa.sqrt())
-            .ok()
-            .map(|l| l.l2)
-            .filter(|v| v.is_finite())
+        let l2 = lyapunov2(self.m, x, &p, kappa.sqrt()).map(|l| Some(l.l2));
+        Ok(keep_call_limit(l2, |_| None)?.filter(|v| v.is_finite()))
     }
 
     /// The Hopf-Hopf test `h` at `x` (SPEC section 8k): the real part of the second pair when
@@ -356,25 +360,27 @@ impl HopfProblem<'_> {
     /// where the roots fail or the critical root is not single (both counted as lost). At
     /// `sqrt(kappa)` below `hh_omega_floor` (near a Bogdanov-Takens point) those two cases are
     /// NaN and not counted, because the pair is lost to rounding or to the root finder there.
-    fn hh_at(&mut self, x: &[f64]) -> f64 {
+    fn hh_at(&mut self, x: &[f64]) -> Result<f64, EngineError> {
         let Some(ro) = self.hh else {
-            return f64::NAN;
+            return Ok(f64::NAN);
         };
         let kappa = x[3 * self.n + 1];
         // The locator probes kappa near 1e-17 at a BT point, where the pair is not a pair.
         if kappa.is_nan() || kappa <= 0.0 {
-            return f64::NAN;
+            return Ok(f64::NAN);
         }
         let lin = match self.lin_at(x) {
             Ok((_, lin)) => lin,
+            // A recursion cap error is returned and never counted as a lost pair (SPEC 8af-5).
+            Err(e) if e.is_call_limit() => return Err(e),
             Err(_) => {
                 self.hh_lost += 1;
-                return f64::NAN;
+                return Ok(f64::NAN);
             }
         };
         let omega = kappa.sqrt();
         if omega <= OMEGA_MIN * matrix_size(&lin) {
-            return f64::NAN;
+            return Ok(f64::NAN);
         }
         // Near BT the pair at +-i omega is lost to rounding or to the root finder, which says
         // nothing about a second crossing. The floor only excuses a missing pair: a pair that
@@ -387,38 +393,50 @@ impl HopfProblem<'_> {
                 if !near_bt {
                     self.hh_lost += 1;
                 }
-                return f64::NAN;
+                return Ok(f64::NAN);
             }
         };
         let pairs = hopf_pairs(&set, omega);
         if near_bt && pairs.critical != 1 {
-            return f64::NAN;
+            return Ok(f64::NAN);
         }
         if !set.unrefined.is_empty() {
             self.hh_unrefined += 1;
         }
         if pairs.critical != 1 {
             self.hh_lost += 1;
-            return f64::NAN;
+            return Ok(f64::NAN);
         }
-        pairs.second.map_or(f64::NAN, |r| r.re)
+        Ok(pairs.second.map_or(f64::NAN, |r| r.re))
     }
 
     /// `Im` of the second critical root at a located `HH` point; `None` where the roots fail,
-    /// the critical root is not single or there is no second root.
-    fn omega2_at(&mut self, alpha: [f64; 2], x: &[f64], kappa: f64) -> Option<f64> {
-        let ro = self.hh?;
+    /// the critical root is not single or there is no second root. A recursion cap error is
+    /// returned (SPEC 8af-5).
+    fn omega2_at(
+        &mut self,
+        alpha: [f64; 2],
+        x: &[f64],
+        kappa: f64,
+    ) -> Result<Option<f64>, EngineError> {
+        let Some(ro) = self.hh else {
+            return Ok(None);
+        };
         if kappa.is_nan() || kappa <= 0.0 {
-            return None;
+            return Ok(None);
         }
         let p = self.declared(alpha[0], alpha[1]);
-        let lin = linearize(self.m, x, &p).ok()?;
-        let set = characteristic_roots(&lin, &ro).ok()?;
+        let Some(lin) = keep_call_limit(linearize(self.m, x, &p).map(Some), |_| None)? else {
+            return Ok(None);
+        };
+        let Ok(set) = characteristic_roots(&lin, &ro) else {
+            return Ok(None);
+        };
         let pairs = hopf_pairs(&set, kappa.sqrt());
         if pairs.critical != 1 {
-            return None;
+            return Ok(None);
         }
-        pairs.second.map(|r| r.im).filter(|v| v.is_finite())
+        Ok(pairs.second.map(|r| r.im).filter(|v| v.is_finite()))
     }
 
     /// `det Delta(0)`; 0 when the matrix is numerically singular.
@@ -511,10 +529,10 @@ impl Problem for HopfProblem<'_> {
         };
         let mut tests = vec![kappa, zh];
         if self.lyapunov {
-            tests.push(self.l1_at(x));
+            tests.push(self.l1_at(x)?);
         }
         if self.hh.is_some() {
-            tests.push(self.hh_at(x));
+            tests.push(self.hh_at(x)?);
         }
         Ok(tests)
     }
@@ -812,22 +830,43 @@ fn run_hopf(
         .collect();
     // The second coefficient is computed once the run is over, at the point each `GH`
     // special carries, because the model is borrowed by the run until then.
-    for s in specials.iter_mut().filter(|s| s.label == "GH") {
-        s.l2 = prob.l2_at(s.alpha, &s.x, s.kappa);
-    }
-    for s in specials.iter_mut().filter(|s| s.label == "HH") {
-        s.omega2 = prob.omega2_at(s.alpha, &s.x, s.kappa);
-    }
+    // A recursion cap error in this pass ends the run with that error (SPEC 8af-5): the
+    // values computed before it stay, the rest of the pass is skipped and the branch is kept.
+    let mut stop = branch.stop.clone();
     let mut warnings = branch.warnings.clone();
-    if extras.coefficients {
-        for s in specials.iter_mut() {
-            if s.label != "ZH" && s.label != "HH" {
-                continue;
+    'post: {
+        for s in specials.iter_mut().filter(|s| s.label == "GH") {
+            match prob.l2_at(s.alpha, &s.x, s.kappa) {
+                Ok(l2) => s.l2 = l2,
+                Err(e) => {
+                    crate::branch::end_with_error(&mut stop, &mut warnings, e);
+                    break 'post;
+                }
             }
-            let p = prob.declared(s.alpha[0], s.alpha[1]);
-            match special_coefficients(prob.m, s, &p) {
-                Ok(v) => s.coefficients = v,
-                Err(e) => warnings.push(coefficient_warning(s, &e)),
+        }
+        for s in specials.iter_mut().filter(|s| s.label == "HH") {
+            match prob.omega2_at(s.alpha, &s.x, s.kappa) {
+                Ok(w) => s.omega2 = w,
+                Err(e) => {
+                    crate::branch::end_with_error(&mut stop, &mut warnings, e);
+                    break 'post;
+                }
+            }
+        }
+        if extras.coefficients {
+            for s in specials.iter_mut() {
+                if s.label != "ZH" && s.label != "HH" {
+                    continue;
+                }
+                let p = prob.declared(s.alpha[0], s.alpha[1]);
+                match special_coefficients(prob.m, s, &p) {
+                    Ok(v) => s.coefficients = v,
+                    Err(e) if e.is_call_limit() => {
+                        crate::branch::end_with_error(&mut stop, &mut warnings, e);
+                        break 'post;
+                    }
+                    Err(e) => warnings.push(coefficient_warning(s, &e)),
+                }
             }
         }
     }
@@ -848,7 +887,7 @@ fn run_hopf(
     Ok(DdeHopfBranch {
         points: branch.points.iter().map(point_of).collect(),
         specials,
-        stop: branch.stop.clone(),
+        stop,
         warnings,
     })
 }

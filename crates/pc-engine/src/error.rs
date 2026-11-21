@@ -52,6 +52,26 @@ impl std::fmt::Display for EngineError {
 
 impl std::error::Error for EngineError {}
 
+impl EngineError {
+    /// True for the recursion cap error, which no step retries on and no code may hide as a
+    /// NaN, a missing value or an unrefined point (SPEC 8af-5, Errors).
+    pub fn is_call_limit(&self) -> bool {
+        matches!(self, EngineError::CallLimit(_))
+    }
+}
+
+/// Keeps a recursion cap error as an error and maps every other error with `other`, which is
+/// what the caller did with it before (SPEC 8af-5, Errors). An `Ok` passes through.
+pub(crate) fn keep_call_limit<T>(
+    r: Result<T, EngineError>,
+    other: impl FnOnce(EngineError) -> T,
+) -> Result<T, EngineError> {
+    match r {
+        Err(e) if !e.is_call_limit() => Ok(other(e)),
+        r => r,
+    }
+}
+
 impl From<LinalgError> for EngineError {
     fn from(e: LinalgError) -> Self {
         match e {
