@@ -188,6 +188,16 @@ fn a_member_that_does_not_finish_is_reported_and_the_run_still_exits_zero() {
 }
 
 #[test]
+fn a_member_past_the_frame_cap_is_named_recursion_depth() {
+    let mut job = decay_job();
+    job["params"] = json!({"per_member": [[1.0], [2e6]]});
+    let model = "par k=1\ns(n)=if(n<1)then(0)else(1+s(n-1))\nx'=-s(k)*x\ndone\n";
+    let v = ok("deep", model, &job);
+    assert_eq!(v["status"], json!(["ok", "recursion_depth"]));
+    assert!(v["states"][1][0][0].is_null(), "{}", v["states"]);
+}
+
+#[test]
 fn a_missing_key_is_named() {
     for key in [
         "backend",

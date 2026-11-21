@@ -292,6 +292,24 @@ classdef EnsembleTest < matlab.unittest.TestCase
             testCase.verifyEqual(r.TReached(1), 2);
         end
 
+        function recursionDepthStopsOneMemberWithAWarning(testCase)
+            % s(k) takes k + 1 frames, so k = 2e6 passes the cap of 1,000,000 frames
+            % and only that member stops.
+            m = testCase.model("par k=3" + newline + ...
+                "s(n)=if(n<1)then(0)else(1+s(n-1))" + newline + ...
+                "x'=-s(k)*x/k" + newline + "done" + newline);
+            launch = @() phasecont.ensemble(m, [1 2], [3 2e6], [0 1], Backend = "cpu", ...
+                Precision = "double", Dt = 0.01);
+            testCase.verifyWarning(launch, "phasecont:ensemble:memberStopped");
+            state = warning("off", "phasecont:ensemble:memberStopped");
+            testCase.addTeardown(@() warning(state));
+            r = launch();
+            testCase.verifyEqual(r.Status, ["ok"; "recursionDepth"]);
+            testCase.verifyEqual(r.StatusCode, uint8([0; 6]));
+            testCase.verifyEqual(r.TReached, [1; 0]);
+            testCase.verifyEqual(r.States(1, end, 1), exp(-1), "RelTol", 1e-8);
+        end
+
         function maxStepsWarnsAndKeepsTheLastState(testCase)
             m = testCase.model(testCase.Rotation);
             launch = @() phasecont.ensemble(m, [1; 0], [], [0 10], Backend = "cpu", ...

@@ -186,7 +186,9 @@ pub(crate) fn start(
     // Only a CPU run calls a compiled `F`, one per precision. The first CPU run of a model in a
     // precision compiles it, after `validate` and only when the tape takes every op of `F`, so
     // a model the ensemble refuses is never compiled. The refused run fails later, as before.
-    let native = if device.backend == Backend::Cpu && Tape::build(&model.ir).is_ok() {
+    // A model with recursive calls runs on the tape, since the compiled `F` has no calls.
+    let call_free = Tape::build(&model.ir).is_ok_and(|t| t.units.is_empty());
+    let native = if device.backend == Backend::Cpu && call_free {
         model.native_rhs(head.precision)?
     } else {
         None
@@ -225,6 +227,7 @@ fn done_json(r: &EnsembleResult) -> Value {
             "step_too_small": count(Status::StepTooSmall),
             "max_steps": count(Status::MaxSteps),
             "nonfinite": count(Status::NonFinite),
+            "recursion_depth": count(Status::RecursionDepth),
         },
         "label": label_json(&r.label),
     })

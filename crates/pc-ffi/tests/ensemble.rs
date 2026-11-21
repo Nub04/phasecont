@@ -265,6 +265,22 @@ fn per_member_parameters_are_read_member_major() {
     assert!((s[1] - (-2.0f64).exp()).abs() < 1e-9);
 }
 
+/// A model with a recursive call runs on the CPU tape, since the compiled `F` has no calls.
+/// The member past the frame cap is counted as `recursion_depth` and the other finishes.
+#[test]
+fn a_recursive_model_runs_and_counts_the_member_past_the_cap() {
+    let m = parse("par k=1\ns(n)=if(n<1)then(0)else(1+s(n-1))\nx'=-s(k)*x\ndone\n");
+    let json = job("").replace(r#""params":"shared""#, r#""params":"per_member""#);
+    let ens = start(&m, &json, &[1.0, 1.0], &[1.0, 2e6]);
+    let v = wait(&ens);
+    assert_eq!(v["counts"]["ok"], 1, "{v}");
+    assert_eq!(v["counts"]["recursion_depth"], 1, "{v}");
+    let s = copied(ens.0, PC_ENS_STATES, 2);
+    assert!((s[0] - (-1.0f64).exp()).abs() < 1e-9, "{s:?}");
+    assert!(s[1].is_nan(), "{s:?}");
+    assert_eq!(copied(ens.0, PC_ENS_STATUS, 2), [0.0, 6.0]);
+}
+
 #[test]
 fn a_copy_before_the_run_finishes_gives_2() {
     let m = parse(LORENZ);

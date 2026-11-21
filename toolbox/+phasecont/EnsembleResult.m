@@ -25,10 +25,12 @@ classdef EnsembleResult < handle
     %   Times       output times, S-by-1 (just t1 when no sample times were given)
     %   States      n-by-S-by-M; States(:, s, k) is member k at Times(s)
     %   Status      M-by-1 string: "ok", "bounds", "stepTooSmall",
-    %               "maxSteps" or "notFinite". For a member that did not end
+    %               "maxSteps", "notFinite" or "recursionDepth" (a
+    %               recursive call needed more than 1,000,000 active
+    %               frames). For a member that did not end
     %               "ok", TReached is the time it got to and States is NaN at
     %               the output times after TReached
-    %   StatusCode  the same as numbers 0 to 4
+    %   StatusCode  the same as numbers 0 to 4, and 6 for "recursionDepth"
     %   TReached    time each member reached, M-by-1
     %   Accepted    accepted steps of each member (fixed steps for RK4,
     %               iterates for a map)

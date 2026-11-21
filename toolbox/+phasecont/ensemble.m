@@ -24,7 +24,7 @@ function r = ensemble(m, x0, p, tspan, options)
 %   still required, and Backend, Device and Bounds work as for an ODE. Dt,
 %   Rtol, Atol, Hmax and MaxSteps do not apply to a map, and each one passed
 %   raises phasecont:ensemble:mapOption. A member of a map stops early only
-%   with Status "bounds" or "notFinite".
+%   with Status "bounds", "notFinite" or "recursionDepth".
 %
 %   Nothing here has a default for a value that changes a result. These
 %   options are required (for a map, only Precision):
@@ -65,8 +65,11 @@ function r = ensemble(m, x0, p, tspan, options)
 %                 instead of "exact". The results are not bit-reproducible:
 %                 call refine before they feed continuation.
 %
-%   A trajectory that stops with "stepTooSmall", "maxSteps" or "notFinite"
-%   is reported with the warning ID phasecont:ensemble:memberStopped. The
+%   A trajectory that stops with "stepTooSmall", "maxSteps", "notFinite" or
+%   "recursionDepth" is reported with the warning ID
+%   phasecont:ensemble:memberStopped. A member ends with "recursionDepth"
+%   when a recursive function call in its right-hand side needs more than
+%   1,000,000 active frames; the other members go on. The
 %   call blocks while the engine runs and polls it, first after 1 ms and then
 %   at growing intervals up to 50 ms, so a short run returns within a few
 %   milliseconds. Ctrl+C cancels the run.
@@ -248,7 +251,8 @@ reached = ens.copy(phasecont.internal.Ens.TReached, members);
 accepted = ens.copy(phasecont.internal.Ens.Accepted, members);
 rejected = ens.copy(phasecont.internal.Ens.Rejected, members);
 
-names = ["ok" "bounds" "stepTooSmall" "maxSteps" "notFinite"];
+% Code 5 means a member still running, which a finished run never returns.
+names = ["ok" "bounds" "stepTooSmall" "maxSteps" "notFinite" "running" "recursionDepth"];
 label = struct("Backend", string(st.label.backend), ...
     "Device", string(st.label.device), ...
     "Driver", string(st.label.driver), ...
@@ -271,15 +275,18 @@ r = phasecont.EnsembleResult(struct( ...
     "Accepted", accepted, "Rejected", rejected, ...
     "Label", label, "Job", jobInfo));
 
-failed = ismember(r.Status, ["stepTooSmall" "maxSteps" "notFinite"]);
-if any(failed) && isMap
-    warning("phasecont:ensemble:memberStopped", ...
-        "%d of %d members stopped before n = %d (notFinite). See Status.", ...
-        nnz(failed), members, tspan(end));
-elseif any(failed)
-    warning("phasecont:ensemble:memberStopped", ...
-        "%d of %d members stopped before t = %.6g (stepTooSmall, maxSteps or notFinite). See Status.", ...
-        nnz(failed), members, tspan(end));
+failed = ismember(r.Status, ["stepTooSmall" "maxSteps" "notFinite" "recursionDepth"]);
+if any(failed)
+    why = strjoin(unique(r.Status(failed), "stable"), ", ");
+    if isMap
+        warning("phasecont:ensemble:memberStopped", ...
+            "%d of %d members stopped before n = %d (%s). See Status.", ...
+            nnz(failed), members, tspan(end), why);
+    else
+        warning("phasecont:ensemble:memberStopped", ...
+            "%d of %d members stopped before t = %.6g (%s). See Status.", ...
+            nnz(failed), members, tspan(end), why);
+    end
 end
 end
 
