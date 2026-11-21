@@ -2,7 +2,7 @@
 //! closed-form values, derivatives, call counts, the depth cap and the refusals.
 
 use pc_ir::eval::try_eval_entry;
-use pc_ir::machine::{EvalError, EvalStats, MAX_ACTIVE_CALLS};
+use pc_ir::machine::{self, EvalError, EvalStats, MAX_ACTIVE_CALLS};
 use pc_ir::{EntryKind, IrErrorKind, IrModel, Slot, lower, lower_dde};
 use pc_ode::{MapLoader, Severity, SourceMap, load};
 
@@ -275,5 +275,127 @@ fn dir_of_a_formal_exponent() {
             "x={x}: {:?} vs {w:?}",
             j[0]
         );
+    }
+}
+
+// ---- machine::run_unit: the entry point of the JIT helper ----
+
+fn unit_named(ir: &IrModel, name: &str) -> u32 {
+    ir.dag
+        .units()
+        .iter()
+        .position(|u| u.name == name)
+        .unwrap_or_else(|| panic!("no unit {name}")) as u32
+}
+
+#[test]
+fn run_unit_matches_the_entry_run_bit_for_bit() {
+    let mut m = ir(FX);
+    let u = unit_named(&m, "f");
+    for n in 0..=25i32 {
+        let nf = f64::from(n);
+        let (f, st) = run(&mut m, EntryKind::F, &[1.5], &[nf], &[]);
+        let mut out = [f64::NAN];
+        let ust = machine::run_unit(
+            &m.dag,
+            u,
+            &[nf],
+            &[1.5],
+            &[nf, 0.0],
+            &[],
+            &mut out,
+            MAX_ACTIVE_CALLS,
+        )
+        .expect("runs");
+        assert_eq!(out[0].to_bits(), f[0].to_bits(), "n={n}");
+        assert_eq!(ust.max_depth, st.max_depth, "n={n}");
+    }
+}
+
+#[test]
+fn run_unit_leaves_nothing_behind() {
+    // Two runs of different units, a failed one in between, then the first again: the global
+    // flags set by one run must not show up as values in the next.
+    let mut m = ir("par k=3\nfact(n)=if(n<=1)then(1)else(n*fact(n-1))\n\
+                    pw(x,n)=if(n<1)then(1)else(x*pw(x,n-1))\nx'=fact(k)+pw(x,k)\ndone\n");
+    let fu = unit_named(&m, "fact");
+    let pu = unit_named(&m, "pw");
+    let _ = m.entry(&EntryKind::F).unwrap();
+    let go = |u: u32, args: &[f64], x: f64, cap: usize| {
+        let mut out = [f64::NAN];
+        let r = machine::run_unit(&m.dag, u, args, &[x], &[3.0, 0.0], &[], &mut out, cap);
+        (r, out[0])
+    };
+    for round in 0..3 {
+        let (r, v) = go(fu, &[10.0], 2.0, MAX_ACTIVE_CALLS);
+        r.expect("fact");
+        assert_eq!(v, 3_628_800.0, "round {round}");
+        let (r, v) = go(pu, &[1.5, 6.0], 2.0, MAX_ACTIVE_CALLS);
+        r.expect("pw");
+        assert_eq!(v, 1.5f64.powi(6), "round {round}");
+        // A cap error part way down: every slot is NaN, and the next call is good.
+        let (r, v) = go(fu, &[10.0], 2.0, 4);
+        assert!(matches!(r, Err(EvalError::Depth { .. })), "{r:?}");
+        assert!(v.is_nan());
+    }
+}
+
+#[test]
+fn run_unit_survives_a_big_dag_then_a_small_one_then_a_big_one() {
+    let mut big = ir(FX);
+    let mut other = ir(PW);
+    let _ = (
+        big.entry(&EntryKind::F).unwrap(),
+        other.entry(&EntryKind::F).unwrap(),
+    );
+    let (bu, ou) = (unit_named(&big, "f"), unit_named(&other, "pw"));
+    let call = |m: &IrModel, u: u32, args: &[f64], x: f64, n: f64| {
+        let mut out = [f64::NAN];
+        machine::run_unit(
+            &m.dag,
+            u,
+            args,
+            &[x],
+            &[n, 0.0],
+            &[],
+            &mut out,
+            MAX_ACTIVE_CALLS,
+        )
+        .expect("runs");
+        out[0]
+    };
+    for _ in 0..3 {
+        assert_eq!(call(&big, bu, &[7.0], 1.5, 7.0), 1.5f64.powi(7));
+        assert_eq!(call(&other, ou, &[1.5, 4.0], 1.5, 4.0), 1.5f64.powi(4));
+    }
+}
+
+#[test]
+fn run_unit_rejects_a_short_output_slice_and_a_bad_unit() {
+    let mut m = ir(FX);
+    let u = unit_named(&m, "f");
+    let _ = m.entry(&EntryKind::F).unwrap();
+    let mut none: [f64; 0] = [];
+    let r = machine::run_unit(&m.dag, u, &[2.0], &[1.5], &[2.0, 0.0], &[], &mut none, 100);
+    assert!(matches!(r, Err(EvalError::Malformed(_))), "{r:?}");
+    let mut out = [f64::NAN];
+    let r = machine::run_unit(&m.dag, 99, &[2.0], &[1.5], &[2.0, 0.0], &[], &mut out, 100);
+    assert!(matches!(r, Err(EvalError::Malformed(_))), "{r:?}");
+    assert!(out[0].is_nan());
+    // The buffers are still good afterwards.
+    machine::run_unit(&m.dag, u, &[2.0], &[1.5], &[2.0, 0.0], &[], &mut out, 100).unwrap();
+    assert_eq!(out[0], 2.25);
+}
+
+#[test]
+fn run_unit_does_not_keep_a_value_of_the_last_state() {
+    // `f` reads the state `x` in its body, and `x` changes between runs of the same thread.
+    let mut m = ir(FX);
+    let u = unit_named(&m, "f");
+    let _ = m.entry(&EntryKind::F).unwrap();
+    for x in [1.5, 0.5, 2.0, 1.5, -3.0] {
+        let mut out = [f64::NAN];
+        machine::run_unit(&m.dag, u, &[5.0], &[x], &[5.0, 0.0], &[], &mut out, 100).unwrap();
+        assert_eq!(out[0], f64::powi(x, 5), "x={x}");
     }
 }

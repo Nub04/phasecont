@@ -258,8 +258,8 @@ classdef ModelTest < matlab.unittest.TestCase
 
         function recursiveFunctionWarns(testCase)
             % F-4 (SPEC 8af-5): a recursive function is ODE0047, a warning that
-            % names the function and the depth cap. Only the fallback evaluator
-            % runs it in stage 1; the JIT refuses with engine:model.
+            % names the function and the depth cap. The JIT and the fallback
+            % evaluator run it (stage 2); the AOT path still refuses.
             f = testCase.write("recursive.ode", "par k=3" + newline + ...
                 "pw(x,n)=if(n<1)then(1)else(x*pw(x,n-1))" + newline + ...
                 "init x=1.5" + newline + "x'=pw(x,k)" + newline + "done" + newline);
@@ -273,17 +273,30 @@ classdef ModelTest < matlab.unittest.TestCase
             testCase.verifySubstring(string(m.Diagnostics(1).message), "`pw`");
             testCase.verifySubstring(string(m.Diagnostics(1).message), "1,000,000");
             testCase.verifyEqual(m.rhs(1.5), 3.375);
-            testCase.verifyError(@() phasecont.Model(f, Evaluator = "jit"), ...
-                "phasecont:engine:model");
-            % With no Evaluator the session option decides, "jit" by default:
-            % the refusal names the evaluator that runs the model.
+            mj = phasecont.Model(f, Evaluator = "jit");
+            testCase.verifyEqual(mj.rhs(1.5), 3.375);
+            % With no Evaluator the session option decides, "jit" by default,
+            % so the default evaluator runs the model too.
             testCase.assumeEqual(phasecont.config("Codegen"), "jit");
-            try
-                phasecont.Model(f);
-                testCase.verifyFail("the default evaluator ran a recursive model");
-            catch err
-                testCase.verifyEqual(string(err.identifier), "phasecont:engine:model");
-                testCase.verifySubstring(string(err.message), "fallback");
+            md = phasecont.Model(f);
+            testCase.verifyEqual(md.rhs(1.5), 3.375);
+            clear restore
+        end
+
+        function recursionCapRaisesNumeric(testCase)
+            % SPEC 8af-5, Depth cap: the 1,000,001st active call stops the run
+            % with engine:numeric, on the JIT and on the fallback evaluator, in
+            % a direct evaluation and in simulate (not a stop reason).
+            f = testCase.write("cap.ode", "par k=1000000" + newline + ...
+                "s(n)=if(n<1)then(0)else(n+s(n-1))" + newline + ...
+                "init x=1" + newline + "x'=-x+0*s(k)" + newline + "done" + newline);
+            w = warning("off", "phasecont:model:parseWarning");
+            restore = onCleanup(@() warning(w));
+            for ev = ["jit" "fallback"]
+                m = phasecont.Model(f, Evaluator = ev);
+                testCase.verifyError(@() m.rhs(1), "phasecont:engine:numeric", ev);
+                testCase.verifyError(@() phasecont.simulate(m, 1, [0 1]), ...
+                    "phasecont:engine:numeric", ev);
             end
             clear restore
         end

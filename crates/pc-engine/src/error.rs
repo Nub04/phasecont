@@ -89,8 +89,13 @@ impl From<LinalgError> for EngineError {
 }
 
 impl From<JitError> for EngineError {
+    /// An evaluation error of a call, the cap or out of memory, stays a recursion limit error;
+    /// every other JIT error is a model error.
     fn from(e: JitError) -> Self {
-        EngineError::Model(e.to_string())
+        match e {
+            JitError::Eval(e) => EngineError::from(e),
+            e => EngineError::Model(e.to_string()),
+        }
     }
 }
 
@@ -132,5 +137,24 @@ mod tests {
             EngineError::from(EvalError::Malformed("x".into())),
             EngineError::Model(_)
         ));
+    }
+
+    #[test]
+    fn jit_eval_errors_keep_their_meaning_and_other_jit_errors_are_model_errors() {
+        let e = EngineError::from(JitError::Eval(EvalError::Depth {
+            func: "sum".into(),
+            cap: 7,
+        }));
+        assert!(e.is_call_limit(), "{e:?}");
+        assert!(e.to_string().contains("sum"), "{e}");
+        assert!(EngineError::from(JitError::Eval(EvalError::OutOfMemory)).is_call_limit());
+        for e in [
+            JitError::Eval(EvalError::Malformed("x".into())),
+            JitError::BadLength("x has 1 values, expected 2".into()),
+            JitError::Cranelift("y".into()),
+        ] {
+            let mapped = EngineError::from(e);
+            assert!(matches!(mapped, EngineError::Model(_)), "{mapped:?}");
+        }
     }
 }

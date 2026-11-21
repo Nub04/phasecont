@@ -997,11 +997,21 @@ fn finish(shared: &Shared, r: Result<&Branch, EngineError>) -> RunState {
 }
 
 /// [`finish`] for a branch that is already stored: only its stop reason matters.
+///
+/// A stop on a recursion cap hit ends the run `Failed` with that error (SPEC 8af-5, Errors), so
+/// the caller sees an error and not a normal end. So does a stop on a model error, which is a
+/// model that cannot be evaluated (a failed JIT compile, a call helper that failed), not a
+/// numeric event. The points and the stop reason stay on the branch. Every other
+/// `StopReason::Error` still ends `Done`: a NaN in `simulate` or an iterate, a Newton failure or
+/// a bad problem is a stop reason with a warning.
 fn finish_stop(shared: &Shared, r: Result<&StopReason, EngineError>) -> RunState {
     let cancelled = shared.cancel.load(Ordering::Relaxed);
     match r {
         _ if cancelled => RunState::Cancelled,
         Ok(stop) if *stop == StopReason::Cancelled => RunState::Cancelled,
+        Ok(StopReason::Error(e)) if e.is_call_limit() || matches!(e, EngineError::Model(_)) => {
+            RunState::Failed(e.clone())
+        }
         Ok(_) => RunState::Done,
         Err(EngineError::Cancelled) => RunState::Cancelled,
         Err(e) => RunState::Failed(e),
@@ -1466,10 +1476,54 @@ mod tests {
     }
 
     #[test]
+    fn finish_stop_fails_a_run_that_stopped_on_a_cap_hit_or_a_model_error_and_no_other() {
+        let sh = empty_shared();
+        let cap = EngineError::CallLimit("a call of sum".into());
+        assert_eq!(
+            finish_stop(&sh, Ok(&StopReason::Error(cap.clone()))),
+            RunState::Failed(cap.clone())
+        );
+        // A model error stop is a model that cannot run.
+        let m = EngineError::Model("the JIT could not compile an entry".into());
+        assert_eq!(
+            finish_stop(&sh, Ok(&StopReason::Error(m.clone()))),
+            RunState::Failed(m)
+        );
+        // Every other error stop still ends `Done` with its stop reason, as before: a NaN in
+        // `simulate` or an iterate is a stop reason with a warning, not an error.
+        for e in [
+            EngineError::NotFinite("F".into()),
+            EngineError::NewtonFailed {
+                iters: 3,
+                residual: 1.0,
+            },
+            EngineError::BadProblem("x".into()),
+        ] {
+            assert_eq!(
+                finish_stop(&sh, Ok(&StopReason::Error(e.clone()))),
+                RunState::Done,
+                "{e:?}"
+            );
+        }
+        // A cancel request wins over a cap hit.
+        sh.cancel.store(true, Ordering::Relaxed);
+        assert_eq!(
+            finish_stop(&sh, Ok(&StopReason::Error(cap))),
+            RunState::Cancelled
+        );
+    }
+
+    #[test]
     fn finish_stop_agrees_with_finish() {
         let sh = empty_shared();
         let mut b = placeholder();
-        for stop in [StopReason::End, StopReason::Cancelled, StopReason::Bounds] {
+        let cap = StopReason::Error(EngineError::CallLimit("a call of f".into()));
+        for stop in [
+            StopReason::End,
+            StopReason::Cancelled,
+            StopReason::Bounds,
+            cap,
+        ] {
             b.stop = stop.clone();
             assert_eq!(finish_stop(&sh, Ok(&stop)), finish(&sh, Ok(&b)));
         }

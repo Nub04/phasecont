@@ -4,12 +4,16 @@
 //! tape of pc-ensemble (single precision). Nodes are lowered once each in increasing id
 //! order. No `fma` is emitted.
 
+use crate::module::CallImage;
 use crate::{Float, JitError};
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
-use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, Type, types};
+use cranelift_codegen::ir::{
+    self, BlockArg, InstBuilder, MemFlagsData, StackSlotData, StackSlotKind, Type, types,
+};
 use cranelift_codegen::isa::TargetFrontendConfig;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use pc_ir::dag::{Cmp, Dag, Fn1, Fn2, NodeId, Op};
+use pc_ir::machine::EvalError;
 use pc_ir::math::table_ok;
 use std::collections::{BTreeSet, HashMap};
 
@@ -150,6 +154,8 @@ pub(crate) struct Ctx<'a> {
     pub ptr: Type,
     pub float: Float,
     pub target: TargetFrontendConfig,
+    /// The call helper, for an entry that reads a recursive function.
+    pub call: Option<CallLower>,
 }
 
 /// The constant `v` in the float type; single precision rounds it as `v as f32` does.
@@ -304,6 +310,40 @@ fn powi(b: &mut FunctionBuilder, float: Float, x: ir::Value, n: i32) -> ir::Valu
     }
 }
 
+/// The call helper as the code of an entry reaches it.
+pub(crate) struct CallLower {
+    /// The import of [`crate::module::pc_jit_call`] in this function.
+    pub helper: ir::FuncRef,
+    /// The address of the image that the helper reads. It lives as long as the code does.
+    pub image: *const CallImage,
+}
+
+/// The values of the entry parameters and the stack slots of the calls.
+struct State {
+    x: Option<ir::Value>,
+    p: Option<ir::Value>,
+    v: Option<ir::Value>,
+    /// The slot that every call spills its arguments to: calls run one at a time, so one slot
+    /// sized for the widest call is enough.
+    args: Option<ir::StackSlot>,
+    /// The slot of the outputs of the `Call` node with this id.
+    outs: Vec<Option<ir::StackSlot>>,
+}
+
+fn bad_call(m: String) -> JitError {
+    JitError::Eval(EvalError::Malformed(m))
+}
+
+/// The value of node `id`, or an error when it has none yet.
+fn need_val(vals: &[Option<ir::Value>], id: NodeId) -> Result<ir::Value, JitError> {
+    vals.get(id.0 as usize).copied().flatten().ok_or_else(|| {
+        bad_call(format!(
+            "node {} has no value where a branch needs it",
+            id.0
+        ))
+    })
+}
+
 /// Builds the body of one entry into `func`, whose signature is already set.
 pub(crate) fn build(
     func: &mut ir::Function,
@@ -325,123 +365,48 @@ pub(crate) fn build(
     };
     let fl = c.float;
     let mut vals: Vec<Option<ir::Value>> = vec![None; c.dag.len()];
-
-    for i in 0..c.dag.len() {
-        if !c.live.get(i).copied().unwrap_or(false) {
-            continue;
+    let mut st = State {
+        x,
+        p,
+        v,
+        args: None,
+        outs: Vec::new(),
+    };
+    let mut branches = false;
+    if c.call.is_some() {
+        // Only an entry with calls needs these, so the others keep their code as it was.
+        let mut widest = 0;
+        for (i, &l) in c.live.iter().enumerate() {
+            if !l {
+                continue;
+            }
+            match *c.dag.op(NodeId(i as u32)) {
+                Op::Call(u, _) => {
+                    widest = widest.max(c.dag.unit(u).map_or(0, |u| u.arity));
+                }
+                Op::If(..) => branches = true,
+                _ => {}
+            }
         }
-        let arg = |b: &mut FunctionBuilder, vals: &[Option<ir::Value>], id: NodeId| match vals
-            .get(id.0 as usize)
-            .copied()
-            .flatten()
-        {
-            Some(v) => v,
-            None => fnan(b, fl),
-        };
-        let leaf = |b: &mut FunctionBuilder, base: Option<ir::Value>, k: u32| match base {
-            Some(base) => load(b, fl, base, k),
-            None => fnan(b, fl),
-        };
-        let r = match *c.dag.op(NodeId(i as u32)) {
-            Op::Const(bits) => fconst(&mut b, fl, f64::from_bits(bits)),
-            Op::Var(k) => leaf(&mut b, x, k),
-            Op::Param(k) => leaf(&mut b, p, k),
-            Op::Dir(k) => leaf(&mut b, v, k),
-            // `compile_as` refuses an entry that reads one of these.
-            Op::Arg(_) | Op::Call(..) | Op::If(..) | Op::Out(..) => fnan(&mut b, fl),
-            Op::Neg(a) => {
-                let a = arg(&mut b, &vals, a);
-                b.ins().fneg(a)
+        if widest > 0 {
+            let data = StackSlotData::new(StackSlotKind::ExplicitSlot, widest * 8, 3);
+            st.args = Some(b.create_sized_stack_slot(data));
+        }
+        st.outs = vec![None; c.dag.len()];
+    }
+
+    if branches {
+        let mut scope = Vec::new();
+        region(&mut b, &c, &mut st, &mut vals, &mut scope, c.outputs)?;
+    } else {
+        for i in 0..c.dag.len() {
+            if !c.live.get(i).copied().unwrap_or(false) {
+                continue;
             }
-            Op::Add(l, r) => {
-                let (l, r) = (arg(&mut b, &vals, l), arg(&mut b, &vals, r));
-                b.ins().fadd(l, r)
+            let r = lower_node(&mut b, &c, &mut st, &vals, i)?;
+            if let Some(slot) = vals.get_mut(i) {
+                *slot = Some(r);
             }
-            Op::Sub(l, r) => {
-                let (l, r) = (arg(&mut b, &vals, l), arg(&mut b, &vals, r));
-                b.ins().fsub(l, r)
-            }
-            Op::Mul(l, r) => {
-                let (l, r) = (arg(&mut b, &vals, l), arg(&mut b, &vals, r));
-                b.ins().fmul(l, r)
-            }
-            // `t == 0` gives +0 whatever `p` is, else `t * p`; see `Op::ZMul`.
-            Op::ZMul(t, p) => {
-                let (t, p) = (arg(&mut b, &vals, t), arg(&mut b, &vals, p));
-                let prod = b.ins().fmul(t, p);
-                zero_guard(&mut b, fl, t, prod)
-            }
-            Op::Div(l, r) => {
-                let (l, r) = (arg(&mut b, &vals, l), arg(&mut b, &vals, r));
-                b.ins().fdiv(l, r)
-            }
-            // `n == 0` gives +0 whatever `d` is, else `n / d`; see `Op::ZDiv`.
-            Op::ZDiv(n, d) => {
-                let (n, d) = (arg(&mut b, &vals, n), arg(&mut b, &vals, d));
-                let quot = b.ins().fdiv(n, d);
-                zero_guard(&mut b, fl, n, quot)
-            }
-            Op::PowI(a, n) => {
-                let a = arg(&mut b, &vals, a);
-                powi(&mut b, fl, a, n)
-            }
-            Op::Call1(f, a) => {
-                let a = arg(&mut b, &vals, a);
-                call1(&mut b, &c, f, a)?
-            }
-            Op::Call2(f, l, r) => {
-                let (l, r) = (arg(&mut b, &vals, l), arg(&mut b, &vals, r));
-                call2(&mut b, &c, f, l, r)?
-            }
-            Op::Cmp(k, l, r) => {
-                let (l, r) = (arg(&mut b, &vals, l), arg(&mut b, &vals, r));
-                let cc = match k {
-                    Cmp::Lt => FloatCC::LessThan,
-                    Cmp::Le => FloatCC::LessThanOrEqual,
-                    Cmp::Gt => FloatCC::GreaterThan,
-                    Cmp::Ge => FloatCC::GreaterThanOrEqual,
-                    Cmp::Eq => FloatCC::Equal,
-                };
-                let t = b.ins().fcmp(cc, l, r);
-                b2f(&mut b, fl, t)
-            }
-            Op::And(l, r) => {
-                let (l, r) = (arg(&mut b, &vals, l), arg(&mut b, &vals, r));
-                let (l, r) = (nonzero(&mut b, fl, l), nonzero(&mut b, fl, r));
-                let t = b.ins().band(l, r);
-                b2f(&mut b, fl, t)
-            }
-            Op::Or(l, r) => {
-                let (l, r) = (arg(&mut b, &vals, l), arg(&mut b, &vals, r));
-                let (l, r) = (nonzero(&mut b, fl, l), nonzero(&mut b, fl, r));
-                let t = b.ins().bor(l, r);
-                b2f(&mut b, fl, t)
-            }
-            Op::Not(a) => {
-                let a = arg(&mut b, &vals, a);
-                let t = is_zero(&mut b, fl, a);
-                b2f(&mut b, fl, t)
-            }
-            Op::Select(k, l, r) => {
-                let (k, l, r) = (
-                    arg(&mut b, &vals, k),
-                    arg(&mut b, &vals, l),
-                    arg(&mut b, &vals, r),
-                );
-                let t = nonzero(&mut b, fl, k);
-                b.ins().select(t, l, r)
-            }
-            Op::Table(id, a) => {
-                let a = arg(&mut b, &vals, a);
-                table(&mut b, &c, "pc_table", id, a)?
-            }
-            Op::TableSlope(id, a) => {
-                let a = arg(&mut b, &vals, a);
-                table(&mut b, &c, "pc_table_slope", id, a)?
-            }
-        };
-        if let Some(slot) = vals.get_mut(i) {
-            *slot = Some(r);
         }
     }
 
@@ -449,6 +414,11 @@ pub(crate) fn build(
         for (k, o) in c.outputs.iter().enumerate() {
             let r = match vals.get(o.0 as usize).copied().flatten() {
                 Some(v) => v,
+                // An output id outside the DAG reads as NaN; an output of a node in the DAG
+                // that was never lowered is a bug in an entry with calls.
+                None if c.call.is_some() && (o.0 as usize) < c.dag.len() => {
+                    return Err(bad_call(format!("output node {} was not lowered", o.0)));
+                }
                 None => fnan(&mut b, fl),
             };
             // The `+ 0.0` has to be a node of the function, not of the DAG: `Dag::add` folds
@@ -563,4 +533,277 @@ fn table(
         // A missing or malformed table reads as NaN, like the interpreter.
         None => Ok(b.ins().f64const(f64::NAN)),
     }
+}
+
+/// Emits the nodes that `roots` need on every path, in id order, and gives each its value in
+/// `vals`. Nodes already in `vals` are reused. An `If` is emitted as a branch, so the nodes
+/// that only an arm needs are emitted inside that arm and a call in the untaken arm never
+/// runs. `scope` lists the nodes emitted here, so that an arm can forget its own.
+fn region(
+    b: &mut FunctionBuilder,
+    c: &Ctx,
+    st: &mut State,
+    vals: &mut Vec<Option<ir::Value>>,
+    scope: &mut Vec<u32>,
+    roots: &[NodeId],
+) -> Result<(), JitError> {
+    let n = c.dag.len();
+    let mut stack: Vec<u32> = roots.iter().map(|r| r.0).collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut order = Vec::new();
+    while let Some(i) = stack.pop() {
+        if i as usize >= n || vals[i as usize].is_some() || !seen.insert(i) {
+            continue;
+        }
+        order.push(i);
+        let op = c.dag.op(NodeId(i));
+        match *op {
+            // The arms wait for the branch.
+            Op::If(cond, _, _) => stack.push(cond.0),
+            _ => c.dag.operands(op, &mut |ch| stack.push(ch.0)),
+        }
+    }
+    order.sort_unstable();
+    for i in order {
+        let r = match *c.dag.op(NodeId(i)) {
+            Op::If(cond, a, other) => branch(b, c, st, vals, scope, cond, a, other)?,
+            _ => lower_node(b, c, st, vals, i as usize)?,
+        };
+        vals[i as usize] = Some(r);
+        scope.push(i);
+    }
+    Ok(())
+}
+
+/// `cond != 0 ? a : other` as two blocks that meet in a third, whose parameter is the value.
+/// A NaN condition takes `a`, like `nonzero` and the frame machine.
+#[allow(clippy::too_many_arguments)]
+fn branch(
+    b: &mut FunctionBuilder,
+    c: &Ctx,
+    st: &mut State,
+    vals: &mut Vec<Option<ir::Value>>,
+    scope: &mut Vec<u32>,
+    cond: NodeId,
+    a: NodeId,
+    other: NodeId,
+) -> Result<ir::Value, JitError> {
+    let fl = c.float;
+    let cv = need_val(vals, cond)?;
+    let t = nonzero(b, fl, cv);
+    let (then_block, else_block, merge) = (b.create_block(), b.create_block(), b.create_block());
+    b.append_block_param(merge, fl.ty());
+    b.ins().brif(t, then_block, &[], else_block, &[]);
+    for (block, arm) in [(then_block, a), (else_block, other)] {
+        b.switch_to_block(block);
+        b.seal_block(block);
+        let mark = scope.len();
+        region(b, c, st, vals, scope, &[arm])?;
+        let v = need_val(vals, arm)?;
+        b.ins().jump(merge, &[BlockArg::Value(v)]);
+        // What this arm emitted does not dominate the code after the merge.
+        for id in scope.drain(mark..) {
+            vals[id as usize] = None;
+            st.outs[id as usize] = None;
+        }
+    }
+    b.switch_to_block(merge);
+    b.seal_block(merge);
+    Ok(b.block_params(merge)[0])
+}
+
+/// The value of live node `i`, whose operands are in `vals`.
+fn lower_node(
+    b: &mut FunctionBuilder,
+    c: &Ctx,
+    st: &mut State,
+    vals: &[Option<ir::Value>],
+    i: usize,
+) -> Result<ir::Value, JitError> {
+    let fl = c.float;
+    let (x, p, v) = (st.x, st.p, st.v);
+    if c.call.is_some() {
+        // An operand without a value would be read as a NaN below; in an entry with calls that
+        // is a lowering bug, so say so.
+        let mut missing = None;
+        c.dag.operands(c.dag.op(NodeId(i as u32)), &mut |ch| {
+            if vals.get(ch.0 as usize).copied().flatten().is_none() {
+                missing = Some(ch.0);
+            }
+        });
+        if let Some(m) = missing {
+            return Err(bad_call(format!(
+                "node {i} was lowered before its operand {m}"
+            )));
+        }
+    }
+    let arg = |b: &mut FunctionBuilder, vals: &[Option<ir::Value>], id: NodeId| match vals
+        .get(id.0 as usize)
+        .copied()
+        .flatten()
+    {
+        Some(v) => v,
+        None => fnan(b, fl),
+    };
+    let leaf = |b: &mut FunctionBuilder, base: Option<ir::Value>, k: u32| match base {
+        Some(base) => load(b, fl, base, k),
+        None => fnan(b, fl),
+    };
+    Ok(match *c.dag.op(NodeId(i as u32)) {
+        Op::Const(bits) => fconst(b, fl, f64::from_bits(bits)),
+        Op::Var(k) => leaf(b, x, k),
+        Op::Param(k) => leaf(b, p, k),
+        Op::Dir(k) => leaf(b, v, k),
+        // A formal outside a body, an `If` outside a branching region and a call in an entry
+        // compiled without the helper cannot be lowered. The machine reports the first as
+        // malformed; none of them may become a quiet NaN in the code.
+        Op::Arg(k) => {
+            return Err(bad_call(format!("formal {k} outside a body")));
+        }
+        Op::If(..) => {
+            return Err(bad_call("an If outside a branching region".into()));
+        }
+        Op::Call(u, l) => {
+            let Some(cl) = c.call.as_ref() else {
+                return Err(bad_call(
+                    "a call in an entry compiled without the helper".into(),
+                ));
+            };
+            let unit = c
+                .dag
+                .unit(u)
+                .ok_or_else(|| bad_call(format!("call of unit {u}, which does not exist")))?;
+            let argv = c.dag.args(l);
+            if argv.len() != unit.arity as usize {
+                return Err(bad_call(format!(
+                    "call of {} with {} arguments, expected {}",
+                    unit.name,
+                    argv.len(),
+                    unit.arity
+                )));
+            }
+            let spill = match st.args {
+                Some(s) => b.ins().stack_addr(c.ptr, s, 0),
+                None => b.ins().iconst(c.ptr, 8),
+            };
+            for (k, &a) in argv.iter().enumerate() {
+                let a = arg(b, vals, a);
+                store(b, fl, a, spill, k);
+            }
+            let data = StackSlotData::new(StackSlotKind::ExplicitSlot, unit.nout * 8, 3);
+            let slot = b.create_sized_stack_slot(data);
+            let outs = b.ins().stack_addr(c.ptr, slot, 0);
+            let image = b.ins().iconst(c.ptr, cl.image as usize as i64);
+            let unit_id = b.ins().iconst(types::I32, i64::from(u));
+            // A plain entry has no `v`; the helper reads none of it then.
+            let none = b.ins().iconst(c.ptr, 8);
+            let (x, p, v) = (x.unwrap_or(none), p.unwrap_or(none), v.unwrap_or(none));
+            b.ins()
+                .call(cl.helper, &[image, unit_id, spill, x, p, v, outs]);
+            if let Some(s) = st.outs.get_mut(i) {
+                *s = Some(slot);
+            }
+            load(b, fl, outs, 0)
+        }
+        Op::Out(call, j) => {
+            let Some(slot) = st.outs.get(call.0 as usize).copied().flatten() else {
+                return Err(bad_call(format!(
+                    "output {j} of a call that was not lowered before it"
+                )));
+            };
+            if let Op::Call(u, _) = *c.dag.op(call)
+                && c.dag.unit(u).is_none_or(|u| j >= u.nout)
+            {
+                return Err(bad_call(format!("output {j} of unit {u}")));
+            }
+            let outs = b.ins().stack_addr(c.ptr, slot, 0);
+            load(b, fl, outs, j)
+        }
+        Op::Neg(a) => {
+            let a = arg(b, vals, a);
+            b.ins().fneg(a)
+        }
+        Op::Add(l, r) => {
+            let (l, r) = (arg(b, vals, l), arg(b, vals, r));
+            b.ins().fadd(l, r)
+        }
+        Op::Sub(l, r) => {
+            let (l, r) = (arg(b, vals, l), arg(b, vals, r));
+            b.ins().fsub(l, r)
+        }
+        Op::Mul(l, r) => {
+            let (l, r) = (arg(b, vals, l), arg(b, vals, r));
+            b.ins().fmul(l, r)
+        }
+        // `t == 0` gives +0 whatever `p` is, else `t * p`; see `Op::ZMul`.
+        Op::ZMul(t, p) => {
+            let (t, p) = (arg(b, vals, t), arg(b, vals, p));
+            let prod = b.ins().fmul(t, p);
+            zero_guard(b, fl, t, prod)
+        }
+        Op::Div(l, r) => {
+            let (l, r) = (arg(b, vals, l), arg(b, vals, r));
+            b.ins().fdiv(l, r)
+        }
+        // `n == 0` gives +0 whatever `d` is, else `n / d`; see `Op::ZDiv`.
+        Op::ZDiv(n, d) => {
+            let (n, d) = (arg(b, vals, n), arg(b, vals, d));
+            let quot = b.ins().fdiv(n, d);
+            zero_guard(b, fl, n, quot)
+        }
+        Op::PowI(a, n) => {
+            let a = arg(b, vals, a);
+            powi(b, fl, a, n)
+        }
+        Op::Call1(f, a) => {
+            let a = arg(b, vals, a);
+            call1(b, c, f, a)?
+        }
+        Op::Call2(f, l, r) => {
+            let (l, r) = (arg(b, vals, l), arg(b, vals, r));
+            call2(b, c, f, l, r)?
+        }
+        Op::Cmp(k, l, r) => {
+            let (l, r) = (arg(b, vals, l), arg(b, vals, r));
+            let cc = match k {
+                Cmp::Lt => FloatCC::LessThan,
+                Cmp::Le => FloatCC::LessThanOrEqual,
+                Cmp::Gt => FloatCC::GreaterThan,
+                Cmp::Ge => FloatCC::GreaterThanOrEqual,
+                Cmp::Eq => FloatCC::Equal,
+            };
+            let t = b.ins().fcmp(cc, l, r);
+            b2f(b, fl, t)
+        }
+        Op::And(l, r) => {
+            let (l, r) = (arg(b, vals, l), arg(b, vals, r));
+            let (l, r) = (nonzero(b, fl, l), nonzero(b, fl, r));
+            let t = b.ins().band(l, r);
+            b2f(b, fl, t)
+        }
+        Op::Or(l, r) => {
+            let (l, r) = (arg(b, vals, l), arg(b, vals, r));
+            let (l, r) = (nonzero(b, fl, l), nonzero(b, fl, r));
+            let t = b.ins().bor(l, r);
+            b2f(b, fl, t)
+        }
+        Op::Not(a) => {
+            let a = arg(b, vals, a);
+            let t = is_zero(b, fl, a);
+            b2f(b, fl, t)
+        }
+        Op::Select(k, l, r) => {
+            let (k, l, r) = (arg(b, vals, k), arg(b, vals, l), arg(b, vals, r));
+            let t = nonzero(b, fl, k);
+            b.ins().select(t, l, r)
+        }
+        Op::Table(id, a) => {
+            let a = arg(b, vals, a);
+            table(b, c, "pc_table", id, a)?
+        }
+        Op::TableSlope(id, a) => {
+            let a = arg(b, vals, a);
+            table(b, c, "pc_table_slope", id, a)?
+        }
+    })
 }

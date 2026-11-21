@@ -1445,3 +1445,119 @@ fn bessel_derivative_with_truncated_orders_matches_eval_and_finite_differences()
         }
     }
 }
+
+/// The call helper: what it counts, how it fails and what it leaves for the caller.
+mod call_helper {
+    use crate::{CompiledModel, JitError, module};
+    use pc_ir::EntryKind;
+    use pc_ir::machine::EvalError;
+    use pc_ode::{MapLoader, SourceMap, load};
+
+    fn model(src: &str) -> CompiledModel {
+        let mut map = SourceMap::new();
+        let top = map.add("t.ode", src);
+        let l = load(top, &mut map, &mut MapLoader::new());
+        CompiledModel::new(pc_ir::lower(&l.expanded, &l.info).expect("lowers"))
+    }
+
+    const SUM: &str = "par k=3\nsum(n)=if(n<1)then(0)else(n+sum(n-1))\nx'=sum(k)\ndone\n";
+    /// The call sits in one arm only; the other arm is a constant.
+    const GUARDED: &str =
+        "par k=3\nf(n)=if(n<1)then(0)else(n+f(n-1))\nx'=if(k<0)then(5)else(f(k))\ndone\n";
+
+    fn run_f(m: &mut CompiledModel, k: f64) -> Result<f64, JitError> {
+        let mut out = [f64::NAN];
+        m.call(&EntryKind::F, &[0.0], &[k, 0.0], &[], &mut out)?;
+        Ok(out[0])
+    }
+
+    #[test]
+    fn one_call_in_the_entry_is_one_helper_call() {
+        let mut m = model(SUM);
+        module::HELPER_CALLS.with(|c| c.set(0));
+        assert_eq!(run_f(&mut m, 10.0).unwrap(), 55.0);
+        assert_eq!(module::HELPER_CALLS.with(|c| c.get()), 1);
+    }
+
+    #[test]
+    fn the_untaken_arm_makes_no_helper_call() {
+        let mut m = model(GUARDED);
+        module::HELPER_CALLS.with(|c| c.set(0));
+        assert_eq!(run_f(&mut m, -1.0).unwrap(), 5.0);
+        assert_eq!(module::HELPER_CALLS.with(|c| c.get()), 0);
+        assert_eq!(run_f(&mut m, 4.0).unwrap(), 10.0);
+        assert_eq!(module::HELPER_CALLS.with(|c| c.get()), 1);
+    }
+
+    #[test]
+    fn a_panic_in_the_helper_is_an_error_not_an_abort() {
+        let mut m = model(SUM);
+        module::PANIC_IN_HELPER.with(|f| f.set(true));
+        match run_f(&mut m, 5.0) {
+            Err(JitError::Eval(EvalError::Malformed(t))) => {
+                assert!(t.contains("panic") && t.contains("forced"), "{t}")
+            }
+            other => panic!("{other:?}"),
+        }
+        // The hook fired once; the next call runs and the flag is clear.
+        assert_eq!(run_f(&mut m, 5.0).unwrap(), 15.0);
+    }
+
+    #[test]
+    fn an_error_does_not_leak_into_the_next_call_or_the_next_model() {
+        let mut a = model(SUM);
+        assert!(matches!(
+            run_f(&mut a, 1_000_000.0),
+            Err(JitError::Eval(EvalError::Depth { .. }))
+        ));
+        let mut b = model(SUM);
+        assert_eq!(run_f(&mut b, 4.0).unwrap(), 10.0);
+        assert_eq!(run_f(&mut a, 4.0).unwrap(), 10.0);
+    }
+
+    #[test]
+    fn a_model_without_calls_neither_sets_nor_reads_the_flag() {
+        let mut m = model("par a=1\nx'=a*x\ndone\n");
+        let mut out = [f64::NAN];
+        m.call(&EntryKind::F, &[2.0], &[3.0, 0.0], &[], &mut out)
+            .unwrap();
+        assert_eq!(out[0], 6.0);
+        assert!(module::take_call_error().is_none());
+    }
+
+    /// A formal in the main scope of an entry has no value. The machine calls it malformed, and
+    /// the JIT must say so too and not put a NaN in the code.
+    #[test]
+    fn a_formal_in_an_entry_is_an_error_not_a_nan() {
+        use crate::{Dims, compile_with_calls};
+        use pc_ir::Entry;
+        use pc_ir::dag::Dag;
+        let mut dag = Dag::new(1000);
+        let u = dag.add_unit("g", 1, 1);
+        let a = dag.arg(0);
+        let one = dag.konst(1.0);
+        let body = dag.add(a, one);
+        assert!(dag.set_body(u, &[body]));
+        let two = dag.konst(2.0);
+        let c = dag.call(u, &[two]);
+        // The stray formal sits next to a live call, so the entry takes the call lowering.
+        let stray = dag.arg(0);
+        let out = dag.add(stray, c);
+        let entry = Entry {
+            kind: EntryKind::F,
+            outputs: vec![out],
+        };
+        let dims = Dims { n: 1, n_p: 0 };
+        match compile_with_calls(&[(EntryKind::F, &entry)], &dag, dims) {
+            Err(JitError::Eval(EvalError::Malformed(t))) => assert!(t.contains("formal"), "{t}"),
+            Err(e) => panic!("{e}"),
+            Ok(_) => panic!("compiled a formal outside a body"),
+        }
+        // The same DAG without the stray formal compiles.
+        let entry = Entry {
+            kind: EntryKind::F,
+            outputs: vec![c],
+        };
+        assert!(compile_with_calls(&[(EntryKind::F, &entry)], &dag, dims).is_ok());
+    }
+}

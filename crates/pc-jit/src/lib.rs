@@ -36,6 +36,7 @@ use cranelift_module::{FuncId, Linkage, Module};
 use pc_ir::dag::{Dag, NodeId, Op};
 use pc_ir::{Entry, EntryKind};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// `F`, `Aux`, `JacU` and `JacP` entries: `(x, p, out)`.
 ///
@@ -84,6 +85,9 @@ pub enum JitError {
     /// The entry uses a construct that the JIT does not lower yet, such as a recursive
     /// function call (SPEC 8af-5, stage 2).
     Unsupported(String),
+    /// A call of a recursive function stopped the evaluation: the cap on active calls, the
+    /// call frames running out of memory, a broken call DAG or a panic in the call helper.
+    Eval(pc_ir::machine::EvalError),
 }
 
 impl std::fmt::Display for JitError {
@@ -94,6 +98,7 @@ impl std::fmt::Display for JitError {
             JitError::Ir(e) => write!(f, "ir: {e}"),
             JitError::BadLength(m) => write!(f, "bad length: {m}"),
             JitError::Unsupported(m) => write!(f, "not supported by the JIT: {m}"),
+            JitError::Eval(e) => write!(f, "{e}"),
         }
     }
 }
@@ -107,7 +112,7 @@ pub(crate) fn cl<T, E: std::fmt::Display>(what: &str, r: Result<T, E>) -> Result
 /// Compiles each entry to one native function. The code reads copies of the tables it
 /// uses, which the result owns, so it stays valid after `dag` is dropped.
 pub fn compile(entries: &[(EntryKind, &Entry)], dag: &Dag) -> Result<JitEntries, JitError> {
-    compile_as(entries, dag, Float::F64)
+    compile_as(entries, dag, Float::F64, None)
 }
 
 /// [`compile`] in single precision. Only plain entries are allowed; read them with
@@ -118,25 +123,49 @@ pub fn compile_f32(entries: &[(EntryKind, &Entry)], dag: &Dag) -> Result<JitEntr
             "{k:?} in single precision"
         )));
     }
-    compile_as(entries, dag, Float::F32)
+    compile_as(entries, dag, Float::F32, None)
+}
+
+/// The sizes of the arrays that an entry reads, which the call helper needs to build slices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Dims {
+    /// The number of state variables.
+    pub n: usize,
+    /// The number of parameters, without the time slot.
+    pub n_p: usize,
+}
+
+/// [`compile`] for entries that may call recursive functions (SPEC 8af-5). A call becomes a
+/// call of a helper that runs the unit on the DAG evaluator, so the code carries a snapshot of
+/// `dag` that it owns, and an entry that reaches no call compiles to the same code as with
+/// [`compile`]. A helper error (the cap on active calls, memory) does not stop the entry:
+/// the call gives NaN and the first error waits for [`CompiledModel::call`], which returns it.
+/// A caller that runs the functions of the result directly must read that error itself, so
+/// only [`CompiledModel`] uses this. `dims` are the model's `n` and `n_p`.
+pub(crate) fn compile_with_calls(
+    entries: &[(EntryKind, &Entry)],
+    dag: &Dag,
+    dims: Dims,
+) -> Result<JitEntries, JitError> {
+    compile_as(entries, dag, Float::F64, Some(dims))
 }
 
 fn compile_as(
     entries: &[(EntryKind, &Entry)],
     dag: &Dag,
     float: Float,
+    calls: Option<Dims>,
 ) -> Result<JitEntries, JitError> {
-    if entries
-        .iter()
-        .any(|(_, e)| e.outputs.iter().any(|&o| dag.has_call(o)))
-    {
+    let reaches_call = |e: &Entry| e.outputs.iter().any(|&o| dag.has_call(o));
+    if calls.is_none() && entries.iter().any(|(_, e)| reaches_call(e)) {
         return Err(JitError::Unsupported(
-            "recursive function call; only the fallback evaluator runs recursive functions so far"
-                .into(),
+            "recursive function call; compile does not run them, a CompiledModel does".into(),
         ));
     }
     // The guard exists from here on; any `?` below drops it and frees the module.
-    let mut je = JitEntries::new(float)?;
+    // The call helper is imported only when an entry reaches a call.
+    let with_calls = calls.is_some() && entries.iter().any(|(_, e)| reaches_call(e));
+    let mut je = JitEntries::new(float, with_calls)?;
     #[cfg(test)]
     if module::FAIL_AFTER_NEW.with(|f| f.get()) {
         return Err(JitError::Cranelift("forced failure".into()));
@@ -147,6 +176,7 @@ fn compile_as(
         fns,
         frame,
         code,
+        images,
         ..
     } = &mut je;
     let Some(module) = module.as_mut() else {
@@ -184,6 +214,22 @@ fn compile_as(
         imports.insert(name, id);
     }
 
+    // One snapshot of the DAG serves every entry of this compile.
+    let snapshot: Option<Arc<Dag>> = with_calls.then(|| Arc::new(dag.clone()));
+    let helper_id = if with_calls {
+        let mut sig = module.make_signature();
+        // image, unit, args, x, p, v, out
+        sig.params.push(AbiParam::new(ptr));
+        sig.params.push(AbiParam::new(types::I32));
+        sig.params.extend([AbiParam::new(ptr); 5]);
+        Some(cl(
+            module::CALL_HELPER,
+            module.declare_function(module::CALL_HELPER, Linkage::Import, &sig),
+        )?)
+    } else {
+        None
+    };
+
     let mut ctx = module.make_context();
     let mut fbc = FunctionBuilderContext::new();
     let mut table_store = lower::Tables::new();
@@ -204,6 +250,27 @@ fn compile_as(
             };
             refs.insert(n, module.declare_func_in_func(fid, &mut ctx.func));
         }
+        let call = match (helper_id, &snapshot, calls) {
+            (Some(h), Some(dag), Some(d)) if reaches_call(entry) => {
+                let nv = match kind {
+                    EntryKind::Dir(slots) => slots.iter().map(|s| s.len(d.n, d.n_p)).sum(),
+                    _ => 0,
+                };
+                let image = Arc::new(module::CallImage {
+                    dag: Arc::clone(dag),
+                    nx: d.n,
+                    np: d.n_p + 1,
+                    nv,
+                });
+                let at: *const module::CallImage = Arc::as_ptr(&image);
+                images.push(image);
+                Some(lower::CallLower {
+                    helper: module.declare_func_in_func(h, &mut ctx.func),
+                    image: at,
+                })
+            }
+            _ => None,
+        };
         let mut table_ptrs = HashMap::new();
         for (j, &l) in live.iter().enumerate() {
             if !l {
@@ -227,6 +294,7 @@ fn compile_as(
                 ptr,
                 float,
                 target: module.target_config(),
+                call,
             },
         )?;
         cl(&name, module.define_function(id, &mut ctx))?;

@@ -212,7 +212,7 @@ fn finish(
         return Err(EngineError::NonAutonomous);
     }
     check_tables(model, info)?;
-    if !matches!(which, Evaluator::Fallback) {
+    if matches!(which, Evaluator::Aot { .. }) {
         refuse_calls(&ir)?;
     }
     Ok(match which {
@@ -232,10 +232,9 @@ fn finish(
     })
 }
 
-/// Refuses with `Model` an IR that calls a recursive function (SPEC 8af-5, stage 1). The
-/// JIT and the AOT path do not run calls yet, and the JIT compiles an entry on its first
-/// evaluation, so without this check the refusal would surface on a later call instead of
-/// at build. The text names the functions and the evaluator that runs them.
+/// Refuses with `Model` an IR that calls a recursive function, for the AOT path, which does
+/// not run calls yet (SPEC 8af-5, stage 3). The JIT and the fallback run them. The text
+/// names the functions and the evaluators that run them.
 fn refuse_calls(ir: &IrModel) -> Result<(), EngineError> {
     let mut names: Vec<&str> = Vec::new();
     for u in ir.dag.units() {
@@ -247,8 +246,8 @@ fn refuse_calls(ir: &IrModel) -> Result<(), EngineError> {
         return Ok(());
     }
     Err(EngineError::Model(format!(
-        "the model calls the recursive function{} {}, which only the fallback evaluator runs \
-         for now; build it with Evaluator = \"fallback\"",
+        "the model calls the recursive function{} {}, which the AOT path does not run \
+         yet; build it with Evaluator = \"jit\" or \"fallback\"",
         if names.len() == 1 { "" } else { "s" },
         names.join(", ")
     )))

@@ -513,10 +513,17 @@ fn handle(
             };
             // The JIT compiles an entry on its first call. Run `F` once so that the
             // compile happens here and `jit_max_frame` is set. The value does not matter,
-            // and a NaN at the declared start is not an error.
+            // and a NaN at the declared start is not an error. A recursion cap hit at the
+            // declared start is not one either: the parameters can change before a run, and
+            // the run reports the cap. A model error is one, since the model cannot run: the
+            // JIT could not compile an entry, or a recursive call failed in the call helper.
             p.push(0.0);
             let mut out = vec![0.0; built.n()];
-            let _ = built.eval(&EntryKind::F, &ctx.warm_x, &p, &[], &mut out);
+            if let Err(e @ pc_engine::EngineError::Model(_)) =
+                built.eval(&EntryKind::F, &ctx.warm_x, &p, &[], &mut out)
+            {
+                return Err(e.into());
+            }
             *ev = Some(built);
             *lock(&ctx.evaluator) = Some(which);
             Ok(Reply::Compiled)

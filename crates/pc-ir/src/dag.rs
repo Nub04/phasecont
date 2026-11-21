@@ -214,6 +214,7 @@ impl Checkpoint {
     }
 }
 
+#[derive(Clone)]
 pub struct Dag {
     nodes: Vec<Op>,
     /// `nonfinite[i]` is [`Dag::may_be_nonfinite`] of node `i`, set when the node is added.
