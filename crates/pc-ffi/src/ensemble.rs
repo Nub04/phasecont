@@ -182,15 +182,20 @@ pub(crate) fn start(
         &model.ir, &head, members, x0, params, per_member, None,
     ))?;
     check_math(head.backend, head.precision, head.math)?;
-    // Only the CPU tape runs recursive calls (SPEC 8af-5). A GPU run of such a model fails here,
-    // before the device probe, so the error is the same on a machine without that GPU.
-    // The test reads the DAG, not the tape, so a model the tape rejects for another reason
-    // gets the same code; its message then adds the tape's reason, since the cpu backend
-    // refuses that model too. The name comes from the tape when it builds (a function the
-    // right-hand side reaches), else from the first function of the DAG.
+    // The cpu and cuda backends run recursive calls (SPEC 8af-5); OpenCL and Metal do not yet.
+    // A run of such a model on another backend fails here, before the device probe, so the
+    // error is the same on a machine without that GPU. The test reads the DAG, not the tape,
+    // so a model the tape rejects for another reason gets the same code on every GPU backend,
+    // cuda included; its message then adds the tape's reason, since the cpu backend refuses
+    // that model too. The name comes from the tape when it builds (a function the right-hand
+    // side reaches), else from the first function of the DAG.
     let ir = &model.ir;
     let tape = Tape::build(ir);
-    if head.backend != Backend::Cpu && ir.f.iter().any(|&id| ir.dag.has_call(id)) {
+    let runs_calls = match head.backend {
+        Backend::Cpu => true,
+        b => b.call_frames().is_some() && tape.is_ok(),
+    };
+    if !runs_calls && ir.f.iter().any(|&id| ir.dag.has_call(id)) {
         let name = tape
             .iter()
             .flat_map(|t| &t.units)
@@ -202,7 +207,7 @@ pub(crate) fn start(
         return Err(Error::Model(match &tape {
             Ok(_) => format!(
                 "the right-hand side calls the recursive function {name}, which only the cpu \
-                 ensemble backend runs, not {backend}"
+                 and cuda ensemble backends run, not {backend}"
             ),
             Err(e) => {
                 let why = match e {

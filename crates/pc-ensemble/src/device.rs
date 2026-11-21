@@ -24,6 +24,17 @@ impl Backend {
     pub fn from_name(name: &str) -> Option<Backend> {
         Backend::ALL.into_iter().find(|b| b.name() == name)
     }
+
+    /// Whether the backend runs a model with user function calls (SPEC section 8af-5), and
+    /// the most call frames one member may hold. The CPU tape caps a member at
+    /// `MAX_ACTIVE_CALLS` frames, a GPU kernel at its stack of [`KERNEL_FRAMES`](crate::tape::KERNEL_FRAMES).
+    pub fn call_frames(self) -> Option<usize> {
+        match self {
+            Backend::Cpu => Some(pc_ir::machine::MAX_ACTIVE_CALLS),
+            Backend::Cuda => Some(crate::tape::KERNEL_FRAMES),
+            Backend::OpenCl | Backend::Metal => None,
+        }
+    }
 }
 
 /// One device a backend can run on.

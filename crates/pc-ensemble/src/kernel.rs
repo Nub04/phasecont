@@ -23,7 +23,7 @@
 use pc_codegen::kernel::{Dialect, KernelError, Scalar, emit_rhs, float_literal, prelude};
 
 use crate::real::Real;
-use crate::tape::{KERNEL_FRAMES, Tape, emit_calls_rhs, kernel_stride};
+use crate::tape::{KERNEL_FRAMES, Tape, emit_calls_rhs, kernel_frame, kernel_stride};
 use crate::traj::Coef;
 
 /// Control words per member, see [`crate::abi`].
@@ -170,6 +170,31 @@ pub fn kernel_source_in(
 /// of the largest frame of its functions, or 0 for a tape without calls (SPEC section 8af-5).
 pub fn stack_len(tape: &Tape) -> usize {
     KERNEL_FRAMES * kernel_stride(tape)
+}
+
+/// The per-member stack of a kernel with calls (SPEC section 8af-5): [`KERNEL_FRAMES`] frames
+/// of `frame_reals` reals, the frame of `function`, the widest function of the tape.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stack {
+    pub function: String,
+    pub frame_reals: usize,
+    pub frames: usize,
+}
+
+impl Stack {
+    /// Reals of the stack of one member, the same as [`stack_len`].
+    pub fn reals(&self) -> usize {
+        self.frames.saturating_mul(self.frame_reals)
+    }
+}
+
+/// The stack the kernel of `tape` needs, or `None` for a tape without calls.
+pub fn stack_of(tape: &Tape) -> Option<Stack> {
+    kernel_frame(tape).map(|(function, frame_reals)| Stack {
+        function,
+        frame_reals,
+        frames: KERNEL_FRAMES,
+    })
 }
 
 /// Replaces each of the `count` copies of `from` in `s`. The templates are fixed text, so a

@@ -7,33 +7,63 @@
 //! one batch can hold, [`run_batched`] runs the job in that many members at a time through the
 //! backend's single-run code and joins the results in member order. A member does not depend
 //! on the other members, so the joined result has the bits of one run.
+//!
+//! A kernel with calls also takes a stack of 4,096 frames per member (SPEC section 8af-5). It
+//! is a member buffer like the others, outside the 256 KiB rule of the scratch layout, so a
+//! deep model runs in smaller batches, and a member whose stack does not fit at all is a
+//! [`EnsembleError::GpuLaunch`] that names the function and its frame.
 
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::job::{EnsembleError, EnsembleResult, Job, Params};
-use crate::kernel::CTL;
+use crate::kernel::{CTL, Stack};
 
 /// The bytes a run takes on the device: [`Costs::per_member`] for each member and
 /// [`Costs::fixed`] whatever the member count is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Costs {
     /// Bytes one member takes in each buffer that grows with the member count.
-    pub per_member: [(&'static str, u64); 5],
+    pub per_member: [(&'static str, u64); 6],
     /// Bytes of the buffers that do not (`rc`, `segm` and a shared parameter set).
     pub fixed: u64,
+    /// The stack of a kernel with calls, for the error when it does not fit.
+    pub stack: Option<StackCost>,
+}
+
+/// The stack of one member in bytes: `frames` frames of `frame_bytes` for `function`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StackCost {
+    pub function: String,
+    pub frame_bytes: u64,
+    pub frames: u64,
+}
+
+impl StackCost {
+    fn text(&self) -> String {
+        format!(
+            "the recursive function {} needs a stack of {} frames of {} bytes, {} bytes for \
+             one member",
+            self.function,
+            self.frames,
+            self.frame_bytes,
+            self.frames.saturating_mul(self.frame_bytes)
+        )
+    }
 }
 
 impl Costs {
     /// The costs of a run of `n` states and `n_p` parameters with `ns` output times and
     /// `work_len` values of `work` per member, in a scalar of `real_bytes` bytes.
-    /// `per_member_params` is true when every member has its own parameter set.
+    /// `per_member_params` is true when every member has its own parameter set, and `stack`
+    /// is the stack of a kernel with calls.
     pub fn new(
         n: usize,
         n_p: usize,
         per_member_params: bool,
         ns: usize,
         work_len: usize,
+        stack: Option<&Stack>,
         real_bytes: usize,
     ) -> Costs {
         let t = real_bytes as u64;
@@ -46,10 +76,16 @@ impl Costs {
                 ("work", reals(work_len)),
                 ("out", reals(ns.saturating_mul(n))),
                 ("ctl", (CTL as u64) * 4),
+                ("stack", stack.map_or(0, |s| reals(s.reals()))),
             ],
             fixed: reals(ns.saturating_mul(4).saturating_add(5))
                 .saturating_add((ns as u64).saturating_mul(8))
                 .saturating_add(if per_member_params { 0 } else { par }),
+            stack: stack.map(|s| StackCost {
+                function: s.function.clone(),
+                frame_bytes: reals(s.frame_reals),
+                frames: s.frames as u64,
+            }),
         }
     }
 
@@ -66,7 +102,8 @@ impl Costs {
 /// A batch takes `fixed` bytes plus [`Costs::member`] bytes per member, and that has to fit in
 /// `budget`. No single buffer of a batch may exceed `max_alloc` either. A `budget` or a
 /// `max_alloc` of 0 turns that limit off. The result is at least 1 and at most `members`. A
-/// member that does not fit is a [`EnsembleError::BadJob`] that names the limit.
+/// member that does not fit is a [`EnsembleError::BadJob`] that names the limit, or a
+/// [`EnsembleError::GpuLaunch`] that names the function when the member has a stack.
 pub fn plan_batches(
     members: usize,
     costs: &Costs,
@@ -79,11 +116,15 @@ pub fn plan_batches(
         let room = budget.saturating_sub(costs.fixed);
         let fits = room / each;
         if fits == 0 {
-            return Err(EnsembleError::BadJob(format!(
+            let need = format!(
                 "one member needs {each} bytes on the device, and {} bytes are left of a budget of \
                  {budget} bytes after {} bytes that do not depend on the members",
                 room, costs.fixed
-            )));
+            );
+            return Err(match &costs.stack {
+                Some(s) => EnsembleError::GpuLaunch(format!("{}: {need}", s.text())),
+                None => EnsembleError::BadJob(need),
+            });
         }
         most = most.min(fits);
     }
@@ -94,10 +135,14 @@ pub fn plan_batches(
             }
             let fits = max_alloc / bytes;
             if fits == 0 {
-                return Err(EnsembleError::BadJob(format!(
+                let need = format!(
                     "the {name} buffer needs {bytes} bytes for one member and the device allows \
                      {max_alloc} bytes in one buffer"
-                )));
+                );
+                return Err(match (&costs.stack, name) {
+                    (Some(s), "stack") => EnsembleError::GpuLaunch(format!("{}: {need}", s.text())),
+                    _ => EnsembleError::BadJob(need),
+                });
             }
             most = most.min(fits);
         }
@@ -112,6 +157,7 @@ pub fn members_per_batch(
     job: &Job,
     ns: usize,
     work_len: usize,
+    stack: Option<&Stack>,
     real_bytes: usize,
     budget: Option<u64>,
     max_alloc: u64,
@@ -122,6 +168,7 @@ pub fn members_per_batch(
         matches!(job.params, Params::PerMember(_)),
         ns,
         work_len,
+        stack,
         real_bytes,
     );
     let planned = plan_batches(job.members, &costs, budget.unwrap_or(0), max_alloc)?;
@@ -292,8 +339,29 @@ mod tests {
                 ("work", per[2]),
                 ("out", per[3]),
                 ("ctl", per[4]),
+                ("stack", 0),
             ],
             fixed,
+            stack: None,
+        }
+    }
+
+    /// The costs above plus a stack of `frames` frames of `frame` bytes for `fib`.
+    fn with_stack(per: [u64; 5], fixed: u64, frames: u64, frame: u64) -> Costs {
+        let mut c = costs(per, fixed);
+        c.per_member[5] = ("stack", frames * frame);
+        c.stack = Some(StackCost {
+            function: "fib".into(),
+            frame_bytes: frame,
+            frames,
+        });
+        c
+    }
+
+    fn launch_text(e: EnsembleError) -> String {
+        match e {
+            EnsembleError::GpuLaunch(t) => t,
+            other => panic!("expected GpuLaunch, got {other:?}"),
         }
     }
 
@@ -351,6 +419,8 @@ mod tests {
     #[test]
     fn sizes_at_the_edge_of_u64_do_not_overflow() {
         let c = costs([u64::MAX, u64::MAX, u64::MAX, 0, 0], u64::MAX);
+        let s = with_stack([1, 0, 0, 0, 0], 0, u64::MAX, 1);
+        assert_eq!(plan_batches(10, &s, u64::MAX, 0), Ok(1));
         assert!(plan_batches(10, &c, u64::MAX, 0).is_err());
         assert!(plan_batches(10, &c, 0, u64::MAX).is_ok());
         assert_eq!(plan_batches(0, &c, 0, 0), Ok(1));
@@ -359,16 +429,69 @@ mod tests {
     #[test]
     fn costs_follow_the_buffers_of_a_run() {
         // 2 states, 1 parameter, 3 output times, 5 work values, 8-byte reals.
-        let own = Costs::new(2, 1, true, 3, 5, 8);
+        let own = Costs::new(2, 1, true, 3, 5, None, 8);
         assert_eq!(
             own.per_member.map(|(_, b)| b),
-            [16, 8, 40, 48, (CTL as u64) * 4]
+            [16, 8, 40, 48, (CTL as u64) * 4, 0]
         );
         assert_eq!(own.fixed, (5 + 12) * 8 + 3 * 8);
-        let shared = Costs::new(2, 1, false, 3, 5, 8);
+        let shared = Costs::new(2, 1, false, 3, 5, None, 8);
         assert_eq!(shared.per_member[1], ("par", 0));
         assert_eq!(shared.fixed, own.fixed + 8);
         assert_eq!(own.member(), 16 + 8 + 40 + 48 + (CTL as u64) * 4);
+    }
+
+    #[test]
+    fn the_stack_is_a_member_buffer_that_shrinks_the_batch() {
+        // 116 bytes a member without the stack, 4096 frames of 24 bytes with it.
+        let c = with_stack([16, 0, 100, 0, 0], 50, 4096, 24);
+        assert_eq!(c.member(), 116 + 4096 * 24);
+        assert_eq!(plan_batches(100, &c, 50 + 7 * c.member(), 0), Ok(7));
+        assert_eq!(plan_batches(100, &c, 50 + 7 * c.member() - 1, 0), Ok(6));
+        // The largest buffer bounds the stack buffer as it bounds the others.
+        assert_eq!(plan_batches(100, &c, 0, 3 * 4096 * 24), Ok(3));
+    }
+
+    #[test]
+    fn a_stack_that_does_not_fit_one_member_is_a_launch_error_that_names_the_function() {
+        let c = with_stack([16, 0, 100, 0, 0], 50, 4096, 24);
+        let t = launch_text(plan_batches(100, &c, 50 + 1000, 0).unwrap_err());
+        for want in ["fib", "4096 frames", "24 bytes", "98304", "1050"] {
+            assert!(t.contains(want), "{want}: {t}");
+        }
+        let t = launch_text(plan_batches(100, &c, 0, 4096 * 24 - 1).unwrap_err());
+        for want in ["fib", "24 bytes", "98303"] {
+            assert!(t.contains(want), "{want}: {t}");
+        }
+        // A member too big for its other buffers is still a bad job.
+        let big = with_stack([16, 0, 2000, 0, 0], 0, 4096, 24);
+        assert!(matches!(
+            plan_batches(100, &big, 0, 1000),
+            Err(EnsembleError::BadJob(_))
+        ));
+    }
+
+    #[test]
+    fn costs_hold_the_stack_of_a_kernel_with_calls() {
+        let stack = Stack {
+            function: "fib".into(),
+            frame_reals: 3,
+            frames: 4096,
+        };
+        let c = Costs::new(2, 1, true, 3, 5, Some(&stack), 8);
+        assert_eq!(c.per_member[5], ("stack", 4096 * 3 * 8));
+        assert_eq!(
+            c.stack,
+            Some(StackCost {
+                function: "fib".into(),
+                frame_bytes: 24,
+                frames: 4096
+            })
+        );
+        let plain = Costs::new(2, 1, true, 3, 5, None, 8);
+        assert_eq!(plain.per_member[5], ("stack", 0));
+        assert_eq!(plain.stack, None);
+        assert_eq!(c.member(), plain.member() + 4096 * 24);
     }
 
     #[test]

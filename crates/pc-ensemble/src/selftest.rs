@@ -11,6 +11,11 @@
 //! * `determinism`: the same job twice, one member alone, and the members in reverse order
 //!   must give the same bits. The number of values that differ is the error, the limit is 0.
 //!   The jobs are RK4 and Dormand-Prince on a model of `+ - * /` and the Henon map with `iter`.
+//! * `recursion`, on a backend that runs function calls: `x' = -s(k)*x/k` with the recursive
+//!   `s(n) = n` under RK4 against `x0*exp(-t)`, at depths up to 4,096 frames, error scaled by
+//!   `1 + |exact|`. One more member asks for exactly the frames of the backend's cap and
+//!   must end with `recursion_depth` while the others finish; if it does not, the error is
+//!   infinite. The limit is that of `analytic-rk4`.
 //! * Bit-exactness: for a backend that is not the CPU reference, fixed-step RK4 on a model
 //!   of `+ - * /` only and the Henon map with `iter` must match the CPU backend in the same
 //!   precision bit for bit. The CPU backend is the reference, so its report says `None`.
@@ -118,6 +123,11 @@ const AFFINE: &str = "par a=0.5\nx(t+1)=a*x+t\ndone\n";
 /// -0.8074.
 const HENON: &str = "par a=0.2,b=0.3\nx(t+1)=1-a*x^2+y\ny(t+1)=b*x\ndone\n";
 const HENON_PAR: [f64; 2] = [0.2, 0.3];
+/// `s(k)` recurses `k + 1` frames deep and returns `k`, so `x' = -x` at every depth.
+const RECURSIVE: &str = "par k=1\ns(n)=if(n<1)then(0)else(1+s(n-1))\nx'=-s(k)*x/k\ndone\n";
+/// The depths of the `recursion` tier that finish on every backend; 4,095 takes the 4,096
+/// frames of a GPU stack.
+const RECURSION_K: [f64; 6] = [1.0, 2.0, 7.0, 64.0, 1000.0, 4095.0];
 const HENON_T1: f64 = 50.0;
 
 fn model(src: &str) -> IrModel {
@@ -269,6 +279,34 @@ fn dp5(precision: Precision) -> (Method, f64) {
             1e-8,
         ),
     }
+}
+
+/// Worst `|got - exact| / (1 + |exact|)` of `RECURSIVE` at the depths of `RECURSION_K`,
+/// or infinity when a member does not finish or the member at the cap of `frames` frames
+/// finishes.
+fn recursion(run: Runner, precision: Precision, frames: usize) -> Result<f64, EnsembleError> {
+    let (method, _) = rk4(precision);
+    let m = model(RECURSIVE);
+    let mut k = RECURSION_K.to_vec();
+    // `s(frames)` needs one frame more than the cap.
+    k.push(frames as f64);
+    let x0: Vec<f64> = (0..k.len()).map(|i| 0.2 + 0.1 * i as f64).collect();
+    let mut j = job(&m, &x0, &[], 1.0, method, precision);
+    j.params = Params::PerMember(&k);
+    let r = run(&j)?;
+    let last = k.len() - 1;
+    if r.status[last] != Status::RecursionDepth {
+        return Ok(f64::INFINITY);
+    }
+    let mut worst = 0.0f64;
+    for (i, &start) in x0.iter().enumerate().take(last) {
+        if r.status[i] != Status::Ok {
+            return Ok(f64::INFINITY);
+        }
+        let e = start * (-1.0f64).exp();
+        worst = worst.max((r.state(i, 0)[0] - e).abs() / (1.0 + e.abs()));
+    }
+    Ok(worst)
 }
 
 /// Worst `|got - exact| / (1 + |exact|)` for `AFFINE` over [0, 10], where the exact value is
@@ -476,7 +514,7 @@ pub fn run_with(
     let precision = label.precision;
     let (m4, l4) = rk4(precision);
     let (m5, l5) = dp5(precision);
-    let tiers = vec![
+    let mut tiers = vec![
         Tier {
             name: "analytic-rk4",
             max_error: analytic(run, m4, precision)?,
@@ -498,6 +536,13 @@ pub fn run_with(
             limit: 0.0,
         },
     ];
+    if let Some(frames) = device.backend.call_frames() {
+        tiers.push(Tier {
+            name: "recursion",
+            max_error: recursion(run, precision, frames)?,
+            limit: l4,
+        });
+    }
     let bit_exact = if compare_bits {
         Some(bit_exact(run, precision)?)
     } else {

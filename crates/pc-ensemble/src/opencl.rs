@@ -46,7 +46,7 @@ use crate::gpu::{
 };
 use crate::job::{Checked, EnsembleError, EnsembleResult, Job, Label, Precision, validate};
 use crate::kept::{Kept, Lru};
-use crate::kernel::{Layout, kernel_source_in};
+use crate::kernel::{Layout, kernel_source_in, stack_of};
 use crate::real::Real;
 use crate::tape::Tape;
 use crate::winload::{self, NoCwdSearch};
@@ -462,6 +462,7 @@ fn session(
         job,
         checked.times.len(),
         work_len,
+        stack_of(tape).as_ref(),
         real_bytes,
         memory.map(half_budget),
         handle.max_alloc,

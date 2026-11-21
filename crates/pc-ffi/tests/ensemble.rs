@@ -293,7 +293,14 @@ fn a_gpu_backend_refuses_a_recursive_model_with_the_model_code() {
         "par k=1\ns(n)=if(n<1)then(0)else(1+s(n-1))\nx'=-s(k)*x+erf(x)\ndone\n",
     ] {
         let m = parse(src);
-        for backend in ["cuda", "opencl", "metal"] {
+        let erf = src.contains("erf");
+        // cuda runs a recursive model the tape builds, so only the erf model is refused there.
+        let backends: &[&str] = if erf {
+            &["cuda", "opencl", "metal"]
+        } else {
+            &["opencl", "metal"]
+        };
+        for &backend in backends {
             let json = job("").replace("\"cpu\"", &format!("\"{backend}\""));
             let (rc, ens) = start_with(&m, &json, &[1.0], &[1.0]);
             assert_eq!(rc, PC_ERR_MODEL, "{backend} {src}: {}", last_error());
@@ -305,11 +312,27 @@ fn a_gpu_backend_refuses_a_recursive_model_with_the_model_code() {
             );
             // Only a model the tape builds is sent to the cpu backend; the other names the
             // construct the cpu backend refuses as well.
-            let erf = src.contains("erf");
-            assert_eq!(e.contains("only the cpu"), !erf, "{e}");
+            assert_eq!(e.contains("only the cpu and cuda"), !erf, "{e}");
             assert_eq!(e.contains("uses erf"), erf, "{e}");
         }
     }
+}
+
+/// The cuda backend takes a recursive model the tape builds: on a machine without a CUDA
+/// device the start fails with `gpu_unavailable`, never with the model code, and with one the
+/// run finishes.
+#[test]
+fn the_cuda_backend_takes_a_recursive_model() {
+    let m = parse("par k=1\ns(n)=if(n<1)then(0)else(1+s(n-1))\nx'=-s(k)*x\ndone\n");
+    let json = job("").replace("\"cpu\"", "\"cuda\"");
+    let (rc, ens) = start_with(&m, &json, &[1.0], &[1.0]);
+    if rc == PC_ERR_GPU_UNAVAILABLE {
+        assert_eq!(ens, 0);
+        return;
+    }
+    assert_eq!(rc, 0, "{}", last_error());
+    let v = wait(&Id(ens));
+    assert_eq!(v["state"], "done", "{v}");
 }
 
 /// The cpu backend refuses a recursive model that uses a construct the tape lacks, when the

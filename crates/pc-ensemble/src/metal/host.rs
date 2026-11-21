@@ -22,7 +22,7 @@ use crate::batch::{half_budget, members_per_batch, run_batched};
 use crate::device::{Backend, BackendState, DeviceInfo};
 use crate::gpu::{check_alloc, drive, global_size, guard, kernel_err, layout_by_size};
 use crate::job::{Checked, EnsembleError, EnsembleResult, Job, Label, Precision, validate};
-use crate::kernel::{Layout, kernel_source_in};
+use crate::kernel::{Layout, kernel_source_in, stack_of};
 use crate::tape::Tape;
 
 type Dev = ProtocolObject<dyn MTLDevice>;
@@ -239,6 +239,7 @@ fn session(
             job,
             checked.times.len(),
             layout.work_len(checked.n, integrator_of(job.method)),
+            stack_of(tape).as_ref(),
             size_of::<f32>(),
             info.memory_bytes.map(half_budget),
             handle.max_alloc,

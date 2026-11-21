@@ -64,7 +64,13 @@ fn the_cpu_selftest_passes_in_both_precisions() {
             assert!(t.max_error.is_finite(), "{}: {t:?}", t.name);
         }
         let names: Vec<&str> = r.tiers.iter().map(|t| t.name).collect();
-        for want in ["analytic-rk4", "analytic-dp5", "iterate", "determinism"] {
+        for want in [
+            "analytic-rk4",
+            "analytic-dp5",
+            "iterate",
+            "determinism",
+            "recursion",
+        ] {
             assert!(names.contains(&want), "{names:?}");
         }
     }
@@ -164,6 +170,7 @@ mod run_with {
 
     use pc_ensemble::device::{Backend, DeviceInfo};
     use pc_ensemble::selftest::{SelfTestError, run_with};
+    use pc_ensemble::tape::{KERNEL_FRAMES, with_max_calls};
     use pc_ensemble::{
         EnsembleError, EnsembleResult, Job, Label, Math, Method, Precision, Status, run_cpu,
     };
@@ -190,8 +197,40 @@ mod run_with {
         }
     }
 
+    /// The CPU backend under the call cap of the fake CUDA device, so it ends a member past
+    /// 4,096 frames as a CUDA kernel does.
     fn cpu(j: &Job) -> Result<EnsembleResult, EnsembleError> {
+        with_max_calls(KERNEL_FRAMES, || uncapped(j))
+    }
+
+    /// The CPU backend at its own cap of 1,000,000 frames.
+    fn uncapped(j: &Job) -> Result<EnsembleResult, EnsembleError> {
         run_cpu(j, u64::MAX, &AtomicBool::new(false))
+    }
+
+    #[test]
+    fn a_runner_that_does_not_stop_at_the_cap_fails_the_recursion_tier() {
+        let r = run_with(&uncapped, device(), label(Precision::Double), false, false).unwrap();
+        let t = r.tiers.iter().find(|t| t.name == "recursion").unwrap();
+        assert_eq!(t.max_error, f64::INFINITY, "{t:?}");
+        assert!(!r.pass);
+        let t = r.tiers.iter().find(|t| t.name == "analytic-rk4").unwrap();
+        assert!(t.pass(), "{t:?}");
+    }
+
+    #[test]
+    fn a_backend_that_does_not_run_calls_has_no_recursion_tier() {
+        for b in [Backend::OpenCl, Backend::Metal] {
+            let d = DeviceInfo {
+                backend: b,
+                ..device()
+            };
+            let r = run_with(&cpu, d, label(Precision::Single), false, false).unwrap();
+            assert!(r.pass, "{b:?}: {:#?}", r.tiers);
+            assert!(r.tiers.iter().all(|t| t.name != "recursion"), "{b:?}");
+        }
+        let r = run_with(&cpu, device(), label(Precision::Single), false, false).unwrap();
+        assert!(r.tiers.iter().any(|t| t.name == "recursion"));
     }
 
     #[test]

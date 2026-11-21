@@ -1608,13 +1608,27 @@ fn ins_op(ins: Ins) -> Op {
 /// for a tape without calls.
 #[doc(hidden)]
 pub fn kernel_stride(tape: &Tape) -> usize {
+    kernel_frame(tape).map_or(0, |(_, reals)| reals)
+}
+
+/// The function of `tape` with the largest kernel frame and the reals of that frame, or
+/// `None` for a tape without calls. The first such function wins a tie.
+#[doc(hidden)]
+pub fn kernel_frame(tape: &Tape) -> Option<(String, usize)> {
     if tape.units.is_empty() {
-        return 0;
+        return None;
     }
     let prog = CpuTape::<f64>::new_calls(tape)
         .prog
         .expect("a call program");
-    stride_of(&prog)
+    let mut best: Option<(usize, usize)> = None;
+    for (i, u) in prog.units.iter().enumerate() {
+        let reals = 1 + u.flen as usize + u.nflags as usize;
+        if best.is_none_or(|(_, r)| reals > r) {
+            best = Some((i, reals));
+        }
+    }
+    best.map(|(i, reals)| (tape.units[i].name.clone(), reals))
 }
 
 fn stride_of(prog: &Prog) -> usize {

@@ -46,7 +46,7 @@ use crate::device::{Backend, BackendState, DeviceInfo};
 use crate::gpu::{GLOBAL_SCRATCH_FROM, drive, guard, kernel_err};
 use crate::job::{EnsembleError, EnsembleResult, Job, Label, Math, Precision, validate};
 use crate::kept::{Kept, Lru};
-use crate::kernel::{Integrator, Layout, kernel_source_in, private_reals};
+use crate::kernel::{Integrator, Layout, Stack, kernel_source_in, private_reals, stack_of};
 use crate::real::Real;
 use crate::tape::Tape;
 use crate::winload::{self, NoCwdSearch};
@@ -723,8 +723,8 @@ pub fn run_cuda(
             p.devices.len()
         )));
     }
+    // A tape with calls runs on a per-member stack in global memory (SPEC section 8af-5).
     let tape = Tape::build(job.model)?;
-    tape.refuse_calls()?;
     let scalar = match job.precision {
         Precision::Single => Scalar::F32,
         Precision::Double => Scalar::F64,
@@ -889,10 +889,13 @@ fn session(
     let integrator = integrator_of(job.method);
     let private_bytes = private_reals(checked.n, integrator).saturating_mul(real_bytes);
     let work_len = layout.work_len(checked.n, integrator);
+    // A kernel with calls also takes its stack, a member buffer outside the scratch rule.
+    let stack = stack_of(tape);
     let size = members_per_batch(
         job,
         checked.times.len(),
         work_len,
+        stack.as_ref(),
         real_bytes,
         Some(budget_of(buffer_room(layout, private_bytes, &capacity))),
         0,
@@ -902,12 +905,13 @@ fn session(
             .held
             .fetch_max(reserve_of(private_bytes, &capacity), Ordering::SeqCst);
     }
+    let stack_len = stack.as_ref().map_or(0, Stack::reals);
     let ran = run_batched(job, size, cancel, |sub| match job.precision {
         Precision::Single => launch_all(
             ctx,
             &function,
             pack_in::<f32>(sub, checked, tape, layout),
-            layout,
+            (layout, stack_len),
             cancel,
         )
         .and_then(|packed| packed.finish(label.clone())),
@@ -915,7 +919,7 @@ fn session(
             ctx,
             &function,
             pack_in::<f64>(sub, checked, tape, layout),
-            layout,
+            (layout, stack_len),
             cancel,
         )
         .and_then(|packed| packed.finish(label.clone())),
@@ -931,11 +935,12 @@ fn session(
 }
 
 /// Uploads the buffers, launches until no member is running and downloads the result.
+/// `stack_len` is the reals of the stack of one member, 0 for a kernel without calls.
 fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
     ctx: &Arc<CudaContext>,
     function: &CudaFunction,
     mut packed: Packed<T>,
-    layout: Layout,
+    (layout, stack_len): (Layout, usize),
     cancel: &AtomicBool,
 ) -> Result<Packed<T>, EnsembleError> {
     let stream = ctx.default_stream();
@@ -963,6 +968,16 @@ fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
     let mut ctl_d = stream
         .clone_htod(packed.ctl.as_slice())
         .map_err(drv("copy ctl to device"))?;
+    // The kernel writes a frame before it reads it, so the stack needs no upload. A kernel
+    // without calls takes no stack argument.
+    let mut stk = match stack_len {
+        0 => None,
+        len => Some(
+            stream
+                .alloc_zeros::<T>(packed.members.saturating_mul(len))
+                .map_err(drv("allocate the call stack on the device"))?,
+        ),
+    };
 
     let blocks = u32::try_from(packed.members.div_ceil(BLOCK as usize)).map_err(|_| {
         EnsembleError::BadJob(format!(
@@ -1008,9 +1023,12 @@ fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
                 .arg(&max_steps)
                 .arg(&ns)
                 .arg(&pstride);
+            if let Some(stk) = stk.as_mut() {
+                b.arg(stk);
+            }
             // SAFETY: the arguments follow the signature of `pc_ens` in order and type, the
-            // buffers have the sizes `crate::abi` documents, and the kernel returns early
-            // for a thread past the last member.
+            // buffers have the sizes `crate::abi` documents, the stack has `PC_STK` reals per
+            // member, and the kernel returns early for a thread past the last member.
             unsafe { b.launch(cfg) }.map_err(&launch_error)?;
         }
         stream.synchronize().map_err(drv("synchronize"))?;
