@@ -303,8 +303,36 @@ fn a_gpu_backend_refuses_a_recursive_model_with_the_model_code() {
                 e.contains("recursive function s") && e.contains(backend),
                 "{e}"
             );
+            // Only a model the tape builds is sent to the cpu backend; the other names the
+            // construct the cpu backend refuses as well.
+            let erf = src.contains("erf");
+            assert_eq!(e.contains("only the cpu"), !erf, "{e}");
+            assert_eq!(e.contains("uses erf"), erf, "{e}");
         }
     }
+}
+
+/// The cpu backend refuses a recursive model that uses a construct the tape lacks, when the
+/// run is polled, as it does for a model without calls.
+#[test]
+fn the_cpu_backend_refuses_a_recursive_model_the_tape_cannot_run() {
+    let m = parse("par k=1\ns(n)=if(n<1)then(0)else(1+s(n-1))\nx'=-s(k)*x+erf(x)\ndone\n");
+    let (rc, ens) = start_with(&m, &job(""), &[1.0], &[1.0]);
+    assert_eq!(rc, 0, "{}", last_error());
+    let mut v = (0, None);
+    for _ in 0..12_000 {
+        v = poll_raw(ens);
+        if v.0 != 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_ne!(v.0, 0, "the run did not fail");
+    let e = last_error();
+    assert!(
+        e.contains("uses erf, which the ensemble engine cannot run"),
+        "{e}"
+    );
 }
 
 #[test]
