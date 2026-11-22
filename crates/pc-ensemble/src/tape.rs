@@ -1677,7 +1677,7 @@ pub fn emit_calls_rhs(
         ));
     }
     // The warp layout scales every slot index by the group of 32 members.
-    if stack == StackLayout::Warp && stride * KERNEL_FRAMES * 32 >= 1 << 31 {
+    if stack != StackLayout::Member && stride * KERNEL_FRAMES * 32 >= 1 << 31 {
         return Err(KernelError::Unsupported(
             "recursive functions too large for the warp stack layout; use stack member".into(),
         ));
@@ -1687,9 +1687,12 @@ pub fn emit_calls_rhs(
     let at = |e: String| -> String {
         match stack {
             StackLayout::Member => format!("stk[{e}]"),
-            StackLayout::Warp => format!("stk[({e}) * 32u]"),
+            StackLayout::Warp | StackLayout::Auto => format!("stk[({e}) * 32u]"),
         }
     };
+    // The auto variant also counts the peak and the frames entered (saturating) and leaves
+    // them in words 1 and 2 of the error word's array.
+    let auto = stack == StackLayout::Auto;
     let (n, n_p) = (tape.n, tape.n_p);
     let nc = cpu.consts.len();
     let tb = nc + n + n_p + 1;
@@ -1755,6 +1758,9 @@ pub fn emit_calls_rhs(
         "    pc_real rv = PC_ZERO;\n    pc_uint depth = 0u, fb = 0u, nfb = 0u;\n    int pc = 0;\n\
          \x20   (void)rv;\n    (void)depth;\n    (void)fb;\n    (void)nfb;\n",
     );
+    if auto {
+        b.push_str("    pc_uint peak = 0u, calls = 0u;\n");
+    }
     // A case label at every step a jump, a return or a resume reaches.
     let mut label = vec![false; prog.steps.len()];
     label[prog.entry as usize] = true;
@@ -1869,10 +1875,16 @@ pub fn emit_calls_rhs(
                         at(format!("nfb + {}u", stride as u32 - 1 - f))
                     );
                 }
+                let count = if auto {
+                    "            if (depth > peak) {\n                peak = depth;\n            }\n\
+                     \x20           if (calls != 0xffffffffu) {\n                calls++;\n            }\n"
+                } else {
+                    ""
+                };
                 let _ = writeln!(
                     b,
                     "            {} = (pc_real){resume};\n            fb = nfb;\n            depth++;\n\
-                     \x20           pc = {};\n            continue;\n        }}\n        /* fallthrough */\n\
+                     {count}\x20           pc = {};\n            continue;\n        }}\n        /* fallthrough */\n\
                      \x20       case {resume}:\n        {{\n            {} = rv;",
                     at("nfb".into()),
                     unit.entry,
@@ -1899,6 +1911,9 @@ pub fn emit_calls_rhs(
         "        /* fallthrough */\n        default:\n            *cerr = 1u;\n            pc = -1;\n\
          \x20           continue;\n        }\n    }\n",
     );
+    if auto {
+        b.push_str("    cerr[1] = peak;\n    cerr[2] = calls;\n");
+    }
     b.push_str("    if (*cerr != 0u) {\n");
     for k in 0..n {
         let _ = writeln!(b, "        out[{k}] = PC_NAN;");

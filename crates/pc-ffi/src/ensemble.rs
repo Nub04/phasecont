@@ -235,6 +235,8 @@ fn label_json(l: &Label) -> Value {
         "single_precision": l.single_precision(),
         "math": l.math.name(),
         "stack": l.stack.name(),
+        "stack_ran": l.stack_ran.name(),
+        "sorted": l.sorted,
     })
 }
 

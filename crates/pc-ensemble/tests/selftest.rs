@@ -195,6 +195,8 @@ mod run_with {
             precision: p,
             math: pc_ensemble::Math::Exact,
             stack: pc_ensemble::StackLayout::Member,
+            stack_ran: pc_ensemble::StackRan::Member,
+            sorted: false,
         }
     }
 

@@ -230,6 +230,8 @@ fn result_json(r: &EnsembleResult) -> Value {
             "single_precision": r.label.single_precision(),
             "math": r.label.math.name(),
             "stack": r.label.stack.name(),
+            "stack_ran": r.label.stack_ran.name(),
+            "sorted": r.label.sorted,
         },
     })
 }

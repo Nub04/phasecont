@@ -31,7 +31,7 @@ use std::ffi::{CString, c_char};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use cudarc::driver::{
     CudaContext, CudaFunction, DeviceRepr, DriverError, LaunchConfig, PushKernelArg,
@@ -40,17 +40,20 @@ use cudarc::driver::{
 use cudarc::nvrtc::{self, CompileError, CompileOptions, Ptx, compile_ptx_with_opts, sys as nsys};
 use pc_codegen::kernel::{Dialect, Scalar};
 
+use crate::abi::ctl_done;
 use crate::abi::{Packed, integrator_of, pack_in};
 use crate::batch::{members_per_batch, run_batched};
 use crate::device::{Backend, BackendState, DeviceInfo};
-use crate::gpu::{GLOBAL_SCRATCH_FROM, drive, guard, kernel_err};
+use crate::gpu::{GLOBAL_SCRATCH_FROM, drive, drive_from, guard, kernel_err};
 use crate::job::{
-    EnsembleError, EnsembleResult, Job, Label, Math, Precision, StackLayout, validate,
+    EnsembleError, EnsembleResult, Job, Label, Math, Params, Precision, StackLayout, StackRan,
+    validate,
 };
 use crate::kept::{Kept, Lru};
 use crate::kernel::{
     Integrator, Layout, Stack, kernel_source_in, kernel_source_with, private_reals, stack_of,
 };
+use crate::order::{self, AfterProbe, AutoPlan, Choice, Depth, Judge};
 use crate::real::Real;
 use crate::tape::Tape;
 use crate::winload::{self, NoCwdSearch};
@@ -738,6 +741,44 @@ pub fn run_cuda(
         Precision::Single => size_of::<f32>(),
         Precision::Double => size_of::<f64>(),
     };
+    // `auto` sorts the members by the depth of their first right-hand side when the sampled
+    // keys are out of order and runs each batch member or warp (SPEC section 8af-5). The keys
+    // come from the CPU, before any device work. A batch on warp runs the plain warp kernel,
+    // with the counting variant of it as the probe.
+    let plan = match job.stack {
+        StackLayout::Auto => Some(order::plan_auto(&tape, job, cancel)?),
+        _ => None,
+    };
+    let (kernel_stack, sorted) = match &plan {
+        None => (job.stack, false),
+        Some(AutoPlan::Member) => (StackLayout::Member, false),
+        Some(AutoPlan::Keys { order, .. }) => (StackLayout::Warp, order.is_some()),
+    };
+    let permuted = match &plan {
+        Some(AutoPlan::Keys {
+            order: Some(order), ..
+        }) => Some(order::permute(job, order)),
+        _ => None,
+    };
+    let run_job = match &permuted {
+        None => Job {
+            stack: kernel_stack,
+            ..job.clone()
+        },
+        Some((x0, params)) => Job {
+            x0,
+            params: match params {
+                Some(p) => Params::PerMember(p),
+                None => job.params,
+            },
+            stack: kernel_stack,
+            ..job.clone()
+        },
+    };
+    let keys = match &plan {
+        Some(AutoPlan::Keys { keys, .. }) => Some(keys.as_slice()),
+        _ => None,
+    };
     // The entry this run used, so that a failure removes that one and not a newer one.
     let mut used: Option<Arc<Entry>> = None;
     let ran = guard(|| {
@@ -756,14 +797,34 @@ pub fn run_cuda(
         // is picked here, where the context exists, and it decides the kernel text.
         let capacity = capacity_of(entry)?;
         let layout = pick(forced_layout(), tape.n, integrator, real_bytes, capacity);
-        let src = kernel_source_with(&tape, integrator, scalar, Dialect::Cuda, layout, job.stack)
-            .map_err(kernel_err)?;
+        let text = |stack| {
+            kernel_source_with(&tape, integrator, scalar, Dialect::Cuda, layout, stack)
+                .map_err(kernel_err)
+        };
+        let src = text(kernel_stack)?;
+        // `auto` runs a batch that the keys do not favor, and the rest of a batch after a
+        // switch, on the member kernel, and probes the depths with the counting kernel.
+        let extra = match keys {
+            Some(_) => Some((text(StackLayout::Member)?, text(StackLayout::Auto)?)),
+            None => None,
+        };
+        let auto = match (keys, &extra) {
+            (Some(keys), Some((member, probe))) => Some(AutoRun {
+                keys,
+                member,
+                probe,
+            }),
+            _ => None,
+        };
         let run = Run {
             layout,
             capacity,
             src: &src,
+            auto,
+            asked: job.stack,
+            sorted,
         };
-        session(entry, device, p, job, &checked, &tape, &run, cancel)
+        session(entry, device, p, &run_job, &checked, &tape, &run, cancel)
     })
     .unwrap_or_else(|msg| Err(EnsembleError::GpuLaunch(format!("panic in cudarc: {msg}"))));
     if matches!(
@@ -778,7 +839,12 @@ pub fn run_cuda(
     }
     // The last drop of an entry can panic, so this one is dropped where a panic is caught.
     let _ = guard(|| drop(used));
-    ran
+    match &plan {
+        Some(AutoPlan::Keys {
+            order: Some(order), ..
+        }) => ran.map(|r| order::unpermute(r, order)),
+        _ => ran,
+    }
 }
 
 /// What the runs on one device share: its context and the kernels compiled for it.
@@ -798,6 +864,26 @@ struct Run<'a> {
     layout: Layout,
     capacity: Capacity,
     src: &'a str,
+    /// The keys and the other kernels of an `auto` run that has keys. `src` is then the plain
+    /// warp kernel.
+    auto: Option<AutoRun<'a>>,
+    /// The stack layout the job asked for, for the label.
+    asked: StackLayout,
+    /// Whether the members run in another order than the job's.
+    sorted: bool,
+}
+
+/// What an `auto` run with keys adds to [`Run`].
+#[derive(Clone, Copy)]
+struct AutoRun<'a> {
+    /// The keys in the run order; members outside the sampled groups have none without a full
+    /// pass.
+    keys: &'a [Option<Depth>],
+    /// The member kernel, compiled when a batch, a timing or a switch first needs it.
+    member: &'a str,
+    /// The counting warp kernel, which also writes the peak and the calls of each member's
+    /// last right-hand side.
+    probe: &'a str,
 }
 
 /// The resident threads and the free memory of the device behind `entry`.
@@ -860,12 +946,15 @@ fn session(
         layout,
         capacity,
         src,
+        auto,
+        asked,
+        sorted,
     } = *run;
     let ctx = &entry.ctx;
     let cc = ctx
         .compute_capability()
         .map_err(drv("compute capability"))?;
-    let function =
+    let compile = |src: &str| {
         entry
             .kernels
             .get_or_make((src.to_owned(), cc, job.precision, job.math), || {
@@ -876,14 +965,17 @@ fn session(
                 };
                 let module = ctx.load_module(image).map_err(load("load_module"))?;
                 module.load_function(ENTRY).map_err(load("load_function"))
-            })?;
+            })
+    };
     let label = Label {
         backend: Backend::Cuda.name().into(),
         device: device.name.clone(),
         driver: device.driver.clone(),
         precision: job.precision,
         math: job.math,
-        stack: job.stack,
+        stack: asked,
+        stack_ran: StackRan::of(job.stack),
+        sorted,
     };
     // The free memory bounds the members of one batch. The private layout takes its local
     // memory first: the driver reserves it for every resident thread, whatever the batch size.
@@ -911,23 +1003,46 @@ fn session(
             .fetch_max(reserve_of(private_bytes, &capacity), Ordering::SeqCst);
     }
     let stack_len = stack.as_ref().map_or(0, Stack::reals);
-    let ran = run_batched(job, size, cancel, |sub| match job.precision {
-        Precision::Single => launch_all(
-            ctx,
-            &function,
-            pack_in::<f32>(sub, checked, tape, layout),
-            (layout, stack_len, job.stack),
-            cancel,
-        )
-        .and_then(|packed| packed.finish(label.clone())),
-        Precision::Double => launch_all(
-            ctx,
-            &function,
-            pack_in::<f64>(sub, checked, tape, layout),
-            (layout, stack_len, job.stack),
-            cancel,
-        )
-        .and_then(|packed| packed.finish(label.clone())),
+    // The next batch's first member in the run order, for its keys.
+    let mut at = 0usize;
+    let member_of = |a: &AutoRun| compile(a.member);
+    let ran = run_batched(job, size, cancel, |sub| {
+        // An `auto` batch with keys picks member or warp from its keys. On warp it probes the
+        // depths and can time both layouts or switch to member after a probe.
+        let start = at;
+        at += sub.members;
+        let lazy;
+        let kernels = match auto {
+            None => Kernels::Fixed(compile(src)?, StackRan::of(job.stack)),
+            Some(a) => match order::choose(a.keys, start, start + sub.members, job.precision) {
+                Choice::Member => Kernels::Fixed(compile(a.member)?, StackRan::Member),
+                c => {
+                    lazy = move || member_of(&a);
+                    Kernels::Auto {
+                        warp: compile(src)?,
+                        probe: compile(a.probe)?,
+                        member: &lazy,
+                        time: c == Choice::Time,
+                    }
+                }
+            },
+        };
+        let shape = (layout, stack_len, job.precision);
+        let mut label = label.clone();
+        let (packed, ran) = match job.precision {
+            Precision::Single => {
+                let packed = pack_in::<f32>(sub, checked, tape, layout);
+                launch_all(ctx, kernels, packed, shape, cancel)
+                    .and_then(|(packed, ran)| Ok((packed.finish(label.clone())?, ran)))?
+            }
+            Precision::Double => {
+                let packed = pack_in::<f64>(sub, checked, tape, layout);
+                launch_all(ctx, kernels, packed, shape, cancel)
+                    .and_then(|(packed, ran)| Ok((packed.finish(label.clone())?, ran)))?
+            }
+        };
+        label.stack_ran = ran;
+        Ok(EnsembleResult { label, ..packed })
     });
     // cudarc's Drop code stores its errors in the context. Take them here and charge them to
     // this run, or the next run on the device would see them.
@@ -939,16 +1054,49 @@ fn session(
     }
 }
 
-/// Uploads the buffers, launches until no member is running and downloads the result.
-/// `stack_len` is the reals of the stack of one member, 0 for a kernel without calls, and
-/// `stack` its layout, which pads the buffer to whole groups of 32 members.
+/// The scratch layout, the stack reals of one member and the precision of one launch
+/// sequence.
+type Shape = (Layout, usize, Precision);
+
+/// The kernels of one batch.
+enum Kernels<'a> {
+    /// One kernel for the whole batch, of the stack layout given.
+    Fixed(CudaFunction, StackRan),
+    /// An `auto` batch on warp (SPEC section 8af-5): the plain warp kernel, its counting
+    /// variant that probes the depths, and the member kernel, compiled when a timing or a
+    /// switch first needs it. `time` asks for a timing of both layouts after the first probe.
+    Auto {
+        warp: CudaFunction,
+        probe: CudaFunction,
+        member: &'a dyn Fn() -> Result<CudaFunction, EnsembleError>,
+        time: bool,
+    },
+}
+
+/// The time of `steps` step attempts at the rate of `(n, took)`.
+fn at_rate(steps: u64, (n, took): (u64, Duration)) -> Duration {
+    took.mul_f64(steps as f64 / n.max(1) as f64)
+}
+
+/// Uploads the buffers, launches until no member is running and downloads the result, with
+/// the stack layout that ran.
+///
+/// `stack_len` is the reals of the stack of one member, 0 for a kernel without calls. The
+/// stack buffer holds whole groups of 32 members unless the batch runs member only, so the
+/// warp, probe and member kernels of an `auto` batch share it.
+///
+/// An `auto` batch starts with a one-step launch of the probe. A later launch that is due for
+/// a probe runs the plain warp kernel for all its steps but the last and the probe for the
+/// last one, so the depths belong to the control words read after it. The probe computes the
+/// same bits as the plain kernel, so the run advances through it. After a probe the host
+/// keeps warp, times both layouts once or switches to member for the rest of the batch.
 fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
     ctx: &Arc<CudaContext>,
-    function: &CudaFunction,
+    kernels: Kernels,
     mut packed: Packed<T>,
-    (layout, stack_len, stack): (Layout, usize, StackLayout),
+    (layout, stack_len, precision): Shape,
     cancel: &AtomicBool,
-) -> Result<Packed<T>, EnsembleError> {
+) -> Result<(Packed<T>, StackRan), EnsembleError> {
     let stream = ctx.default_stream();
     let rc = stream
         .clone_htod(packed.rc.as_slice())
@@ -976,13 +1124,27 @@ fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
         .map_err(drv("copy ctl to device"))?;
     // The kernel writes a frame before it reads it, so the stack needs no upload. A kernel
     // without calls takes no stack argument.
+    let group = match &kernels {
+        Kernels::Fixed(_, StackRan::Member) => StackLayout::Member,
+        _ => StackLayout::Warp,
+    };
     let mut stk = match stack_len {
         0 => None,
         len => Some(
             stream
-                .alloc_zeros::<T>(stack.buffer_reals(packed.members, len))
+                .alloc_zeros::<T>(group.buffer_reals(packed.members, len))
                 .map_err(drv("allocate the call stack on the device"))?,
         ),
+    };
+    let probing = matches!(kernels, Kernels::Auto { .. });
+    let mut dep = vec![0u32; if probing { 2 * packed.members } else { 0 }];
+    let mut dep_d = match probing {
+        true => Some(
+            stream
+                .alloc_zeros::<u32>(dep.len())
+                .map_err(drv("allocate the depth buffer on the device"))?,
+        ),
+        false => None,
     };
 
     let blocks = u32::try_from(packed.members.div_ceil(BLOCK as usize)).map_err(|_| {
@@ -1009,7 +1171,14 @@ fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
     let max_steps = packed.max_steps;
 
     let launch_error = drv("launch");
-    drive(&mut packed.ctl, members as usize, cancel, |steps, ctl| {
+    // One launch of `function` for `steps` step attempts, then the control words, and the
+    // depths when `dep` is given (the probe kernel takes the depth buffer as its last
+    // argument). It returns the time of the launch alone.
+    let mut go = |function: &CudaFunction,
+                  steps: u64,
+                  dep: Option<&mut Vec<u32>>,
+                  ctl: &mut Vec<u32>|
+     -> Result<Duration, EnsembleError> {
         let started = Instant::now();
         #[cfg(feature = "fault-injection")]
         if crate::fault::take_panic_fault() {
@@ -1032,9 +1201,16 @@ fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
             if let Some(stk) = stk.as_mut() {
                 b.arg(stk);
             }
+            if dep.is_some()
+                && let Some(d) = dep_d.as_mut()
+            {
+                b.arg(d);
+            }
             // SAFETY: the arguments follow the signature of `pc_ens` in order and type, the
             // buffers have the sizes `crate::abi` documents, the stack has `PC_STK` reals per
-            // member, and the kernel returns early for a thread past the last member.
+            // member (whole groups of 32 unless the batch runs member only), the depth buffer
+            // two words per member and only the probe kernel takes it, and the kernel returns
+            // early for a thread past the last member.
             unsafe { b.launch(cfg) }.map_err(&launch_error)?;
         }
         stream.synchronize().map_err(drv("synchronize"))?;
@@ -1042,11 +1218,133 @@ fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
         stream
             .memcpy_dtoh(&ctl_d, ctl)
             .map_err(drv("copy ctl to host"))?;
+        if let Some(dep) = dep
+            && let Some(d) = dep_d.as_ref()
+        {
+            stream
+                .memcpy_dtoh(d, dep)
+                .map_err(drv("copy the depths to host"))?;
+        }
         stream
             .synchronize()
             .map_err(drv("synchronize after copy"))?;
         Ok(took)
-    })?;
+    };
+
+    let m = members as usize;
+    let ran = match kernels {
+        Kernels::Fixed(function, ran) => {
+            drive(&mut packed.ctl, m, cancel, |steps, ctl| {
+                go(&function, steps, None, ctl)
+            })?;
+            ran
+        }
+        Kernels::Auto {
+            warp,
+            probe,
+            member,
+            time,
+        } => {
+            let mut ran = StackRan::Warp;
+            // The member kernel once compiled, and whether the batch switched to it.
+            let mut member_fn: Option<CudaFunction> = None;
+            let mut switched = false;
+            let mut want_time = time;
+            let mut timed = false;
+            // The last plain warp launch, `(steps, time)`.
+            let mut last_warp: Option<(u64, Duration)> = None;
+            // The time of the last probe sub-launch and of the plain launches since it.
+            let mut probe_took: Option<Duration> = None;
+            let mut since = Duration::ZERO;
+            drive_from(1, &mut packed.ctl, m, cancel, |steps, ctl| {
+                if switched {
+                    let f = member_fn.as_ref().expect("compiled at the switch");
+                    return go(f, steps, None, ctl);
+                }
+                if want_time
+                    && !timed
+                    && let Some(p) = probe_took
+                {
+                    // Time both layouts on plain kernels (SPEC section 8af-5): member, warp,
+                    // member, each launch its own sample, sized from the last plain warp
+                    // launch or else the probe; the set grows only while it is short and its
+                    // ratio is close to the margin.
+                    timed = true;
+                    ran = StackRan::Mixed;
+                    let mf = match &member_fn {
+                        Some(f) => f.clone(),
+                        None => member_fn.insert(member()?).clone(),
+                    };
+                    let (n0, t0) = last_warp.unwrap_or((1, p));
+                    let mut n = order::timed_steps(n0, t0);
+                    let mut spent = Duration::ZERO;
+                    loop {
+                        if ctl_done(ctl, m) {
+                            return Ok(spent);
+                        }
+                        // Member, warp, member: the mean of the two member launches meets
+                        // the warp launch at the same point of a cost that drifts in time,
+                        // and warp, whose loss has no bound, runs once.
+                        let m1 = go(&mf, n, None, ctl)?;
+                        spent += m1;
+                        if ctl_done(ctl, m) {
+                            return Ok(spent);
+                        }
+                        let w = (n, go(&warp, n, None, ctl)?);
+                        spent += w.1;
+                        last_warp = Some(w);
+                        if ctl_done(ctl, m) {
+                            return Ok(spent);
+                        }
+                        let m2 = go(&mf, n, None, ctl)?;
+                        spent += m2;
+                        let mm = (n, (m1 + m2) / 2);
+                        match order::judge(w, mm) {
+                            Judge::Member => {
+                                switched = true;
+                                return Ok(at_rate(steps, mm));
+                            }
+                            Judge::Warp => return Ok(at_rate(steps, w)),
+                            Judge::Grow(k) => n = k,
+                        }
+                    }
+                }
+                let due = probe_took.is_none_or(|p| order::probe_due(since, p));
+                if !due {
+                    let t = go(&warp, steps, None, ctl)?;
+                    last_warp = Some((steps, t));
+                    since += t;
+                    return Ok(t);
+                }
+                let mut took = Duration::ZERO;
+                if steps > 1 {
+                    let t = go(&warp, steps - 1, None, ctl)?;
+                    last_warp = Some((steps - 1, t));
+                    took += t;
+                    if ctl_done(ctl, m) {
+                        return Ok(took);
+                    }
+                }
+                let t = go(&probe, 1, Some(&mut dep), ctl)?;
+                took += t;
+                probe_took = Some(t);
+                since = Duration::ZERO;
+                match order::after_probe(&dep, ctl, m, precision, timed) {
+                    AfterProbe::Member => {
+                        if member_fn.is_none() {
+                            member_fn = Some(member()?);
+                        }
+                        switched = true;
+                        ran = StackRan::Mixed;
+                    }
+                    AfterProbe::Time => want_time = true,
+                    AfterProbe::Stay => {}
+                }
+                Ok(took)
+            })?;
+            ran
+        }
+    };
     packed.out = stream.clone_dtoh(&out).map_err(drv("copy out to host"))?;
     // `finish` reads `work` only for a member that did not end `Ok`.
     if packed.needs_work() {
@@ -1055,7 +1353,7 @@ fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
     stream
         .synchronize()
         .map_err(drv("synchronize after copy"))?;
-    Ok(packed)
+    Ok((packed, ran))
 }
 
 #[cfg(test)]

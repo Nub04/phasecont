@@ -243,12 +243,31 @@ fn with_calls(integrator: Integrator, body: &str, entry: &str, stack: StackLayou
             _ => b.push_str(line),
         }
     }
-    let mut b = swap(
-        &b,
-        "                     pc_uint ns)\n{\n",
-        "                     pc_uint ns, PC_GLOBAL pc_real *stk)\n{\n    pc_uint cerr_w = 0u;\n    PC_PRIV pc_uint *cerr = &cerr_w;\n",
-        1,
-    );
+    let auto = stack == StackLayout::Auto;
+    let mut b = if auto {
+        // The auto variant keeps the peak and the calls of the last right-hand side in words 1
+        // and 2 of the error word's array and writes them to `dep` when the launch ends.
+        let mut b = swap(
+            &b,
+            "                     pc_uint ns)\n{\n",
+            "                     pc_uint ns, PC_GLOBAL pc_real *stk, PC_GLOBAL pc_uint *dep)\n{\n    pc_uint cerr_w[3] = {0u, 0u, 0u};\n    PC_PRIV pc_uint *cerr = cerr_w;\n",
+            1,
+        );
+        b = swap(
+            &b,
+            "    c[0] = st;\n",
+            "    dep[0] = cerr_w[1];\n    dep[1] = cerr_w[2];\n    c[0] = st;\n",
+            1,
+        );
+        b
+    } else {
+        swap(
+            &b,
+            "                     pc_uint ns)\n{\n",
+            "                     pc_uint ns, PC_GLOBAL pc_real *stk)\n{\n    pc_uint cerr_w = 0u;\n    PC_PRIV pc_uint *cerr = &cerr_w;\n",
+            1,
+        )
+    };
     match integrator {
         Integrator::Rk4 | Integrator::Iter => {
             b = swap(
@@ -293,31 +312,45 @@ fn with_calls(integrator: Integrator, body: &str, entry: &str, stack: StackLayou
     }
     // Member layout: each member owns PC_STK consecutive reals. Warp layout: a group of 32
     // members owns 32 * PC_STK reals, and slot e of lane l sits at e * 32 + l, so the lanes
-    // of a warp that touch the same slot touch adjacent reals.
+    // of a warp that touch the same slot touch adjacent reals. Auto runs the warp layout.
     let base = match stack {
         StackLayout::Member => "stk + m * PC_STK",
-        StackLayout::Warp => "stk + (m / 32u) * (32u * (pc_ulong)PC_STK) + (m % 32u)",
+        StackLayout::Warp | StackLayout::Auto => {
+            "stk + (m / 32u) * (32u * (pc_ulong)PC_STK) + (m % 32u)"
+        }
     };
+    let dep = if auto { ", dep + 2u * m" } else { "" };
     let e = swap(
         entry,
         "ctl + m * PC_CTL, steps, max_steps, ns);\n",
-        &format!("ctl + m * PC_CTL, steps, max_steps, ns,\n              {base});\n"),
+        &format!("ctl + m * PC_CTL, steps, max_steps, ns,\n              {base}{dep});\n"),
         1,
     );
-    let e = if e.contains("[[buffer(11)]]") {
-        swap(
+    let e = match (e.contains("[[buffer(11)]]"), auto) {
+        (true, false) => swap(
             &e,
             "constant pc_ulong &pstride [[buffer(11)]],\n",
             "constant pc_ulong &pstride [[buffer(11)]],\n                   PC_GLOBAL pc_real *PC_RESTRICT stk [[buffer(12)]],\n",
             1,
-        )
-    } else {
-        swap(
+        ),
+        (true, true) => swap(
+            &e,
+            "constant pc_ulong &pstride [[buffer(11)]],\n",
+            "constant pc_ulong &pstride [[buffer(11)]],\n                   PC_GLOBAL pc_real *PC_RESTRICT stk [[buffer(12)]],\n                   PC_GLOBAL pc_uint *PC_RESTRICT dep [[buffer(13)]],\n",
+            1,
+        ),
+        (false, false) => swap(
             &e,
             "pc_ulong pstride)\n",
             "pc_ulong pstride,\n            PC_GLOBAL pc_real *PC_RESTRICT stk)\n",
             1,
-        )
+        ),
+        (false, true) => swap(
+            &e,
+            "pc_ulong pstride)\n",
+            "pc_ulong pstride,\n            PC_GLOBAL pc_real *PC_RESTRICT stk, PC_GLOBAL pc_uint *PC_RESTRICT dep)\n",
+            1,
+        ),
     };
     b.push_str(&e);
     b

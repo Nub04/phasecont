@@ -269,7 +269,7 @@ fn bad(m: String) -> EnsembleError {
 /// `job` and a slice of its members. A job of `size` members or fewer goes to `run_one` as it
 /// is. The cancel flag is read before each batch, and a set flag gives
 /// [`EnsembleError::Cancelled`]. The first error ends the run. The label of the result is the
-/// one of the first batch.
+/// one of the first batch, with `stack_ran` joined over every batch.
 pub fn run_batched(
     job: &Job,
     size: usize,
@@ -358,6 +358,8 @@ impl EnsembleResult {
 
     /// Adds the members of `part` after the members already here.
     fn append(&mut self, part: EnsembleResult) {
+        // `auto` chooses the layout per batch, so the layouts that ran add up.
+        self.label.stack_ran = self.label.stack_ran.join(part.label.stack_ran);
         self.states.extend(part.states);
         self.status.extend(part.status);
         self.t_reached.extend(part.t_reached);

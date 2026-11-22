@@ -127,9 +127,21 @@ pub fn drive(
     ctl: &mut Vec<u32>,
     members: usize,
     cancel: &AtomicBool,
+    launch: impl FnMut(u64, &mut Vec<u32>) -> Result<Duration, EnsembleError>,
+) -> Result<(), EnsembleError> {
+    drive_from(FIRST_STEPS, ctl, members, cancel, launch)
+}
+
+/// [`drive`] with a first launch of `first` step attempts instead of [`FIRST_STEPS`]. The
+/// `auto` stack layout starts with one step, so that its depth probe sees every member early.
+pub fn drive_from(
+    first: u64,
+    ctl: &mut Vec<u32>,
+    members: usize,
+    cancel: &AtomicBool,
     mut launch: impl FnMut(u64, &mut Vec<u32>) -> Result<Duration, EnsembleError>,
 ) -> Result<(), EnsembleError> {
-    let mut steps = FIRST_STEPS;
+    let mut steps = first.max(1);
     let mut now = vec![0u32; ctl.len()];
     loop {
         if cancel.load(Ordering::Relaxed) {
@@ -409,6 +421,33 @@ mod tests {
         assert_eq!(seen[1], FIRST_STEPS * 2);
         assert_eq!(seen[2], FIRST_STEPS * 4);
         assert_eq!(ctl, words(3, Status::Ok, 3));
+    }
+
+    #[test]
+    fn a_first_launch_of_one_step_grows_from_one() {
+        let mut ctl = words(2, Status::Running, 0);
+        let mut seen = Vec::new();
+        let cancel = AtomicBool::new(false);
+        drive_from(1, &mut ctl, 2, &cancel, |steps, now| {
+            seen.push(steps);
+            let n = seen.len() as u32;
+            let status = if n == 3 { Status::Ok } else { Status::Running };
+            now.copy_from_slice(&words(2, status, n));
+            Ok(Duration::from_micros(1))
+        })
+        .unwrap();
+        // A fast launch grows the size fourfold at most, starting from one step.
+        assert_eq!(seen, vec![1, 4, 16]);
+        // A first size of 0 still launches one step.
+        let mut ctl = words(1, Status::Running, 0);
+        let mut first = 0;
+        drive_from(0, &mut ctl, 1, &cancel, |steps, now| {
+            first = steps;
+            now.copy_from_slice(&words(1, Status::Ok, 1));
+            Ok(TARGET)
+        })
+        .unwrap();
+        assert_eq!(first, 1);
     }
 
     #[test]

@@ -22,7 +22,7 @@ use crate::batch::{half_budget, members_per_batch, run_batched};
 use crate::device::{Backend, BackendState, DeviceInfo};
 use crate::gpu::{check_alloc, drive, global_size, guard, kernel_err, layout_by_size};
 use crate::job::{
-    Checked, EnsembleError, EnsembleResult, Job, Label, Precision, StackLayout, validate,
+    Checked, EnsembleError, EnsembleResult, Job, Label, Precision, StackLayout, StackRan, validate,
 };
 use crate::kernel::{Layout, Stack, kernel_source_with, stack_of};
 use crate::tape::Tape;
@@ -155,6 +155,13 @@ pub fn run_metal(
             "{members} members is more than a Metal kernel can index (4294967295)"
         )));
     }
+    // OpenCL and Metal do not choose a stack layout, so `auto` runs member (SPEC 8af-5).
+    let asked = job.stack;
+    let resolved = Job {
+        stack: job.stack.or_member(),
+        ..job.clone()
+    };
+    let job = &resolved;
     let tape = Tape::build(job.model)?;
     // Metal has no query for the free memory or the resident threads either, so the layout
     // follows the size of the model only (SPEC 13).
@@ -175,7 +182,9 @@ pub fn run_metal(
         driver: info.driver.clone(),
         precision: job.precision,
         math: job.math,
-        stack: job.stack,
+        stack: asked,
+        stack_ran: StackRan::of(job.stack),
+        sorted: false,
     };
     guard(|| {
         session(

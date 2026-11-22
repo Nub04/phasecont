@@ -48,44 +48,27 @@ fn same(device: &DeviceInfo, what: &str, j: &Job, l: Layout) -> EnsembleResult {
     force_layout(None);
     assert_eq!(got.label.backend, "cuda", "{what}");
     assert_eq!(want.status, got.status, "{what}: status");
-    // The other stack layout runs the same arithmetic in another memory order, so it gives
-    // the same bits as this one, Dormand-Prince included.
-    let other = match j.stack {
-        StackLayout::Member => StackLayout::Warp,
-        StackLayout::Warp => StackLayout::Member,
-    };
-    let mut o = j.clone();
-    o.stack = other;
-    force_layout(Some(l));
-    let alt = run_on(device, &o, &AtomicBool::new(false))
-        .unwrap_or_else(|e| panic!("{what} {}: the device run failed: {e}", other.name()));
-    force_layout(None);
-    assert_eq!(alt.label.stack, other, "{what}");
-    assert_eq!(got.status, alt.status, "{what} {}: status", other.name());
-    assert_eq!(
-        bits(&got.states),
-        bits(&alt.states),
-        "{what} {}: states",
-        other.name()
-    );
-    assert_eq!(
-        bits(&got.t_reached),
-        bits(&alt.t_reached),
-        "{what} {}: t",
-        other.name()
-    );
-    assert_eq!(
-        got.accepted,
-        alt.accepted,
-        "{what} {}: accepted",
-        other.name()
-    );
-    assert_eq!(
-        got.rejected,
-        alt.rejected,
-        "{what} {}: rejected",
-        other.name()
-    );
+    // The other stack layouts run the same arithmetic in another memory order (and `auto` in
+    // another member order, which it undoes), so they give the same bits as this one,
+    // Dormand-Prince included.
+    for other in [StackLayout::Member, StackLayout::Warp, StackLayout::Auto] {
+        if other == j.stack {
+            continue;
+        }
+        let mut o = j.clone();
+        o.stack = other;
+        force_layout(Some(l));
+        let alt = run_on(device, &o, &AtomicBool::new(false))
+            .unwrap_or_else(|e| panic!("{what} {}: the device run failed: {e}", other.name()));
+        force_layout(None);
+        let n = other.name();
+        assert_eq!(alt.label.stack, other, "{what}");
+        assert_eq!(got.status, alt.status, "{what} {n}: status");
+        assert_eq!(bits(&got.states), bits(&alt.states), "{what} {n}: states");
+        assert_eq!(bits(&got.t_reached), bits(&alt.t_reached), "{what} {n}: t");
+        assert_eq!(got.accepted, alt.accepted, "{what} {n}: accepted");
+        assert_eq!(got.rejected, alt.rejected, "{what} {n}: rejected");
+    }
     match j.method {
         Method::Dp5 { .. } => {
             let rel = match j.precision {

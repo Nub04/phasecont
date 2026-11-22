@@ -16,8 +16,9 @@ const FRAMES: usize = 4096;
 
 const BOTH: [Precision; 2] = [Precision::Single, Precision::Double];
 
-/// Both stack layouts, which must give the same bits.
-const STACKS: [StackLayout; 2] = [StackLayout::Member, StackLayout::Warp];
+/// The stack layouts, which must give the same bits. `auto` runs its warp variant here, the
+/// text that also writes the depth words.
+const STACKS: [StackLayout; 3] = [StackLayout::Member, StackLayout::Warp, StackLayout::Auto];
 
 fn methods(p: Precision) -> [Method; 2] {
     let dp5 = match p {

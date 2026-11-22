@@ -172,7 +172,8 @@ pub fn math(v: &Value) -> Parsed<Math> {
 /// `member` or `warp`.
 pub fn stack(v: &Value) -> Parsed<StackLayout> {
     let name = string(v, "stack")?;
-    StackLayout::from_name(name).ok_or_else(|| format!("stack must be member or warp, got {name}"))
+    StackLayout::from_name(name)
+        .ok_or_else(|| format!("stack must be member, warp or auto, got {name}"))
 }
 
 fn index(v: &Value, key: &str) -> Parsed<usize> {

@@ -45,7 +45,7 @@ use crate::gpu::{
     ForcedLayout, Quiet, check_alloc, drive, global_size, guard, kernel_err, layout_by_size,
 };
 use crate::job::{
-    Checked, EnsembleError, EnsembleResult, Job, Label, Precision, StackLayout, validate,
+    Checked, EnsembleError, EnsembleResult, Job, Label, Precision, StackLayout, StackRan, validate,
 };
 use crate::kept::{Kept, Lru};
 use crate::kernel::{Layout, Stack, kernel_source_with, stack_of};
@@ -300,6 +300,13 @@ pub fn run_opencl(
             info.name
         )));
     }
+    // OpenCL and Metal do not choose a stack layout, so `auto` runs member (SPEC 8af-5).
+    let asked = job.stack;
+    let resolved = Job {
+        stack: job.stack.or_member(),
+        ..job.clone()
+    };
+    let job = &resolved;
     // A tape with calls runs on a per-member stack in global memory (SPEC section 8af-5).
     let tape = Tape::build(job.model)?;
     let scalar = match job.precision {
@@ -334,7 +341,9 @@ pub fn run_opencl(
         driver: info.driver.clone(),
         precision: job.precision,
         math: job.math,
-        stack: job.stack,
+        stack: asked,
+        stack_ran: StackRan::of(job.stack),
+        sorted: false,
     };
     // The entry this run used, so that a failure removes that one and not a newer one.
     let mut used: Option<Arc<Shared>> = None;

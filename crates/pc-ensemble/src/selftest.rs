@@ -574,6 +574,8 @@ pub fn run_selftest(sel: Selected) -> Result<Report, SelfTestError> {
         precision: sel.precision,
         math: Math::Exact,
         stack: StackLayout::Member,
+        stack_ran: crate::job::StackRan::Member,
+        sorted: false,
     };
     let cancel = AtomicBool::new(false);
     let on = device.clone();

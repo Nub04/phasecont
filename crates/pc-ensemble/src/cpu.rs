@@ -101,7 +101,10 @@ fn run_as<T: Real>(
             driver: format!("pc-ensemble {}", env!("CARGO_PKG_VERSION")),
             precision: job.precision,
             math: job.math,
-            stack: crate::job::StackLayout::Member,
+            // The CPU keeps no GPU call stack: it names the layout asked for and runs none.
+            stack: job.stack,
+            stack_ran: crate::job::StackRan::Member,
+            sorted: false,
         },
     })
 }

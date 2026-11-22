@@ -62,6 +62,10 @@ pub enum StackLayout {
     /// Groups of 32 members: real e of member m at (m / 32) · 32 · `PC_STK` + 32 e + m mod 32,
     /// so the lanes of a warp at the same depth touch adjacent reals.
     Warp,
+    /// CUDA sorts the members by recursion depth and picks member or warp for each batch,
+    /// with a fallback to member when the depths the kernel reports say warp is slower. Every
+    /// other backend and every kernel without calls runs member.
+    Auto,
 }
 
 impl StackLayout {
@@ -69,20 +73,30 @@ impl StackLayout {
         match self {
             StackLayout::Member => "member",
             StackLayout::Warp => "warp",
+            StackLayout::Auto => "auto",
         }
     }
 
     pub fn from_name(name: &str) -> Option<StackLayout> {
-        [StackLayout::Member, StackLayout::Warp]
+        [StackLayout::Member, StackLayout::Warp, StackLayout::Auto]
             .into_iter()
             .find(|m| m.name() == name)
     }
 
-    /// Members of one group: 1 for [`StackLayout::Member`], 32 for [`StackLayout::Warp`].
+    /// Members of one group: 1 for [`StackLayout::Member`], 32 for [`StackLayout::Warp`] and
+    /// for [`StackLayout::Auto`], whose buffer must hold the warp layout.
     pub fn group(self) -> usize {
         match self {
             StackLayout::Member => 1,
-            StackLayout::Warp => 32,
+            StackLayout::Warp | StackLayout::Auto => 32,
+        }
+    }
+
+    /// The layout a backend that does not choose runs: [`StackLayout::Auto`] runs member.
+    pub fn or_member(self) -> StackLayout {
+        match self {
+            StackLayout::Auto => StackLayout::Member,
+            s => s,
         }
     }
 
@@ -93,6 +107,38 @@ impl StackLayout {
             .div_ceil(self.group())
             .saturating_mul(self.group())
             .saturating_mul(len)
+    }
+}
+
+/// The stack layout a run used, which [`StackLayout::Auto`] chooses per batch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StackRan {
+    Member,
+    Warp,
+    /// Some batches or launches ran member and some ran warp.
+    Mixed,
+}
+
+impl StackRan {
+    pub fn name(self) -> &'static str {
+        match self {
+            StackRan::Member => "member",
+            StackRan::Warp => "warp",
+            StackRan::Mixed => "mixed",
+        }
+    }
+
+    /// The layout of a run that used no other: [`StackLayout::Auto`] counts as member.
+    pub fn of(stack: StackLayout) -> StackRan {
+        match stack {
+            StackLayout::Warp => StackRan::Warp,
+            StackLayout::Member | StackLayout::Auto => StackRan::Member,
+        }
+    }
+
+    /// The layout of two runs joined: the same one, or [`StackRan::Mixed`].
+    pub fn join(self, other: StackRan) -> StackRan {
+        if self == other { self } else { StackRan::Mixed }
     }
 }
 
@@ -299,7 +345,14 @@ pub struct Label {
     pub driver: String,
     pub precision: Precision,
     pub math: Math,
+    /// The stack layout the job asked for.
     pub stack: StackLayout,
+    /// The stack layout the kernel ran: the asked one, or for [`StackLayout::Auto`] the one it
+    /// chose.
+    pub stack_ran: StackRan,
+    /// True when [`StackLayout::Auto`] ran the members in another order (the results are in
+    /// the job's order either way).
+    pub sorted: bool,
 }
 
 impl Label {

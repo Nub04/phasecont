@@ -544,16 +544,23 @@ fn stack_is_member_when_left_out_and_rejects_unknown_names() {
     let m = parse(DECAY);
     let v = wait(&start(&m, &job(""), &[1.0], &[1.0]));
     assert_eq!(v["label"]["stack"], "member");
-    // The CPU keeps no GPU call stack, so a warp request runs and its label names the
-    // layout that ran.
-    let v = wait(&start(&m, &job(r#","stack":"warp""#), &[1.0], &[1.0]));
-    assert_eq!(v["counts"]["ok"], 1);
-    assert_eq!(v["label"]["stack"], "member");
+    assert_eq!(v["label"]["stack_ran"], "member");
+    assert_eq!(v["label"]["sorted"], false);
+    // The CPU keeps no GPU call stack, so a warp or auto request runs: the label keeps the
+    // layout asked for and names the one that ran.
+    for asked in ["warp", "auto"] {
+        let extra = format!(r#","stack":"{asked}""#);
+        let v = wait(&start(&m, &job(&extra), &[1.0], &[1.0]));
+        assert_eq!(v["counts"]["ok"], 1);
+        assert_eq!(v["label"]["stack"], asked);
+        assert_eq!(v["label"]["stack_ran"], "member");
+        assert_eq!(v["label"]["sorted"], false);
+    }
     let (rc, ens) = start_with(&m, &job(r#","stack":"bogus""#), &[1.0], &[1.0]);
     assert_eq!(rc, PC_ERR_BAD_PROBLEM);
     assert_eq!(ens, 0);
     assert!(
-        last_error().contains("stack must be member or warp, got bogus"),
+        last_error().contains("stack must be member, warp or auto, got bogus"),
         "{}",
         last_error()
     );
