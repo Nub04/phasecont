@@ -123,6 +123,12 @@ impl<K: PartialEq, V: Clone> Lru<K, V> {
         Ok(value)
     }
 
+    /// The value for `key` when one is kept, without making one and without changing the order.
+    pub fn peek(&self, key: &K) -> Option<V> {
+        let slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
+        slots.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+    }
+
     /// How many values are kept.
     pub fn len(&self) -> usize {
         self.slots
@@ -318,6 +324,21 @@ mod lru_tests {
         }
         assert_eq!(lru.len(), 3);
         assert_eq!(built.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn a_peek_neither_makes_a_value_nor_saves_one_from_eviction() {
+        let lru: Lru<u32, Arc<u32>> = Lru::new(2);
+        let built = AtomicUsize::new(0);
+        assert!(lru.peek(&0).is_none());
+        assert_eq!(built.load(Ordering::SeqCst), 0);
+        lru.get_or_make(0, make(&built, 10)).unwrap();
+        lru.get_or_make(1, make(&built, 11)).unwrap();
+        assert_eq!(lru.peek(&0).as_deref(), Some(&10));
+        // 0 is still the oldest, so the next value pushes it out.
+        lru.get_or_make(2, make(&built, 12)).unwrap();
+        assert!(lru.peek(&0).is_none());
+        assert_eq!(lru.peek(&1).as_deref(), Some(&11));
     }
 
     #[test]

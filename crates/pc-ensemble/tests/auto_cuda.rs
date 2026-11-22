@@ -3,8 +3,10 @@
 //! `member` run for every member. Every model is our own.
 //!
 //! A machine with no CUDA device skips with a `SKIPPED` line, and `PC_REQUIRE_GPU=cuda` turns
-//! the skip into a failure. All cases run in one function because `force_members` is a
-//! process-wide switch and tests in one binary run in parallel.
+//! the skip into a failure. All cases run in one function because `force_members` and the
+//! repay factor are process-wide switches and tests in one binary run in parallel. The factor
+//! is 0, so the compile gate passes as soon as the member kernel is kept; `auto_cache` tests
+//! the gate itself.
 
 mod common;
 
@@ -13,6 +15,7 @@ use std::sync::atomic::AtomicBool;
 use common::*;
 use pc_ensemble::batch::force_members;
 use pc_ensemble::device::{Backend, BackendState, DeviceInfo, find_device, list_devices};
+use pc_ensemble::order::{REPAY, set_repay_factor};
 use pc_ensemble::run::run_on;
 use pc_ensemble::{EnsembleResult, Job, Method, Params, Precision, StackLayout, StackRan, Status};
 
@@ -24,12 +27,16 @@ const SUM: &str = "par n=0\ns(m)=if(m<1)then(0)else(1+s(m-1))\nx'=-x*(1+s(n))/(1
 const DRIFT: &str =
     "par w=1\ns(m)=if(m<1)then(0)else(1+s(m-1))\nx'=w+1e-12*s(flr(256*(1+sin(x))))\ndone\n";
 
-/// Puts the batch switch back, also when a test panics.
+/// Held for the whole of each test: the batch switch and the repay factor are process-wide.
+static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Puts the batch switch and the repay factor back, also when a test panics.
 struct Reset;
 
 impl Drop for Reset {
     fn drop(&mut self) {
         force_members(None);
+        set_repay_factor(REPAY);
     }
 }
 
@@ -84,7 +91,9 @@ fn auto_picks_the_layout_per_batch_on_a_cuda_device() {
         BackendState::NotBuilt => return skip_gpu("cuda", "not built into this binary"),
     };
     eprintln!("cuda device 0: {} ({})", device.name, device.driver);
+    let _lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _reset = Reset;
+    set_repay_factor(0.0);
     let mut precisions = vec![Precision::Single];
     if device.fp64 {
         precisions.push(Precision::Double);
@@ -256,6 +265,9 @@ fn fma_gives_the_same_bits_in_every_layout_on_a_cuda_device() {
     if !device.fp64 {
         return skip_gpu("cuda", "fma runs only in double precision");
     }
+    let _lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _reset = Reset;
+    set_repay_factor(0.0);
     let rk4 = Method::Rk4 { dt: 0.05 };
     let members = 2048;
     let x0: Vec<f64> = (0..members).map(|i| 1.0 + i as f64 / 4096.0).collect();

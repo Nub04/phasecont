@@ -8,7 +8,7 @@
 //! The GPU run checks the bounds against the depths a probe kernel reports and, when they
 //! leave the choice open, times both layouts.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use rayon::prelude::*;
@@ -270,6 +270,36 @@ pub fn bounds<'a>(
 /// costs less than the CPU pass that sorts it, so it runs member (SPEC section 8af-5).
 pub const FLOOR_RHS: f64 = 20.0;
 
+/// How many times the compile cost of the kernels it lacks the member kernel of a model must
+/// run before `auto` takes its keys and builds the warp and probe kernels (SPEC section 8af-5,
+/// compile gate). With 10 a model whose calls end just after the gate stays within 1.1 times
+/// `member`.
+pub const REPAY: f64 = 10.0;
+
+/// The factor the gate uses, [`REPAY`] unless a test set another one.
+static REPAY_NOW: AtomicU64 = AtomicU64::new(REPAY.to_bits());
+
+/// Sets the factor of the compile gate for this process, so a test can pass the gate on the
+/// second call. Not for use outside tests.
+#[doc(hidden)]
+pub fn set_repay_factor(factor: f64) {
+    REPAY_NOW.store(factor.to_bits(), Ordering::SeqCst);
+}
+
+/// True when the member kernel has run long enough for `auto` to build the `missing` warp
+/// and probe kernels: its launches took `spent` in this process, at least `factor` times the
+/// estimated compile time of the missing kernels, 2 · `nvrtc` each, with `nvrtc` the NVRTC
+/// time of the member kernel. With nothing missing the gate passes.
+pub fn gate_passes_with(factor: f64, spent: Duration, nvrtc: Duration, missing: usize) -> bool {
+    spent.as_secs_f64() >= factor * missing as f64 * 2.0 * nvrtc.as_secs_f64()
+}
+
+/// [`gate_passes_with`] at the factor of this process.
+pub fn gate_passes(spent: Duration, nvrtc: Duration, missing: usize) -> bool {
+    let factor = f64::from_bits(REPAY_NOW.load(Ordering::SeqCst));
+    gate_passes_with(factor, spent, nvrtc, missing)
+}
+
 /// What `auto` does with a job on CUDA.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AutoPlan {
@@ -295,18 +325,24 @@ pub fn below_floor(job: &Job) -> bool {
     }
 }
 
+/// True when `auto` runs `job` as member without keys whatever the kernels kept: a tape
+/// without calls, fewer than [`WARP`] members, a run below the floor or a stack that would
+/// pass 2^31 reals in a group of [`WARP`]. Such a run skips the compile gate.
+pub fn member_only(tape: &Tape, job: &Job) -> bool {
+    let stride = kernel_stride(tape);
+    tape.units.is_empty()
+        || job.members < WARP
+        || below_floor(job)
+        || stride.saturating_mul(KERNEL_FRAMES).saturating_mul(WARP) >= 1 << 31
+}
+
 /// The plan of `auto` for `job` on CUDA. A tape without calls, a job of fewer than [`WARP`]
 /// members, a run below the floor and a stack that would pass 2^31 reals in a group of
 /// [`WARP`] run member without keys. Every other job gets the keys of the sampled groups
 /// ([`sampled_members`]); when they are out of order it gets the keys of every member and the
 /// order that sorts them.
 pub fn plan_auto(tape: &Tape, job: &Job, cancel: &AtomicBool) -> Result<AutoPlan, EnsembleError> {
-    let stride = kernel_stride(tape);
-    if tape.units.is_empty()
-        || job.members < WARP
-        || below_floor(job)
-        || stride.saturating_mul(KERNEL_FRAMES).saturating_mul(WARP) >= 1 << 31
-    {
+    if member_only(tape, job) {
         return Ok(AutoPlan::Member);
     }
     let sample = sampled_members(job.members);
@@ -561,6 +597,22 @@ pub fn member_wins(warp: (u64, Duration), member: (u64, Duration)) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_compile_gate_passes_at_ten_times_the_missing_compiles() {
+        let ms = Duration::from_millis;
+        let t = ms(90);
+        // Nothing missing: the gate passes at once.
+        assert!(gate_passes_with(REPAY, Duration::ZERO, t, 0));
+        // One missing kernel costs 2 · 90 ms, so the gate needs 1.8 s of member launches.
+        assert!(!gate_passes_with(REPAY, ms(1799), t, 1));
+        assert!(gate_passes_with(REPAY, ms(1800), t, 1));
+        // Two missing kernels need 3.6 s.
+        assert!(!gate_passes_with(REPAY, ms(3599), t, 2));
+        assert!(gate_passes_with(REPAY, ms(3600), t, 2));
+        // A factor of 0 passes the gate as soon as the member kernel is kept.
+        assert!(gate_passes_with(0.0, Duration::ZERO, t, 2));
+    }
 
     fn chain(peaks: &[u32]) -> Vec<Depth> {
         peaks

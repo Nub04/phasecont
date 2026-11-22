@@ -5,8 +5,11 @@
 //! It is a measurement, not a check, so it is ignored in a normal run:
 //!
 //! ```text
-//! PC_REQUIRE_GPU=cuda cargo test --release -p pc-ensemble --test auto_time -- --ignored --nocapture
+//! PC_REQUIRE_GPU=cuda cargo test --release -p pc-ensemble --test auto_time -- --ignored \
+//!     --nocapture --test-threads=1
 //! ```
+//!
+//! One thread, since the tests share the GPU and the process-wide compile gate.
 //!
 //! Settings, all optional: `PC_AT_MEMBERS` (comma list, default `4096,10000,16384`; 10,000 is
 //! not a whole number of blocks, so the last block and the last warp group run part full),
@@ -14,7 +17,7 @@
 //! `PC_AT_CASES` (comma list of case names, default all). Every case prints one `AT` line with
 //! the fastest run of each layout in milliseconds, `auto` over `member`, `auto` over the faster
 //! of the two, and the `stack_ran` and `sorted` of the `auto` run. The first run of each layout
-//! compiles its kernels and is not timed. The timed runs take turns, one run of each layout per
+//! compiles its kernels and is not timed, and `auto` warms up until it passes its compile gate. The timed runs take turns, one run of each layout per
 //! round, so a clock that drifts during a case slows every layout alike. All three layouts
 //! must give the same bits.
 
@@ -184,8 +187,8 @@ fn env_list(name: &str) -> Option<Vec<String>> {
 }
 
 /// The fastest of `repeats` runs of each layout in `stacks`, in milliseconds, with the result
-/// of its last run. Each layout runs once untimed first, so its kernels are compiled. The
-/// timed runs go in rounds, one run of each layout per round, so a clock or power state that
+/// of its last run. Each layout runs once untimed first, so its kernels are compiled, and
+/// `auto` then runs untimed until it has passed its compile gate. The timed runs go in rounds, one run of each layout per round, so a clock or power state that
 /// drifts during the measurement falls on every layout alike.
 fn timed<const K: usize>(
     device: &DeviceInfo,
@@ -205,6 +208,17 @@ fn timed<const K: usize>(
             run_on(device, o, &cancel).expect("the warm-up run"),
         )
     });
+    for (o, (_, r)) in jobs.iter().zip(out.iter_mut()) {
+        if o.stack != StackLayout::Auto {
+            continue;
+        }
+        let mut runs = 0;
+        while !pc_ensemble::cuda::auto_gate_passed() {
+            *r = run_on(device, o, &cancel).expect("a warm-up run");
+            runs += 1;
+            assert!(runs < 10_000, "auto did not pass its compile gate");
+        }
+    }
     for _ in 0..repeats {
         for (o, (best, r)) in jobs.iter().zip(out.iter_mut()) {
             let start = Instant::now();

@@ -741,46 +741,10 @@ pub fn run_cuda(
         Precision::Single => size_of::<f32>(),
         Precision::Double => size_of::<f64>(),
     };
-    // `auto` sorts the members by the depth of their first right-hand side when the sampled
-    // keys are out of order and runs each batch member or warp (SPEC section 8af-5). The keys
-    // come from the CPU, before any device work. A batch on warp runs the plain warp kernel,
-    // with the counting variant of it as the probe.
-    let plan = match job.stack {
-        StackLayout::Auto => Some(order::plan_auto(&tape, job, cancel)?),
-        _ => None,
-    };
-    let (kernel_stack, sorted) = match &plan {
-        None => (job.stack, false),
-        Some(AutoPlan::Member) => (StackLayout::Member, false),
-        Some(AutoPlan::Keys { order, .. }) => (StackLayout::Warp, order.is_some()),
-    };
-    let permuted = match &plan {
-        Some(AutoPlan::Keys {
-            order: Some(order), ..
-        }) => Some(order::permute(job, order)),
-        _ => None,
-    };
-    let run_job = match &permuted {
-        None => Job {
-            stack: kernel_stack,
-            ..job.clone()
-        },
-        Some((x0, params)) => Job {
-            x0,
-            params: match params {
-                Some(p) => Params::PerMember(p),
-                None => job.params,
-            },
-            stack: kernel_stack,
-            ..job.clone()
-        },
-    };
-    let keys = match &plan {
-        Some(AutoPlan::Keys { keys, .. }) => Some(keys.as_slice()),
-        _ => None,
-    };
     // The entry this run used, so that a failure removes that one and not a newer one.
     let mut used: Option<Arc<Entry>> = None;
+    // The order an `auto` run put the members in, to put the result back in the job's order.
+    let mut sorted_by: Option<Vec<u32>> = None;
     let ran = guard(|| {
         // The context comes from the table inside the guard, because `CudaContext::new`
         // panics when a library is missing and the last drop of a context can too.
@@ -801,12 +765,90 @@ pub fn run_cuda(
             kernel_source_with(&tape, integrator, scalar, Dialect::Cuda, layout, stack)
                 .map_err(kernel_err)
         };
-        let src = text(kernel_stack)?;
+        let cc = entry
+            .ctx
+            .compute_capability()
+            .map_err(drv("compute capability"))?;
+        let kept = |src: &str| {
+            entry
+                .kernels
+                .peek(&(src.to_owned(), cc, job.precision, job.math))
+        };
+        // `auto` runs as `member` until the member kernel has run long enough to repay the
+        // warp and probe kernels it still lacks (the compile gate, SPEC section 8af-5). Past
+        // the gate it sorts the members by the depth of their first right-hand side when the
+        // sampled keys are out of order and runs each batch member or warp. The keys come from
+        // the CPU. A batch on warp runs the plain warp kernel, with the counting variant of it
+        // as the probe.
+        let mut member_src = None;
+        let mut warp_probe = None;
+        let plan = match job.stack {
+            StackLayout::Auto if order::member_only(&tape, job) => {
+                GATE_PASSED.store(true, Ordering::SeqCst);
+                Some(AutoPlan::Member)
+            }
+            StackLayout::Auto => {
+                let member = text(StackLayout::Member)?;
+                let open = match kept(&member) {
+                    None => None,
+                    Some(k) => {
+                        let warp = text(StackLayout::Warp)?;
+                        let probe = text(StackLayout::Auto)?;
+                        let missing = [&warp, &probe]
+                            .into_iter()
+                            .filter(|s| kept(s).is_none())
+                            .count();
+                        order::gate_passes(k.spent(), k.nvrtc, missing).then_some((warp, probe))
+                    }
+                };
+                GATE_PASSED.store(open.is_some(), Ordering::SeqCst);
+                member_src = Some(member);
+                Some(match open {
+                    None => AutoPlan::Member,
+                    Some(wp) => {
+                        warp_probe = Some(wp);
+                        order::plan_auto(&tape, job, cancel)?
+                    }
+                })
+            }
+            _ => None,
+        };
+        let (kernel_stack, sorted) = match &plan {
+            None => (job.stack, false),
+            Some(AutoPlan::Member) => (StackLayout::Member, false),
+            Some(AutoPlan::Keys { order, .. }) => (StackLayout::Warp, order.is_some()),
+        };
+        let permuted = match &plan {
+            Some(AutoPlan::Keys {
+                order: Some(order), ..
+            }) => Some(order::permute(job, order)),
+            _ => None,
+        };
+        let run_job = match &permuted {
+            None => Job {
+                stack: kernel_stack,
+                ..job.clone()
+            },
+            Some((x0, params)) => Job {
+                x0,
+                params: match params {
+                    Some(p) => Params::PerMember(p),
+                    None => job.params,
+                },
+                stack: kernel_stack,
+                ..job.clone()
+            },
+        };
+        let keys = match &plan {
+            Some(AutoPlan::Keys { keys, .. }) => Some(keys.as_slice()),
+            _ => None,
+        };
         // `auto` runs a batch that the keys do not favor, and the rest of a batch after a
         // switch, on the member kernel, and probes the depths with the counting kernel.
-        let extra = match keys {
-            Some(_) => Some((text(StackLayout::Member)?, text(StackLayout::Auto)?)),
-            None => None,
+        let (src, extra) = match (keys, member_src, warp_probe) {
+            (Some(_), Some(member), Some((warp, probe))) => (warp, Some((member, probe))),
+            (None, Some(member), _) => (member, None),
+            _ => (text(kernel_stack)?, None),
         };
         let auto = match (keys, &extra) {
             (Some(keys), Some((member, probe))) => Some(AutoRun {
@@ -824,7 +866,11 @@ pub fn run_cuda(
             asked: job.stack,
             sorted,
         };
-        session(entry, device, p, &run_job, &checked, &tape, &run, cancel)
+        let ran = session(entry, device, p, &run_job, &checked, &tape, &run, cancel);
+        if let Some(AutoPlan::Keys { order, .. }) = plan {
+            sorted_by = order;
+        }
+        ran
     })
     .unwrap_or_else(|msg| Err(EnsembleError::GpuLaunch(format!("panic in cudarc: {msg}"))));
     if matches!(
@@ -839,11 +885,9 @@ pub fn run_cuda(
     }
     // The last drop of an entry can panic, so this one is dropped where a panic is caught.
     let _ = guard(|| drop(used));
-    match &plan {
-        Some(AutoPlan::Keys {
-            order: Some(order), ..
-        }) => ran.map(|r| order::unpermute(r, order)),
-        _ => ran,
+    match &sorted_by {
+        Some(order) => ran.map(|r| order::unpermute(r, order)),
+        None => ran,
     }
 }
 
@@ -851,12 +895,34 @@ pub fn run_cuda(
 struct Entry {
     // The kernels drop before the context. Each loaded function holds its module, and a module
     // holds the context.
-    kernels: Lru<KernelKey, CudaFunction>,
+    kernels: Lru<KernelKey, Kernel>,
     ctx: Arc<CudaContext>,
     /// The largest local-memory reserve that a private run asked of this context. The driver
     /// keeps the memory until the context is destroyed, so the free memory read later is lower
     /// by this much and the layout rule adds it back.
     held: AtomicU64,
+}
+
+/// A loaded kernel with what the compile gate of `auto` reads (SPEC section 8af-5).
+#[derive(Clone)]
+struct Kernel {
+    f: CudaFunction,
+    /// The time NVRTC took to compile it.
+    nvrtc: Duration,
+    /// The sum of the times of its launches in this process, in nanoseconds, shared by every
+    /// run that takes it from the kept list.
+    spent: Arc<AtomicU64>,
+}
+
+impl Kernel {
+    fn spent(&self) -> Duration {
+        Duration::from_nanos(self.spent.load(Ordering::SeqCst))
+    }
+
+    fn add(&self, took: Duration) {
+        let ns = u64::try_from(took.as_nanos()).unwrap_or(u64::MAX);
+        self.spent.fetch_add(ns, Ordering::SeqCst);
+    }
 }
 
 /// The layout of one run, the capacity it was picked from and the kernel text it gives.
@@ -919,6 +985,17 @@ static CONTEXTS: Kept<Entry> = Kept::new();
 /// How many kernels have been compiled in this process, for the cache test.
 static COMPILES: AtomicUsize = AtomicUsize::new(0);
 
+/// Whether the last `auto` run passed its compile gate, for the tests.
+static GATE_PASSED: AtomicBool = AtomicBool::new(false);
+
+/// Whether the last `auto` run on CUDA passed its compile gate (SPEC section 8af-5), or ran
+/// member without keys and so skipped it, for the tests that warm `auto` up before they time
+/// it.
+#[doc(hidden)]
+pub fn auto_gate_passed() -> bool {
+    GATE_PASSED.load(Ordering::SeqCst)
+}
+
 /// How many kernels the kept entry of device `index` holds, for the cache test.
 #[doc(hidden)]
 pub fn kept_kernels(index: usize) -> usize {
@@ -959,12 +1036,19 @@ fn session(
             .kernels
             .get_or_make((src.to_owned(), cc, job.precision, job.math), || {
                 COMPILES.fetch_add(1, Ordering::SeqCst);
+                let started = Instant::now();
                 let image = compile_image(src, p, cc, job.math)?;
+                let nvrtc = started.elapsed();
                 let load = |step: &'static str| {
                     move |e: DriverError| EnsembleError::GpuCompile(drv_text(step, &e))
                 };
                 let module = ctx.load_module(image).map_err(load("load_module"))?;
-                module.load_function(ENTRY).map_err(load("load_function"))
+                let f = module.load_function(ENTRY).map_err(load("load_function"))?;
+                Ok(Kernel {
+                    f,
+                    nvrtc,
+                    spent: Arc::new(AtomicU64::new(0)),
+                })
             })
     };
     let label = Label {
@@ -1061,14 +1145,14 @@ type Shape = (Layout, usize, Precision);
 /// The kernels of one batch.
 enum Kernels<'a> {
     /// One kernel for the whole batch, of the stack layout given.
-    Fixed(CudaFunction, StackRan),
+    Fixed(Kernel, StackRan),
     /// An `auto` batch on warp (SPEC section 8af-5): the plain warp kernel, its counting
     /// variant that probes the depths, and the member kernel, compiled when a timing or a
     /// switch first needs it. `time` asks for a timing of both layouts after the first probe.
     Auto {
-        warp: CudaFunction,
-        probe: CudaFunction,
-        member: &'a dyn Fn() -> Result<CudaFunction, EnsembleError>,
+        warp: Kernel,
+        probe: Kernel,
+        member: &'a dyn Fn() -> Result<Kernel, EnsembleError>,
         time: bool,
     },
 }
@@ -1171,10 +1255,10 @@ fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
     let max_steps = packed.max_steps;
 
     let launch_error = drv("launch");
-    // One launch of `function` for `steps` step attempts, then the control words, and the
+    // One launch of `kernel` for `steps` step attempts, then the control words, and the
     // depths when `dep` is given (the probe kernel takes the depth buffer as its last
-    // argument). It returns the time of the launch alone.
-    let mut go = |function: &CudaFunction,
+    // argument). It returns the time of the launch alone and adds it to the kernel's sum.
+    let mut go = |kernel: &Kernel,
                   steps: u64,
                   dep: Option<&mut Vec<u32>>,
                   ctl: &mut Vec<u32>|
@@ -1185,7 +1269,7 @@ fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
             panic!("injected panic in launch");
         }
         {
-            let mut b = stream.launch_builder(function);
+            let mut b = stream.launch_builder(&kernel.f);
             b.arg(&rc)
                 .arg(&segm)
                 .arg(&x0)
@@ -1215,6 +1299,7 @@ fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
         }
         stream.synchronize().map_err(drv("synchronize"))?;
         let took = started.elapsed();
+        kernel.add(took);
         stream
             .memcpy_dtoh(&ctl_d, ctl)
             .map_err(drv("copy ctl to host"))?;
@@ -1247,7 +1332,7 @@ fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
         } => {
             let mut ran = StackRan::Warp;
             // The member kernel once compiled, and whether the batch switched to it.
-            let mut member_fn: Option<CudaFunction> = None;
+            let mut member_fn: Option<Kernel> = None;
             let mut switched = false;
             let mut want_time = time;
             let mut timed = false;
