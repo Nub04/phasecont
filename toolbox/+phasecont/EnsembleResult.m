@@ -37,10 +37,13 @@ classdef EnsembleResult < handle
     %               iterates for a map)
     %   Rejected    rejected steps of each member (0 for RK4 and for a map)
     %   Label       struct with Backend, Device, Driver, Precision,
-    %               SinglePrecision and Math ("exact", or "fma" for a
-    %               FastMath run)
+    %               SinglePrecision, Math ("exact", or "fma" for a
+    %               FastMath run), Stack (the StackLayout asked for) and
+    %               StackRan ("member", "warp" or "mixed": the layout that
+    %               ran)
     %   Job         struct with the settings of the run: TSpan, Method,
-    %               Dt, Rtol, Atol, Hmax, MaxSteps, Bounds, FastMath
+    %               Dt, Rtol, Atol, Hmax, MaxSteps, Bounds, FastMath,
+    %               StackLayout
     %   Final       n-by-M states at the last output time
     %   Members     number of trajectories
     %

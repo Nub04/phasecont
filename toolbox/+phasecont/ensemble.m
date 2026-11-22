@@ -64,6 +64,19 @@ function r = ensemble(m, x0, p, tspan, options)
 %                 phasecont:ensemble:fastMath, and R.Label.Math is "fma"
 %                 instead of "exact". The results are not bit-reproducible:
 %                 call refine before they feed continuation.
+%     StackLayout "member" (default), "warp" or "auto". Where a GPU kernel
+%                 keeps the call frames of a model with recursive
+%                 functions. It changes the speed of a run, never its
+%                 results: every layout gives the same bits. "member" keeps
+%                 the frames of one member together, "warp" interleaves the
+%                 frames of 32 members so that the threads of a warp at the
+%                 same depth read adjacent memory, and "auto" lets CUDA pick
+%                 warp or member for each batch from the call depths the
+%                 kernel reports. OpenCL and Metal run "auto" as "member",
+%                 and the CPU and a model without calls ignore the option.
+%                 R.Label.Stack is the layout asked for and R.Label.StackRan
+%                 the one that ran: "member", "warp", or "mixed" when an
+%                 "auto" run used both.
 %
 %   A trajectory that stops with "stepTooSmall", "maxSteps", "notFinite" or
 %   "recursionDepth" is reported with the warning ID
@@ -91,6 +104,7 @@ arguments
     options.MaxSteps double {mustBeScalarOrEmpty} = []
     options.Bounds (1,1) double = Inf
     options.FastMath (1,1) logical = false
+    options.StackLayout (1,1) string = "member"
 end
 import phasecont.internal.num2json
 
@@ -158,6 +172,11 @@ if ~(options.Bounds > 0)
     error("phasecont:ensemble:badOption", ...
         "Bounds must be positive; Inf turns the test off.");
 end
+stack = options.StackLayout;
+if ~any(stack == ["member" "warp" "auto"])
+    error("phasecont:ensemble:badOption", ...
+        "StackLayout must be ""member"", ""warp"" or ""auto"", got ""%s"".", stack);
+end
 
 [backend, device] = chooseDevice(options, precision);
 math = "exact";
@@ -205,6 +224,7 @@ end
 job = "{""backend"":""" + backend + """,""device"":" + sprintf("%d", device) ...
     + ",""precision"":""" + precision + """" ...
     + ",""math"":""" + math + """" ...
+    + ",""stack"":""" + stack + """" ...
     + ",""t0"":" + num2json(tspan(1)) + ",""t1"":" + num2json(tspan(end)) ...
     + ",""method"":" + methodJson + ",""output"":" + outputJson ...
     + ",""bounds"":" + boundsJson ...
@@ -259,11 +279,13 @@ label = struct("Backend", string(st.label.backend), ...
     "Driver", string(st.label.driver), ...
     "Precision", string(st.label.precision), ...
     "SinglePrecision", logical(st.label.single_precision), ...
-    "Math", string(st.label.math));
+    "Math", string(st.label.math), ...
+    "Stack", string(st.label.stack), ...
+    "StackRan", string(st.label.stack_ran));
 jobInfo = struct("TSpan", tspan, "Method", method, "Dt", double(options.Dt), ...
     "Rtol", double(options.Rtol), "Atol", double(options.Atol), ...
     "Hmax", Inf, "MaxSteps", maxSteps, "Bounds", options.Bounds, ...
-    "FastMath", math == "fma");
+    "FastMath", math == "fma", "StackLayout", stack);
 if method == "iter"
     jobInfo.Hmax = [];
 elseif method == "dp5" && ~isempty(options.Hmax)
