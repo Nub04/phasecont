@@ -172,6 +172,59 @@ classdef EeModeTest < matlab.unittest.TestCase
                 "1 - jInf");
         end
 
+        function jEngineeringForm(testCase)
+            % SPEC 8ah, "Engineering E form": the exponent is a multiple
+            % of 3 and E0 is left out.
+            v = [978, 9780, 0.00512, 0.5, 1.5e6, -2e-5, 1e5, 12345678, ...
+                123.456, -0.001, 1e100, complex(1e3, -3.3e-3), ...
+                complex(0, -3.3e-3), 999.9999999];
+            want = ["978" "9.78E3" "5.12E-3" "500E-3" "1.5E6" "-20E-6" ...
+                "100E3" "12.3457E6" "123.456" "-1E-3" "10E99" ...
+                "1E3 - j3.3E-3" "-j3.3E-3" "1E3"];
+            for k = 1:numel(v)
+                testCase.verifyEqual(phasecont.ee.jstr(v(k)), want(k), ...
+                    "entry " + k);
+            end
+            testCase.verifyEqual(phasecont.ee.jstr(978, Digits = 2), "980");
+            testCase.verifyEqual(phasecont.ee.jstr(4.9e-324, Digits = 2), ...
+                "4.9E-324");
+            testCase.verifyEqual(phasecont.ee.jstr(978, Digits = 1), "1E3");
+            testCase.verifyEqual(phasecont.ee.jstr(zeros(0, 3)), ...
+                strings(0, 3));
+        end
+
+        function jEngineeringFormFuzz(testCase)
+            % The E form keeps the value that %.*g rounds to, with a
+            % mantissa from 1 to below 1000 and an exponent that is a
+            % multiple of 3.
+            s = RandStream("mt19937ar", "Seed", 11);
+            v = sign(randn(s, 2000, 1)) .* 10.^(-320 + 620*rand(s, 2000, 1));
+            v = v(v ~= 0 & isfinite(v));
+            for dg = 1:17
+                t = phasecont.ee.jstr(v, Digits = dg);
+                ref = str2double(compose("%." + dg + "g", v));
+                testCase.verifyEqual(str2double(t), ref, ...
+                    sprintf("Digits %d", dg));
+                nm = regexp(t, "^-?(?<m>\d+(?:\.\d*[1-9])?)(?:E(?<e>-?[1-9]\d*))?$", ...
+                    "names", "once");
+                ok = ~cellfun(@isempty, nm);
+                testCase.verifyTrue(all(ok), sprintf("Digits %d layout", dg));
+                nm = nm(ok);
+                m = cellfun(@(c) str2double(c.m), nm);
+                % MATLAB leaves an unmatched named group out of the struct.
+                e = zeros(size(nm));
+                for j = 1:numel(nm)
+                    if isfield(nm{j}, "e")
+                        e(j) = str2double(nm{j}.e);
+                    end
+                end
+                testCase.verifyTrue(all(m >= 1 & m < 1000), ...
+                    sprintf("Digits %d mantissa", dg));
+                testCase.verifyTrue(all(mod(e, 3) == 0), ...
+                    sprintf("Digits %d exponent", dg));
+            end
+        end
+
         function jDisplayRefusals(testCase)
             testCase.verifyError(@() phasecont.ee.jstr(1, Digits = 0), ...
                 "phasecont:model:badOption");
@@ -318,22 +371,43 @@ classdef EeModeTest < matlab.unittest.TestCase
         function backstopDirect(testCase)
             % Inputs inside the window cannot reach the Inf or NaN branch,
             % so call the backstop directly.
-            step = struct("Op", "scale", "Rows", [1 1], "Factor", 2, ...
-                "Matrix", eye(2));
-            none = reshape(step([]), 0, 1);
-            phasecont.internal.eeBackstop(1, [1; 2], step, none);
-            phasecont.internal.eeBackstop([], none, zeros(0, 1));
-            infFactor = step;
-            infFactor.Factor = Inf;
-            nanMatrix = [step; step];
-            nanMatrix(2).Matrix(1, 2) = NaN;
-            bad = {{[], [1; Inf]}, {[], infFactor}, {[], nanMatrix}, ...
+            phasecont.internal.eeBackstop(1, [1; 2], eye(2));
+            phasecont.internal.eeBackstop([], zeros(0, 1));
+            bad = {{[], [1; Inf]}, {[], [1 NaN]}, ...
                 {0}, {realmin/2}, {Inf}, {NaN}};
             for k = 1:numel(bad)
                 args = bad{k};
                 testCase.verifyError(@() ...
                     phasecont.internal.eeBackstop(args{:}), ...
                     "phasecont:ee:outOfRange", sprintf("case %d", k));
+            end
+        end
+
+        function gaussJordanStepCheck(testCase)
+            % The reduction checks each step's Factor and changed row.
+            [M, steps] = phasecont.internal.eeGaussJordan([eye(2) [3; 4]], 2);
+            testCase.verifyEqual(M, [eye(2) [3; 4]]);
+            testCase.verifyEqual(size(steps), [0 1]);
+            testCase.verifyEqual(fieldnames(steps), ...
+                {'Op'; 'Rows'; 'Factor'; 'Matrix'});
+            % Subnormal pivot: Factor 1/1e-310 is Inf.
+            testCase.verifyError(@() phasecont.internal.eeGaussJordan( ...
+                [1e-310 0 1; 0 1 1], 2), "phasecont:ee:outOfRange");
+            % An add step overflows row 2 to -Inf.
+            testCase.verifyError(@() phasecont.internal.eeGaussJordan( ...
+                [1 1e308; 1 -1e308], 2), "phasecont:ee:outOfRange");
+        end
+
+        function rangeMessageForm(testCase)
+            % Message values use the engineering E form (SPEC 8ah).
+            try
+                phasecont.ee.solve(1e-200*eye(2), [1; 1], Method = "cramer");
+                testCase.verifyFail("no error");
+            catch err
+                testCase.verifyEqual(string(err.identifier), ...
+                    "phasecont:ee:outOfRange");
+                testCase.verifySubstring(string(err.message), ...
+                    "about 789E-33 to 1.27E30");
             end
         end
 

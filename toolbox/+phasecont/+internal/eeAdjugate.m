@@ -5,10 +5,19 @@ function adj = eeAdjugate(A)
 %   the conjugate transpose. The i,j cofactor is (-1)^(i+j) times det of A
 %   with row i and column j deleted; det of the empty minor of a 1 by 1 is 1.
 n = size(A, 1);
+keep = cell(n, 1);                 % index vector with entry k deleted
+for k = 1:n
+    keep{k} = [1:k-1, k+1:n];
+end
 C = zeros(n);
 for i = 1:n
+    Ai = A(keep{i}, :);
     for j = 1:n
-        C(i, j) = (-1)^(i + j) * det(A([1:i-1, i+1:n], [1:j-1, j+1:n]));
+        m = det(Ai(:, keep{j}));
+        if mod(i + j, 2)
+            m = -m;
+        end
+        C(i, j) = m;
     end
 end
 adj = C.';

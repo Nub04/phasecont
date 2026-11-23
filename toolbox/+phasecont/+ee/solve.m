@@ -66,12 +66,12 @@ switch method
     case "inverse"
         [M, steps] = phasecont.internal.eeGaussJordan([A eye(n)], n);
         x = M(:, n+1:end) * b;
-        phasecont.internal.eeBackstop([], steps, x);
+        phasecont.internal.eeBackstop([], x);
         info.Steps = steps;
     case "gaussjordan"
         [M, steps] = phasecont.internal.eeGaussJordan([A b], n);
         x = M(:, end);
-        phasecont.internal.eeBackstop([], steps, x);
+        phasecont.internal.eeBackstop([], x);
         info.Steps = steps;
 end
 end

@@ -38,7 +38,7 @@ switch method
     case "gaussjordan"
         [M, steps] = phasecont.internal.eeGaussJordan([A eye(n)], n);
         X = M(:, n+1:end);
-        phasecont.internal.eeBackstop([], steps, X);
+        phasecont.internal.eeBackstop([], X);
         info.Steps = steps;
 end
 end
