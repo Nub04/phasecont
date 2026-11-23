@@ -7,8 +7,9 @@
 //! most the member it is on. A cancelled run returns no result, so a member that a cancel
 //! skipped changes nothing.
 //!
-//! RK4 runs `CPU_LANES` consecutive members per rayon task, stage by stage across the
-//! lanes, and the cancel flag is then read before each group (SPEC section 13, `cpu`).
+//! RK4 runs up to `CPU_LANES` consecutive members per rayon task, stage by stage across the
+//! lanes, and the cancel flag is then read before each group (SPEC section 13, `cpu`). A small
+//! ensemble gets smaller groups, so that every thread still gets work ([`default_lanes`]).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -19,8 +20,19 @@ use crate::real::Real;
 use crate::tape::Tape;
 use crate::traj::{Ctx, Kind, Traj};
 
-/// The number of RK4 members one rayon task runs together.
+/// The largest number of RK4 members one rayon task runs together.
 pub const CPU_LANES: usize = 4;
+
+/// The RK4 group size [`run_cpu`] uses for `members` on `threads` threads: the largest W of
+/// `CPU_LANES` and 2 with `members >= 2 * W * threads`, so every thread gets at least two
+/// groups, and 1 otherwise. A thread count of 0 counts as 1. The size changes no bit.
+pub fn default_lanes(members: usize, threads: usize) -> usize {
+    let threads = threads.max(1);
+    [CPU_LANES, 2]
+        .into_iter()
+        .find(|&w| members >= 2 * w * threads)
+        .unwrap_or(1)
+}
 
 /// Runs `job` on the CPU. `steps_per_launch` is at least 1; pass `u64::MAX` for one launch.
 pub fn run_cpu(
@@ -28,7 +40,8 @@ pub fn run_cpu(
     steps_per_launch: u64,
     cancel: &AtomicBool,
 ) -> Result<EnsembleResult, EnsembleError> {
-    run_cpu_lanes(job, steps_per_launch, cancel, CPU_LANES)
+    let lanes = default_lanes(job.members, rayon::current_num_threads());
+    run_cpu_lanes(job, steps_per_launch, cancel, lanes)
 }
 
 /// [`run_cpu`] with RK4 groups of `lanes` members, 1, 2, 4 or 8; 1 runs one member at a

@@ -7,7 +7,7 @@
 mod common;
 
 use common::*;
-use pc_ensemble::cpu::run_cpu_lanes;
+use pc_ensemble::cpu::{default_lanes, run_cpu_lanes};
 use pc_ensemble::job::NativeRhs;
 use pc_ensemble::{EnsembleResult, Job, Method, Output, Params, Precision, Status};
 use pc_ir::IrModel;
@@ -324,5 +324,57 @@ fn a_group_size_outside_the_list_is_refused() {
             run_cpu_lanes(&j, u64::MAX, &AtomicBool::new(false), lanes).is_err(),
             "lanes={lanes}"
         );
+    }
+}
+
+#[test]
+fn the_default_group_leaves_every_thread_two_groups() {
+    // The largest of 4 and 2 with members >= 2 * lanes * threads, else 1 (SPEC section 13).
+    for (members, threads, want) in [
+        (0, 16, 1),
+        (1, 1, 1),
+        (3, 1, 1),
+        (4, 1, 2),
+        (7, 1, 2),
+        (8, 1, 4),
+        (100_000, 1, 4),
+        (8, 16, 1),
+        (32, 16, 1),
+        (63, 16, 1),
+        (64, 16, 2),
+        (127, 16, 2),
+        (128, 16, 4),
+        (100_000, 16, 4),
+        (100, 0, 4),
+    ] {
+        assert_eq!(
+            default_lanes(members, threads),
+            want,
+            "members={members} threads={threads}"
+        );
+    }
+}
+
+#[test]
+fn the_default_group_gives_the_bits_of_one_lane_at_every_thread_count() {
+    let m = build_model(VDP);
+    for members in [3, 8, 16, 33, 64] {
+        let x0 = x0s(members, 2);
+        for precision in [Precision::Double, Precision::Single] {
+            let mut j = job(&m, members, &x0, &[1.5], 2.0, RK4, precision);
+            j.output = Output::Samples(vec![1.0, 2.0]);
+            let want = run_lanes(&j, u64::MAX, 1);
+            for threads in [1, 2, 8] {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .unwrap();
+                same(
+                    &pool.install(|| run(&j)),
+                    &want,
+                    &format!("{precision:?} members={members} threads={threads}"),
+                );
+            }
+        }
     }
 }
