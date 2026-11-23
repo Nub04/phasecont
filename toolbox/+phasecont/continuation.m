@@ -283,6 +283,16 @@ arguments
 end
 import phasecont.internal.num2json
 
+% continuationBatch calls continuation in a prepare-only mode: the options
+% are checked and the problem is built as for a solo call, and the job comes
+% back unrun.
+prepareOnly = phasecont.internal.prepareOnly();
+if prepareOnly && options.Plot
+    error("phasecont:model:badOption", ...
+        "Plot cannot be used in continuationBatch. Plot each branch " + ...
+        "after the batch returns.");
+end
+
 if ~isempty(m.Only)
     warning("phasecont:continuation:onlyIgnored", ...
         "The only list of the model applies to simulate; continuation ignores it.");
@@ -711,6 +721,11 @@ elseif isCycle
     yrow = 1 + varIdx + n*(0:grid(1)*grid(2));
 end
 lines = gobjects(1, 0);
+if prepareOnly
+    br = struct("Model", m, "Problem", problem, "U0", u0, "P", p, ...
+        "Finish", @finish, "RunError", @runError);
+    return
+end
 try
     if options.Plot
         out = phasecont.internal.runLoop(m, problem, u0, p, @drawLive);
@@ -718,45 +733,58 @@ try
         out = phasecont.internal.runLoop(m, problem, u0, p);
     end
 catch err
-    if isempty(detected) || ~startsWith(err.identifier, "phasecont:engine:")
-        rethrow(err);
-    end
-    error(err.identifier, "%s\nThe start used the detected period T = %.6g. " + ...
-        "Pass Period to give the period, or simulate longer so the orbit " + ...
-        "settles onto the cycle.", err.message, detected.Period);
+    runError(err);
 end
-st = out.Status;
-nb = numel(st.branches);
-br = phasecont.Branch.empty(1, 0);
-record = phasecont.internal.RunRecord(struct( ...
-    "Kind", "continuation", "Problem", problem, "U0", u0(:), "P", p(:), ...
-    "ModelSha", m.SourceSha256, "Type", type, "Free", free, "Grid", reshape(grid, 1, []), ...
-    "N", n, "Json", out.Json, "Points", {out.Points}, ...
-    "Specials", {out.Specials}, "Stride", out.Stride));
-for b = 1:nb
-    status = st.branches(b);
-    if isDelayHopf && ~lyapunovGiven
-        % The default leaves out GH and l1 (SPEC 8s), so say so.
-        status = addWarning(status, lyapunovNotice());
+br = finish(out);
+
+    function runError(err)
+        % Rethrows an error of the run. An engine error after a detected
+        % period says which period the start used.
+        if isempty(detected) || ~startsWith(err.identifier, "phasecont:engine:")
+            rethrow(err);
+        end
+        error(err.identifier, "%s\nThe start used the detected period T = %.6g. " + ...
+            "Pass Period to give the period, or simulate longer so the orbit " + ...
+            "settles onto the cycle.", err.message, detected.Period);
     end
-    one = phasecont.internal.rows2branch(m, free, p, n, out.Points{b}, ...
-        out.Specials{b}, status, type, grid);
-    one.attachRecord(record, b);
-    br(1, b) = one;
-end
-if options.Plot
-    % Replace the live lines with the styled plot.
-    delete(lines(isgraphics(lines)));
-    ax.ColorOrderIndex = liveIndex;
-    for b = 1:nb
-        if isCurve
-            plot(br(b), Parent = ax);
-        else
-            plot(br(b), Var = varIdx, Parent = ax);
+
+    function res = finish(out)
+        % The branches of a finished run, with the run record attached, and
+        % the styled plot when Plot is on.
+        st = out.Status;
+        nb = numel(st.branches);
+        res = phasecont.Branch.empty(1, 0);
+        record = phasecont.internal.RunRecord(struct( ...
+            "Kind", "continuation", "Problem", problem, "U0", u0(:), "P", p(:), ...
+            "ModelSha", m.SourceSha256, "Type", type, "Free", free, ...
+            "Grid", reshape(grid, 1, []), "N", n, "Json", out.Json, ...
+            "Points", {out.Points}, "Specials", {out.Specials}, ...
+            "Stride", out.Stride));
+        for b = 1:nb
+            status = st.branches(b);
+            if isDelayHopf && ~lyapunovGiven
+                % The default leaves out GH and l1 (SPEC 8s), so say so.
+                status = addWarning(status, lyapunovNotice());
+            end
+            one = phasecont.internal.rows2branch(m, free, p, n, out.Points{b}, ...
+                out.Specials{b}, status, type, grid);
+            one.attachRecord(record, b);
+            res(1, b) = one;
+        end
+        if options.Plot
+            % Replace the live lines with the styled plot.
+            delete(lines(isgraphics(lines)));
+            ax.ColorOrderIndex = liveIndex;
+            for b = 1:nb
+                if isCurve
+                    plot(res(b), Parent = ax);
+                else
+                    plot(res(b), Var = varIdx, Parent = ax);
+                end
+            end
+            drawnow
         end
     end
-    drawnow
-end
 
     function drawLive(pts, ~)
         % Draws the rows copied so far, one line per branch.
