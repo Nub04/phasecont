@@ -20,6 +20,7 @@ PhaseCont (working name) is a MATLAB toolbox for phase-plane and bifurcation ana
 - Write a branch as a pgfplots figure and its special points as a booktabs table, compile the document with `latexmk`, or edit it in the LaTeX studio app (`phasecont.latex`, `phasecont.app.LatexStudio`).
 - Save a model and its results to a session file, load it again, and replay every run to check the result (`phasecont.Session`, `phasecont.session.replay`).
 - Explore a model in the phase-plane app, with direction field, nullclines, trajectories and equilibria (`phasecont.app.PhasePlane`).
+- Test the hypotheses of the closed-orbit criteria of a planar ODE (gradient system, Lyapunov function, Dulac function, trapping region) at the samples of a rectangle, with exact derivatives (`phasecont.closedOrbitChecks`). A check that holds says so at the samples only.
 - Iterate maps (`x(t+1)=...`), find their fixed points and period-k points with their multipliers, continue them in one parameter with LP, BP, PD and NS points and their normal form coefficients, and follow their LP, PD and NS curves in two parameters with codim-2 labels. The phase-plane app and `phasecont.cobweb` draw maps, and `phasecont.ensemble` iterates them. [Maps](#maps) has examples.
 - Build a model from equation text, a table, a MATLAB function handle, a MATLAB function file or an SBML file, with no `.ode` file (`phasecont.Model.fromEquations`, `fromTable`, `fromFunction`, `fromFile`), or type it into the model editor (`phasecont.app.ModelEditor`).
 
