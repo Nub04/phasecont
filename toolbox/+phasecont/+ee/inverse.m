@@ -11,7 +11,7 @@ function [X, info] = inverse(A, options)
 %   rcond(A) <= Tol. INFO has the same fields as in phasecont.ee.solve.
 %
 %   Errors: phasecont:ee:badSize, phasecont:ee:nonfinite,
-%   phasecont:ee:singular and phasecont:model:badOption, as in
+%   phasecont:ee:outOfRange, phasecont:ee:singular and phasecont:model:badOption, as in
 %   phasecont.ee.solve.
 %
 %   See also phasecont.ee.solve, phasecont.ee.jstr.
@@ -30,12 +30,15 @@ switch method
     case "adjugate"
         d = det(A);
         adj = phasecont.internal.eeAdjugate(A);
+        phasecont.internal.eeBackstop(d);
         X = adj / d;
+        phasecont.internal.eeBackstop([], adj, X);
         info.Det = d;
         info.Adjugate = adj;
     case "gaussjordan"
         [M, steps] = phasecont.internal.eeGaussJordan([A eye(n)], n);
         X = M(:, n+1:end);
+        phasecont.internal.eeBackstop([], steps, X);
         info.Steps = steps;
 end
 end

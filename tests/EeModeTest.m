@@ -237,6 +237,83 @@ classdef EeModeTest < matlab.unittest.TestCase
                 Method = "adjugate"), "phasecont:ee:nonfinite");
         end
 
+        function rangeRefused(testCase)
+            % Entries outside 2^-100 <= |a| <= 2^100 pass rcond but let
+            % det(A) or det(B_i) over- or underflow (SPEC 8ah, check 3).
+            cases = {1e-200*eye(2), [1; 1]
+                     1e200*eye(2), [1; 1]
+                     1e-50*eye(8), ones(8, 1)
+                     1e-310, 1
+                     1e-100*eye(3), 1e-200*ones(3, 1)
+                     [1 0; 0 1e40j], [1; 1]
+                     eye(2), [1; 2^101]};
+            for k = 1:size(cases, 1)
+                [A, b] = cases{k, :};
+                for m = testCase.SolveMethods
+                    testCase.verifyError(@() phasecont.ee.solve(A, b, ...
+                        Method = m), "phasecont:ee:outOfRange", ...
+                        sprintf("case %d, %s", k, m));
+                end
+                if k <= 6
+                    for m = testCase.InverseMethods
+                        testCase.verifyError(@() phasecont.ee.inverse(A, ...
+                            Method = m), "phasecont:ee:outOfRange", ...
+                            sprintf("case %d, %s", k, m));
+                    end
+                end
+            end
+        end
+
+        function rangeEdgesSolve(testCase)
+            % Order 8 at both ends of the window, A and b at opposite ends.
+            M = ones(8) + eye(8);
+            Mc = ones(8) + eye(8) + 1j*eye(8);
+            lo = 2^-100;
+            cases = {lo*M, 2^100*ones(8, 1)
+                     2^99*M, lo*ones(8, 1)
+                     lo*Mc, 2^100*ones(8, 1)
+                     2^98*Mc, lo*ones(8, 1)};
+            for k = 1:size(cases, 1)
+                [A, b] = cases{k, :};
+                ref = A \ b;
+                for m = testCase.SolveMethods
+                    [x, info] = phasecont.ee.solve(A, b, Method = m);
+                    lbl = sprintf("case %d, %s", k, m);
+                    testCase.verifyLessThanOrEqual(norm(x - ref), ...
+                        1e-10*norm(ref), lbl);
+                    testCase.verifyTrue(all(isfinite([info.DetB; ...
+                        info.Adjugate(:)])), lbl);
+                    if ismember(m, ["cramer" "adjugate"])
+                        testCase.verifyGreaterThanOrEqual(abs(info.Det), ...
+                            realmin, lbl);
+                        testCase.verifyTrue(isfinite(info.Det), lbl);
+                    end
+                end
+                for m = testCase.InverseMethods
+                    X = phasecont.ee.inverse(A, Method = m);
+                    testCase.verifyLessThanOrEqual(norm(A*X - eye(8)), ...
+                        1e-10, sprintf("case %d, %s", k, m));
+                end
+            end
+        end
+
+        function determinantBackstop(testCase)
+            % Inside the window and above a Tol near 0, det(A) can still
+            % underflow: Cramer and the adjugate refuse, Gauss-Jordan solves.
+            A = 2^-100*(ones(8) + 2^-40*eye(8));
+            b = 2^-100*(1:8).';
+            for m = ["cramer" "adjugate"]
+                testCase.verifyError(@() phasecont.ee.solve(A, b, ...
+                    Method = m, Tol = 1e-15), "phasecont:ee:outOfRange", m);
+            end
+            testCase.verifyError(@() phasecont.ee.inverse(A, ...
+                Method = "adjugate", Tol = 1e-15), "phasecont:ee:outOfRange");
+            for m = ["inverse" "gaussjordan"]
+                x = phasecont.ee.solve(A, b, Method = m, Tol = 1e-15);
+                testCase.verifyTrue(all(isfinite(x)), m);
+            end
+        end
+
         function optionRefusals(testCase)
             ok = [2 1; 1 3];
             b = [4; 7];

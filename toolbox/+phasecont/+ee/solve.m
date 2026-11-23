@@ -21,7 +21,9 @@ function [x, info] = solve(A, b, options)
 %
 %   Errors: phasecont:ee:badSize (A not square double of order 1 to 8, or
 %   B not a double column of length n), phasecont:ee:nonfinite (NaN or
-%   Inf), phasecont:ee:singular (rcond(A) <= Tol) and
+%   Inf), phasecont:ee:outOfRange (a nonzero entry of A or B outside
+%   2^-100 to 2^100 in magnitude, or det(A) or a result outside the double
+%   range), phasecont:ee:singular (rcond(A) <= Tol) and
 %   phasecont:model:badOption (missing or unknown Method, Tol outside
 %   0 <= Tol < 1).
 %
@@ -48,22 +50,28 @@ switch method
             Bi(:, i) = b;
             detB(i) = det(Bi);
         end
+        phasecont.internal.eeBackstop(d);
         x = detB / d;
+        phasecont.internal.eeBackstop([], detB, x);
         info.Det = d;
         info.DetB = detB;
     case "adjugate"
         d = det(A);
         adj = phasecont.internal.eeAdjugate(A);
+        phasecont.internal.eeBackstop(d);
         x = adj * b / d;
+        phasecont.internal.eeBackstop([], adj, x);
         info.Det = d;
         info.Adjugate = adj;
     case "inverse"
         [M, steps] = phasecont.internal.eeGaussJordan([A eye(n)], n);
         x = M(:, n+1:end) * b;
+        phasecont.internal.eeBackstop([], steps, x);
         info.Steps = steps;
     case "gaussjordan"
         [M, steps] = phasecont.internal.eeGaussJordan([A b], n);
         x = M(:, end);
+        phasecont.internal.eeBackstop([], steps, x);
         info.Steps = steps;
 end
 end
