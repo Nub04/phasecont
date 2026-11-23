@@ -15,7 +15,8 @@ PhaseCont (working name) is a MATLAB toolbox for phase-plane and bifurcation ana
 - Continue the equilibria of a delay model, one that calls `delay(x, tau)`, with the characteristic roots counted at every point (`Roots`), and detect LP, BP and H points. Follow the Hopf curves of a delay model in two parameters with their BT and ZH points, GH points with `Lyapunov = true` and HH points with `Roots`. `Coefficients = true` adds the zero-Hopf and Hopf-Hopf normal form coefficients.
 - Continue the cycles that branch off a Hopf point of a delay model, with their Floquet multipliers (`Floquet`) and their LPC, PD and NS points. `Detect = "BPC"` labels the branch points of the discretized cycle problem, and `Switch = "BPC1"` follows the branch that leaves one.
 - Integrate many trajectories of one model at once, for a grid of start states or parameter sets, on the CPU or on a GPU through CUDA, OpenCL or Metal (`phasecont.ensemble`). `Precision` has no default. Single-precision results are labeled as such, and `refine` runs a member again in double precision on the CPU. `phasecont.gpuDevices` lists the devices, and `phasecont.gpuSelfTest` checks one against exact solutions.
-- Fit model parameters to trajectory data with the Levenberg-Marquardt method, one ensemble call per iteration, in double precision on the CPU (`phasecont.fit`). It fits ODE models only.
+- Fit model parameters to trajectory data with the Levenberg-Marquardt method, one ensemble call per iteration, in double precision on the CPU (`phasecont.fit`). `Starts` runs several start points in one ensemble call per iteration. It fits ODE models only.
+- Run several continuations at the same time, one engine thread each (`phasecont.continuationBatch`), for both directions of a branch, several start points or a family of parameter values.
 - Write a branch as a pgfplots figure and its special points as a booktabs table, compile the document with `latexmk`, or edit it in the LaTeX studio app (`phasecont.latex`, `phasecont.app.LatexStudio`).
 - Save a model and its results to a session file, load it again, and replay every run to check the result (`phasecont.Session`, `phasecont.session.replay`).
 - Explore a model in the phase-plane app, with direction field, nullclines, trajectories and equilibria (`phasecont.app.PhasePlane`).
@@ -89,6 +90,17 @@ lp.Data.coefficient                                % the normal form coefficient
 ```
 
 `continuation` blocks while it runs and polls the engine, first after 1 ms and then at growing intervals up to 50 ms. Ctrl+C cancels the run and frees it. It returns a `phasecont.Branch` that holds copies of the data, so it stays valid after the model is deleted. `Type` selects the problem: `"EP"` (the default), `"LC"` from a Hopf point, and `"LP"`, `"H"`, `"LPC"`, `"PD"`, `"NS"` or `"HOM"` with two free parameters. `help phasecont.continuation` lists the options.
+
+To run independent curves at the same time, pass each one as a cell of `continuation` arguments. Each job runs on its own engine thread, and the results come back in input order with the same bits as the calls in turn:
+
+```matlab
+brs = phasecont.continuationBatch({
+    {m, eq, "Free", "a", "Direction",  1, "Bounds", [-5 5]}
+    {m, eq, "Free", "a", "Direction", -1, "Bounds", [-5 5]}});
+plot(brs{1}); hold on; plot(brs{2})
+```
+
+`MaxConcurrent` caps the live runs and defaults to `maxNumCompThreads`. The ensemble and the cycle solver share one pool of worker threads, one per logical CPU. To use fewer, set `RAYON_NUM_THREADS` before you start MATLAB.
 
 ## `@` options
 
