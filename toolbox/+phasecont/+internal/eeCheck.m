@@ -5,9 +5,11 @@ function rc = eeCheck(A, tol, b)
 %   rcond(A) > TOL, and returns rcond(A). RC = eeCheck(A, TOL, B) also
 %   checks that B is a double column of length size(A, 1) with no NaN or
 %   Inf entry. Every nonzero entry of A and B must have a magnitude from
-%   2^-100 to 2^100, so that det(A), det(B_i) and the adjugate stay inside
-%   the double range at order 8. Every method of phasecont.ee.solve and phasecont.ee.inverse
-%   calls it first, so they refuse the same matrices.
+%   2^-100 to 2^100, so that no single term of det(A), det(B_i) or a
+%   cofactor leaves the double range at order 8; cancellation between
+%   terms is caught afterwards by eeBackstop. Every method of
+%   phasecont.ee.solve and phasecont.ee.inverse calls it first, so they
+%   refuse the same matrices.
 if ~(isa(A, "double") && ~issparse(A) && ismatrix(A) ...
         && size(A, 1) == size(A, 2) && size(A, 1) >= 1 && size(A, 1) <= 8)
     error("phasecont:ee:badSize", ...

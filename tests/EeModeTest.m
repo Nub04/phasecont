@@ -272,7 +272,8 @@ classdef EeModeTest < matlab.unittest.TestCase
             cases = {lo*M, 2^100*ones(8, 1)
                      2^99*M, lo*ones(8, 1)
                      lo*Mc, 2^100*ones(8, 1)
-                     2^98*Mc, lo*ones(8, 1)};
+                     2^98*Mc, lo*ones(8, 1)
+                     1j*2^99*M, lo*ones(8, 1)};
             for k = 1:size(cases, 1)
                 [A, b] = cases{k, :};
                 ref = A \ b;
@@ -311,6 +312,28 @@ classdef EeModeTest < matlab.unittest.TestCase
             for m = ["inverse" "gaussjordan"]
                 x = phasecont.ee.solve(A, b, Method = m, Tol = 1e-15);
                 testCase.verifyTrue(all(isfinite(x)), m);
+            end
+        end
+
+        function backstopDirect(testCase)
+            % Inputs inside the window cannot reach the Inf or NaN branch,
+            % so call the backstop directly.
+            step = struct("Op", "scale", "Rows", [1 1], "Factor", 2, ...
+                "Matrix", eye(2));
+            none = reshape(step([]), 0, 1);
+            phasecont.internal.eeBackstop(1, [1; 2], step, none);
+            phasecont.internal.eeBackstop([], none, zeros(0, 1));
+            infFactor = step;
+            infFactor.Factor = Inf;
+            nanMatrix = [step; step];
+            nanMatrix(2).Matrix(1, 2) = NaN;
+            bad = {{[], [1; Inf]}, {[], infFactor}, {[], nanMatrix}, ...
+                {0}, {realmin/2}, {Inf}, {NaN}};
+            for k = 1:numel(bad)
+                args = bad{k};
+                testCase.verifyError(@() ...
+                    phasecont.internal.eeBackstop(args{:}), ...
+                    "phasecont:ee:outOfRange", sprintf("case %d", k));
             end
         end
 
