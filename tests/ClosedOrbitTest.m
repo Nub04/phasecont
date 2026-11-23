@@ -410,7 +410,8 @@ classdef ClosedOrbitTest < matlab.unittest.TestCase
         end
 
         function nonfiniteValuesNameTheQuantity(testCase)
-            % f, J, grad V and grad g each fail at one sample of a 3 by 3 grid.
+            % f, J, V, g, grad V and grad g each fail at one sample of a 3 by 3
+            % grid.
             % sqrt(x+1) is finite at x = -1 and its slope is not; a zero
             % tangent times a pole is +0 by the SPEC rule, so sqrt(x^2+y^2)
             % at the origin would not fail.
@@ -419,6 +420,8 @@ classdef ClosedOrbitTest < matlab.unittest.TestCase
                 ["sqrt(x+1)" "-x"], {"Gradient", true}, "the Jacobian of f", "(-1, -1)"
                 ["-x" "-y"], {"Lyapunov", "sqrt(x+1)"}, "the gradient of V", "(-1, -1)"
                 ["-x" "-y"], {"Dulac", "sqrt(x+1)"}, "the gradient of g", "(-1, -1)"
+                ["-x" "-y"], {"Lyapunov", "1/x"}, "the Lyapunov function V", "(0, -1)"
+                ["-x" "-y"], {"Dulac", "1/x"}, "the Dulac function g", "(0, -1)"
                 };
             for k = 1:size(cases, 1)
                 m = testCase.model(cases{k, 1});

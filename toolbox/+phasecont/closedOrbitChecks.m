@@ -73,7 +73,11 @@ function r = closedOrbitChecks(m, options)
 %     phasecont:orbit:badExpression  V or G does not parse or uses t
 %     phasecont:orbit:nonfinite      NaN or Inf in f, J, V, grad V, G or
 %                                    grad G at a sample; the message names
-%                                    the sample and the quantity
+%                                    the sample and the quantity. Engine
+%                                    derivatives give 0 where a zero tangent
+%                                    meets a pole (SPEC section 2), so the
+%                                    gradient of sqrt(x^2+y^2) at the origin
+%                                    is 0 and raises no error
 %
 %   Example (Strogatz, Example 7.2.4)
 %     m = phasecont.Model.fromEquations(["x' = x*(2-x-y)" ...
