@@ -42,10 +42,24 @@ function r = fit(m, x0, P, t, Y, options)
 %   FdScale must be large enough to move every fitted parameter: a step that
 %   leaves q_j unchanged in double precision raises phasecont:fit:badOption.
 %
-%   One option is optional:
+%   Two options are optional:
 %     MaxSteps   most steps of one member, passed to phasecont.ensemble,
 %                whose limit is 100000 when MaxSteps is not given or is
 %                empty, as for Dt, Rtol and Atol
+%     Starts     |Fit|-by-K matrix of start values, one column per start,
+%                rows in the order of Fit. They replace the fitted values
+%                in P, which still gives the other parameters. The K fits
+%                run in lockstep, one ensemble call per iteration for all
+%                starts still running, and each start gives the same bits
+%                as a fit from that start alone. R is the start with the
+%                lowest Cost (a tie keeps the lower index); R.Starts holds
+%                every start and R.BestStart the index of R. A start that
+%                would raise startFailed, jacobianFailed, unidentifiable or
+%                the badOption of FdStep has Stop "failed" and its error in
+%                Error, and the fit warns phasecont:fit:someStartsFailed.
+%                When every start fails, the error of the first is raised
+%                with "In start k:" before its message. A Starts that is not
+%                a finite real |Fit|-by-K matrix raises phasecont:fit:badStarts.
 %
 %   A trial point that does not finish is a rejected step. A start point
 %   that does not finish raises phasecont:fit:startFailed, and so does a
@@ -78,6 +92,7 @@ arguments
     options.StepTol = []
     options.MaxIter = []
     options.MaxSteps = []
+    options.Starts = []
 end
 
 if m.IsMap
@@ -158,6 +173,20 @@ if isnumeric(P) && isempty(P)
 else
     p0 = m.paramVector(P);
 end
+starts = options.Starts;
+given = ~(isnumeric(starts) && isempty(starts));
+if given
+    if ~(isnumeric(starts) && isreal(starts) && ismatrix(starts) ...
+            && size(starts, 1) == nf && size(starts, 2) >= 1 ...
+            && all(isfinite(starts), "all"))
+        error("phasecont:fit:badStarts", ...
+            "Starts must be a finite real %d-by-K matrix: one row per name in Fit, one column per start.", ...
+            nf);
+    end
+    Q0 = double(starts);
+else
+    Q0 = p0(fitIdx);
+end
 
 if ~(isnumeric(t) && isreal(t) && isvector(t) && all(isfinite(t)))
     error("phasecont:fit:badTime", "T must be a vector of finite real times.");
@@ -187,97 +216,228 @@ saved = warning("query", warnId);
 warning("off", warnId);
 restore = onCleanup(@() warning(saved)); %#ok<NASGU>
 
-q = p0(fitIdx);
-ev = evaluate(ctx, q);
-if ~ev.ok0
-    error("phasecont:fit:startFailed", ...
-        "The model did not reach the last data time from the start values (status ""%s"").%s", ...
-        ev.status(1), stepsHint(ev.status(1)));
+cfg = struct("tau", tau, "gradTol", gradTol, "stepTol", stepTol, ...
+    "maxIter", maxIter, "nf", nf);
+K = size(Q0, 2);
+S = cell(1, K);
+for k = 1:K
+    S{k} = newStart(Q0(:, k), maxIter);
 end
-requireJacobian(ctx, ev);
-f = ev.resid;
-model = ev.model;
-J = ev.J;
-cost = 0.5 * (f' * f);
-g = J' * f;
-mu = tau * max(sum(J .^ 2, 1));
-nu = 2;
-gradNorm = norm(g, Inf);
-done = gradNorm <= gradTol;
-stop = "";
-if done
-    stop = "gradient";
-end
-
-cap = min(maxIter, 64);   % History rows grow by doubling, up to MaxIter
-hist = nan(cap, 7);       % Iter Cost GradNorm StepNorm Mu Rho Accepted
-iter = 0;
-while ~done && iter < maxIter
-    h = [J; sqrt(mu) * eye(nf)] \ [-f; zeros(nf, 1)];
-    stepNorm = norm(h);
-    if stepNorm <= stepTol * (norm(q) + stepTol)
-        done = true;
-        stop = "step";
+% Each pass makes one ensemble call for the points of every start that is
+% still running: its start point or its trial point. A fit without Starts
+% is the case K = 1.
+while true
+    live = find(cellfun(@(s) s.phase ~= "end", S));
+    if isempty(live)
         break
     end
-    iter = iter + 1;
-    qNew = q + h;
-    trial = evaluate(ctx, qNew);
-    rho = NaN;
-    accept = false;
-    if trial.ok0
-        fNew = trial.resid;
-        costNew = 0.5 * (fNew' * fNew);
-        rho = (cost - costNew) / (0.5 * (h' * (mu * h - g)));
-        accept = rho > 0;
-    end
-    muUsed = mu;
-    if accept
-        requireJacobian(ctx, trial);
-        q = qNew;
-        f = fNew;
-        model = trial.model;
-        J = trial.J;
-        cost = costNew;
-        g = J' * f;
-        gradNorm = norm(g, Inf);
-        mu = mu * max(1/3, 1 - (2 * rho - 1)^3);
-        nu = 2;
-        if gradNorm <= gradTol
-            done = true;
-            stop = "gradient";
+    blocks = cell(1, numel(live));
+    etas = cell(1, numel(live));
+    keep = false(1, numel(live));
+    for i = 1:numel(live)
+        k = live(i);
+        try
+            [blocks{i}, etas{i}] = perturb(ctx, S{k}.point);
+            keep(i) = true;
+        catch err
+            S{k} = failStart(S{k}, err);
         end
-    else
-        mu = mu * nu;
-        nu = 2 * nu;
     end
-    if iter > cap
-        cap = min(maxIter, 2 * cap);
-        hist(cap, 1) = NaN;
+    live = live(keep);
+    if isempty(live)
+        continue
     end
-    hist(iter, :) = [iter cost gradNorm stepNorm muUsed rho accept];
-end
-if ~done
-    stop = "maxIter";
+    blocks = blocks(keep);
+    etas = etas(keep);
+    pm = [blocks{:}];
+    res = phasecont.ensemble(ctx.m, repmat(ctx.x0, 1, size(pm, 2)), pm, ...
+        ctx.tspan, "Backend", "cpu", "Precision", "double", ctx.method{:});
+    for i = 1:numel(live)
+        k = live(i);
+        ev = unpack(ctx, res, (i - 1) * (nf + 1), etas{i});
+        try
+            S{k} = advance(S{k}, ev, ctx, cfg);
+        catch err
+            S{k} = failStart(S{k}, err);
+        end
+    end
 end
 
-hist = hist(1:iter, :);
+results = cell(1, K);
+for k = 1:K
+    results{k} = resultFields(S{k}, ctx, obsNames, t, nObs);
+end
+failed = cellfun(@(s) s.stop == "failed", S);
+if ~given
+    if failed
+        rethrow(S{1}.err);
+    end
+    v = results{1};
+    v.Starts = phasecont.FitResult.empty(1, 0);
+    r = phasecont.FitResult(v);
+    return
+end
+if all(failed)
+    err = S{1}.err;
+    throw(MException(err.identifier, "%s", "In start 1: " + string(err.message)));
+end
+each = phasecont.FitResult.empty(1, 0);
+for k = 1:K
+    each(k) = phasecont.FitResult(results{k});
+end
+costs = cellfun(@(v) v.Cost, results);
+costs(failed) = NaN;
+[~, best] = min(costs);        % min skips NaN and keeps the first of a tie
+v = results{best};
+v.Starts = each;
+v.BestStart = best;
+r = phasecont.FitResult(v);
+if any(failed)
+    warning("phasecont:fit:someStartsFailed", ...
+        "%d of %d starts failed. Their entries in R.Starts have Stop ""failed"" and hold the error in Error.", ...
+        nnz(failed), K);
+end
+end
+
+function s = newStart(q, maxIter)
+% The state of one start before its first ensemble call.
+cap = min(maxIter, 64);   % History rows grow by doubling, up to MaxIter
+s = struct("phase", "start", "point", q, "q", q, "f", [], "model", [], ...
+    "J", [], "cost", NaN, "g", [], "mu", NaN, "nu", 2, "gradNorm", NaN, ...
+    "done", false, "stop", "", "iter", 0, "rows", 0, "cap", cap, ...
+    "hist", nan(cap, 7), "h", [], "stepNorm", NaN, "err", []);
+end
+
+function s = advance(s, ev, ctx, cfg)
+% One step of Algorithm 3.16 for one start, given the ensemble result of
+% its point. Errors are those of a fit from this start alone.
+if s.phase == "start"
+    if ~ev.ok0
+        error("phasecont:fit:startFailed", ...
+            "The model did not reach the last data time from the start values (status ""%s"").%s", ...
+            ev.status(1), stepsHint(ev.status(1)));
+    end
+    requireJacobian(ctx, ev);
+    s.f = ev.resid;
+    s.model = ev.model;
+    s.J = ev.J;
+    s.cost = 0.5 * (s.f' * s.f);
+    s.g = s.J' * s.f;
+    s.mu = cfg.tau * max(sum(s.J .^ 2, 1));
+    s.nu = 2;
+    s.gradNorm = norm(s.g, Inf);
+    s.done = s.gradNorm <= cfg.gradTol;
+    if s.done
+        s.stop = "gradient";
+    end
+else
+    h = s.h;
+    rho = NaN;
+    accept = false;
+    if ev.ok0
+        fNew = ev.resid;
+        costNew = 0.5 * (fNew' * fNew);
+        rho = (s.cost - costNew) / (0.5 * (h' * (s.mu * h - s.g)));
+        accept = rho > 0;
+    end
+    muUsed = s.mu;
+    if accept
+        requireJacobian(ctx, ev);
+        s.q = s.point;
+        s.f = fNew;
+        s.model = ev.model;
+        s.J = ev.J;
+        s.cost = costNew;
+        s.g = s.J' * s.f;
+        s.gradNorm = norm(s.g, Inf);
+        s.mu = s.mu * max(1/3, 1 - (2 * rho - 1)^3);
+        s.nu = 2;
+        if s.gradNorm <= cfg.gradTol
+            s.done = true;
+            s.stop = "gradient";
+        end
+    else
+        s.mu = s.mu * s.nu;
+        s.nu = 2 * s.nu;
+    end
+    if s.iter > s.cap
+        s.cap = min(cfg.maxIter, 2 * s.cap);
+        s.hist(s.cap, 1) = NaN;
+    end
+    s.hist(s.iter, :) = [s.iter s.cost s.gradNorm s.stepNorm muUsed rho accept];
+    s.rows = s.iter;
+end
+s = nextStep(s, cfg);
+end
+
+function s = nextStep(s, cfg)
+% The next trial point, or the end of this start.
+if ~s.done && s.iter < cfg.maxIter
+    h = [s.J; sqrt(s.mu) * eye(cfg.nf)] \ [-s.f; zeros(cfg.nf, 1)];
+    stepNorm = norm(h);
+    if stepNorm <= cfg.stepTol * (norm(s.q) + cfg.stepTol)
+        s.done = true;
+        s.stop = "step";
+        s.phase = "end";
+        return
+    end
+    s.iter = s.iter + 1;
+    s.h = h;
+    s.stepNorm = stepNorm;
+    s.point = s.q + h;
+    s.phase = "trial";
+    return
+end
+if ~s.done
+    s.stop = "maxIter";
+end
+s.phase = "end";
+end
+
+function s = failStart(s, err)
+% Record an error of this start. Only the errors that a fit raises from a
+% point are recorded; any other error ends the call.
+if ~ismember(string(err.identifier), ["phasecont:fit:startFailed" ...
+        "phasecont:fit:jacobianFailed" "phasecont:fit:unidentifiable" ...
+        "phasecont:fit:badOption"])
+    rethrow(err);
+end
+s.err = err;
+s.stop = "failed";
+s.phase = "end";
+end
+
+function v = resultFields(s, ctx, obsNames, t, nObs)
+% The FitResult fields of one start.
+nf = numel(s.q);
+hist = s.hist(1:s.rows, :);
 history = table(hist(:, 1), hist(:, 2), hist(:, 3), hist(:, 4), hist(:, 5), ...
     hist(:, 6), logical(hist(:, 7)), VariableNames = ...
     ["Iter" "Cost" "GradNorm" "StepNorm" "Mu" "Rho" "Accepted"]);
-
-pAll = p0;
-pAll(fitIdx) = q;
+pAll = ctx.p0;
+pAll(ctx.fitIdx) = s.q;
 params = struct();
 for k = 1:nf
-    params.(fitNames(k)) = q(k);
+    params.(ctx.fitNames(k)) = s.q(k);
 end
-r = phasecont.FitResult(struct("Fit", fitNames, "Observe", obsNames, ...
-    "Times", t, "Estimate", q, "P", pAll, "Parameters", params, ...
-    "Fitted", model, "Residual", reshape(f, nTimes, nObs), ...
-    "Cost", cost, "GradNorm", gradNorm, "Jacobian", J, ...
-    "Iterations", iter, "Converged", stop ~= "maxIter", "Stop", stop, ...
-    "History", history));
+residual = zeros(0, 0);
+model = zeros(0, 0);
+J = zeros(0, 0);
+if ~isempty(s.f)
+    residual = reshape(s.f, ctx.nTimes, nObs);
+    model = s.model;
+    J = s.J;
+end
+err = MException.empty;
+if s.stop == "failed"
+    err = s.err;
+end
+v = struct("Fit", ctx.fitNames, "Observe", obsNames, ...
+    "Times", t, "Estimate", s.q, "P", pAll, "Parameters", params, ...
+    "Fitted", model, "Residual", residual, ...
+    "Cost", s.cost, "GradNorm", s.gradNorm, "Jacobian", J, ...
+    "Iterations", s.rows, "Converged", s.stop ~= "maxIter" && s.stop ~= "failed", ...
+    "Stop", s.stop, "History", history, "BestStart", [], "Error", err);
 end
 
 function names = nameList(v, id, label)
@@ -307,10 +467,10 @@ for name = ["Dt" "Rtol" "Atol" "MaxSteps"]
 end
 end
 
-function ev = evaluate(ctx, q)
-% One ensemble call: member 1 is the point q, member j+1 is q with fitted
-% parameter j moved by a forward-difference step. Returns the residual at q
-% and, when every member finished, the Jacobian.
+function [pm, eta] = perturb(ctx, q)
+% The parameter columns of one point: column 1 is the point q, column j+1
+% is q with fitted parameter j moved by a forward-difference step. eta holds
+% the steps that were actually taken.
 nf = numel(q);
 eta = ctx.fdStep * max(abs(q), ctx.fdScale);
 pq = ctx.p0;
@@ -326,22 +486,27 @@ for j = 1:nf
     end
     pm(ctx.fitIdx(j), j + 1) = moved;
 end
-res = phasecont.ensemble(ctx.m, repmat(ctx.x0, 1, nf + 1), pm, ctx.tspan, ...
-    "Backend", "cpu", "Precision", "double", ctx.method{:});
-ev = struct("status", res.Status, "ok0", res.Status(1) == "ok", ...
-    "okJ", res.Status(2:end) == "ok", "resid", [], "model", [], "J", []);
+end
+
+function ev = unpack(ctx, res, offset, eta)
+% The residual at one point and, when every member finished, the Jacobian.
+% The members of the point are offset + 1 to offset + nf + 1 of res.
+nf = numel(eta);
+status = res.Status(offset + (1:nf + 1));
+ev = struct("status", status, "ok0", status(1) == "ok", ...
+    "okJ", status(2:end) == "ok", "resid", [], "model", [], "J", []);
 if ~ev.ok0
     return
 end
 nTimes = ctx.nTimes;
 nObs = numel(ctx.obsIdx);
-model0 = observed(res, 1, ctx.obsIdx, nTimes, nObs);
+model0 = observed(res, offset + 1, ctx.obsIdx, nTimes, nObs);
 ev.model = model0;
 ev.resid = reshape(model0 - ctx.Y, [], 1);
 J = zeros(numel(model0), nf);
 for j = 1:nf
     if ev.okJ(j)
-        mj = observed(res, j + 1, ctx.obsIdx, nTimes, nObs);
+        mj = observed(res, offset + j + 1, ctx.obsIdx, nTimes, nObs);
         J(:, j) = (mj(:) - model0(:)) / eta(j);
     end
 end
