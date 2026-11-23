@@ -6,6 +6,9 @@
 //! launch and before each member inside a launch, so after a cancel every thread finishes at
 //! most the member it is on. A cancelled run returns no result, so a member that a cancel
 //! skipped changes nothing.
+//!
+//! RK4 runs `CPU_LANES` consecutive members per rayon task, stage by stage across the
+//! lanes, and the cancel flag is then read before each group (SPEC section 13, `cpu`).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -14,7 +17,10 @@ use rayon::prelude::*;
 use crate::job::{EnsembleError, EnsembleResult, Job, Label, Precision, Status, validate};
 use crate::real::Real;
 use crate::tape::Tape;
-use crate::traj::{Ctx, Traj};
+use crate::traj::{Ctx, Kind, Traj};
+
+/// The number of RK4 members one rayon task runs together.
+pub const CPU_LANES: usize = 4;
 
 /// Runs `job` on the CPU. `steps_per_launch` is at least 1; pass `u64::MAX` for one launch.
 pub fn run_cpu(
@@ -22,21 +28,66 @@ pub fn run_cpu(
     steps_per_launch: u64,
     cancel: &AtomicBool,
 ) -> Result<EnsembleResult, EnsembleError> {
+    run_cpu_lanes(job, steps_per_launch, cancel, CPU_LANES)
+}
+
+/// [`run_cpu`] with RK4 groups of `lanes` members, 1, 2, 4 or 8; 1 runs one member at a
+/// time. The group size changes no bit of the result. For tests and benches.
+#[doc(hidden)]
+pub fn run_cpu_lanes(
+    job: &Job,
+    steps_per_launch: u64,
+    cancel: &AtomicBool,
+    lanes: usize,
+) -> Result<EnsembleResult, EnsembleError> {
     if steps_per_launch == 0 {
         return Err(EnsembleError::BadJob(
             "steps per launch must be at least 1".into(),
         ));
     }
-    match job.precision {
-        Precision::Single => run_as::<f32>(job, steps_per_launch, cancel),
-        Precision::Double => run_as::<f64>(job, steps_per_launch, cancel),
+    if !matches!(lanes, 1 | 2 | 4 | 8) {
+        return Err(EnsembleError::BadJob(format!(
+            "lanes must be 1, 2, 4 or 8, not {lanes}"
+        )));
     }
+    match job.precision {
+        Precision::Single => run_as::<f32>(job, steps_per_launch, cancel, lanes),
+        Precision::Double => run_as::<f64>(job, steps_per_launch, cancel, lanes),
+    }
+}
+
+/// One launch of every member, `W` consecutive members per rayon task.
+fn launch_groups<T: Real, const W: usize>(
+    ctx: &Ctx<T>,
+    trajs: &mut [Traj<T>],
+    work: &mut [T],
+    out: &mut [T],
+    steps_per_launch: u64,
+    cancel: &AtomicBool,
+) {
+    let (work_len, out_len) = (ctx.work_len(), ctx.out_len());
+    trajs
+        .par_chunks_mut(W)
+        .zip(work.par_chunks_mut(W * work_len))
+        .zip(out.par_chunks_mut(W * out_len))
+        .for_each_init(
+            || {
+                let slabs = std::array::from_fn::<_, W, _>(|_| ctx.rhs.slab());
+                (slabs, vec![T::ZERO; 7 * W * ctx.n])
+            },
+            |(slabs, g), ((trs, w), o)| {
+                if !cancel.load(Ordering::Relaxed) {
+                    Traj::advance_group(trs, ctx, w, o, slabs, g, steps_per_launch);
+                }
+            },
+        );
 }
 
 fn run_as<T: Real>(
     job: &Job,
     steps_per_launch: u64,
     cancel: &AtomicBool,
+    lanes: usize,
 ) -> Result<EnsembleResult, EnsembleError> {
     let checked = validate(job)?;
     let tape = Tape::build(job.model)?;
@@ -44,6 +95,7 @@ fn run_as<T: Real>(
     ctx.cancel = Some(cancel);
     let (work_len, out_len) = (ctx.work_len(), ctx.out_len());
     let members = job.members;
+    let rk4 = matches!(ctx.kind, Kind::Rk4(_));
 
     let mut work = vec![T::ZERO; members * work_len];
     let mut out = vec![T::NAN; members * out_len];
@@ -53,18 +105,24 @@ fn run_as<T: Real>(
         if cancel.load(Ordering::Relaxed) {
             return Err(EnsembleError::Cancelled);
         }
-        trajs
-            .par_iter_mut()
-            .zip(work.par_chunks_mut(work_len))
-            .zip(out.par_chunks_mut(out_len))
-            .for_each_init(
-                || ctx.rhs.slab(),
-                |vals, ((tr, w), o)| {
-                    if !cancel.load(Ordering::Relaxed) {
-                        tr.advance(&ctx, w, o, vals, steps_per_launch);
-                    }
-                },
-            );
+        let (w, o, s) = (&mut work[..], &mut out[..], steps_per_launch);
+        match lanes {
+            2 if rk4 => launch_groups::<T, 2>(&ctx, &mut trajs, w, o, s, cancel),
+            4 if rk4 => launch_groups::<T, 4>(&ctx, &mut trajs, w, o, s, cancel),
+            8 if rk4 => launch_groups::<T, 8>(&ctx, &mut trajs, w, o, s, cancel),
+            _ => trajs
+                .par_iter_mut()
+                .zip(w.par_chunks_mut(work_len))
+                .zip(o.par_chunks_mut(out_len))
+                .for_each_init(
+                    || ctx.rhs.slab(),
+                    |vals, ((tr, w), o)| {
+                        if !cancel.load(Ordering::Relaxed) {
+                            tr.advance(&ctx, w, o, vals, s);
+                        }
+                    },
+                ),
+        }
         // A cancel inside a long evaluation of a tape with calls fails that evaluation, so
         // the member reads `recursion_depth`; the flag is read again before that is taken as
         // a finished run.

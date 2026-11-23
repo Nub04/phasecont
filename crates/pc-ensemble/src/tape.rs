@@ -941,6 +941,62 @@ impl<T: Real> CpuTape<T> {
     }
 }
 
+/// The compiled `F` that [`CpuTape::eval_native`] would call, looked up once for many calls
+/// (SPEC section 13, `cpu`). [`CpuTape::native_call`] makes it.
+#[derive(Clone, Copy, Debug)]
+pub struct NativeCall<T: Real> {
+    g: unsafe extern "C" fn(*const T, *const T, *mut T),
+    /// Where the parameters start in a slab of the tape.
+    ps: usize,
+    /// The index of `t` after the parameters.
+    t_at: usize,
+    n: usize,
+    outputs: usize,
+    slab_len: usize,
+}
+
+impl<T: Real> CpuTape<T> {
+    /// The function [`CpuTape::eval_native`] calls for `f`, or `None` when it would run the
+    /// tape instead.
+    pub fn native_call(&self, f: NativeRhs) -> Option<NativeCall<T>> {
+        let g = T::native(f).filter(|_| self.prog.is_none())?;
+        Some(NativeCall {
+            g,
+            ps: self.consts.len() + self.n,
+            t_at: self.np1 - 1,
+            n: self.n,
+            outputs: self.outputs.len(),
+            slab_len: self.slab_len(),
+        })
+    }
+}
+
+impl<T: Real> NativeCall<T> {
+    /// What [`CpuTape::eval_native`] does with this function: writes `t` into `slab`, then
+    /// `f(t, x)` to `out`. `slab` must come from [`CpuTape::slab`] of the tape that made
+    /// `self`, bound to the member's parameters.
+    #[inline(always)]
+    pub fn call(&self, x: &[T], t: T, slab: &mut Slab<T>, out: &mut [T]) {
+        assert!(
+            slab.v.len() == self.slab_len && x.len() >= self.n && out.len() >= self.outputs,
+            "native rhs: a slab of {} values, {} states and room for {} outputs; the tape has \
+             {}, {} and {}",
+            slab.v.len(),
+            x.len(),
+            out.len(),
+            self.slab_len,
+            self.n,
+            self.outputs
+        );
+        let sv = &mut slab.v[self.ps..];
+        sv[self.t_at] = t;
+        // SAFETY: as in `CpuTape::eval_native`: `x` has `n` values, `sv` the parameters and
+        // `t` in the order the function reads them, `out` room for every output, and the
+        // three do not alias. `native_call` matched the function to `T`.
+        unsafe { (self.g)(x.as_ptr(), sv.as_ptr(), out.as_mut_ptr()) };
+    }
+}
+
 // The call program of a tape with calls (SPEC section 8af-5, stage 4a).
 //
 // Ops without a call below them run eagerly: those that do not read a formal once per
