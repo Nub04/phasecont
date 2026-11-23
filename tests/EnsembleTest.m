@@ -15,7 +15,7 @@ classdef EnsembleTest < matlab.unittest.TestCase
         TwoPar = "par a=1, b=2" + newline + "x'=-a*x+b" + newline + ...
             "init x=0" + newline + "done" + newline
         % The StackLayout of a run that does not give one.
-        DefaultStack = "member"
+        DefaultStack = "auto"
     end
 
     properties (TestParameter)

@@ -4,7 +4,7 @@
 //! that is wrong. Nothing is filled in for a missing key, except that `device` is the first
 //! device of the backend when it is left out, and the result names the device that ran, and
 //! that a missing `math` is `exact`, the rounding every job had before the key existed, and a
-//! missing `stack` is `member`, the call-stack layout every job had before that key existed.
+//! missing `stack` is `auto`, which gives the bits of `member` (SPEC 8af-5, "Stack layout").
 
 use pc_ensemble::device::{Backend, BackendState, DeviceInfo, DeviceList};
 use pc_ensemble::{Math, Method, Output, Precision, StackLayout};
@@ -214,7 +214,7 @@ pub fn parse_head(m: &Map<String, Value>) -> Parsed<Head> {
         bounds: limit(get("bounds")?, "bounds")?,
         max_steps,
         math: m.get("math").map_or(Ok(Math::Exact), math)?,
-        stack: m.get("stack").map_or(Ok(StackLayout::Member), stack)?,
+        stack: m.get("stack").map_or(Ok(StackLayout::Auto), stack)?,
     })
 }
 

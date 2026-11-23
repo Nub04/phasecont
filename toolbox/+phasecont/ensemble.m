@@ -64,7 +64,7 @@ function r = ensemble(m, x0, p, tspan, options)
 %                 phasecont:ensemble:fastMath, and R.Label.Math is "fma"
 %                 instead of "exact". The results are not bit-reproducible:
 %                 call refine before they feed continuation.
-%     StackLayout "member" (default), "warp" or "auto". Where a GPU kernel
+%     StackLayout "auto" (default), "member" or "warp". Where a GPU kernel
 %                 keeps the call frames of a model with recursive
 %                 functions. It changes the speed of a run, never its
 %                 results: every layout gives the same bits. "member" keeps
@@ -104,7 +104,7 @@ arguments
     options.MaxSteps double {mustBeScalarOrEmpty} = []
     options.Bounds (1,1) double = Inf
     options.FastMath (1,1) logical = false
-    options.StackLayout (1,1) string = "member"
+    options.StackLayout (1,1) string = "auto"
 end
 import phasecont.internal.num2json
 

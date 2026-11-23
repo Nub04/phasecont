@@ -540,10 +540,10 @@ fn math_is_exact_when_left_out_and_fma_runs_only_on_cuda_double() {
 }
 
 #[test]
-fn stack_is_member_when_left_out_and_rejects_unknown_names() {
+fn stack_is_auto_when_left_out_and_rejects_unknown_names() {
     let m = parse(DECAY);
     let v = wait(&start(&m, &job(""), &[1.0], &[1.0]));
-    assert_eq!(v["label"]["stack"], "member");
+    assert_eq!(v["label"]["stack"], "auto");
     assert_eq!(v["label"]["stack_ran"], "member");
     assert_eq!(v["label"]["sorted"], false);
     // The CPU keeps no GPU call stack, so a warp or auto request runs: the label keeps the
