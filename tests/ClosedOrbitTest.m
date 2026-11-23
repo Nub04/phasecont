@@ -224,7 +224,7 @@ classdef ClosedOrbitTest < matlab.unittest.TestCase
                 Grid = [11 11], Trapping = true);
             c = r.Trapping;
             testCase.verifyEqual(c.Verdict, "fails");
-            testCase.verifyTrue(ismember(c.Worst, ["left" "right"]));
+            testCase.verifyEqual(c.Worst, "left");
             testCase.verifyEqual(c.Max, 1);
         end
 
@@ -340,6 +340,100 @@ classdef ClosedOrbitTest < matlab.unittest.TestCase
             testCase.verifyEqual(r.Region, testCase.Box);
             testCase.verifyEqual(r.Grid, [21 21]);
             testCase.verifyEqual(r.Tol, 1e-9);
+        end
+
+        % Test 7: review additions (positive signs, Tol, zero fields,
+        % nonfinite f, J and gradients).
+        function aSourceHasAPositiveSign(testCase)
+            m = testCase.model(["x" "y"]);
+            r = phasecont.closedOrbitChecks(m, Region = testCase.Box, ...
+                Grid = [21 21], Lyapunov = "x^2 + y^2", Dulac = "1");
+            testCase.verifyEqual(r.Lyapunov.Verdict, "holds on samples");
+            testCase.verifyEqual(r.Lyapunov.Sign, "positive");
+            testCase.verifyEqual(r.Lyapunov.FixedPointSamples, 1);
+            testCase.verifyEqual(r.Dulac.Verdict, "holds on samples");
+            testCase.verifyEqual(r.Dulac.Sign, "positive");
+            testCase.verifyEqual(r.Dulac.Min, 2, RelTol = 1e-12);
+            testCase.verifyEqual(r.Dulac.Max, 2, RelTol = 1e-12);
+        end
+
+        function tolDecidesWhatIsZero(testCase)
+            % J12 - J21 = -1e-7 at every sample and max ||J||_F is about 1.41.
+            m = testCase.model(["y" "1.0000001*x"]);
+            r = phasecont.closedOrbitChecks(m, Region = testCase.Box, ...
+                Grid = [5 5], Gradient = true);
+            testCase.verifyEqual(r.Gradient.Verdict, "fails");
+            r = phasecont.closedOrbitChecks(m, Region = testCase.Box, ...
+                Grid = [5 5], Gradient = true, Tol = 1e-6);
+            testCase.verifyEqual(r.Gradient.Verdict, "holds on samples");
+            testCase.verifyEqual(r.Tol, 1e-6);
+        end
+
+        function aZeroFieldIsInconclusiveAndTraps(testCase)
+            m = testCase.model(["0" "0"]);
+            r = phasecont.closedOrbitChecks(m, Region = testCase.Box, ...
+                Grid = [5 5], Lyapunov = "x^2 + y^2", Trapping = true);
+            testCase.verifyEqual(r.Lyapunov.Verdict, "inconclusive");
+            testCase.verifyEqual(r.Lyapunov.FixedPointSamples, 25);
+            testCase.verifySubstring(r.Lyapunov.Reason, "f is zero");
+            testCase.verifyEqual(r.Trapping.Verdict, "holds on samples");
+            testCase.verifyEqual(r.Trapping.Scale, 0);
+            testCase.verifySubstring(r.Trapping.Reason, "f is zero at every boundary");
+        end
+
+        function aSaddleTieGoesToTheLeftSide(testCase)
+            m = testCase.model(["x" "-y"]);
+            r = phasecont.closedOrbitChecks(m, Region = [-1 1 -1 1], ...
+                Grid = [11 11], Trapping = true);
+            testCase.verifyEqual(r.Trapping.Worst, "left");
+            testCase.verifyEqual(r.Trapping.MaxAt, [-1 -1]);
+        end
+
+        function checksNotAskedForHaveNaNFields(testCase)
+            m = testCase.model(["y" "-x"]);
+            r = phasecont.closedOrbitChecks(m, Region = testCase.Box, ...
+                Grid = [5 5], Gradient = true);
+            for c = [r.Lyapunov.MinAt r.Lyapunov.MaxAt r.Dulac.MinAt ...
+                    r.Trapping.MaxAt r.Lyapunov.VMinAt r.Lyapunov.VMaxAt]
+                testCase.verifyTrue(isnan(c));
+            end
+            testCase.verifyTrue(isnan(r.Dulac.Scale) && isnan(r.Trapping.Scale));
+            testCase.verifyEqual(r.Lyapunov.Sign, "");
+            testCase.verifyEqual(r.Lyapunov.Expression, "");
+            testCase.verifyEqual(r.Lyapunov.FixedPointSamples, 0);
+            testCase.verifyEqual(r.Dulac.Sign, "");
+            testCase.verifyEqual(r.Dulac.ZeroSamples, 0);
+            testCase.verifyEqual(r.Dulac.Expression, "");
+            testCase.verifyEqual(r.Trapping.Worst, "");
+            testCase.verifyEqual(r.Trapping.TangentSamples, 0);
+            testCase.verifyEqual(r.Lyapunov.Reason, "The check was not asked for.");
+        end
+
+        function nonfiniteValuesNameTheQuantity(testCase)
+            % f, J, grad V and grad g each fail at one sample of a 3 by 3 grid.
+            % sqrt(x+1) is finite at x = -1 and its slope is not; a zero
+            % tangent times a pole is +0 by the SPEC rule, so sqrt(x^2+y^2)
+            % at the origin would not fail.
+            cases = {
+                ["1/x" "-x"], {"Gradient", true}, "the vector field f", "(0, -1)"
+                ["sqrt(x+1)" "-x"], {"Gradient", true}, "the Jacobian of f", "(-1, -1)"
+                ["-x" "-y"], {"Lyapunov", "sqrt(x+1)"}, "the gradient of V", "(-1, -1)"
+                ["-x" "-y"], {"Dulac", "sqrt(x+1)"}, "the gradient of g", "(-1, -1)"
+                };
+            for k = 1:size(cases, 1)
+                m = testCase.model(cases{k, 1});
+                opts = cases{k, 2};
+                try
+                    phasecont.closedOrbitChecks(m, "Region", [-1 1 -1 1], ...
+                        "Grid", [3 3], opts{:});
+                    testCase.verifyFail(sprintf("case %d: no error", k));
+                catch err
+                    testCase.verifyEqual(string(err.identifier), ...
+                        "phasecont:orbit:nonfinite", sprintf("case %d", k));
+                    testCase.verifySubstring(string(err.message), cases{k, 3});
+                    testCase.verifySubstring(string(err.message), cases{k, 4});
+                end
+            end
         end
     end
 end
