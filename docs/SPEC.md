@@ -2837,6 +2837,65 @@ r = phasecont.closedOrbitChecks(m, Region = [x0 x1 y0 y1], Grid = [nx ny], ...
 7. *Params.* Van der Pol with $\mu$ given as `Params = struct("mu", -1)` and $g = 1$ on $[-3, 3]^2$ gives $\mathrm{tr}\,J = \mu(1 - x^2)$, which still changes sign, so it fails; with `Params = struct("mu", 0)` and `Dulac = "1"` it is inconclusive.
 8. The full MATLAB suite stays green (0 failed). No Rust changes. `LC_ALL=C grep -c` of the em dash gives 0 in every file this slice changes.
 
+## 8ah. EE mode: linear systems by hand methods and j display
+
+The EE mode adds a package `phasecont.ee` with three functions that solve and invert small complex linear systems the way a circuits course does by hand, and print complex numbers in the engineering form. It is MATLAB only. It adds no C ABI member, no engine code and no session format, and it reads no model.
+
+**Why this is not a numerical hot loop in MATLAB (rule 4).** The functions take matrices of order $n \le 8$. The adjugate is $n^2 = 64$ determinants of order 7, and a Gauss-Jordan reduction of $[A \mid I]$ at $n = 8$ records at most $8 \times 9$ steps, each a row operation and a copy of an 8 by 16 matrix. On a random complex 8 by 8 in Windows MATLAB R2026b (median of 5 `timeit` runs, 2026-11-23) one `solve` call takes 30 us by Cramer, 263 us by the adjugate, 1.35 ms by the inverse and 1.25 ms by Gauss-Jordan, and `jstr` of the 64 entries takes 0.75 ms. That is one call per system, not a loop over samples or steps. The purpose is to show the hand methods and their steps, not to solve large systems; `A\b` stays the tool for that.
+
+**Sources.** Hefferon, *Linear Algebra* (CC BY-SA 2.5 or GFDL; LaTeX source at gitlab.com/jim.hefferon/linear-algebra, commit ba78931b, read 2026-11-23):
+
+- *Cramer's rule* (Chapter Four, Topic "Cramer's Rule"). If $\det A \ne 0$, the system $A\mathbf x = \mathbf b$ has the unique solution $x_i = \det B_i / \det A$, where $B_i$ is $A$ with column $i$ replaced by $\mathbf b$.
+- *Adjugate* (Chapter Four, Section III "Laplace's Formula"). The $i,j$ minor of $T$ deletes row $i$ and column $j$; the $i,j$ cofactor $T_{i,j}$ is $(-1)^{i+j}$ times the determinant of that minor. The adjugate (adjoint) has the $j,i$ cofactor in row $i$, column $j$, that is, it is the transpose of the matrix of cofactors. $T \operatorname{adj}(T) = \operatorname{adj}(T)\, T = \det(T)\, I$, so $T^{-1} = \operatorname{adj}(T)/\det T$ when $\det T \ne 0$.
+- *Inverse by Gauss-Jordan* (Chapter Three, Section IV "Matrix Operations", subsection "Inverses"). $H$ is invertible if and only if it Gauss-Jordan reduces to $I$, and applying the same row steps in the same order to $I$ gives $H^{-1}$. Reducing $[H \mid I]$ to $[I \mid H^{-1}]$ does both at once.
+- *j display.* Ulaby, *Fundamentals of Applied Electromagnetics*, 7th ed., Section 1-6 "Review of Complex Numbers", writes the rectangular form as $3 - j4$: the real part, the sign, then $j$ before the magnitude of the imaginary part.
+
+No text of the sources is copied; the tests use their own matrices.
+
+**Functions.**
+
+- `[x, info] = phasecont.ee.solve(A, b, Method = M, Tol = 1e-9)` solves $A\mathbf x = \mathbf b$. `Method` is required, with no default: `"cramer"` ($x_i = \det B_i/\det A$, with MATLAB `det`), `"adjugate"` ($\mathbf x = \operatorname{adj}(A)\,\mathbf b/\det A$), `"inverse"` ($A^{-1}$ by Gauss-Jordan on $[A \mid I]$, then $A^{-1}\mathbf b$) or `"gaussjordan"` (Gauss-Jordan on $[A \mid \mathbf b]$; $\mathbf x$ is the last column).
+- `[X, info] = phasecont.ee.inverse(A, Method = M, Tol = 1e-9)` gives $A^{-1}$. `Method` is required: `"adjugate"` or `"gaussjordan"` (on $[A \mid I]$).
+- `s = phasecont.ee.jstr(z, Digits = 6)` returns a string array the size of `z`.
+
+`info` is a struct with the fields `Method`, `RCond` (`rcond(A)`), `Det` (`det(A)`, NaN for `"gaussjordan"` and `"inverse"`), `DetB` ($\det B_i$ as an $n$ by 1 column for `"cramer"`, `[]` otherwise), `Adjugate` (the adjugate for `"adjugate"`, `[]` otherwise) and `Steps` (the Gauss-Jordan steps for `"gaussjordan"` and `"inverse"`, a 0 by 1 struct otherwise).
+
+**Checks, in this order, shared by every method.**
+
+1. `A` is a numeric matrix of class double (real or complex), square, of order 1 to 8, and `b` (for `solve`) is a numeric double column of length $n$. Otherwise `phasecont:ee:badSize`. A missing or unknown `Method` is `phasecont:model:badOption`; a `Tol` outside $0 \le$ `Tol` $< 1$ is `phasecont:model:badOption`.
+2. No entry of `A` or `b` is NaN or Inf. Otherwise `phasecont:ee:nonfinite`.
+3. `rcond(A) > Tol`. Otherwise `phasecont:ee:singular`, with the value of `rcond(A)` in the message. Every method calls the same internal check first, so no method returns Inf or NaN for a matrix another method refuses. `rcond` is the reciprocal condition number in the 1-norm, which does not change when $A$ is scaled; $\det A$ does, so it is not the test.
+
+**Gauss-Jordan steps.** Column by column, $k = 1, \dots, n$: the pivot is the entry of largest magnitude in column $k$ at or below row $k$, the smallest row index on a tie. A step is recorded only when it changes the matrix:
+
+- `"swap"`: rows $k$ and $p$ swap ($p \ne k$);
+- `"scale"`: row $k$ is multiplied by $1/a_{kk}$ (when $a_{kk} \ne 1$), and the entry $a_{kk}$ is then set to exactly 1;
+- `"add"`: for every other row $i$ with $a_{ik} \ne 0$, row $i$ becomes row $i$ plus $c$ times row $k$ with $c = -a_{ik}$, and the entry $a_{ik}$ is then set to exactly 0.
+
+Each step is a struct with `Op`, `Rows` (`[k p]`, `[k k]` or `[i k]`), `Factor` (1 for a swap) and `Matrix`, the augmented matrix after the step. Replaying the steps on the starting matrix with the same operations gives every `Matrix` bit for bit.
+
+**j display.** For each entry $z = a + jb$, with $a$ and $b$ printed by `sprintf("%.*g", Digits, ·)`:
+
+- $b = 0$ (including $-0$): `"a"`;
+- $a = 0$ (including $-0$) and $b \ne 0$: `"j|b|"` or `"-j|b|"`;
+- otherwise `"a + j|b|"` or `"a - j|b|"`.
+
+A real part of $-0$ prints as `"0"`. `Digits` is a whole number from 1 to 17. NaN or Inf parts print as MATLAB prints them (`"NaN"`, `"Inf"`, `"-Inf"`) in the same layout. A real input is accepted.
+
+**Owner decisions.** The advisor chose the package name `phasecont.ee`, the function and method names, the `phasecont:ee:*` ids, the partial-pivot rule and the `rcond` singular test with `Tol = 1e-9` on 2026-11-23 at night; the owner can rename or change them.
+
+**Bit-level forms.** None.
+
+**Acceptance tests (`tests/EeModeTest.m`).**
+
+1. *Exact answers.* An integer 2 by 2 and an integer 3 by 3 system with an integer solution: every `solve` method gives the solution to `AbsTol` $10^{-12}$, and every `inverse` method gives the inverse to `AbsTol` $10^{-12}$. `info.DetB` and `info.Det` of `"cramer"` are the integer determinants to $10^{-12}$, and `info.Adjugate` of `"adjugate"` is the integer adjugate.
+2. *Agreement.* On a random real 6 by 6 and a random complex 8 by 8 (fixed seed), every method agrees with `A\b` to $10^{-10}$ relative and $\lVert A\mathbf x - \mathbf b\rVert \le 10^{-10}\lVert \mathbf b\rVert$; every `inverse` method gives $\lVert A X - I\rVert \le 10^{-10}$.
+3. *Complex.* A non-symmetric 3 by 3 with nonzero imaginary parts above and below the diagonal: all four `solve` methods and both `inverse` methods agree with each other and with `A\b` to $10^{-12}$ (this catches `'` used where `.'` belongs in the adjugate).
+4. *Steps.* A 3 by 3 that needs a swap: the first step is `"swap"`; replaying `Steps` reproduces every `Matrix` with `isequal`; the last `Matrix` has $I$ in its left block; a column of $0.5, 2, -2$ ties rows 2 and 3 and swaps row 1 with row 2.
+5. *j display.* `jstr` of $3 - 4j$, $-2 - 3j$, $6 + 8j$, $5$, $-4j$, $0$, `complex(0, -0)`, `complex(2, -0)`, `complex(-0, 3)` and a 2 by 2 array gives exactly `"3 - j4"`, `"-2 - j3"`, `"6 + j8"`, `"5"`, `"-j4"`, `"0"`, `"0"`, `"2"`, `"j3"` and a 2 by 2 string array; `Digits = 3` on $\pi + j e$ gives `"3.14 + j2.72"`.
+6. *Must not pass.* A singular 3 by 3 (a row that is the sum of two others), a near-singular matrix with `rcond` below `Tol` and the same matrix with a `Tol` below its `rcond` (which solves), a 9 by 9, a 2 by 3, NaN and Inf entries, a `b` of the wrong length, a row `b`, a missing `Method`, an unknown `Method`, `"cramer"` asked of `inverse`, and a `Tol` of 1 raise the errors named above.
+7. The full MATLAB suite stays green (0 failed). No Rust changes. `LC_ALL=C grep -c` of the em dash gives 0 in every file this slice changes.
+
 ## 9. Acceptance tests
 
 Exact tests (no oracle needed):
