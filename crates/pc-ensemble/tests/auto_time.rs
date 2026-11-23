@@ -491,15 +491,20 @@ fn cold_first_call_of_auto_and_member() {
     }
 }
 
-/// The first call under `member` and under `auto` on the cases where `member` wins, kernel
+/// The first calls under `member` and under `auto` on the cases where `member` wins, kernel
 /// compiles included, at a size whose launches fall below the timing floor of the judge and
 /// at one above it. Each layout gets its own copy of the model (a constant that differs in the
 /// text), so neither finds the kernels of the other in the cache. `PC_AT_CASES` and
 /// `PC_AT_MEMBERS` choose the cases (default `drift-scattered,tree-wide`) and sizes (default
-/// `64,512,4096`). It prints one `COLDCASE` line per case, size and precision: milliseconds of
-/// the first and of a warm call of each layout, `auto` over `member` for each, and the kernel
-/// compiles of each layout. The constants start from the clock, so a rerun misses the
-/// driver's JIT cache as a new model would.
+/// `64,512,4096`). `auto` runs as `member` until its compile gate passes, so the test calls it
+/// until the gate passes and then 3 times more. It prints one `COLDCASE` line per case, size
+/// and precision, in milliseconds: the first and the second `member` call; the first `auto`
+/// call; the median of the later calls before the gate over the second `member` call; the
+/// calls up to and including the one that passed the gate; that call, and its time beyond the
+/// second `member` call; the fastest call after the gate and its ratio to the second `member`
+/// call; all `auto` calls up to the gate over as many `member` calls (the first cold, the rest
+/// warm); and the kernel compiles of each layout. The constants start from the clock, so a
+/// rerun misses the driver's JIT cache as a new model would.
 #[test]
 #[ignore = "a timing measurement that needs a CUDA device"]
 fn cold_first_call_where_member_wins() {
@@ -528,8 +533,9 @@ fn cold_first_call_where_member_wins() {
         precisions.push(Precision::Double);
     }
     eprintln!(
-        "COLDCASE case members precision member_cold member_warm auto_cold auto_warm \
-         cold_ratio warm_ratio stack_ran member_compiles auto_compiles"
+        "COLDCASE case members precision member_cold member_warm auto_first pre_ratio \
+         calls_to_gate cross_ms cross_extra post_warm post_ratio series_ratio stack_ran \
+         member_compiles auto_compiles"
     );
     // The tags start from the clock, so a second process does not send the kernel texts of
     // the first one again and get them from the driver's JIT cache.
@@ -566,24 +572,55 @@ fn cold_first_call_where_member_wins() {
                     j.stack = stack;
                     let cancel = AtomicBool::new(false);
                     let before = pc_ensemble::cuda::kernel_compiles();
-                    for _ in 0..2 {
+                    let call = || {
                         let start = Instant::now();
                         let r = run_on(&device, &j, &cancel).expect("a run");
-                        ms.push(start.elapsed().as_secs_f64() * 1e3);
-                        ran = r.label.stack_ran.name();
+                        (
+                            start.elapsed().as_secs_f64() * 1e3,
+                            r.label.stack_ran.name(),
+                        )
+                    };
+                    if stack == StackLayout::Member {
+                        for _ in 0..2 {
+                            ms.push(call().0);
+                        }
+                    } else {
+                        // Every call up to the one that passed the gate, then the fastest of 3.
+                        loop {
+                            let (t, r) = call();
+                            ms.push(t);
+                            ran = r;
+                            if pc_ensemble::cuda::auto_gate_passed() {
+                                break;
+                            }
+                            assert!(ms.len() < 10_000, "auto did not pass its compile gate");
+                        }
+                        let post = (0..3).map(|_| call()).fold(f64::INFINITY, |b, (t, r)| {
+                            ran = r;
+                            b.min(t)
+                        });
+                        ms.push(post);
                     }
                     compiles.push(pc_ensemble::cuda::kernel_compiles() - before);
                 }
+                let (m_cold, m_warm) = (ms[0], ms[1]);
+                let post = ms[ms.len() - 1];
+                let series = &ms[2..ms.len() - 1];
+                let calls = series.len();
+                let cross = series[calls - 1];
+                let mut pre: Vec<f64> = series[1..calls.saturating_sub(1).max(1)].to_vec();
+                pre.sort_by(f64::total_cmp);
+                let pre_ratio = pre.get(pre.len() / 2).map_or(f64::NAN, |t| t / m_warm);
+                let as_member = m_cold + (calls - 1) as f64 * m_warm;
                 eprintln!(
-                    "COLDCASE {} {members} {} {:.1} {:.1} {:.1} {:.1} {:.3} {:.3} {ran} {} {}",
+                    "COLDCASE {} {members} {} {m_cold:.1} {m_warm:.1} {:.1} {pre_ratio:.3} {calls} \
+                     {cross:.1} {:.1} {post:.1} {:.3} {:.3} {ran} {} {}",
                     case.name,
                     p.name(),
-                    ms[0],
-                    ms[1],
-                    ms[2],
-                    ms[3],
-                    ms[2] / ms[0],
-                    ms[3] / ms[1],
+                    series[0],
+                    cross - m_warm,
+                    post / m_warm,
+                    series.iter().sum::<f64>() / as_member,
                     compiles[0],
                     compiles[1]
                 );
