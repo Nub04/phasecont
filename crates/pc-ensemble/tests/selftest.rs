@@ -146,10 +146,13 @@ fn a_missing_device_is_not_a_pass() {
 }
 
 #[test]
-fn a_backend_that_is_not_built_has_no_device() {
+fn a_backend_without_a_device_gives_no_device() {
+    // CUDA and OpenCL load their libraries at run time, so a machine with a
+    // GPU lists devices for them; only a backend that lists no device 0 is
+    // checked here.
+    let list = list_devices();
     for b in [Backend::Cuda, Backend::OpenCl, Backend::Metal] {
-        // The Metal backend is built on macOS, where it finds a device.
-        if cfg!(target_os = "macos") && b == Backend::Metal {
+        if list.devices.iter().any(|d| d.backend == b && d.index == 0) {
             continue;
         }
         let e = run_selftest(Selected {
