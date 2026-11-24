@@ -230,21 +230,17 @@ end
 
 function J = jacobians(id, X, p, what)
 % J is 4-by-K: rows J11, J21, J12, J22 (the columns of each 2-by-2 J).
+% One model_jacobian_batch call (SPEC 8ai-1); bad is the 1-based column the
+% engine refused as not finite, or 0.
 K = size(X, 2);
-J = zeros(4, K);
-for k = 1:K
-    try
-        Jk = pckern("model_jacobian", id, X(:, k), p, '');
-    catch err
-        if err.identifier ~= "phasecont:engine:numeric"
-            rethrow(err);
-        end
-        nonfinite(X(:, k), what);
-    end
-    if ~all(isfinite(Jk), "all")
-        nonfinite(X(:, k), what);
-    end
-    J(:, k) = Jk(:);
+[J, bad] = pckern("model_jacobian_batch", id, X, p, '');
+J = reshape(J, 4, K);
+first = find(~all(isfinite(J), 1), 1);
+if bad > 0 && (isempty(first) || bad <= first)
+    nonfinite(X(:, bad), what);
+end
+if ~isempty(first)
+    nonfinite(X(:, first), what);
 end
 end
 

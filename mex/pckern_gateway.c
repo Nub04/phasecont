@@ -21,6 +21,8 @@
  *   F = pckern("model_rhs_batch", m, X, p [, t])   X is n-by-k, one point per column; F is n-by-k
  *   [u, ev] = pckern("model_equilibrium", m, u0, p, opts)
  *   J = pckern("model_jacobian", m, u, p, opts)   n-by-n; opts "" or {"iterate":k}
+ *   [J, bad] = pckern("model_jacobian_batch", m, U, p, opts)   U n-by-k; J n-by-n-by-k;
+ *                                          bad: 1-based column of a numeric refusal, or 0
  *   r = pckern("run_start", m, problem, u0, p)
  *   status = pckern("run_poll", r)
  *   rows = pckern("run_copy", r, branch, what, start, count, stride)
@@ -781,6 +783,54 @@ static void cmd_model_jacobian(int nlhs, mxArray *plhs[], int nrhs, const mxArra
     plhs[0] = jac;
 }
 
+/* The Jacobian at every column of U, as an n-by-n-by-k array (SPEC 8ai-1). The loop
+ * runs here over model_jacobian, so each slice is the bits that entry returns. With two
+ * outputs, a numeric refusal stops the loop and bad is its 1-based column. */
+static void cmd_model_jacobian_batch(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
+{
+    uint64_t m;
+    const double *u, *p;
+    size_t n, k, np, j;
+    mwSize dims[3];
+    char *opts;
+    mxArray *jac;
+    double *out;
+    double bad = 0.0;
+    int32_t rc = 0;
+    need_args(nrhs, 5, 5, "model_jacobian_batch");
+    need_outs(nlhs, 2, "model_jacobian_batch");
+    m = get_handle(prhs[1]);
+    u = get_mat(prhs[2], "U", &n, &k);
+    p = get_vec(prhs[3], "p", &np);
+    if (n == 0)
+        bad_arg("%s", "U needs at least one row");
+    opts = get_text(prhs[4], "opts");
+    dims[0] = n;
+    dims[1] = n;
+    dims[2] = k;
+    jac = mxCreateNumericArray(3, dims, mxDOUBLE_CLASS, mxREAL);
+    out = mxGetDoubles(jac);
+    for (j = 0; j < k; j++) {
+        rc = g_api->model_jacobian(m, u + j * n, n, p, np, opts[0] ? opts : NULL,
+                                   out + j * n * n, n * n);
+        if (rc != 0)
+            break;
+    }
+    mxFree(opts);
+    if (rc != 0) {
+        if (rc != PC_ERR_NUMERIC || nlhs < 2) {
+            mxDestroyArray(jac);
+            check(rc);
+        }
+        /* The refused slice may hold part of a result; the SPEC says it is 0. */
+        memset(out + j * n * n, 0, n * n * sizeof(double));
+        bad = (double)(j + 1);
+    }
+    plhs[0] = jac;
+    if (nlhs > 1)
+        plhs[1] = mxCreateDoubleScalar(bad);
+}
+
 static void cmd_run_start(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 {
     uint64_t m, run = 0;
@@ -1040,6 +1090,7 @@ static const struct {
     {"model_rhs_batch", cmd_model_rhs_batch},
     {"model_equilibrium", cmd_model_equilibrium},
     {"model_jacobian", cmd_model_jacobian},
+    {"model_jacobian_batch", cmd_model_jacobian_batch},
     {"import", cmd_import},
     {"latex", cmd_latex},
     {"run_start", cmd_run_start},
