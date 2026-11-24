@@ -3,6 +3,7 @@
 pub mod abi;
 pub mod batch;
 pub mod cpu;
+pub mod ctlpow;
 pub mod cuda;
 pub mod device;
 #[cfg(feature = "fault-injection")]

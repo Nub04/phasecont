@@ -84,6 +84,9 @@ pub struct Coef<T: Real> {
     pub expo1: T,
     pub facold0: T,
     pub facold_min: T,
+    /// `facold0^beta` and `facold_min^beta`, so the controller need not form them.
+    pub facold0_pb: T,
+    pub facold_min_pb: T,
     pub uround: T,
     pub tenth: T,
     pub c101: T,
@@ -113,6 +116,8 @@ impl<T: Real> Coef<T> {
             expo1: r(0.2 - BETA * 0.75),
             facold0: r(1e-4),
             facold_min: r(1e-4),
+            facold0_pb: r(1e-4).powf(r(BETA)),
+            facold_min_pb: r(1e-4).powf(r(BETA)),
             uround: r(T::UROUND_F64),
             tenth: r(0.1),
             c101: r(1.01),
@@ -318,7 +323,10 @@ pub struct Traj<T: Real> {
     step_in_seg: u32,
     /// DP5: the step to try next.
     h: T,
-    facold: T,
+    /// DP5: `facold^beta`, where `facold` is the error of the last accepted step, floored
+    /// at `facold_min`. It is kept raised to `beta` so that an accepted step forms both of
+    /// its powers from one logarithm of its error (SPEC section 13).
+    facold_pb: T,
     reject: bool,
     /// The error estimate of the last attempt was NaN.
     nan_err: bool,
@@ -350,7 +358,7 @@ impl<T: Real> Traj<T> {
             si: 0,
             step_in_seg: 0,
             h: T::ZERO,
-            facold: T::ZERO,
+            facold_pb: T::ZERO,
             reject: false,
             nan_err: false,
         }
@@ -689,7 +697,7 @@ impl<T: Real> Traj<T> {
             return;
         }
         self.h = h;
-        self.facold = ctx.co.facold0;
+        self.facold_pb = ctx.co.facold0_pb;
     }
 
     fn finish_sample(&mut self, out: &mut [T], y: &[T]) {
@@ -834,19 +842,26 @@ impl<T: Real> Traj<T> {
             if self.too_deep(wk.vals) {
                 return;
             }
-            let fac11 = err.powf(co.expo1);
             if err <= T::ONE {
                 if self.reject_state(ctx, wk.y1) {
                     return;
                 }
-                // Only an accepted step uses facold^beta, so a rejected one skips the power.
-                let fac = clamp(
-                    fac11 / self.facold.powf(co.beta) / co.safe,
-                    co.inv_fac2,
-                    co.inv_fac1,
-                );
+                // err^expo1 for this step and err^beta for the next one, from one logarithm
+                // of err; the bits are those of two `powf` calls.
+                let (fac11, err_pb) = err.powf_pair(co.expo1, co.beta);
+                debug_assert!(fac11.to_f64().to_bits() == err.powf(co.expo1).to_f64().to_bits());
+                let fac = clamp(fac11 / self.facold_pb / co.safe, co.inv_fac2, co.inv_fac1);
                 let mut hnew = self.h / fac;
-                self.facold = err.fmax(co.facold_min);
+                // facold = max(err, facold_min), kept as facold^beta.
+                self.facold_pb = if err >= co.facold_min {
+                    err_pb
+                } else {
+                    co.facold_min_pb
+                };
+                debug_assert!(
+                    self.facold_pb.to_f64().to_bits()
+                        == err.fmax(co.facold_min).powf(co.beta).to_f64().to_bits()
+                );
                 self.accepted += 1;
                 self.t = t_end;
                 self.nan_err = false;
@@ -878,6 +893,7 @@ impl<T: Real> Traj<T> {
                 self.reject = false;
                 self.h = hnew;
             } else {
+                let fac11 = err.powf(co.expo1);
                 // The clamp above would give a NaN error a growth factor; shrink instead.
                 self.h = self.h / co.inv_fac1.fmin(fac11 / co.safe);
                 self.reject = true;
