@@ -338,6 +338,22 @@ typedef struct pc_api_v1_t {
                                  size_t k, const double *p, size_t np,
                                  const char *opts_json, double *jac_out,
                                  size_t njac, size_t *done);
+
+  /* model_equilibrium from k starts in one request, with the same opts_json
+   * for every start (SPEC 8ai-2). u0 holds k columns of nu values; u_out,
+   * eig_out (real parts, then imaginary parts), res_out and status_out hold k
+   * columns of nu_out, neig_out, nres and nstatus values. The lengths are
+   * those of one start (n, n, 2n, 1, 1). A start that fails numerically gets
+   * PC_ERR_NUMERIC in status_out and NaN columns; any other error is the
+   * error of the call, from the lowest start index. k = 0 runs the checks
+   * and writes nothing. */
+  int32_t (*model_equilibrium_many)(uint64_t model, const double *u0,
+                                    size_t nu, size_t k, const double *p,
+                                    size_t np, const char *opts_json,
+                                    double *u_out, size_t nu_out,
+                                    double *eig_out, size_t neig_out,
+                                    double *res_out, size_t nres,
+                                    int32_t *status_out, size_t nstatus);
 } pc_api_v1_t;
 
 #define PC_CODEC_ENCODE 0
@@ -356,7 +372,7 @@ typedef struct pc_api_v1_t {
 typedef const pc_api_v1_t *(*pc_api_v1_fn)(void);
 
 /* Layout of pc_api_v1_t on 64-bit targets, in bytes. */
-#define PC_API_V1_SIZE 216
+#define PC_API_V1_SIZE 224
 #define PC_API_V1_OFFSET_ABI_VERSION 0
 #define PC_API_V1_OFFSET_STRUCT_SIZE 4
 #define PC_API_V1_OFFSET_MODEL_FROM_ODE 8
@@ -385,6 +401,7 @@ typedef const pc_api_v1_t *(*pc_api_v1_fn)(void);
 #define PC_API_V1_OFFSET_CODEC 192
 #define PC_API_V1_OFFSET_MODEL_RHS_MANY 200
 #define PC_API_V1_OFFSET_MODEL_JACOBIAN_MANY 208
+#define PC_API_V1_OFFSET_MODEL_EQUILIBRIUM_MANY 216
 
 #ifndef PCKERN_NO_LAYOUT_CHECK
 /* C89 negative-array checks: _Static_assert needs /std:c11 on MSVC. */
@@ -420,6 +437,7 @@ PC_CHECK_OFFSET(model_jacobian, PC_API_V1_OFFSET_MODEL_JACOBIAN);
 PC_CHECK_OFFSET(codec, PC_API_V1_OFFSET_CODEC);
 PC_CHECK_OFFSET(model_rhs_many, PC_API_V1_OFFSET_MODEL_RHS_MANY);
 PC_CHECK_OFFSET(model_jacobian_many, PC_API_V1_OFFSET_MODEL_JACOBIAN_MANY);
+PC_CHECK_OFFSET(model_equilibrium_many, PC_API_V1_OFFSET_MODEL_EQUILIBRIUM_MANY);
 #endif
 
 #ifdef __cplusplus

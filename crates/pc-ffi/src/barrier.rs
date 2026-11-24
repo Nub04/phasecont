@@ -186,6 +186,18 @@ pub(crate) unsafe fn bytes_out<'a>(p: *mut u8, len: usize, what: &str) -> Result
     Ok(unsafe { std::slice::from_raw_parts_mut(p, len) })
 }
 
+/// Borrows `len` 32-bit integers for writing, with the same rules as `f64_out`.
+///
+/// # Safety
+/// A non-NULL `p` must be valid for writes of `len` integers for `'a`, with no other access.
+pub(crate) unsafe fn i32_out<'a>(p: *mut i32, len: usize, what: &str) -> Result<&'a mut [i32]> {
+    check_slice(p, len, what)?;
+    if len == 0 {
+        return Ok(&mut []);
+    }
+    Ok(unsafe { std::slice::from_raw_parts_mut(p, len) })
+}
+
 /// Checks an output pointer and returns it as a reference. NULL and a pointer
 /// that is not aligned for `T` are errors.
 ///

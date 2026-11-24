@@ -528,3 +528,100 @@ fn a_library_built_from_another_model_gives_5_and_names_the_tag() {
     let (got, want) = (rhs(&fresh, &x, &p), rhs(&jit, &x, &p));
     assert!(got.iter().zip(&want).all(|(a, b)| same(*a, *b)));
 }
+
+/// Runs `model_equilibrium_many` from the `n`-value columns of `u0` and checks every
+/// column against `model_equilibrium` from that start. Returns how many converged.
+fn check_many(m: &Id, n: usize, u0: &[f64], p: &[f64], opts: Option<&str>) -> usize {
+    let k = u0.len() / n;
+    let c = opts.map(|s| CString::new(s).unwrap());
+    let o = c.as_ref().map_or(ptr::null(), |c| c.as_ptr());
+    let mut u = vec![f64::NAN; n * k];
+    let mut eig = vec![f64::NAN; 2 * n * k];
+    let mut res = vec![f64::NAN; k];
+    let mut status = vec![-1i32; k];
+    let rc = unsafe {
+        (api().model_equilibrium_many)(
+            m.0,
+            u0.as_ptr(),
+            n,
+            k,
+            p.as_ptr(),
+            p.len(),
+            o,
+            u.as_mut_ptr(),
+            n,
+            eig.as_mut_ptr(),
+            2 * n,
+            res.as_mut_ptr(),
+            1,
+            status.as_mut_ptr(),
+            1,
+        )
+    };
+    assert_eq!(rc, 0, "{}", last_error());
+    let mut converged = 0;
+    for j in 0..k {
+        let mut u1 = vec![f64::NAN; n];
+        let mut e1 = vec![f64::NAN; 2 * n];
+        let rc1 = unsafe {
+            (api().model_equilibrium)(
+                m.0,
+                u0[n * j..].as_ptr(),
+                n,
+                p.as_ptr(),
+                p.len(),
+                o,
+                u1.as_mut_ptr(),
+                n,
+                e1.as_mut_ptr(),
+                2 * n,
+            )
+        };
+        if rc1 == 0 {
+            converged += 1;
+            assert_eq!(status[j], 0, "start {j}");
+            let uj = &u[n * j..n * (j + 1)];
+            assert!(uj.iter().zip(&u1).all(|(a, b)| same(*a, *b)), "start {j}");
+            let ej = &eig[2 * n * j..2 * n * (j + 1)];
+            assert!(ej.iter().zip(&e1).all(|(a, b)| same(*a, *b)), "start {j}");
+        } else {
+            assert_eq!((rc1, status[j]), (8, 8), "start {j}");
+        }
+    }
+    converged
+}
+
+/// `model_equilibrium_many` with an AOT evaluator gives the bits of `model_equilibrium` from
+/// every start (SPEC 8ai-2, test 1). Three starts run on the model thread (W = 1). 1600
+/// starts make up to four workers (M = 500) on a machine with two or more threads, so the
+/// workers open the library too. The Henon map runs at iterate 1 and 2.
+#[test]
+fn equilibrium_many_with_the_aot_model_has_the_bits_of_single_calls() {
+    let tmp = Temp::new("eq-many");
+    let Some(m) = aot_model("x'=x-x^3\ny'=-y\ndone\n", &tmp) else {
+        return;
+    };
+    assert_eq!(
+        check_many(&m, 2, &[1.3, 0.4, -0.2, 0.1, f64::NAN, 0.0], &[], None),
+        2
+    );
+    let k = 1600;
+    let u0: Vec<f64> = (0..k)
+        .flat_map(|j| [-1.5 + 3.0 * (j as f64) / (k as f64 - 1.0), 0.25])
+        .collect();
+    let converged = check_many(&m, 2, &u0, &[], None);
+    assert!(converged >= k / 2, "{converged} of {k} converged");
+
+    let henon = include_str!("../../pc-ode/tests/corpus/henon_map.ode");
+    let Some(h) = aot_model(henon, &tmp) else {
+        return;
+    };
+    let p = [1.4, 0.3];
+    let u0: Vec<f64> = (0..1200)
+        .flat_map(|j| [-1.5 + 3.0 * (j as f64) / 1199.0, 0.2])
+        .collect();
+    for opts in [None, Some(r#"{"iterate":2,"max_newton":30}"#)] {
+        assert!(check_many(&h, 2, &u0[..6], &p, opts) > 0, "{opts:?}");
+        assert!(check_many(&h, 2, &u0, &p, opts) > 0, "{opts:?}");
+    }
+}

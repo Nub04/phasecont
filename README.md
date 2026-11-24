@@ -6,7 +6,7 @@ PhaseCont (working name) is a MATLAB toolbox for phase-plane and bifurcation ana
 
 - Parse `.ode` files, with diagnostics that give file, line and column (`phasecont.Model`).
 - Integrate trajectories with the Dormand-Prince 5(4) pair (`phasecont.simulate`).
-- Find equilibria with Newton's method (`phasecont.equilibrium`).
+- Find equilibria with Newton's method from one start (`phasecont.equilibrium`) or from a grid of starts on several CPU threads, with the duplicates merged (`phasecont.equilibria`).
 - Continue equilibria in one parameter and detect fold (LP), branch point (BP) and Hopf (H) points, with their normal form coefficients (`phasecont.continuation`).
 - Continue limit cycles from a Hopf point by orthogonal collocation and detect folds (LPC), period doublings (PD) and Neimark-Sacker (NS) points from the Floquet multipliers.
 - Continue LP, H, LPC, PD and NS points in two parameters, and detect their codim-2 points: CP, BT, ZH, GH and HH on LP and H curves, LPPD, LPNS, CPC and R1 on LPC curves, LPPD, PDNS, GPD and R2 on PD curves, and R1 to R4, LPNS, PDNS and CH on NS curves.
@@ -103,6 +103,13 @@ plot(brs{1}); hold on; plot(brs{2})
 ```
 
 `MaxConcurrent` caps the live runs and defaults to `maxNumCompThreads`. The ensemble and the cycle solver share one pool of worker threads, one per logical CPU. To use fewer, set `RAYON_NUM_THREADS` before you start MATLAB.
+
+To find every equilibrium in a box, pass a matrix of starts, one per column. The Newton solves run on several CPU threads in one engine call, and the starts that reach the same point within `MergeTol` (default 1e-6) give one Point:
+
+```matlab
+[pts, raw] = phasecont.equilibria(m, linspace(-3, 3, 61));   % x = -1 and x = 1
+raw.Group                                         % which Point each start reached, 0 if none
+```
 
 ## `@` options
 

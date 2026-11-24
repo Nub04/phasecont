@@ -20,6 +20,8 @@
  *   f = pckern("model_rhs", m, x, p, t)    f(x, p, t); t is a real double scalar
  *   F = pckern("model_rhs_batch", m, X, p [, t])   X is n-by-k, one point per column; F is n-by-k
  *   [u, ev] = pckern("model_equilibrium", m, u0, p, opts)
+ *   [U, E, res, status] = pckern("model_equilibrium_many", m, U0, p, opts)   U0 n-by-K;
+ *                                          U n-by-K, E n-by-K complex, res and status 1-by-K
  *   J = pckern("model_jacobian", m, u, p, opts)   n-by-n; opts "" or {"iterate":k}
  *   [J, bad] = pckern("model_jacobian_batch", m, U, p, opts)   U n-by-k; J n-by-n-by-k;
  *                                          bad: 1-based column of a numeric refusal, or 0
@@ -779,6 +781,73 @@ static void cmd_model_equilibrium(int nlhs, mxArray *plhs[], int nrhs, const mxA
         mxDestroyArray(ev);
 }
 
+/* model_equilibrium from every column of U0 in one request (SPEC 8ai-2). U and E hold
+ * the point and its eigenvalues (or multipliers) per start, res the residual and status
+ * 0 or PC_ERR_NUMERIC. A failed start has NaN columns. It needs model_equilibrium_many,
+ * since model_equilibrium gives no residual. K = 0 returns empty outputs before any call. */
+static void cmd_model_equilibrium_many(int nlhs, mxArray *plhs[], int nrhs,
+                                       const mxArray *prhs[])
+{
+    uint64_t m;
+    const double *u0, *p;
+    size_t n, k, np, i, j;
+    char *opts;
+    mxArray *u, *ev, *res, *status;
+    double *eig;
+    mxComplexDouble *z;
+    int32_t rc;
+    need_args(nrhs, 5, 5, "model_equilibrium_many");
+    need_outs(nlhs, 4, "model_equilibrium_many");
+    if (!has_member(offsetof(pc_api_v1_t, model_equilibrium_many) +
+                    sizeof g_api->model_equilibrium_many) ||
+        !g_api->model_equilibrium_many)
+        fail("phasecont:engine:load",
+             "%s has no model_equilibrium_many entry (struct_size %u): the engine library is "
+             "older than this gateway, so reinstall PhaseCont",
+             PC_LIB_NAME, (unsigned)g_struct_size);
+    m = get_handle(prhs[1]);
+    u0 = get_mat(prhs[2], "U0", &n, &k);
+    p = get_vec(prhs[3], "p", &np);
+    opts = get_text(prhs[4], "opts");
+    u = mxCreateDoubleMatrix(n, k, mxREAL);
+    ev = mxCreateDoubleMatrix(n, k, mxCOMPLEX);
+    res = mxCreateDoubleMatrix(1, k, mxREAL);
+    status = mxCreateNumericMatrix(1, k, mxINT32_CLASS, mxREAL);
+    if (k == 0) {
+        mxFree(opts);
+        plhs[0] = u;
+        plhs[1] = ev;
+        plhs[2] = res;
+        plhs[3] = status;
+        return;
+    }
+    eig = (double *)mxCalloc(2 * n * k + 1, sizeof(double));
+    rc = g_api->model_equilibrium_many(m, u0, n, k, p, np, opts[0] ? opts : NULL,
+                                       mxGetDoubles(u), n, eig, 2 * n, mxGetDoubles(res), 1,
+                                       mxGetInt32s(status), 1);
+    mxFree(opts);
+    if (rc != 0) {
+        mxFree(eig);
+        mxDestroyArray(u);
+        mxDestroyArray(ev);
+        mxDestroyArray(res);
+        mxDestroyArray(status);
+    }
+    check(rc);
+    z = mxGetComplexDoubles(ev);
+    for (j = 0; j < k; j++) {
+        for (i = 0; i < n; i++) {
+            z[j * n + i].real = eig[2 * n * j + i];
+            z[j * n + i].imag = eig[2 * n * j + n + i];
+        }
+    }
+    mxFree(eig);
+    plhs[0] = u;
+    plhs[1] = ev;
+    plhs[2] = res;
+    plhs[3] = status;
+}
+
 static void cmd_model_jacobian(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 {
     uint64_t m;
@@ -1134,6 +1203,7 @@ static const struct {
     {"model_equilibrium", cmd_model_equilibrium},
     {"model_jacobian", cmd_model_jacobian},
     {"model_jacobian_batch", cmd_model_jacobian_batch},
+    {"model_equilibrium_many", cmd_model_equilibrium_many},
     {"import", cmd_import},
     {"latex", cmd_latex},
     {"run_start", cmd_run_start},

@@ -21,7 +21,7 @@ pub mod tape;
 pub mod traj;
 mod winload;
 
-pub use cpu::run_cpu;
+pub use cpu::{cpu_threads, run_cpu};
 pub use job::{
     EnsembleError, EnsembleResult, Job, Label, Math, Method, Output, Params, Precision,
     StackLayout, StackRan, Status,

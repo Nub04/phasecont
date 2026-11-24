@@ -13,16 +13,17 @@ use pc_engine::{EngineError, EpSetup, Evaluator, Options, Run};
 use serde_json::{Value, json};
 
 use crate::barrier::{
-    barrier, bytes_arg, bytes_out, f64_arg, f64_out, into_c_string, out_ptr, ptr_barrier, str_arg,
+    barrier, bytes_arg, bytes_out, f64_arg, f64_out, i32_out, into_c_string, out_ptr, ptr_barrier,
+    str_arg,
 };
 use crate::ensemble::{self, EnsHandle};
-use crate::error::{Error, Result, bad_arg};
+use crate::error::{Error, PC_ERR_NUMERIC, Result, bad_arg};
 use crate::import;
 use crate::json::problem::{
     Kind, Mode, map_type_runs, parse_iterate, parse_options, parse_problem,
 };
 use crate::latex;
-use crate::model::{Build, DELAY_MODEL, ModelHandle, NOT_COMPILED};
+use crate::model::{Build, DELAY_MODEL, ModelHandle, NOT_COMPILED, Start, equilibrium_workers};
 use crate::parse::{MAX_MODEL_TEXT, parse_model};
 use crate::registry::{self, Handle};
 use crate::run::{RunHandle, pack_row_aux, poll_json, stride_aux};
@@ -591,15 +592,7 @@ pub unsafe extern "C" fn model_equilibrium(
 ) -> i32 {
     barrier(|| {
         let h = model_handle(model)?;
-        h.ode_only()?;
-        let n = h.n();
-        if !h.names.autonomous {
-            return Err(Error::NonAutonomous(EngineError::NonAutonomous.to_string()));
-        }
-        expect_len("u0", n, nu)?;
-        expect_len("p", h.n_p(), np)?;
-        expect_len("u_out", n, nu_out)?;
-        expect_len("eig_out", eig_len(n)?, neig_out)?;
+        let n = equilibrium_checks(&h, nu, np, nu_out, neig_out)?;
         if overlaps(u_out, nu_out, eig_out, neig_out) {
             return Err(bad_arg("u_out and eig_out overlap"));
         }
@@ -613,6 +606,133 @@ pub unsafe extern "C" fn model_equilibrium(
         for (i, (re, im)) in r.eig.iter().enumerate() {
             eig_out[i] = *re;
             eig_out[n + i] = *im;
+        }
+        Ok(())
+    })
+}
+
+/// The checks `model_equilibrium` and `model_equilibrium_many` run before any solve, in
+/// this order (SPEC 8ai-2): an ODE or map model, the non-autonomous refusal, then the
+/// lengths of one start. Returns n.
+fn equilibrium_checks(
+    h: &ModelHandle,
+    nu: usize,
+    np: usize,
+    nu_out: usize,
+    neig_out: usize,
+) -> Result<usize> {
+    h.ode_only()?;
+    let n = h.n();
+    if !h.names.autonomous {
+        return Err(Error::NonAutonomous(EngineError::NonAutonomous.to_string()));
+    }
+    expect_len("u0", n, nu)?;
+    expect_len("p", h.n_p(), np)?;
+    expect_len("u_out", n, nu_out)?;
+    expect_len("eig_out", eig_len(n)?, neig_out)?;
+    Ok(n)
+}
+
+/// `model_equilibrium` from each of `k` columns of `u0` (SPEC 8ai-2). `nu`, `nu_out`,
+/// `neig_out`, `nres` and `nstatus` are the lengths of one start (n, n, 2n, 1 and 1), and
+/// the outputs hold `k` such columns. A start that converges gets status 0, its `u` and
+/// eigenvalues, and `max |G(u)|` in `res_out`; a start with a numeric error gets
+/// `PC_ERR_NUMERIC`, NaN columns and the residual rule of the SPEC. Any other error at a
+/// start is the error of the call, from the lowest such start.
+///
+/// # Safety
+/// `u0` must be valid for `nu*k` reads, `p` for `np`, `opts` NULL or NUL-terminated,
+/// `u_out` valid for `nu_out*k` writes, `eig_out` for `neig_out*k`, `res_out` for
+/// `nres*k` and `status_out` for `nstatus*k`.
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn model_equilibrium_many(
+    model: u64,
+    u0: *const f64,
+    nu: usize,
+    k: usize,
+    p: *const f64,
+    np: usize,
+    opts: *const c_char,
+    u_out: *mut f64,
+    nu_out: usize,
+    eig_out: *mut f64,
+    neig_out: usize,
+    res_out: *mut f64,
+    nres: usize,
+    status_out: *mut i32,
+    nstatus: usize,
+) -> i32 {
+    barrier(|| {
+        let h = model_handle(model)?;
+        let n = equilibrium_checks(&h, nu, np, nu_out, neig_out)?;
+        expect_len("res_out", 1, nres)?;
+        expect_len("status_out", 1, nstatus)?;
+        let nu_all = total_len("u0", nu, k)?;
+        let nu_out_all = total_len("u_out", nu_out, k)?;
+        let neig_all = total_len("eig_out", neig_out, k)?;
+        let nres_all = total_len("res_out", nres, k)?;
+        let nstatus_all = total_len("status_out", nstatus, k)?;
+        let bytes = |what: &str, len: usize, size: usize| {
+            len.checked_mul(size)
+                .ok_or_else(|| bad_arg(format!("{what}: length {len} is too large")))
+        };
+        let outs = [
+            ("u_out", u_out as usize, bytes("u_out", nu_out_all, 8)?),
+            ("eig_out", eig_out as usize, bytes("eig_out", neig_all, 8)?),
+            ("res_out", res_out as usize, bytes("res_out", nres_all, 8)?),
+            (
+                "status_out",
+                status_out as usize,
+                bytes("status_out", nstatus_all, 4)?,
+            ),
+        ];
+        for (i, a) in outs.iter().enumerate() {
+            for b in &outs[i + 1..] {
+                if a.1 != 0 && b.1 != 0 && bytes_overlap(a.1, a.2, b.1, b.2) {
+                    return Err(bad_arg(format!("{} and {} overlap", a.0, b.0)));
+                }
+            }
+        }
+        let u0 = unsafe { f64_arg(u0, nu_all, "u0") }?.to_vec();
+        let p = unsafe { f64_arg(p, np, "p") }?.to_vec();
+        let (opts, iterate) = engine_options(opts, h.map)?;
+        let u_out = unsafe { f64_out(u_out, nu_out_all, "u_out") }?;
+        let eig_out = unsafe { f64_out(eig_out, neig_all, "eig_out") }?;
+        let res_out = unsafe { f64_out(res_out, nres_all, "res_out") }?;
+        let status_out = unsafe { i32_out(status_out, nstatus_all, "status_out") }?;
+        if k == 0 {
+            // No start reaches the model thread, which refuses a model never compiled.
+            h.evaluator().ok_or_else(|| bad_arg(NOT_COMPILED))?;
+            return Ok(());
+        }
+        let workers = equilibrium_workers(k, pc_ensemble::cpu_threads());
+        let starts = h.equilibrium_many(u0, p, opts, iterate, workers)?;
+        if starts.len() != k {
+            return Err(Error::Internal(format!(
+                "equilibrium_many: {} results for {k} starts",
+                starts.len()
+            )));
+        }
+        for (j, s) in starts.into_iter().enumerate() {
+            let u = &mut u_out[j * n..(j + 1) * n];
+            let eig = &mut eig_out[j * 2 * n..(j + 1) * 2 * n];
+            match s {
+                Start::Done(e, res) => {
+                    u.copy_from_slice(&e.u);
+                    for (i, (re, im)) in e.eig.iter().enumerate() {
+                        eig[i] = *re;
+                        eig[n + i] = *im;
+                    }
+                    res_out[j] = res;
+                    status_out[j] = 0;
+                }
+                Start::Failed(res) => {
+                    u.fill(f64::NAN);
+                    eig.fill(f64::NAN);
+                    res_out[j] = res;
+                    status_out[j] = PC_ERR_NUMERIC;
+                }
+            }
         }
         Ok(())
     })

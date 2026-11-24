@@ -34,6 +34,12 @@ pub fn default_lanes(members: usize, threads: usize) -> usize {
         .unwrap_or(1)
 }
 
+/// The size of the CPU thread pool: `RAYON_NUM_THREADS`, or the number of logical cores.
+/// Other crates size their own worker sets from it (SPEC 8ai-2).
+pub fn cpu_threads() -> usize {
+    rayon::current_num_threads()
+}
+
 /// Runs `job` on the CPU. `steps_per_launch` is at least 1; pass `u64::MAX` for one launch.
 pub fn run_cpu(
     job: &Job,
