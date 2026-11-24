@@ -310,6 +310,34 @@ typedef struct pc_api_v1_t {
   int32_t (*codec)(uint32_t op, size_t rows, size_t cols, double *values,
                    size_t n_values, uint8_t *bytes, size_t n_bytes,
                    size_t *used);
+
+  /* model_rhs at k points in one request to the model thread (SPEC 8ai-1b).
+   * x holds k columns of nx values and out k columns of nout values, column
+   * by column; nx, np and nout are the lengths model_rhs takes for one
+   * column, and a total length that overflows size_t is PC_ERR_BAD_ARG. t
+   * NULL is model_rhs at every column, t non-NULL model_rhs_t at *t. The
+   * checks before any column is evaluated (handle, model kind, t, lengths)
+   * are those of the single calls, with the same codes and messages, and
+   * column j has the bits of the single call at column j. done may be NULL;
+   * otherwise it is set to 0 on entry and on return to k, or to the 0-based
+   * index of the first column whose evaluation failed, in which case the
+   * columns before it are written, the rest of out is not, and the return
+   * code and message are the single call's at that column. k = 0 runs the
+   * checks and writes nothing. Loaders built before this field existed see
+   * a smaller struct_size and must not read it. */
+  int32_t (*model_rhs_many)(uint64_t model, const double *t, const double *x,
+                            size_t nx, size_t k, const double *p, size_t np,
+                            double *out, size_t nout, size_t *done);
+
+  /* model_jacobian at k points in one request, with the same opts_json for
+   * every column (SPEC 8ai-1b). u holds k columns of nu values and jac_out k
+   * column-major nu-by-nu blocks; nu, np and njac are the lengths
+   * model_jacobian takes for one column. Checks, bits, done and k = 0 are as
+   * for model_rhs_many. */
+  int32_t (*model_jacobian_many)(uint64_t model, const double *u, size_t nu,
+                                 size_t k, const double *p, size_t np,
+                                 const char *opts_json, double *jac_out,
+                                 size_t njac, size_t *done);
 } pc_api_v1_t;
 
 #define PC_CODEC_ENCODE 0
@@ -328,7 +356,7 @@ typedef struct pc_api_v1_t {
 typedef const pc_api_v1_t *(*pc_api_v1_fn)(void);
 
 /* Layout of pc_api_v1_t on 64-bit targets, in bytes. */
-#define PC_API_V1_SIZE 200
+#define PC_API_V1_SIZE 216
 #define PC_API_V1_OFFSET_ABI_VERSION 0
 #define PC_API_V1_OFFSET_STRUCT_SIZE 4
 #define PC_API_V1_OFFSET_MODEL_FROM_ODE 8
@@ -355,6 +383,8 @@ typedef const pc_api_v1_t *(*pc_api_v1_fn)(void);
 #define PC_API_V1_OFFSET_LATEX_RENDER 176
 #define PC_API_V1_OFFSET_MODEL_JACOBIAN 184
 #define PC_API_V1_OFFSET_CODEC 192
+#define PC_API_V1_OFFSET_MODEL_RHS_MANY 200
+#define PC_API_V1_OFFSET_MODEL_JACOBIAN_MANY 208
 
 #ifndef PCKERN_NO_LAYOUT_CHECK
 /* C89 negative-array checks: _Static_assert needs /std:c11 on MSVC. */
@@ -388,6 +418,8 @@ PC_CHECK_OFFSET(ens_cancel, PC_API_V1_OFFSET_ENS_CANCEL);
 PC_CHECK_OFFSET(latex_render, PC_API_V1_OFFSET_LATEX_RENDER);
 PC_CHECK_OFFSET(model_jacobian, PC_API_V1_OFFSET_MODEL_JACOBIAN);
 PC_CHECK_OFFSET(codec, PC_API_V1_OFFSET_CODEC);
+PC_CHECK_OFFSET(model_rhs_many, PC_API_V1_OFFSET_MODEL_RHS_MANY);
+PC_CHECK_OFFSET(model_jacobian_many, PC_API_V1_OFFSET_MODEL_JACOBIAN_MANY);
 #endif
 
 #ifdef __cplusplus

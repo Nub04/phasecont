@@ -293,9 +293,9 @@ static void load_api(void)
     if (!api)
         fail("phasecont:engine:load",
              "%s: pc_api_v1 returned NULL (a panic inside it was caught)", PC_LIB_NAME);
-    /* Members appended after model_jacobian (so far only codec) may be
-     * missing from an older library; the command that uses one checks
-     * has_member first. */
+    /* Members appended after model_jacobian (codec, model_rhs_many and
+     * model_jacobian_many) may be missing from an older library; the command
+     * that uses one checks has_member first. */
     if (api->abi_version != (uint32_t)PC_ABI_VERSION ||
         api->struct_size < (uint32_t)offsetof(pc_api_v1_t, codec))
         fail("phasecont:engine:load",
@@ -692,17 +692,21 @@ static void cmd_model_rhs(int nlhs, mxArray *plhs[], int nrhs, const mxArray *pr
     plhs[0] = f;
 }
 
-/* The right-hand side at every column of X. The loop runs here, in C, so a direction
- * field or a nullcline grid costs one MEX call. The columns are contiguous, so each
- * call reads and writes in place. */
+/* The right-hand side at every column of X, in one MEX call. With a pckern that has
+ * model_rhs_many (SPEC 8ai-1b) all columns go to the model thread in one request;
+ * otherwise the loop runs here over model_rhs or model_rhs_t. Both paths give the
+ * bits of the single call at each column and raise the first refused column's error,
+ * which rhsGaps relies on. The columns are contiguous, so each call reads and writes
+ * in place. */
 static void cmd_model_rhs_batch(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 {
     uint64_t m;
     const double *x, *p;
     double *out;
-    size_t n, k, np, j;
+    size_t n, k, np, j, done = 0;
     double t = 0.0;
     mxArray *f;
+    int32_t rc;
     need_args(nrhs, 4, 5, "model_rhs_batch");
     need_outs(nlhs, 1, "model_rhs_batch");
     m = get_handle(prhs[1]);
@@ -710,15 +714,31 @@ static void cmd_model_rhs_batch(int nlhs, mxArray *plhs[], int nrhs, const mxArr
     p = get_vec(prhs[3], "p", &np);
     if (nrhs == 5)
         t = get_real_scalar(prhs[4], "t");
+    /* K = 0 is the empty result on both paths, with no handle, row or length error. */
+    if (k == 0) {
+        plhs[0] = mxCreateDoubleMatrix(n, 0, mxREAL);
+        return;
+    }
     if (n == 0)
         bad_arg("%s", "X needs at least one row");
     f = mxCreateDoubleMatrix(n, k, mxREAL);
     out = mxGetDoubles(f);
-    for (j = 0; j < k; j++) {
-        if (nrhs == 5)
-            check(g_api->model_rhs_t(m, t, x + j * n, n, p, np, out + j * n, n));
-        else
-            check(g_api->model_rhs(m, x + j * n, n, p, np, out + j * n, n));
+    if (has_member(offsetof(pc_api_v1_t, model_rhs_many) + sizeof g_api->model_rhs_many) &&
+        g_api->model_rhs_many) {
+        rc = g_api->model_rhs_many(m, nrhs == 5 ? &t : NULL, x, n, k, p, np, out, n, &done);
+        if (rc != 0)
+            mxDestroyArray(f);
+        check(rc);
+    } else {
+        for (j = 0; j < k; j++) {
+            if (nrhs == 5)
+                rc = g_api->model_rhs_t(m, t, x + j * n, n, p, np, out + j * n, n);
+            else
+                rc = g_api->model_rhs(m, x + j * n, n, p, np, out + j * n, n);
+            if (rc != 0)
+                mxDestroyArray(f);
+            check(rc);
+        }
     }
     plhs[0] = f;
 }
@@ -783,14 +803,16 @@ static void cmd_model_jacobian(int nlhs, mxArray *plhs[], int nrhs, const mxArra
     plhs[0] = jac;
 }
 
-/* The Jacobian at every column of U, as an n-by-n-by-k array (SPEC 8ai-1). The loop
- * runs here over model_jacobian, so each slice is the bits that entry returns. With two
- * outputs, a numeric refusal stops the loop and bad is its 1-based column. */
+/* The Jacobian at every column of U, as an n-by-n-by-k array (SPEC 8ai-1). With a
+ * pckern that has model_jacobian_many (SPEC 8ai-1b) all columns go to the model thread
+ * in one request; otherwise the loop runs here over model_jacobian. Both paths give the
+ * bits of model_jacobian at each slice. With two outputs, a numeric refusal stops at
+ * that column, its slice is 0 and bad is its 1-based column. */
 static void cmd_model_jacobian_batch(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 {
     uint64_t m;
     const double *u, *p;
-    size_t n, k, np, j;
+    size_t n, k, np, j = 0;
     mwSize dims[3];
     char *opts;
     mxArray *jac;
@@ -802,23 +824,44 @@ static void cmd_model_jacobian_batch(int nlhs, mxArray *plhs[], int nrhs, const 
     m = get_handle(prhs[1]);
     u = get_mat(prhs[2], "U", &n, &k);
     p = get_vec(prhs[3], "p", &np);
-    if (n == 0)
-        bad_arg("%s", "U needs at least one row");
     opts = get_text(prhs[4], "opts");
     dims[0] = n;
     dims[1] = n;
     dims[2] = k;
+    /* K = 0 is the empty result on both paths, with no handle, row or length error. */
+    if (k == 0) {
+        mxFree(opts);
+        plhs[0] = mxCreateNumericArray(3, dims, mxDOUBLE_CLASS, mxREAL);
+        if (nlhs > 1)
+            plhs[1] = mxCreateDoubleScalar(0.0);
+        return;
+    }
+    if (n == 0) {
+        mxFree(opts);
+        bad_arg("%s", "U needs at least one row");
+    }
     jac = mxCreateNumericArray(3, dims, mxDOUBLE_CLASS, mxREAL);
     out = mxGetDoubles(jac);
-    for (j = 0; j < k; j++) {
-        rc = g_api->model_jacobian(m, u + j * n, n, p, np, opts[0] ? opts : NULL,
-                                   out + j * n * n, n * n);
-        if (rc != 0)
-            break;
+    if (has_member(offsetof(pc_api_v1_t, model_jacobian_many) +
+                   sizeof g_api->model_jacobian_many) &&
+        g_api->model_jacobian_many) {
+        size_t done = 0;
+        rc = g_api->model_jacobian_many(m, u, n, k, p, np, opts[0] ? opts : NULL, out, n * n,
+                                        &done);
+        j = done;
+    } else {
+        for (j = 0; j < k; j++) {
+            rc = g_api->model_jacobian(m, u + j * n, n, p, np, opts[0] ? opts : NULL,
+                                       out + j * n * n, n * n);
+            if (rc != 0)
+                break;
+        }
     }
     mxFree(opts);
     if (rc != 0) {
-        if (rc != PC_ERR_NUMERIC || nlhs < 2) {
+        /* The pre-checks return the single call's code, so a refusal before any
+         * column gives the same result on both paths. done < k whenever rc != 0. */
+        if (rc != PC_ERR_NUMERIC || nlhs < 2 || j >= k) {
             mxDestroyArray(jac);
             check(rc);
         }

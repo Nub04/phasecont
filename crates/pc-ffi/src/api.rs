@@ -213,6 +213,18 @@ unsafe fn rhs_at(
     nout: usize,
 ) -> Result<()> {
     let h = model_handle(model)?;
+    rhs_checks(&h, t, nx, np, nout)?;
+    let x = unsafe { f64_arg(x, nx, "x") }?.to_vec();
+    let p = unsafe { f64_arg(p, np, "p") }?.to_vec();
+    let out = unsafe { f64_out(out, nout, "out") }?;
+    out.copy_from_slice(&h.rhs(x, p, t.unwrap_or(0.0))?);
+    Ok(())
+}
+
+/// The checks of `model_rhs`, `model_rhs_t` and `model_rhs_many`, in this order, so the
+/// three entries give the same codes and messages (SPEC 8ai-1b). `nx`, `np` and `nout` are
+/// the lengths of one column.
+fn rhs_checks(h: &ModelHandle, t: Option<f64>, nx: usize, np: usize, nout: usize) -> Result<()> {
     h.ode_only()?;
     if t.is_none() && !h.names.autonomous {
         return Err(Error::NonAutonomous(
@@ -227,13 +239,90 @@ unsafe fn rhs_at(
     expect_len("x", h.n(), nx)?;
     expect_len("p", h.n_p(), np)?;
     expect_len("out", h.n(), nout)?;
-    let x = unsafe { f64_arg(x, nx, "x") }?.to_vec();
-    let p = unsafe { f64_arg(p, np, "p") }?.to_vec();
-    let out = unsafe { f64_out(out, nout, "out") }?;
-    out.copy_from_slice(&h.rhs(x, p, t.unwrap_or(0.0))?);
     Ok(())
 }
 
+/// Sets `*done` to 0 and returns it, or None for a NULL `done` (SPEC 8ai-1b).
+///
+/// # Safety
+/// `done` must be NULL or valid for one `usize` write.
+unsafe fn done_slot<'a>(done: *mut usize) -> Result<Option<&'a mut usize>> {
+    if done.is_null() {
+        return Ok(None);
+    }
+    let d = unsafe { out_ptr(done, "done") }?;
+    *d = 0;
+    Ok(Some(d))
+}
+
+/// `what` columns of `per` values each, or an error when the total does not fit in usize.
+fn total_len(what: &str, per: usize, k: usize) -> Result<usize> {
+    per.checked_mul(k)
+        .ok_or_else(|| bad_arg(format!("{what}: {k} columns of {per} values overflow")))
+}
+
+/// Copies the columns a many-column request finished to `out` and sets `done`, then returns
+/// the error of the refused column, if any (SPEC 8ai-1b).
+fn finish_many(
+    m: crate::model::Many,
+    out: &mut [f64],
+    k: usize,
+    done: Option<&mut usize>,
+) -> Result<()> {
+    out[..m.out.len()].copy_from_slice(&m.out);
+    let (n_done, err) = match m.failed {
+        Some((j, e)) => (j, Some(e)),
+        None => (k, None),
+    };
+    if let Some(d) = done {
+        *d = n_done;
+    }
+    err.map_or(Ok(()), Err)
+}
+
+/// `F` at `k` columns of `x` in one request to the model thread (SPEC 8ai-1b). `t` NULL
+/// gives `model_rhs` at every column, and a value gives `model_rhs_t` at that time; column
+/// j of `out` has the bits of that call at column j. `nx` and `nout` are the lengths of one
+/// column. `done` (may be NULL) gets `k`, or the index of the first refused column, whose
+/// error the call returns after writing the columns before it.
+///
+/// # Safety
+/// `t` must be NULL or valid for one read, `x` valid for `nx*k` reads, `p` for `np`, `out`
+/// for `nout*k` writes, and `done` NULL or valid for one write.
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn model_rhs_many(
+    model: u64,
+    t: *const f64,
+    x: *const f64,
+    nx: usize,
+    k: usize,
+    p: *const f64,
+    np: usize,
+    out: *mut f64,
+    nout: usize,
+    done: *mut usize,
+) -> i32 {
+    barrier(|| {
+        let done = unsafe { done_slot(done) }?;
+        let t = if t.is_null() {
+            None
+        } else {
+            Some(unsafe { f64_arg(t, 1, "t") }?[0])
+        };
+        let h = model_handle(model)?;
+        rhs_checks(&h, t, nx, np, nout)?;
+        let nx_all = total_len("x", nx, k)?;
+        let nout_all = total_len("out", nout, k)?;
+        let x = unsafe { f64_arg(x, nx_all, "x") }?.to_vec();
+        let p = unsafe { f64_arg(p, np, "p") }?.to_vec();
+        let out = unsafe { f64_out(out, nout_all, "out") }?;
+        if k == 0 {
+            return Ok(());
+        }
+        let m = h.rhs_many(x, p, t.unwrap_or(0.0))?;
+        finish_many(m, out, k, done)
+    })
+}
 pub unsafe extern "C" fn run_start(
     model: u64,
     problem_json: *const c_char,
@@ -570,17 +659,7 @@ pub unsafe extern "C" fn model_jacobian(
 ) -> i32 {
     barrier(|| {
         let h = model_handle(model)?;
-        h.ode_only()?;
-        let n = h.n();
-        if !h.names.autonomous {
-            return Err(Error::NonAutonomous(EngineError::NonAutonomous.to_string()));
-        }
-        expect_len("u", n, nu)?;
-        expect_len("p", h.n_p(), np)?;
-        let nn = n
-            .checked_mul(n)
-            .ok_or_else(|| bad_arg("jac_out: n*n overflows"))?;
-        expect_len("jac_out", nn, njac)?;
+        jacobian_checks(&h, nu, np, njac)?;
         let u = unsafe { f64_arg(u, nu, "u") }?.to_vec();
         let p = unsafe { f64_arg(p, np, "p") }?.to_vec();
         let iterate = jacobian_options(opts, h.map)?;
@@ -588,6 +667,63 @@ pub unsafe extern "C" fn model_jacobian(
         let jac = h.jacobian(u, p, iterate)?;
         out.copy_from_slice(&jac);
         Ok(())
+    })
+}
+
+/// The checks of `model_jacobian` and `model_jacobian_many` before they read their buffers,
+/// in this order, so both give the same codes and messages (SPEC 8ai-1b). `nu`, `np` and
+/// `njac` are the lengths of one column.
+fn jacobian_checks(h: &ModelHandle, nu: usize, np: usize, njac: usize) -> Result<()> {
+    h.ode_only()?;
+    let n = h.n();
+    if !h.names.autonomous {
+        return Err(Error::NonAutonomous(EngineError::NonAutonomous.to_string()));
+    }
+    expect_len("u", n, nu)?;
+    expect_len("p", h.n_p(), np)?;
+    let nn = n
+        .checked_mul(n)
+        .ok_or_else(|| bad_arg("jac_out: n*n overflows"))?;
+    expect_len("jac_out", nn, njac)
+}
+
+/// The Jacobian of `model_jacobian` at `k` columns of `u` in one request to the model thread
+/// (SPEC 8ai-1b). Block j of `jac_out` (`njac` values, column-major) has the bits of that
+/// call at column j, and the same `opts` applies to every column. `nu` and `njac` are the
+/// lengths of one column. `done` (may be NULL) gets `k`, or the index of the first refused
+/// column, whose error the call returns after writing the blocks before it.
+///
+/// # Safety
+/// `u` must be valid for `nu*k` reads, `p` for `np`, `opts` NULL or NUL-terminated,
+/// `jac_out` valid for `njac*k` writes, and `done` NULL or valid for one write.
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn model_jacobian_many(
+    model: u64,
+    u: *const f64,
+    nu: usize,
+    k: usize,
+    p: *const f64,
+    np: usize,
+    opts: *const c_char,
+    jac_out: *mut f64,
+    njac: usize,
+    done: *mut usize,
+) -> i32 {
+    barrier(|| {
+        let done = unsafe { done_slot(done) }?;
+        let h = model_handle(model)?;
+        jacobian_checks(&h, nu, np, njac)?;
+        let nu_all = total_len("u", nu, k)?;
+        let njac_all = total_len("jac_out", njac, k)?;
+        let u = unsafe { f64_arg(u, nu_all, "u") }?.to_vec();
+        let p = unsafe { f64_arg(p, np, "p") }?.to_vec();
+        let iterate = jacobian_options(opts, h.map)?;
+        let out = unsafe { f64_out(jac_out, njac_all, "jac_out") }?;
+        if k == 0 {
+            return Ok(());
+        }
+        let m = h.jacobian_many(u, p, iterate)?;
+        finish_many(m, out, k, done)
     })
 }
 

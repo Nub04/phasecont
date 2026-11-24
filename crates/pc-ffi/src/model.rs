@@ -73,6 +73,18 @@ enum Request {
         p: Vec<f64>,
         iterate: usize,
     },
+    /// `F` at each column of `x`, `n` values a column, with the code of `Rhs` (SPEC 8ai-1b).
+    RhsMany {
+        x: Vec<f64>,
+        p: Vec<f64>,
+        t: f64,
+    },
+    /// The Jacobian at each column of `u`, with the code of `Jacobian` (SPEC 8ai-1b).
+    JacobianMany {
+        u: Vec<f64>,
+        p: Vec<f64>,
+        iterate: usize,
+    },
     /// Compile `F` for the ensemble workers in this precision. The code stays in the model
     /// thread's slot for that precision.
     EnsembleF(Precision),
@@ -86,12 +98,20 @@ pub(crate) struct Equilibrium {
     pub eig: Vec<(f64, f64)>,
 }
 
+/// The answer to a many-column request (SPEC 8ai-1b): the values of the columns before the
+/// first error, in column order, and that error with its 0-based column.
+pub(crate) struct Many {
+    pub out: Vec<f64>,
+    pub failed: Option<(usize, Error)>,
+}
+
 enum Reply {
     Compiled,
     CFile(PathBuf),
     Rhs(Vec<f64>),
     Equilibrium(Equilibrium),
     Jacobian(Vec<f64>),
+    Many(Many),
     EnsembleF(Option<NativeRhs>),
 }
 
@@ -293,6 +313,27 @@ impl ModelHandle {
         match self.call(Request::Jacobian { u, p, iterate })? {
             Reply::Jacobian(j) => Ok(j),
             _ => Err(Error::Internal("unexpected reply to jacobian".into())),
+        }
+    }
+
+    /// [`Self::rhs`] at each `n`-value column of `x` in one request to the model thread, so
+    /// each column has the bits of a single call (SPEC 8ai-1b). Stops at the first error.
+    pub fn rhs_many(&self, x: Vec<f64>, p: Vec<f64>, t: f64) -> Result<Many> {
+        self.ode_only()?;
+        match self.call(Request::RhsMany { x, p, t })? {
+            Reply::Many(m) => Ok(m),
+            _ => Err(Error::Internal("unexpected reply to rhs_many".into())),
+        }
+    }
+
+    /// [`Self::jacobian`] at each `n`-value column of `u` in one request to the model thread,
+    /// so each `n*n` block has the bits of a single call (SPEC 8ai-1b). Stops at the first
+    /// error.
+    pub fn jacobian_many(&self, u: Vec<f64>, p: Vec<f64>, iterate: usize) -> Result<Many> {
+        self.ode_only()?;
+        match self.call(Request::JacobianMany { u, p, iterate })? {
+            Reply::Many(m) => Ok(m),
+            _ => Err(Error::Internal("unexpected reply to jacobian_many".into())),
         }
     }
 
@@ -567,6 +608,50 @@ fn handle(
             let ev = compiled(ev)?;
             let mut it = IteratedMap::new(ev, iterate);
             Ok(Reply::Jacobian(jacobian_at(&mut it, &u, &p)?))
+        }
+        Request::RhsMany { x, mut p, t } => {
+            let ev = compiled(ev)?;
+            let n = ev.n();
+            if n == 0 || !x.len().is_multiple_of(n) {
+                return Err(Error::Internal("rhs_many: x is not whole columns".into()));
+            }
+            p.push(t);
+            let mut out = vec![0.0; x.len()];
+            for (j, (xc, oc)) in x.chunks_exact(n).zip(out.chunks_exact_mut(n)).enumerate() {
+                if let Err(e) = ev.eval(&EntryKind::F, xc, &p, &[], oc) {
+                    out.truncate(j * n);
+                    return Ok(Reply::Many(Many {
+                        out,
+                        failed: Some((j, e.into())),
+                    }));
+                }
+            }
+            Ok(Reply::Many(Many { out, failed: None }))
+        }
+        Request::JacobianMany { u, p, iterate } => {
+            let ev = compiled(ev)?;
+            let mut it = IteratedMap::new(ev, iterate);
+            let n = it.n();
+            if n == 0 || !u.len().is_multiple_of(n) {
+                return Err(Error::Internal(
+                    "jacobian_many: u is not whole columns".into(),
+                ));
+            }
+            let mut p = p;
+            p.push(0.0);
+            let nn = n * n;
+            let mut out = vec![0.0; u.len() * n];
+            for (j, (uc, oc)) in u.chunks_exact(n).zip(out.chunks_exact_mut(nn)).enumerate() {
+                // The same `JacU` call as `jacobian_at`, so each block has its bits.
+                if let Err(e) = it.eval(&EntryKind::JacU, uc, &p, &[], oc) {
+                    out.truncate(j * nn);
+                    return Ok(Reply::Many(Many {
+                        out,
+                        failed: Some((j, e.into())),
+                    }));
+                }
+            }
+            Ok(Reply::Many(Many { out, failed: None }))
         }
         Request::Panic => panic!("debug model panic"),
     }
@@ -1031,6 +1116,161 @@ done\n";
             h.panic_in_native.store(false, Ordering::Relaxed);
             let id = crate::ensemble::start(&h, job, &[1.0, 0.0], &[1.5]).unwrap();
             registry::remove(id).unwrap();
+        }
+    }
+
+    /// Columns of a grid on [-2, 2]^2, `k` of them.
+    fn grid(k: usize) -> Vec<f64> {
+        (0..k)
+            .flat_map(|j| {
+                let s = j as f64 / k.max(1) as f64;
+                [-2.0 + 4.0 * s, 2.0 - 3.7 * s * s]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn rhs_many_has_the_bits_of_single_calls() {
+        // SPEC 8ai-1b, test 1.
+        let h = handle_of(VDP);
+        h.compile(Build::Jit).unwrap();
+        let x = grid(37);
+        let m = h.rhs_many(x.clone(), vec![1.5], 0.25).unwrap();
+        assert!(m.failed.is_none());
+        let single: Vec<f64> = x
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|c| h.rhs(c.to_vec(), vec![1.5], 0.25).unwrap())
+            .collect();
+        assert!(same_bits(&m.out, &single));
+    }
+
+    #[test]
+    fn rhs_many_passes_t_to_every_column() {
+        // SPEC 8ai-1b, test 1, on a model that depends on t, so a wrong or dropped t
+        // changes the bits.
+        let h = handle_of("par r=2\nx'=r*x*(1-x)+t\ny'=-y*t\ndone\n");
+        h.compile(Build::Jit).unwrap();
+        let x = grid(37);
+        for t in [0.25, 0.75] {
+            let m = h.rhs_many(x.clone(), vec![2.0], t).unwrap();
+            assert!(m.failed.is_none());
+            let single: Vec<f64> = x
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .flat_map(|c| h.rhs(c.to_vec(), vec![2.0], t).unwrap())
+                .collect();
+            assert!(same_bits(&m.out, &single), "t = {t}");
+        }
+        let a = h.rhs_many(x.clone(), vec![2.0], 0.25).unwrap();
+        let b = h.rhs_many(x, vec![2.0], 0.75).unwrap();
+        assert!(!same_bits(&a.out, &b.out));
+    }
+
+    #[test]
+    fn jacobian_many_has_the_bits_of_single_calls() {
+        // SPEC 8ai-1b, test 1, for an ODE and for a map at iterate 3.
+        let h = handle_of(VDP);
+        h.compile(Build::Jit).unwrap();
+        let u = grid(37);
+        let m = h.jacobian_many(u.clone(), vec![1.5], 1).unwrap();
+        assert!(m.failed.is_none());
+        let single: Vec<f64> = u
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|c| h.jacobian(c.to_vec(), vec![1.5], 1).unwrap())
+            .collect();
+        assert!(same_bits(&m.out, &single));
+
+        let h = handle_of("par a=1.4, b=0.3\nx(t+1)=1-a*x*x+y\ny(t+1)=b*x\ndone\n");
+        h.compile(Build::Jit).unwrap();
+        let m = h.jacobian_many(u.clone(), vec![1.4, 0.3], 3).unwrap();
+        assert!(m.failed.is_none());
+        let single: Vec<f64> = u
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|c| h.jacobian(c.to_vec(), vec![1.4, 0.3], 3).unwrap())
+            .collect();
+        assert!(same_bits(&m.out, &single));
+    }
+
+    #[test]
+    fn many_calls_stop_at_the_first_refused_column() {
+        // SPEC 8ai-1b, test 2: sqrt(x+1) is NaN at x = -2 and its slope is not finite at
+        // x = -1. The columns before the refused one come back with their single-call
+        // bits, and the error is the single call's.
+        let h = handle_of("x'=sqrt(x+1)\ny'=-y\ndone\n");
+        h.compile(Build::Jit).unwrap();
+        let x = vec![0.0, 0.0, 1.0, 1.0, -2.0, 0.0, 2.0, 3.0];
+        let m = h.rhs_many(x.clone(), vec![], 0.0).unwrap();
+        let (j, e) = m.failed.expect("column 2 is refused");
+        assert_eq!(j, 2);
+        let single = h.rhs(x[4..6].to_vec(), vec![], 0.0).unwrap_err();
+        assert_eq!(e.to_string(), single.to_string());
+        assert_eq!(e.code(), single.code());
+        let first: Vec<f64> = x[..4]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|c| h.rhs(c.to_vec(), vec![], 0.0).unwrap())
+            .collect();
+        assert!(same_bits(&m.out, &first));
+
+        let u = vec![0.0, 0.0, 1.0, 1.0, -1.0, 0.0, 2.0, 3.0];
+        let m = h.jacobian_many(u.clone(), vec![], 1).unwrap();
+        let (j, e) = m.failed.expect("column 2 is refused");
+        assert_eq!(j, 2);
+        let single = h.jacobian(u[4..6].to_vec(), vec![], 1).unwrap_err();
+        assert_eq!(e.to_string(), single.to_string());
+        assert_eq!(e.code(), single.code());
+        let first: Vec<f64> = u[..4]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|c| h.jacobian(c.to_vec(), vec![], 1).unwrap())
+            .collect();
+        assert!(same_bits(&m.out, &first));
+    }
+
+    /// Timing for SPEC 8ai-1b: K = 40401 single calls against one many-column call.
+    /// Run with `cargo test --release -p pc-ffi many_call_timing -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn many_call_timing() {
+        use std::time::Instant;
+        let h = handle_of(VDP);
+        h.compile(Build::Jit).unwrap();
+        let k = 40401;
+        let u = grid(k);
+        for _ in 0..2 {
+            let t0 = Instant::now();
+            for c in u.as_chunks::<2>().0 {
+                std::hint::black_box(h.jacobian(c.to_vec(), vec![1.5], 1).unwrap());
+            }
+            let single = t0.elapsed().as_secs_f64();
+            let t0 = Instant::now();
+            std::hint::black_box(h.jacobian_many(u.clone(), vec![1.5], 1).unwrap());
+            let many = t0.elapsed().as_secs_f64();
+            let t0 = Instant::now();
+            for c in u.as_chunks::<2>().0 {
+                std::hint::black_box(h.rhs(c.to_vec(), vec![1.5], 0.0).unwrap());
+            }
+            let rsingle = t0.elapsed().as_secs_f64();
+            let t0 = Instant::now();
+            std::hint::black_box(h.rhs_many(u.clone(), vec![1.5], 0.0).unwrap());
+            let rmany = t0.elapsed().as_secs_f64();
+            let us = 1e6 / k as f64;
+            println!(
+                "jacobian single {:.3} us/pt, many {:.3} us/pt; rhs single {:.3} us/pt, many {:.3} us/pt",
+                single * us,
+                many * us,
+                rsingle * us,
+                rmany * us
+            );
         }
     }
 }
