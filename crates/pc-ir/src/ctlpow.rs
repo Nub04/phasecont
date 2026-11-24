@@ -15,8 +15,9 @@
 // Only the path for a positive normal x other than 1 and an exponent y with 0 < y < 0.9,
 // y != 0.5 is kept. On that path none of the special-case branches of `pow` is taken, and
 // |y log2(x)| < 0.9 * 1075, so the overflow, underflow and subnormal-result branches are
-// never taken either. Every other input calls `pc_ir::math::pow`, which is `libm::pow`. The operations that remain are
-// those of `pow`, in the same order, so the result has the same bits.
+// never taken either. Every other input calls `crate::math::pow`, which is `libm::pow`.
+// The operations that remain are those of `pow`, in the same order, so the result has the
+// same bits.
 
 //! Both powers of the Dormand-Prince step-size controller from one logarithm
 //! (SPEC section 13, `cpu`).
@@ -176,8 +177,9 @@ fn exp2_part(y: f64, t1: f64, t2: f64) -> f64 {
     with_set_high_word(z, jj as u32)
 }
 
-/// `(pc_ir::math::pow(x, a), pc_ir::math::pow(x, b))` (which is `libm::pow`), bit for bit, with one log2(x) when x is positive,
-/// normal and not 1 and both exponents are in (0, 0.9) and not 0.5.
+/// `(crate::math::pow(x, a), crate::math::pow(x, b))` (which is `libm::pow`), bit for bit,
+/// with one log2(x) when x is positive, normal and not 1 and both exponents are in (0, 0.9)
+/// and not 0.5.
 ///
 /// Not inlined: inlined into the DP5 step loop it made Lorenz-96 with 40 states run twice
 /// as long on x86_64-pc-windows-gnu (2026-11-23), while the call costs nothing measurable.
@@ -189,7 +191,7 @@ pub fn pow_pair(x: f64, a: f64, b: f64) -> (f64, f64) {
     {
         return (exp2_part(a, t1, t2), exp2_part(b, t1, t2));
     }
-    (pc_ir::math::pow(x, a), pc_ir::math::pow(x, b))
+    (crate::math::pow(x, a), crate::math::pow(x, b))
 }
 
 #[cfg(test)]
@@ -204,12 +206,12 @@ mod tests {
                 let (pa, pb) = pow_pair(x, a, b);
                 assert_eq!(
                     pa.to_bits(),
-                    pc_ir::math::pow(x, a).to_bits(),
+                    crate::math::pow(x, a).to_bits(),
                     "x = {x:e}, y = {a}"
                 );
                 assert_eq!(
                     pb.to_bits(),
-                    pc_ir::math::pow(x, b).to_bits(),
+                    crate::math::pow(x, b).to_bits(),
                     "x = {x:e}, y = {b}"
                 );
             }
@@ -269,12 +271,12 @@ mod tests {
                 let (pa, pb) = pow_pair(x, a, b);
                 assert_eq!(
                     pa.to_bits(),
-                    pc_ir::math::pow(x, a).to_bits(),
+                    crate::math::pow(x, a).to_bits(),
                     "x = {x:e}, y = {a}"
                 );
                 assert_eq!(
                     pb.to_bits(),
-                    pc_ir::math::pow(x, b).to_bits(),
+                    crate::math::pow(x, b).to_bits(),
                     "x = {x:e}, y = {b}"
                 );
             }

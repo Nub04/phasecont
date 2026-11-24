@@ -7,6 +7,7 @@
 
 pub mod check;
 pub mod complex;
+pub mod ctlpow;
 pub mod dag;
 pub mod delays;
 pub mod diff;

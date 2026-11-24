@@ -1,4 +1,4 @@
-PhaseCont pc-ensemble
+PhaseCont pc-ir
 
 src/ctlpow.rs is ported from the libm crate 0.2.16, src/math/pow.rs
 (https://crates.io/crates/libm/0.2.16), which takes it from musl libc and FreeBSD

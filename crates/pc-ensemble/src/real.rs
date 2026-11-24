@@ -63,7 +63,7 @@ pub trait Real:
     fn atan2(self, x: Self) -> Self;
     fn powf(self, y: Self) -> Self;
     /// `(self.powf(a), self.powf(b))` with the same bits. The double version shares one
-    /// logarithm between the two powers (`crate::ctlpow`).
+    /// logarithm between the two powers (`pc_ir::ctlpow`).
     fn powf_pair(self, a: Self, b: Self) -> (Self, Self);
     fn fmod(self, y: Self) -> Self;
 
@@ -214,7 +214,7 @@ impl_real!(
     cosh pc_ir::math::cosh, tanh pc_ir::math::tanh, exp pc_ir::math::exp,
     ln pc_ir::math::ln, log10 pc_ir::math::log10, atan2 pc_ir::math::atan2,
     pow pc_ir::math::pow, fmod pc_ir::math::fmod,
-    pow_pair crate::ctlpow::pow_pair
+    pow_pair pc_ir::ctlpow::pow_pair
 );
 
 #[cfg(test)]

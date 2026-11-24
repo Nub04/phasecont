@@ -66,9 +66,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ### libm (MIT)
 
 - Source: the `libm` crate 0.2.16 from crates.io (https://crates.io/crates/libm/0.2.16), `src/math/pow.rs`, which carries the FreeBSD `e_pow.c` notice below. The crate's license text is its `LICENSE.txt`. `libm` is outside the list of projects named for porting in the project rules; the owner approved this port on 2026-11-23.
-- Ported into: `crates/pc-ensemble/src/ctlpow.rs`
-- What was ported: the positive-normal-x path of `pow`, split at log2(x) into `log2_pair` (the pair t1, t2) and `exp2_part` (y·log2 x and 2^z), so that the two powers of the CPU Dormand-Prince controller share one logarithm. The special-case, overflow, underflow and subnormal-result branches are not ported; those inputs call `libm::pow` (SPEC Section 13, `cpu`).
-- Notice (also in `crates/pc-ensemble/NOTICE`, which `pc-cli licenses` copies into `THIRD_PARTY_LICENSES.txt`):
+- Ported into: `crates/pc-ir/src/ctlpow.rs`
+- What was ported: the positive-normal-x path of `pow`, split at log2(x) into `log2_pair` (the pair t1, t2) and `exp2_part` (y·log2 x and 2^z), so that the two powers of the Dormand-Prince controller share one logarithm, in the CPU ensemble and, on `x86_64-pc-windows-gnu`, in the solo integrator (`crates/pc-engine/src/ivp.rs`). The special-case, overflow, underflow and subnormal-result branches are not ported; those inputs call `libm::pow` (SPEC Section 13, `cpu`).
+- Notice (also in `crates/pc-ir/NOTICE`, which `pc-cli licenses` copies into `THIRD_PARTY_LICENSES.txt`):
 
 ```
 rust-lang/libm as a whole is available for use under the MIT license:
