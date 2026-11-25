@@ -90,9 +90,11 @@ jobs:
   # compiles it. This job runs clippy and the tests with the gnu host toolchain.
   # GitHub sets CI on every runner, so the hashes pinned to the dev machine
   # compare their counts only, as on the other legs. continue-on-error keeps the
-  # job from blocking a merge while it is new.
-  # Seven tests are expected to fail on this job at first; see "Windows-gnu test
-  # job" in docs/STATUS.md.
+  # job from blocking a merge until it has been green for a week of pushes on
+  # the pinned MinGW (see "x87 precision on windows-gnu" in docs/STATUS.md).
+  # The job links with MinGW-Builds 16.2.0 (mingw-w64 v14, msvcrt), pinned by
+  # SHA256, because Rust's windows-gnu std links msvcrt and the MinGW of the
+  # runner image (15.2.0 ucrt on 2026-11-25) changes with the image.
   rust-windows-gnu:
     if: github.event_name != 'schedule'
     continue-on-error: true
@@ -115,15 +117,63 @@ jobs:
           rustc -vV
           rustc -vV | grep -qx 'host: x86_64-pc-windows-gnu'
           cargo -vV | grep -qx 'host: x86_64-pc-windows-gnu'
-      - name: Show the gcc on PATH, which the AOT C tests use
-        run: gcc --version || true
-      # Diagnostics for the x87 precision issue in docs/STATUS.md: which C
-      # runtime the MinGW on this runner links (msvcrt or ucrt), and whether
-      # the std functions take the x87 path on this runner.
-      - name: Show the MinGW C runtime of the toolchain
+      # The archive and the extracted tree each get a new directory.
+      - name: Install the pinned MinGW
+        env:
+          MINGW_URL: https://github.com/niXman/mingw-builds-binaries/releases/download/16.2.0-rt_v14-rev1/x86_64-16.2.0-release-posix-seh-msvcrt-rt_v14-rev1.7z
+          MINGW_SHA256: a3cfb25037981ea1cd2f4e5452fa45c700b20fffc311e5d78de90dedd142b73a
         run: |
-          gcc -dumpspecs | grep -m3 -iE 'msvcrt|ucrt' || true
-          echo '#include <stdio.h>' | gcc -dM -E -x c - | grep -E '_UCRT|__MSVCRT_VERSION__' || true
+          set -euo pipefail
+          tmp="$(cygpath -u "$RUNNER_TEMP")"
+          dl="$tmp/mingw-builds-download"
+          dir="$tmp/mingw-builds"
+          mkdir "$dl" "$dir"
+          curl -fsSL --retry 3 -o "$dl/mingw.7z" "$MINGW_URL"
+          echo "$MINGW_SHA256  $dl/mingw.7z" | sha256sum -c -
+          7z x -bd -o"$(cygpath -w "$dir")" "$(cygpath -w "$dl/mingw.7z")" >/dev/null
+          bin="$dir/mingw64/bin"
+          test -f "$bin/gcc.exe"
+          cygpath -w "$bin" >> "$GITHUB_PATH"
+          echo "MINGW_BIN=$bin" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=$(cygpath -w "$bin/gcc.exe")" >> "$GITHUB_ENV"
+      # rustc links with the gcc that the linker variable names, and the AOT C
+      # tests run the gcc on PATH, so both must be the pinned one, and a
+      # program it links must import msvcrt.dll and no part of the ucrt.
+      - name: Check that the pinned msvcrt MinGW is the one in use
+        run: |
+          set -euo pipefail
+          lc() { cygpath -m "$1" | tr '[:upper:]' '[:lower:]'; }
+          for tool in gcc objdump; do
+            got="$(type -P "$tool" || true)"
+            if [[ "$(lc "${got%.exe}")" != "$(lc "$MINGW_BIN/$tool")" ]]; then
+              echo "$tool on PATH is '$got', expected the one in $MINGW_BIN" >&2
+              exit 1
+            fi
+          done
+          if [[ "$(lc "$CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER")" != "$(lc "$MINGW_BIN/gcc.exe")" ]]; then
+            echo "linker is '$CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER', expected $MINGW_BIN/gcc.exe" >&2
+            exit 1
+          fi
+          gcc --version | head -n1
+          test "$(gcc -dumpfullversion)" = 16.2.0
+          macros="$(echo '#include <stdio.h>' | gcc -dM -E -x c -)"
+          grep -E '__MSVCRT_VERSION__' <<<"$macros"
+          if grep -qE '^#define _UCRT\b' <<<"$macros"; then
+            echo "gcc defines _UCRT, expected an msvcrt toolchain" >&2
+            exit 1
+          fi
+          t="$(cygpath -u "$RUNNER_TEMP")/crt-check"
+          mkdir "$t"
+          printf '#include <stdio.h>\nint main(void) { puts("crt-check: ok"); return 0; }\n' > "$t/crt.c"
+          gcc -O1 -o "$t/crt.exe" "$t/crt.c"
+          imports="$(objdump -p "$t/crt.exe" | grep 'DLL Name')"
+          echo "$imports"
+          grep -qi 'msvcrt\.dll' <<<"$imports"
+          if grep -qiE 'ucrtbase|api-ms-win-crt' <<<"$imports"; then
+            echo "crt.exe imports the ucrt" >&2
+            exit 1
+          fi
+          "$t/crt.exe"
       - name: Report the x87 path in std
         if: ${{ steps.host.outcome == 'success' }}
         continue-on-error: true
@@ -257,10 +307,22 @@ jobs:
           path: build/*.vsix
           if-no-files-found: error
 
+  # The cross build runs in a digest-pinned Fedora 45 container with the MinGW
+  # versions that scripts/mingw-fedora pins (msvcrt), the same set as the dev
+  # machine, so CI, the release and local builds link the same CRT and libgcc.
   pckern-win:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    container: fedora:45@sha256:a7d72ba2745b100a3351087472e5ee7b2450af7cf331e7673007e3817612839c
+    defaults:
+      run:
+        shell: bash
     steps:
+      - name: Install the host tools
+        run: |
+          pkgs=(gcc git-core tar gzip findutils gawk diffutils)
+          command -v curl >/dev/null || pkgs+=(curl)
+          dnf install -y --setopt=install_weak_deps=False "${pkgs[@]}"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -268,8 +330,8 @@ jobs:
         with:
           toolchain: 1.99.1
           targets: x86_64-pc-windows-gnu
-      - name: Install MinGW
-        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+      - name: Install the pinned MinGW
+        run: scripts/mingw-fedora install
       - name: Cross build pckern.dll
         run: |
           # Replace the checkout and cargo home paths, so the DLL holds no

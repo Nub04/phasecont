@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# The Fedora 45 MinGW-w64 packages that build pckern.dll and pc-cli.exe for
+# x86_64-pc-windows-gnu, pinned to exact versions. CI and the release install
+# these in a digest-pinned fedora:45 container, and the dev machine has the
+# same set (docs/ENVIRONMENT.md). The CRT is msvcrt, the one Rust's
+# windows-gnu std links (see "x87 precision on windows-gnu" in
+# docs/STATUS.md).
+#
+# Usage:
+#   scripts/mingw-fedora install   dnf install the pinned versions (run as root)
+#   scripts/mingw-fedora check     fail unless exactly these versions are installed
+#
+# When dnf no longer finds a version (Fedora updates keep only the newest
+# build), move the pin to the new build in one commit, here and in
+# docs/ENVIRONMENT.md.
+set -euo pipefail
+
+PINNED=(
+  mingw64-gcc-16.2.1-2.fc45
+  mingw64-cpp-16.2.1-2.fc45
+  mingw64-libgcc-16.2.1-2.fc45
+  mingw64-binutils-2.46.0-2.fc45
+  mingw-binutils-generic-2.46.0-2.fc45
+  mingw64-crt-14.0.0-3.fc45
+  mingw64-headers-14.0.0-2.fc45
+  mingw64-winpthreads-14.0.0-3.fc45
+  mingw64-winpthreads-static-14.0.0-3.fc45
+  mingw64-filesystem-152-1.fc45
+  mingw-filesystem-base-152-1.fc45
+)
+
+check() {
+  local status=0 want name got
+  for want in "${PINNED[@]}"; do
+    # The name is everything before the last two dash-separated fields.
+    name="${want%-*-*}"
+    if ! got="$(rpm -q --qf '%{NAME}-%{VERSION}-%{RELEASE}\n' "$name" 2>&1)"; then
+      echo "mingw-fedora: $name is not installed, expected $want" >&2
+      status=1
+    elif [[ "$got" != "$want" ]]; then
+      echo "mingw-fedora: $name is $got, expected $want" >&2
+      status=1
+    else
+      echo "$got"
+    fi
+  done
+  return "$status"
+}
+
+case "${1:-}" in
+  install)
+    dnf install -y --setopt=install_weak_deps=False "${PINNED[@]}"
+    check
+    ;;
+  check)
+    check
+    ;;
+  *)
+    echo "usage: scripts/mingw-fedora install|check" >&2
+    exit 2
+    ;;
+esac
