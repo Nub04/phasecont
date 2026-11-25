@@ -260,6 +260,19 @@ fn bad_models_options_and_lengths_are_refused() {
     assert_eq!(rc, BAD_ARG, "NULL jac_out");
     let rc = unsafe {
         (api().model_jacobian)(
+            m.0,
+            u.as_ptr(),
+            2,
+            ptr::null(),
+            4,
+            ptr::null(),
+            jac.as_mut_ptr(),
+            4,
+        )
+    };
+    assert_eq!(rc, BAD_ARG, "NULL p");
+    let rc = unsafe {
+        (api().model_jacobian)(
             0xdead_beef,
             u.as_ptr(),
             2,
