@@ -117,6 +117,17 @@ jobs:
           cargo -vV | grep -qx 'host: x86_64-pc-windows-gnu'
       - name: Show the gcc on PATH, which the AOT C tests use
         run: gcc --version || true
+      # Diagnostics for the x87 precision issue in docs/STATUS.md: which C
+      # runtime the MinGW on this runner links (msvcrt or ucrt), and whether
+      # the std functions take the x87 path on this runner.
+      - name: Show the MinGW C runtime of the toolchain
+        run: |
+          gcc -dumpspecs | grep -m3 -iE 'msvcrt|ucrt' || true
+          echo '#include <stdio.h>' | gcc -dM -E -x c - | grep -E '_UCRT|__MSVCRT_VERSION__' || true
+      - name: Report the x87 path in std
+        if: ${{ steps.host.outcome == 'success' }}
+        continue-on-error: true
+        run: cargo test --locked -p pc-ir --test x87_control_word -- --nocapture
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked --no-fail-fast
         if: ${{ !cancelled() && steps.host.outcome == 'success' }}
@@ -272,6 +283,8 @@ jobs:
         run: |
           target/release/pc-cli dll-imports target/x86_64-pc-windows-gnu/release/pckern.dll
           scripts/check-host-paths target/x86_64-pc-windows-gnu/release/pckern.dll
+      - name: Check that the DLL links no x87 math functions
+        run: scripts/check-x87-math target/x86_64-pc-windows-gnu/release/pckern.dll
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pckern-win64
@@ -282,6 +295,8 @@ jobs:
           export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc
           export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS="--remap-path-prefix=$GITHUB_WORKSPACE=/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo"
           cargo build --release --locked --target x86_64-pc-windows-gnu -p pc-cli
+      - name: Check that pc-cli.exe links no x87 math functions
+        run: scripts/check-x87-math target/x86_64-pc-windows-gnu/release/pc-cli.exe
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pc-cli-win64

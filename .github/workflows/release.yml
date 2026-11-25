@@ -55,6 +55,7 @@ jobs:
           cargo build --release --locked -p pc-cli
           target/release/pc-cli dll-imports target/x86_64-pc-windows-gnu/release/pckern.dll
           scripts/check-host-paths target/x86_64-pc-windows-gnu/release/pckern.dll
+          scripts/check-x87-math target/x86_64-pc-windows-gnu/release/pckern.dll
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: lib-win64

@@ -63,6 +63,7 @@ dll="$target_dir/x86_64-pc-windows-gnu/release/pckern.dll"
 cargo build --release --locked -p pc-cli
 "$target_dir/release/pc-cli" dll-imports "$dll"
 scripts/check-host-paths "$dll"
+scripts/check-x87-math "$dll"
 
 mkdir -p "$stage"
 if ! err="$(cp "$dll" "$stage/pckern.dll" 2>&1)"; then
