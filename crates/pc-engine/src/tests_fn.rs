@@ -86,7 +86,7 @@ pub(crate) fn psi_h_relative(eigs: &[(f64, f64)], log_ref: f64) -> f64 {
     if sign == 0.0 {
         return 0.0;
     }
-    sign * (log - log_ref).min(700.0).exp()
+    sign * pc_ir::hostmath::exp((log - log_ref).min(700.0))
 }
 
 /// What a zero of `psi_H` is.

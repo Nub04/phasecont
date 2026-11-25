@@ -7,6 +7,9 @@
 //! `cargo test --test dde_cycle_labels -- --ignored --nocapture` to print the measured
 //! values behind the bounds.
 
+// Test references may use the std functions; see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use pc_engine::{
     DdeCycleBranch, DdeCycleSetup, DdeCycleSpecial, DdeCycleStart, DdeFloquetOptions, DdeModel,
     EngineError, Evaluator, Options, StopReason, build_dde, dde_continue_cycle,

@@ -6,6 +6,9 @@
 //! run counterclockwise with period 2 pi, and its nontrivial Floquet multiplier is
 //! exp(-4 pi alpha). Run with `-- --nocapture` to see the errors.
 
+// Test references may use the std functions; see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 mod common;
 
 use common::load;

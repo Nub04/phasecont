@@ -96,7 +96,7 @@ impl C {
 
     /// `exp(-lambda tau)`.
     fn exp_neg(self, tau: f64) -> C {
-        let m = (-self.re * tau).exp();
+        let m = pc_ir::hostmath::exp(-self.re * tau);
         let (s, c) = (self.im * tau).sin_cos();
         C::new(m * c, -m * s)
     }
@@ -266,7 +266,7 @@ fn frobenius(a: &[f64]) -> f64 {
 fn scale(p: &LinearDde, norms: &(f64, Vec<f64>), lam: C) -> f64 {
     let mut s = lam.abs() + norms.0;
     for ((tau, _), nj) in p.delays.iter().zip(&norms.1) {
-        s += nj * (-lam.re * tau).exp();
+        s += nj * pc_ir::hostmath::exp(-lam.re * tau);
     }
     s
 }

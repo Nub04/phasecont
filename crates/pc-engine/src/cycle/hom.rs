@@ -557,7 +557,7 @@ impl<'a> HomProblem<'a> {
             };
             self.outer.eval_at(x, &EntryKind::F, u, &mut self.f)?;
             let dot: f64 = self.f.iter().zip(&wv).map(|(a, b)| a * b).sum();
-            Ok(dot * (e * period * l / 2.0).exp())
+            Ok(dot * pc_ir::hostmath::exp(e * period * l / 2.0))
         };
         let (ls, lu) = (lam[ns - 1], lam[ns]);
         let ofs = if is_real(ls) {

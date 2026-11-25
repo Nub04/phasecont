@@ -15,6 +15,9 @@
 //! The NS curve is be = -c al with kappa = cos(2 pi (w2 + e al)).
 //! Run with `-- --nocapture` to see the errors.
 
+// Test references may use the std functions; see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 mod common;
 
 use common::{load, rk4};

@@ -3,6 +3,9 @@
 //! collocation, and every period at the bifurcation is pi, so a missing factor of T
 //! shows up. The runs use ntst = 40 and ncol = 4.
 
+// Test references may use the std functions; see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 mod common;
 
 use common::{attractor_orbit, load};

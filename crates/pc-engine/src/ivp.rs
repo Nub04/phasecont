@@ -121,7 +121,7 @@ fn ctl_pow(x: f64, y: f64) -> f64 {
 }
 #[cfg(not(all(target_os = "windows", target_env = "gnu")))]
 fn ctl_pow(x: f64, y: f64) -> f64 {
-    x.powf(y)
+    pc_ir::hostmath::powf(x, y)
 }
 
 /// `(ctl_pow(x, a), ctl_pow(x, b))`, with the same bits.
@@ -131,7 +131,7 @@ fn ctl_pow_pair(x: f64, a: f64, b: f64) -> (f64, f64) {
 }
 #[cfg(not(all(target_os = "windows", target_env = "gnu")))]
 fn ctl_pow_pair(x: f64, a: f64, b: f64) -> (f64, f64) {
-    (x.powf(a), x.powf(b))
+    (pc_ir::hostmath::powf(x, a), pc_ir::hostmath::powf(x, b))
 }
 
 /// The right-hand side as a closure over time, state and output.

@@ -1,6 +1,9 @@
 //! Ensemble runs through the table from `pc_api_v1()`. Every test runs on the CPU backend,
 //! so no GPU or driver is needed.
 
+// Test references may use the std functions; see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use std::ffi::{CStr, CString, c_char};
 use std::ptr;
 use std::time::{Duration, Instant};

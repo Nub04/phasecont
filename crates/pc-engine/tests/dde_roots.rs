@@ -3,6 +3,9 @@
 //! The completeness tests count the roots with an argument-principle winding number of
 //! `det Delta` along a rectangle, computed here with a complex LU of the test's own.
 
+// Test references may use the std functions; see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use pc_engine::{CharRoot, EngineError, LinearDde, RootOptions, RootSet, characteristic_roots};
 use std::f64::consts::PI;
 use std::ops::{Add, Div, Mul, Sub};

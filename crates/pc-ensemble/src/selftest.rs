@@ -164,7 +164,7 @@ fn cases() -> [Case; 3] {
             src: DECAY,
             params: &[1.3],
             t1: 1.0,
-            exact: |x, t| vec![x[0] * (-1.3 * t).exp()],
+            exact: |x, t| vec![x[0] * pc_ir::hostmath::exp(-1.3 * t)],
         },
         Case {
             src: OSC,
@@ -182,7 +182,7 @@ fn cases() -> [Case; 3] {
             params: &[],
             t1: 2.0,
             exact: |x, t| {
-                let e = t.exp();
+                let e = pc_ir::hostmath::exp(t);
                 vec![x[0] * e / (1.0 - x[0] + x[0] * e)]
             },
         },
@@ -304,7 +304,7 @@ fn recursion(run: Runner, precision: Precision, frames: usize) -> Result<f64, En
         if r.status[i] != Status::Ok {
             return Ok(f64::INFINITY);
         }
-        let e = start * (-1.0f64).exp();
+        let e = start * pc_ir::hostmath::exp(-1.0);
         worst = worst.max((r.state(i, 0)[0] - e).abs() / (1.0 + e.abs()));
     }
     Ok(worst)

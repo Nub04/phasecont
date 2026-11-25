@@ -1,0 +1,12 @@
+# MinGW-w64's msvcrt runtime runs these on the x87 unit, so on x86_64-pc-windows-gnu their
+# bits depend on the calling thread's precision control. Engine code calls pc_ir::hostmath.
+disallowed-methods = [
+    { path = "f64::powf", reason = "use pc_ir::hostmath::powf (x87 bits depend on the thread on windows-gnu)" },
+    { path = "f64::exp", reason = "use pc_ir::hostmath::exp (x87 bits depend on the thread on windows-gnu)" },
+    { path = "f64::exp2", reason = "use pc_ir::hostmath::exp2 (x87 bits depend on the thread on windows-gnu)" },
+    { path = "f64::exp_m1", reason = "use pc_ir::hostmath::exp_m1 (x87 bits depend on the thread on windows-gnu)" },
+    { path = "f64::ln_1p", reason = "use pc_ir::hostmath::ln_1p (x87 bits depend on the thread on windows-gnu)" },
+    { path = "f64::atanh", reason = "use pc_ir::hostmath::atanh (x87 bits depend on the thread on windows-gnu)" },
+    { path = "f64::asinh", reason = "use pc_ir::hostmath::asinh (x87 bits depend on the thread on windows-gnu)" },
+    { path = "f64::acosh", reason = "use pc_ir::hostmath::acosh (x87 bits depend on the thread on windows-gnu)" },
+]

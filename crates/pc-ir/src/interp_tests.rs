@@ -1121,7 +1121,7 @@ fn machine_matches_the_dag_on_recursive_models() {
     assert!(
         [0.7f64, 1.1, -1.3]
             .iter()
-            .any(|&x| Scalar::powi(x, 7).to_bits() != x.powf(7.0).to_bits())
+            .any(|&x| Scalar::powi(x, 7).to_bits() != Scalar::pow(x, 7.0).to_bits())
     );
 }
 

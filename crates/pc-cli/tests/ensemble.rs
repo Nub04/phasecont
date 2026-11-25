@@ -2,6 +2,9 @@
 //!
 //! The expected values are closed forms: decay `x' = -a x` gives `x(t) = x0 exp(-a t)`.
 
+// Test references may use the std functions; see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 mod common;
 
 use std::path::{Path, PathBuf};

@@ -1,5 +1,8 @@
 //! Runs through the table from `pc_api_v1()`.
 
+// Test references may use the std functions; see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use std::ffi::{CStr, CString, c_char};
 use std::ptr;
 use std::time::{Duration, Instant};
