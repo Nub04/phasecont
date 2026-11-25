@@ -84,6 +84,43 @@ jobs:
           cargo run --release --locked -p pc-cli -- ensemble --bench --members 100000 --case vdp-rk4 > bench.json
           scripts/check-bench-bits bench.json
 
+  # The release pckern.dll and pc-cli.exe are built for x86_64-pc-windows-gnu, and
+  # code under cfg(target_env = "gnu") (the libm powers of the solo DP5 in
+  # pc-engine) builds on that target only, so the msvc leg of the rust job never
+  # compiles it. This job runs clippy and the tests with the gnu host toolchain.
+  # GitHub sets CI on every runner, so the hashes pinned to the dev machine
+  # compare their counts only, as on the other legs. continue-on-error keeps the
+  # job from blocking a merge while it is new.
+  # Seven tests are expected to fail on this job at first; see "Windows-gnu test
+  # job" in docs/STATUS.md.
+  rust-windows-gnu:
+    if: github.event_name != 'schedule'
+    continue-on-error: true
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.99.1-x86_64-pc-windows-gnu
+          components: clippy
+      - name: Check that the gnu host toolchain is the one in use
+        id: host
+        run: |
+          set -eu
+          rustc -vV
+          rustc -vV | grep -qx 'host: x86_64-pc-windows-gnu'
+          cargo -vV | grep -qx 'host: x86_64-pc-windows-gnu'
+      - name: Show the gcc on PATH, which the AOT C tests use
+        run: gcc --version || true
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked --no-fail-fast
+        if: ${{ !cancelled() && steps.host.outcome == 'success' }}
+
   # The nightly run checks the lock file against the RustSec advisory database, so an
   # advisory published after the last push still shows up within a day.
   advisories:
