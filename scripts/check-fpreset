@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Fail when a windows-gnu exe does not carry the pc-cli `_fpreset` override,
+# which sets the x87 control word of the main thread to 0x027F, the value
+# that threads Windows starts already have (see "x87 precision on
+# windows-gnu" in docs/STATUS.md). The msvcrt MinGW-w64 CRT version only
+# runs fninit, which leaves 0x037F. crates/pc-cli/tests/main_thread_x87.rs
+# checks the override in its own exe; this scan checks the shipped one.
+#
+# Usage:
+#   scripts/check-fpreset FILE...
+#
+# Needs x86_64-w64-mingw32-nm and x86_64-w64-mingw32-objdump (binutils).
+set -euo pipefail
+
+if [[ $# -eq 0 ]]; then
+  echo "usage: scripts/check-fpreset FILE..." >&2
+  exit 2
+fi
+
+NM=${NM:-x86_64-w64-mingw32-nm}
+OBJDUMP=${OBJDUMP:-x86_64-w64-mingw32-objdump}
+
+for tool in "$NM" "$OBJDUMP"; do
+  if ! command -v "$tool" >/dev/null; then
+    echo "check-fpreset: $tool not found" >&2
+    exit 2
+  fi
+done
+
+status=0
+for f in "$@"; do
+  if [[ ! -f "$f" ]]; then
+    echo "check-fpreset: no such file: $f" >&2
+    status=1
+    continue
+  fi
+  if ! syms="$("$NM" "$f" 2>&1)"; then
+    echo "check-fpreset: $NM failed on $f: $syms" >&2
+    status=1
+    continue
+  fi
+  defs="$(printf '%s\n' "$syms" | grep -cE ' [Tt] _fpreset$' || true)"
+  if [[ "$defs" != 1 ]]; then
+    echo "check-fpreset: $f defines _fpreset $defs times, expected once" >&2
+    status=1
+    continue
+  fi
+  if ! asm="$("$OBJDUMP" -d --no-show-raw-insn --disassemble=_fpreset "$f" 2>&1)"; then
+    echo "check-fpreset: $OBJDUMP failed on $f: $asm" >&2
+    status=1
+    continue
+  fi
+  # Keep the body of _fpreset up to its first ret.
+  body="$(printf '%s\n' "$asm" | awk '/<_fpreset>:$/{p=1; next} p{print} p&&/\tret/{exit}')"
+  missing=""
+  for want in 'fninit' 'fldcw' '\$0x27f,'; do
+    grep -qE "$want" <<<"$body" || missing+=" ${want//\\/}"
+  done
+  if [[ -n "$missing" ]]; then
+    echo "check-fpreset: _fpreset in $f lacks:$missing" >&2
+    printf '%s\n' "$body" >&2
+    status=1
+  else
+    echo "check-fpreset: $f sets the x87 control word to 0x027F in _fpreset"
+  fi
+done
+exit "$status"

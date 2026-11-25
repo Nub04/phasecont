@@ -297,6 +297,8 @@ jobs:
           cargo build --release --locked --target x86_64-pc-windows-gnu -p pc-cli
       - name: Check that pc-cli.exe links no x87 math functions
         run: scripts/check-x87-math target/x86_64-pc-windows-gnu/release/pc-cli.exe
+      - name: Check that pc-cli.exe sets the main thread x87 control word
+        run: scripts/check-fpreset target/x86_64-pc-windows-gnu/release/pc-cli.exe
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pc-cli-win64

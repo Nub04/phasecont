@@ -17,3 +17,9 @@ pc-jit = { path = "../pc-jit" }
 pc-latex = { path = "../pc-latex" }
 pc-ode = { path = "../pc-ode" }
 serde_json = "1.0.154"
+
+# libtest runs tests on spawned threads, so this test checks the main thread from its
+# own `main`.
+[[test]]
+name = "main_thread_x87"
+harness = false
