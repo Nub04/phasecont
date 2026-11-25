@@ -24,6 +24,13 @@ OBJDUMP=${OBJDUMP:-x86_64-w64-mingw32-objdump}
 # worker thread in the 2026-11-25 probe (1e6 inputs each).
 names='pow|exp|exp2|expm1|log1p|atanh|asinh|acosh'
 
+for tool in "$NM" "$OBJDUMP"; do
+  if ! command -v "$tool" >/dev/null; then
+    echo "check-x87-math: $tool not found" >&2
+    exit 2
+  fi
+done
+
 status=0
 for f in "$@"; do
   if [[ ! -f "$f" ]]; then
@@ -31,7 +38,11 @@ for f in "$@"; do
     status=1
     continue
   fi
-  syms="$("$NM" "$f" 2>/dev/null || true)"
+  if ! syms="$("$NM" "$f" 2>&1)"; then
+    echo "check-x87-math: $NM failed on $f: $syms" >&2
+    status=1
+    continue
+  fi
   # A stripped binary has no symbol table, and an empty scan would pass
   # for the wrong reason. libm and the CRT always add more than this.
   count="$(printf '%s\n' "$syms" | grep -c . || true)"
@@ -41,7 +52,14 @@ for f in "$@"; do
     continue
   fi
   defined="$(printf '%s\n' "$syms" | grep -E " [TtIi] (__imp_)?($names)$" || true)"
-  imported="$("$OBJDUMP" -p "$f" | grep -E "^[[:space:]]+[0-9a-f]+[[:space:]]+[0-9]+[[:space:]]+($names)$" || true)"
+  if ! headers="$("$OBJDUMP" -p "$f" 2>&1)"; then
+    echo "check-x87-math: $OBJDUMP failed on $f: $headers" >&2
+    status=1
+    continue
+  fi
+  # Import table rows read "vma  Ordinal  Hint  Member-Name", for example
+  # "00fb7e70  <none>  03f4  acos", with the hint in hex.
+  imported="$(printf '%s\n' "$headers" | grep -E "^[[:space:]]+[0-9a-f]+[[:space:]]+(<none>|[0-9a-f]+)[[:space:]]+[0-9a-f]+[[:space:]]+($names)$" || true)"
   if [[ -n "$defined$imported" ]]; then
     echo "check-x87-math: $f links x87 math functions:" >&2
     [[ -n "$defined" ]] && echo "$defined" >&2
