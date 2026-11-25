@@ -264,6 +264,32 @@ classdef ContinuationBatchTest < matlab.unittest.TestCase
             br = phasecont.continuation(m, eq, Free = "a", MaxSteps = 3);
             testCase.verifyClass(br, "phasecont.Branch");
         end
+
+        function theDefaultCapIsMaxNumCompThreads(testCase)
+            % SPEC P45: MaxConcurrent defaults to maxNumCompThreads.
+            old = maxNumCompThreads(2);
+            testCase.addTeardown(@() maxNumCompThreads(old));
+            m = testCase.model(testCase.Fold);
+            eq = phasecont.equilibrium(m, -1);
+            job = {m, eq, "Free", "a", "Direction", 1, "MaxSteps", 40000, ...
+                "H0", 1e-4, "Hmax", 1e-4, "Bounds", [-1000 1000]};
+            live = zeros(1, 0, "uint64");
+            peak = 0;
+            phasecont.internal.pollHook(@hook);
+            got = phasecont.continuationBatch(repmat({job}, 1, 5));
+            phasecont.internal.pollHook([]);
+            testCase.verifyEqual(numel(got), 5);
+            testCase.verifyEqual(peak, 2);
+
+            function hook(run, st)
+                if st.state == "running"
+                    live = union(live, run.Id);
+                else
+                    live = setdiff(live, run.Id);
+                end
+                peak = max(peak, numel(live));
+            end
+        end
     end
 end
 

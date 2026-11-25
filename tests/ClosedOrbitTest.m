@@ -438,5 +438,26 @@ classdef ClosedOrbitTest < matlab.unittest.TestCase
                 end
             end
         end
+
+        function aZeroTangentAtAPoleRaisesNoError(testCase)
+            % SPEC section 8ag, with the zero-tangent rule of section 2: a
+            % zero tangent times a pole is +0, so the gradient of
+            % sqrt(x^2 + y^2) at the origin (a sample of this 3 by 3 grid)
+            % is 0 and raises no error. The verdict is not checked. The
+            % control sqrt(x^2 + y^2 + x) has a nonzero tangent into the
+            % same pole, so its gradient at the origin is infinite and the
+            % same grid raises nonfinite: the origin's gradient is checked.
+            m = testCase.model(["-x" "-y"]);
+            for opt = ["Lyapunov" "Dulac"]
+                r = phasecont.closedOrbitChecks(m, "Region", [-1 1 -1 1], ...
+                    "Grid", [3 3], opt, "sqrt(x^2+y^2)");
+                c = r.(opt);
+                testCase.verifyGreaterThan(c.Samples, 0, opt);
+                testCase.verifyTrue(isfinite(c.Min) && isfinite(c.Max), opt);
+                testCase.verifyError(@() phasecont.closedOrbitChecks(m, ...
+                    "Region", [-1 1 -1 1], "Grid", [3 3], opt, ...
+                    "sqrt(x^2+y^2+x)"), "phasecont:orbit:nonfinite", opt);
+            end
+        end
     end
 end
