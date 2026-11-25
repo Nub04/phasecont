@@ -906,7 +906,9 @@ classdef FitTest < matlab.unittest.TestCase
             m = testCase.model(testCase.Line);
             t = (0.5:0.5:3)';
             c = testCase.options([], struct("Fit", "b"));
-            for given = {{}, {"Starts", []}}
+            % SPEC section on several starts: an empty Starts is the same as none.
+            for given = {{}, {"Starts", []}, {"Starts", zeros(1, 0)}, ...
+                    {"Starts", zeros(0, 1)}, {"Starts", zeros(0, 0, 2)}}
                 r = phasecont.fit(m, 0, [], t, 2*t, c{:}, given{1}{:});
                 testCase.verifyEmpty(r.Starts);
                 testCase.verifyClass(r.Starts, "phasecont.FitResult");

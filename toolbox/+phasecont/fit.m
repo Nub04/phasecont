@@ -58,8 +58,9 @@ function r = fit(m, x0, P, t, Y, options)
 %                the badOption of FdStep has Stop "failed" and its error in
 %                Error, and the fit warns phasecont:fit:someStartsFailed.
 %                When every start fails, the error of the first is raised
-%                with "In start k:" before its message. A Starts that is not
-%                a finite real |Fit|-by-K matrix raises phasecont:fit:badStarts.
+%                with "In start k:" before its message. An empty Starts of
+%                any size is the same as none. A Starts that is not a
+%                finite real |Fit|-by-K matrix raises phasecont:fit:badStarts.
 %
 %   A trial point that does not finish is a rejected step. A start point
 %   that does not finish raises phasecont:fit:startFailed, and so does a
