@@ -433,6 +433,41 @@ classdef StrogatzFigureTest < matlab.unittest.TestCase
                 testCase.verifyNotEmpty(findall(ax, "Tag", tag), tag);
             end
         end
+
+        function check_fig_10_3_4(testCase, out)
+            % F(x) = r x (1 - x), F'(x) = r (1 - 2x). Fixed points: x = 0 with
+            % multiplier r, and x* = 1 - 1/r with multiplier r (1 - 2 + 2/r) = 2 - r.
+            % So the branch point (multiplier 1 on both) is at r = 1, and x* has a
+            % multiplier of -1 at r = 3, where x* = 2/3.
+            % A 2-cycle {p, q} solves F(F(x)) = x without F(x) = x; dividing out the
+            % fixed points leaves r^2 x^2 - r (r + 1) x + (r + 1) = 0, so
+            % p + q = (r + 1)/r and p q = (r + 1)/r^2. Its multiplier is
+            % F'(p) F'(q) = r^2 (1 - 2(p + q) + 4 p q) = -r^2 + 2r + 4, which is -1 at
+            % r^2 - 2r - 5 = 0, r = 1 + sqrt(6).
+            t = out.Transcritical;
+            bp = t(1).points("BP");
+            testCase.verifyNumElements(bp, 1);
+            % Point.Index is the grid row next to the point, so read the refined parameters.
+            testCase.verifyEqual(bp.P(t(1).FreeIndex), 1, AbsTol = 1e-6);
+            r = t(2).Alpha;
+            testCase.verifyEqual(t(2).U, 1 - 1./r, AbsTol = 1e-9);
+            testCase.verifyEqual(t(2).Eigenvalues, 2 - r, AbsTol = 1e-8);
+            testCase.verifyGreaterThan(max(r), 1.9);
+            d = out.Doubling;
+            pd = d(1).points("PD");
+            testCase.verifyNumElements(pd, 1);
+            testCase.verifyEqual(pd.P(d(1).FreeIndex), 3, AbsTol = 1e-6);
+            testCase.verifyEqual(pd.U, 2/3, AbsTol = 1e-6);
+            testCase.verifyEqual(d(1).U, 1 - 1./d(1).Alpha, AbsTol = 1e-9);
+            testCase.verifyEqual(d(2).Iterate, 2);
+            r2 = d(2).Alpha;
+            x0 = d(2).U;
+            x1 = r2.*x0.*(1 - x0);
+            testCase.verifyEqual(r2.*x1.*(1 - x1), x0, AbsTol = 1e-9);
+            pd2 = d(2).points("PD");
+            testCase.verifyNumElements(pd2, 1);
+            testCase.verifyEqual(pd2.P(d(2).FreeIndex), 1 + sqrt(6), AbsTol = 1e-6);
+        end
     end
 end
 

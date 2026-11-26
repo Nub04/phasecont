@@ -116,5 +116,18 @@
     "source": {"x0": "chosen", "N": "chosen", "guess": "chosen"},
     "check": "each iterate is cos of the one before; fixed point by fzero, multiplier -sin x*",
     "state": "done"
+  },
+  {
+    "figure": "10.3.4",
+    "edition": 3,
+    "model": "logistic_map.ode",
+    "script": "fig_10_3_4",
+    "api": ["continuation", "Switch BP1", "Switch PD1", "Branch.plot"],
+    "values": {"r0": 0.5, "x0": 0, "bounds": [0.5, 2], "r1": 2.5, "x1": 0.6,
+               "bounds1": [2.5, 3.6], "hmax": 0.05},
+    "source": {"r0": "chosen", "x0": "chosen", "bounds": "chosen", "r1": "chosen",
+               "x1": "chosen", "bounds1": "chosen", "hmax": "chosen"},
+    "check": "branch point at r = 1; period doubling at r = 3 and of the 2-cycle at 1 + sqrt(6)",
+    "state": "done"
   }
 ]
