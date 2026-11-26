@@ -94,6 +94,7 @@ classdef StrogatzFigureTest < matlab.unittest.TestCase
             end
             opened = StrogatzFigureTest.newFigures(before);
             if isfield(out, "App")
+                testCase.verifyNotEmpty(opened, "Plot = false must still build the app window");
                 testCase.verifyTrue(all(arrayfun(@(f) f.Visible == "off", opened)), ...
                     "Plot = false must leave the app window hidden");
             else
@@ -269,12 +270,17 @@ classdef StrogatzFigureTest < matlab.unittest.TestCase
             testCase.verifyNumElements(findall(ax, "Tag", "pc-equilibrium-unstable"), 2);
             testCase.verifyNumElements(findall(ax, "Tag", "pc-nullcline"), 2);
             testCase.verifyNumElements(findall(ax, "Tag", "pc-trajectory"), 4);
-            % Every start leaves the saddle's stable manifold, so each orbit ends at
-            % one of the two stable nodes. The slowest rate there is 1 and T = 20.
+            % Each orbit starts at its point in Values.points and runs forward over
+            % [0 T]. The oracle is ode45 from the same start and T.
+            v = out.Values;
+            f = @(t, u) [u(1)*(3 - u(1) - 2*u(2)); u(2)*(2 - u(1) - u(2))];
             for k = 1:4
-                e = out.Trajectories{k}.X(end, :);
-                d = min(vecnorm(expected(2:3, :) - e, 2, 2));
-                testCase.verifyLessThan(d, 1e-3);
+                tr = out.Trajectories{k};
+                testCase.verifyEqual(tr.X(1, :), v.points(k, :), AbsTol = 1e-12);
+                testCase.verifyEqual(tr.T(end), v.T, AbsTol = 1e-12);
+                [~, U] = ode45(f, [0 v.T], v.points(k, :).', ...
+                    odeset(RelTol = 1e-12, AbsTol = 1e-14));
+                testCase.verifyEqual(tr.X(end, :), U(end, :), AbsTol = 1e-3);
             end
         end
 
@@ -303,7 +309,8 @@ classdef StrogatzFigureTest < matlab.unittest.TestCase
             % At r = 1 the folds of the h branch sit at x = -+1/sqrt(3), so
             % h = +-2/(3 sqrt(3)). The cusp has f_xx = -6x = 0 as well: x = 0, so
             % (h, r) = (0, 0).
-            % The checks on the special points read the refined points (Point.P).
+            % The checks on the special points read the refined points (Point.P), since
+            % Point.Index is the neighbouring grid row.
             b = out.Branch;
             lp = b.points("LP");
             testCase.verifyNumElements(lp, 2);
@@ -330,7 +337,8 @@ classdef StrogatzFigureTest < matlab.unittest.TestCase
             % so tau = (3x^2 - 5 - b x)/u and Delta = 5 b x/u > 0. Hopf has tau = 0:
             % b = 3x - 5/x = 3a/5 - 25/a. At a = 10: x = 2, u = 5, b = 3.5 and
             % omega^2 = Delta = 7.
-            % The checks on the special points read the refined points (Point.P).
+            % The checks on the special points read the refined points (Point.P), since
+            % Point.Index is the neighbouring grid row.
             b = out.Branch;
             hp = b.points("H");
             testCase.verifyNumElements(hp, 1);
@@ -401,10 +409,13 @@ classdef StrogatzFigureTest < matlab.unittest.TestCase
             testCase.verifyEqual(hom.Alpha(1, 2), v.c, AbsTol = 1e-8);
             fprintf("strogatz-info 8.4.3 HOM points %d, last c %.6g mu %.6g, LC index %d\n", ...
                 size(hom.Alpha, 1), hom.Alpha(end, 2), hom.Alpha(end, 1), out.Index);
-            % The bracket in Values holds a sign change at c = 1. At the last HOM
-            % point (c = 1.1) it does not and fzero errors, so only the first point
-            % is checked.
-            for k = 1
+            % The bracket in Values holds a sign change only for rows whose mu is
+            % inside it. The last HOM point (c = 1.1, mu about -0.95268) is outside,
+            % so the check takes the first row and the last row whose mu is at least
+            % bracket(1) + 1e-4, the asserted AbsTol, so the oracle root cannot sit
+            % at the bracket edge.
+            kLast = find(hom.Alpha(:, 1) >= v.bracket(1) + 1e-4, 1, "last");
+            for k = unique([1 kLast])
                 c = hom.Alpha(k, 2);
                 muc = fzero(@(mu) splitDistance(mu, c), v.bracket);
                 fprintf("strogatz-err 8.4.3 c %.6g mu %.10g oracle %.10g\n", c, hom.Alpha(k, 1), muc);

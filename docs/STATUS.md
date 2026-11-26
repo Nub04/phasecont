@@ -1047,40 +1047,40 @@ Rows done: 12 of 12. Moved to gaps.json: none of the 12 slice rows (gaps.json ho
 
 | Row | API family | Plot = false (s) | Plot = true (s) | Oracle error |
 |---|---|---|---|---|
-| 2.2.6 | equilibrium | 0.868 | 1.462 | AbsTol 1e-9 on x*, 1e-8 on the eigenvalue |
-| 9.3.2 | simulate | 0.660 | 0.409 | 3.54e-11 relative, limit 1e-6 |
-| 6.4.7 | PhasePlane findEquilibrium, addTrajectory, showNullclines | 14.651 | n/a, app row (test skipped by design) | AbsTol 1e-9 on equilibria, 1e-6 on eigenvalue real parts |
-| 3.4.2 | continuation EP, Switch BP1; Branch.plot | 1.194 | 0.541 | AbsTol 1e-6 on the branch point, 1e-8 on x^2 = r and the eigenvalues |
-| 3.6.2 | continuation LP; Branch.plot | 0.355 | 0.298 | AbsTol 1e-6 on the fold r values and the cusp, 1e-8 on the fold curve |
-| 8.3.4 | continuation EP, H; Branch.plot | 0.323 | 0.284 | AbsTol 1e-6 on Hopf b and omega, 1e-8 on the Hopf curve |
-| 9.5.1 | equilibrium; continuation EP, LC; Branch.plot | 0.296 | 0.438 | AbsTol 1e-6 on Hopf r and omega, 1e-5 relative on cycle closure |
-| 8.4.3 | continuation LC, HOM; simulate; Trajectory.plot | 2.040 | 4.512 | mu -0.8645452474 against oracle -0.8645452474, AbsTol 1e-4 |
-| 10.1.3 | cobweb; simulate; equilibrium | 0.174 | 0.764 | RelTol 1e-15 on iterates, AbsTol 1e-12 on the fixed point and multiplier |
-| 10.3.4 | continuation EP, Switch BP1, Switch PD1; Branch.plot | 0.336 | 0.278 | AbsTol 1e-6 on the BP and PD r values, 1e-9 on x |
-| 12.2.2 | ensemble | 0.455 | 0.160 | AbsTol 1e-14 on the image grid |
-| 5.2.8 | continuation EP; Branch.classify, tdplot | 0.174 | 0.248 | AbsTol 1e-8 on T and D |
+| 2.2.6 | equilibrium | 0.806 | 1.395 | AbsTol 1e-9 on x*, 1e-8 on the eigenvalue |
+| 9.3.2 | simulate | 0.619 | 0.407 | 3.54e-11 relative, limit 1e-6 |
+| 6.4.7 | PhasePlane findEquilibrium, addTrajectory, showNullclines | 14.349 | n/a, app row (test skipped by design) | AbsTol 1e-9 on equilibria, 1e-6 on eigenvalue real parts, 1e-3 on the orbit end points against ode45 |
+| 3.4.2 | continuation EP, Switch BP1; Branch.plot | 1.311 | 0.469 | AbsTol 1e-6 on the branch point, 1e-8 on x^2 = r and the eigenvalues |
+| 3.6.2 | continuation LP; Branch.plot | 0.376 | 0.283 | AbsTol 1e-6 on the fold h values and the cusp, 1e-8 on the fold curve |
+| 8.3.4 | continuation EP, H; Branch.plot | 0.302 | 0.310 | AbsTol 1e-6 on Hopf b and omega, 1e-8 on the Hopf curve, AbsTol 1e-3 on the curve ends |
+| 9.5.1 | equilibrium; continuation EP, LC; Branch.plot | 0.283 | 0.430 | AbsTol 1e-6 on Hopf r and omega, 1e-5 relative on cycle closure, RelTol 1e-3 on the period |
+| 8.4.3 | continuation LC, HOM; simulate; Trajectory.plot | 1.905 | 4.569 | c 1: mu -0.8645452474 against oracle -0.8645452474; c 1.08974: mu -0.9436140749 against oracle -0.9436140749; AbsTol 1e-4 |
+| 10.1.3 | cobweb; simulate; equilibrium | 0.175 | 0.737 | RelTol 1e-15 on iterates, AbsTol 1e-12 on the fixed point and multiplier |
+| 10.3.4 | continuation EP, Switch BP1, Switch PD1; Branch.plot | 0.322 | 0.301 | AbsTol 1e-6 on the BP and PD r values, 1e-9 on x |
+| 12.2.2 | ensemble | 0.453 | 0.184 | AbsTol 1e-14 on the image grid |
+| 5.2.8 | continuation EP; Branch.classify, tdplot | 0.187 | 0.257 | AbsTol 1e-8 on T and D, AbsTol 1e-12 on the plot path |
 
-The times are from one class run in one MATLAB session, so each row includes its own model compile; repeat runs of single rows during Tasks 4 to 13 took 0.12 to 1.85 s with Plot = false and 0.28 to 5.1 s with Plot = true once warm. In this run row 6.4.7 took 14.651 s with Plot = false, which includes building its app and compiling its model for the first time.
+The table is pass 1 of two class runs in one MATLAB session, so each row includes its own model compile. In pass 2 (warm) the rows took 0.087 to 1.764 s with Plot = false and 0.163 to 2.977 s with Plot = true, apart from the 6.4.7 app row, which took 14.349 s in pass 1 and 3.169 s in pass 2 with Plot = false; the 14.349 s includes building its app and compiling its model for the first time. Log: `~/phasecont-wip/strogatz-slice0-fix-run-2026-11-26.txt`.
 
-Whole class on this machine: 43.6 s (test runner total, 28 tests: 12 oracle checks, 11 Plot = true runs, 1 skipped app row, 4 schema and probe tests). CI time: not measured, waits for the push go.
+Whole class on this machine: 42.9 s in pass 1 (test runner total, 28 tests: 12 oracle checks, 11 Plot = true runs, 1 skipped app row, 4 schema and probe tests; 27 passed, 0 failed, 1 incomplete) and 19.0 s in pass 2. CI time: not measured, waits for the push go.
 
-Full MATLAB suite (`buildtool test`, 2026-11-26): 1080 total, 1068 passed, 0 failed, 12 incomplete. Log: `~/phasecont-wip/strogatz-slice0-suite-2026-11-26.txt`.
+Full MATLAB suite (`buildtool test`, 2026-11-26): 1080 total, 1068 passed, 0 failed, 12 incomplete. Log: `~/phasecont-wip/strogatz-slice0-fix-suite-2026-11-26.txt`.
 
 Chosen values (D2), from manifest.json:
 - 2.2.6: x0 = 0.7, window = [-2, 2].
 - 9.3.2: tspan = [0, 50], relTol = 1e-10, absTol = 1e-12.
 - 6.4.7: points = [[0.1, 0.1], [0.1, 1.9], [2.9, 0.1], [0.9, 1.1]], window = [0, 3.5, 0, 2.5], T = 20.
-- 3.4.2: r0 = -1, x0 = 0, bounds = [-1, 1], hmax = 0.05, x1 = -1, r1 = 1, bounds1 = [-1, 1.5].
+- 3.4.2: r0 = -1, x0 = 0, bounds = [-1, 1], hmax = 0.05, x1 = -1, r1 = 1, bounds1 = [-1, 1.5], direction1 = -1.
 - 3.6.2: h0 = 0, r0 = 1, x0 = -1, hBounds = [-1, 1], rBounds = [-0.5, 1.5], direction = 1.
 - 8.3.4: a0 = 10, b0 = 2, x0 = [2, 5], bBounds = [2, 5], curveBounds = [0.5, 10], directions = [1, -1].
 - 9.5.1: r0 = 20, guess = [7, 7, 19], epBounds = [20, 30], ntst = 40, ncol = 4, lcBounds = [13, 25], direction = 1, maxSteps = 70.
-- 8.4.3: mu0 = -1.5, x0 = [1, 0], epBounds = [-1.5, -0.5], ntst = 80, ncol = 4, hmax = 0.05, maxNewton = 15, maxSteps = 1700, periodT = 50, homBounds = [0.9, 1.1], homHmax = 0.01, bracket = [-0.95, -0.8], panels = [-0.92, -0.8], starts = [[1.1, 0], [0.01, 0.01]], T = 30.
+- 8.4.3: mu0 = -1.5, x0 = [1, 0], epBounds = [-1.5, -0.5], ntst = 80, ncol = 4, hmax = 0.05, maxNewton = 15, maxSteps = 1700, periodT = 50, homBounds = [0.9, 1.1], homHmax = 0.01, bracket = [-0.95, -0.8], panels = [-0.92, -0.8], starts = [[1.1, 0], [0.01, 0.01]], T = 15.
 - 10.1.3: x0 = 1, N = 20, guess = 0.7.
 - 10.3.4: r0 = 0.5, x0 = 0, bounds = [0.5, 2], r1 = 2.5, x1 = 0.6, bounds1 = [2.5, 3.6], hmax = 0.05.
 - 12.2.2: box = [-1.5, 1.5, -0.4, 0.4], n = 100, steps = 1.
 - 5.2.8: k = 1, c0 = -3, x0 = [0, 0], bounds = [-3, 3], direction = 1.
 
-Proposed time budget for the class: 90 s, which is twice the measured 43.6 s (87.2 s) rounded up to the next 10 s. The measured spread between a cold single row (up to 14.7 s) and a warm one (0.12 to 1.85 s with Plot = false) is why a factor of 2 is the proposal. Owner signs.
+Proposed time budget for the class: 90 s, which is twice the measured 42.9 s (85.8 s) rounded up to the next 10 s. The measured spread between a cold single row (up to 14.3 s, the 6.4.7 app row in pass 1) and a warm one (0.087 to 3.169 s with Plot = false in pass 2) is why a factor of 2 is the proposal. Owner signs.
 
 ## Roadmap (2026-11-13)
 
