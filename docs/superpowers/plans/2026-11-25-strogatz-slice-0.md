@@ -22,7 +22,7 @@
 - Done rule: a row is done when its script runs from a clean session and its check passes. A row that needs a missing feature moves to `gaps.json` with a reason. A PhaseCont defect makes the row `"blocked: <item>"` and goes to the owner. No workarounds.
 - No public API change, no C ABI change, no new dependency, no install.
 - Writing: no em dashes, plain verbs, nub-humanizer in embedded mode for comments and commit messages.
-- Commits: local only, on `strogatz-figures`, `git add` by path (never `CLAUDE.md`), identity `git -c user.name=Nubayat -c user.email=nubayata@gmail.com commit`, imperative subject of 72 characters or fewer, no AI attribution of any kind. No push.
+- Commits: local only, on `strogatz-figures`, `git add` by path (never `CLAUDE.md`), identity `git -c user.name=Nubayat commit`, imperative subject of 72 characters or fewer, no AI attribution of any kind. No push.
 - Before every commit, in the worktree: `export CARGO_TARGET_DIR=$PWD/target CARGO_BUILD_JOBS=4 CUDA_VISIBLE_DEVICES=""` then `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo deny check` (baseline 2981 passed, 0 failed, 23 ignored; no Rust changes are expected).
 - Subagents, if used: set `model` to `sonnet` or `haiku` on every one. Give them no book content.
 
@@ -809,7 +809,7 @@ Run the four checks, then:
 git add tests/StrogatzFigureTest.m books/strogatz/manifest.json books/strogatz/gaps.json \
   books/strogatz/figures/strogatzModel.m books/strogatz/figures/fig_2_2_6.m \
   books/strogatz/models/cosine_flow.ode
-git -c user.name=Nubayat -c user.email=nubayata@gmail.com commit -m "Add the Strogatz figure test class and figure 2.2.6"
+git -c user.name=Nubayat commit -m "Add the Strogatz figure test class and figure 2.2.6"
 ```
 
 ---
@@ -906,7 +906,7 @@ Run the four checks, then:
 ```bash
 git add books/strogatz/figures/fig_9_3_2.m books/strogatz/models/lorenz.ode \
   books/strogatz/manifest.json tests/StrogatzFigureTest.m
-git -c user.name=Nubayat -c user.email=nubayata@gmail.com commit -m "Add Strogatz figure 9.3.2 (Lorenz orbit)"
+git -c user.name=Nubayat commit -m "Add Strogatz figure 9.3.2 (Lorenz orbit)"
 ```
 
 ---
@@ -1024,7 +1024,7 @@ Run the four checks, then:
 ```bash
 git add books/strogatz/figures/fig_6_4_7.m books/strogatz/models/rabbits_sheep.ode \
   books/strogatz/manifest.json tests/StrogatzFigureTest.m
-git -c user.name=Nubayat -c user.email=nubayata@gmail.com commit -m "Add Strogatz figure 6.4.7 (PhasePlane app)"
+git -c user.name=Nubayat commit -m "Add Strogatz figure 6.4.7 (PhasePlane app)"
 ```
 
 ---
@@ -1120,7 +1120,7 @@ Run the four checks, then:
 ```bash
 git add books/strogatz/figures/fig_3_4_2.m books/strogatz/models/pitchfork.ode \
   books/strogatz/manifest.json tests/StrogatzFigureTest.m
-git -c user.name=Nubayat -c user.email=nubayata@gmail.com commit -m "Add Strogatz figure 3.4.2 (pitchfork branch switch)"
+git -c user.name=Nubayat commit -m "Add Strogatz figure 3.4.2 (pitchfork branch switch)"
 ```
 
 ---
@@ -1219,7 +1219,7 @@ Run the four checks, then:
 ```bash
 git add books/strogatz/figures/fig_3_6_2.m books/strogatz/models/imperfect.ode \
   books/strogatz/manifest.json tests/StrogatzFigureTest.m
-git -c user.name=Nubayat -c user.email=nubayata@gmail.com commit -m "Add Strogatz figure 3.6.2 (fold curve and cusp)"
+git -c user.name=Nubayat commit -m "Add Strogatz figure 3.6.2 (fold curve and cusp)"
 ```
 
 ---
@@ -1326,7 +1326,7 @@ Run the four checks, then:
 ```bash
 git add books/strogatz/figures/fig_8_3_4.m books/strogatz/models/chemical_oscillator.ode \
   books/strogatz/manifest.json tests/StrogatzFigureTest.m
-git -c user.name=Nubayat -c user.email=nubayata@gmail.com commit -m "Add Strogatz figure 8.3.4 (Hopf curve)"
+git -c user.name=Nubayat commit -m "Add Strogatz figure 8.3.4 (Hopf curve)"
 ```
 
 ---
@@ -1440,7 +1440,7 @@ end
 Run the four checks, then:
 ```bash
 git add books/strogatz/figures/fig_9_5_1.m books/strogatz/manifest.json tests/StrogatzFigureTest.m
-git -c user.name=Nubayat -c user.email=nubayata@gmail.com commit -m "Add Strogatz figure 9.5.1 (Lorenz cycles from Hopf)"
+git -c user.name=Nubayat commit -m "Add Strogatz figure 9.5.1 (Lorenz cycles from Hopf)"
 ```
 
 ---
@@ -1593,7 +1593,7 @@ Run the four checks, then:
 ```bash
 git add books/strogatz/figures/fig_8_4_3.m books/strogatz/models/homoclinic.ode \
   books/strogatz/manifest.json tests/StrogatzFigureTest.m
-git -c user.name=Nubayat -c user.email=nubayata@gmail.com commit -m "Add Strogatz figure 8.4.3 (homoclinic curve)"
+git -c user.name=Nubayat commit -m "Add Strogatz figure 8.4.3 (homoclinic curve)"
 ```
 
 ---
@@ -1686,7 +1686,7 @@ Run the four checks, then:
 ```bash
 git add books/strogatz/figures/fig_10_1_3.m books/strogatz/models/cosine_map.ode \
   books/strogatz/manifest.json tests/StrogatzFigureTest.m
-git -c user.name=Nubayat -c user.email=nubayata@gmail.com commit -m "Add Strogatz figure 10.1.3 (cobweb of the cosine map)"
+git -c user.name=Nubayat commit -m "Add Strogatz figure 10.1.3 (cobweb of the cosine map)"
 ```
 
 ---
@@ -1799,7 +1799,7 @@ Run the four checks, then:
 ```bash
 git add books/strogatz/figures/fig_10_3_4.m books/strogatz/models/logistic_map.ode \
   books/strogatz/manifest.json tests/StrogatzFigureTest.m
-git -c user.name=Nubayat -c user.email=nubayata@gmail.com commit -m "Add Strogatz figure 10.3.4 (logistic map branches)"
+git -c user.name=Nubayat commit -m "Add Strogatz figure 10.3.4 (logistic map branches)"
 ```
 
 ---
@@ -1885,7 +1885,7 @@ Run the four checks, then:
 ```bash
 git add books/strogatz/figures/fig_12_2_2.m books/strogatz/models/henon_map.ode \
   books/strogatz/manifest.json tests/StrogatzFigureTest.m
-git -c user.name=Nubayat -c user.email=nubayata@gmail.com commit -m "Add Strogatz figure 12.2.2 (Henon map image)"
+git -c user.name=Nubayat commit -m "Add Strogatz figure 12.2.2 (Henon map image)"
 ```
 
 ---
@@ -1989,7 +1989,7 @@ Run the four checks, then:
 ```bash
 git add books/strogatz/figures/fig_5_2_8.m books/strogatz/models/damped_oscillator.ode \
   books/strogatz/manifest.json tests/StrogatzFigureTest.m
-git -c user.name=Nubayat -c user.email=nubayata@gmail.com commit -m "Add Strogatz figure 5.2.8 (trace-determinant path)"
+git -c user.name=Nubayat commit -m "Add Strogatz figure 5.2.8 (trace-determinant path)"
 ```
 
 ---
@@ -2042,7 +2042,7 @@ The proposed budget is a number for the owner to accept or change; no test check
 Run the four checks, then:
 ```bash
 git add docs/STATUS.md
-git -c user.name=Nubayat -c user.email=nubayata@gmail.com commit -m "Report Strogatz slice 0 rows, times and chosen values"
+git -c user.name=Nubayat commit -m "Report Strogatz slice 0 rows, times and chosen values"
 ```
 
 - [ ] **Step 5: Stop at the gate**

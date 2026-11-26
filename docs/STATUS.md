@@ -1080,7 +1080,7 @@ Chosen values (D2), from manifest.json:
 - 12.2.2: box = [-1.5, 1.5, -0.4, 0.4], n = 100, steps = 1.
 - 5.2.8: k = 1, c0 = -3, x0 = [0, 0], bounds = [-3, 3], direction = 1.
 
-Proposed time budget for the class: 90 s, which is twice the measured 42.9 s (85.8 s) rounded up to the next 10 s. The measured spread between a cold single row (up to 14.3 s, the 6.4.7 app row in pass 1) and a warm one (0.087 to 3.169 s with Plot = false in pass 2) is why a factor of 2 is the proposal. Owner signs.
+Proposed time budget for the class: 90 s, which is twice the measured 42.9 s (85.8 s) rounded up to the next 10 s. The measured spread between a cold single row (up to 14.3 s, the 6.4.7 app row in pass 1) and a warm one (0.087 to 3.169 s with Plot = false in pass 2) is why a factor of 2 is the proposal. The owner signed the 90 s budget on 2026-11-26.
 
 ## Roadmap (2026-11-13)
 
