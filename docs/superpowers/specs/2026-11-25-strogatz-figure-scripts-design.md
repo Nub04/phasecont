@@ -1,6 +1,6 @@
 # Strogatz figure scripts (sub-project A, part 4b): design
 
-Date: 2026-11-25. State: draft for owner review. No plan and no code yet.
+Date: 2026-11-25. State: decisions D1 to D5 ruled on 2026-11-25 (see "Decisions"). Slice 0 plan next; no code yet.
 
 ## Goal
 
@@ -12,17 +12,17 @@ The triage read every figure in the book (PDF on the owner's machine, never copi
 
 | Class | Rows |
 |---|---|
-| Covered by today's API | 155 (129 computed, 25 sketch, 1 schematic) |
-| Gap, needs a feature PhaseCont lacks | 62 |
+| Covered by today's API | 153 (127 computed, 25 sketch, 1 schematic) |
+| Gap, needs a feature PhaseCont lacks | 64 |
 | n/a, nothing to compute | 12 |
 
-The covered rows per chapter: ch1 1, ch2 13, ch3 31, ch4 1, ch5 8, ch6 20, ch7 16, ch8 23, ch9 12, ch10 18, ch12 10, ch13 2.
+The covered rows per chapter: ch1 1, ch2 13, ch3 31, ch4 1, ch5 8, ch6 20, ch7 16, ch8 23, ch9 12, ch10 18, ch12 10.
 
-The covered rows name 148 distinct model strings. Grouped by hand, they come to about 65 to 75 model families, for example the Lorenz equations, the logistic flow and map, the saddle-node, transcritical and pitchfork normal forms, the imperfect bifurcation, the budworm model, the bead on a rotating hoop, the harmonic, damped and van der Pol oscillators, the rabbits and sheep model, the pendulum, the glycolysis model, the genetic switch, the chemical oscillator, the driven pendulum, the Rossler equations, the Henon, baker, tent and sine maps, the forced Duffing equation and the Kuramoto model.
+The covered rows name 146 distinct model strings. Grouped by hand, they come to about 65 to 75 model families, for example the Lorenz equations, the logistic flow and map, the saddle-node, transcritical and pitchfork normal forms, the imperfect bifurcation, the budworm model, the bead on a rotating hoop, the harmonic, damped and van der Pol oscillators, the rabbits and sheep model, the pendulum, the glycolysis model, the genetic switch, the chemical oscillator, the driven pendulum, the Rossler equations, the Henon, baker, tent and sine maps and the forced Duffing equation.
 
-The API calls the covered rows need, counted over the rows (a row can need several): `simulate` 69, `PhasePlane` 58, `continuation` 26, `equilibrium` 24, `cobweb` 13, `ensemble` 6, `tdplot` 1. 24 rows also need some MATLAB glue (see the glue rule).
+The API calls the covered rows need, counted over the rows (a row can need several): `simulate` 67, `PhasePlane` 58, `continuation` 26, `equilibrium` 24, `cobweb` 13, `ensemble` 6, `tdplot` 1. 22 rows also need some MATLAB glue (see the glue rule).
 
-The 155 rows are an upper bound. A row counts as done only when its script runs and its check passes.
+The 153 rows are an upper bound. A row counts as done only when its script runs and its check passes.
 
 ## Rules
 
@@ -35,7 +35,7 @@ The 155 rows are an upper bound. A row counts as done only when its script runs 
 
 ## Layout
 
-Recommended (decision D1): a top-level folder that the `.mltbx` does not ship.
+Ruled (decision D1): a top-level folder that the `.mltbx` does not ship.
 
 ```
 books/strogatz/
@@ -118,19 +118,20 @@ Slice 0 ends with a short report for the owner: rows done, rows moved to the gap
 ## Known blocks and deviations
 
 - **2.5.1** (x' = x^(1/3)) is blocked by the fractional-power item in STATUS: at the singular point the DAG and the JIT can give NaN where the fallback gives a finite value. The row waits for that fix.
-- **Kuramoto rows 13.2.3 and 13.2.4.** The `.ode` reader has no `sum(..)of(..)`. A script could write the model text for N = 1000 oscillators as a string and load it. That is string building, not integration, so it fits the glue rule as written, but it is a generated model, not a model file (decision D4).
 - **`x*y<=0`.** PhaseCont reads it as `x*(y<=0)`, as XPPAUT does, and warns. Our model files write the parentheses they mean, so this is not a block (decision D5).
 
 ## Out of scope
 
-- The 62 gap rows. By reason: 1-D phase line plot 10, fractal set construction 9, angle-valued state on a cylinder or torus 7, Poincare map 5, plot on the circle, cylinder or torus 5, potential or energy surface 4, potential plot V(x) 3, phase plot on the circle 3, period or time-average sweep 3, orbit diagram 3, Lyapunov exponent 2, correlation dimension 2, and one each of a model-term plot, a Lorenz map of successive maxima, a global unstable manifold, an escape-time image, a closed-curve vector plot and a basin of attraction. Building any of these is a feature with its own spec.
+- The 64 gap rows. By reason: 1-D phase line plot 10, fractal set construction 9, angle-valued state on a cylinder or torus 7, Poincare map 5, plot on the circle, cylinder or torus 5, potential or energy surface 4, potential plot V(x) 3, phase plot on the circle 3, period or time-average sweep 3, orbit diagram 3, Lyapunov exponent 2, correlation dimension 2, and one each of a model-term plot, a Lorenz map of successive maxima, a global unstable manifold, an escape-time image, a closed-curve vector plot and a basin of attraction. The two Kuramoto rows (13.2.3, 13.2.4) are on the list too, because the `.ode` reader has no `sum(..)of(..)` (decision D4). Building any of these is a feature with its own spec.
 - Kuznetsov and Ermentrout. They follow the same design once the owner supplies the PDFs.
 - Changes to the public API, the C ABI or a dependency.
 
-## Owner decisions
+## Decisions
 
-- **D1. Location.** Recommended: `books/strogatz/` at the repo root, not shipped. Option: ship a subset under `toolbox/examples/` later.
-- **D2. Chosen values.** 47 rows use at least one value the book does not print: 1.1.1, 2.4.1, 2.5.1, 3.1.3, 3.4.8, 3.5.8, 4.3.6, 5.1.2, 5.3.1, 6.3.2, 6.7.7, 7.1.3, 7.3.4, 7.5.1, 7.6.1, 8.1.1, 8.1.6, 8.2.3, 8.2.5, 8.3.5, 8.4.2, 8.5.1, 8.7.3, 9.2.5, 9.4.1, 9.5.1, 9.5.2, 9.5.4, 10.1.2, 10.2.1, 10.2.2, 10.3.1, 10.3.2, 10.3.4, 10.4.3, 10.4.4, 10.5.1, 10.6.1, 12.1.4, 12.1.5, 12.2.2, 12.2.3, 12.5.3, 12.5.5, 12.5.8, 13.2.3, 13.2.4. Recommended: accept chosen values that the manifest marks as chosen. Option: drop those rows.
-- **D3. The 12 n/a rows** (3.5.7, 4.2.1, 4.5.2, 6.7.6, 9.2.3, 9.6.2, 10.7.2, 10.7.3, 11.5.4, 12.2.1, 13.2.5, 13.5.3) are cartoons, measured data or diagrams without numbers. Recommended: list them in `gaps.json` as n/a and build nothing.
-- **D4. Kuramoto.** Recommended: allow the generated N-oscillator model text for 13.2.3 and 13.2.4. Option: move both rows to the gap list until the reader has `sum(..)of(..)`.
-- **D5. `x*y<=0`.** Recommended: treat the XPPAUT reading as correct and write parentheses in our files. Option: make it a parse error (a behavior change, so not in this part).
+The owner delegated D1 to D5 to the advisor on 2026-11-25. The rulings below stand until the owner changes them.
+
+- **D1. Location.** Ruled: `books/strogatz/` at the repo root, not shipped. A subset under `toolbox/examples/` stays a later option.
+- **D2. Chosen values.** Ruled: accept chosen values, each marked `"chosen"` in the manifest. 45 rows use at least one value the book does not print: 1.1.1, 2.4.1, 2.5.1, 3.1.3, 3.4.8, 3.5.8, 4.3.6, 5.1.2, 5.3.1, 6.3.2, 6.7.7, 7.1.3, 7.3.4, 7.5.1, 7.6.1, 8.1.1, 8.1.6, 8.2.3, 8.2.5, 8.3.5, 8.4.2, 8.5.1, 8.7.3, 9.2.5, 9.4.1, 9.5.1, 9.5.2, 9.5.4, 10.1.2, 10.2.1, 10.2.2, 10.3.1, 10.3.2, 10.3.4, 10.4.3, 10.4.4, 10.5.1, 10.6.1, 12.1.4, 12.1.5, 12.2.2, 12.2.3, 12.5.3, 12.5.5, 12.5.8. Three of them (9.5.1, 10.3.4, 12.2.2) are slice 0 rows, so the slice 0 report lists every chosen value it used.
+- **D3. The 12 n/a rows** (3.5.7, 4.2.1, 4.5.2, 6.7.6, 9.2.3, 9.6.2, 10.7.2, 10.7.3, 11.5.4, 12.2.1, 13.2.5, 13.5.3) are cartoons, measured data or diagrams without numbers. Ruled: list them in `gaps.json` as n/a and build nothing.
+- **D4. Kuramoto.** Ruled: 13.2.3 and 13.2.4 go on the gap list until the `.ode` reader has `sum(..)of(..)`. A model text generated in MATLAB is not a model file (rule 3), and the cost of N = 1000 states was not measured.
+- **D5. `x*y<=0`.** Ruled: the XPPAUT reading is correct, and our model files write the parentheses they mean. Making it a parse error is a behavior change and not part of this work.
