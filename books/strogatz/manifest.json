@@ -140,5 +140,17 @@
     "source": {"a": "stated", "b": "stated", "box": "chosen", "n": "chosen", "steps": "chosen"},
     "check": "image of the start grid against the map formula, AbsTol 1e-14",
     "state": "done"
+  },
+  {
+    "figure": "5.2.8",
+    "edition": 3,
+    "model": "damped_oscillator.ode",
+    "script": "fig_5_2_8",
+    "api": ["continuation", "Branch.classify", "Branch.tdplot"],
+    "values": {"k": 1, "c0": -3, "x0": [0, 0], "bounds": [-3, 3], "direction": 1},
+    "source": {"k": "chosen", "c0": "chosen", "x0": "chosen", "bounds": "chosen",
+               "direction": "chosen"},
+    "check": "tau = -c and Delta = 1; types by region of c; tdplot path and parabola tau^2 = 4 Delta",
+    "state": "done"
   }
 ]

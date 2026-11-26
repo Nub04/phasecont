@@ -478,6 +478,40 @@ classdef StrogatzFigureTest < matlab.unittest.TestCase
             testCase.verifySize(out.Result.Final, size(X0));
             testCase.verifyEqual(out.Result.Final, F, AbsTol = 1e-14);
         end
+
+        function check_fig_5_2_8(testCase, out)
+            % x' = y, y' = -k x - c y has J = [0 1; -k -c], so tau = -c and
+            % Delta = k = 1. The type follows from tau^2 - 4 Delta = c^2 - 4 and the
+            % sign of tau: c < -2 unstable node, -2 < c < 0 unstable spiral,
+            % 0 < c < 2 stable spiral, c > 2 stable node. Points within 1e-6 of
+            % c = -2, 0, 2 sit on a boundary and are not checked for type.
+            % tdplot must draw the path at (tau, Delta), the parabola Delta = tau^2/4
+            % and the two axis lines.
+            br = out.Branch;
+            tbl = br.classify();
+            c = tbl.Alpha;
+            testCase.verifyEqual(tbl.T, -c, AbsTol = 1e-8);
+            testCase.verifyEqual(tbl.D, ones(size(c)), AbsTol = 1e-8);
+            type = string(tbl.Type);
+            region = {c < -2 - 1e-6, abs(c + 1) < 1 - 1e-6, abs(c - 1) < 1 - 1e-6, c > 2 + 1e-6};
+            names = ["unstable node" "unstable spiral" "stable spiral" "stable node"];
+            for k = 1:4
+                testCase.verifyNotEmpty(type(region{k}), names(k));
+                testCase.verifyTrue(all(type(region{k}) == names(k)), names(k));
+            end
+            f = figure(Visible = "off");
+            testCase.addTeardown(@() delete(f));
+            ax = axes(f);
+            br.tdplot(Parent = ax);
+            path = findall(ax, "Tag", "pc-td-path");
+            testCase.verifyNumElements(path, 1);
+            testCase.verifyEqual(path.XData(:), tbl.T, AbsTol = 1e-12);
+            testCase.verifyEqual(path.YData(:), tbl.D, AbsTol = 1e-12);
+            parabola = findall(ax, "Tag", "pc-td-parabola");
+            testCase.verifyNumElements(parabola, 1);
+            testCase.verifyEqual(parabola.YData, parabola.XData.^2/4, AbsTol = 1e-12);
+            testCase.verifyNumElements(findall(ax, "Tag", "pc-td-axis"), 2);
+        end
     end
 end
 
