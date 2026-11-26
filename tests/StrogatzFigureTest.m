@@ -320,6 +320,32 @@ classdef StrogatzFigureTest < matlab.unittest.TestCase
             testCase.verifyEqual(cp.P(c.FreeIndex).', [0 0], AbsTol = 1e-6);
             testCase.verifyTrue(any(x < 0) && any(x > 0), "The curve passes the cusp");
         end
+
+        function check_fig_8_3_4(testCase, out)
+            % f = a - x - 4xy/u, g = b x (1 - y/u), u = 1 + x^2. g = 0 with x > 0
+            % gives y = u; then f = a - 5x = 0, so x* = a/5 and y* = 1 + a^2/25.
+            % At the equilibrium:
+            %   f_x = -1 - 4y(1 - x^2)/u^2 = (3x^2 - 5)/u,   f_y = -4x/u,
+            %   g_x = b - b y (1 - x^2)/u^2 = 2b x^2/u,      g_y = -b x/u,
+            % so tau = (3x^2 - 5 - b x)/u and Delta = 5 b x/u > 0. Hopf has tau = 0:
+            % b = 3x - 5/x = 3a/5 - 25/a. At a = 10: x = 2, u = 5, b = 3.5 and
+            % omega^2 = Delta = 7.
+            % The checks on the special points read the refined points (Point.P).
+            b = out.Branch;
+            hp = b.points("H");
+            testCase.verifyNumElements(hp, 1);
+            testCase.verifyEqual(hp.P(b.FreeIndex), 3.5, AbsTol = 1e-6);
+            testCase.verifyEqual(hp.Data.omega, sqrt(7), AbsTol = 1e-6);
+            a = vertcat(out.Curves.Alpha);
+            U = vertcat(out.Curves.U);
+            testCase.verifyEqual(a(:, 2), 3*a(:, 1)/5 - 25./a(:, 1), AbsTol = 1e-8);
+            testCase.verifyEqual(U(:, 1), a(:, 1)/5, AbsTol = 1e-8);
+            testCase.verifyEqual(U(:, 2), 1 + a(:, 1).^2/25, AbsTol = 1e-8);
+            % b = 0.5 and b = 10 bound the curve: 3a^2/5 - b a - 25 = 0 gives
+            % a = (5b + sqrt(25b^2 + 1500))/6, so a runs from 6.885 to 18.87.
+            ends = (5*[0.5 10] + sqrt(25*[0.5 10].^2 + 1500))/6;
+            testCase.verifyEqual([min(a(:, 1)) max(a(:, 1))], ends, AbsTol = 1e-3);
+        end
     end
 end
 

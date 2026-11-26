@@ -59,5 +59,18 @@
                "rBounds": "chosen", "direction": "chosen"},
     "check": "fold curve r = 3x^2, h = -2x^3, 27h^2 = 4r^3; cusp at the origin",
     "state": "done"
+  },
+  {
+    "figure": "8.3.4",
+    "edition": 3,
+    "model": "chemical_oscillator.ode",
+    "script": "fig_8_3_4",
+    "api": ["continuation", "Type H", "Branch.plot"],
+    "values": {"a0": 10, "b0": 2, "x0": [2, 5], "bBounds": [2, 5], "curveBounds": [0.5, 10],
+               "directions": [1, -1]},
+    "source": {"a0": "chosen", "b0": "chosen", "x0": "chosen", "bBounds": "chosen",
+               "curveBounds": "chosen", "directions": "chosen"},
+    "check": "Hopf at b = 3.5, omega sqrt(7); Hopf curve b = 3a/5 - 25/a, x* = a/5",
+    "state": "done"
   }
 ]
