@@ -277,6 +277,25 @@ classdef StrogatzFigureTest < matlab.unittest.TestCase
                 testCase.verifyLessThan(d, 1e-3);
             end
         end
+
+        function check_fig_3_4_2(testCase, out)
+            % f(x, r) = r x - x^3, f_x = r - 3x^2, f_r = x. On x = 0, f_x = r and
+            % f_r = 0, so both vanish at (0, 0): a branch point at r = 0. The other
+            % branch through it is r = x^2, where f_x = r - 3r = -2r.
+            brs = out.Branches;
+            bp = brs(1).points("BP");
+            testCase.verifyNumElements(bp, 1);
+            % Point.Index is the grid row next to the point, so read the refined parameters.
+            testCase.verifyEqual(bp.P(brs(1).FreeIndex), 0, AbsTol = 1e-6);
+            testCase.verifyLessThan(max(abs(brs(1).U)), 1e-10);
+            testCase.verifyEqual(brs(1).Eigenvalues, brs(1).Alpha, AbsTol = 1e-8);
+            x = vertcat(brs(2:end).U);
+            r = vertcat(brs(2:end).Alpha);
+            lambda = vertcat(brs(2:end).Eigenvalues);
+            testCase.verifyEqual(x.^2, r, AbsTol = 1e-8);
+            testCase.verifyEqual(lambda, -2*r, AbsTol = 1e-8);
+            testCase.verifyTrue(any(x < -0.9) && any(x > 0.9), "Both halves of r = x^2");
+        end
     end
 end
 

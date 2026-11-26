@@ -34,5 +34,18 @@
     "source": {"points": "chosen", "window": "chosen", "T": "chosen"},
     "check": "four equilibria, eigenvalues against eig of a central-difference Jacobian, marker counts",
     "state": "done"
+  },
+  {
+    "figure": "3.4.2",
+    "edition": 3,
+    "model": "pitchfork.ode",
+    "script": "fig_3_4_2",
+    "api": ["continuation", "Switch BP1", "Branch.plot"],
+    "values": {"r0": -1, "x0": 0, "bounds": [-1, 1], "hmax": 0.05,
+               "x1": -1, "r1": 1, "bounds1": [-1, 1.5]},
+    "source": {"r0": "chosen", "x0": "chosen", "bounds": "chosen", "hmax": "chosen",
+               "x1": "chosen", "r1": "chosen", "bounds1": "chosen"},
+    "check": "branch point at r = 0; x = 0 with eigenvalue r; x^2 = r with eigenvalue -2r",
+    "state": "done"
   }
 ]
