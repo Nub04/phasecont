@@ -105,5 +105,16 @@
                "starts": "chosen", "T": "chosen"},
     "check": "Hopf at mu = -1, omega 1; homoclinic mu against an ode45 manifold-splitting oracle",
     "state": "done"
+  },
+  {
+    "figure": "10.1.3",
+    "edition": 3,
+    "model": "cosine_map.ode",
+    "script": "fig_10_1_3",
+    "api": ["cobweb", "simulate", "equilibrium"],
+    "values": {"x0": 1, "N": 20, "guess": 0.7},
+    "source": {"x0": "chosen", "N": "chosen", "guess": "chosen"},
+    "check": "each iterate is cos of the one before; fixed point by fzero, multiplier -sin x*",
+    "state": "done"
   }
 ]

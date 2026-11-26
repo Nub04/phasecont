@@ -411,6 +411,28 @@ classdef StrogatzFigureTest < matlab.unittest.TestCase
                 testCase.verifyEqual(hom.Alpha(k, 1), muc, AbsTol = 1e-4);
             end
         end
+
+        function check_fig_10_1_3(testCase, out)
+            % The map is x(n+1) = cos x(n). Each returned iterate must be the cosine of
+            % the one before. A fixed point solves x = cos x (oracle: fzero), and its
+            % multiplier is the derivative -sin x*. cobweb must return the same
+            % iterates as simulate over [0 N] and draw its four tagged parts.
+            v = out.Values;
+            x = out.Trajectory.X(:, 1);
+            testCase.verifyNumElements(x, v.N + 1);
+            testCase.verifyEqual(x(2:end), cos(x(1:end-1)), RelTol = 1e-15);
+            xs = fzero(@(x) x - cos(x), v.guess);
+            testCase.verifyEqual(out.Point.U, xs, AbsTol = 1e-12);
+            testCase.verifyEqual(out.Point.Eigenvalues, -sin(xs), AbsTol = 1e-12);
+            f = figure(Visible = "off");
+            testCase.addTeardown(@() delete(f));
+            ax = axes(f);
+            [~, tr] = phasecont.cobweb(out.Model, v.x0, v.N, Parent = ax);
+            testCase.verifyEqual(tr.X, out.Trajectory.X);
+            for tag = ["pc-cobweb-graph" "pc-cobweb-diagonal" "pc-cobweb" "pc-start"]
+                testCase.verifyNotEmpty(findall(ax, "Tag", tag), tag);
+            end
+        end
     end
 end
 
