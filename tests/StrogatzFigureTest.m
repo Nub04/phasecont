@@ -296,6 +296,30 @@ classdef StrogatzFigureTest < matlab.unittest.TestCase
             testCase.verifyEqual(lambda, -2*r, AbsTol = 1e-8);
             testCase.verifyTrue(any(x < -0.9) && any(x > 0.9), "Both halves of r = x^2");
         end
+
+        function check_fig_3_6_2(testCase, out)
+            % f(x) = h + r x - x^3. A fold has f = 0 and f_x = r - 3x^2 = 0, so
+            % r = 3x^2 and h = -r x + x^3 = -2x^3. Then 27 h^2 = 108 x^6 = 4 r^3.
+            % At r = 1 the folds of the h branch sit at x = -+1/sqrt(3), so
+            % h = +-2/(3 sqrt(3)). The cusp has f_xx = -6x = 0 as well: x = 0, so
+            % (h, r) = (0, 0).
+            % The checks on the special points read the refined points (Point.P).
+            b = out.Branch;
+            lp = b.points("LP");
+            testCase.verifyNumElements(lp, 2);
+            testCase.verifyEqual(sort(arrayfun(@(p) p.P(b.FreeIndex), lp(:))), [-1; 1] * 2/(3*sqrt(3)), AbsTol = 1e-6);
+            c = out.Curve;
+            x = c.U;
+            h = c.Alpha(:, 1);
+            r = c.Alpha(:, 2);
+            testCase.verifyEqual(r, 3*x.^2, AbsTol = 1e-8);
+            testCase.verifyEqual(h, -2*x.^3, AbsTol = 1e-8);
+            testCase.verifyEqual(27*h.^2, 4*r.^3, AbsTol = 1e-8);
+            cp = c.points("CP");
+            testCase.verifyNumElements(cp, 1);
+            testCase.verifyEqual(cp.P(c.FreeIndex).', [0 0], AbsTol = 1e-6);
+            testCase.verifyTrue(any(x < 0) && any(x > 0), "The curve passes the cusp");
+        end
     end
 end
 

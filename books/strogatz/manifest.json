@@ -47,5 +47,17 @@
                "x1": "chosen", "r1": "chosen", "bounds1": "chosen"},
     "check": "branch point at r = 0; x = 0 with eigenvalue r; x^2 = r with eigenvalue -2r",
     "state": "done"
+  },
+  {
+    "figure": "3.6.2",
+    "edition": 3,
+    "model": "imperfect.ode",
+    "script": "fig_3_6_2",
+    "api": ["continuation", "Type LP", "Branch.plot"],
+    "values": {"h0": 0, "r0": 1, "x0": -1, "hBounds": [-1, 1], "rBounds": [-0.5, 1.5], "direction": 1},
+    "source": {"h0": "chosen", "r0": "chosen", "x0": "chosen", "hBounds": "chosen",
+               "rBounds": "chosen", "direction": "chosen"},
+    "check": "fold curve r = 3x^2, h = -2x^3, 27h^2 = 4r^3; cusp at the origin",
+    "state": "done"
   }
 ]
