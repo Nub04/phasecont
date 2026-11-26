@@ -1,0 +1,13 @@
+[
+  {
+    "figure": "2.2.6",
+    "edition": 3,
+    "model": "cosine_flow.ode",
+    "script": "fig_2_2_6",
+    "api": ["equilibrium"],
+    "values": {"x0": 0.7, "window": [-2, 2]},
+    "source": {"x0": "chosen", "window": "chosen"},
+    "check": "fzero root of x - cos x; eigenvalue 1 + sin x*, unstable",
+    "state": "done"
+  }
+]
