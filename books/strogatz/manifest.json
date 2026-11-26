@@ -72,5 +72,20 @@
                "curveBounds": "chosen", "directions": "chosen"},
     "check": "Hopf at b = 3.5, omega sqrt(7); Hopf curve b = 3a/5 - 25/a, x* = a/5",
     "state": "done"
+  },
+  {
+    "figure": "9.5.1",
+    "edition": 3,
+    "model": "lorenz.ode",
+    "script": "fig_9_5_1",
+    "api": ["equilibrium", "continuation", "Type LC", "Branch.plot"],
+    "values": {"sigma": 10, "b": 2.6666666666666665, "r0": 20, "guess": [7, 7, 19],
+               "epBounds": [20, 30], "ntst": 40, "ncol": 4, "lcBounds": [13, 25],
+               "direction": 1, "maxSteps": 70},
+    "source": {"sigma": "stated", "b": "stated", "r0": "chosen", "guess": "chosen",
+               "epBounds": "chosen", "ntst": "chosen", "ncol": "chosen", "lcBounds": "chosen",
+               "direction": "chosen", "maxSteps": "chosen"},
+    "check": "Hopf at r = 470/19 with omega^2 = 1760/19; a cycle checked by ode45 closure",
+    "state": "done"
   }
 ]

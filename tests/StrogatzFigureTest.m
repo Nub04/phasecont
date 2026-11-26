@@ -346,6 +346,42 @@ classdef StrogatzFigureTest < matlab.unittest.TestCase
             ends = (5*[0.5 10] + sqrt(25*[0.5 10].^2 + 1500))/6;
             testCase.verifyEqual([min(a(:, 1)) max(a(:, 1))], ends, AbsTol = 1e-3);
         end
+
+        function check_fig_9_5_1(testCase, out)
+            % At C+- = (+-sqrt(b(r-1)), +-sqrt(b(r-1)), r-1) the Jacobian of the
+            % Lorenz equations has the characteristic polynomial
+            %   lambda^3 + (sigma + b + 1) lambda^2 + b(sigma + r) lambda + 2 b sigma (r - 1).
+            % A cubic l^3 + p l^2 + q l + s has roots +-i omega when p q = s, with
+            % omega^2 = q. Here p q = s reads (sigma + b + 1)(sigma + r) = 2 sigma (r - 1),
+            % so r_H = sigma (sigma + b + 3)/(sigma - b - 1). With sigma = 10 and
+            % b = 8/3: r_H = 470/19, omega^2 = b (sigma + r_H) = 1760/19 and the third
+            % root is -p = -41/3. The first cycles have period near 2 pi/omega.
+            % Cycle oracle: ode45 from the first mesh point over one period must close
+            % the orbit and pass the mesh midpoint.
+            v = out.Values;
+            rH = v.sigma*(v.sigma + v.b + 3)/(v.sigma - v.b - 1);
+            omega = sqrt(v.b*(v.sigma + rH));
+            b = out.Branch;
+            hp = b.points("H");
+            testCase.verifyNumElements(hp, 1);
+            % The check reads the refined point (Point.P), since Point.Index is the
+            % neighbouring grid row.
+            testCase.verifyEqual(hp.P(b.FreeIndex), rH, AbsTol = 1e-6);
+            testCase.verifyEqual(hp.Data.omega, omega, AbsTol = 1e-6);
+            lc = out.Cycles;
+            testCase.verifyEqual(lc.Period(1), 2*pi/omega, RelTol = 1e-3);
+            i = find(lc.Alpha < rH - 1, 1);
+            testCase.verifyNotEmpty(i, "The cycles reach r < r_H - 1");
+            [t, x] = lc.cycle(i);
+            r = lc.Alpha(i);
+            f = @(s, u) [v.sigma*(u(2) - u(1)); r*u(1) - u(2) - u(1)*u(3); u(1)*u(2) - v.b*u(3)];
+            mid = ceil(numel(t)/2);
+            [~, U] = ode45(f, [0 t(mid) t(end)], x(1, :)', odeset(RelTol = 1e-12, AbsTol = 1e-12));
+            scale = norm(x(1, :));
+            testCase.verifyLessThan(norm(U(end, :) - x(1, :))/scale, 1e-5, "Orbit closes");
+            testCase.verifyLessThan(norm(U(2, :) - x(mid, :))/scale, 1e-5, "Orbit passes the midpoint");
+            fprintf("strogatz-info 9.5.1 lowest r %.6g, largest period %.6g\n", min(lc.Alpha), max(lc.Period));
+        end
     end
 end
 
