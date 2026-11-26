@@ -129,6 +129,31 @@ classdef RunBoundedTest < matlab.unittest.TestCase
             testCase.verifySubstring(r.Output, "wrapper says hi");
             testCase.verifyFalse(r.TimedOut);
         end
+
+        function aTimeoutStopsTheChildOfACmdWrapper(testCase)
+            % cmd.exe runs the wrapper and ping runs as its child. If the
+            % child outlived the timeout it would hold the output file open,
+            % so the delete would warn and leave the file behind.
+            testCase.assumeTrue(ispc, "Only Windows runs .cmd wrappers");
+            folder = string(tempname(tempdir));
+            mkdir(folder);
+            testCase.addTeardown(@() rmdir(folder, "s"));
+            fid = fopen(fullfile(folder, "pcsleeper.cmd"), "w");
+            fprintf(fid, "@ping -n 61 127.0.0.1\r\n");
+            fclose(fid);
+            oldPath = getenv("PATH");
+            setenv("PATH", folder + ";" + oldPath);
+            testCase.addTeardown(@() setenv("PATH", oldPath));
+            before = string({dir(fullfile(tempdir, "tp*.txt")).name});
+            clock = tic;
+            r = testCase.verifyWarningFree(@() phasecont.internal.runBounded( ...
+                ["pcsleeper"], string(tempdir), 1));
+            testCase.verifyLessThan(toc(clock), 30);
+            testCase.verifyTrue(r.TimedOut);
+            testCase.verifyEqual(r.Status, -1);
+            after = string({dir(fullfile(tempdir, "tp*.txt")).name});
+            testCase.verifyEmpty(setdiff(after, before));
+        end
     end
 
     methods (Static, Access = private)
