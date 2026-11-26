@@ -223,6 +223,23 @@ classdef StrogatzFigureTest < matlab.unittest.TestCase
             testCase.verifyEqual(pt.Eigenvalues, 1 + sin(xs), AbsTol = 1e-8);
             testCase.verifyFalse(pt.Stable);
         end
+
+        function check_fig_9_3_2(testCase, out)
+            % Oracle: ode45 on the same equations with RelTol = AbsTol =
+            % 1e-12, up to the first output time at or after t = 1. The
+            % horizon is short because the flow is chaotic: nearby orbits
+            % separate, so a long comparison would measure the separation,
+            % not the solver.
+            v = out.Values;
+            tr = out.Trajectory;
+            testCase.verifyEqual(tr.T(end), v.tspan(2), AbsTol = 1e-12);
+            k = find(tr.T >= 1, 1);
+            f = @(t, u) [v.sigma*(u(2) - u(1)); v.r*u(1) - u(2) - u(1)*u(3); u(1)*u(2) - v.b*u(3)];
+            [~, U] = ode45(f, [0 tr.T(k)], v.x0(:), odeset(RelTol = 1e-12, AbsTol = 1e-12));
+            err = norm(tr.X(k, :) - U(end, :)) / norm(U(end, :));
+            fprintf("strogatz-err 9.3.2 %.3g\n", err);
+            testCase.verifyLessThan(err, 1e-6);
+        end
     end
 end
 
