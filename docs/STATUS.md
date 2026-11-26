@@ -1041,6 +1041,47 @@ Decisions of 2026-11-19 on the open items above. The owner asked for them to be 
 - RK4 lane groups, cost of the per-step end (2026-11-23, measured, nothing built). A scratch build replaced `accept` in `rk4_lanes_in` with bookkeeping only (time, step counts and the sample at the end of a segment, no recursion-depth, finite, bounds or step-limit test), to bound what a leaner step end could gain. Scratch bench on the Windows build, 16 threads, vdp-rk4, 100k members, dt 0.01, t1 = 40, lanes 4, five interleaved invocations of each build, median of 5 rounds each: single 0.9259, 0.9279, 1.2516, 0.9659, 0.9968 s against the stub's 1.1134, 0.8117, 0.8621, 0.8346, 1.2896 s, double 0.8358, 0.7876, 0.8465, 0.8257, 0.8428 s against 0.7476, 0.7625, 0.7569, 0.7380, 0.7427 s. The medians give 1.12x single and 1.12x double, below the 1.25x a change would need to be worth building, and the stub's hashes were the same. The step end is therefore not the next lever for RK4. Raw output: `~/phasecont-wip/lanes-bench/rk4-accept-ceiling-2026-11-23.txt`. Not measured: other models and other thread counts.
 - Order of work: CI and docs, R4, R1, parser Q2, the zero-Hopf check, round D and round E (both done 2026-11-19, above), then round F (SPEC section 8af, rows P40 to P44). Each item gets its SPEC text and tests first. Commits stay local until the owner approves the next push.
 
+### Strogatz slice 0 report (2026-11-26)
+
+Rows done: 12 of 12. Moved to gaps.json: none of the 12 slice rows (gaps.json holds 76 entries, written from the plan in Task 2, commit df5918d, for figures outside the slice). Blocked: none.
+
+| Row | API family | Plot = false (s) | Plot = true (s) | Oracle error |
+|---|---|---|---|---|
+| 2.2.6 | equilibrium | 0.868 | 1.462 | AbsTol 1e-9 on x*, 1e-8 on the eigenvalue |
+| 9.3.2 | simulate | 0.660 | 0.409 | 3.54e-11 relative, limit 1e-6 |
+| 6.4.7 | PhasePlane findEquilibrium, addTrajectory, showNullclines | 14.651 | n/a, app row (test skipped by design) | AbsTol 1e-9 on equilibria, 1e-6 on eigenvalue real parts |
+| 3.4.2 | continuation EP, Switch BP1; Branch.plot | 1.194 | 0.541 | AbsTol 1e-6 on the branch point, 1e-8 on x^2 = r and the eigenvalues |
+| 3.6.2 | continuation LP; Branch.plot | 0.355 | 0.298 | AbsTol 1e-6 on the fold r values and the cusp, 1e-8 on the fold curve |
+| 8.3.4 | continuation EP, H; Branch.plot | 0.323 | 0.284 | AbsTol 1e-6 on Hopf b and omega, 1e-8 on the Hopf curve |
+| 9.5.1 | equilibrium; continuation EP, LC; Branch.plot | 0.296 | 0.438 | AbsTol 1e-6 on Hopf r and omega, 1e-5 relative on cycle closure |
+| 8.4.3 | continuation LC, HOM; simulate; Trajectory.plot | 2.040 | 4.512 | mu -0.8645452474 against oracle -0.8645452474, AbsTol 1e-4 |
+| 10.1.3 | cobweb; simulate; equilibrium | 0.174 | 0.764 | RelTol 1e-15 on iterates, AbsTol 1e-12 on the fixed point and multiplier |
+| 10.3.4 | continuation EP, Switch BP1, Switch PD1; Branch.plot | 0.336 | 0.278 | AbsTol 1e-6 on the BP and PD r values, 1e-9 on x |
+| 12.2.2 | ensemble | 0.455 | 0.160 | AbsTol 1e-14 on the image grid |
+| 5.2.8 | continuation EP; Branch.classify, tdplot | 0.174 | 0.248 | AbsTol 1e-8 on T and D |
+
+The times are from one class run in one MATLAB session, so each row includes its own model compile; repeat runs of single rows during Tasks 4 to 13 took 0.12 to 1.85 s with Plot = false and 0.28 to 5.1 s with Plot = true once warm. In this run row 6.4.7 took 14.651 s with Plot = false, which includes building its app and compiling its model for the first time.
+
+Whole class on this machine: 43.6 s (test runner total, 28 tests: 12 oracle checks, 11 Plot = true runs, 1 skipped app row, 4 schema and probe tests). CI time: not measured, waits for the push go.
+
+Full MATLAB suite (`buildtool test`, 2026-11-26): 1080 total, 1068 passed, 0 failed, 12 incomplete. Log: `~/phasecont-wip/strogatz-slice0-suite-2026-11-26.txt`.
+
+Chosen values (D2), from manifest.json:
+- 2.2.6: x0 = 0.7, window = [-2, 2].
+- 9.3.2: tspan = [0, 50], relTol = 1e-10, absTol = 1e-12.
+- 6.4.7: points = [[0.1, 0.1], [0.1, 1.9], [2.9, 0.1], [0.9, 1.1]], window = [0, 3.5, 0, 2.5], T = 20.
+- 3.4.2: r0 = -1, x0 = 0, bounds = [-1, 1], hmax = 0.05, x1 = -1, r1 = 1, bounds1 = [-1, 1.5].
+- 3.6.2: h0 = 0, r0 = 1, x0 = -1, hBounds = [-1, 1], rBounds = [-0.5, 1.5], direction = 1.
+- 8.3.4: a0 = 10, b0 = 2, x0 = [2, 5], bBounds = [2, 5], curveBounds = [0.5, 10], directions = [1, -1].
+- 9.5.1: r0 = 20, guess = [7, 7, 19], epBounds = [20, 30], ntst = 40, ncol = 4, lcBounds = [13, 25], direction = 1, maxSteps = 70.
+- 8.4.3: mu0 = -1.5, x0 = [1, 0], epBounds = [-1.5, -0.5], ntst = 80, ncol = 4, hmax = 0.05, maxNewton = 15, maxSteps = 1700, periodT = 50, homBounds = [0.9, 1.1], homHmax = 0.01, bracket = [-0.95, -0.8], panels = [-0.92, -0.8], starts = [[1.1, 0], [0.01, 0.01]], T = 30.
+- 10.1.3: x0 = 1, N = 20, guess = 0.7.
+- 10.3.4: r0 = 0.5, x0 = 0, bounds = [0.5, 2], r1 = 2.5, x1 = 0.6, bounds1 = [2.5, 3.6], hmax = 0.05.
+- 12.2.2: box = [-1.5, 1.5, -0.4, 0.4], n = 100, steps = 1.
+- 5.2.8: k = 1, c0 = -3, x0 = [0, 0], bounds = [-3, 3], direction = 1.
+
+Proposed time budget for the class: 90 s, which is twice the measured 43.6 s (87.2 s) rounded up to the next 10 s. The measured spread between a cold single row (up to 14.7 s) and a warm one (0.12 to 1.85 s with Plot = false) is why a factor of 2 is the proposal. Owner signs.
+
 ## Roadmap (2026-11-13)
 
 This section comes from a read-only audit of 2026-11-13 (launch gaps, hardware coverage, optimization headroom and parity with XPPAUT) and from the owner's answers that day. Launch here means a release of the work after v1.0.0-preview to GitHub Releases, and later File Exchange and the Add-On Explorer.
