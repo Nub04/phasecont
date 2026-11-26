@@ -1,0 +1,6 @@
+# Henon map
+par a=1.4, b=0.3
+init x=0, y=0
+x(t+1)=1-a*x^2+y
+y(t+1)=b*x
+done

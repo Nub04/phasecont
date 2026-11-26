@@ -129,5 +129,16 @@
                "x1": "chosen", "bounds1": "chosen", "hmax": "chosen"},
     "check": "branch point at r = 1; period doubling at r = 3 and of the 2-cycle at 1 + sqrt(6)",
     "state": "done"
+  },
+  {
+    "figure": "12.2.2",
+    "edition": 3,
+    "model": "henon_map.ode",
+    "script": "fig_12_2_2",
+    "api": ["ensemble"],
+    "values": {"a": 1.4, "b": 0.3, "box": [-1.5, 1.5, -0.4, 0.4], "n": 100, "steps": 1},
+    "source": {"a": "stated", "b": "stated", "box": "chosen", "n": "chosen", "steps": "chosen"},
+    "check": "image of the start grid against the map formula, AbsTol 1e-14",
+    "state": "done"
   }
 ]

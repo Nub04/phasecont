@@ -468,6 +468,16 @@ classdef StrogatzFigureTest < matlab.unittest.TestCase
             testCase.verifyNumElements(pd2, 1);
             testCase.verifyEqual(pd2.P(d(2).FreeIndex), 1 + sqrt(6), AbsTol = 1e-6);
         end
+
+        function check_fig_12_2_2(testCase, out)
+            % One step of the Henon map x' = 1 - a x^2 + y, y' = b x, applied to every
+            % start point as array arithmetic, is the oracle for the ensemble image.
+            v = out.Values;
+            X0 = out.Start;
+            F = [1 - v.a*X0(1, :).^2 + X0(2, :); v.b*X0(1, :)];
+            testCase.verifySize(out.Result.Final, size(X0));
+            testCase.verifyEqual(out.Result.Final, F, AbsTol = 1e-14);
+        end
     end
 end
 
