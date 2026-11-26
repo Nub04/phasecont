@@ -22,5 +22,17 @@
                "tspan": "chosen", "relTol": "chosen", "absTol": "chosen"},
     "check": "ode45 at RelTol and AbsTol 1e-12 to t = 1, relative error below 1e-6",
     "state": "done"
+  },
+  {
+    "figure": "6.4.7",
+    "edition": 3,
+    "model": "rabbits_sheep.ode",
+    "script": "fig_6_4_7",
+    "api": ["PhasePlane.findEquilibrium", "PhasePlane.addTrajectory", "PhasePlane.showNullclines"],
+    "values": {"points": [[0.1, 0.1], [0.1, 1.9], [2.9, 0.1], [0.9, 1.1]],
+               "window": [0, 3.5, 0, 2.5], "T": 20},
+    "source": {"points": "chosen", "window": "chosen", "T": "chosen"},
+    "check": "four equilibria, eigenvalues against eig of a central-difference Jacobian, marker counts",
+    "state": "done"
   }
 ]

@@ -1,0 +1,5 @@
+# Competition of two species, x rabbits and y sheep
+init x=0.1, y=0.1
+x'=x*(3-x-2*y)
+y'=y*(2-x-y)
+done

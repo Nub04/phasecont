@@ -240,6 +240,43 @@ classdef StrogatzFigureTest < matlab.unittest.TestCase
             fprintf("strogatz-err 9.3.2 %.3g\n", err);
             testCase.verifyLessThan(err, 1e-6);
         end
+
+        function check_fig_6_4_7(testCase, out)
+            % x' = x(3 - x - 2y), y' = y(2 - x - y). Equilibria: x = 0 or x = 3 - 2y,
+            % and y = 0 or y = 2 - x, which gives (0,0), (0,2), (3,0) and (1,1).
+            % J = [3 - 2x - 2y, -2x; -y, 2 - x - 2y]:
+            %   (0,0): diag(3, 2), eigenvalues 3 and 2, unstable node;
+            %   (0,2): [-1 0; -2 -2], eigenvalues -1 and -2, stable node;
+            %   (3,0): [-3 -6; 0 -1], eigenvalues -3 and -1, stable node;
+            %   (1,1): [-1 -2; -1 -1], eigenvalues -1 +- sqrt(2), a saddle.
+            % The guesses in Values.points are listed in that order. The eigenvalues
+            % are also checked against eig of a central-difference Jacobian.
+            expected = [0 0; 0 2; 3 0; 1 1];
+            stable = [false true true false];
+            m = out.Model;
+            for k = 1:4
+                pt = out.Points{k};
+                testCase.verifyEqual(pt.U', expected(k, :), AbsTol = 1e-9);
+                % All four eigenvalue pairs are real. pt.Eigenvalues is complex-typed,
+                % and sort orders complex values by magnitude, so sort the real parts.
+                ev = eig(cdJacobian(m, pt.U));
+                testCase.verifyEqual(imag(pt.Eigenvalues), zeros(size(pt.Eigenvalues)), AbsTol = 1e-9);
+                testCase.verifyEqual(sort(real(pt.Eigenvalues)), sort(real(ev)), AbsTol = 1e-6);
+                testCase.verifyEqual(pt.Stable, stable(k));
+            end
+            ax = out.App.Axes;
+            testCase.verifyNumElements(findall(ax, "Tag", "pc-equilibrium-stable"), 2);
+            testCase.verifyNumElements(findall(ax, "Tag", "pc-equilibrium-unstable"), 2);
+            testCase.verifyNumElements(findall(ax, "Tag", "pc-nullcline"), 2);
+            testCase.verifyNumElements(findall(ax, "Tag", "pc-trajectory"), 4);
+            % Every start leaves the saddle's stable manifold, so each orbit ends at
+            % one of the two stable nodes. The slowest rate there is 1 and T = 20.
+            for k = 1:4
+                e = out.Trajectories{k}.X(end, :);
+                d = min(vecnorm(expected(2:3, :) - e, 2, 2));
+                testCase.verifyLessThan(d, 1e-3);
+            end
+        end
     end
 end
 
