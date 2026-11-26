@@ -74,9 +74,9 @@ out = fig_9_3_2(Plot = true)
 | `values` | parameters, starts and windows used |
 | `source` | `"stated"` or `"chosen"` for each entry in `values` |
 | `check` | the check kind and its oracle, for example `"ode45 at t = 1, RelTol 1e-10"` |
-| `state` | `"done"`, `"gap"` (with a reason) or `"blocked"` (with the item that blocks it) |
+| `state` | `"done"` or `"blocked"` (with the item that blocks it) |
 
-The gap and n/a rows go in a second file, `gaps.json`, with the same `figure` field and a reason. The triage spreadsheet in the scratchpad is the source for both and is not committed.
+The gap and n/a rows go in a second file, `gaps.json`, with the same `figure` field and a reason. A covered row that turns out to need a missing feature leaves `manifest.json` and moves to `gaps.json`. The triage files (local only, in `~/phasecont-wip/strogatz-triage-2026-11-25/`) are the source for both and are not committed.
 
 ## Checks
 
