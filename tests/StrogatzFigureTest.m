@@ -382,6 +382,35 @@ classdef StrogatzFigureTest < matlab.unittest.TestCase
             testCase.verifyLessThan(norm(U(2, :) - x(mid, :))/scale, 1e-5, "Orbit passes the midpoint");
             fprintf("strogatz-info 9.5.1 lowest r %.6g, largest period %.6g\n", min(lc.Alpha), max(lc.Period));
         end
+
+        function check_fig_8_4_3(testCase, out)
+            % Equilibria: y = 0 and x - x^2 = 0, so (0, 0) and (1, 0). At (1, 0) the
+            % Jacobian is [0 1; -1 mu + c]; with c = 1, tau = mu + 1 and Delta = 1, so
+            % the Hopf point is at mu = -1 with omega = 1. The cycles grow from there
+            % until they meet the saddle at the origin at mu_c. Oracle for mu_c: fzero
+            % of splitDistance (see that function) over the bracket in Values.
+            v = out.Values;
+            b = out.Branch;
+            hp = b.points("H");
+            testCase.verifyNumElements(hp, 1);
+            % The check reads the refined point (Point.P), since Point.Index is the
+            % neighbouring grid row.
+            testCase.verifyEqual(hp.P(b.FreeIndex), -1, AbsTol = 1e-6);
+            testCase.verifyEqual(hp.Data.omega, 1, AbsTol = 1e-6);
+            hom = out.Homoclinic;
+            testCase.verifyEqual(hom.Alpha(1, 2), v.c, AbsTol = 1e-8);
+            fprintf("strogatz-info 8.4.3 HOM points %d, last c %.6g mu %.6g, LC index %d\n", ...
+                size(hom.Alpha, 1), hom.Alpha(end, 2), hom.Alpha(end, 1), out.Index);
+            % The bracket in Values holds a sign change at c = 1. At the last HOM
+            % point (c = 1.1) it does not and fzero errors, so only the first point
+            % is checked.
+            for k = 1
+                c = hom.Alpha(k, 2);
+                muc = fzero(@(mu) splitDistance(mu, c), v.bracket);
+                fprintf("strogatz-err 8.4.3 c %.6g mu %.10g oracle %.10g\n", c, hom.Alpha(k, 1), muc);
+                testCase.verifyEqual(hom.Alpha(k, 1), muc, AbsTol = 1e-4);
+            end
+        end
     end
 end
 
@@ -399,4 +428,30 @@ for k = 1:n
     e(k) = h;
     J(:, k) = (m.rhs(u + e, varargin{:}) - m.rhs(u - e, varargin{:})) / (2*h);
 end
+end
+
+function d = splitDistance(mu, c)
+% Signed distance on y = 0, x > 1, between the unstable and the stable
+% manifold of the saddle at the origin of x' = y, y' = mu y + x - x^2 + c x y.
+% The Jacobian there is [0 1; 1 mu], with eigenvalues (mu +- sqrt(mu^2 + 4))/2
+% and eigenvectors (1, lambda). The unstable branch leaves into x > 0, y > 0,
+% passes above the focus at (1, 0) (the flow turns clockwise there, since
+% x' = y) and first meets y = 0 going down. The stable branch, followed
+% backward in time from (1, lambda_s) eps, meets y = 0 going up. The two
+% crossings coincide at a homoclinic orbit, so d changes sign at mu_c.
+f = @(t, u) [u(2); mu*u(2) + u(1) - u(1)^2 + c*u(1)*u(2)];
+lu = (mu + sqrt(mu^2 + 4))/2;
+ls = (mu - sqrt(mu^2 + 4))/2;
+e = 1e-6;
+down = odeset(RelTol = 1e-12, AbsTol = 1e-14, Events = @(t, u) yZero(u, -1));
+up = odeset(RelTol = 1e-12, AbsTol = 1e-14, Events = @(t, u) yZero(u, 1));
+[~, ~, ~, uu] = ode45(f, [0 200], e*[1; lu], down);
+[~, ~, ~, us] = ode45(@(t, u) -f(t, u), [0 200], e*[1; ls], up);
+d = uu(1, 1) - us(1, 1);
+end
+
+function [value, isterminal, direction] = yZero(u, dir)
+value = u(2);
+isterminal = 1;
+direction = dir;
 end

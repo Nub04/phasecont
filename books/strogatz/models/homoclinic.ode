@@ -1,0 +1,6 @@
+# Planar system with a homoclinic bifurcation in mu
+par mu=-1.5, c=1
+init x=1, y=0
+x'=y
+y'=mu*y+x-x^2+c*x*y
+done

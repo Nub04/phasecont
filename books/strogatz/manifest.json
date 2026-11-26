@@ -87,5 +87,23 @@
                "direction": "chosen", "maxSteps": "chosen"},
     "check": "Hopf at r = 470/19 with omega^2 = 1760/19; a cycle checked by ode45 closure",
     "state": "done"
+  },
+  {
+    "figure": "8.4.3",
+    "edition": 3,
+    "model": "homoclinic.ode",
+    "script": "fig_8_4_3",
+    "api": ["continuation", "Type LC", "Type HOM", "simulate", "Trajectory.plot"],
+    "values": {"mu0": -1.5, "c": 1, "x0": [1, 0], "epBounds": [-1.5, -0.5], "ntst": 80,
+               "ncol": 4, "hmax": 0.05, "maxNewton": 15, "maxSteps": 1700, "periodT": 50,
+               "homBounds": [0.9, 1.1], "homHmax": 0.01, "bracket": [-0.95, -0.8],
+               "panels": [-0.92, -0.8], "starts": [[1.1, 0], [0.01, 0.01]], "T": 30},
+    "source": {"mu0": "chosen", "c": "stated", "x0": "chosen", "epBounds": "chosen",
+               "ntst": "chosen", "ncol": "chosen", "hmax": "chosen", "maxNewton": "chosen",
+               "maxSteps": "chosen", "periodT": "chosen", "homBounds": "chosen",
+               "homHmax": "chosen", "bracket": "chosen", "panels": "chosen",
+               "starts": "chosen", "T": "chosen"},
+    "check": "Hopf at mu = -1, omega 1; homoclinic mu against an ode45 manifold-splitting oracle",
+    "state": "done"
   }
 ]
