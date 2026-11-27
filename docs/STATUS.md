@@ -1074,7 +1074,7 @@ Chosen values (D2), from manifest.json:
 - 3.6.2: h0 = 0, r0 = 1, x0 = -1, hBounds = [-1, 1], rBounds = [-0.5, 1.5], direction = 1.
 - 8.3.4: a0 = 10, b0 = 2, x0 = [2, 5], bBounds = [2, 5], curveBounds = [0.5, 10], directions = [1, -1].
 - 9.5.1: r0 = 20, guess = [7, 7, 19], epBounds = [20, 30], ntst = 40, ncol = 4, lcBounds = [13, 25], direction = 1, maxSteps = 70.
-- 8.4.3: mu0 = -1.5, x0 = [1, 0], epBounds = [-1.5, -0.5], ntst = 80, ncol = 4, hmax = 0.05, maxNewton = 15, maxSteps = 1700, periodT = 50, homBounds = [0.9, 1.1], homHmax = 0.01, bracket = [-0.95, -0.8], panels = [-0.92, -0.8], starts = [[1.1, 0], [0.01, 0.01]], T = 15.
+- 8.4.3: mu0 = -1.5, x0 = [1, 0], epBounds = [-1.5, -0.5], ntst = 80, ncol = 4, hmax = 0.05, maxNewton = 15, maxSteps = 1700, periodT = 50, homBounds = [0.9, 1.1], homHmax = 0.01, bracket = [-0.95, -0.8], muBelow = -0.92 (stated in the text), muAbove = -0.8, starts = [[1.1, 0], [0.01, 0.01]], T = 15.
 - 10.1.3: x0 = 1, N = 20, guess = 0.7.
 - 10.3.4: r0 = 0.5, x0 = 0, bounds = [0.5, 2], r1 = 2.5, x1 = 0.6, bounds1 = [2.5, 3.6], hmax = 0.05.
 - 12.2.2: box = [-1.5, 1.5, -0.4, 0.4], n = 100, steps = 1.

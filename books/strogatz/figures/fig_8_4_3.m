@@ -10,7 +10,7 @@ end
 v = struct("mu0", -1.5, "c", 1, "x0", [1 0], "epBounds", [-1.5 -0.5], "ntst", 80, ...
     "ncol", 4, "hmax", 0.05, "maxNewton", 15, "maxSteps", 1700, "periodT", 50, ...
     "homBounds", [0.9 1.1], "homHmax", 0.01, "bracket", [-0.95 -0.8], ...
-    "panels", [-0.92 -0.8], "starts", [1.1 0; 0.01 0.01], "T", 15);
+    "muBelow", -0.92, "muAbove", -0.8, "starts", [1.1 0; 0.01 0.01], "T", 15);
 m = strogatzModel("homoclinic.ode");
 b = phasecont.continuation(m, v.x0, Params = struct("mu", v.mu0, "c", v.c), ...
     Free = "mu", Bounds = v.epBounds);
@@ -25,7 +25,7 @@ out = struct("Values", v, "Model", m, "Branch", b, "Cycles", lc, "Index", i, ...
 if ~options.Plot
     return
 end
-mus = [v.panels(1) hom.Alpha(1, 1) v.panels(2)];
+mus = [v.muBelow hom.Alpha(1, 1) v.muAbove];
 tl = tiledlayout(figure, 1, 3);
 for k = 1:3
     ax = nexttile(tl);
