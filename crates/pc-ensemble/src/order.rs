@@ -3,8 +3,8 @@
 //! A kernel with calls runs fastest with the warp stack layout when the 32 lanes of a warp
 //! recurse to nearly the same depth, and up to about six times slower than the member layout
 //! when they do not. `auto` evaluates the right-hand side of a sample of the members once on
-//! the CPU at `(x0, t0)`, records how deep it went, sorts all members by that depth when the
-//! sample is out of order, and bounds from the depths the ratio of warp time to member time.
+//! the CPU at `(x0, t0)`, records how deep it went, sorts all members by the frames they
+//! entered when the sample is out of order, and bounds from the depths the ratio of warp time to member time.
 //! The GPU run checks the bounds against the depths a probe kernel reports and, when they
 //! leave the choice open, times both layouts.
 
@@ -198,19 +198,28 @@ pub fn sampled_members(members: usize) -> Vec<usize> {
         .collect()
 }
 
-/// True when `keys` are in nondecreasing order of (peak, calls).
-pub fn in_order(keys: &[Depth]) -> bool {
-    keys.windows(2).all(|w| w[0] <= w[1])
+/// The sort key of a member: the frames it entered, then its peak depth. A lane's time in
+/// either layout follows the frames it enters, so a warp of members with similar keys
+/// diverges little. On a single chain the two numbers are equal, so the order is the order
+/// of the peak, but a tree beside a chain (`fib(n) + s(k)`) sorted by peak puts members with
+/// a deep chain and a short tree next to members with a short chain and a wide tree.
+pub fn sort_key(d: &Depth) -> (u64, u32) {
+    (d.calls, d.peak)
 }
 
-/// The stable order that sorts `keys` by peak depth, then by frames entered, or `None` when
-/// they are in that order already.
+/// True when `keys` are in nondecreasing order of [`sort_key`].
+pub fn in_order(keys: &[Depth]) -> bool {
+    keys.windows(2).all(|w| sort_key(&w[0]) <= sort_key(&w[1]))
+}
+
+/// The stable order that sorts `keys` by [`sort_key`], or `None` when they are in that
+/// order already.
 pub fn sort_order(keys: &[Depth]) -> Option<Vec<u32>> {
     if in_order(keys) {
         return None;
     }
     let mut order: Vec<u32> = (0..keys.len() as u32).collect();
-    order.sort_by_key(|&m| keys[m as usize]);
+    order.sort_by_key(|&m| sort_key(&keys[m as usize]));
     Some(order)
 }
 
@@ -629,13 +638,28 @@ mod tests {
         assert_eq!(sort_order(&chain(&[1, 1, 2, 5])), None);
         let k = chain(&[3, 1, 3, 1, 2]);
         assert_eq!(sort_order(&k), Some(vec![1, 3, 4, 0, 2]));
-        // Peak first, then frames entered.
+        // Frames entered first, then peak.
         let t = vec![
             Depth { peak: 2, calls: 9 },
             Depth { peak: 2, calls: 3 },
             Depth { peak: 1, calls: 50 },
+            Depth { peak: 5, calls: 9 },
+            Depth { peak: 4, calls: 9 },
         ];
-        assert_eq!(sort_order(&t), Some(vec![2, 1, 0]));
+        assert_eq!(sort_order(&t), Some(vec![1, 0, 4, 3, 2]));
+        // A deep chain with few frames comes before a shallow tree with many.
+        let t = vec![
+            Depth {
+                peak: 13,
+                calls: 1219,
+            },
+            Depth {
+                peak: 201,
+                calls: 205,
+            },
+        ];
+        assert!(!in_order(&t));
+        assert_eq!(sort_order(&t), Some(vec![1, 0]));
     }
 
     #[test]
