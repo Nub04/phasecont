@@ -29,13 +29,13 @@
 
 use std::ffi::{CString, c_char};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use cudarc::driver::{
-    CudaContext, CudaFunction, DeviceRepr, DriverError, LaunchConfig, PushKernelArg,
-    ValidAsZeroBits, result, sys as dsys,
+    CudaContext, CudaFunction, CudaSlice, CudaStream, DeviceRepr, DriverError, LaunchConfig,
+    PushKernelArg, ValidAsZeroBits, result, sys as dsys,
 };
 use cudarc::nvrtc::{self, CompileError, CompileOptions, Ptx, compile_ptx_with_opts, sys as nsys};
 use pc_codegen::kernel::{Dialect, Scalar};
@@ -60,6 +60,8 @@ use crate::winload::{self, NoCwdSearch};
 
 /// The name of the kernel entry point.
 const ENTRY: &str = "pc_ens";
+/// The name of the key kernel of the counting variant (SPEC section 8af-5).
+const KEYS: &str = "pc_keys";
 /// Threads per block. Small enough for a register-heavy double precision kernel.
 const BLOCK: u32 = 64;
 /// `CUDA_ERROR_LAUNCH_TIMEOUT`: the driver stopped a launch that ran too long.
@@ -81,6 +83,46 @@ const STICKY: [u32; 9] = [700, 702, 710, 714, 715, 716, 717, 718, 719];
 /// Added to the text of a sticky error.
 const STICKY_NOTE: &str = "; the driver can keep this error until the process ends, so if later \
 GPU runs fail the same way, restart the process (in MATLAB, restart MATLAB)";
+
+/// The byte every new call stack is filled with: `0x100 | byte`, or 0 for none. A debug build
+/// fills with 0xFF, a NaN in both precisions; a release build does not fill.
+static STACK_FILL: AtomicU16 = AtomicU16::new(if cfg!(debug_assertions) { 0x1FF } else { 0 });
+
+/// Fills every CUDA call stack made after the call with `byte`, or leaves new stacks unset
+/// with `None`. The stack tests use it to run each model on stacks that hold different
+/// values. It is not part of the API.
+#[doc(hidden)]
+pub fn set_stack_fill(byte: Option<u8>) {
+    STACK_FILL.store(byte.map_or(0, |b| 0x100 | u16::from(b)), Ordering::SeqCst);
+}
+
+/// A call stack of `len` reals on the device, left as the allocator gives it, so it holds
+/// what an earlier launch left there. Clearing it cost as much as 11 ms at 16,384 members.
+/// The kernel matches the CPU, which fills each new frame with zeros, because every frame
+/// value is written before it is read: `tape::unproven` checks that for each unit of the
+/// program, and the kernel clears at each call any frame value it cannot prove. The resume
+/// label, the arguments and the flags are written at each call. The stack tests fill new
+/// stacks with several bytes ([`set_stack_fill`]) and compare the bits with the CPU.
+fn stack_buffer<T: DeviceRepr>(
+    stream: &Arc<CudaStream>,
+    len: usize,
+) -> Result<CudaSlice<T>, EnsembleError> {
+    // SAFETY: the memory is unset. Any bit pattern is a valid `f32` or `f64`, the host never
+    // reads the buffer, and the kernel's results do not depend on what it holds (see above).
+    let mut s =
+        unsafe { stream.alloc::<T>(len) }.map_err(drv("allocate the call stack on the device"))?;
+    let fill = STACK_FILL.load(Ordering::SeqCst);
+    if fill != 0 {
+        use cudarc::driver::DevicePtrMut;
+        let n = s.num_bytes();
+        let (p, _record) = s.device_ptr_mut(stream);
+        // SAFETY: `p` holds `n` bytes allocated on `stream`, and any bit pattern is a valid
+        // `f32` or `f64`.
+        unsafe { result::memset_d8_async(p, (fill & 0xFF) as u8, n, stream.cu_stream()) }
+            .map_err(drv("fill the call stack on the device"))?;
+    }
+    Ok(s)
+}
 
 /// A driver error of a copy, a launch or a synchronize. A watchdog stop is its own error.
 fn drv(step: &'static str) -> impl Fn(DriverError) -> EnsembleError {
@@ -737,10 +779,7 @@ pub fn run_cuda(
         Precision::Double => Scalar::F64,
     };
     let integrator = integrator_of(job.method);
-    let real_bytes = match job.precision {
-        Precision::Single => size_of::<f32>(),
-        Precision::Double => size_of::<f64>(),
-    };
+    let real_bytes = real_bytes_of(job.precision);
     // The entry this run used, so that a failure removes that one and not a newer one.
     let mut used: Option<Arc<Entry>> = None;
     // The order an `auto` run put the members in, to put the result back in the job's order.
@@ -778,8 +817,9 @@ pub fn run_cuda(
         // warp and probe kernels it still lacks (the compile gate, SPEC section 8af-5). Past
         // the gate it sorts the members by the depth of their first right-hand side when the
         // sampled keys are out of order and runs each batch member or warp. The keys come from
-        // the CPU. A batch on warp runs the plain warp kernel, with the counting variant of it
-        // as the probe.
+        // the key kernel of the probe module, which runs each member's first right-hand side
+        // on the device. A batch on warp runs the plain warp kernel, with the counting variant
+        // of it as the probe.
         let mut member_src = None;
         let mut warp_probe = None;
         let plan = match job.stack {
@@ -806,8 +846,23 @@ pub fn run_cuda(
                 Some(match open {
                     None => AutoPlan::Member,
                     Some(wp) => {
+                        let probe = compile_kernel(entry, p, cc, job, &wp.1)?;
+                        let keys = probe.keys.as_ref().ok_or_else(|| {
+                            EnsembleError::GpuCompile(format!(
+                                "the probe module has no {KEYS} kernel"
+                            ))
+                        })?;
+                        let chunk = batch_size(job, &checked, &tape, layout, &capacity)?;
+                        let plan = match job.precision {
+                            Precision::Single => {
+                                plan_on_gpu::<f32>(&entry.ctx, keys, &tape, job, chunk, cancel)?
+                            }
+                            Precision::Double => {
+                                plan_on_gpu::<f64>(&entry.ctx, keys, &tape, job, chunk, cancel)?
+                            }
+                        };
                         warp_probe = Some(wp);
-                        order::plan_auto(&tape, job, cancel)?
+                        plan
                     }
                 })
             }
@@ -907,6 +962,8 @@ struct Entry {
 #[derive(Clone)]
 struct Kernel {
     f: CudaFunction,
+    /// The key kernel `pc_keys` of the module, which only the counting variant has.
+    keys: Option<CudaFunction>,
     /// The time NVRTC took to compile it.
     nvrtc: Duration,
     /// The sum of the times of its launches in this process, in nanoseconds, shared by every
@@ -1008,6 +1065,255 @@ pub fn kernel_compiles() -> usize {
     COMPILES.load(Ordering::SeqCst)
 }
 
+/// The depth keys of every member of `job` from the key kernel on CUDA device `device`, in
+/// chunks of at most `chunk` members, or `None` for a tape without calls. The test compares
+/// them with the CPU keys of `order::depth_keys`.
+#[doc(hidden)]
+pub fn device_keys(
+    device: &DeviceInfo,
+    job: &Job,
+    chunk: usize,
+) -> Result<Option<Vec<Depth>>, EnsembleError> {
+    validate(job)?;
+    let p = probe();
+    if let BackendState::Unavailable(why) = &p.state {
+        return Err(EnsembleError::GpuUnavailable(why.clone()));
+    }
+    if device.backend != Backend::Cuda || device.index >= p.devices.len() {
+        return Err(EnsembleError::GpuUnavailable(format!(
+            "no CUDA device {}",
+            device.index
+        )));
+    }
+    let tape = Tape::build(job.model)?;
+    if tape.units.is_empty() {
+        return Ok(None);
+    }
+    let scalar = match job.precision {
+        Precision::Single => Scalar::F32,
+        Precision::Double => Scalar::F64,
+    };
+    let integrator = integrator_of(job.method);
+    let real_bytes = real_bytes_of(job.precision);
+    guard(|| {
+        let entry = CONTEXTS.get_or_make(device.index, || {
+            let ctx = CudaContext::new(device.index).map_err(drv("create context"))?;
+            Ok(Arc::new(Entry {
+                kernels: Lru::new(KERNELS_KEPT),
+                ctx,
+                held: AtomicU64::new(0),
+            }))
+        })?;
+        let capacity = capacity_of(&entry)?;
+        let layout = pick(forced_layout(), tape.n, integrator, real_bytes, capacity);
+        let src = kernel_source_with(
+            &tape,
+            integrator,
+            scalar,
+            Dialect::Cuda,
+            layout,
+            StackLayout::Auto,
+        )
+        .map_err(kernel_err)?;
+        let cc = entry
+            .ctx
+            .compute_capability()
+            .map_err(drv("compute capability"))?;
+        let k = compile_kernel(&entry, p, cc, job, &src)?;
+        let f = k.keys.as_ref().ok_or_else(|| {
+            EnsembleError::GpuCompile(format!("the probe module has no {KEYS} kernel"))
+        })?;
+        let all: Vec<usize> = (0..job.members).collect();
+        let cancel = AtomicBool::new(false);
+        match job.precision {
+            Precision::Single => {
+                with_device_keys::<f32, _>(&entry.ctx, f, &tape, job, chunk, &cancel, |k| k(&all))
+            }
+            Precision::Double => {
+                with_device_keys::<f64, _>(&entry.ctx, f, &tape, job, chunk, &cancel, |k| k(&all))
+            }
+        }
+        .map(Some)
+    })
+    .unwrap_or_else(|msg| Err(EnsembleError::GpuLaunch(format!("panic in cudarc: {msg}"))))
+}
+
+/// The bytes of one real of `precision`.
+fn real_bytes_of(precision: Precision) -> usize {
+    match precision {
+        Precision::Single => size_of::<f32>(),
+        Precision::Double => size_of::<f64>(),
+    }
+}
+
+/// The kernel of text `src` from the kept list of `entry`, compiled and loaded when it is not
+/// there. A module whose text has the key kernel also loads `pc_keys`.
+fn compile_kernel(
+    entry: &Entry,
+    p: &Probe,
+    cc: (i32, i32),
+    job: &Job,
+    src: &str,
+) -> Result<Kernel, EnsembleError> {
+    entry
+        .kernels
+        .get_or_make((src.to_owned(), cc, job.precision, job.math), || {
+            COMPILES.fetch_add(1, Ordering::SeqCst);
+            let started = Instant::now();
+            let image = compile_image(src, p, cc, job.math)?;
+            let nvrtc = started.elapsed();
+            let load = |step: &'static str| {
+                move |e: DriverError| EnsembleError::GpuCompile(drv_text(step, &e))
+            };
+            let module = entry.ctx.load_module(image).map_err(load("load_module"))?;
+            let f = module.load_function(ENTRY).map_err(load("load_function"))?;
+            let keys = match src.contains(KEYS) {
+                true => Some(module.load_function(KEYS).map_err(load("load_function"))?),
+                false => None,
+            };
+            Ok(Kernel {
+                f,
+                keys,
+                nvrtc,
+                spent: Arc::new(AtomicU64::new(0)),
+            })
+        })
+}
+
+/// The members of one batch of `job`. The free memory bounds them. The private layout takes
+/// its local memory first: the driver reserves it for every resident thread, whatever the
+/// batch size. A kernel with calls also takes its stack, a member buffer outside the scratch
+/// rule.
+fn batch_size(
+    job: &Job,
+    checked: &crate::job::Checked,
+    tape: &Tape,
+    layout: Layout,
+    capacity: &Capacity,
+) -> Result<usize, EnsembleError> {
+    let real_bytes = real_bytes_of(job.precision);
+    let integrator = integrator_of(job.method);
+    let private_bytes = private_reals(checked.n, integrator).saturating_mul(real_bytes);
+    members_per_batch(
+        job,
+        checked.times.len(),
+        layout.work_len(checked.n, integrator),
+        stack_of(tape).as_ref(),
+        real_bytes,
+        Some(budget_of(buffer_room(layout, private_bytes, capacity))),
+        0,
+    )
+}
+
+/// The plan of an `auto` run past its compile gate, with the depth keys from the key kernel
+/// `keys` of the counting module (SPEC section 8af-5).
+fn plan_on_gpu<T: Real + DeviceRepr + ValidAsZeroBits>(
+    ctx: &Arc<CudaContext>,
+    keys: &CudaFunction,
+    tape: &Tape,
+    job: &Job,
+    chunk: usize,
+    cancel: &AtomicBool,
+) -> Result<AutoPlan, EnsembleError> {
+    with_device_keys::<T, _>(ctx, keys, tape, job, chunk, cancel, |k| {
+        order::plan_with(tape, job, k)
+    })
+}
+
+/// Runs `body` with a function that returns the depth keys of the members it is given, in
+/// that order, from the key kernel `keys`. The key kernel runs the right-hand side of the
+/// run's kernels once per member at `(x0, t0)`, in chunks of at most `chunk` members that
+/// share one stack buffer, so a key is the depth the probe reports for that member's first
+/// right-hand side. The cancel flag is read before each chunk.
+#[allow(clippy::type_complexity)]
+fn with_device_keys<T: Real + DeviceRepr + ValidAsZeroBits, R>(
+    ctx: &Arc<CudaContext>,
+    keys: &CudaFunction,
+    tape: &Tape,
+    job: &Job,
+    chunk: usize,
+    cancel: &AtomicBool,
+    body: impl FnOnce(
+        &mut dyn FnMut(&[usize]) -> Result<Vec<Depth>, EnsembleError>,
+    ) -> Result<R, EnsembleError>,
+) -> Result<R, EnsembleError> {
+    let stream = ctx.default_stream();
+    let x0: Vec<T> = job.x0.iter().map(|&v| T::from_f64(v)).collect();
+    let (src, pstride) = match job.params {
+        Params::Shared(p) => (p, 0u64),
+        Params::PerMember(p) => (p, tape.n_p as u64),
+    };
+    let mut par: Vec<T> = src.iter().map(|&v| T::from_f64(v)).collect();
+    if par.is_empty() {
+        // A kernel argument must not be empty, even when the model has no parameters.
+        par.push(T::ZERO);
+    }
+    let x0 = stream.clone_htod(&x0).map_err(drv("copy x0 to device"))?;
+    let par = stream.clone_htod(&par).map_err(drv("copy par to device"))?;
+    let chunk = chunk.clamp(1, job.members.max(1));
+    let stack_len = stack_of(tape).as_ref().map_or(0, Stack::reals);
+    let mut stk = stack_buffer::<T>(&stream, StackLayout::Warp.buffer_reals(chunk, stack_len))?;
+    let t0 = T::from_f64(job.t0);
+    body(&mut |which: &[usize]| {
+        let mut out = Vec::with_capacity(which.len());
+        for part in which.chunks(chunk) {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(EnsembleError::Cancelled);
+            }
+            let idx: Vec<u64> = part.iter().map(|&m| m as u64).collect();
+            let idx = stream
+                .clone_htod(&idx)
+                .map_err(drv("copy the key members to device"))?;
+            let mut dep = stream
+                .alloc_zeros::<u32>(2 * part.len())
+                .map_err(drv("allocate the key buffer on the device"))?;
+            let count = part.len() as u64;
+            let blocks = u32::try_from(part.len().div_ceil(BLOCK as usize)).map_err(|_| {
+                EnsembleError::BadJob(format!(
+                    "{} members need more blocks than a launch can hold",
+                    part.len()
+                ))
+            })?;
+            let cfg = LaunchConfig {
+                grid_dim: (blocks, 1, 1),
+                block_dim: (BLOCK, 1, 1),
+                shared_mem_bytes: 0,
+            };
+            {
+                let mut b = stream.launch_builder(keys);
+                b.arg(&x0)
+                    .arg(&par)
+                    .arg(&idx)
+                    .arg(&mut stk)
+                    .arg(&mut dep)
+                    .arg(&count)
+                    .arg(&pstride)
+                    .arg(&t0);
+                // SAFETY: the arguments follow the signature of `pc_keys` in order and type,
+                // `idx` holds `count` members below `job.members`, `x0` holds `PC_N` reals and
+                // `par` `pstride` reals per member (one shared row when `pstride` is 0), the
+                // stack holds `PC_STK` reals for each of the `chunk` threads in whole groups of
+                // 32, `dep` holds two words per thread, and the kernel returns early for a
+                // thread past `count`.
+                unsafe { b.launch(cfg) }.map_err(drv("launch the key kernel"))?;
+            }
+            let mut host = vec![0u32; 2 * part.len()];
+            stream
+                .memcpy_dtoh(&dep, &mut host)
+                .map_err(drv("copy the keys to host"))?;
+            stream
+                .synchronize()
+                .map_err(drv("synchronize after the keys"))?;
+            // The kernel counts the calls in 32 bits and stops at the largest value.
+            out.extend(host.as_chunks::<2>().0.iter().map(|&[peak, calls]| Depth {
+                peak,
+                calls: u64::from(calls),
+            }));
+        }
+        Ok(out)
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn session(
     entry: &Entry,
@@ -1031,26 +1337,7 @@ fn session(
     let cc = ctx
         .compute_capability()
         .map_err(drv("compute capability"))?;
-    let compile = |src: &str| {
-        entry
-            .kernels
-            .get_or_make((src.to_owned(), cc, job.precision, job.math), || {
-                COMPILES.fetch_add(1, Ordering::SeqCst);
-                let started = Instant::now();
-                let image = compile_image(src, p, cc, job.math)?;
-                let nvrtc = started.elapsed();
-                let load = |step: &'static str| {
-                    move |e: DriverError| EnsembleError::GpuCompile(drv_text(step, &e))
-                };
-                let module = ctx.load_module(image).map_err(load("load_module"))?;
-                let f = module.load_function(ENTRY).map_err(load("load_function"))?;
-                Ok(Kernel {
-                    f,
-                    nvrtc,
-                    spent: Arc::new(AtomicU64::new(0)),
-                })
-            })
-    };
+    let compile = |src: &str| compile_kernel(entry, p, cc, job, src);
     let label = Label {
         backend: Backend::Cuda.name().into(),
         device: device.name.clone(),
@@ -1061,32 +1348,15 @@ fn session(
         stack_ran: StackRan::of(job.stack),
         sorted,
     };
-    // The free memory bounds the members of one batch. The private layout takes its local
-    // memory first: the driver reserves it for every resident thread, whatever the batch size.
-    let real_bytes = match job.precision {
-        Precision::Single => size_of::<f32>(),
-        Precision::Double => size_of::<f64>(),
-    };
-    let integrator = integrator_of(job.method);
-    let private_bytes = private_reals(checked.n, integrator).saturating_mul(real_bytes);
-    let work_len = layout.work_len(checked.n, integrator);
-    // A kernel with calls also takes its stack, a member buffer outside the scratch rule.
-    let stack = stack_of(tape);
-    let size = members_per_batch(
-        job,
-        checked.times.len(),
-        work_len,
-        stack.as_ref(),
-        real_bytes,
-        Some(budget_of(buffer_room(layout, private_bytes, &capacity))),
-        0,
-    )?;
+    let size = batch_size(job, checked, tape, layout, &capacity)?;
     if layout == Layout::Private {
+        let private_bytes = private_reals(checked.n, integrator_of(job.method))
+            .saturating_mul(real_bytes_of(job.precision));
         entry
             .held
             .fetch_max(reserve_of(private_bytes, &capacity), Ordering::SeqCst);
     }
-    let stack_len = stack.as_ref().map_or(0, Stack::reals);
+    let stack_len = stack_of(tape).as_ref().map_or(0, Stack::reals);
     // The next batch's first member in the run order, for its keys.
     let mut at = 0usize;
     let member_of = |a: &AutoRun| compile(a.member);
@@ -1206,19 +1476,18 @@ fn launch_all<T: Real + DeviceRepr + ValidAsZeroBits>(
     let mut ctl_d = stream
         .clone_htod(packed.ctl.as_slice())
         .map_err(drv("copy ctl to device"))?;
-    // The kernel writes a frame before it reads it, so the stack needs no upload. A kernel
-    // without calls takes no stack argument.
+    // The kernel writes a frame before it reads it, so the stack needs no upload and no
+    // clearing (`stack_buffer`). A kernel without calls takes no stack argument.
     let group = match &kernels {
         Kernels::Fixed(_, StackRan::Member) => StackLayout::Member,
         _ => StackLayout::Warp,
     };
     let mut stk = match stack_len {
         0 => None,
-        len => Some(
-            stream
-                .alloc_zeros::<T>(group.buffer_reals(packed.members, len))
-                .map_err(drv("allocate the call stack on the device"))?,
-        ),
+        len => Some(stack_buffer::<T>(
+            &stream,
+            group.buffer_reals(packed.members, len),
+        )?),
     };
     let probing = matches!(kernels, Kernels::Auto { .. });
     let mut dep = vec![0u32; if probing { 2 * packed.members } else { 0 }];

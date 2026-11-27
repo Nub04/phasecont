@@ -351,11 +351,22 @@ pub fn member_only(tape: &Tape, job: &Job) -> bool {
 /// ([`sampled_members`]); when they are out of order it gets the keys of every member and the
 /// order that sorts them.
 pub fn plan_auto(tape: &Tape, job: &Job, cancel: &AtomicBool) -> Result<AutoPlan, EnsembleError> {
+    plan_with(tape, job, |which| keys_of(tape, job, which, cancel))
+}
+
+/// [`plan_auto`] with the keys of the members in `which` from `keys_of`, in that order. The
+/// CUDA backend passes the keys of its key kernel, which runs the same right-hand side as the
+/// kernels of the run.
+pub fn plan_with(
+    tape: &Tape,
+    job: &Job,
+    mut keys_of: impl FnMut(&[usize]) -> Result<Vec<Depth>, EnsembleError>,
+) -> Result<AutoPlan, EnsembleError> {
     if member_only(tape, job) {
         return Ok(AutoPlan::Member);
     }
     let sample = sampled_members(job.members);
-    let sampled = keys_of(tape, job, &sample, cancel)?;
+    let sampled = keys_of(&sample)?;
     let mut keys: Vec<Option<Depth>> = vec![None; job.members];
     for (&m, &k) in sample.iter().zip(&sampled) {
         keys[m] = Some(k);
@@ -365,7 +376,7 @@ pub fn plan_auto(tape: &Tape, job: &Job, cancel: &AtomicBool) -> Result<AutoPlan
     }
     // The rest of the members, then the order of all of them.
     let rest: Vec<usize> = (0..job.members).filter(|&m| keys[m].is_none()).collect();
-    for (&m, k) in rest.iter().zip(keys_of(tape, job, &rest, cancel)?) {
+    for (&m, k) in rest.iter().zip(keys_of(&rest)?) {
         keys[m] = Some(k);
     }
     let all: Vec<Depth> = keys.iter().map(|k| k.expect("every key")).collect();

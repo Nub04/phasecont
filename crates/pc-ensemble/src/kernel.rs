@@ -353,8 +353,41 @@ fn with_calls(integrator: Integrator, body: &str, entry: &str, stack: StackLayou
         ),
     };
     b.push_str(&e);
+    if auto && e.contains("__global__") {
+        b.push_str(KEYS_CUDA);
+    }
     b
 }
+
+/// The key kernel of the CUDA counting variant (SPEC section 8af-5): thread `i` evaluates the
+/// right-hand side of member `idx[i]` once at `(x0, t0)` and writes the peak and the calls of
+/// that evaluation to `dep[2i]` and `dep[2i + 1]`. The stack slots follow the warp layout over
+/// `i`, so `stk` holds whole groups of 32 of the `count` threads.
+const KEYS_CUDA: &str = r#"
+extern "C" __global__ void pc_keys(PC_IN pc_real *PC_RESTRICT x0, PC_IN pc_real *PC_RESTRICT par,
+                                   PC_IN pc_ulong *PC_RESTRICT idx,
+                                   PC_GLOBAL pc_real *PC_RESTRICT stk,
+                                   PC_GLOBAL pc_uint *PC_RESTRICT dep, pc_ulong count,
+                                   pc_ulong pstride, pc_real t0)
+{
+    pc_ulong i = (pc_ulong)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) {
+        return;
+    }
+    pc_ulong m = idx[i];
+    pc_real y[PC_N];
+    pc_real k[PC_N];
+    pc_uint j;
+    for (j = 0u; j < PC_N; j++) {
+        y[j] = x0[m * PC_N + j];
+    }
+    pc_uint cerr_w[3] = {0u, 0u, 0u};
+    pc_rhs(t0, y, par + m * pstride, k, stk + (i / 32u) * (32u * (pc_ulong)PC_STK) + (i % 32u),
+           cerr_w);
+    dep[2u * i] = cerr_w[1];
+    dep[2u * i + 1u] = cerr_w[2];
+}
+"#;
 
 /// The line of a template that the declarations of the scratch replace.
 const ARRAYS: &str = "    /*PC_ARRAYS*/\n";
