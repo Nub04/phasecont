@@ -330,6 +330,11 @@ classdef ClassifyTest < matlab.unittest.TestCase
                 testCase.verifyError(@() classify(pt, Tol = tol), ...
                     "phasecont:point:badOption", sprintf("Tol %g", tol));
             end
+            % Not of class double: refused before it can be converted (SPEC 8ac).
+            for tol = {single(1e-9), int32(0)}
+                testCase.verifyError(@() classify(pt, Tol = tol{1}), ...
+                    "MATLAB:validators:mustBeA", class(tol{1}));
+            end
         end
 
         % Branch.classify and Branch.tdplot (SPEC section 8ad, tests 1 to 4).
@@ -438,6 +443,15 @@ classdef ClassifyTest < matlab.unittest.TestCase
             for tol = [-1e-9 1 NaN Inf]
                 testCase.verifyError(@() classify(br, Tol = tol), ...
                     "phasecont:branch:badOption", sprintf("Tol %g", tol));
+            end
+            % Not of class double, in classify and in tdplot (SPEC 8ad).
+            f = figure(Visible = "off");
+            testCase.addTeardown(@() close(f));
+            for tol = {single(1e-9), int32(0)}
+                testCase.verifyError(@() classify(br, Tol = tol{1}), ...
+                    "MATLAB:validators:mustBeA", class(tol{1}));
+                testCase.verifyError(@() tdplot(br, Tol = tol{1}, Parent = axes(f)), ...
+                    "MATLAB:validators:mustBeA", "tdplot " + class(tol{1}));
             end
         end
 

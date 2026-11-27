@@ -285,7 +285,7 @@ classdef Branch < handle
             %   whose Jacobian has NaN or Inf entries.
             arguments
                 br (1,1) phasecont.Branch
-                options.Tol (1,1) double {mustBeReal} = 1e-9
+                options.Tol (1,1) {mustBeA(options.Tol, "double"), mustBeReal} = 1e-9
             end
             tol = options.Tol;
             if ~(isfinite(tol) && tol >= 0 && tol < 1)
@@ -359,7 +359,7 @@ classdef Branch < handle
             %   lines, markers and texts as a column vector.
             arguments
                 br (1,1) phasecont.Branch
-                options.Tol (1,1) double {mustBeReal} = 1e-9
+                options.Tol (1,1) {mustBeA(options.Tol, "double"), mustBeReal} = 1e-9
                 options.Parent = []
             end
             if br.Type == "EP" && br.stateCount() ~= 2
