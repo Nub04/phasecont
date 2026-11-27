@@ -1,5 +1,6 @@
 //! `pow` ported from Arm optimized-routines `math/pow.c` (Copyright (c) 2018-2026, Arm
-//! Limited), commit 9a0d5027ec6c3c529642f2d81391125935d99321, used under its MIT license (see
+//! Limited) and `math/pow_common.h` (`checkint`, Copyright (c) 2026, Arm Limited), commit
+//! 9a0d5027ec6c3c529642f2d81391125935d99321, used under its MIT license (see
 //! THIRD_PARTY_NOTICES.md). The port follows the C code line by line, with the tables in
 //! `aorpow/tables.rs`.
 //!

@@ -72,10 +72,10 @@ The source file src/math/pow.rs carries this notice:
 src/aorpow.rs and src/aorpow/tables.rs are ported from Arm optimized-routines
 (https://github.com/ARM-software/optimized-routines), commit
 9a0d5027ec6c3c529642f2d81391125935d99321: math/pow.c (Copyright (c) 2018-2026,
-Arm Limited), math/pow_log_data.c (Copyright (c) 2018, Arm Limited) and
-math/exp_data.c (Copyright (c) 2018-2023, Arm Limited). optimized-routines is
-available under MIT OR Apache-2.0 WITH LLVM-exception; this port uses it under
-the MIT license:
+Arm Limited), math/pow_common.h (Copyright (c) 2026, Arm Limited),
+math/pow_log_data.c (Copyright (c) 2018, Arm Limited) and math/exp_data.c
+(Copyright (c) 2018-2023, Arm Limited). optimized-routines is available under
+MIT OR Apache-2.0 WITH LLVM-exception; this port uses it under the MIT license:
 
 ------------------------------------------------------------------------------
 Copyright (c) 1999-2022, Arm Limited.
