@@ -100,7 +100,7 @@ pub const PROBE_EVERY: u32 = 20;
 /// The shortest timed launch when `auto` times both layouts.
 pub const TIMED_MIN: Duration = Duration::from_millis(10);
 /// Member wins a timing when it takes less than this share of the warp time per step.
-pub const SWITCH_MARGIN: f64 = 0.9;
+pub const SWITCH_MARGIN: f64 = 1.0;
 
 /// The depth of every member's right-hand side at `(x0, t0)`, in the job's precision, with
 /// the kernel's frame cap. `None` for a tape without calls. A member that passes the cap
@@ -914,34 +914,35 @@ mod tests {
             timed_steps(1, Duration::ZERO),
             crate::gpu::MAX_STEPS_PER_LAUNCH
         );
-        assert!(member_wins((10, ms(100)), (20, ms(179))));
-        assert!(!member_wins((10, ms(100)), (20, ms(181))));
-        assert!(!member_wins((10, ms(100)), (5, ms(50))));
+        assert!(member_wins((10, ms(100)), (20, ms(199))));
+        assert!(!member_wins((10, ms(100)), (20, ms(201))));
+        assert!(!member_wins((10, ms(100)), (5, ms(55))));
     }
 
     #[test]
     fn a_timing_decides_on_long_or_clear_samples_and_grows_short_close_ones() {
         let ms = Duration::from_millis;
         let cap = crate::gpu::MAX_STEPS_PER_LAUNCH;
-        // Both at least 10 ms: the margin of 0.9 decides.
+        // Both at least 10 ms: the margin of 1 decides.
         assert_eq!(judge((100, ms(20)), (100, ms(16))), Judge::Member);
-        assert_eq!(judge((100, ms(20)), (100, ms(19))), Judge::Warp);
+        assert_eq!(judge((100, ms(20)), (100, ms(19))), Judge::Member);
+        assert_eq!(judge((100, ms(20)), (100, ms(21))), Judge::Warp);
         assert_eq!(judge((100, ms(20)), (200, ms(35))), Judge::Member);
-        // Short but clear: r at most 0.6 or at least 1.35.
+        // Short but clear: r at most 2/3 or at least 1.5.
         assert_eq!(
-            judge((10, ms(5)), (10, Duration::from_micros(2900))),
+            judge((10, ms(5)), (10, Duration::from_micros(3200))),
             Judge::Member
         );
         assert_eq!(
-            judge((10, ms(5)), (10, Duration::from_micros(3100))),
-            Judge::Grow(33)
+            judge((10, ms(5)), (10, Duration::from_micros(3500))),
+            Judge::Grow(29)
         );
         assert_eq!(
-            judge((10, ms(4)), (10, Duration::from_micros(5500))),
+            judge((10, ms(4)), (10, Duration::from_micros(6200))),
             Judge::Warp
         );
         assert_eq!(
-            judge((10, ms(4)), (10, Duration::from_micros(5300))),
+            judge((10, ms(4)), (10, Duration::from_micros(5800))),
             Judge::Grow(25)
         );
         // Short and close: grow so that the faster launch would take 10 ms.
