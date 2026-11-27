@@ -1593,6 +1593,10 @@ fn exec<T: Real>(
                     v.push(x);
                 }
                 v.resize(nfb + flen, T::ZERO);
+                #[cfg(test)]
+                if let Some(x) = tests::FRAME_FILL.with(Cell::get) {
+                    v[nfb + unit.arity as usize..].fill(T::from_f64(x));
+                }
                 let nflb = cs.flags.len();
                 cs.flags.resize(nflb + unit.nflags as usize, 0);
                 cs.depth = cs.depth.max(cs.frames.len() as u32 + 1);
@@ -1694,6 +1698,220 @@ fn stride_of(prog: &Prog) -> usize {
         .unwrap_or(1)
 }
 
+// Frame values read before they are written (SPEC section 8af-5). The CPU fills each new
+// frame with zeros. A kernel frame holds what an earlier frame, call or launch left at that
+// depth, since the stack is not cleared before a launch, so a kernel matches the CPU only
+// where every frame value is written before any read of it. `unproven` checks that for each
+// unit with a forward must-write analysis, and the kernel clears at each call the slots it
+// cannot prove, as the CPU does.
+
+/// A set of frame slots, one bit per slot.
+type Slots = Vec<u64>;
+
+fn has(s: &Slots, k: usize) -> bool {
+    s[k / 64] >> (k % 64) & 1 != 0
+}
+
+fn put(s: &mut Slots, k: usize) {
+    s[k / 64] |= 1 << (k % 64);
+}
+
+/// Intersects `a` with `b`, and says whether `a` changed.
+fn meet(a: &mut Slots, b: &Slots) -> bool {
+    let mut changed = false;
+    for (x, &y) in a.iter_mut().zip(b) {
+        let z = *x & y;
+        changed |= z != *x;
+        *x = z;
+    }
+    changed
+}
+
+/// Calls `f` on each slot that `step` reads.
+fn reads(prog: &Prog, step: Step, f: &mut impl FnMut(u32)) {
+    match step {
+        Step::Op(_, ins) => match ins {
+            Ins::Neg(a) | Ins::Call1(_, a) | Ins::Not(a) => f(a),
+            Ins::Add(a, b)
+            | Ins::Sub(a, b)
+            | Ins::Mul(a, b)
+            | Ins::ZMul(a, b)
+            | Ins::Div(a, b)
+            | Ins::ZDiv(a, b)
+            | Ins::Call2(_, a, b)
+            | Ins::Cmp(_, a, b)
+            | Ins::And(a, b)
+            | Ins::Or(a, b) => {
+                f(a);
+                f(b);
+            }
+            Ins::Select(c, a, b) => {
+                f(c);
+                f(a);
+                f(b);
+            }
+        },
+        Step::Move(_, a) | Step::JmpIfZero(a, _) | Step::Ret(a) => f(a),
+        Step::Invoke(u, lo, _) => {
+            let lo = lo as usize;
+            for &a in &prog.pool[lo..lo + prog.units[u as usize].arity as usize] {
+                f(a);
+            }
+        }
+        Step::Jmp(_) | Step::Sub(..) | Step::Rts(_) | Step::End => {}
+    }
+}
+
+/// The must-write analysis of the frame slots of a [`Prog`].
+struct MustWrite<'a> {
+    prog: &'a Prog,
+    words: usize,
+    /// The slots each subroutine writes on every path to its return, by its first step.
+    done: HashMap<u32, Slots>,
+    /// The subroutines whose summary is being computed.
+    busy: Vec<u32>,
+}
+
+impl MustWrite<'_> {
+    fn none(&self) -> Slots {
+        vec![0; self.words]
+    }
+
+    /// The slots written on every path from `start` to each step it reaches, before the step
+    /// runs, with `init` written at `start`.
+    ///
+    /// Without `rts` the walk enters the body of every subroutine it calls, with the slots
+    /// written where it is called. With `rts` it enters none of them and also returns the
+    /// slots written on every path to an `Rts` of that flag.
+    ///
+    /// A `Sub` adds what its body writes on every path, whether it runs the body or skips it:
+    /// a frame flag is set only by a run of the body in the same frame, earlier on the path.
+    /// A subroutine with a global flag writes no frame slot.
+    fn flow(
+        &mut self,
+        start: u32,
+        init: Slots,
+        rts: Option<u32>,
+    ) -> (HashMap<usize, Slots>, Option<Slots>) {
+        let mut state: HashMap<usize, Slots> = HashMap::new();
+        let mut out: Option<Slots> = None;
+        state.insert(start as usize, init);
+        let mut work = vec![start as usize];
+        while let Some(s) = work.pop() {
+            let mut cur = state[&s].clone();
+            let mut next: Vec<(usize, Slots)> = Vec::with_capacity(2);
+            match self.prog.steps[s] {
+                Step::Op(d, _) | Step::Move(d, _) | Step::Invoke(_, _, d) => {
+                    if d & LOCAL != 0 {
+                        put(&mut cur, (d & !LOCAL) as usize);
+                    }
+                    next.push((s + 1, cur));
+                }
+                Step::Jmp(t) => next.push((t as usize, cur)),
+                Step::JmpIfZero(_, t) => {
+                    next.push((t as usize, cur.clone()));
+                    next.push((s + 1, cur));
+                }
+                Step::Sub(f, t) => {
+                    if rts.is_none() {
+                        next.push((t as usize, cur.clone()));
+                    }
+                    if f & LOCAL != 0 {
+                        let w = self.summary(f, t);
+                        for (a, b) in cur.iter_mut().zip(&w) {
+                            *a |= b;
+                        }
+                    }
+                    next.push((s + 1, cur));
+                }
+                Step::Rts(f) => {
+                    if rts == Some(f) {
+                        match &mut out {
+                            Some(o) => {
+                                meet(o, &cur);
+                            }
+                            None => out = Some(cur),
+                        }
+                    }
+                }
+                Step::Ret(_) | Step::End => {}
+            }
+            for (n, st) in next {
+                match state.get_mut(&n) {
+                    None => {
+                        state.insert(n, st);
+                        work.push(n);
+                    }
+                    Some(old) => {
+                        if meet(old, &st) {
+                            work.push(n);
+                        }
+                    }
+                }
+            }
+        }
+        (state, out)
+    }
+
+    /// The frame slots that the subroutine at `t` with flag `f` writes on every path to its
+    /// return. A subroutine that reaches itself, or never returns, counts as writing none.
+    fn summary(&mut self, f: u32, t: u32) -> Slots {
+        if let Some(w) = self.done.get(&t) {
+            return w.clone();
+        }
+        if self.busy.contains(&t) {
+            return self.none();
+        }
+        self.busy.push(t);
+        let init = self.none();
+        let (_, out) = self.flow(t, init, Some(f));
+        self.busy.pop();
+        let w = out.unwrap_or_else(|| self.none());
+        self.done.insert(t, w.clone());
+        w
+    }
+}
+
+/// For each unit of `prog`, the frame values (slots from its arity on) that some path of the
+/// unit may read before it writes them, in increasing order.
+fn unproven(prog: &Prog) -> Vec<Vec<u32>> {
+    let words = prog
+        .units
+        .iter()
+        .map(|u| u.flen as usize)
+        .max()
+        .unwrap_or(0)
+        .div_ceil(64)
+        .max(1);
+    let mut mw = MustWrite {
+        prog,
+        words,
+        done: HashMap::new(),
+        busy: Vec::new(),
+    };
+    let mut all = Vec::with_capacity(prog.units.len());
+    for u in &prog.units {
+        let mut init = mw.none();
+        for k in 0..u.arity as usize {
+            put(&mut init, k);
+        }
+        let (state, _) = mw.flow(u.entry, init, None);
+        let mut bad = mw.none();
+        for (&s, st) in &state {
+            reads(prog, prog.steps[s], &mut |a| {
+                if a & LOCAL != 0 {
+                    let k = (a & !LOCAL) as usize;
+                    if !has(st, k) {
+                        put(&mut bad, k);
+                    }
+                }
+            });
+        }
+        all.push((0..u.flen).filter(|&k| has(&bad, k as usize)).collect());
+    }
+    all
+}
+
 /// The kernel function `pc_rhs` of a tape with calls, and the reals per frame of its stack.
 /// It takes the arguments of [`emit_rhs`](pc_codegen::kernel::emit_rhs), then the member's
 /// stack and its error word: a call past [`KERNEL_FRAMES`] sets the word, and every
@@ -1718,9 +1936,21 @@ pub fn emit_calls_rhs(
     if !names.is_empty() {
         return Err(KernelError::Unsupported(names.join(", ")));
     }
-    let cpu = CpuTape::<f64>::new_calls(tape);
+    emit_calls(tape, &CpuTape::<f64>::new_calls(tape), scalar, stack)
+}
+
+/// The kernel text of the call program of `cpu`, the call tape of `tape`.
+fn emit_calls(
+    tape: &Tape,
+    cpu: &CpuTape<f64>,
+    scalar: Scalar,
+    stack: StackLayout,
+) -> Result<(String, usize), KernelError> {
     let prog = cpu.prog.as_deref().expect("a call program");
     let stride = stride_of(prog);
+    // The frame values a call clears, as the CPU does, because no proof says they are
+    // written before they are read.
+    let clear = unproven(prog);
     let ninvoke = prog
         .steps
         .iter()
@@ -1924,6 +2154,13 @@ pub fn emit_calls_rhs(
                         name(a)
                     );
                 }
+                for &k in &clear[u as usize] {
+                    let _ = writeln!(
+                        b,
+                        "            {} = PC_ZERO;",
+                        at(format!("nfb + {}u", 1 + k))
+                    );
+                }
                 for f in 0..unit.nflags {
                     let _ = writeln!(
                         b,
@@ -1985,6 +2222,12 @@ pub fn emit_calls_rhs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// The value the CPU writes to the frame values of each new frame in place of zero,
+        /// to show a read of a frame value before its write.
+        pub(super) static FRAME_FILL: Cell<Option<f64>> = const { Cell::new(None) };
+    }
     use pc_ir::dag::Dag;
     use pc_ir::eval::eval;
     use pc_ir::{Entry, EntryKind};
@@ -2030,6 +2273,29 @@ mod tests {
                 }
                 assert_eq!(cs.entered, stats.calls, "frames entered at {x:?} {p:?}");
                 assert_eq!(cs.peak, stats.max_depth, "peak depth at {x:?} {p:?}");
+                // Every frame value is written before it is read, so the kernel needs no
+                // cleared stack, and a frame filled with anything else gives the same bits.
+                let prog = cpu.prog.as_deref().expect("a call program");
+                assert!(
+                    unproven(prog).iter().all(Vec::is_empty),
+                    "a frame value with no proof: {:?}",
+                    unproven(prog)
+                );
+                for fill in [f64::NAN, 12.08, -0.0] {
+                    FRAME_FILL.with(|c| c.set(Some(fill)));
+                    let mut slab = cpu.slab();
+                    let mut again = vec![0.0; ir.f.len()];
+                    cpu.eval(x, p, &mut slab, &mut again);
+                    FRAME_FILL.with(|c| c.set(None));
+                    assert!(!slab.failed(), "fill {fill}: the tape failed");
+                    for (i, (a, g)) in again.iter().zip(&got).enumerate() {
+                        assert_eq!(
+                            bits(*a),
+                            bits(*g),
+                            "output {i} with frames filled with {fill} at x={x:?} p={p:?}"
+                        );
+                    }
+                }
                 Some(got)
             }
             Err(pc_ir::machine::EvalError::Depth { .. }) => {
@@ -2431,6 +2697,162 @@ mod tests {
 
     /// Bits of `v` widened to `f64`, with every NaN the same: NaN payloads are not part of
     /// the result.
+    /// A program of `units` (entry, arity, frame length, flags) over `steps`.
+    fn hand_prog(steps: Vec<Step>, pool: Vec<u32>, units: &[(u32, u32, u32, u32)]) -> Prog {
+        Prog {
+            steps,
+            pool,
+            units: units
+                .iter()
+                .map(|&(entry, arity, flen, nflags)| ProgUnit {
+                    entry,
+                    arity,
+                    flen,
+                    nflags,
+                })
+                .collect(),
+            entry: 0,
+            nflag_global: 1,
+            glen: 8,
+            cap: 100,
+        }
+    }
+
+    #[test]
+    fn the_must_write_check_finds_a_read_on_one_path() {
+        const L: u32 = LOCAL;
+        use Step::*;
+        // A diamond where one arm writes slot 1 and the join reads it.
+        let one_arm = vec![JmpIfZero(L, 3), Move(L | 1, L), Jmp(3), Ret(L | 1)];
+        let p = hand_prog(one_arm, vec![], &[(0, 1, 2, 0)]);
+        assert_eq!(unproven(&p), vec![vec![1]]);
+        // Both arms write it.
+        let both = vec![
+            JmpIfZero(L, 3),
+            Move(L | 1, L),
+            Jmp(4),
+            Move(L | 1, 0),
+            Ret(L | 1),
+        ];
+        let p = hand_prog(both, vec![], &[(0, 1, 2, 0)]);
+        assert_eq!(unproven(&p), vec![Vec::<u32>::new()]);
+        // A slot read before any write, beside one that is written.
+        let early = vec![Move(L | 2, L | 1), Move(L | 1, L), Ret(L | 2)];
+        let p = hand_prog(early, vec![], &[(0, 1, 3, 0)]);
+        assert_eq!(unproven(&p), vec![vec![1]]);
+    }
+
+    #[test]
+    fn the_must_write_check_follows_subroutines() {
+        const L: u32 = LOCAL;
+        use Step::*;
+        let none = Vec::<u32>::new();
+        // A subroutine writes the slot read after it.
+        let sub = vec![Sub(L, 2), Ret(L | 1), Move(L | 1, L), Rts(L)];
+        let p = hand_prog(sub, vec![], &[(0, 1, 2, 1)]);
+        assert_eq!(unproven(&p), vec![none.clone()]);
+        // It runs in one arm only, and the join reads its slot.
+        let one_arm = vec![
+            JmpIfZero(L, 2),
+            Sub(L, 4),
+            Ret(L | 1),
+            End,
+            Move(L | 1, L),
+            Rts(L),
+        ];
+        let p = hand_prog(one_arm, vec![], &[(0, 1, 2, 1)]);
+        assert_eq!(unproven(&p), vec![vec![1]]);
+        // Nested: the outer body calls the inner one, which writes slot 2, then reads it.
+        let nested = |first: Step, second: Step, ret: u32| {
+            vec![
+                Sub(L, 2),
+                Ret(L | ret),
+                first,
+                second,
+                Rts(L),
+                Move(L | 2, L),
+                Rts(L | 1),
+            ]
+        };
+        let p = hand_prog(
+            nested(Sub(L | 1, 5), Move(L | 1, L | 2), 1),
+            vec![],
+            &[(0, 1, 3, 2)],
+        );
+        assert_eq!(unproven(&p), vec![none.clone()]);
+        // The slot the inner body writes is proven after the outer one returns.
+        let p = hand_prog(
+            nested(Sub(L | 1, 5), Move(L | 1, L | 2), 2),
+            vec![],
+            &[(0, 1, 3, 2)],
+        );
+        assert_eq!(unproven(&p), vec![none.clone()]);
+        // The outer body reads slot 2 before it calls the inner one.
+        let p = hand_prog(
+            nested(Move(L | 1, L | 2), Sub(L | 1, 5), 1),
+            vec![],
+            &[(0, 1, 3, 2)],
+        );
+        assert_eq!(unproven(&p), vec![vec![2]]);
+        // A body that calls itself ends the walk.
+        let own = vec![Sub(L, 2), Ret(L | 1), Sub(L, 2), Move(L | 1, L), Rts(L)];
+        let p = hand_prog(own, vec![], &[(0, 1, 2, 1)]);
+        assert_eq!(unproven(&p), vec![none.clone()]);
+        // A subroutine with a global flag runs in the caller's frame, so its reads count.
+        let global = vec![Sub(0, 2), Ret(L), Move(5, L | 1), Rts(0)];
+        let p = hand_prog(global, vec![], &[(0, 1, 2, 0)]);
+        assert_eq!(unproven(&p), vec![vec![1]]);
+    }
+
+    #[test]
+    fn the_must_write_check_reads_call_arguments() {
+        const L: u32 = LOCAL;
+        use Step::*;
+        let steps = vec![Invoke(1, 0, L | 1), Ret(L | 1), Ret(L)];
+        let p = hand_prog(steps.clone(), vec![L], &[(0, 1, 2, 0), (2, 1, 1, 0)]);
+        assert_eq!(unproven(&p), vec![Vec::<u32>::new(), vec![]]);
+        let p = hand_prog(steps, vec![L | 1], &[(0, 1, 2, 0), (2, 1, 1, 0)]);
+        assert_eq!(unproven(&p), vec![vec![1], vec![]]);
+    }
+
+    #[test]
+    fn a_kernel_clears_the_frame_values_it_cannot_prove() {
+        let ir = call_model("fact(k)+sm(k)");
+        let tape = Tape::build(&ir).expect("tape");
+        let mut cpu = CpuTape::<f64>::new_calls(&tape);
+        let (text, _) = emit_calls(&tape, &cpu, Scalar::F64, StackLayout::Member).expect("text");
+        // A unit whose return reads one more frame value than it writes.
+        let prog = cpu.prog.as_deref_mut().expect("a call program");
+        let unit = &mut prog.units[0];
+        let old = unit.flen;
+        unit.flen += 1;
+        let entry = unit.entry as usize;
+        let ret = (entry..prog.steps.len())
+            .find(|&s| matches!(prog.steps[s], Step::Ret(_)))
+            .expect("the unit returns");
+        prog.steps[ret] = Step::Ret(LOCAL | old);
+        let want = unproven(prog);
+        assert_eq!(want[0], vec![old]);
+        assert!(want[1..].iter().all(Vec::is_empty));
+        let line = format!("stk[nfb + {}u] = PC_ZERO;", 1 + old);
+        assert!(!text.contains(&line));
+        let (text, _) = emit_calls(&tape, &cpu, Scalar::F64, StackLayout::Member).expect("text");
+        assert!(text.contains(&line));
+        let (text, _) = emit_calls(&tape, &cpu, Scalar::F32, StackLayout::Warp).expect("text");
+        let line = format!("stk[(nfb + {}u) * 32u] = PC_ZERO;", 1 + old);
+        assert!(text.contains(&line));
+        // On the CPU that read sees the fill, so the fill hook of the bits tests is live.
+        let run = |fill: Option<f64>| {
+            FRAME_FILL.with(|c| c.set(fill));
+            let mut slab = cpu.slab();
+            let mut out = vec![0.0; 2];
+            cpu.eval(&[0.5, 0.25], &[3.0, 0.5, 0.0], &mut slab, &mut out);
+            FRAME_FILL.with(|c| c.set(None));
+            out[0]
+        };
+        assert_ne!(bits(run(None)), bits(run(Some(12.08))));
+    }
+
     fn bits<T: Real>(v: T) -> u64 {
         let f = v.to_f64();
         if f.is_nan() { u64::MAX } else { f.to_bits() }
