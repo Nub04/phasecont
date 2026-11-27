@@ -1062,7 +1062,7 @@ Rows done: 12 of 12. Moved to gaps.json: none of the 12 slice rows (gaps.json ho
 
 The table is pass 1 of two class runs in one MATLAB session, so each row includes its own model compile. In pass 2 (warm) the rows took 0.087 to 1.764 s with Plot = false and 0.163 to 2.977 s with Plot = true, apart from the 6.4.7 app row, which took 14.349 s in pass 1 and 3.169 s in pass 2 with Plot = false; the 14.349 s includes building its app and compiling its model for the first time. Log: `~/phasecont-wip/strogatz-slice0-fix-run-2026-11-26.txt`.
 
-Whole class on this machine: 42.9 s in pass 1 (test runner total, 28 tests: 12 oracle checks, 11 Plot = true runs, 1 skipped app row, 4 schema and probe tests; 27 passed, 0 failed, 1 incomplete) and 19.0 s in pass 2. CI time: not measured, waits for the push go.
+Whole class on this machine: 42.9 s in pass 1 (test runner total, 28 tests: 12 oracle checks, 11 Plot = true runs, 1 skipped app row, 4 schema and probe tests; 27 passed, 0 failed, 1 incomplete) and 19.0 s in pass 2. CI time (run 45912470433 on c47270a, from the JUnit artifacts): 10.3 s on ubuntu-latest, 13.7 s on windows-latest and 49.0 s on macos-latest, each inside the 90 s budget. The slowest macOS rows were 6.4.7 (11.1 s) and the 8.4.3 plot run (9.0 s). The whole run took about 37 min, and its longest job was matlab (macos-latest) at 1775 s. On macOS the 9.5.1 info line reads lowest r 23.2731 and largest period 0.707821, against 23.2369 and 0.709303 on Linux and Windows; the test prints that line and does not check it.
 
 Full MATLAB suite (`buildtool test`, 2026-11-26): 1080 total, 1068 passed, 0 failed, 12 incomplete. Log: `~/phasecont-wip/strogatz-slice0-fix-suite-2026-11-26.txt`.
 
