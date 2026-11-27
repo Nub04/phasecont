@@ -42,7 +42,7 @@ use pc_codegen::kernel::{Dialect, Scalar};
 
 use crate::abi::ctl_done;
 use crate::abi::{Packed, integrator_of, pack_in};
-use crate::batch::{members_per_batch, run_batched};
+use crate::batch::{largest_batch, members_per_batch, run_batched};
 use crate::device::{Backend, BackendState, DeviceInfo};
 use crate::gpu::{GLOBAL_SCRATCH_FROM, drive, drive_from, guard, kernel_err};
 use crate::job::{
@@ -852,7 +852,13 @@ pub fn run_cuda(
                                 "the probe module has no {KEYS} kernel"
                             ))
                         })?;
-                        let chunk = batch_size(job, &checked, &tape, layout, &capacity)?;
+                        // The key stack takes the size of the run's largest batch, so the
+                        // run gets that memory back from the pool and does not allocate and
+                        // first touch fresh memory.
+                        let chunk = largest_batch(
+                            job.members,
+                            batch_size(job, &checked, &tape, layout, &capacity)?,
+                        );
                         let plan = match job.precision {
                             Precision::Single => {
                                 plan_on_gpu::<f32>(&entry.ctx, keys, &tape, job, chunk, cancel)?

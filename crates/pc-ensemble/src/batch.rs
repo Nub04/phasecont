@@ -259,6 +259,14 @@ pub fn batch_ranges(members: usize, most: usize) -> Vec<Range<usize>> {
         .collect()
 }
 
+/// The members of the largest range of [`batch_ranges`]`(members, most)`, which is the
+/// first one.
+pub fn largest_batch(members: usize, most: usize) -> usize {
+    let most = most.max(1);
+    let count = members.div_ceil(most).max(1);
+    members.div_ceil(count)
+}
+
 fn bad(m: String) -> EnsembleError {
     EnsembleError::BadJob(m)
 }
@@ -600,6 +608,21 @@ mod tests {
                     assert!(w[0].len() >= w[1].len() && w[0].len() - w[1].len() <= 1);
                 }
                 assert!(r.iter().all(|x| x.len() <= most && !x.is_empty()));
+            }
+        }
+    }
+
+    #[test]
+    fn the_largest_batch_is_the_first_range() {
+        assert_eq!(largest_batch(0, 5), 0);
+        assert_eq!(largest_batch(0, 0), 0);
+        assert_eq!(largest_batch(250, 100), 84);
+        assert_eq!(largest_batch(16384, 14252), 8192);
+        for members in 1..200 {
+            for most in 0..220 {
+                let r = batch_ranges(members, most);
+                assert_eq!(largest_batch(members, most), r[0].len(), "{members} {most}");
+                assert!(r.iter().all(|x| x.len() <= r[0].len()));
             }
         }
     }
