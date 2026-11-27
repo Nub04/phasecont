@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Fail when a windows-gnu binary defines or imports a math function whose
-# MinGW-w64 msvcrt version uses x87 precision control, so its bits depend
-# on the thread that calls it (see "x87 precision on windows-gnu" in
-# docs/STATUS.md). The source routes these through pc_ir::hostmath, and
-# clippy.toml bans the std methods, but a lint cannot see a libcall that
+# Fail when a windows-gnu binary defines or imports MinGW-w64's fma or fmaf,
+# or a math function whose MinGW-w64 msvcrt version uses x87 precision
+# control, so its bits depend on the thread that calls it (see "x87
+# precision on windows-gnu" in docs/STATUS.md). The source routes the x87
+# functions through pc_ir::hostmath, and clippy.toml bans the std methods
+# and mul_add, but a lint cannot see a libcall that
 # the compiler emits on its own (powi with a runtime exponent is one). This
 # scan of the linked binary is the check that counts.
 #
@@ -22,7 +23,12 @@ NM=${NM:-x86_64-w64-mingw32-nm}
 OBJDUMP=${OBJDUMP:-x86_64-w64-mingw32-objdump}
 # The f64 functions that gave different bits on the main thread and on a
 # worker thread in the 2026-11-25 probe (1e6 inputs each).
-names='pow|exp|exp2|expm1|log1p|atanh|asinh|acosh'
+x87_names='pow|exp|exp2|expm1|log1p|atanh|asinh|acosh'
+# MinGW-w64's fmaf (spike S4) and fma are not correctly rounded: fma gave
+# other bits than vfmadd on 2,241,553 of 10,000,000 inputs (2026-11-27). So a
+# fused multiply-add must be a vfmadd instruction, never a call
+# (pc_ir::aorpow).
+names="$x87_names|fma|fmaf"
 
 for tool in "$NM" "$OBJDUMP"; do
   if ! command -v "$tool" >/dev/null; then
@@ -61,7 +67,7 @@ for f in "$@"; do
   # "00fb7e70  <none>  03f4  acos", with the hint in hex.
   imported="$(printf '%s\n' "$headers" | grep -E "^[[:space:]]+[0-9a-f]+[[:space:]]+(<none>|[0-9a-f]+)[[:space:]]+[0-9a-f]+[[:space:]]+($names)$" || true)"
   if [[ -n "$defined$imported" ]]; then
-    echo "check-x87-math: $f links x87 math functions:" >&2
+    echo "check-x87-math: $f links x87 math functions or fma:" >&2
     [[ -n "$defined" ]] && echo "$defined" >&2
     [[ -n "$imported" ]] && echo "imported: $imported" >&2
     status=1

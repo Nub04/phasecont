@@ -6,9 +6,10 @@
 //! in `cycle::mesh` into `pow(x, n as f64)` on this target. The x87 precision-control field
 //! rounds their intermediate results, and a MinGW exe starts its main thread at 64-bit
 //! precision while every other thread starts at Windows' 53-bit default. The same call then
-//! gives different bits on different threads. These wrappers call `libm` on that target,
-//! which uses SSE2 only, and the platform functions everywhere else, so Linux and macOS keep
-//! their bits and speed.
+//! gives different bits on different threads. On that target these wrappers call `libm`,
+//! which uses SSE2 only, except `powf`, which calls the port of glibc's `pow` in
+//! [`crate::aorpow`], so it gives the bits glibc gives on the same CPU. Everywhere else they
+//! call the platform functions, so Linux and macOS keep their bits and speed.
 //!
 //! Engine code calls these instead of the `f64` methods. `clippy.toml` bans the methods except
 //! `powi`, whose calls with a constant exponent become multiplications and are fine; a scan of
@@ -47,11 +48,16 @@ mod imp {
     }
 }
 
-// `libm` on windows-gnu. It is also faster there: 41 ns against 115 ns per `pow`, and 8 ns
-// against 58 ns per `exp` (2026-11-25, one core).
+// `libm` on windows-gnu, which is also faster there: 8 ns against 58 ns per `exp`
+// (2026-11-25, one core). `powf` is the port in `aorpow`, at 5 ns per call for the fused
+// build and 16 ns for the plain one, against 68 ns for the MinGW-w64 `pow` (2026-11-27, one
+// core, `pow(x, expo1)` on step errors).
 #[cfg(all(target_os = "windows", target_env = "gnu"))]
 mod imp {
-    pub use libm::{acosh, asinh, atanh, exp, exp2, pow as powf};
+    pub use libm::{acosh, asinh, atanh, exp, exp2};
+    pub fn powf(x: f64, y: f64) -> f64 {
+        crate::aorpow::pow(x, y)
+    }
     // The compiler turns a `powi` with a variable exponent into `pow(x, n as f64)` here
     // (seen in `cycle::mesh`), so this makes the same call through `libm`.
     pub fn powi(x: f64, n: i32) -> f64 {

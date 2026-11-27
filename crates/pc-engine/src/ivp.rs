@@ -110,28 +110,12 @@ const BETA: f64 = 0.04;
 /// Unit roundoff the step-too-small test uses, as in `dopri5`.
 const UROUND: f64 = 2.3e-16;
 
-// The powers of the starting step and the step control. On x86_64-pc-windows-gnu they are
-// `libm::pow` (`pc_ir::math`), and an accepted step takes its two powers from one logarithm
-// with `pc_ir::ctlpow::pow_pair`: MinGW-w64's `pow` took 138 ns per call there, against
-// 37.6 ns for `libm::pow` and 6.6 ns for glibc's `pow` on Linux (2026-11-24, one core). Every
-// other target keeps the platform `pow`, so Linux and macOS keep their bits and speed.
-#[cfg(all(target_os = "windows", target_env = "gnu"))]
-fn ctl_pow(x: f64, y: f64) -> f64 {
-    pc_ir::math::pow(x, y)
-}
-#[cfg(not(all(target_os = "windows", target_env = "gnu")))]
+// The powers of the starting step and the step control. `hostmath::powf` is the platform
+// `pow` on Linux and macOS and the port of glibc's `pow` on x86_64-pc-windows-gnu, where
+// MinGW-w64's `pow` runs on the x87 unit and took 68 ns per call against 5 ns for the port
+// (2026-11-27, one core).
 fn ctl_pow(x: f64, y: f64) -> f64 {
     pc_ir::hostmath::powf(x, y)
-}
-
-/// `(ctl_pow(x, a), ctl_pow(x, b))`, with the same bits.
-#[cfg(all(target_os = "windows", target_env = "gnu"))]
-fn ctl_pow_pair(x: f64, a: f64, b: f64) -> (f64, f64) {
-    pc_ir::ctlpow::pow_pair(x, a, b)
-}
-#[cfg(not(all(target_os = "windows", target_env = "gnu")))]
-fn ctl_pow_pair(x: f64, a: f64, b: f64) -> (f64, f64) {
-    (pc_ir::hostmath::powf(x, a), pc_ir::hostmath::powf(x, b))
 }
 
 /// The right-hand side as a closure over time, state and output.
@@ -379,9 +363,8 @@ pub(crate) fn integrate_rows(
     };
 
     let expo1 = 0.2 - BETA * 0.75;
-    // facold^BETA, where facold is the error of the last accepted step floored at 1e-4. It is
-    // kept raised to BETA so that an accepted step forms both of its powers from one
-    // logarithm of err (see `ctl_pow`).
+    // facold^BETA, where facold is the error of the last accepted step floored at 1e-4. An
+    // accepted step computes err^BETA once and the next step reuses it.
     let facold_min_pb = ctl_pow(1e-4, BETA);
     let mut facold_pb = facold_min_pb;
     let mut reject = false;
@@ -407,10 +390,8 @@ pub(crate) fn integrate_rows(
             Err(e) => break StopReason::Error(e),
         };
         if err <= 1.0 {
-            // err^expo1 for this step and err^BETA for the next one, from one logarithm of err;
-            // the bits are those of two `pow` calls.
-            let (fac11, err_pb) = ctl_pow_pair(err, expo1, BETA);
-            debug_assert!(fac11.to_bits() == ctl_pow(err, expo1).to_bits());
+            // err^expo1 for this step and err^BETA for the next one.
+            let (fac11, err_pb) = (ctl_pow(err, expo1), ctl_pow(err, BETA));
             let fac = (fac11 / facold_pb / SAFE).clamp(1.0 / FAC2, 1.0 / FAC1);
             let mut hnew = h / fac;
             // facold = max(err, 1e-4), kept as facold^BETA.

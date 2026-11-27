@@ -9,4 +9,6 @@ disallowed-methods = [
     { path = "f64::atanh", reason = "use pc_ir::hostmath::atanh (x87 bits depend on the thread on windows-gnu)" },
     { path = "f64::asinh", reason = "use pc_ir::hostmath::asinh (x87 bits depend on the thread on windows-gnu)" },
     { path = "f64::acosh", reason = "use pc_ir::hostmath::acosh (x87 bits depend on the thread on windows-gnu)" },
+    { path = "f64::mul_add", reason = "without the FMA target feature it calls the C fma, which MinGW-w64 does not round correctly (see pc_ir::aorpow)" },
+    { path = "f32::mul_add", reason = "without the FMA target feature it calls the C fmaf, which MinGW-w64 does not round correctly (spike S4)" },
 ]
