@@ -8,6 +8,7 @@
 // Unit tests may compute references with the std functions; engine code may not (clippy.toml).
 #![cfg_attr(test, allow(clippy::disallowed_methods))]
 
+pub mod aorpow;
 pub mod check;
 pub mod complex;
 pub mod ctlpow;
