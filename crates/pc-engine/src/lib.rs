@@ -6,6 +6,9 @@
 //! pseudo-arclength continuation. [`Run`] does the same on a worker thread with poll and
 //! cancel, and [`install_hook`] makes worker panics quiet and recoverable.
 
+// Unit tests may compute references with the std functions; engine code may not (clippy.toml).
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
+
 mod aot;
 mod branch;
 mod codim2;

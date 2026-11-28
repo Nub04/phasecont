@@ -195,6 +195,7 @@ pub fn ensemble(file: &Path, job_path: &Path) -> ExitCode {
         math: spec.head.math,
         // A one-shot run does not repay a compile; the tape gives the same bits.
         native: None,
+        stack: spec.head.stack,
     };
     match run_on(&device, &job, &AtomicBool::new(false)) {
         Ok(result) => out(&to_text(&result_json(&result)), 0),
@@ -228,6 +229,9 @@ fn result_json(r: &EnsembleResult) -> Value {
             "precision": r.label.precision.name(),
             "single_precision": r.label.single_precision(),
             "math": r.label.math.name(),
+            "stack": r.label.stack.name(),
+            "stack_ran": r.label.stack_ran.name(),
+            "sorted": r.label.sorted,
         },
     })
 }
@@ -427,6 +431,7 @@ fn bench_row(case: &BenchCase, device: &DeviceInfo, precision: Precision, member
         precision,
         math: Math::Exact,
         native: jit.as_ref().map(|(_, f, _)| *f),
+        stack: pc_ensemble::StackLayout::Member,
     };
     let cancel = AtomicBool::new(false);
     let mut best = f64::INFINITY;

@@ -638,6 +638,13 @@ mod tests {
         assert_eq!(state_name(&RunState::Cancelled).unwrap(), "cancelled");
         let e = state_name(&RunState::Failed(EngineError::Singular("x".into()))).unwrap_err();
         assert_eq!(e.code(), 8);
+        // A recursion cap hit reaches MATLAB as the numeric error (`phasecont:engine:numeric`).
+        let e = state_name(&RunState::Failed(EngineError::CallLimit(
+            "a call of f".into(),
+        )))
+        .unwrap_err();
+        assert_eq!(e.code(), 8);
+        assert!(e.to_string().contains("recursion limit"), "{e}");
         let e = state_name(&RunState::Panicked {
             message: "m".into(),
             location: "f.rs:1:2".into(),

@@ -299,8 +299,11 @@ pub fn continue_ep(
     drop(problem);
     if branch.stop != StopReason::Cancelled {
         refine_specials(model, &setup.params, setup.free, opts, cancel, &mut branch);
-        if map {
-            attach_map_coefficients(model, &setup.params, setup.free, &mut branch);
+        // A recursion cap error in the coefficients ends the run with that error (SPEC 8af-5).
+        if map
+            && let Err(e) = attach_map_coefficients(model, &setup.params, setup.free, &mut branch)
+        {
+            branch.end_with_error(e);
         }
     }
     Ok(branch)

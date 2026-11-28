@@ -5,14 +5,20 @@
 //! checked `.ode` model into a DAG. `interp` walks the model directly with dual numbers
 //! and serves as the independent f64 fallback.
 
+// Unit tests may compute references with the std functions; engine code may not (clippy.toml).
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
+
+pub mod aorpow;
 pub mod check;
 pub mod complex;
+pub mod ctlpow;
 pub mod dag;
 pub mod delays;
 pub mod diff;
 pub mod entry;
 pub mod error;
 pub mod eval;
+pub mod hostmath;
 pub mod interp;
 pub mod lower;
 pub mod machine;

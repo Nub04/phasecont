@@ -14,11 +14,15 @@ classdef EnsembleTest < matlab.unittest.TestCase
         Blow = "x'=x^2" + newline + "init x=1" + newline + "done" + newline
         TwoPar = "par a=1, b=2" + newline + "x'=-a*x+b" + newline + ...
             "init x=0" + newline + "done" + newline
+        % The StackLayout of a run that does not give one.
+        DefaultStack = "auto"
     end
 
     properties (TestParameter)
         GpuBackend = {"cuda", "opencl", "metal"}
         GpuPrecision = {"single", "double"}
+        % The GPU backends that run recursive calls (SPEC 8af-5).
+        CallBackend = {"cuda", "opencl", "metal"}
     end
 
     methods (TestClassSetup)
@@ -292,6 +296,56 @@ classdef EnsembleTest < matlab.unittest.TestCase
             testCase.verifyEqual(r.TReached(1), 2);
         end
 
+        function recursionDepthStopsOneMemberWithAWarning(testCase)
+            % s(k) takes k + 1 frames, so k = 2e6 passes the cap of 1,000,000 frames
+            % and only that member stops.
+            m = testCase.model("par k=3" + newline + ...
+                "s(n)=if(n<1)then(0)else(1+s(n-1))" + newline + ...
+                "x'=-s(k)*x/k" + newline + "done" + newline);
+            launch = @() phasecont.ensemble(m, [1 2], [3 2e6], [0 1], Backend = "cpu", ...
+                Precision = "double", Dt = 0.01);
+            testCase.verifyWarning(launch, "phasecont:ensemble:memberStopped");
+            state = warning("off", "phasecont:ensemble:memberStopped");
+            testCase.addTeardown(@() warning(state));
+            r = launch();
+            testCase.verifyEqual(r.Status, ["ok"; "recursionDepth"]);
+            testCase.verifyEqual(r.StatusCode, uint8([0; 6]));
+            testCase.verifyEqual(r.TReached, [1; 0]);
+            testCase.verifyEqual(r.States(1, end, 1), exp(-1), "RelTol", 1e-8);
+        end
+
+        function aGpuBackendRefusesARecursiveModelTheTapeCannotRun(testCase)
+            % A GPU kernel is emitted from the tape, which has no erf. The engine
+            % refuses before it looks for a device, so the ID is the same on a
+            % machine without the GPU.
+            m = testCase.model("s(n)=if(n<1)then(0)else(1+s(n-1))" + newline + ...
+                "x'=-s(1)*x+erf(x)" + newline + "done" + newline);
+            for b = ["cuda", "opencl", "metal"]
+                testCase.verifyError(@() phasecont.ensemble(m, 1, [], [0 1], ...
+                    Backend = b, Precision = "single", Dt = 0.01), ...
+                    "phasecont:engine:model", b);
+            end
+        end
+
+        function aGpuStopsAMemberPastTheKernelStack(testCase, CallBackend)
+            % The GPU kernel holds 4,096 call frames per member: s(4095) takes all
+            % of them and s(4096) one more, so only the second member stops.
+            testCase.skipUnlessDevice(CallBackend, "single");
+            m = testCase.model("par k=3" + newline + ...
+                "s(n)=if(n<1)then(0)else(1+s(n-1))" + newline + ...
+                "x'=-s(k)*x/k" + newline + "done" + newline);
+            launch = @() phasecont.ensemble(m, [1 2], [4095 4096], [0 1], ...
+                Backend = CallBackend, Precision = "single", Dt = 0.01);
+            testCase.verifyWarning(launch, "phasecont:ensemble:memberStopped");
+            state = warning("off", "phasecont:ensemble:memberStopped");
+            testCase.addTeardown(@() warning(state));
+            r = launch();
+            testCase.verifyEqual(r.Status, ["ok"; "recursionDepth"]);
+            testCase.verifyEqual(r.StatusCode, uint8([0; 6]));
+            testCase.verifyEqual(r.TReached, [1; 0]);
+            testCase.verifyEqual(r.States(1, end, 1), exp(-1), "RelTol", 1e-5);
+        end
+
         function maxStepsWarnsAndKeepsTheLastState(testCase)
             m = testCase.model(testCase.Rotation);
             launch = @() phasecont.ensemble(m, [1; 0], [], [0 10], Backend = "cpu", ...
@@ -302,6 +356,72 @@ classdef EnsembleTest < matlab.unittest.TestCase
             r = launch();
             testCase.verifyEqual(r.Status, "maxSteps");
             testCase.verifyEqual(r.TReached, 0.1, "AbsTol", 1e-12);
+        end
+
+        % ---- stack layout ----
+
+        function stackLayoutIsLabelledOnTheCpu(testCase)
+            % The CPU keeps its call frames in its own memory, so every layout runs
+            % as member there and the label says so.
+            m = testCase.model("par k=3" + newline + ...
+                "s(n)=if(n<1)then(0)else(1+s(n-1))" + newline + ...
+                "x'=-s(k)*x/k" + newline + "done" + newline);
+            ref = [];
+            for s = ["member", "warp", "auto"]
+                r = phasecont.ensemble(m, [1 2], [3 5], [0 1], Backend = "cpu", ...
+                    Precision = "double", Dt = 0.01, StackLayout = s);
+                testCase.verifyEqual(r.Label.Stack, s);
+                testCase.verifyEqual(r.Label.StackRan, "member", s);
+                testCase.verifyEqual(r.Job.StackLayout, s);
+                if isempty(ref)
+                    ref = r.States;
+                end
+                testCase.verifyEqual(r.States, ref, s);
+            end
+        end
+
+        function stackLayoutDefaultIsLabelled(testCase)
+            m = testCase.model(testCase.Rotation);
+            r = phasecont.ensemble(m, [1; 0], [], [0 1], Backend = "cpu", ...
+                Precision = "double", Dt = 0.01);
+            testCase.verifyEqual(r.Label.Stack, testCase.DefaultStack);
+            testCase.verifyEqual(r.Job.StackLayout, testCase.DefaultStack);
+        end
+
+        function aBadStackLayoutRaises(testCase)
+            m = testCase.model(testCase.Rotation);
+            for s = ["lane", "", "Member "]
+                testCase.verifyError(@() phasecont.ensemble(m, [1; 0], [], [0 1], ...
+                    Backend = "cpu", Precision = "double", Dt = 0.01, ...
+                    StackLayout = s), "phasecont:ensemble:badOption", s);
+            end
+        end
+
+        function stackLayoutsGiveTheSameBitsOnAGpu(testCase, CallBackend)
+            % Only addresses change between layouts, so the states are equal bit for
+            % bit. On CUDA, auto picks warp or member for the batch; the other
+            % backends run auto as member.
+            testCase.skipUnlessDevice(CallBackend, "single");
+            m = testCase.model("par k=3" + newline + ...
+                "s(n)=if(n<1)then(0)else(1+s(n-1))" + newline + ...
+                "x'=-s(k)*x/k" + newline + "done" + newline);
+            k = 1 + mod((0:255) * 37, 600);
+            x0 = 1 + (0:255) / 256;
+            run = @(s) phasecont.ensemble(m, x0, k, [0 1], Backend = CallBackend, ...
+                Precision = "single", Dt = 0.05, StackLayout = s);
+            member = run("member");
+            testCase.verifyEqual(member.Label.StackRan, "member");
+            warp = run("warp");
+            testCase.verifyEqual(warp.Label.StackRan, "warp");
+            auto = run("auto");
+            if CallBackend == "cuda"
+                testCase.verifyTrue(any(auto.Label.StackRan == ["member" "warp" "mixed"]));
+            else
+                testCase.verifyEqual(auto.Label.StackRan, "member");
+            end
+            % verifyEqual without a tolerance compares exactly.
+            testCase.verifyEqual(warp.States, member.States);
+            testCase.verifyEqual(auto.States, member.States);
         end
 
         % ---- refine ----

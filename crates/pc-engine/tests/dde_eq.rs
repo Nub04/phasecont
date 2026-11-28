@@ -2,6 +2,9 @@
 //!
 //! The models are written inline. Every closed form below is derived in the SPEC.
 
+// Test references may use the std functions; see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use pc_engine::{
     DdeModel, EngineError, EpSetup, Evaluator, Options, RootOptions, build, build_dde,
     dde_equilibrium, dde_linearize, dde_residual, dde_stability,

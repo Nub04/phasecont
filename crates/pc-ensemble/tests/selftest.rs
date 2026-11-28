@@ -64,7 +64,13 @@ fn the_cpu_selftest_passes_in_both_precisions() {
             assert!(t.max_error.is_finite(), "{}: {t:?}", t.name);
         }
         let names: Vec<&str> = r.tiers.iter().map(|t| t.name).collect();
-        for want in ["analytic-rk4", "analytic-dp5", "iterate", "determinism"] {
+        for want in [
+            "analytic-rk4",
+            "analytic-dp5",
+            "iterate",
+            "determinism",
+            "recursion",
+        ] {
             assert!(names.contains(&want), "{names:?}");
         }
     }
@@ -140,10 +146,13 @@ fn a_missing_device_is_not_a_pass() {
 }
 
 #[test]
-fn a_backend_that_is_not_built_has_no_device() {
+fn a_backend_without_a_device_gives_no_device() {
+    // CUDA and OpenCL load their libraries at run time, so a machine with a
+    // GPU lists devices for them; only a backend that lists no device 0 is
+    // checked here.
+    let list = list_devices();
     for b in [Backend::Cuda, Backend::OpenCl, Backend::Metal] {
-        // The Metal backend is built on macOS, where it finds a device.
-        if cfg!(target_os = "macos") && b == Backend::Metal {
+        if list.devices.iter().any(|d| d.backend == b && d.index == 0) {
             continue;
         }
         let e = run_selftest(Selected {
@@ -164,6 +173,7 @@ mod run_with {
 
     use pc_ensemble::device::{Backend, DeviceInfo};
     use pc_ensemble::selftest::{SelfTestError, run_with};
+    use pc_ensemble::tape::{KERNEL_FRAMES, with_max_calls};
     use pc_ensemble::{
         EnsembleError, EnsembleResult, Job, Label, Math, Method, Precision, Status, run_cpu,
     };
@@ -187,11 +197,44 @@ mod run_with {
             driver: "0".into(),
             precision: p,
             math: pc_ensemble::Math::Exact,
+            stack: pc_ensemble::StackLayout::Member,
+            stack_ran: pc_ensemble::StackRan::Member,
+            sorted: false,
         }
     }
 
+    /// The CPU backend under the call cap of the fake CUDA device, so it ends a member past
+    /// 4,096 frames as a CUDA kernel does.
     fn cpu(j: &Job) -> Result<EnsembleResult, EnsembleError> {
+        with_max_calls(KERNEL_FRAMES, || uncapped(j))
+    }
+
+    /// The CPU backend at its own cap of 1,000,000 frames.
+    fn uncapped(j: &Job) -> Result<EnsembleResult, EnsembleError> {
         run_cpu(j, u64::MAX, &AtomicBool::new(false))
+    }
+
+    #[test]
+    fn a_runner_that_does_not_stop_at_the_cap_fails_the_recursion_tier() {
+        let r = run_with(&uncapped, device(), label(Precision::Double), false, false).unwrap();
+        let t = r.tiers.iter().find(|t| t.name == "recursion").unwrap();
+        assert_eq!(t.max_error, f64::INFINITY, "{t:?}");
+        assert!(!r.pass);
+        let t = r.tiers.iter().find(|t| t.name == "analytic-rk4").unwrap();
+        assert!(t.pass(), "{t:?}");
+    }
+
+    #[test]
+    fn every_gpu_backend_has_a_recursion_tier() {
+        for b in [Backend::Cuda, Backend::OpenCl, Backend::Metal] {
+            let d = DeviceInfo {
+                backend: b,
+                ..device()
+            };
+            let r = run_with(&cpu, d, label(Precision::Single), false, false).unwrap();
+            assert!(r.pass, "{b:?}: {:#?}", r.tiers);
+            assert!(r.tiers.iter().any(|t| t.name == "recursion"), "{b:?}");
+        }
     }
 
     #[test]

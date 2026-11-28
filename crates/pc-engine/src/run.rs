@@ -224,6 +224,10 @@ struct Inner {
     /// The flat rows of each IVP or ITER branch, by branch index (SPEC section 8af-1); `None`
     /// (or missing) for a branch that keeps its points in `branches`.
     rows: Vec<Option<Rows>>,
+    /// The thinned rows of a finished thinned IVP branch (SPEC section 8af-2), by branch index.
+    /// The worker moves them into `rows` under the hold of the lock that sets the end state, so
+    /// no poll sees them while the state is still `Running`.
+    pending: Vec<(usize, Rows)>,
 }
 
 struct Shared {
@@ -391,8 +395,9 @@ fn flat_rows(
 /// An IVP run with the `thin` key (SPEC section 8af-2). The rows go into a store of the
 /// worker, so the shared slot stays empty and a poll or a copy sees no rows while the run
 /// goes on. On every end the worker returns from (End, MaxSteps, StepTooSmall, an error and
-/// a cancel) it thins the rows and puts the store in the shared slot under one hold of the
-/// lock. A panic unwinds past the swap, so a panicked run shows no rows.
+/// a cancel) it thins the rows and leaves them in `Inner::pending`; `worker` moves them into
+/// the shared slot under the hold of the lock that sets the end state, so a poll sees the
+/// thinned rows only with that state. A panicked run shows no rows.
 fn thinned_ivp(
     shared: &Shared,
     idx: usize,
@@ -413,7 +418,7 @@ fn thinned_ivp(
     let on_row = &mut |alpha: f64, x: &[f64], aux: &[f64], _h: f64| rows.push(alpha, x, aux);
     let b = integrate_rows(model, ivp, opts, &shared.cancel, on_row).map(flat_branch);
     rows.thin(tol);
-    shared.lock().rows[idx] = Some(rows);
+    shared.lock().pending.push((idx, rows));
     b
 }
 
@@ -997,11 +1002,21 @@ fn finish(shared: &Shared, r: Result<&Branch, EngineError>) -> RunState {
 }
 
 /// [`finish`] for a branch that is already stored: only its stop reason matters.
+///
+/// A stop on a recursion cap hit ends the run `Failed` with that error (SPEC 8af-5, Errors), so
+/// the caller sees an error and not a normal end. So does a stop on a model error, which is a
+/// model that cannot be evaluated (a failed JIT compile, a call helper that failed), not a
+/// numeric event. The points and the stop reason stay on the branch. Every other
+/// `StopReason::Error` still ends `Done`: a NaN in `simulate` or an iterate, a Newton failure or
+/// a bad problem is a stop reason with a warning.
 fn finish_stop(shared: &Shared, r: Result<&StopReason, EngineError>) -> RunState {
     let cancelled = shared.cancel.load(Ordering::Relaxed);
     match r {
         _ if cancelled => RunState::Cancelled,
         Ok(stop) if *stop == StopReason::Cancelled => RunState::Cancelled,
+        Ok(StopReason::Error(e)) if e.is_call_limit() || matches!(e, EngineError::Model(_)) => {
+            RunState::Failed(e.clone())
+        }
         Ok(_) => RunState::Done,
         Err(EngineError::Cancelled) => RunState::Cancelled,
         Err(e) => RunState::Failed(e),
@@ -1019,7 +1034,15 @@ fn worker(shared: Arc<Shared>, run_body: impl FnOnce(&Shared) -> RunState) {
             RunState::Panicked { message, location }
         }
     };
-    shared.lock().state = state;
+    let mut g = shared.lock();
+    let pending = std::mem::take(&mut g.pending);
+    // A panicked run reports zero rows (SPEC 8af-2), so its thinned rows are dropped.
+    if !matches!(state, RunState::Panicked { .. }) {
+        for (idx, rows) in pending {
+            g.rows[idx] = Some(rows);
+        }
+    }
+    g.state = state;
 }
 
 impl Run {
@@ -1047,6 +1070,7 @@ impl Run {
                 state: RunState::Running,
                 iterates: Vec::new(),
                 rows: Vec::new(),
+                pending: Vec::new(),
             }),
             cancel: AtomicBool::new(false),
         });
@@ -1384,6 +1408,7 @@ mod tests {
                 state: RunState::Running,
                 iterates: Vec::new(),
                 rows: Vec::new(),
+                pending: Vec::new(),
             }),
             cancel: AtomicBool::new(false),
         };
@@ -1421,6 +1446,7 @@ mod tests {
                 state: RunState::Running,
                 iterates: Vec::new(),
                 rows: Vec::new(),
+                pending: Vec::new(),
             }),
             cancel: AtomicBool::new(false),
         }
@@ -1466,10 +1492,54 @@ mod tests {
     }
 
     #[test]
+    fn finish_stop_fails_a_run_that_stopped_on_a_cap_hit_or_a_model_error_and_no_other() {
+        let sh = empty_shared();
+        let cap = EngineError::CallLimit("a call of sum".into());
+        assert_eq!(
+            finish_stop(&sh, Ok(&StopReason::Error(cap.clone()))),
+            RunState::Failed(cap.clone())
+        );
+        // A model error stop is a model that cannot run.
+        let m = EngineError::Model("the JIT could not compile an entry".into());
+        assert_eq!(
+            finish_stop(&sh, Ok(&StopReason::Error(m.clone()))),
+            RunState::Failed(m)
+        );
+        // Every other error stop still ends `Done` with its stop reason, as before: a NaN in
+        // `simulate` or an iterate is a stop reason with a warning, not an error.
+        for e in [
+            EngineError::NotFinite("F".into()),
+            EngineError::NewtonFailed {
+                iters: 3,
+                residual: 1.0,
+            },
+            EngineError::BadProblem("x".into()),
+        ] {
+            assert_eq!(
+                finish_stop(&sh, Ok(&StopReason::Error(e.clone()))),
+                RunState::Done,
+                "{e:?}"
+            );
+        }
+        // A cancel request wins over a cap hit.
+        sh.cancel.store(true, Ordering::Relaxed);
+        assert_eq!(
+            finish_stop(&sh, Ok(&StopReason::Error(cap))),
+            RunState::Cancelled
+        );
+    }
+
+    #[test]
     fn finish_stop_agrees_with_finish() {
         let sh = empty_shared();
         let mut b = placeholder();
-        for stop in [StopReason::End, StopReason::Cancelled, StopReason::Bounds] {
+        let cap = StopReason::Error(EngineError::CallLimit("a call of f".into()));
+        for stop in [
+            StopReason::End,
+            StopReason::Cancelled,
+            StopReason::Bounds,
+            cap,
+        ] {
             b.stop = stop.clone();
             assert_eq!(finish_stop(&sh, Ok(&stop)), finish(&sh, Ok(&b)));
         }
@@ -1506,6 +1576,7 @@ mod tests {
                 state: RunState::Running,
                 iterates: Vec::new(),
                 rows: Vec::new(),
+                pending: Vec::new(),
             }),
             cancel: AtomicBool::new(false),
         });
@@ -1538,6 +1609,7 @@ mod tests {
                 state: RunState::Done,
                 iterates: Vec::new(),
                 rows: Vec::new(),
+                pending: Vec::new(),
             }),
             cancel: AtomicBool::new(false),
         });
@@ -1766,5 +1838,39 @@ mod tests {
         assert_eq!(special_index(&b, "bpc1"), Some(0));
         assert_eq!(special_index(&b, "BPC2"), None);
         assert_eq!(special_index(&b, "LPC1"), None);
+    }
+
+    /// SPEC 8af-2, While running: a thinned run shows no rows until its end state is set,
+    /// and then shows the thinned rows. The check runs on the worker after the IVP has
+    /// returned and before the worker sets the state, the gap a poll fell into on CI.
+    #[test]
+    fn a_thinned_run_shows_its_rows_only_with_its_end_state() {
+        let (model, info) = test_model("lorenz.ode");
+        let kind = RunKind::Ivp {
+            tspan: [0.0, 2.0],
+            opts: IvpOptions::default(),
+            n_aux: 0,
+            thin: Some(1e-3),
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let run = Run::spawn(move |shared| {
+            let mut m = build_allowing_t(&model, &info, Evaluator::Jit).unwrap();
+            let setup = EpSetup::new(0, vec![10.0, 28.0, 8.0 / 3.0], vec![1.0, 1.0, 1.0]);
+            let opts = Options::default();
+            let b = follow_at(shared, m.as_mut(), false, 1, &kind, &setup, &opts, 0);
+            let seen = {
+                let g = shared.lock();
+                (g.state.clone(), g.rows[0].as_ref().map(|r| r.len()))
+            };
+            tx.send(seen).unwrap();
+            let stop = store_branch(shared, 0, b.unwrap());
+            finish_stop(shared, Ok(&stop))
+        });
+        let st = run.join();
+        let (state, rows) = rx.recv().unwrap();
+        assert_eq!(state, RunState::Running);
+        assert_eq!(rows, Some(0), "rows were visible while the run was running");
+        assert_eq!(st.state, RunState::Done);
+        assert!(st.points[0] >= 2, "points {:?}", st.points);
     }
 }

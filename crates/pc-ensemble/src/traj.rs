@@ -15,6 +15,8 @@
 //! Workspace of a member, `10 n + n_p + 1` values in this order: `y`, `y1`, `yt`, the seven
 //! stages `k0` to `k6`, and the parameters followed by the time.
 
+use std::sync::atomic::AtomicBool;
+
 use crate::job::{Checked, Job, Method, NativeRhs, Params, Status};
 use crate::real::Real;
 use crate::tape::{CpuTape, Slab, Tape};
@@ -82,6 +84,9 @@ pub struct Coef<T: Real> {
     pub expo1: T,
     pub facold0: T,
     pub facold_min: T,
+    /// `facold0^beta` and `facold_min^beta`, so the controller need not form them.
+    pub facold0_pb: T,
+    pub facold_min_pb: T,
     pub uround: T,
     pub tenth: T,
     pub c101: T,
@@ -111,6 +116,8 @@ impl<T: Real> Coef<T> {
             expo1: r(0.2 - BETA * 0.75),
             facold0: r(1e-4),
             facold_min: r(1e-4),
+            facold0_pb: r(1e-4).powf(r(BETA)),
+            facold_min_pb: r(1e-4).powf(r(BETA)),
             uround: r(T::UROUND_F64),
             tenth: r(0.1),
             c101: r(1.01),
@@ -183,6 +190,9 @@ pub struct Ctx<'a, T: Real> {
     pub times: Vec<T>,
     pub kind: Kind<T>,
     pub co: Coef<T>,
+    /// The cancel flag of the run, read inside a long evaluation of a tape with calls. None
+    /// from [`Ctx::new`].
+    pub cancel: Option<&'a AtomicBool>,
 }
 
 impl<'a, T: Real> Ctx<'a, T> {
@@ -252,6 +262,7 @@ impl<'a, T: Real> Ctx<'a, T> {
             times,
             kind,
             co,
+            cancel: None,
         }
     }
 
@@ -277,6 +288,25 @@ pub struct Work<'a, T: Real> {
     out: &'a mut [T],
 }
 
+impl<'a, T: Real> Work<'a, T> {
+    /// Splits a member's workspace `w` of `Ctx::work_len` values for `n` states.
+    fn new(n: usize, w: &'a mut [T], out: &'a mut [T], vals: &'a mut Slab<T>) -> Self {
+        let (y, rest) = w.split_at_mut(n);
+        let (y1, rest) = rest.split_at_mut(n);
+        let (yt, rest) = rest.split_at_mut(n);
+        let (k, p) = rest.split_at_mut(7 * n);
+        Work {
+            y,
+            y1,
+            yt,
+            k,
+            p,
+            vals,
+            out,
+        }
+    }
+}
+
 /// The state of one member between step attempts.
 #[derive(Clone, Copy, Debug)]
 pub struct Traj<T: Real> {
@@ -293,7 +323,10 @@ pub struct Traj<T: Real> {
     step_in_seg: u32,
     /// DP5: the step to try next.
     h: T,
-    facold: T,
+    /// DP5: `facold^beta`, where `facold` is the error of the last accepted step, floored
+    /// at `facold_min`. It is kept raised to `beta` so that an accepted step forms both of
+    /// its powers from one logarithm of its error (SPEC section 13).
+    facold_pb: T,
     reject: bool,
     /// The error estimate of the last attempt was NaN.
     nan_err: bool,
@@ -325,7 +358,7 @@ impl<T: Real> Traj<T> {
             si: 0,
             step_in_seg: 0,
             h: T::ZERO,
-            facold: T::ZERO,
+            facold_pb: T::ZERO,
             reject: false,
             nan_err: false,
         }
@@ -345,25 +378,8 @@ impl<T: Real> Traj<T> {
         if self.status != Status::Running {
             return true;
         }
-        let n = ctx.n;
-        let (y, rest) = w.split_at_mut(n);
-        let (y1, rest) = rest.split_at_mut(n);
-        let (yt, rest) = rest.split_at_mut(n);
-        let (k, p) = rest.split_at_mut(7 * n);
-        let mut wk = Work {
-            y,
-            y1,
-            yt,
-            k,
-            p,
-            vals,
-            out,
-        };
-        if self.started {
-            ctx.rhs.bind(wk.p, wk.vals);
-        } else {
-            self.start(ctx, &mut wk);
-        }
+        let mut wk = Work::new(ctx.n, w, out, vals);
+        self.load(ctx, &mut wk);
         if self.status == Status::Running {
             match &ctx.kind {
                 Kind::Rk4(segs) => self.rk4(ctx, segs, &mut wk, budget),
@@ -372,6 +388,275 @@ impl<T: Real> Traj<T> {
             }
         }
         self.status != Status::Running
+    }
+
+    /// Binds the member's parameters to `wk.vals`, or starts the member on its first call.
+    fn load(&mut self, ctx: &Ctx<T>, wk: &mut Work<T>) {
+        if self.started {
+            ctx.rhs.bind(wk.p, wk.vals);
+        } else {
+            self.start(ctx, wk);
+        }
+    }
+
+    /// Runs up to `budget` step attempts for each member of `trs`, a group of `W`
+    /// consecutive members or fewer at the end of the run (SPEC section 13, `cpu`). `w` and
+    /// `out` hold the workspaces and output slices of the group in member order, and
+    /// `slabs` gives each lane its own slab. A full RK4 group whose members are all running
+    /// and at the same step runs stage by stage across the lanes; every other case runs one
+    /// member at a time. Either way a member does the same operations in the same order on
+    /// its own data as it would alone, so its bits do not depend on the group.
+    pub fn advance_group<const W: usize>(
+        trs: &mut [Traj<T>],
+        ctx: &Ctx<T>,
+        w: &mut [T],
+        out: &mut [T],
+        slabs: &mut [Slab<T>; W],
+        g: &mut [T],
+        budget: u64,
+    ) {
+        let (wl, ol) = (ctx.work_len(), ctx.out_len());
+        let mut ws = w.chunks_exact_mut(wl);
+        let mut os = out.chunks_exact_mut(ol);
+        let one_by_one = |trs: &mut [Traj<T>],
+                          ws: &mut std::slice::ChunksExactMut<'_, T>,
+                          os: &mut std::slice::ChunksExactMut<'_, T>,
+                          slabs: &mut [Slab<T>; W],
+                          budget: u64| {
+            for ((tr, (w, o)), vals) in trs.iter_mut().zip(ws.zip(os)).zip(slabs.iter_mut()) {
+                tr.advance(ctx, w, o, vals, budget);
+            }
+        };
+        let Kind::Rk4(segs) = &ctx.kind else {
+            return one_by_one(trs, &mut ws, &mut os, slabs, budget);
+        };
+        if trs.len() != W {
+            return one_by_one(trs, &mut ws, &mut os, slabs, budget);
+        }
+        let group: &mut [Traj<T>; W] = trs.try_into().expect("the length is W");
+        if group.iter().any(|t| t.status != Status::Running) {
+            return one_by_one(trs, &mut ws, &mut os, slabs, budget);
+        }
+        let mut sl = slabs.iter_mut();
+        let mut wks: [Work<T>; W] = std::array::from_fn(|_| {
+            let (Some(w), Some(o), Some(vals)) = (ws.next(), os.next(), sl.next()) else {
+                unreachable!("a full group has W workspaces, outputs and slabs");
+            };
+            Work::new(ctx.n, w, o, vals)
+        });
+        for (tr, wk) in group.iter_mut().zip(wks.iter_mut()) {
+            tr.load(ctx, wk);
+        }
+        let first = group[0];
+        let in_step = group.iter().all(|t| {
+            t.status == Status::Running
+                && (t.si, t.step_in_seg, t.accepted)
+                    == (first.si, first.step_in_seg, first.accepted)
+        });
+        let left = if in_step {
+            Traj::rk4_lanes(group, ctx, segs, &mut wks, g, budget)
+        } else {
+            budget
+        };
+        if left == 0 {
+            return;
+        }
+        for (tr, wk) in group.iter_mut().zip(wks.iter_mut()) {
+            if tr.status == Status::Running {
+                tr.rk4(ctx, segs, wk, left);
+            }
+        }
+    }
+
+    /// RK4 on the `W` lanes of a group that are all running and at the same step, stage by
+    /// stage across the lanes. Each lane does the operations of [`Traj::rk4`] in its order.
+    /// It stops after the first step at which a lane stops and returns the budget left for
+    /// the other lanes, which then go on one at a time.
+    fn rk4_lanes<const W: usize>(
+        trs: &mut [Traj<T>; W],
+        ctx: &Ctx<T>,
+        segs: &[Seg<T>],
+        wks: &mut [Work<T>; W],
+        g: &mut [T],
+        budget: u64,
+    ) -> u64 {
+        let n = ctx.n;
+        let wn = W * n;
+        // The group's states and stages side by side, member-major, so that each pass below
+        // is one loop over `W n` values.
+        let (y, rest) = g[..7 * wn].split_at_mut(wn);
+        let (yt, rest) = rest.split_at_mut(wn);
+        let (k1, rest) = rest.split_at_mut(wn);
+        let (k2, rest) = rest.split_at_mut(wn);
+        let (k3, rest) = rest.split_at_mut(wn);
+        let (k4, y1) = rest.split_at_mut(wn);
+        for (c, wk) in y.chunks_exact_mut(n).zip(wks.iter()) {
+            c.copy_from_slice(wk.y);
+        }
+        Traj::rk4_lanes_in(trs, ctx, segs, wks, [y, yt, k1, k2, k3, k4, y1], budget)
+    }
+
+    /// The loop of [`Traj::rk4_lanes`] on the group buffers `y, yt, k1, k2, k3, k4, y1`. The
+    /// buffers `y` and `y1` trade places after a step that every lane accepts, and each lane's
+    /// state goes back to its workspace on return.
+    fn rk4_lanes_in<const W: usize>(
+        trs: &mut [Traj<T>; W],
+        ctx: &Ctx<T>,
+        segs: &[Seg<T>],
+        wks: &mut [Work<T>; W],
+        bufs: [&mut [T]; 7],
+        mut budget: u64,
+    ) -> u64 {
+        let (n, two) = (ctx.n, ctx.co.two);
+        let [mut y, yt, k1, k2, k3, k4, mut y1] = bufs;
+        let call = ctx.native.and_then(|f| ctx.rhs.native_call(f));
+        // `k = f(t, x)` for every lane, each with its own slab.
+        let stage = |wks: &mut [Work<T>; W], x: &[T], t: T, k: &mut [T]| match call {
+            Some(c) => {
+                for ((wk, x), k) in wks
+                    .iter_mut()
+                    .zip(x.chunks_exact(n))
+                    .zip(k.chunks_exact_mut(n))
+                {
+                    c.call(x, t, wk.vals, k);
+                }
+            }
+            None => {
+                for ((wk, x), k) in wks
+                    .iter_mut()
+                    .zip(x.chunks_exact(n))
+                    .zip(k.chunks_exact_mut(n))
+                {
+                    eval_at(ctx, x, t, wk.vals, k);
+                }
+            }
+        };
+        while budget > 0 {
+            budget -= 1;
+            let (si, i) = (trs[0].si, trs[0].step_in_seg);
+            let seg = &segs[si as usize];
+            let last_in_seg = u64::from(i) + 1 == seg.m;
+            let ts = seg.a + T::from_u32(i) * seg.h;
+            let t_next = if last_in_seg {
+                seg.b
+            } else {
+                seg.a + T::from_u32(i + 1) * seg.h
+            };
+            let (h, half, h6) = (seg.h, seg.half, seg.h6);
+            stage(wks, y, ts, k1);
+            for ((t, &a), &k) in yt.iter_mut().zip(y.iter()).zip(k1.iter()) {
+                *t = a + half * k;
+            }
+            stage(wks, yt, ts + half, k2);
+            for ((t, &a), &k) in yt.iter_mut().zip(y.iter()).zip(k2.iter()) {
+                *t = a + half * k;
+            }
+            stage(wks, yt, ts + half, k3);
+            for ((t, &a), &k) in yt.iter_mut().zip(y.iter()).zip(k3.iter()) {
+                *t = a + h * k;
+            }
+            stage(wks, yt, t_next, k4);
+            for (((((o, &a), &q1), &q2), &q3), &q4) in y1
+                .iter_mut()
+                .zip(y.iter())
+                .zip(k1.iter())
+                .zip(k2.iter())
+                .zip(k3.iter())
+                .zip(k4.iter())
+            {
+                let mut s = q1 + two * q2;
+                s = s + two * q3;
+                s = s + q4;
+                *o = a + h6 * s;
+            }
+            let mut going = true;
+            let mut took = [true; W];
+            for (((tr, wk), y1), took) in trs
+                .iter_mut()
+                .zip(wks.iter_mut())
+                .zip(y1.chunks_exact(n))
+                .zip(took.iter_mut())
+            {
+                match tr.accept(ctx, y1, wk.vals, wk.out, t_next, last_in_seg) {
+                    Some(running) => going &= running,
+                    None => (*took, going) = (false, false),
+                }
+            }
+            if !going {
+                for (((wk, y), y1), took) in wks
+                    .iter_mut()
+                    .zip(y.chunks_exact(n))
+                    .zip(y1.chunks_exact(n))
+                    .zip(took)
+                {
+                    wk.y.copy_from_slice(if took { y1 } else { y });
+                }
+                return budget;
+            }
+            std::mem::swap(&mut y, &mut y1);
+        }
+        for (wk, y) in wks.iter_mut().zip(y.chunks_exact(n)) {
+            wk.y.copy_from_slice(y);
+        }
+        budget
+    }
+
+    /// Ends a step whose new state is in `y1`: stops the member when the right-hand side
+    /// went past the frame cap or `y1` is rejected, and otherwise accepts `y1` at `t_next`,
+    /// writes a sample at the end of a segment and checks the step limit. Returns true while
+    /// the member is still running.
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    fn end_step(
+        &mut self,
+        ctx: &Ctx<T>,
+        y: &mut [T],
+        y1: &mut [T],
+        vals: &Slab<T>,
+        out: &mut [T],
+        t_next: T,
+        last_in_seg: bool,
+    ) -> bool {
+        match self.accept(ctx, y1, vals, out, t_next, last_in_seg) {
+            None => false,
+            Some(running) => {
+                y.swap_with_slice(y1);
+                running
+            }
+        }
+    }
+
+    /// [`Traj::end_step`] without the swap: `None` when the step is rejected and the member
+    /// stops on its old state, otherwise whether the member, now on `y1`, still runs.
+    #[inline]
+    fn accept(
+        &mut self,
+        ctx: &Ctx<T>,
+        y1: &[T],
+        vals: &Slab<T>,
+        out: &mut [T],
+        t_next: T,
+        last_in_seg: bool,
+    ) -> Option<bool> {
+        if self.too_deep(vals) || self.reject_state(ctx, y1) {
+            return None;
+        }
+        self.t = t_next;
+        self.accepted += 1;
+        self.step_in_seg += 1;
+        if last_in_seg {
+            self.finish_sample(out, y1);
+            self.step_in_seg = 0;
+            if self.si as usize == ctx.times.len() {
+                self.status = Status::Ok;
+                return Some(false);
+            }
+        }
+        if self.accepted >= ctx.max_steps {
+            self.status = Status::MaxSteps;
+            return Some(false);
+        }
+        Some(true)
     }
 
     /// Loads the member's inputs and, for the adaptive method, the first stage and the
@@ -396,17 +681,23 @@ impl<T: Real> Traj<T> {
             return;
         };
         eval_at(ctx, wk.y, ctx.t0, wk.vals, &mut wk.k[..n]);
+        if self.too_deep(wk.vals) {
+            return;
+        }
         if !all_finite(&wk.k[..n]) {
             self.status = Status::NonFinite;
             return;
         }
         let h = initial_step(ctx, par, wk);
+        if self.too_deep(wk.vals) {
+            return;
+        }
         if !(h.is_finite() && h > T::ZERO) {
             self.status = Status::NonFinite;
             return;
         }
         self.h = h;
-        self.facold = ctx.co.facold0;
+        self.facold_pb = ctx.co.facold0_pb;
     }
 
     fn finish_sample(&mut self, out: &mut [T], y: &[T]) {
@@ -460,23 +751,7 @@ impl<T: Real> Traj<T> {
                 s = s + k4[j];
                 y1[j] = y[j] + h6 * s;
             }
-            if self.reject_state(ctx, y1) {
-                return;
-            }
-            y.swap_with_slice(y1);
-            self.t = t_next;
-            self.accepted += 1;
-            self.step_in_seg += 1;
-            if last_in_seg {
-                self.finish_sample(out, y);
-                self.step_in_seg = 0;
-                if self.si as usize == ctx.times.len() {
-                    self.status = Status::Ok;
-                    return;
-                }
-            }
-            if self.accepted >= ctx.max_steps {
-                self.status = Status::MaxSteps;
+            if !self.end_step(ctx, y, y1, vals, out, t_next, last_in_seg) {
                 return;
             }
         }
@@ -499,26 +774,21 @@ impl<T: Real> Traj<T> {
                 seg.a + T::from_u32(i + 1)
             };
             eval_at(ctx, y, ts, vals, y1);
-            if self.reject_state(ctx, y1) {
-                return;
-            }
-            y.swap_with_slice(y1);
-            self.t = t_next;
-            self.accepted += 1;
-            self.step_in_seg += 1;
-            if last_in_seg {
-                self.finish_sample(out, y);
-                self.step_in_seg = 0;
-                if self.si as usize == ctx.times.len() {
-                    self.status = Status::Ok;
-                    return;
-                }
-            }
-            if self.accepted >= ctx.max_steps {
-                self.status = Status::MaxSteps;
+            if !self.end_step(ctx, y, y1, vals, out, t_next, last_in_seg) {
                 return;
             }
         }
+    }
+
+    /// Ends the member with [`Status::RecursionDepth`] when a right-hand side since the
+    /// last bind went past the frame cap. Only a tape with calls can fail, and a failed
+    /// slab stays failed until the next bind, so one test after each step covers every stage.
+    fn too_deep(&mut self, vals: &Slab<T>) -> bool {
+        if vals.failed() {
+            self.status = Status::RecursionDepth;
+            return true;
+        }
+        false
     }
 
     /// Sets the status and returns true when the new state `y1` is not finite or leaves the
@@ -569,19 +839,29 @@ impl<T: Real> Traj<T> {
             let last = landing && self.si as usize + 1 == ctx.times.len();
             let t_end = if landing { s } else { self.t + self.h };
             let err = dp5_step(ctx, par, wk, self.t, self.h, t_end);
-            let fac11 = err.powf(co.expo1);
+            if self.too_deep(wk.vals) {
+                return;
+            }
             if err <= T::ONE {
                 if self.reject_state(ctx, wk.y1) {
                     return;
                 }
-                // Only an accepted step uses facold^beta, so a rejected one skips the power.
-                let fac = clamp(
-                    fac11 / self.facold.powf(co.beta) / co.safe,
-                    co.inv_fac2,
-                    co.inv_fac1,
-                );
+                // err^expo1 for this step and err^beta for the next one, from one logarithm
+                // of err; the bits are those of two `powf` calls.
+                let (fac11, err_pb) = err.powf_pair(co.expo1, co.beta);
+                debug_assert!(fac11.to_f64().to_bits() == err.powf(co.expo1).to_f64().to_bits());
+                let fac = clamp(fac11 / self.facold_pb / co.safe, co.inv_fac2, co.inv_fac1);
                 let mut hnew = self.h / fac;
-                self.facold = err.fmax(co.facold_min);
+                // facold = max(err, facold_min), kept as facold^beta.
+                self.facold_pb = if err >= co.facold_min {
+                    err_pb
+                } else {
+                    co.facold_min_pb
+                };
+                debug_assert!(
+                    self.facold_pb.to_f64().to_bits()
+                        == err.fmax(co.facold_min).powf(co.beta).to_f64().to_bits()
+                );
                 self.accepted += 1;
                 self.t = t_end;
                 self.nan_err = false;
@@ -613,6 +893,7 @@ impl<T: Real> Traj<T> {
                 self.reject = false;
                 self.h = hnew;
             } else {
+                let fac11 = err.powf(co.expo1);
                 // The clamp above would give a NaN error a growth factor; shrink instead.
                 self.h = self.h / co.inv_fac1.fmin(fac11 / co.safe);
                 self.reject = true;
@@ -626,7 +907,7 @@ impl<T: Real> Traj<T> {
 fn eval_at<T: Real>(ctx: &Ctx<T>, x: &[T], t: T, vals: &mut Slab<T>, out: &mut [T]) {
     match ctx.native {
         Some(f) => ctx.rhs.eval_native(f, x, t, vals, out),
-        None => ctx.rhs.eval_xt(x, t, vals, out),
+        None => ctx.rhs.eval_xt_with(x, t, vals, out, ctx.cancel),
     }
 }
 

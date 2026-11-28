@@ -1,0 +1,4 @@
+# x(n+1) = cos(x(n))
+init x=1
+x(t+1)=cos(x)
+done

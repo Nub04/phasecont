@@ -62,6 +62,9 @@ pub trait Real:
     fn log10(self) -> Self;
     fn atan2(self, x: Self) -> Self;
     fn powf(self, y: Self) -> Self;
+    /// `(self.powf(a), self.powf(b))` with the same bits. The double version shares one
+    /// logarithm between the two powers (`pc_ir::ctlpow`).
+    fn powf_pair(self, a: Self, b: Self) -> (Self, Self);
     fn fmod(self, y: Self) -> Self;
 
     /// Smaller of the two; a NaN operand is ignored, as Rust's `min` does. The controller
@@ -80,7 +83,8 @@ macro_rules! impl_real {
         $t:ident, $name:literal, $uround:expr, widen $widen:path, native $native:ident,
         sin $sin:path, cos $cos:path, tan $tan:path, asin $asin:path, acos $acos:path,
         atan $atan:path, sinh $sinh:path, cosh $cosh:path, tanh $tanh:path, exp $exp:path,
-        ln $ln:path, log10 $log10:path, atan2 $atan2:path, pow $pow:path, fmod $fmod:path
+        ln $ln:path, log10 $log10:path, atan2 $atan2:path, pow $pow:path, fmod $fmod:path,
+        pow_pair $pow_pair:path
     ) => {
         impl Real for $t {
             const ZERO: Self = 0.0;
@@ -161,6 +165,9 @@ macro_rules! impl_real {
             fn powf(self, y: Self) -> Self {
                 $pow(self, y)
             }
+            fn powf_pair(self, a: Self, b: Self) -> (Self, Self) {
+                $pow_pair(self, a, b)
+            }
             fn fmod(self, y: Self) -> Self {
                 $fmod(self, y)
             }
@@ -188,11 +195,16 @@ fn widen_f64(v: Vec<f64>) -> Vec<f64> {
     v
 }
 
+fn pow_pair_f32(x: f32, a: f32, b: f32) -> (f32, f32) {
+    (libm::powf(x, a), libm::powf(x, b))
+}
+
 impl_real!(
     f32, "single", 1.192_092_9e-7, widen widen_f32, native single,
     sin libm::sinf, cos libm::cosf, tan libm::tanf, asin libm::asinf, acos libm::acosf,
     atan libm::atanf, sinh libm::sinhf, cosh libm::coshf, tanh libm::tanhf, exp libm::expf,
-    ln libm::logf, log10 libm::log10f, atan2 libm::atan2f, pow libm::powf, fmod libm::fmodf
+    ln libm::logf, log10 libm::log10f, atan2 libm::atan2f, pow libm::powf, fmod libm::fmodf,
+    pow_pair pow_pair_f32
 );
 
 impl_real!(
@@ -201,7 +213,8 @@ impl_real!(
     acos pc_ir::math::acos, atan pc_ir::math::atan, sinh pc_ir::math::sinh,
     cosh pc_ir::math::cosh, tanh pc_ir::math::tanh, exp pc_ir::math::exp,
     ln pc_ir::math::ln, log10 pc_ir::math::log10, atan2 pc_ir::math::atan2,
-    pow pc_ir::math::pow, fmod pc_ir::math::fmod
+    pow pc_ir::math::pow, fmod pc_ir::math::fmod,
+    pow_pair pc_ir::ctlpow::pow_pair
 );
 
 #[cfg(test)]

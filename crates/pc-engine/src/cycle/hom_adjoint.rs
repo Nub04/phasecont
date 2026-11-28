@@ -395,7 +395,7 @@ pub fn inclination_flips(
         let Some(v) = signed_eigvec(a, n, l.0, prev[k].as_deref()) else {
             continue;
         };
-        let value = dot(&v, phi) * (sign * period * l.0 / 2.0).exp();
+        let value = dot(&v, phi) * pc_ir::hostmath::exp(sign * period * l.0 / 2.0);
         if k == 0 {
             out.ifs = value;
         } else {

@@ -25,7 +25,7 @@ use super::mesh;
 use super::normal::CycleBifurcation;
 use super::problem::{CycleProblem, Extra};
 use crate::branch::{Branch, Options, Point};
-use crate::error::EngineError;
+use crate::error::{EngineError, keep_call_limit};
 use crate::model::ModelEval;
 use crate::problem::Problem;
 use pc_linalg::CondenseShape;
@@ -212,10 +212,9 @@ impl Problem for PdProblem<'_> {
         _tangent: &[f64],
         eigs: &[(f64, f64)],
     ) -> Result<Vec<f64>, EngineError> {
-        let c = self
-            .outer
-            .coefficient(CycleBifurcation::Pd, x)
-            .unwrap_or(f64::NAN);
+        let c = keep_call_limit(self.outer.coefficient(CycleBifurcation::Pd, x), |_| {
+            f64::NAN
+        })?;
         Ok(pd_curve_tests(eigs, c))
     }
 
@@ -225,13 +224,20 @@ impl Problem for PdProblem<'_> {
 
     /// Moves the phase reference to x and refreshes the borders there. When N cannot be
     /// solved at x the old borders stay.
-    fn accept(&mut self, x: &[f64]) {
+    fn accept(&mut self, x: &[f64]) -> Result<(), EngineError> {
         self.inner.forget();
-        self.outer.accept(x);
-        if self.factor(x).and_then(|_| self.transpose_solve()).is_ok() {
+        self.outer.accept(x)?;
+        let r = keep_call_limit(
+            self.factor(x)
+                .and_then(|_| self.transpose_solve())
+                .map(Some),
+            |_| None,
+        );
+        self.inner.forget();
+        if r?.is_some() {
             self.take_borders();
         }
-        self.inner.forget();
+        Ok(())
     }
 
     fn mesh(&self) -> Vec<f64> {

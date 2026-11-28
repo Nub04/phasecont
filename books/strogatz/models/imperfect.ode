@@ -1,0 +1,5 @@
+# Imperfect pitchfork
+par h=0, r=1
+init x=-1
+x'=h+r*x-x^3
+done

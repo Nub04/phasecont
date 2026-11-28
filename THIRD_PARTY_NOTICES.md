@@ -62,3 +62,106 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
+
+### Arm optimized-routines (MIT OR Apache-2.0 WITH LLVM-exception, used under MIT)
+
+- Source: https://github.com/ARM-software/optimized-routines at commit 9a0d5027ec6c3c529642f2d81391125935d99321: `math/pow.c` (Copyright (c) 2018-2026, Arm Limited), `math/pow_common.h` (Copyright (c) 2026, Arm Limited), `math/pow_log_data.c` (Copyright (c) 2018, Arm Limited) and `math/exp_data.c` (Copyright (c) 2018-2023, Arm Limited). The license text below is the MIT part of the repository's `LICENSE` file at that commit. optimized-routines is outside the list of projects named for porting in the project rules; the owner approved this port on 2026-11-26.
+- Ported into: `crates/pc-ir/src/aorpow.rs` and `crates/pc-ir/src/aorpow/tables.rs`
+- What was ported: `pow` with its `log_inline`, `exp_inline`, `specialcase` and `checkint` helpers, in two builds: one with no fused operations and one with the multiply-adds that gcc fuses under `-mfma -mavx2 -ffp-contract=fast`. The tables are the log table (N = 128, `pad` dropped) and the exp table (N = 128) with their constants, written as the bits of each f64. `hostmath::powf` calls it on `x86_64-pc-windows-gnu` only (SPEC Section 13, `cpu`).
+- Notice (also in `crates/pc-ir/NOTICE`, which `pc-cli licenses` copies into `THIRD_PARTY_LICENSES.txt`):
+
+```
+Copyright (c) 1999-2022, Arm Limited.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### libm (MIT)
+
+- Source: the `libm` crate 0.2.16 from crates.io (https://crates.io/crates/libm/0.2.16), `src/math/pow.rs`, which carries the FreeBSD `e_pow.c` notice below. The crate's license text is its `LICENSE.txt`. `libm` is outside the list of projects named for porting in the project rules; the owner approved this port on 2026-11-23.
+- Ported into: `crates/pc-ir/src/ctlpow.rs`
+- What was ported: the positive-normal-x path of `pow`, split at log2(x) into `log2_pair` (the pair t1, t2) and `exp2_part` (y·log2 x and 2^z), so that the two powers of the Dormand-Prince controller share one logarithm in the CPU ensemble (`crates/pc-ensemble/src/real.rs`). The special-case, overflow, underflow and subnormal-result branches are not ported; those inputs call `libm::pow` (SPEC Section 13, `cpu`).
+- Notice (also in `crates/pc-ir/NOTICE`, which `pc-cli licenses` copies into `THIRD_PARTY_LICENSES.txt`):
+
+```
+rust-lang/libm as a whole is available for use under the MIT license:
+
+------------------------------------------------------------------------------
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+------------------------------------------------------------------------------
+
+This Rust library contains the following copyrights:
+
+    Copyright (c) 2018 Jorge Aparicio
+
+Portions of this software are derived from third-party works licensed under
+terms compatible with the above MIT license:
+
+* musl libc https://www.musl-libc.org/. This library contains the following
+  copyright:
+
+      Copyright © 2005-2020 Rich Felker, et al.
+
+* The CORE-MATH project https://core-math.gitlabpages.inria.fr/. CORE-MATH
+  routines are available under the MIT license on a per-file basis.
+
+The musl libc COPYRIGHT file also includes the following notice relevant to
+math portions of the library:
+
+------------------------------------------------------------------------------
+Much of the math library code (src/math/* and src/complex/*) is
+Copyright © 1993,2004 Sun Microsystems or
+Copyright © 2003-2011 David Schultz or
+Copyright © 2003-2009 Steven G. Kargl or
+Copyright © 2003-2009 Bruce D. Evans or
+Copyright © 2008 Stephen L. Moshier or
+Copyright © 2017-2018 Arm Limited
+and labelled as such in comments in the individual source files. All
+have been licensed under extremely permissive terms.
+------------------------------------------------------------------------------
+
+Copyright notices are retained in src/* files where relevant.
+
+The source file src/math/pow.rs carries this notice:
+
+    origin: FreeBSD /usr/src/lib/msun/src/e_pow.c
+    ====================================================
+    Copyright (C) 2004 by Sun Microsystems, Inc. All rights reserved.
+
+    Permission to use, copy, modify, and distribute this
+    software is freely granted, provided that this notice
+    is preserved.
+    ====================================================
+```

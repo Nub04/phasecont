@@ -6,14 +6,14 @@
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 
 use pc_engine::{
-    EpSetup, Evaluator, IteratedMap, MapAsRoot, ModelEval, Options, build_allowing_t, build_dde,
-    check_tables, engine_kinds, entry_symbol, equilibrium,
+    EngineError, EpSetup, Evaluator, IteratedMap, MapAsRoot, ModelEval, Options, build_allowing_t,
+    build_dde, check_tables, engine_kinds, entry_symbol, equilibrium,
 };
 use pc_ensemble::Precision;
 use pc_ensemble::job::{NATIVE_FRAME_LIMIT, NativeRhs};
@@ -73,6 +73,27 @@ enum Request {
         p: Vec<f64>,
         iterate: usize,
     },
+    /// `F` at each column of `x`, `n` values a column, with the code of `Rhs` (SPEC 8ai-1b).
+    RhsMany {
+        x: Vec<f64>,
+        p: Vec<f64>,
+        t: f64,
+    },
+    /// The Jacobian at each column of `u`, with the code of `Jacobian` (SPEC 8ai-1b).
+    JacobianMany {
+        u: Vec<f64>,
+        p: Vec<f64>,
+        iterate: usize,
+    },
+    /// The solve of `Equilibrium` from each `n`-value column of `u0`, one after another
+    /// (SPEC 8ai-2 with one worker).
+    EquilibriumMany {
+        u0: Vec<f64>,
+        p: Vec<f64>,
+        opts: Options,
+        iterate: usize,
+        hook: StartHook,
+    },
     /// Compile `F` for the ensemble workers in this precision. The code stays in the model
     /// thread's slot for that precision.
     EnsembleF(Precision),
@@ -86,12 +107,75 @@ pub(crate) struct Equilibrium {
     pub eig: Vec<(f64, f64)>,
 }
 
+/// The answer to a many-column request (SPEC 8ai-1b): the values of the columns before the
+/// first error, in column order, and that error with its 0-based column.
+pub(crate) struct Many {
+    pub out: Vec<f64>,
+    pub failed: Option<(usize, Error)>,
+}
+
+/// The outcome of one start of `model_equilibrium_many` (SPEC 8ai-2).
+pub(crate) enum Start {
+    /// Converged: the bits of `model_equilibrium` from this start, and `max |G(u)|`.
+    Done(Equilibrium, f64),
+    /// A numeric error, with the residual the SPEC gives for it (NaN, the last Newton
+    /// residual, or infinity when Newton took no step).
+    Failed(f64),
+}
+
+/// The least number of starts one worker of `model_equilibrium_many` gets, the M of SPEC
+/// 8ai-2. On the bistable test ODE a start costs about 2 us and building a JIT evaluator
+/// for a worker about 0.5 ms, so a worker pays off from a few hundred starts; STATUS has
+/// the timing.
+pub(crate) const MIN_STARTS_PER_WORKER: usize = 500;
+
+/// The number of workers for `k` starts: min(T, ceil(k / M)), at least 1 (SPEC 8ai-2).
+pub(crate) fn equilibrium_workers(k: usize, threads: usize) -> usize {
+    threads.min(k.div_ceil(MIN_STARTS_PER_WORKER)).max(1)
+}
+
+/// Test hook of `model_equilibrium_many`: a panic or a model error at chosen starts.
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct StartHook {
+    pub panic_at: Option<usize>,
+    pub error_at: Vec<usize>,
+}
+
+#[cfg(test)]
+impl StartHook {
+    fn check(&self, j: usize) -> Result<()> {
+        if self.panic_at == Some(j) {
+            panic!("debug start panic at {j}");
+        }
+        if self.error_at.contains(&j) {
+            return Err(Error::Model(format!("debug start error at {j}")));
+        }
+        Ok(())
+    }
+}
+
+/// Outside tests the hook is empty and does nothing.
+#[cfg(not(test))]
+#[derive(Clone, Default)]
+pub(crate) struct StartHook;
+
+#[cfg(not(test))]
+impl StartHook {
+    #[inline(always)]
+    fn check(&self, _j: usize) -> Result<()> {
+        Ok(())
+    }
+}
+
 enum Reply {
     Compiled,
     CFile(PathBuf),
     Rhs(Vec<f64>),
     Equilibrium(Equilibrium),
     Jacobian(Vec<f64>),
+    Many(Many),
+    Starts(Vec<Start>),
     EnsembleF(Option<NativeRhs>),
 }
 
@@ -122,6 +206,9 @@ pub(crate) struct ModelHandle {
     /// Test hook: when set, the model thread panics on the next ensemble `F` request.
     #[cfg(test)]
     panic_in_native: Arc<std::sync::atomic::AtomicBool>,
+    /// Test hook: what `equilibrium_many` does at chosen starts.
+    #[cfg(test)]
+    pub(crate) start_hook: Mutex<StartHook>,
     /// The evaluator the model thread holds, with the library path for an AOT one.
     /// Written by that thread after a successful compile.
     evaluator: Arc<Mutex<Option<Evaluator>>>,
@@ -185,6 +272,8 @@ impl ModelHandle {
             native: Mutex::new([None, None]),
             #[cfg(test)]
             panic_in_native,
+            #[cfg(test)]
+            start_hook: Mutex::new(StartHook::default()),
             evaluator,
             c_file: Mutex::new(None),
             max_frame,
@@ -296,6 +385,159 @@ impl ModelHandle {
         }
     }
 
+    /// [`Self::rhs`] at each `n`-value column of `x` in one request to the model thread, so
+    /// each column has the bits of a single call (SPEC 8ai-1b). Stops at the first error.
+    pub fn rhs_many(&self, x: Vec<f64>, p: Vec<f64>, t: f64) -> Result<Many> {
+        self.ode_only()?;
+        match self.call(Request::RhsMany { x, p, t })? {
+            Reply::Many(m) => Ok(m),
+            _ => Err(Error::Internal("unexpected reply to rhs_many".into())),
+        }
+    }
+
+    /// [`Self::jacobian`] at each `n`-value column of `u` in one request to the model thread,
+    /// so each `n*n` block has the bits of a single call (SPEC 8ai-1b). Stops at the first
+    /// error.
+    pub fn jacobian_many(&self, u: Vec<f64>, p: Vec<f64>, iterate: usize) -> Result<Many> {
+        self.ode_only()?;
+        match self.call(Request::JacobianMany { u, p, iterate })? {
+            Reply::Many(m) => Ok(m),
+            _ => Err(Error::Internal("unexpected reply to jacobian_many".into())),
+        }
+    }
+
+    /// [`Self::equilibrium`] from each `n`-value column of `u0` (SPEC 8ai-2). With
+    /// `workers` 1 the starts run on the model thread. With more, each of
+    /// `min(workers, k)` scoped threads builds its own evaluator of the kind the model
+    /// thread holds and takes the next start from a shared counter, so every start runs
+    /// the same code as a single call. A start's numeric error is a [`Start::Failed`]; any
+    /// other error fails the call, with the error of the lowest such start.
+    pub fn equilibrium_many(
+        &self,
+        u0: Vec<f64>,
+        p: Vec<f64>,
+        opts: Options,
+        iterate: usize,
+        workers: usize,
+    ) -> Result<Vec<Start>> {
+        self.ode_only()?;
+        let n = self.n();
+        if n == 0 || !u0.len().is_multiple_of(n) {
+            return Err(Error::Internal(
+                "equilibrium_many: u0 is not whole columns".into(),
+            ));
+        }
+        let k = u0.len() / n;
+        let hook = self.start_hook();
+        if workers <= 1 || k <= 1 {
+            return match self.call(Request::EquilibriumMany {
+                u0,
+                p,
+                opts,
+                iterate,
+                hook,
+            })? {
+                Reply::Starts(s) => Ok(s),
+                _ => Err(Error::Internal(
+                    "unexpected reply to equilibrium_many".into(),
+                )),
+            };
+        }
+        let which = self.evaluator().ok_or_else(|| bad_arg(NOT_COMPILED))?;
+        let next = AtomicUsize::new(0);
+        // The lowest start with an error of the call so far; workers take no start above it.
+        let first_fatal = AtomicUsize::new(usize::MAX);
+        let worker = || {
+            let mut ev: Option<Box<dyn ModelEval>> = None;
+            let mut done = Vec::new();
+            loop {
+                let j = next.fetch_add(1, Ordering::Relaxed);
+                if j >= k || j > first_fatal.load(Ordering::Relaxed) {
+                    return (done, None);
+                }
+                let r = guarded(|| {
+                    hook.check(j)?;
+                    if ev.is_none() {
+                        ev = Some(build_allowing_t(&self.model, &self.info, which.clone())?);
+                    }
+                    let ev = ev.as_deref_mut().expect("built above");
+                    one_start(ev, self.map, &u0[j * n..(j + 1) * n], &p, &opts, iterate)
+                });
+                match r {
+                    Ok(s) => done.push((j, s)),
+                    Err(e) => {
+                        first_fatal.fetch_min(j, Ordering::Relaxed);
+                        return (done, Some((j, e)));
+                    }
+                }
+            }
+        };
+        let w = workers.min(k);
+        let mut parts = Vec::with_capacity(w);
+        let mut spawn_err = None;
+        std::thread::scope(|s| {
+            let mut handles = Vec::with_capacity(w);
+            for _ in 0..w {
+                match std::thread::Builder::new()
+                    .name("pckern-equilibria".into())
+                    .stack_size(MODEL_STACK)
+                    .spawn_scoped(s, worker)
+                {
+                    Ok(h) => handles.push(h),
+                    Err(e) => {
+                        // The running workers stop after their current start.
+                        first_fatal.store(0, Ordering::Relaxed);
+                        spawn_err = Some(Error::Internal(format!(
+                            "cannot start an equilibrium worker: {e}"
+                        )));
+                        break;
+                    }
+                }
+            }
+            for h in handles {
+                // Every start runs inside the panic barrier, so a join error is a bug here.
+                parts.push(h.join().map_err(|_| {
+                    Error::Internal("an equilibrium worker panicked outside the barrier".into())
+                }));
+            }
+        });
+        if let Some(e) = spawn_err {
+            return Err(e);
+        }
+        let mut starts: Vec<Option<Start>> = (0..k).map(|_| None).collect();
+        let mut fatal: Option<(usize, Error)> = None;
+        for part in parts {
+            let (done, err) = part?;
+            for (j, s) in done {
+                starts[j] = Some(s);
+            }
+            if let Some((j, e)) = err
+                && fatal.as_ref().is_none_or(|(i, _)| j < *i)
+            {
+                fatal = Some((j, e));
+            }
+        }
+        if let Some((_, e)) = fatal {
+            return Err(e);
+        }
+        starts
+            .into_iter()
+            .map(|s| {
+                s.ok_or_else(|| Error::Internal("equilibrium_many: a start did not run".into()))
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn start_hook(&self) -> StartHook {
+        lock(&self.start_hook).clone()
+    }
+
+    #[cfg(not(test))]
+    fn start_hook(&self) -> StartHook {
+        StartHook
+    }
+
     /// The compiled `F` in `precision` for the ensemble workers, or `None` when the model has
     /// none (a delay model, an oversized frame, a compile error) and the run uses the tape.
     /// The first call for a precision compiles on the model thread, 0.1 to 7 ms for the models
@@ -380,6 +622,79 @@ fn jacobian_at(it: &mut IteratedMap<'_>, u: &[f64], params: &[f64]) -> Result<Ve
     // `JacU` is column-major (`out[i + n*j] = df_i/du_j`), as `eigenvalues` expects.
     it.eval(&EntryKind::JacU, u, &p, &[], &mut jac)?;
     Ok(jac)
+}
+
+/// The Newton solve of `model_equilibrium` through `it`: `F(u) = 0` on an ODE and
+/// `F^k(u) - u = 0` on a map (SPEC 8v, 8y). Every equilibrium entry calls it, so a start
+/// of `model_equilibrium_many` has the bits of a single call (SPEC 8ai-2).
+fn newton(
+    it: &mut IteratedMap<'_>,
+    map: bool,
+    setup: &EpSetup,
+    opts: &Options,
+) -> std::result::Result<Vec<f64>, EngineError> {
+    if map {
+        equilibrium(&mut MapAsRoot::new(it), setup, opts)
+    } else {
+        equilibrium(it, setup, opts)
+    }
+}
+
+/// The eigenvalues of the Jacobian of `it` at `u`: the eigenvalues of an equilibrium, or
+/// the multipliers of a fixed point of `F^k`.
+fn eigen_at(it: &mut IteratedMap<'_>, u: &[f64], params: &[f64]) -> Result<Vec<(f64, f64)>> {
+    let jac = jacobian_at(it, u, params)?;
+    pc_linalg::eigenvalues(&jac, it.n()).map_err(|e| Error::Numeric(format!("eigenvalues: {e}")))
+}
+
+/// `max_i |G_i(u)|` for the `G` that [`newton`] solves, with the same evaluation as its
+/// last residual.
+fn residual_at(it: &mut IteratedMap<'_>, map: bool, u: &[f64], params: &[f64]) -> Result<f64> {
+    let mut p = params.to_vec();
+    p.push(0.0);
+    let mut g = vec![0.0; it.n()];
+    if map {
+        MapAsRoot::new(it).eval(&EntryKind::F, u, &p, &[], &mut g)?;
+    } else {
+        it.eval(&EntryKind::F, u, &p, &[], &mut g)?;
+    }
+    Ok(g.iter().fold(0.0, |m: f64, v| m.max(v.abs())))
+}
+
+/// One start of `model_equilibrium_many` (SPEC 8ai-2). A start with NaN or infinity in
+/// `u0` fails before any Newton step. A numeric error is a failed start; any other error
+/// is the error of the call.
+fn one_start(
+    ev: &mut dyn ModelEval,
+    map: bool,
+    u0: &[f64],
+    p: &[f64],
+    opts: &Options,
+    iterate: usize,
+) -> Result<Start> {
+    if !u0.iter().all(|v| v.is_finite()) {
+        return Ok(Start::Failed(f64::NAN));
+    }
+    let failed = |e: Error| match e {
+        Error::Numeric(_) => Ok(Start::Failed(f64::NAN)),
+        e => Err(e),
+    };
+    let mut it = IteratedMap::new(ev, iterate);
+    let setup = EpSetup::new(0, p.to_vec(), u0.to_vec());
+    let u = match newton(&mut it, map, &setup, opts) {
+        Ok(u) => u,
+        Err(EngineError::NewtonFailed { residual, .. }) => return Ok(Start::Failed(residual)),
+        Err(e) => return failed(e.into()),
+    };
+    let eig = match eigen_at(&mut it, &u, p) {
+        Ok(eig) => eig,
+        Err(e) => return failed(e),
+    };
+    let res = match residual_at(&mut it, map, &u, p) {
+        Ok(r) => r,
+        Err(e) => return failed(e),
+    };
+    Ok(Start::Done(Equilibrium { u, eig }, res))
 }
 
 /// What the model thread owns besides the evaluator.
@@ -513,10 +828,17 @@ fn handle(
             };
             // The JIT compiles an entry on its first call. Run `F` once so that the
             // compile happens here and `jit_max_frame` is set. The value does not matter,
-            // and a NaN at the declared start is not an error.
+            // and a NaN at the declared start is not an error. A recursion cap hit at the
+            // declared start is not one either: the parameters can change before a run, and
+            // the run reports the cap. A model error is one, since the model cannot run: the
+            // JIT could not compile an entry, or a recursive call failed in the call helper.
             p.push(0.0);
             let mut out = vec![0.0; built.n()];
-            let _ = built.eval(&EntryKind::F, &ctx.warm_x, &p, &[], &mut out);
+            if let Err(e @ pc_engine::EngineError::Model(_)) =
+                built.eval(&EntryKind::F, &ctx.warm_x, &p, &[], &mut out)
+            {
+                return Err(e.into());
+            }
             *ev = Some(built);
             *lock(&ctx.evaluator) = Some(which);
             Ok(Reply::Compiled)
@@ -545,21 +867,80 @@ fn handle(
             // fixed point are its multipliers (SPEC 8v and 8y). k = 1 evaluates F itself, and
             // an ODE always has k = 1.
             let mut it = IteratedMap::new(ev, iterate);
-            let u = if ctx.info.kind == ModelKind::Map {
-                equilibrium(&mut MapAsRoot::new(&mut it), &setup, &opts)?
-            } else {
-                equilibrium(&mut it, &setup, &opts)?
-            };
-            let n = it.n();
-            let jac = jacobian_at(&mut it, &u, &setup.params)?;
-            let eig = pc_linalg::eigenvalues(&jac, n)
-                .map_err(|e| Error::Numeric(format!("eigenvalues: {e}")))?;
+            let u = newton(&mut it, ctx.info.kind == ModelKind::Map, &setup, &opts)?;
+            let eig = eigen_at(&mut it, &u, &setup.params)?;
             Ok(Reply::Equilibrium(Equilibrium { u, eig }))
+        }
+        Request::EquilibriumMany {
+            u0,
+            p,
+            opts,
+            iterate,
+            hook,
+        } => {
+            let ev = compiled(ev)?;
+            let n = ev.n();
+            if n == 0 || !u0.len().is_multiple_of(n) {
+                return Err(Error::Internal(
+                    "equilibrium_many: u0 is not whole columns".into(),
+                ));
+            }
+            let map = ctx.info.kind == ModelKind::Map;
+            let mut out = Vec::with_capacity(u0.len() / n);
+            for (j, c) in u0.chunks_exact(n).enumerate() {
+                hook.check(j)?;
+                out.push(one_start(ev, map, c, &p, &opts, iterate)?);
+            }
+            Ok(Reply::Starts(out))
         }
         Request::Jacobian { u, p, iterate } => {
             let ev = compiled(ev)?;
             let mut it = IteratedMap::new(ev, iterate);
             Ok(Reply::Jacobian(jacobian_at(&mut it, &u, &p)?))
+        }
+        Request::RhsMany { x, mut p, t } => {
+            let ev = compiled(ev)?;
+            let n = ev.n();
+            if n == 0 || !x.len().is_multiple_of(n) {
+                return Err(Error::Internal("rhs_many: x is not whole columns".into()));
+            }
+            p.push(t);
+            let mut out = vec![0.0; x.len()];
+            for (j, (xc, oc)) in x.chunks_exact(n).zip(out.chunks_exact_mut(n)).enumerate() {
+                if let Err(e) = ev.eval(&EntryKind::F, xc, &p, &[], oc) {
+                    out.truncate(j * n);
+                    return Ok(Reply::Many(Many {
+                        out,
+                        failed: Some((j, e.into())),
+                    }));
+                }
+            }
+            Ok(Reply::Many(Many { out, failed: None }))
+        }
+        Request::JacobianMany { u, p, iterate } => {
+            let ev = compiled(ev)?;
+            let mut it = IteratedMap::new(ev, iterate);
+            let n = it.n();
+            if n == 0 || !u.len().is_multiple_of(n) {
+                return Err(Error::Internal(
+                    "jacobian_many: u is not whole columns".into(),
+                ));
+            }
+            let mut p = p;
+            p.push(0.0);
+            let nn = n * n;
+            let mut out = vec![0.0; u.len() * n];
+            for (j, (uc, oc)) in u.chunks_exact(n).zip(out.chunks_exact_mut(nn)).enumerate() {
+                // The same `JacU` call as `jacobian_at`, so each block has its bits.
+                if let Err(e) = it.eval(&EntryKind::JacU, uc, &p, &[], oc) {
+                    out.truncate(j * nn);
+                    return Ok(Reply::Many(Many {
+                        out,
+                        failed: Some((j, e.into())),
+                    }));
+                }
+            }
+            Ok(Reply::Many(Many { out, failed: None }))
         }
         Request::Panic => panic!("debug model panic"),
     }
@@ -581,7 +962,9 @@ fn emit_model(model: &Model, info: &ModelInfo) -> Result<pc_codegen::EmittedC> {
     }
     let named: Vec<(String, &pc_ir::Entry)> =
         kinds.iter().map(entry_symbol).zip(entries.iter()).collect();
-    pc_codegen::emit_c_tagged(&ir, &named).map_err(|e| Error::Internal(format!("emit_c: {e}")))
+    // Every refusal of the emitter is a property of the model: two names with one C
+    // identifier, a reserved identifier, or a recursive call (SPEC 8af-5).
+    pc_codegen::emit_c_tagged(&ir, &named).map_err(|e| Error::Model(format!("emit_c: {e}")))
 }
 
 /// Writes the C text of the model to `<dir>/pc_model_<hash>.c`, creating `dir` if it is
@@ -679,6 +1062,7 @@ mod tests {
             precision,
             math: pc_ensemble::Math::Exact,
             native,
+            stack: pc_ensemble::StackLayout::Member,
         };
         let device = find_device(Backend::Cpu, 0).unwrap();
         run_on(&device, &job, &AtomicBool::new(false)).unwrap()
@@ -822,6 +1206,7 @@ done\n";
             precision,
             math: pc_ensemble::Math::Exact,
             native,
+            stack: pc_ensemble::StackLayout::Member,
         };
         let device = find_device(Backend::Cpu, 0).unwrap();
         run_on(&device, &job, &AtomicBool::new(false)).unwrap()
@@ -1020,6 +1405,398 @@ done\n";
             h.panic_in_native.store(false, Ordering::Relaxed);
             let id = crate::ensemble::start(&h, job, &[1.0, 0.0], &[1.5]).unwrap();
             registry::remove(id).unwrap();
+        }
+    }
+
+    /// Columns of a grid on [-2, 2]^2, `k` of them.
+    fn grid(k: usize) -> Vec<f64> {
+        (0..k)
+            .flat_map(|j| {
+                let s = j as f64 / k.max(1) as f64;
+                [-2.0 + 4.0 * s, 2.0 - 3.7 * s * s]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn rhs_many_has_the_bits_of_single_calls() {
+        // SPEC 8ai-1b, test 1.
+        let h = handle_of(VDP);
+        h.compile(Build::Jit).unwrap();
+        let x = grid(37);
+        let m = h.rhs_many(x.clone(), vec![1.5], 0.25).unwrap();
+        assert!(m.failed.is_none());
+        let single: Vec<f64> = x
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|c| h.rhs(c.to_vec(), vec![1.5], 0.25).unwrap())
+            .collect();
+        assert!(same_bits(&m.out, &single));
+    }
+
+    #[test]
+    fn rhs_many_passes_t_to_every_column() {
+        // SPEC 8ai-1b, test 1, on a model that depends on t, so a wrong or dropped t
+        // changes the bits.
+        let h = handle_of("par r=2\nx'=r*x*(1-x)+t\ny'=-y*t\ndone\n");
+        h.compile(Build::Jit).unwrap();
+        let x = grid(37);
+        for t in [0.25, 0.75] {
+            let m = h.rhs_many(x.clone(), vec![2.0], t).unwrap();
+            assert!(m.failed.is_none());
+            let single: Vec<f64> = x
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .flat_map(|c| h.rhs(c.to_vec(), vec![2.0], t).unwrap())
+                .collect();
+            assert!(same_bits(&m.out, &single), "t = {t}");
+        }
+        let a = h.rhs_many(x.clone(), vec![2.0], 0.25).unwrap();
+        let b = h.rhs_many(x, vec![2.0], 0.75).unwrap();
+        assert!(!same_bits(&a.out, &b.out));
+    }
+
+    #[test]
+    fn jacobian_many_has_the_bits_of_single_calls() {
+        // SPEC 8ai-1b, test 1, for an ODE and for a map at iterate 3.
+        let h = handle_of(VDP);
+        h.compile(Build::Jit).unwrap();
+        let u = grid(37);
+        let m = h.jacobian_many(u.clone(), vec![1.5], 1).unwrap();
+        assert!(m.failed.is_none());
+        let single: Vec<f64> = u
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|c| h.jacobian(c.to_vec(), vec![1.5], 1).unwrap())
+            .collect();
+        assert!(same_bits(&m.out, &single));
+
+        let h = handle_of("par a=1.4, b=0.3\nx(t+1)=1-a*x*x+y\ny(t+1)=b*x\ndone\n");
+        h.compile(Build::Jit).unwrap();
+        let m = h.jacobian_many(u.clone(), vec![1.4, 0.3], 3).unwrap();
+        assert!(m.failed.is_none());
+        let single: Vec<f64> = u
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|c| h.jacobian(c.to_vec(), vec![1.4, 0.3], 3).unwrap())
+            .collect();
+        assert!(same_bits(&m.out, &single));
+    }
+
+    #[test]
+    fn many_calls_stop_at_the_first_refused_column() {
+        // SPEC 8ai-1b, test 2: sqrt(x+1) is NaN at x = -2 and its slope is not finite at
+        // x = -1. The columns before the refused one come back with their single-call
+        // bits, and the error is the single call's.
+        let h = handle_of("x'=sqrt(x+1)\ny'=-y\ndone\n");
+        h.compile(Build::Jit).unwrap();
+        let x = vec![0.0, 0.0, 1.0, 1.0, -2.0, 0.0, 2.0, 3.0];
+        let m = h.rhs_many(x.clone(), vec![], 0.0).unwrap();
+        let (j, e) = m.failed.expect("column 2 is refused");
+        assert_eq!(j, 2);
+        let single = h.rhs(x[4..6].to_vec(), vec![], 0.0).unwrap_err();
+        assert_eq!(e.to_string(), single.to_string());
+        assert_eq!(e.code(), single.code());
+        let first: Vec<f64> = x[..4]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|c| h.rhs(c.to_vec(), vec![], 0.0).unwrap())
+            .collect();
+        assert!(same_bits(&m.out, &first));
+
+        let u = vec![0.0, 0.0, 1.0, 1.0, -1.0, 0.0, 2.0, 3.0];
+        let m = h.jacobian_many(u.clone(), vec![], 1).unwrap();
+        let (j, e) = m.failed.expect("column 2 is refused");
+        assert_eq!(j, 2);
+        let single = h.jacobian(u[4..6].to_vec(), vec![], 1).unwrap_err();
+        assert_eq!(e.to_string(), single.to_string());
+        assert_eq!(e.code(), single.code());
+        let first: Vec<f64> = u[..4]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|c| h.jacobian(c.to_vec(), vec![], 1).unwrap())
+            .collect();
+        assert!(same_bits(&m.out, &first));
+    }
+
+    const BISTABLE: &str = "x'=x-x^3\ny'=-y\ndone\n";
+    const HENON: &str = "par a=1.4, b=0.3\nx(t+1)=1-a*x*x+y\ny(t+1)=b*x\ndone\n";
+
+    fn newton_opts(max_newton: usize) -> Options {
+        Options {
+            max_newton,
+            ..Options::default()
+        }
+    }
+
+    /// Columns of a 2-D grid on [-1.5, 1.5]^2, `side` by `side`.
+    fn box_starts(side: usize) -> Vec<f64> {
+        let at = |i: usize| -1.5 + 3.0 * i as f64 / (side - 1) as f64;
+        (0..side * side)
+            .flat_map(|j| [at(j % side), at(j / side)])
+            .collect()
+    }
+
+    fn eig_bits(e: &[(f64, f64)]) -> Vec<f64> {
+        e.iter().flat_map(|&(re, im)| [re, im]).collect()
+    }
+
+    /// `max_i |G_i(u)|` through `model_rhs`: `F(u)` on an ODE, `F^k(u) - u` on a map.
+    fn residual_by_rhs(h: &ModelHandle, u: &[f64], p: &[f64], map: bool, k: usize) -> f64 {
+        let g = if map {
+            let mut v = u.to_vec();
+            for _ in 0..k {
+                v = h.rhs(v, p.to_vec(), 0.0).unwrap();
+            }
+            v.iter().zip(u).map(|(a, b)| a - b).collect()
+        } else {
+            h.rhs(u.to_vec(), p.to_vec(), 0.0).unwrap()
+        };
+        g.iter().fold(0.0, |m: f64, v| m.max(v.abs()))
+    }
+
+    /// Checks every start of `got` against a single `equilibrium` call from its column.
+    /// Returns the number of converged starts.
+    #[allow(clippy::too_many_arguments)]
+    fn assert_starts_match_single_calls(
+        h: &ModelHandle,
+        got: &[Start],
+        u0: &[f64],
+        p: &[f64],
+        opts: &Options,
+        map: bool,
+        k: usize,
+        what: &str,
+    ) -> usize {
+        let n = h.ir.n();
+        assert_eq!(got.len(), u0.len() / n, "{what}");
+        let mut done = 0;
+        for (j, (s, c)) in got.iter().zip(u0.chunks_exact(n)).enumerate() {
+            let single = h.equilibrium(EpSetup::new(0, p.to_vec(), c.to_vec()), opts.clone(), k);
+            match (s, single) {
+                (Start::Done(e, res), Ok(one)) => {
+                    assert!(same_bits(&e.u, &one.u), "{what}: u at start {j}");
+                    assert!(
+                        same_bits(&eig_bits(&e.eig), &eig_bits(&one.eig)),
+                        "{what}: eigenvalues at start {j}"
+                    );
+                    let by_rhs = residual_by_rhs(h, &e.u, p, map, k);
+                    assert_eq!(
+                        res.to_bits(),
+                        by_rhs.to_bits(),
+                        "{what}: residual at start {j}"
+                    );
+                    done += 1;
+                }
+                (Start::Failed(_), Err(e)) => {
+                    assert_eq!(
+                        e.code(),
+                        Error::Numeric(String::new()).code(),
+                        "{what}: {j}"
+                    );
+                }
+                (Start::Done(..), Err(e)) => panic!("{what}: start {j} converged, single: {e}"),
+                (Start::Failed(r), Ok(_)) => panic!("{what}: start {j} failed ({r}), single ok"),
+            }
+        }
+        done
+    }
+
+    #[test]
+    fn equilibrium_many_has_the_bits_of_single_calls() {
+        // SPEC 8ai-2, test 1, for the JIT and the fallback (the AOT case runs through the
+        // C ABI in tests/equilibria.rs).
+        let u0 = box_starts(5);
+        let k = u0.len() / 2;
+        let cases: [(&str, Vec<f64>, usize); 3] = [
+            (BISTABLE, vec![], 1),
+            (HENON, vec![1.4, 0.3], 1),
+            (HENON, vec![1.4, 0.3], 2),
+        ];
+        for (build, name) in [(Build::Jit, "jit"), (Build::Fallback, "fallback")] {
+            for (text, p, it) in &cases {
+                let h = handle_of(text);
+                h.compile(match build {
+                    Build::Jit => Build::Jit,
+                    _ => Build::Fallback,
+                })
+                .unwrap();
+                let map = h.map;
+                let opts = newton_opts(50);
+                for w in [1, 2, 3, k + 1] {
+                    let got = h
+                        .equilibrium_many(u0.clone(), p.clone(), opts.clone(), *it, w)
+                        .unwrap();
+                    let what = format!("{name}, iterate {it}, map {map}, W = {w}");
+                    let done =
+                        assert_starts_match_single_calls(&h, &got, &u0, p, &opts, map, *it, &what);
+                    assert!(done >= 3, "{what}: only {done} starts converged");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn failed_starts_follow_the_residual_rule() {
+        // SPEC 8ai-2, test 2. The Jacobian of x' = x^2 - 1 is singular at x = 0.
+        let h = handle_of("x'=x*x-1\ny'=-y\ndone\n");
+        h.compile(Build::Jit).unwrap();
+        let u0 = vec![
+            2.0,
+            0.3,
+            0.0,
+            0.5,
+            f64::NAN,
+            0.0,
+            0.5,
+            f64::INFINITY,
+            -3.0,
+            1.0,
+        ];
+        let opts = newton_opts(50);
+        for w in [1, 2, 3] {
+            let got = h
+                .equilibrium_many(u0.clone(), vec![], opts.clone(), 1, w)
+                .unwrap();
+            let done = assert_starts_match_single_calls(
+                &h,
+                &got,
+                &u0,
+                &[],
+                &opts,
+                false,
+                1,
+                &format!("W = {w}"),
+            );
+            assert_eq!(done, 2, "W = {w}");
+            for (j, s) in got.iter().enumerate().take(4).skip(1) {
+                match s {
+                    Start::Failed(r) => assert!(r.is_nan(), "W = {w}, start {j}: {r}"),
+                    Start::Done(..) => panic!("W = {w}: start {j} converged"),
+                }
+            }
+        }
+
+        // Newton does not converge in 2 steps from x = 100: the residual is its last one,
+        // and with no step at all it is infinity.
+        let far = vec![100.0, 1.0, 2.0, 0.3];
+        for w in [1, 2] {
+            let got = h
+                .equilibrium_many(far.clone(), vec![], newton_opts(2), 1, w)
+                .unwrap();
+            let Start::Failed(r) = got[0] else {
+                panic!("W = {w}: the far start converged")
+            };
+            let single = h
+                .equilibrium(
+                    EpSetup::new(0, vec![], far[..2].to_vec()),
+                    newton_opts(2),
+                    1,
+                )
+                .err()
+                .expect("the single far call converged");
+            assert!(r.is_finite() && r > 1.0, "W = {w}: {r}");
+            assert!(single.to_string().contains("Newton"), "{single}");
+            let got = h
+                .equilibrium_many(far.clone(), vec![], newton_opts(0), 1, w)
+                .unwrap();
+            for s in &got {
+                match s {
+                    Start::Failed(r) => assert_eq!(*r, f64::INFINITY, "W = {w}"),
+                    Start::Done(..) => panic!("W = {w}: converged with no Newton step"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_error_of_the_call_comes_from_the_lowest_start() {
+        // SPEC 8ai-2, test 3.
+        let h = handle_of(BISTABLE);
+        h.compile(Build::Jit).unwrap();
+        let u0 = box_starts(4);
+        let cases = [
+            (None, vec![7, 3], "debug start error at 3"),
+            (Some(5), vec![9, 2], "debug start error at 2"),
+            (Some(4), vec![11], "debug start panic at 4"),
+            (Some(1), vec![], "debug start panic at 1"),
+        ];
+        for (panic_at, error_at, want) in cases {
+            *h.start_hook.lock().unwrap() = StartHook {
+                panic_at,
+                error_at: error_at.clone(),
+            };
+            for w in [1, 2, 3] {
+                let e = match h.equilibrium_many(u0.clone(), vec![], newton_opts(50), 1, w) {
+                    Ok(_) => panic!("W = {w}: no error for {want}"),
+                    Err(e) => e,
+                };
+                assert!(e.to_string().contains(want), "W = {w}: {e}, want {want}");
+            }
+        }
+        // The handle still works after a panic in a start.
+        *h.start_hook.lock().unwrap() = StartHook::default();
+        for w in [1, 3] {
+            assert!(
+                h.equilibrium_many(u0.clone(), vec![], newton_opts(50), 1, w)
+                    .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn the_worker_count_follows_the_spec() {
+        // W = min(T, ceil(k / M)), at least 1 (SPEC 8ai-2).
+        let m = MIN_STARTS_PER_WORKER;
+        assert_eq!(equilibrium_workers(0, 16), 1);
+        assert_eq!(equilibrium_workers(1, 16), 1);
+        assert_eq!(equilibrium_workers(m, 16), 1);
+        assert_eq!(equilibrium_workers(m + 1, 16), 2);
+        assert_eq!(equilibrium_workers(1000 * m, 16), 16);
+        assert_eq!(equilibrium_workers(1000 * m, 0), 1);
+    }
+
+    /// Timing for SPEC 8ai-1b: K = 40401 single calls against one many-column call.
+    /// Run with `cargo test --release -p pc-ffi many_call_timing -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn many_call_timing() {
+        use std::time::Instant;
+        let h = handle_of(VDP);
+        h.compile(Build::Jit).unwrap();
+        let k = 40401;
+        let u = grid(k);
+        for _ in 0..2 {
+            let t0 = Instant::now();
+            for c in u.as_chunks::<2>().0 {
+                std::hint::black_box(h.jacobian(c.to_vec(), vec![1.5], 1).unwrap());
+            }
+            let single = t0.elapsed().as_secs_f64();
+            let t0 = Instant::now();
+            std::hint::black_box(h.jacobian_many(u.clone(), vec![1.5], 1).unwrap());
+            let many = t0.elapsed().as_secs_f64();
+            let t0 = Instant::now();
+            for c in u.as_chunks::<2>().0 {
+                std::hint::black_box(h.rhs(c.to_vec(), vec![1.5], 0.0).unwrap());
+            }
+            let rsingle = t0.elapsed().as_secs_f64();
+            let t0 = Instant::now();
+            std::hint::black_box(h.rhs_many(u.clone(), vec![1.5], 0.0).unwrap());
+            let rmany = t0.elapsed().as_secs_f64();
+            let us = 1e6 / k as f64;
+            println!(
+                "jacobian single {:.3} us/pt, many {:.3} us/pt; rhs single {:.3} us/pt, many {:.3} us/pt",
+                single * us,
+                many * us,
+                rsingle * us,
+                rmany * us
+            );
         }
     }
 }

@@ -113,14 +113,16 @@ pub fn curve_point_normal_form(
 /// Gives every LPC, PD and NS special point of the cycle branch `branch` its normal form
 /// coefficient: `Extras::coefficient` is b, c or Re d, `coefficient2` is Im d of an NS
 /// point and `normalization` names the conditions. A point whose coefficient cannot be
-/// computed keeps empty extras and adds a warning, the run itself is not affected.
+/// computed keeps empty extras and adds a warning, the run itself is not affected. A
+/// recursion cap error is returned (SPEC 8af-5), and the points done before it keep their
+/// coefficients.
 pub(crate) fn attach_coefficients(
     model: &mut dyn ModelEval,
     branch: &mut Branch,
     free: usize,
     params: &[f64],
     ncol: usize,
-) {
+) -> Result<(), EngineError> {
     for sp in branch.specials.iter_mut() {
         let kind = match sp.label.as_str() {
             "LPC" => CycleBifurcation::Lpc,
@@ -134,12 +136,14 @@ pub(crate) fn attach_coefficients(
                 sp.extras.coefficient2 = nf.coefficient2;
                 sp.extras.normalization = Some(nf.normalization.to_string());
             }
+            Err(e) if e.is_call_limit() => return Err(e),
             Err(e) => branch.warnings.push(format!(
                 "{} point at alpha = {}: no normal form coefficient: {e}",
                 sp.label, sp.point.alpha
             )),
         }
     }
+    Ok(())
 }
 
 /// The coefficient for the orbit at the base points of `mesh`, with `p` the parameters

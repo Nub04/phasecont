@@ -13,16 +13,17 @@ use pc_engine::{EngineError, EpSetup, Evaluator, Options, Run};
 use serde_json::{Value, json};
 
 use crate::barrier::{
-    barrier, bytes_arg, bytes_out, f64_arg, f64_out, into_c_string, out_ptr, ptr_barrier, str_arg,
+    barrier, bytes_arg, bytes_out, f64_arg, f64_out, i32_out, into_c_string, out_ptr, ptr_barrier,
+    str_arg,
 };
 use crate::ensemble::{self, EnsHandle};
-use crate::error::{Error, Result, bad_arg};
+use crate::error::{Error, PC_ERR_NUMERIC, Result, bad_arg};
 use crate::import;
 use crate::json::problem::{
     Kind, Mode, map_type_runs, parse_iterate, parse_options, parse_problem,
 };
 use crate::latex;
-use crate::model::{Build, DELAY_MODEL, ModelHandle, NOT_COMPILED};
+use crate::model::{Build, DELAY_MODEL, ModelHandle, NOT_COMPILED, Start, equilibrium_workers};
 use crate::parse::{MAX_MODEL_TEXT, parse_model};
 use crate::registry::{self, Handle};
 use crate::run::{RunHandle, pack_row_aux, poll_json, stride_aux};
@@ -213,6 +214,18 @@ unsafe fn rhs_at(
     nout: usize,
 ) -> Result<()> {
     let h = model_handle(model)?;
+    rhs_checks(&h, t, nx, np, nout)?;
+    let x = unsafe { f64_arg(x, nx, "x") }?.to_vec();
+    let p = unsafe { f64_arg(p, np, "p") }?.to_vec();
+    let out = unsafe { f64_out(out, nout, "out") }?;
+    out.copy_from_slice(&h.rhs(x, p, t.unwrap_or(0.0))?);
+    Ok(())
+}
+
+/// The checks of `model_rhs`, `model_rhs_t` and `model_rhs_many`, in this order, so the
+/// three entries give the same codes and messages (SPEC 8ai-1b). `nx`, `np` and `nout` are
+/// the lengths of one column.
+fn rhs_checks(h: &ModelHandle, t: Option<f64>, nx: usize, np: usize, nout: usize) -> Result<()> {
     h.ode_only()?;
     if t.is_none() && !h.names.autonomous {
         return Err(Error::NonAutonomous(
@@ -227,13 +240,90 @@ unsafe fn rhs_at(
     expect_len("x", h.n(), nx)?;
     expect_len("p", h.n_p(), np)?;
     expect_len("out", h.n(), nout)?;
-    let x = unsafe { f64_arg(x, nx, "x") }?.to_vec();
-    let p = unsafe { f64_arg(p, np, "p") }?.to_vec();
-    let out = unsafe { f64_out(out, nout, "out") }?;
-    out.copy_from_slice(&h.rhs(x, p, t.unwrap_or(0.0))?);
     Ok(())
 }
 
+/// Sets `*done` to 0 and returns it, or None for a NULL `done` (SPEC 8ai-1b).
+///
+/// # Safety
+/// `done` must be NULL or valid for one `usize` write.
+unsafe fn done_slot<'a>(done: *mut usize) -> Result<Option<&'a mut usize>> {
+    if done.is_null() {
+        return Ok(None);
+    }
+    let d = unsafe { out_ptr(done, "done") }?;
+    *d = 0;
+    Ok(Some(d))
+}
+
+/// `what` columns of `per` values each, or an error when the total does not fit in usize.
+fn total_len(what: &str, per: usize, k: usize) -> Result<usize> {
+    per.checked_mul(k)
+        .ok_or_else(|| bad_arg(format!("{what}: {k} columns of {per} values overflow")))
+}
+
+/// Copies the columns a many-column request finished to `out` and sets `done`, then returns
+/// the error of the refused column, if any (SPEC 8ai-1b).
+fn finish_many(
+    m: crate::model::Many,
+    out: &mut [f64],
+    k: usize,
+    done: Option<&mut usize>,
+) -> Result<()> {
+    out[..m.out.len()].copy_from_slice(&m.out);
+    let (n_done, err) = match m.failed {
+        Some((j, e)) => (j, Some(e)),
+        None => (k, None),
+    };
+    if let Some(d) = done {
+        *d = n_done;
+    }
+    err.map_or(Ok(()), Err)
+}
+
+/// `F` at `k` columns of `x` in one request to the model thread (SPEC 8ai-1b). `t` NULL
+/// gives `model_rhs` at every column, and a value gives `model_rhs_t` at that time; column
+/// j of `out` has the bits of that call at column j. `nx` and `nout` are the lengths of one
+/// column. `done` (may be NULL) gets `k`, or the index of the first refused column, whose
+/// error the call returns after writing the columns before it.
+///
+/// # Safety
+/// `t` must be NULL or valid for one read, `x` valid for `nx*k` reads, `p` for `np`, `out`
+/// for `nout*k` writes, and `done` NULL or valid for one write.
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn model_rhs_many(
+    model: u64,
+    t: *const f64,
+    x: *const f64,
+    nx: usize,
+    k: usize,
+    p: *const f64,
+    np: usize,
+    out: *mut f64,
+    nout: usize,
+    done: *mut usize,
+) -> i32 {
+    barrier(|| {
+        let done = unsafe { done_slot(done) }?;
+        let t = if t.is_null() {
+            None
+        } else {
+            Some(unsafe { f64_arg(t, 1, "t") }?[0])
+        };
+        let h = model_handle(model)?;
+        rhs_checks(&h, t, nx, np, nout)?;
+        let nx_all = total_len("x", nx, k)?;
+        let nout_all = total_len("out", nout, k)?;
+        let x = unsafe { f64_arg(x, nx_all, "x") }?.to_vec();
+        let p = unsafe { f64_arg(p, np, "p") }?.to_vec();
+        let out = unsafe { f64_out(out, nout_all, "out") }?;
+        if k == 0 {
+            return Ok(());
+        }
+        let m = h.rhs_many(x, p, t.unwrap_or(0.0))?;
+        finish_many(m, out, k, done)
+    })
+}
 pub unsafe extern "C" fn run_start(
     model: u64,
     problem_json: *const c_char,
@@ -414,6 +504,14 @@ pub unsafe extern "C" fn model_info(model: u64, out_json: *mut *mut c_char) -> i
             _ => None,
         };
         let c_file = h.c_file().map(|p| p.to_string_lossy().into_owned());
+        // The recursive functions the lowered model reaches, once each in first-use order
+        // (SPEC 8af-5, F-5). A declared function that no entry calls makes no unit.
+        let mut recursive: Vec<&str> = Vec::new();
+        for u in h.ir.dag.units() {
+            if !recursive.contains(&u.name.as_str()) {
+                recursive.push(&u.name);
+            }
+        }
         let names = &h.names;
         let v = json!({
             "n": h.n(),
@@ -437,6 +535,7 @@ pub unsafe extern "C" fn model_info(model: u64, out_json: *mut *mut c_char) -> i
             "aot_lib": aot_lib,
             "c_file": c_file,
             "jit_max_frame": h.max_frame(),
+            "recursive": recursive,
         });
         let s =
             serde_json::to_string(&v).map_err(|e| Error::Internal(format!("info JSON: {e}")))?;
@@ -493,15 +592,7 @@ pub unsafe extern "C" fn model_equilibrium(
 ) -> i32 {
     barrier(|| {
         let h = model_handle(model)?;
-        h.ode_only()?;
-        let n = h.n();
-        if !h.names.autonomous {
-            return Err(Error::NonAutonomous(EngineError::NonAutonomous.to_string()));
-        }
-        expect_len("u0", n, nu)?;
-        expect_len("p", h.n_p(), np)?;
-        expect_len("u_out", n, nu_out)?;
-        expect_len("eig_out", eig_len(n)?, neig_out)?;
+        let n = equilibrium_checks(&h, nu, np, nu_out, neig_out)?;
         if overlaps(u_out, nu_out, eig_out, neig_out) {
             return Err(bad_arg("u_out and eig_out overlap"));
         }
@@ -515,6 +606,133 @@ pub unsafe extern "C" fn model_equilibrium(
         for (i, (re, im)) in r.eig.iter().enumerate() {
             eig_out[i] = *re;
             eig_out[n + i] = *im;
+        }
+        Ok(())
+    })
+}
+
+/// The checks `model_equilibrium` and `model_equilibrium_many` run before any solve, in
+/// this order (SPEC 8ai-2): an ODE or map model, the non-autonomous refusal, then the
+/// lengths of one start. Returns n.
+fn equilibrium_checks(
+    h: &ModelHandle,
+    nu: usize,
+    np: usize,
+    nu_out: usize,
+    neig_out: usize,
+) -> Result<usize> {
+    h.ode_only()?;
+    let n = h.n();
+    if !h.names.autonomous {
+        return Err(Error::NonAutonomous(EngineError::NonAutonomous.to_string()));
+    }
+    expect_len("u0", n, nu)?;
+    expect_len("p", h.n_p(), np)?;
+    expect_len("u_out", n, nu_out)?;
+    expect_len("eig_out", eig_len(n)?, neig_out)?;
+    Ok(n)
+}
+
+/// `model_equilibrium` from each of `k` columns of `u0` (SPEC 8ai-2). `nu`, `nu_out`,
+/// `neig_out`, `nres` and `nstatus` are the lengths of one start (n, n, 2n, 1 and 1), and
+/// the outputs hold `k` such columns. A start that converges gets status 0, its `u` and
+/// eigenvalues, and `max |G(u)|` in `res_out`; a start with a numeric error gets
+/// `PC_ERR_NUMERIC`, NaN columns and the residual rule of the SPEC. Any other error at a
+/// start is the error of the call, from the lowest such start.
+///
+/// # Safety
+/// `u0` must be valid for `nu*k` reads, `p` for `np`, `opts` NULL or NUL-terminated,
+/// `u_out` valid for `nu_out*k` writes, `eig_out` for `neig_out*k`, `res_out` for
+/// `nres*k` and `status_out` for `nstatus*k`.
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn model_equilibrium_many(
+    model: u64,
+    u0: *const f64,
+    nu: usize,
+    k: usize,
+    p: *const f64,
+    np: usize,
+    opts: *const c_char,
+    u_out: *mut f64,
+    nu_out: usize,
+    eig_out: *mut f64,
+    neig_out: usize,
+    res_out: *mut f64,
+    nres: usize,
+    status_out: *mut i32,
+    nstatus: usize,
+) -> i32 {
+    barrier(|| {
+        let h = model_handle(model)?;
+        let n = equilibrium_checks(&h, nu, np, nu_out, neig_out)?;
+        expect_len("res_out", 1, nres)?;
+        expect_len("status_out", 1, nstatus)?;
+        let nu_all = total_len("u0", nu, k)?;
+        let nu_out_all = total_len("u_out", nu_out, k)?;
+        let neig_all = total_len("eig_out", neig_out, k)?;
+        let nres_all = total_len("res_out", nres, k)?;
+        let nstatus_all = total_len("status_out", nstatus, k)?;
+        let bytes = |what: &str, len: usize, size: usize| {
+            len.checked_mul(size)
+                .ok_or_else(|| bad_arg(format!("{what}: length {len} is too large")))
+        };
+        let outs = [
+            ("u_out", u_out as usize, bytes("u_out", nu_out_all, 8)?),
+            ("eig_out", eig_out as usize, bytes("eig_out", neig_all, 8)?),
+            ("res_out", res_out as usize, bytes("res_out", nres_all, 8)?),
+            (
+                "status_out",
+                status_out as usize,
+                bytes("status_out", nstatus_all, 4)?,
+            ),
+        ];
+        for (i, a) in outs.iter().enumerate() {
+            for b in &outs[i + 1..] {
+                if a.1 != 0 && b.1 != 0 && bytes_overlap(a.1, a.2, b.1, b.2) {
+                    return Err(bad_arg(format!("{} and {} overlap", a.0, b.0)));
+                }
+            }
+        }
+        let u0 = unsafe { f64_arg(u0, nu_all, "u0") }?.to_vec();
+        let p = unsafe { f64_arg(p, np, "p") }?.to_vec();
+        let (opts, iterate) = engine_options(opts, h.map)?;
+        let u_out = unsafe { f64_out(u_out, nu_out_all, "u_out") }?;
+        let eig_out = unsafe { f64_out(eig_out, neig_all, "eig_out") }?;
+        let res_out = unsafe { f64_out(res_out, nres_all, "res_out") }?;
+        let status_out = unsafe { i32_out(status_out, nstatus_all, "status_out") }?;
+        if k == 0 {
+            // No start reaches the model thread, which refuses a model never compiled.
+            h.evaluator().ok_or_else(|| bad_arg(NOT_COMPILED))?;
+            return Ok(());
+        }
+        let workers = equilibrium_workers(k, pc_ensemble::cpu_threads());
+        let starts = h.equilibrium_many(u0, p, opts, iterate, workers)?;
+        if starts.len() != k {
+            return Err(Error::Internal(format!(
+                "equilibrium_many: {} results for {k} starts",
+                starts.len()
+            )));
+        }
+        for (j, s) in starts.into_iter().enumerate() {
+            let u = &mut u_out[j * n..(j + 1) * n];
+            let eig = &mut eig_out[j * 2 * n..(j + 1) * 2 * n];
+            match s {
+                Start::Done(e, res) => {
+                    u.copy_from_slice(&e.u);
+                    for (i, (re, im)) in e.eig.iter().enumerate() {
+                        eig[i] = *re;
+                        eig[n + i] = *im;
+                    }
+                    res_out[j] = res;
+                    status_out[j] = 0;
+                }
+                Start::Failed(res) => {
+                    u.fill(f64::NAN);
+                    eig.fill(f64::NAN);
+                    res_out[j] = res;
+                    status_out[j] = PC_ERR_NUMERIC;
+                }
+            }
         }
         Ok(())
     })
@@ -561,17 +779,7 @@ pub unsafe extern "C" fn model_jacobian(
 ) -> i32 {
     barrier(|| {
         let h = model_handle(model)?;
-        h.ode_only()?;
-        let n = h.n();
-        if !h.names.autonomous {
-            return Err(Error::NonAutonomous(EngineError::NonAutonomous.to_string()));
-        }
-        expect_len("u", n, nu)?;
-        expect_len("p", h.n_p(), np)?;
-        let nn = n
-            .checked_mul(n)
-            .ok_or_else(|| bad_arg("jac_out: n*n overflows"))?;
-        expect_len("jac_out", nn, njac)?;
+        jacobian_checks(&h, nu, np, njac)?;
         let u = unsafe { f64_arg(u, nu, "u") }?.to_vec();
         let p = unsafe { f64_arg(p, np, "p") }?.to_vec();
         let iterate = jacobian_options(opts, h.map)?;
@@ -579,6 +787,63 @@ pub unsafe extern "C" fn model_jacobian(
         let jac = h.jacobian(u, p, iterate)?;
         out.copy_from_slice(&jac);
         Ok(())
+    })
+}
+
+/// The checks of `model_jacobian` and `model_jacobian_many` before they read their buffers,
+/// in this order, so both give the same codes and messages (SPEC 8ai-1b). `nu`, `np` and
+/// `njac` are the lengths of one column.
+fn jacobian_checks(h: &ModelHandle, nu: usize, np: usize, njac: usize) -> Result<()> {
+    h.ode_only()?;
+    let n = h.n();
+    if !h.names.autonomous {
+        return Err(Error::NonAutonomous(EngineError::NonAutonomous.to_string()));
+    }
+    expect_len("u", n, nu)?;
+    expect_len("p", h.n_p(), np)?;
+    let nn = n
+        .checked_mul(n)
+        .ok_or_else(|| bad_arg("jac_out: n*n overflows"))?;
+    expect_len("jac_out", nn, njac)
+}
+
+/// The Jacobian of `model_jacobian` at `k` columns of `u` in one request to the model thread
+/// (SPEC 8ai-1b). Block j of `jac_out` (`njac` values, column-major) has the bits of that
+/// call at column j, and the same `opts` applies to every column. `nu` and `njac` are the
+/// lengths of one column. `done` (may be NULL) gets `k`, or the index of the first refused
+/// column, whose error the call returns after writing the blocks before it.
+///
+/// # Safety
+/// `u` must be valid for `nu*k` reads, `p` for `np`, `opts` NULL or NUL-terminated,
+/// `jac_out` valid for `njac*k` writes, and `done` NULL or valid for one write.
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn model_jacobian_many(
+    model: u64,
+    u: *const f64,
+    nu: usize,
+    k: usize,
+    p: *const f64,
+    np: usize,
+    opts: *const c_char,
+    jac_out: *mut f64,
+    njac: usize,
+    done: *mut usize,
+) -> i32 {
+    barrier(|| {
+        let done = unsafe { done_slot(done) }?;
+        let h = model_handle(model)?;
+        jacobian_checks(&h, nu, np, njac)?;
+        let nu_all = total_len("u", nu, k)?;
+        let njac_all = total_len("jac_out", njac, k)?;
+        let u = unsafe { f64_arg(u, nu_all, "u") }?.to_vec();
+        let p = unsafe { f64_arg(p, np, "p") }?.to_vec();
+        let iterate = jacobian_options(opts, h.map)?;
+        let out = unsafe { f64_out(jac_out, njac_all, "jac_out") }?;
+        if k == 0 {
+            return Ok(());
+        }
+        let m = h.jacobian_many(u, p, iterate)?;
+        finish_many(m, out, k, done)
     })
 }
 

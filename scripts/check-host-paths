@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Fail when a release binary holds a build host path (a home folder or a
-# Windows user profile), which the --remap-path-prefix flags should remove.
+# Windows user profile) or the workspace of a GitHub container job (/__w/),
+# which the --remap-path-prefix flags should remove.
 #
 # Usage:
 #   scripts/check-host-paths FILE...
@@ -20,7 +21,7 @@ for f in "$@"; do
   fi
   # Each hit is printed with up to 160 printable characters after it, so
   # the log shows which file or crate the path comes from.
-  hits="$(LC_ALL=C grep -a -o -E '(/home/[A-Za-z0-9._-]+/|/Users/[A-Za-z0-9._-]+/|[A-Za-z]:\\\\?Users\\\\?)[[:print:]]{0,160}' "$f" | sort | uniq -c || true)"
+  hits="$(LC_ALL=C grep -a -o -E '(/home/[A-Za-z0-9._-]+/|/Users/[A-Za-z0-9._-]+/|/__w/|[A-Za-z]:\\\\?Users\\\\?)[[:print:]]{0,160}' "$f" | sort | uniq -c || true)"
   if [[ -n "$hits" ]]; then
     echo "check-host-paths: $f holds host paths:" >&2
     echo "$hits" >&2

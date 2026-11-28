@@ -108,6 +108,47 @@ pub struct PcApiV1 {
     ) -> i32,
     pub codec:
         unsafe extern "C" fn(u32, usize, usize, *mut f64, usize, *mut u8, usize, *mut usize) -> i32,
+    pub model_rhs_many: unsafe extern "C" fn(
+        u64,
+        *const f64,
+        *const f64,
+        usize,
+        usize,
+        *const f64,
+        usize,
+        *mut f64,
+        usize,
+        *mut usize,
+    ) -> i32,
+    pub model_jacobian_many: unsafe extern "C" fn(
+        u64,
+        *const f64,
+        usize,
+        usize,
+        *const f64,
+        usize,
+        *const c_char,
+        *mut f64,
+        usize,
+        *mut usize,
+    ) -> i32,
+    pub model_equilibrium_many: unsafe extern "C" fn(
+        u64,
+        *const f64,
+        usize,
+        usize,
+        *const f64,
+        usize,
+        *const c_char,
+        *mut f64,
+        usize,
+        *mut f64,
+        usize,
+        *mut f64,
+        usize,
+        *mut i32,
+        usize,
+    ) -> i32,
 }
 
 static API: PcApiV1 = PcApiV1 {
@@ -137,6 +178,9 @@ static API: PcApiV1 = PcApiV1 {
     latex_render: api::latex_render,
     model_jacobian: api::model_jacobian,
     codec: api::codec,
+    model_rhs_many: api::model_rhs_many,
+    model_jacobian_many: api::model_jacobian_many,
+    model_equilibrium_many: api::model_equilibrium_many,
 };
 
 /// The only exported symbol. Returns NULL only if a panic was caught.

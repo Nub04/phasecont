@@ -130,7 +130,7 @@ classdef Point
             %     Jacobian    J
             %
             %   C = classify(PT, Tol = TOL) sets the relative tolerance of the
-            %   tests (default 1e-9), a finite real number with 0 <= TOL < 1.
+            %   tests (default 1e-9), a finite real double with 0 <= TOL < 1.
             %   With s the Frobenius norm of J, zeroD is |D| <= TOL s^2, zeroT
             %   is |T| <= TOL s, zeroDisc is |Disc| <= TOL s^2, zeroRe is
             %   |Re lambda| <= TOL s and unitCircle is ||mu| - 1| <= TOL.
@@ -141,7 +141,7 @@ classdef Point
             %   of variables, or whose Jacobian has NaN or Inf entries.
             arguments
                 obj (1,1) phasecont.Point
-                options.Tol (1,1) double {mustBeReal} = 1e-9
+                options.Tol (1,1) {mustBeA(options.Tol, "double"), mustBeReal} = 1e-9
             end
             tol = options.Tol;
             if ~(isfinite(tol) && tol >= 0 && tol < 1)

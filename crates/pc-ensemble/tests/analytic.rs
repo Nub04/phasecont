@@ -1,6 +1,9 @@
 //! Tier A: ODEs with closed form solutions, and a bit-exact cross-check of the adaptive
 //! method against `pc_engine::integrate`.
 
+// Test references may use the std functions; see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 mod common;
 
 use std::sync::atomic::AtomicBool;

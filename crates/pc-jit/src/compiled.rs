@@ -1,6 +1,7 @@
 //! Lazy compilation of model entries, cached per model.
 
-use crate::{DirFn, JitEntries, JitError, PlainFn, compile};
+use crate::module::{clear_call_error, take_call_error};
+use crate::{Dims, DirFn, JitEntries, JitError, PlainFn, compile_with_calls};
 use pc_ir::{EntryKind, IrModel};
 use std::collections::HashMap;
 
@@ -41,12 +42,17 @@ impl PartialEq for EntryFn {
 pub struct CompiledModel {
     pub(crate) ir: IrModel,
     pub(crate) sets: Vec<JitEntries>,
-    /// The function and the output length of F, Aux, JacU and JacP, by [`plain_slot`]. A
-    /// model evaluates these in its inner loops, so they are found by index.
-    plain: [Option<(EntryFn, usize)>; 4],
+    /// The function, the output length and whether the code calls recursive functions, of F,
+    /// Aux, JacU and JacP, by [`plain_slot`]. A model evaluates these in its inner loops, so
+    /// they are found by index.
+    plain: [Option<Hit>; 4],
     /// The same for each directional kind.
-    dirs: HashMap<EntryKind, (EntryFn, usize)>,
+    dirs: HashMap<EntryKind, Hit>,
 }
+
+/// A compiled entry: its function, its output length and whether its code calls the helper
+/// of recursive functions, which can leave an error for [`CompiledModel::call`] to read.
+type Hit = (EntryFn, usize, bool);
 
 /// Index of a plain kind in `CompiledModel::plain`, `None` for a directional kind.
 fn plain_slot(kind: &EntryKind) -> Option<usize> {
@@ -78,11 +84,16 @@ impl CompiledModel {
     /// The returned [`EntryFn`] carries no lifetime: it is valid only while this
     /// `CompiledModel` is alive, and calling it afterwards is undefined behavior. A
     /// failed request leaves the cache as it was.
+    ///
+    /// An entry of a model that calls recursive functions reports a failed call (the cap on
+    /// active calls, say) only through [`CompiledModel::call`], which reads the error after the
+    /// entry returns. A caller that runs the raw function must not use its output of such a
+    /// model, so use `call` for it.
     pub fn entry(&mut self, kind: &EntryKind) -> Result<EntryFn, JitError> {
-        self.entry_with_len(kind).map(|(f, _)| f)
+        self.entry_with_len(kind).map(|(f, _, _)| f)
     }
 
-    fn entry_with_len(&mut self, kind: &EntryKind) -> Result<(EntryFn, usize), JitError> {
+    fn entry_with_len(&mut self, kind: &EntryKind) -> Result<Hit, JitError> {
         let slot = plain_slot(kind);
         let cached = match slot {
             Some(i) => self.plain[i],
@@ -92,7 +103,11 @@ impl CompiledModel {
             return Ok(hit);
         }
         let e = self.ir.entry(kind).map_err(JitError::Ir)?;
-        let set = compile(&[(kind.clone(), &e)], &self.ir.dag)?;
+        let dims = Dims {
+            n: self.ir.n(),
+            n_p: self.ir.n_p(),
+        };
+        let set = compile_with_calls(&[(kind.clone(), &e)], &self.ir.dag, dims)?;
         let f = match kind {
             EntryKind::Dir(_) => set.dir(kind).map(EntryFn::Dir),
             _ => set.plain(kind).map(EntryFn::Plain),
@@ -100,7 +115,7 @@ impl CompiledModel {
         let Some(f) = f else {
             return Err(JitError::Cranelift("compiled entry missing".into()));
         };
-        let hit = (f, e.outputs.len());
+        let hit = (f, e.outputs.len(), set.has_calls());
         self.sets.push(set);
         match slot {
             Some(i) => self.plain[i] = Some(hit),
@@ -122,7 +137,7 @@ impl CompiledModel {
         out: &mut [f64],
     ) -> Result<(), JitError> {
         let (n, n_p) = (self.ir.n(), self.ir.n_p());
-        let (f, out_len) = self.entry_with_len(kind)?;
+        let (f, out_len, calls) = self.entry_with_len(kind)?;
         let v_len = match kind {
             EntryKind::Dir(slots) => slots.iter().map(|s| s.len(n, n_p)).sum(),
             _ => 0,
@@ -139,6 +154,9 @@ impl CompiledModel {
                 )));
             }
         }
+        if calls {
+            clear_call_error();
+        }
         // SAFETY: `f` came from a JitEntries in `self.sets`, which lives as long as
         // `self`. The lengths were checked above against what the entry reads and
         // writes, and `out` is a unique borrow, so it cannot alias x, p or v.
@@ -148,6 +166,10 @@ impl CompiledModel {
                 EntryFn::Dir(f) => f(x.as_ptr(), p.as_ptr(), v.as_ptr(), out.as_mut_ptr()),
             }
         }
-        Ok(())
+        // The helper cannot return an error through the entry, so it left it for here.
+        match calls.then(take_call_error).flatten() {
+            Some(e) => Err(JitError::Eval(e)),
+            None => Ok(()),
+        }
     }
 }

@@ -60,6 +60,9 @@ fields!(
     latex_render,
     model_jacobian,
     codec,
+    model_rhs_many,
+    model_jacobian_many,
+    model_equilibrium_many,
 );
 
 #[test]

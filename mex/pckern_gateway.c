@@ -20,7 +20,11 @@
  *   f = pckern("model_rhs", m, x, p, t)    f(x, p, t); t is a real double scalar
  *   F = pckern("model_rhs_batch", m, X, p [, t])   X is n-by-k, one point per column; F is n-by-k
  *   [u, ev] = pckern("model_equilibrium", m, u0, p, opts)
+ *   [U, E, res, status] = pckern("model_equilibrium_many", m, U0, p, opts)   U0 n-by-K;
+ *                                          U n-by-K, E n-by-K complex, res and status 1-by-K
  *   J = pckern("model_jacobian", m, u, p, opts)   n-by-n; opts "" or {"iterate":k}
+ *   [J, bad] = pckern("model_jacobian_batch", m, U, p, opts)   U n-by-k; J n-by-n-by-k;
+ *                                          bad: 1-based column of a numeric refusal, or 0
  *   r = pckern("run_start", m, problem, u0, p)
  *   status = pckern("run_poll", r)
  *   rows = pckern("run_copy", r, branch, what, start, count, stride)
@@ -291,9 +295,9 @@ static void load_api(void)
     if (!api)
         fail("phasecont:engine:load",
              "%s: pc_api_v1 returned NULL (a panic inside it was caught)", PC_LIB_NAME);
-    /* Members appended after model_jacobian (so far only codec) may be
-     * missing from an older library; the command that uses one checks
-     * has_member first. */
+    /* Members appended after model_jacobian (codec, model_rhs_many and
+     * model_jacobian_many) may be missing from an older library; the command
+     * that uses one checks has_member first. */
     if (api->abi_version != (uint32_t)PC_ABI_VERSION ||
         api->struct_size < (uint32_t)offsetof(pc_api_v1_t, codec))
         fail("phasecont:engine:load",
@@ -690,17 +694,21 @@ static void cmd_model_rhs(int nlhs, mxArray *plhs[], int nrhs, const mxArray *pr
     plhs[0] = f;
 }
 
-/* The right-hand side at every column of X. The loop runs here, in C, so a direction
- * field or a nullcline grid costs one MEX call. The columns are contiguous, so each
- * call reads and writes in place. */
+/* The right-hand side at every column of X, in one MEX call. With a pckern that has
+ * model_rhs_many (SPEC 8ai-1b) all columns go to the model thread in one request;
+ * otherwise the loop runs here over model_rhs or model_rhs_t. Both paths give the
+ * bits of the single call at each column and raise the first refused column's error,
+ * which rhsGaps relies on. The columns are contiguous, so each call reads and writes
+ * in place. */
 static void cmd_model_rhs_batch(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 {
     uint64_t m;
     const double *x, *p;
     double *out;
-    size_t n, k, np, j;
+    size_t n, k, np, j, done = 0;
     double t = 0.0;
     mxArray *f;
+    int32_t rc;
     need_args(nrhs, 4, 5, "model_rhs_batch");
     need_outs(nlhs, 1, "model_rhs_batch");
     m = get_handle(prhs[1]);
@@ -708,15 +716,31 @@ static void cmd_model_rhs_batch(int nlhs, mxArray *plhs[], int nrhs, const mxArr
     p = get_vec(prhs[3], "p", &np);
     if (nrhs == 5)
         t = get_real_scalar(prhs[4], "t");
+    /* K = 0 is the empty result on both paths, with no handle, row or length error. */
+    if (k == 0) {
+        plhs[0] = mxCreateDoubleMatrix(n, 0, mxREAL);
+        return;
+    }
     if (n == 0)
         bad_arg("%s", "X needs at least one row");
     f = mxCreateDoubleMatrix(n, k, mxREAL);
     out = mxGetDoubles(f);
-    for (j = 0; j < k; j++) {
-        if (nrhs == 5)
-            check(g_api->model_rhs_t(m, t, x + j * n, n, p, np, out + j * n, n));
-        else
-            check(g_api->model_rhs(m, x + j * n, n, p, np, out + j * n, n));
+    if (has_member(offsetof(pc_api_v1_t, model_rhs_many) + sizeof g_api->model_rhs_many) &&
+        g_api->model_rhs_many) {
+        rc = g_api->model_rhs_many(m, nrhs == 5 ? &t : NULL, x, n, k, p, np, out, n, &done);
+        if (rc != 0)
+            mxDestroyArray(f);
+        check(rc);
+    } else {
+        for (j = 0; j < k; j++) {
+            if (nrhs == 5)
+                rc = g_api->model_rhs_t(m, t, x + j * n, n, p, np, out + j * n, n);
+            else
+                rc = g_api->model_rhs(m, x + j * n, n, p, np, out + j * n, n);
+            if (rc != 0)
+                mxDestroyArray(f);
+            check(rc);
+        }
     }
     plhs[0] = f;
 }
@@ -757,6 +781,73 @@ static void cmd_model_equilibrium(int nlhs, mxArray *plhs[], int nrhs, const mxA
         mxDestroyArray(ev);
 }
 
+/* model_equilibrium from every column of U0 in one request (SPEC 8ai-2). U and E hold
+ * the point and its eigenvalues (or multipliers) per start, res the residual and status
+ * 0 or PC_ERR_NUMERIC. A failed start has NaN columns. It needs model_equilibrium_many,
+ * since model_equilibrium gives no residual. K = 0 returns empty outputs before any call. */
+static void cmd_model_equilibrium_many(int nlhs, mxArray *plhs[], int nrhs,
+                                       const mxArray *prhs[])
+{
+    uint64_t m;
+    const double *u0, *p;
+    size_t n, k, np, i, j;
+    char *opts;
+    mxArray *u, *ev, *res, *status;
+    double *eig;
+    mxComplexDouble *z;
+    int32_t rc;
+    need_args(nrhs, 5, 5, "model_equilibrium_many");
+    need_outs(nlhs, 4, "model_equilibrium_many");
+    if (!has_member(offsetof(pc_api_v1_t, model_equilibrium_many) +
+                    sizeof g_api->model_equilibrium_many) ||
+        !g_api->model_equilibrium_many)
+        fail("phasecont:engine:load",
+             "%s has no model_equilibrium_many entry (struct_size %u): the engine library is "
+             "older than this gateway, so reinstall PhaseCont",
+             PC_LIB_NAME, (unsigned)g_struct_size);
+    m = get_handle(prhs[1]);
+    u0 = get_mat(prhs[2], "U0", &n, &k);
+    p = get_vec(prhs[3], "p", &np);
+    opts = get_text(prhs[4], "opts");
+    u = mxCreateDoubleMatrix(n, k, mxREAL);
+    ev = mxCreateDoubleMatrix(n, k, mxCOMPLEX);
+    res = mxCreateDoubleMatrix(1, k, mxREAL);
+    status = mxCreateNumericMatrix(1, k, mxINT32_CLASS, mxREAL);
+    if (k == 0) {
+        mxFree(opts);
+        plhs[0] = u;
+        plhs[1] = ev;
+        plhs[2] = res;
+        plhs[3] = status;
+        return;
+    }
+    eig = (double *)mxCalloc(2 * n * k + 1, sizeof(double));
+    rc = g_api->model_equilibrium_many(m, u0, n, k, p, np, opts[0] ? opts : NULL,
+                                       mxGetDoubles(u), n, eig, 2 * n, mxGetDoubles(res), 1,
+                                       mxGetInt32s(status), 1);
+    mxFree(opts);
+    if (rc != 0) {
+        mxFree(eig);
+        mxDestroyArray(u);
+        mxDestroyArray(ev);
+        mxDestroyArray(res);
+        mxDestroyArray(status);
+    }
+    check(rc);
+    z = mxGetComplexDoubles(ev);
+    for (j = 0; j < k; j++) {
+        for (i = 0; i < n; i++) {
+            z[j * n + i].real = eig[2 * n * j + i];
+            z[j * n + i].imag = eig[2 * n * j + n + i];
+        }
+    }
+    mxFree(eig);
+    plhs[0] = u;
+    plhs[1] = ev;
+    plhs[2] = res;
+    plhs[3] = status;
+}
+
 static void cmd_model_jacobian(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
 {
     uint64_t m;
@@ -779,6 +870,77 @@ static void cmd_model_jacobian(int nlhs, mxArray *plhs[], int nrhs, const mxArra
         mxDestroyArray(jac);
     check(rc);
     plhs[0] = jac;
+}
+
+/* The Jacobian at every column of U, as an n-by-n-by-k array (SPEC 8ai-1). With a
+ * pckern that has model_jacobian_many (SPEC 8ai-1b) all columns go to the model thread
+ * in one request; otherwise the loop runs here over model_jacobian. Both paths give the
+ * bits of model_jacobian at each slice. With two outputs, a numeric refusal stops at
+ * that column, its slice is 0 and bad is its 1-based column. */
+static void cmd_model_jacobian_batch(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
+{
+    uint64_t m;
+    const double *u, *p;
+    size_t n, k, np, j = 0;
+    mwSize dims[3];
+    char *opts;
+    mxArray *jac;
+    double *out;
+    double bad = 0.0;
+    int32_t rc = 0;
+    need_args(nrhs, 5, 5, "model_jacobian_batch");
+    need_outs(nlhs, 2, "model_jacobian_batch");
+    m = get_handle(prhs[1]);
+    u = get_mat(prhs[2], "U", &n, &k);
+    p = get_vec(prhs[3], "p", &np);
+    opts = get_text(prhs[4], "opts");
+    dims[0] = n;
+    dims[1] = n;
+    dims[2] = k;
+    /* K = 0 is the empty result on both paths, with no handle, row or length error. */
+    if (k == 0) {
+        mxFree(opts);
+        plhs[0] = mxCreateNumericArray(3, dims, mxDOUBLE_CLASS, mxREAL);
+        if (nlhs > 1)
+            plhs[1] = mxCreateDoubleScalar(0.0);
+        return;
+    }
+    if (n == 0) {
+        mxFree(opts);
+        bad_arg("%s", "U needs at least one row");
+    }
+    jac = mxCreateNumericArray(3, dims, mxDOUBLE_CLASS, mxREAL);
+    out = mxGetDoubles(jac);
+    if (has_member(offsetof(pc_api_v1_t, model_jacobian_many) +
+                   sizeof g_api->model_jacobian_many) &&
+        g_api->model_jacobian_many) {
+        size_t done = 0;
+        rc = g_api->model_jacobian_many(m, u, n, k, p, np, opts[0] ? opts : NULL, out, n * n,
+                                        &done);
+        j = done;
+    } else {
+        for (j = 0; j < k; j++) {
+            rc = g_api->model_jacobian(m, u + j * n, n, p, np, opts[0] ? opts : NULL,
+                                       out + j * n * n, n * n);
+            if (rc != 0)
+                break;
+        }
+    }
+    mxFree(opts);
+    if (rc != 0) {
+        /* The pre-checks return the single call's code, so a refusal before any
+         * column gives the same result on both paths. done < k whenever rc != 0. */
+        if (rc != PC_ERR_NUMERIC || nlhs < 2 || j >= k) {
+            mxDestroyArray(jac);
+            check(rc);
+        }
+        /* The refused slice may hold part of a result; the SPEC says it is 0. */
+        memset(out + j * n * n, 0, n * n * sizeof(double));
+        bad = (double)(j + 1);
+    }
+    plhs[0] = jac;
+    if (nlhs > 1)
+        plhs[1] = mxCreateDoubleScalar(bad);
 }
 
 static void cmd_run_start(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
@@ -1040,6 +1202,8 @@ static const struct {
     {"model_rhs_batch", cmd_model_rhs_batch},
     {"model_equilibrium", cmd_model_equilibrium},
     {"model_jacobian", cmd_model_jacobian},
+    {"model_jacobian_batch", cmd_model_jacobian_batch},
+    {"model_equilibrium_many", cmd_model_equilibrium_many},
     {"import", cmd_import},
     {"latex", cmd_latex},
     {"run_start", cmd_run_start},

@@ -217,7 +217,13 @@ fn a_running_thinned_run_shows_no_rows() {
         // Before the worker makes its branch there is nothing to copy.
         if st["branches"].as_array().is_some_and(|b| !b.is_empty()) {
             assert_eq!(st["branches"][0]["points"].as_u64().unwrap_or(0), 0, "{st}");
-            assert_eq!(copy(&run, 4, 0, 10).len(), 0);
+            // The run can end between the poll and the copy. Rows come only with the end
+            // state, so a copy that returns rows must be followed by a poll that is not
+            // running.
+            if !copy(&run, 4, 0, 10).is_empty() {
+                let after = poll(&run);
+                assert_ne!(after["state"], "running", "rows while running: {after}");
+            }
         }
         if t0.elapsed() > Duration::from_millis(300) {
             assert_eq!((api().run_cancel)(run.0), 0);

@@ -47,9 +47,11 @@ Commands: `rustc -vV`, `cargo -V`, `rustfmt -V`, `cargo clippy -V`, `rust-analyz
 | clang | `clang version 23.1.3 (Fedora 23.1.3-1.fc45)` |
 | cmake | 4.3.0 |
 | g++-15 | `g++-15 (GCC) 15.3.1 20260722 (Red Hat 15.3.1-1)`, the CUDA host compiler; `NVCC_CCBIN=g++-15` is set |
-| x86_64-w64-mingw32-gcc | `x86_64-w64-mingw32-gcc (GCC) 16.2.1 20260819 (Fedora MinGW 16.2.1-1.fc45)`, from `mingw64-gcc` 16.2.1-1.fc45 |
-| MinGW binutils | `mingw64-binutils` 2.46.0-2.fc45, which has `x86_64-w64-mingw32-dlltool` and `x86_64-w64-mingw32-objdump` |
-| MinGW runtime | `mingw64-crt` and `mingw64-winpthreads-static` 14.0.0-3.fc45, `mingw64-headers` 14.0.0-2.fc45 |
+| x86_64-w64-mingw32-gcc | `x86_64-w64-mingw32-gcc (GCC) 16.2.1 20261029 (Fedora MinGW 16.2.1-2.fc45)`, from `mingw64-gcc`, `mingw64-cpp` and `mingw64-libgcc` 16.2.1-2.fc45 |
+| MinGW binutils | `mingw64-binutils` and `mingw-binutils-generic` 2.46.0-2.fc45; `mingw64-binutils` has `x86_64-w64-mingw32-dlltool` and `x86_64-w64-mingw32-objdump` |
+| MinGW runtime | `mingw64-crt`, `mingw64-winpthreads` and `mingw64-winpthreads-static` 14.0.0-3.fc45, `mingw64-headers` 14.0.0-2.fc45, `mingw64-filesystem` and `mingw-filesystem-base` 152-1.fc45 |
+
+These are the versions that `scripts/mingw-fedora` pins. The `pckern-win` job in `ci.yml` and the `lib-win` job in `release.yml` install them with `scripts/mingw-fedora install` in a `fedora:45` container pinned by digest, and `scripts/mingw-fedora check` fails unless this machine has the same set. When dnf no longer offers one of them, move the pin here and in the script in one commit.
 
 `scripts/build-pckern` sets the linker for `x86_64-pc-windows-gnu` through `CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER` (default `x86_64-w64-mingw32-gcc`). `spikes/.cargo/config.toml` still sets it for the spike. `x86_64-w64-mingw32-objdump -p pckern.dll | grep 'DLL Name'` lists the DLLs a build imports.
 

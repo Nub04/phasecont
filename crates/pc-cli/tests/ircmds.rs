@@ -135,6 +135,30 @@ fn check_derivs_passes_on_a_model_without_parameters() {
 }
 
 #[test]
+fn check_derivs_passes_on_a_recursive_model_with_the_jit_at_0_ulp() {
+    // SPEC 8af-5, stage 2: the JIT runs the calls, so every JIT-vs-DAG row is compared bit for
+    // bit and none is skipped or failed. Written inline so that no fixture is added.
+    let dir = TempDir::new("recursive");
+    let path = dir.file("pw.ode");
+    std::fs::write(
+        &path,
+        "par k=3,a=0.5\npw(x,n)=if(n<1)then(1)else(x*pw(x,n-1))\ninit x=1.5,y=0.2\n\
+         x'=pw(x,k)-a*y\ny'=x-pw(y,2)\ndone\n",
+    )
+    .unwrap();
+    let o = run(&["check-derivs", &path, "--points", "6"]);
+    assert_eq!(code(&o), 0, "{}\n{}", stdout(&o), stderr(&o));
+    let t = stdout(&o);
+    assert!(!t.contains("FAIL") && !t.contains("SKIP"), "{t}");
+    let dag_rows = t
+        .lines()
+        .filter(|l| l.contains("(JIT vs DAG, 0 ulp)"))
+        .count();
+    assert!(dag_rows >= 10, "{dag_rows} JIT vs DAG rows:\n{t}");
+    assert!(t.trim_end().contains("checks pass"), "{t}");
+}
+
+#[test]
 fn check_derivs_passes_on_a_model_that_uses_t() {
     let o = run(&["check-derivs", "forced.ode", "--points", "5"]);
     assert_eq!(code(&o), 0, "{}\n{}", stdout(&o), stderr(&o));

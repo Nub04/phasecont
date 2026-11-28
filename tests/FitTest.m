@@ -118,6 +118,46 @@ classdef FitTest < matlab.unittest.TestCase
             end
         end
 
+        function verifySameFit(testCase, got, want, label)
+            % Two fit results hold the same values, bit for bit. Starts and
+            % BestStart are left out: a start of a multi-start fit has none.
+            testCase.assertClass(got, "phasecont.FitResult", label);
+            for name = ["Fit" "Observe" "Stop"]
+                testCase.verifyEqual(got.(name), want.(name), label + ": " + name);
+            end
+            testCase.verifyEqual(got.Converged, want.Converged, label + ": Converged");
+            testCase.verifyEqual(string(fieldnames(got.Parameters)), ...
+                string(fieldnames(want.Parameters)), label + ": Parameters");
+            for name = ["Times" "Estimate" "P" "Fitted" "Residual" "Cost" ...
+                    "GradNorm" "Jacobian" "Iterations"]
+                testCase.verifyEqual(fitBits(got.(name)), fitBits(want.(name)), ...
+                    label + ": " + name);
+            end
+            testCase.verifyEqual(got.History.Properties.VariableNames, ...
+                want.History.Properties.VariableNames, label + ": History");
+            testCase.verifyEqual(fitBits(table2array(got.History)), ...
+                fitBits(table2array(want.History)), label + ": History");
+        end
+
+        function r = soloFit(~, m, x0, names, q, varargin)
+            % A fit without Starts, started from the fitted values q.
+            p = struct();
+            for k = 1:numel(names)
+                p.(names(k)) = q(k);
+            end
+            r = phasecont.fit(m, x0, p, varargin{:});
+        end
+
+        function err = soloError(testCase, m, x0, names, q, varargin)
+            % The error a fit without Starts raises from the fitted values q.
+            err = [];
+            try
+                testCase.soloFit(m, x0, names, q, varargin{:});
+            catch err
+            end
+            testCase.assertNotEmpty(err, "the solo fit must fail");
+        end
+
         function Y = ensembleData(~, m, x0, p, ts, method)
             % Observed first variable of the model, made by ensemble at
             % the step method of the fit.
@@ -792,6 +832,196 @@ classdef FitTest < matlab.unittest.TestCase
             end
         end
 
+        % ---- several starts (Starts) ----
+
+        function eachStartGivesTheBitsOfASoloFit(testCase, Method)
+            % Five starts of two parameters give 15 members per call, and
+            % the starts stop after different numbers of iterations, so a
+            % start's members move to other places in the call as the
+            % others drop out. One start is at the parameters that made
+            % the data, so with Dt it stops at once.
+            m = testCase.model(testCase.TwoPar);
+            ts = (0.5:0.5:4)';
+            Y = testCase.ensembleData(m, 0, [1.5; 0.7], ts, Method);
+            c = testCase.options("Dt", struct("Fit", ["a" "b"]));
+            Q = [1 2; 0.5 0.1; 3 1; 1.5 0.7; 2 0.3]';
+            r = phasecont.fit(m, 0, [], ts, Y, c{:}, Method{:}, Starts = Q);
+            testCase.assertSize(r.Starts, [1 5]);
+            iters = zeros(1, 5);
+            for k = 1:5
+                want = testCase.soloFit(m, 0, ["a" "b"], Q(:, k), ts, Y, ...
+                    c{:}, Method{:});
+                testCase.verifySameFit(r.Starts(k), want, sprintf("start %d", k));
+                testCase.verifyEmpty(r.Starts(k).Starts);
+                testCase.verifyEmpty(r.Starts(k).BestStart);
+                testCase.verifyEmpty(r.Starts(k).Error);
+                iters(k) = r.Starts(k).Iterations;
+            end
+            testCase.verifyGreaterThan(numel(unique(iters)), 1);
+            testCase.verifySameFit(r, r.Starts(r.BestStart), "best");
+        end
+
+        function theBestStartHasTheLowestCost(testCase)
+            % MaxIter = 2 leaves the starts at different costs.
+            m = testCase.model(testCase.TwoPar);
+            ts = (0.5:0.5:4)';
+            Y = testCase.ensembleData(m, 0, [1.5; 0.7], ts, {"Dt", 0.01});
+            c = testCase.options([], struct("Fit", ["a" "b"], "MaxIter", 2));
+            Q = [3 1; 1.2 0.9; 0.5 0.1; 2 0.3]';
+            r = phasecont.fit(m, 0, [], ts, Y, c{:}, Starts = Q);
+            costs = arrayfun(@(s) s.Cost, r.Starts);
+            testCase.assertGreaterThan(numel(unique(costs)), 1);
+            [~, best] = min(costs);
+            testCase.verifyEqual(r.BestStart, best);
+            testCase.verifySameFit(r, r.Starts(best), "best");
+            testCase.verifySize(r.Starts, [1 4]);
+        end
+
+        function aTieKeepsTheLowerIndex(testCase)
+            % Starts 2 and 3 are the same point, so their costs are equal,
+            % bit for bit; start 1 is far away and costs more after one step.
+            m = testCase.model(testCase.Line);
+            t = (0.5:0.5:3)';
+            c = testCase.options([], struct("Fit", "b", "MaxIter", 1));
+            r = phasecont.fit(m, 0, [], t, 2*t, c{:}, Starts = [100 3 3]);
+            testCase.assertEqual(r.Starts(2).Cost, r.Starts(3).Cost);
+            testCase.assertGreaterThan(r.Starts(1).Cost, r.Starts(2).Cost);
+            testCase.verifyEqual(r.BestStart, 2);
+            testCase.verifySameFit(r.Starts(3), r.Starts(2), "same start");
+        end
+
+        function oneStartIsTheSameAsNoStarts(testCase)
+            m = testCase.model(testCase.TwoPar);
+            ts = (0.5:0.5:4)';
+            Y = testCase.ensembleData(m, 0, [1.5; 0.7], ts, {"Dt", 0.01});
+            c = testCase.options([], struct("Fit", ["a" "b"]));
+            r = phasecont.fit(m, 0, [], ts, Y, c{:}, Starts = [1; 2]);
+            want = testCase.soloFit(m, 0, ["a" "b"], [1; 2], ts, Y, c{:});
+            testCase.verifySameFit(r, want, "best");
+            testCase.verifyEqual(r.BestStart, 1);
+            testCase.verifySize(r.Starts, [1 1]);
+        end
+
+        function withoutStartsTheResultHasNoStarts(testCase)
+            m = testCase.model(testCase.Line);
+            t = (0.5:0.5:3)';
+            c = testCase.options([], struct("Fit", "b"));
+            % SPEC section on several starts: an empty Starts is the same as none.
+            for given = {{}, {"Starts", []}, {"Starts", zeros(1, 0)}, ...
+                    {"Starts", zeros(0, 1)}, {"Starts", zeros(0, 0, 2)}}
+                r = phasecont.fit(m, 0, [], t, 2*t, c{:}, given{1}{:});
+                testCase.verifyEmpty(r.Starts);
+                testCase.verifyClass(r.Starts, "phasecont.FitResult");
+                testCase.verifyEmpty(r.BestStart);
+                testCase.verifyEmpty(r.Error);
+            end
+        end
+
+        function theStartsReplaceTheFittedValuesOfP(testCase)
+            % P keeps the values of the parameters that are not fitted.
+            m = testCase.model(testCase.TwoPar);
+            ts = (0.5:0.5:4)';
+            Y = testCase.ensembleData(m, 0, [1.5; 0.7], ts, {"Dt", 0.01});
+            c = testCase.options([], struct("Fit", "a"));
+            p = struct("a", 99, "b", 0.7);
+            r = phasecont.fit(m, 0, p, ts, Y, c{:}, Starts = [1 2]);
+            for k = 1:2
+                want = testCase.soloFit(m, 0, ["a" "b"], [k 0.7], ts, Y, c{:});
+                testCase.verifySameFit(r.Starts(k), want, sprintf("start %d", k));
+                testCase.verifyEqual(r.Starts(k).P(2), 0.7);
+            end
+        end
+
+        function aStartThatFailsBesideGoodOnesIsRecorded(testCase)
+            % x' = c x^2 from x(0) = 1 blows up at t = 1/c, so start 2 (c = 1)
+            % does not reach t = 2. Starts 1 and 3 run as they would alone.
+            m = testCase.model(testCase.Blow);
+            t = (0.5:0.5:2)';
+            Y = 1 ./ (1 - 0.45*t);
+            c = testCase.options([], struct("Fit", "c", "Tau", 1e-6));
+            Q = [0.1 1 0.2];
+            r = testCase.verifyWarning(@() phasecont.fit(m, 1, [], t, Y, c{:}, ...
+                Starts = Q), "phasecont:fit:someStartsFailed");
+            solo = testCase.soloError(m, 1, "c", 1, t, Y, c{:});
+            bad = r.Starts(2);
+            testCase.verifyEqual(bad.Stop, "failed");
+            testCase.verifyFalse(bad.Converged);
+            testCase.verifyEqual(string(bad.Error.identifier), "phasecont:fit:startFailed");
+            testCase.verifyEqual(bad.Error.identifier, solo.identifier);
+            testCase.verifyEqual(bad.Error.message, solo.message);
+            testCase.verifyEqual(bad.Estimate, 1);
+            testCase.verifyEqual(bad.Iterations, 0);
+            testCase.verifyTrue(isnan(bad.Cost));
+            for k = [1 3]
+                want = testCase.soloFit(m, 1, "c", Q(k), t, Y, c{:});
+                testCase.verifySameFit(r.Starts(k), want, sprintf("start %d", k));
+            end
+            testCase.verifyTrue(ismember(r.BestStart, [1 3]));
+        end
+
+        function aStartWhoseStepDoesNotMoveItIsRecorded(testCase)
+            % With FdScale = 1e6, the step at q = 1e8 is 1e-17 * 1e8 = 1e-9,
+            % below the spacing of doubles near 1e8, so that start raises
+            % badOption alone. At q = 1 the step is 1e-11 and moves it.
+            m = testCase.model(testCase.Decay);
+            t = (0.5:0.5:3)';
+            c = testCase.options([], struct("FdStep", 1e-17, "FdScale", 1e6));
+            Y = exp(-1.3*t);
+            r = testCase.verifyWarning(@() phasecont.fit(m, 1, [], t, Y, c{:}, ...
+                Starts = [1e8 1]), "phasecont:fit:someStartsFailed");
+            solo = testCase.soloError(m, 1, "a", 1e8, t, Y, c{:});
+            testCase.verifyEqual(r.Starts(1).Error.identifier, solo.identifier);
+            testCase.verifyEqual(r.Starts(1).Error.message, solo.message);
+            testCase.verifyEqual(r.Starts(1).Stop, "failed");
+            want = testCase.soloFit(m, 1, "a", 1, t, Y, c{:});
+            testCase.verifySameFit(r.Starts(2), want, "start 2");
+            testCase.verifyEqual(r.BestStart, 2);
+        end
+
+        function whenEveryStartFailsTheFirstErrorIsRaised(testCase)
+            m = testCase.model(testCase.Blow);
+            c = testCase.options([], struct("Fit", "c"));
+            solo = testCase.soloError(m, 1, "c", 2, [2; 3], [2; 3], c{:});
+            try
+                phasecont.fit(m, 1, [], [2; 3], [2; 3], c{:}, Starts = [2 1]);
+                testCase.verifyFail("fit did not raise startFailed");
+            catch err
+                testCase.verifyEqual(err.identifier, solo.identifier);
+                testCase.verifySubstring(err.message, "In start 1");
+                testCase.verifySubstring(err.message, solo.message);
+            end
+        end
+
+        function badStartsAreRefused(testCase)
+            m = testCase.model(testCase.TwoPar);
+            ts = (0.5:0.5:4)';
+            c = testCase.options([], struct("Fit", ["a" "b"]));
+            Y = zeros(numel(ts), 1);
+            bad = {[1 2 3], [1; 2; 3], [1 NaN; 2 3], [1 Inf; 2 3], ...
+                [1 1i; 2 3], "1", {1; 2}, ones(2, 2, 2), true(2, 1)};
+            for k = 1:numel(bad)
+                try
+                    phasecont.fit(m, 0, [], ts, Y, c{:}, Starts = bad{k});
+                    testCase.verifyFail(sprintf("bad Starts %d was taken", k));
+                catch err
+                    testCase.verifyEqual(string(err.identifier), ...
+                        "phasecont:fit:badStarts", sprintf("bad Starts %d", k));
+                end
+            end
+            % One fitted parameter: a column of 2 is two rows, not two starts.
+            c1 = testCase.options([], struct("Fit", "a"));
+            testCase.verifyError(@() phasecont.fit(m, 0, [], ts, Y, c1{:}, ...
+                Starts = [1; 2]), "phasecont:fit:badStarts");
+        end
+
+        function aMapIsRefusedWithStarts(testCase)
+            m = testCase.model("par r=2" + newline + "init x=0.2" + newline + ...
+                "x(t+1)=r*x*(1-x)" + newline + "done" + newline);
+            c = testCase.options([], struct("Fit", "r"));
+            testCase.verifyError(@() phasecont.fit(m, 0.2, [], (1:3)', ...
+                [0.3; 0.4; 0.5], c{:}, Starts = [1 2]), "phasecont:fit:mapModel");
+        end
+
         % ---- warnings ----
 
         function theMemberStoppedWarningIsRestored(testCase)
@@ -824,4 +1054,10 @@ classdef FitTest < matlab.unittest.TestCase
             testCase.verifyWarningFree(@() phasecont.fit(m, 1, 0.1, t, Y, c{:}));
         end
     end
+end
+
+function b = fitBits(x)
+% The size and bit pattern of a numeric or logical value, so NaN entries
+% compare equal.
+b = {size(x), typecast(double(x(:)), "uint64")};
 end

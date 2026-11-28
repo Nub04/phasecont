@@ -1,6 +1,9 @@
 //! Ensemble runs through the table from `pc_api_v1()`. Every test runs on the CPU backend,
 //! so no GPU or driver is needed.
 
+// Test references may use the std functions; see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use std::ffi::{CStr, CString, c_char};
 use std::ptr;
 use std::time::{Duration, Instant};
@@ -15,6 +18,7 @@ const PC_ERR_PANIC: i32 = 1;
 const PC_ERR_BAD_ARG: i32 = 2;
 const PC_ERR_BAD_HANDLE: i32 = 3;
 const PC_ERR_BAD_PROBLEM: i32 = 6;
+const PC_ERR_MODEL: i32 = 5;
 const PC_ERR_GPU_UNAVAILABLE: i32 = 9;
 const PC_ERR_UNSUPPORTED_MODEL: i32 = 13;
 
@@ -265,6 +269,89 @@ fn per_member_parameters_are_read_member_major() {
     assert!((s[1] - (-2.0f64).exp()).abs() < 1e-9);
 }
 
+/// A model with a recursive call runs on the CPU tape, since the compiled `F` has no calls.
+/// The member past the frame cap is counted as `recursion_depth` and the other finishes.
+#[test]
+fn a_recursive_model_runs_and_counts_the_member_past_the_cap() {
+    let m = parse("par k=1\ns(n)=if(n<1)then(0)else(1+s(n-1))\nx'=-s(k)*x\ndone\n");
+    let json = job("").replace(r#""params":"shared""#, r#""params":"per_member""#);
+    let ens = start(&m, &json, &[1.0, 1.0], &[1.0, 2e6]);
+    let v = wait(&ens);
+    assert_eq!(v["counts"]["ok"], 1, "{v}");
+    assert_eq!(v["counts"]["recursion_depth"], 1, "{v}");
+    let s = copied(ens.0, PC_ENS_STATES, 2);
+    assert!((s[0] - (-1.0f64).exp()).abs() < 1e-9, "{s:?}");
+    assert!(s[1].is_nan(), "{s:?}");
+    assert_eq!(copied(ens.0, PC_ENS_STATUS, 2), [0.0, 6.0]);
+}
+
+/// A GPU backend refuses a recursive model the tape cannot build (here it uses erf) with
+/// `PC_ERR_MODEL` before it looks for a device, so the code is the same on a machine without
+/// the GPU (SPEC 8af-5).
+#[test]
+fn a_gpu_backend_refuses_a_recursive_model_the_tape_cannot_run() {
+    let src = "par k=1\ns(n)=if(n<1)then(0)else(1+s(n-1))\nx'=-s(k)*x+erf(x)\ndone\n";
+    let m = parse(src);
+    for backend in ["cuda", "opencl", "metal"] {
+        let json = job("").replace("\"cpu\"", &format!("\"{backend}\""));
+        let (rc, ens) = start_with(&m, &json, &[1.0], &[1.0]);
+        assert_eq!(rc, PC_ERR_MODEL, "{backend}: {}", last_error());
+        assert_eq!(ens, 0, "{backend}");
+        let e = last_error();
+        assert!(
+            e.contains("recursive function s") && e.contains(backend),
+            "{e}"
+        );
+        assert!(e.contains("uses erf"), "{e}");
+    }
+}
+
+/// Every GPU backend takes a recursive model the tape builds: on a machine without such a
+/// device the start fails with `gpu_unavailable`, never with the model code, and with one the
+/// run finishes.
+#[test]
+fn every_gpu_backend_takes_a_recursive_model() {
+    let m = parse("par k=1\ns(n)=if(n<1)then(0)else(1+s(n-1))\nx'=-s(k)*x\ndone\n");
+    for backend in ["cuda", "opencl", "metal"] {
+        let mut json = job("").replace("\"cpu\"", &format!("\"{backend}\""));
+        if backend == "metal" {
+            // Metal has no double type, so a double run fails at the first poll.
+            json = json.replace("\"double\"", "\"single\"");
+        }
+        let (rc, ens) = start_with(&m, &json, &[1.0], &[1.0]);
+        if rc == PC_ERR_GPU_UNAVAILABLE {
+            assert_eq!(ens, 0, "{backend}");
+            continue;
+        }
+        assert_eq!(rc, 0, "{backend}: {}", last_error());
+        let v = wait(&Id(ens));
+        assert_eq!(v["state"], "done", "{backend}: {v}");
+    }
+}
+
+/// The cpu backend refuses a recursive model that uses a construct the tape lacks, when the
+/// run is polled, as it does for a model without calls.
+#[test]
+fn the_cpu_backend_refuses_a_recursive_model_the_tape_cannot_run() {
+    let m = parse("par k=1\ns(n)=if(n<1)then(0)else(1+s(n-1))\nx'=-s(k)*x+erf(x)\ndone\n");
+    let (rc, ens) = start_with(&m, &job(""), &[1.0], &[1.0]);
+    assert_eq!(rc, 0, "{}", last_error());
+    let mut v = (0, None);
+    for _ in 0..12_000 {
+        v = poll_raw(ens);
+        if v.0 != 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_ne!(v.0, 0, "the run did not fail");
+    let e = last_error();
+    assert!(
+        e.contains("uses erf, which the ensemble engine cannot run"),
+        "{e}"
+    );
+}
+
 #[test]
 fn a_copy_before_the_run_finishes_gives_2() {
     let m = parse(LORENZ);
@@ -450,6 +537,33 @@ fn math_is_exact_when_left_out_and_fma_runs_only_on_cuda_double() {
     assert_eq!(rc, PC_ERR_BAD_PROBLEM);
     assert!(
         last_error().contains("math must be exact or fma"),
+        "{}",
+        last_error()
+    );
+}
+
+#[test]
+fn stack_is_auto_when_left_out_and_rejects_unknown_names() {
+    let m = parse(DECAY);
+    let v = wait(&start(&m, &job(""), &[1.0], &[1.0]));
+    assert_eq!(v["label"]["stack"], "auto");
+    assert_eq!(v["label"]["stack_ran"], "member");
+    assert_eq!(v["label"]["sorted"], false);
+    // The CPU keeps no GPU call stack, so a warp or auto request runs: the label keeps the
+    // layout asked for and names the one that ran.
+    for asked in ["warp", "auto"] {
+        let extra = format!(r#","stack":"{asked}""#);
+        let v = wait(&start(&m, &job(&extra), &[1.0], &[1.0]));
+        assert_eq!(v["counts"]["ok"], 1);
+        assert_eq!(v["label"]["stack"], asked);
+        assert_eq!(v["label"]["stack_ran"], "member");
+        assert_eq!(v["label"]["sorted"], false);
+    }
+    let (rc, ens) = start_with(&m, &job(r#","stack":"bogus""#), &[1.0], &[1.0]);
+    assert_eq!(rc, PC_ERR_BAD_PROBLEM);
+    assert_eq!(ens, 0);
+    assert!(
+        last_error().contains("stack must be member, warp or auto, got bogus"),
         "{}",
         last_error()
     );

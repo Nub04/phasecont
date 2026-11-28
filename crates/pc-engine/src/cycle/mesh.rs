@@ -28,7 +28,7 @@ fn mth_derivative(
     out: &mut [f64],
 ) {
     let m = basis.m();
-    let sc = (mesh[j + 1] - mesh[j]).powi(-(m as i32));
+    let sc = pc_ir::hostmath::powi(mesh[j + 1] - mesh[j], -(m as i32));
     let dm = basis.mth_derivative();
     for (c, o) in out.iter_mut().enumerate() {
         *o = sc * (0..=m).map(|l| dm[l] * u[(j * m + l) * n + c]).sum::<f64>();
@@ -61,7 +61,7 @@ fn equidistribution(
         let mut e = 0.0;
         for c in 0..n {
             if j > 0 {
-                e += (2.0 * (nd[c] - hd[c]) / (h(j - 1) + h(j))).abs().powf(pwr);
+                e += pc_ir::hostmath::powf((2.0 * (nd[c] - hd[c]) / (h(j - 1) + h(j))).abs(), pwr);
             }
             if nd[c].abs() > SMALL_DERIVATIVE {
                 small = false;
@@ -83,7 +83,7 @@ fn equidistribution(
     mth_derivative(basis, n, mesh, u, j, &mut nd);
     let mut e = 0.0;
     for c in 0..n {
-        e += ((nd[c] - hd[c]) / dtav).abs().powf(pwr);
+        e += pc_ir::hostmath::powf(((nd[c] - hd[c]) / dtav).abs(), pwr);
         if nd[c].abs() > SMALL_DERIVATIVE {
             small = false;
         }

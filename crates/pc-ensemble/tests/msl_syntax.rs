@@ -137,3 +137,40 @@ fn a_broken_kernel_is_rejected_so_the_check_means_something() {
         Err(log) => assert!(log.contains("no_such_function"), "{log}"),
     }
 }
+
+/// The kernels of models with recursive calls (SPEC 8af-5, stage 4d), which take the call
+/// stack at buffer 12. They are dumped too, so the hosted macOS job compiles the trampoline
+/// with Metal itself.
+#[test]
+fn every_recursive_model_and_integrator_parses_as_cpp_with_the_shim() {
+    let odes = [
+        "par k=5\nfib(n)=if(n<2)then(n)else(fib(n-1)+fib(n-2))\nx'=-x*fib(k)/8\ndone\n",
+        "par k=3\nev(n,a)=if(n<1)then(a)else(od(n-1))\n\
+         od(n)=if(n<1)then(0)else(ev(n-1,x))\nx'=-x*(1+ev(k,0.5))\ndone\n",
+        "s(n)=if(n<1)then(0)else(1+s(n-1))\nx'=1\ny'=s(x*6000)*0\ndone\n",
+    ]
+    .map(|m| (m, &VARIANTS[..]));
+    let maps = ["par k=3\ns(n)=if(n<1)then(0)else(1+s(n-1))\nx(t+1)=s(k)*x/k/2\ndone\n"]
+        .map(|m| (m, &MAP_VARIANTS[..]));
+    for (n, (model, variants)) in odes.into_iter().chain(maps).enumerate() {
+        for &i in variants {
+            for layout in [Layout::Private, Layout::Global] {
+                let src = kernel_in(model, i, layout);
+                assert!(src.contains("[[buffer(12)]]"), "r{n} {i:?} {layout:?}");
+                let name = format!("r{n}-{i:?}-{layout:?}");
+                dump(&src, &name);
+                match check(&src, &name) {
+                    Ok(Some(())) => {}
+                    Ok(None) => {
+                        skip_gpu("clang-msl", "clang++ is not installed (set PC_CLANGXX)");
+                        return;
+                    }
+                    Err(log) => panic!(
+                        "recursive model {n} {i:?} {layout:?} does not parse:\n{log}\n\
+                         --- source ---\n{src}"
+                    ),
+                }
+            }
+        }
+    }
+}

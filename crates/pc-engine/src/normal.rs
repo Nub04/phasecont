@@ -915,13 +915,14 @@ pub(crate) fn map_ns_core(
 /// normal form coefficients, with `model` the residual `G = F - x`. PD gets `b` in
 /// `coefficient`; NS gets `d` in `coefficient`, `Im(e^{-i theta} c1)` in `coefficient2` and
 /// `theta` in `values`. A point whose coefficient cannot be computed keeps its label and
-/// empty extras and adds a warning.
+/// empty extras and adds a warning. A recursion cap error is returned (SPEC 8af-5), and the
+/// points done before it keep their coefficients.
 pub(crate) fn attach_map_coefficients(
     model: &mut dyn ModelEval,
     params: &[f64],
     free: usize,
     branch: &mut Branch,
-) {
+) -> Result<(), EngineError> {
     for sp in branch.specials.iter_mut() {
         if sp.label != "PD" && sp.label != "NS" {
             continue;
@@ -944,12 +945,14 @@ pub(crate) fn attach_map_coefficients(
                 sp.extras.normalization = Some(norm.to_string());
                 sp.extras.values = values;
             }
+            Err(e) if e.is_call_limit() => return Err(e),
             Err(e) => branch.warnings.push(format!(
                 "{} point at alpha = {}: no normal form coefficient: {e}",
                 sp.label, sp.point.alpha
             )),
         }
     }
+    Ok(())
 }
 
 fn at_point<'a>(

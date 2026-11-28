@@ -266,12 +266,12 @@ needs every key below except `device` and `math`; nothing else is filled in.
               bits differ from an exact run
 
 The result has members, n, times, status (one of ok, bounds, step_too_small,
-max_steps, nonfinite per member), states[member][sample][state] (null for a
-value that is not finite), t_reached, accepted, rejected and a label with the
-backend, the device, the driver, the precision, single_precision and math. A
-result with single_precision true, or with math fma, is a screening result: run
-the member again in double precision with math exact before it feeds
-continuation, normal forms or Floquet multipliers.
+max_steps, nonfinite, recursion_depth per member), states[member][sample][state]
+(null for a value that is not finite), t_reached, accepted, rejected and a label
+with the backend, the device, the driver, the precision, single_precision and
+math. A result with single_precision true, or with math fma, is a screening
+result: run the member again in double precision with math exact before it
+feeds continuation, normal forms or Floquet multipliers.
 
 --bench times built-in cases on every device, in both precisions, at each size
 (default 1000,10000,100000) and prints one row each. The cases (default all of

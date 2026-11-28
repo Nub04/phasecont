@@ -256,6 +256,51 @@ classdef ModelTest < matlab.unittest.TestCase
             testCase.verifyEqual(string(m.Diagnostics(1).severity), "warning");
         end
 
+        function recursiveFunctionWarns(testCase)
+            % F-4 (SPEC 8af-5): a recursive function is ODE0047, a warning that
+            % names the function and the depth cap. The JIT and the fallback
+            % evaluator run it (stage 2); the AOT path still refuses.
+            f = testCase.write("recursive.ode", "par k=3" + newline + ...
+                "pw(x,n)=if(n<1)then(1)else(x*pw(x,n-1))" + newline + ...
+                "init x=1.5" + newline + "x'=pw(x,k)" + newline + "done" + newline);
+            testCase.verifyWarning(@() phasecont.Model(f, Evaluator = "fallback"), ...
+                "phasecont:model:parseWarning");
+            w = warning("off", "phasecont:model:parseWarning");
+            restore = onCleanup(@() warning(w));
+            m = phasecont.Model(f, Evaluator = "fallback");
+            testCase.verifyEqual(string({m.Diagnostics.code}), "ODE0047");
+            testCase.verifyEqual(string(m.Diagnostics(1).severity), "warning");
+            testCase.verifySubstring(string(m.Diagnostics(1).message), "`pw`");
+            testCase.verifySubstring(string(m.Diagnostics(1).message), "1,000,000");
+            testCase.verifyEqual(m.rhs(1.5), 3.375);
+            mj = phasecont.Model(f, Evaluator = "jit");
+            testCase.verifyEqual(mj.rhs(1.5), 3.375);
+            % With no Evaluator the session option decides, "jit" by default,
+            % so the default evaluator runs the model too.
+            testCase.assumeEqual(phasecont.config("Codegen"), "jit");
+            md = phasecont.Model(f);
+            testCase.verifyEqual(md.rhs(1.5), 3.375);
+            clear restore
+        end
+
+        function recursionCapRaisesNumeric(testCase)
+            % SPEC 8af-5, Depth cap: the 1,000,001st active call stops the run
+            % with engine:numeric, on the JIT and on the fallback evaluator, in
+            % a direct evaluation and in simulate (not a stop reason).
+            f = testCase.write("cap.ode", "par k=1000000" + newline + ...
+                "s(n)=if(n<1)then(0)else(n+s(n-1))" + newline + ...
+                "init x=1" + newline + "x'=-x+0*s(k)" + newline + "done" + newline);
+            w = warning("off", "phasecont:model:parseWarning");
+            restore = onCleanup(@() warning(w));
+            for ev = ["jit" "fallback"]
+                m = phasecont.Model(f, Evaluator = ev);
+                testCase.verifyError(@() m.rhs(1), "phasecont:engine:numeric", ev);
+                testCase.verifyError(@() phasecont.simulate(m, 1, [0 1]), ...
+                    "phasecont:engine:numeric", ev);
+            end
+            clear restore
+        end
+
         function backslashWarningsAreIssued(testCase)
             % XPPAUT 8.2.2 drops text after a backslash and joins the next
             % line, and a backslash in a comment swallows the next line

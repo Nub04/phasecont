@@ -6,7 +6,7 @@ PhaseCont (working name) is a MATLAB toolbox for phase-plane and bifurcation ana
 
 - Parse `.ode` files, with diagnostics that give file, line and column (`phasecont.Model`).
 - Integrate trajectories with the Dormand-Prince 5(4) pair (`phasecont.simulate`).
-- Find equilibria with Newton's method (`phasecont.equilibrium`).
+- Find equilibria with Newton's method from one start (`phasecont.equilibrium`) or from a grid of starts on several CPU threads, with the duplicates merged (`phasecont.equilibria`).
 - Continue equilibria in one parameter and detect fold (LP), branch point (BP) and Hopf (H) points, with their normal form coefficients (`phasecont.continuation`).
 - Continue limit cycles from a Hopf point by orthogonal collocation and detect folds (LPC), period doublings (PD) and Neimark-Sacker (NS) points from the Floquet multipliers.
 - Continue LP, H, LPC, PD and NS points in two parameters, and detect their codim-2 points: CP, BT, ZH, GH and HH on LP and H curves, LPPD, LPNS, CPC and R1 on LPC curves, LPPD, PDNS, GPD and R2 on PD curves, and R1 to R4, LPNS, PDNS and CH on NS curves.
@@ -15,10 +15,13 @@ PhaseCont (working name) is a MATLAB toolbox for phase-plane and bifurcation ana
 - Continue the equilibria of a delay model, one that calls `delay(x, tau)`, with the characteristic roots counted at every point (`Roots`), and detect LP, BP and H points. Follow the Hopf curves of a delay model in two parameters with their BT and ZH points, GH points with `Lyapunov = true` and HH points with `Roots`. `Coefficients = true` adds the zero-Hopf and Hopf-Hopf normal form coefficients.
 - Continue the cycles that branch off a Hopf point of a delay model, with their Floquet multipliers (`Floquet`) and their LPC, PD and NS points. `Detect = "BPC"` labels the branch points of the discretized cycle problem, and `Switch = "BPC1"` follows the branch that leaves one.
 - Integrate many trajectories of one model at once, for a grid of start states or parameter sets, on the CPU or on a GPU through CUDA, OpenCL or Metal (`phasecont.ensemble`). `Precision` has no default. Single-precision results are labeled as such, and `refine` runs a member again in double precision on the CPU. `phasecont.gpuDevices` lists the devices, and `phasecont.gpuSelfTest` checks one against exact solutions.
-- Fit model parameters to trajectory data with the Levenberg-Marquardt method, one ensemble call per iteration, in double precision on the CPU (`phasecont.fit`). It fits ODE models only.
+- Fit model parameters to trajectory data with the Levenberg-Marquardt method, one ensemble call per iteration, in double precision on the CPU (`phasecont.fit`). `Starts` runs several start points in one ensemble call per iteration. It fits ODE models only.
+- Run several continuations at the same time, one engine thread each (`phasecont.continuationBatch`), for both directions of a branch, several start points or a family of parameter values.
 - Write a branch as a pgfplots figure and its special points as a booktabs table, compile the document with `latexmk`, or edit it in the LaTeX studio app (`phasecont.latex`, `phasecont.app.LatexStudio`).
 - Save a model and its results to a session file, load it again, and replay every run to check the result (`phasecont.Session`, `phasecont.session.replay`).
 - Explore a model in the phase-plane app, with direction field, nullclines, trajectories and equilibria (`phasecont.app.PhasePlane`).
+- Test the hypotheses of the closed-orbit criteria of a planar ODE (gradient system, Lyapunov function, Dulac function, trapping region) at the samples of a rectangle, with exact derivatives (`phasecont.closedOrbitChecks`). A check that holds says so at the samples only.
+- Solve or invert a small real or complex linear system by Cramer's rule, the adjugate or Gauss-Jordan, with the determinants or row steps shown, and print complex numbers in the `3 - j4` form with engineering E notation such as `9.78E3` (`phasecont.ee.solve`, `phasecont.ee.inverse`, `phasecont.ee.jstr`).
 - Iterate maps (`x(t+1)=...`), find their fixed points and period-k points with their multipliers, continue them in one parameter with LP, BP, PD and NS points and their normal form coefficients, and follow their LP, PD and NS curves in two parameters with codim-2 labels. The phase-plane app and `phasecont.cobweb` draw maps, and `phasecont.ensemble` iterates them. [Maps](#maps) has examples.
 - Build a model from equation text, a table, a MATLAB function handle, a MATLAB function file or an SBML file, with no `.ode` file (`phasecont.Model.fromEquations`, `fromTable`, `fromFunction`, `fromFile`), or type it into the model editor (`phasecont.app.ModelEditor`).
 
@@ -89,6 +92,24 @@ lp.Data.coefficient                                % the normal form coefficient
 ```
 
 `continuation` blocks while it runs and polls the engine, first after 1 ms and then at growing intervals up to 50 ms. Ctrl+C cancels the run and frees it. It returns a `phasecont.Branch` that holds copies of the data, so it stays valid after the model is deleted. `Type` selects the problem: `"EP"` (the default), `"LC"` from a Hopf point, and `"LP"`, `"H"`, `"LPC"`, `"PD"`, `"NS"` or `"HOM"` with two free parameters. `help phasecont.continuation` lists the options.
+
+To run independent curves at the same time, pass each one as a cell of `continuation` arguments. Each job runs on its own engine thread, and the results come back in input order with the same bits as the calls in turn:
+
+```matlab
+brs = phasecont.continuationBatch({
+    {m, eq, "Free", "a", "Direction",  1, "Bounds", [-5 5]}
+    {m, eq, "Free", "a", "Direction", -1, "Bounds", [-5 5]}});
+plot(brs{1}); hold on; plot(brs{2})
+```
+
+`MaxConcurrent` caps the live runs and defaults to `maxNumCompThreads`. The ensemble and the cycle solver share one pool of worker threads, one per logical CPU. To use fewer, set `RAYON_NUM_THREADS` before you start MATLAB.
+
+To find every equilibrium in a box, pass a matrix of starts, one per column. The Newton solves run on several CPU threads in one engine call, and the starts that reach the same point within `MergeTol` (default 1e-6) give one Point:
+
+```matlab
+[pts, raw] = phasecont.equilibria(m, linspace(-3, 3, 61));   % x = -1 and x = 1
+raw.Group                                         % which Point each start reached, 0 if none
+```
 
 ## `@` options
 
@@ -238,7 +259,7 @@ app = phasecont.app.ModelEditor;
 
 An ensemble runs many trajectories of one model at once, for a grid of start states or parameter sets. It does not speed up a single run or a continuation. Those stay on the CPU in double precision.
 
-On a map, `ensemble` iterates each member, one iterate per unit of time, and `t` inside the model is the iterate index. `TSPAN` is `[n0 n1]` or `[n0 s1 ... n1]`, increasing whole numbers with `n1 - n0` at most 4294967295, and in single precision every entry must be at most 2^24 in magnitude and two neighboring entries at most 2^24 apart. `Precision` is the only required option. `Dt`, `Rtol`, `Atol`, `Hmax` and `MaxSteps` raise `phasecont:ensemble:mapOption`. A member stops early only with `Status` `"bounds"` or `"notFinite"`, and its states at the times after `TReached` are NaN. With `logistic.ode` from the map section, this iterates 1000 start states at r = 3.7 and records them at n = 100 and n = 200:
+On a map, `ensemble` iterates each member, one iterate per unit of time, and `t` inside the model is the iterate index. `TSPAN` is `[n0 n1]` or `[n0 s1 ... n1]`, increasing whole numbers with `n1 - n0` at most 4294967295, and in single precision every entry must be at most 2^24 in magnitude and two neighboring entries at most 2^24 apart. `Precision` is the only required option. `Dt`, `Rtol`, `Atol`, `Hmax` and `MaxSteps` raise `phasecont:ensemble:mapOption`. A member stops early only with `Status` `"bounds"`, `"notFinite"` or, when the model calls a recursive function deeper than the cap, `"recursionDepth"`, and its states at the times after `TReached` are NaN. With `logistic.ode` from the map section, this iterates 1000 start states at r = 3.7 and records them at n = 100 and n = 200:
 
 ```matlab
 m = phasecont.Model("logistic.ode");

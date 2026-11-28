@@ -11,6 +11,11 @@
 //! * `determinism`: the same job twice, one member alone, and the members in reverse order
 //!   must give the same bits. The number of values that differ is the error, the limit is 0.
 //!   The jobs are RK4 and Dormand-Prince on a model of `+ - * /` and the Henon map with `iter`.
+//! * `recursion`: `x' = -s(k)*x/k` with the recursive `s(n) = n` under RK4 against
+//!   `x0*exp(-t)`, at depths up to 4,096 frames, error scaled by `1 + |exact|`. One more
+//!   member asks for exactly the frames of the backend's cap and must end with
+//!   `recursion_depth` while the others finish; if it does not, the error is infinite. The
+//!   limit is that of `analytic-rk4`.
 //! * Bit-exactness: for a backend that is not the CPU reference, fixed-step RK4 on a model
 //!   of `+ - * /` only and the Henon map with `iter` must match the CPU backend in the same
 //!   precision bit for bit. The CPU backend is the reference, so its report says `None`.
@@ -22,8 +27,8 @@ use pc_ir::IrModel;
 use crate::cpu::run_cpu;
 use crate::device::{Backend, DeviceInfo, find_device};
 use crate::job::{
-    EnsembleError, EnsembleResult, Job, Label, Math, Method, Output, Params, Precision, Status,
-    check_math,
+    EnsembleError, EnsembleResult, Job, Label, Math, Method, Output, Params, Precision,
+    StackLayout, Status, check_math,
 };
 use crate::run::run_on;
 
@@ -118,6 +123,11 @@ const AFFINE: &str = "par a=0.5\nx(t+1)=a*x+t\ndone\n";
 /// -0.8074.
 const HENON: &str = "par a=0.2,b=0.3\nx(t+1)=1-a*x^2+y\ny(t+1)=b*x\ndone\n";
 const HENON_PAR: [f64; 2] = [0.2, 0.3];
+/// `s(k)` recurses `k + 1` frames deep and returns `k`, so `x' = -x` at every depth.
+const RECURSIVE: &str = "par k=1\ns(n)=if(n<1)then(0)else(1+s(n-1))\nx'=-s(k)*x/k\ndone\n";
+/// The depths of the `recursion` tier that finish on every backend; 4,095 takes the 4,096
+/// frames of a GPU stack.
+const RECURSION_K: [f64; 6] = [1.0, 2.0, 7.0, 64.0, 1000.0, 4095.0];
 const HENON_T1: f64 = 50.0;
 
 fn model(src: &str) -> IrModel {
@@ -154,7 +164,7 @@ fn cases() -> [Case; 3] {
             src: DECAY,
             params: &[1.3],
             t1: 1.0,
-            exact: |x, t| vec![x[0] * (-1.3 * t).exp()],
+            exact: |x, t| vec![x[0] * pc_ir::hostmath::exp(-1.3 * t)],
         },
         Case {
             src: OSC,
@@ -172,7 +182,7 @@ fn cases() -> [Case; 3] {
             params: &[],
             t1: 2.0,
             exact: |x, t| {
-                let e = t.exp();
+                let e = pc_ir::hostmath::exp(t);
                 vec![x[0] * e / (1.0 - x[0] + x[0] * e)]
             },
         },
@@ -213,6 +223,7 @@ fn job_in<'a>(
         precision,
         math,
         native: None,
+        stack: StackLayout::Member,
     }
 }
 
@@ -269,6 +280,34 @@ fn dp5(precision: Precision) -> (Method, f64) {
             1e-8,
         ),
     }
+}
+
+/// Worst `|got - exact| / (1 + |exact|)` of `RECURSIVE` at the depths of `RECURSION_K`,
+/// or infinity when a member does not finish or the member at the cap of `frames` frames
+/// finishes.
+fn recursion(run: Runner, precision: Precision, frames: usize) -> Result<f64, EnsembleError> {
+    let (method, _) = rk4(precision);
+    let m = model(RECURSIVE);
+    let mut k = RECURSION_K.to_vec();
+    // `s(frames)` needs one frame more than the cap.
+    k.push(frames as f64);
+    let x0: Vec<f64> = (0..k.len()).map(|i| 0.2 + 0.1 * i as f64).collect();
+    let mut j = job(&m, &x0, &[], 1.0, method, precision);
+    j.params = Params::PerMember(&k);
+    let r = run(&j)?;
+    let last = k.len() - 1;
+    if r.status[last] != Status::RecursionDepth {
+        return Ok(f64::INFINITY);
+    }
+    let mut worst = 0.0f64;
+    for (i, &start) in x0.iter().enumerate().take(last) {
+        if r.status[i] != Status::Ok {
+            return Ok(f64::INFINITY);
+        }
+        let e = start * pc_ir::hostmath::exp(-1.0);
+        worst = worst.max((r.state(i, 0)[0] - e).abs() / (1.0 + e.abs()));
+    }
+    Ok(worst)
 }
 
 /// Worst `|got - exact| / (1 + |exact|)` for `AFFINE` over [0, 10], where the exact value is
@@ -497,6 +536,11 @@ pub fn run_with(
             max_error: determinism(run, precision)?,
             limit: 0.0,
         },
+        Tier {
+            name: "recursion",
+            max_error: recursion(run, precision, device.backend.call_frames())?,
+            limit: l4,
+        },
     ];
     let bit_exact = if compare_bits {
         Some(bit_exact(run, precision)?)
@@ -529,6 +573,9 @@ pub fn run_selftest(sel: Selected) -> Result<Report, SelfTestError> {
         driver: device.driver.clone(),
         precision: sel.precision,
         math: Math::Exact,
+        stack: StackLayout::Member,
+        stack_ran: crate::job::StackRan::Member,
+        sorted: false,
     };
     let cancel = AtomicBool::new(false);
     let on = device.clone();

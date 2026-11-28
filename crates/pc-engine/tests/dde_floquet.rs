@@ -5,6 +5,9 @@
 //! different method (about nine digits). `FORCED` adds a state that the first equation does
 //! not read, so one multiplier is known in closed form.
 
+// Test references may use the std functions; see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use pc_engine::{
     DdeCycleSetup, DdeCycleStart, DdeFloquet, DdeFloquetOptions, DdeModel, EngineError, Evaluator,
     Options, build_dde, dde_correct_cycle, dde_floquet_multipliers,

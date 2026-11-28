@@ -1,0 +1,5 @@
+# Supercritical pitchfork normal form
+par r=-1
+init x=0
+x'=r*x-x^3
+done

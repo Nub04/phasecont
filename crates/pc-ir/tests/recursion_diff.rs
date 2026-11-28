@@ -378,7 +378,7 @@ fn exp_of_a_recursive_call_reuses_the_frame_value() {
     for n in [1u32, 5, 100] {
         let (mut v, mut dv) = (1.0f64, 0.0f64);
         for _ in 0..n {
-            let nv = (xv * v).exp();
+            let nv = pc_ir::math::exp(xv * v);
             dv = (v + dv * xv) * nv;
             v = nv;
         }

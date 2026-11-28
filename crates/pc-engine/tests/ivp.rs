@@ -1,5 +1,8 @@
 //! The initial value problem integrator: accuracy, direction, stops and inputs.
 
+// Test references may use the std functions; see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 mod common;
 
 use common::load;

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 3a23fe6f4744a9c064d14214ad59d9953b93313a4f2f3a3dd1320b09b5dbb9f9 # shrinks to body = "n", gbody = "n", rhs = "if((n)>0)then((n)+(n))else((1.5)*(a))", k = 4.559738736054726, a = 1.749812278558052, x = -1.5180125739703516, cap = 1000

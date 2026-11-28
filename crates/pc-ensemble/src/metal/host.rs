@@ -21,8 +21,10 @@ use crate::abi::{Packed, integrator_of, pack_in};
 use crate::batch::{half_budget, members_per_batch, run_batched};
 use crate::device::{Backend, BackendState, DeviceInfo};
 use crate::gpu::{check_alloc, drive, global_size, guard, kernel_err, layout_by_size};
-use crate::job::{Checked, EnsembleError, EnsembleResult, Job, Label, Precision, validate};
-use crate::kernel::{Layout, kernel_source_in};
+use crate::job::{
+    Checked, EnsembleError, EnsembleResult, Job, Label, Precision, StackLayout, StackRan, validate,
+};
+use crate::kernel::{Layout, Stack, kernel_source_with, stack_of};
 use crate::tape::Tape;
 
 type Dev = ProtocolObject<dyn MTLDevice>;
@@ -153,19 +155,36 @@ pub fn run_metal(
             "{members} members is more than a Metal kernel can index (4294967295)"
         )));
     }
+    // OpenCL and Metal do not choose a stack layout, so `auto` runs member (SPEC 8af-5).
+    let asked = job.stack;
+    let resolved = Job {
+        stack: job.stack.or_member(),
+        ..job.clone()
+    };
+    let job = &resolved;
     let tape = Tape::build(job.model)?;
     // Metal has no query for the free memory or the resident threads either, so the layout
     // follows the size of the model only (SPEC 13).
     let integrator = integrator_of(job.method);
     let layout = layout_by_size(forced_layout(), checked.n, integrator, size_of::<f32>());
-    let src = kernel_source_in(&tape, integrator, Scalar::F32, Dialect::Msl, layout)
-        .map_err(kernel_err)?;
+    let src = kernel_source_with(
+        &tape,
+        integrator,
+        Scalar::F32,
+        Dialect::Msl,
+        layout,
+        job.stack,
+    )
+    .map_err(kernel_err)?;
     let label = Label {
         backend: Backend::Metal.name().into(),
         device: info.name.clone(),
         driver: info.driver.clone(),
         precision: job.precision,
         math: job.math,
+        stack: asked,
+        stack_ran: StackRan::of(job.stack),
+        sorted: false,
     };
     guard(|| {
         session(
@@ -234,10 +253,14 @@ fn session(
             pipeline.threadExecutionWidth(),
         );
         // Metal has no free-memory query here either: half of the device memory is the budget.
+        // A kernel with calls also takes its stack, a member buffer outside the scratch rule.
+        let stack = stack_of(tape);
+        let stack_len = stack.as_ref().map_or(0, Stack::reals);
         let size = members_per_batch(
             job,
             checked.times.len(),
             layout.work_len(checked.n, integrator_of(job.method)),
+            stack.as_ref(),
             size_of::<f32>(),
             info.memory_bytes.map(half_budget),
             handle.max_alloc,
@@ -247,7 +270,13 @@ fn session(
                 &dev,
                 &queue,
                 &pipeline,
-                (group, handle.max_alloc, info.memory_bytes),
+                (
+                    group,
+                    handle.max_alloc,
+                    info.memory_bytes,
+                    stack_len,
+                    job.stack,
+                ),
                 pack_in::<f32>(sub, checked, tape, layout),
                 cancel,
             )
@@ -273,6 +302,14 @@ fn upload<T>(dev: &Dev, data: &[T], step: &str) -> Result<Retained<Buf>, Ensembl
     .ok_or_else(|| {
         EnsembleError::GpuLaunch(format!("{step}: Metal could not allocate {bytes} bytes"))
     })
+}
+
+/// Creates a shared-memory buffer of `bytes` bytes that only the kernel writes.
+fn allocate(dev: &Dev, bytes: usize, step: &str) -> Result<Retained<Buf>, EnsembleError> {
+    dev.newBufferWithLength_options(bytes, MTLResourceOptions::StorageModeShared)
+        .ok_or_else(|| {
+            EnsembleError::GpuLaunch(format!("{step}: Metal could not allocate {bytes} bytes"))
+        })
 }
 
 /// Copies the contents of a shared buffer into `out`. The command that wrote it has finished.
@@ -310,11 +347,13 @@ fn set_value<T>(enc: &ProtocolObject<dyn MTLComputeCommandEncoder>, value: &T, i
 }
 
 /// Uploads the buffers, launches until no member is running and downloads the result.
+/// `stack_len` is the reals of the stack of one member, 0 for a kernel without calls, and
+/// `stack` its layout, which pads the buffer to whole groups of 32 members.
 fn launch_all(
     dev: &Dev,
     queue: &ProtocolObject<dyn MTLCommandQueue>,
     pipeline: &Pipeline,
-    (group, max_alloc, memory): (usize, u64, Option<u64>),
+    (group, max_alloc, memory, stack_len, stack): (usize, u64, Option<u64>, usize, StackLayout),
     mut packed: Packed<f32>,
     cancel: &AtomicBool,
 ) -> Result<Packed<f32>, EnsembleError> {
@@ -328,6 +367,10 @@ fn launch_all(
             ("work", size(packed.work.len(), 4)),
             ("out", size(packed.out.len(), 4)),
             ("ctl", size(packed.ctl.len(), 4)),
+            (
+                "stk",
+                size(stack.buffer_reals(packed.members, stack_len), 4),
+            ),
         ],
         max_alloc,
         memory,
@@ -340,6 +383,16 @@ fn launch_all(
     let out = upload(dev, &packed.out, "copy out to device")?;
     let ctl_d = upload(dev, &packed.ctl, "copy ctl to device")?;
     let buffers: [&Buf; 7] = [&rc, &segm, &x0, &par, &work, &out, &ctl_d];
+    // The kernel writes a frame before it reads it, so the stack needs no copy. A kernel
+    // without calls takes no stack argument.
+    let stk = match stack_len {
+        0 => None,
+        len => Some(allocate(
+            dev,
+            stack.buffer_reals(packed.members, len).saturating_mul(4),
+            "allocate the call stack on the device",
+        )?),
+    };
 
     let members = packed.members as u64;
     let max_steps: u32 = packed.max_steps;
@@ -380,6 +433,11 @@ fn launch_all(
                 set_value(&enc, &max_steps, 9);
                 set_value(&enc, &ns, 10);
                 set_value(&enc, &pstride, 11);
+                if let Some(stk) = &stk {
+                    // SAFETY: the stack holds `stack_len` reals per member and the kernel of a
+                    // tape with calls declares it at index 12.
+                    unsafe { enc.setBuffer_offset_atIndex(Some(stk), 0, 12) };
+                }
                 enc.dispatchThreadgroups_threadsPerThreadgroup(groups, per_group);
                 enc.endEncoding();
                 cb.commit();

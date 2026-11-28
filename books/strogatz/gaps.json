@@ -1,0 +1,382 @@
+[
+  {
+    "figure": "1.0.1",
+    "state": "gap",
+    "reason": "escape-time parameter-plane image"
+  },
+  {
+    "figure": "2.3.2",
+    "state": "gap",
+    "reason": "plot of a model term or auxiliary function"
+  },
+  {
+    "figure": "2.7.2",
+    "state": "gap",
+    "reason": "potential plot V(x)"
+  },
+  {
+    "figure": "2.7.3",
+    "state": "gap",
+    "reason": "potential plot V(x)"
+  },
+  {
+    "figure": "3.4.5",
+    "state": "gap",
+    "reason": "potential plot V(x)"
+  },
+  {
+    "figure": "3.5.7",
+    "state": "n/a",
+    "reason": "nothing to compute (decision D3)"
+  },
+  {
+    "figure": "4.1.1",
+    "state": "gap",
+    "reason": "plot on the circle, cylinder or torus"
+  },
+  {
+    "figure": "4.2.1",
+    "state": "n/a",
+    "reason": "nothing to compute (decision D3)"
+  },
+  {
+    "figure": "4.3.1",
+    "state": "gap",
+    "reason": "1-D phase line plot"
+  },
+  {
+    "figure": "4.3.2",
+    "state": "gap",
+    "reason": "1-D phase line plot"
+  },
+  {
+    "figure": "4.3.3",
+    "state": "gap",
+    "reason": "plot on the circle, cylinder or torus"
+  },
+  {
+    "figure": "4.3.4",
+    "state": "gap",
+    "reason": "period or time-average sweep over a parameter"
+  },
+  {
+    "figure": "4.3.5",
+    "state": "gap",
+    "reason": "1-D phase line plot"
+  },
+  {
+    "figure": "4.3.7",
+    "state": "gap",
+    "reason": "1-D phase line plot"
+  },
+  {
+    "figure": "4.4.3",
+    "state": "gap",
+    "reason": "plot on the circle, cylinder or torus"
+  },
+  {
+    "figure": "4.5.1",
+    "state": "gap",
+    "reason": "1-D phase line plot"
+  },
+  {
+    "figure": "4.5.2",
+    "state": "n/a",
+    "reason": "nothing to compute (decision D3)"
+  },
+  {
+    "figure": "4.6.4",
+    "state": "gap",
+    "reason": "period or time-average sweep over a parameter"
+  },
+  {
+    "figure": "4.6.5",
+    "state": "gap",
+    "reason": "period or time-average sweep over a parameter"
+  },
+  {
+    "figure": "5.1.6",
+    "state": "gap",
+    "reason": "plot on the circle, cylinder or torus"
+  },
+  {
+    "figure": "6.4.8",
+    "state": "gap",
+    "reason": "basin of attraction"
+  },
+  {
+    "figure": "6.5.2",
+    "state": "gap",
+    "reason": "potential or energy surface plot"
+  },
+  {
+    "figure": "6.5.3",
+    "state": "gap",
+    "reason": "potential or energy surface plot"
+  },
+  {
+    "figure": "6.7.4",
+    "state": "gap",
+    "reason": "plot on the circle, cylinder or torus"
+  },
+  {
+    "figure": "6.7.5",
+    "state": "gap",
+    "reason": "potential or energy surface plot"
+  },
+  {
+    "figure": "6.7.6",
+    "state": "n/a",
+    "reason": "nothing to compute (decision D3)"
+  },
+  {
+    "figure": "6.7.8",
+    "state": "gap",
+    "reason": "potential or energy surface plot"
+  },
+  {
+    "figure": "6.8.5",
+    "state": "gap",
+    "reason": "closed-curve vector plot"
+  },
+  {
+    "figure": "7.1.1",
+    "state": "gap",
+    "reason": "1-D phase line plot"
+  },
+  {
+    "figure": "8.4.1",
+    "state": "gap",
+    "reason": "1-D phase line plot"
+  },
+  {
+    "figure": "8.5.2",
+    "state": "gap",
+    "reason": "Poincare map"
+  },
+  {
+    "figure": "8.5.3",
+    "state": "gap",
+    "reason": "Poincare map"
+  },
+  {
+    "figure": "8.5.4",
+    "state": "gap",
+    "reason": "Poincare map"
+  },
+  {
+    "figure": "8.5.5",
+    "state": "gap",
+    "reason": "angle-valued state (cylinder or torus plot)"
+  },
+  {
+    "figure": "8.5.6",
+    "state": "gap",
+    "reason": "angle-valued state (cylinder or torus plot)"
+  },
+  {
+    "figure": "8.5.8",
+    "state": "gap",
+    "reason": "angle-valued state (cylinder or torus plot)"
+  },
+  {
+    "figure": "8.5.10",
+    "state": "gap",
+    "reason": "angle-valued state (cylinder or torus plot)"
+  },
+  {
+    "figure": "8.6.4",
+    "state": "gap",
+    "reason": "angle-valued state (cylinder or torus plot)"
+  },
+  {
+    "figure": "8.6.6",
+    "state": "gap",
+    "reason": "angle-valued state (cylinder or torus plot)"
+  },
+  {
+    "figure": "8.6.7",
+    "state": "gap",
+    "reason": "1-D phase line plot"
+  },
+  {
+    "figure": "8.6.9",
+    "state": "gap",
+    "reason": "angle-valued state (cylinder or torus plot)"
+  },
+  {
+    "figure": "9.2.3",
+    "state": "n/a",
+    "reason": "nothing to compute (decision D3)"
+  },
+  {
+    "figure": "9.3.5",
+    "state": "gap",
+    "reason": "Lyapunov exponent"
+  },
+  {
+    "figure": "9.4.3",
+    "state": "gap",
+    "reason": "Poincare map"
+  },
+  {
+    "figure": "9.6.2",
+    "state": "n/a",
+    "reason": "nothing to compute (decision D3)"
+  },
+  {
+    "figure": "10.2.7",
+    "state": "gap",
+    "reason": "orbit diagram"
+  },
+  {
+    "figure": "10.5.2",
+    "state": "gap",
+    "reason": "Lyapunov exponent"
+  },
+  {
+    "figure": "10.6.2",
+    "state": "gap",
+    "reason": "orbit diagram"
+  },
+  {
+    "figure": "10.6.7",
+    "state": "gap",
+    "reason": "Lorenz map of successive maxima"
+  },
+  {
+    "figure": "10.6.8",
+    "state": "gap",
+    "reason": "orbit diagram"
+  },
+  {
+    "figure": "10.7.2",
+    "state": "n/a",
+    "reason": "nothing to compute (decision D3)"
+  },
+  {
+    "figure": "10.7.3",
+    "state": "n/a",
+    "reason": "nothing to compute (decision D3)"
+  },
+  {
+    "figure": "11.2.1",
+    "state": "gap",
+    "reason": "fractal set construction (outside PhaseCont scope)"
+  },
+  {
+    "figure": "11.2.2",
+    "state": "gap",
+    "reason": "fractal set construction (outside PhaseCont scope)"
+  },
+  {
+    "figure": "11.3.1",
+    "state": "gap",
+    "reason": "fractal set construction (outside PhaseCont scope)"
+  },
+  {
+    "figure": "11.3.2",
+    "state": "gap",
+    "reason": "fractal set construction (outside PhaseCont scope)"
+  },
+  {
+    "figure": "11.3.3",
+    "state": "gap",
+    "reason": "fractal set construction (outside PhaseCont scope)"
+  },
+  {
+    "figure": "11.3.4",
+    "state": "gap",
+    "reason": "fractal set construction (outside PhaseCont scope)"
+  },
+  {
+    "figure": "11.3.5",
+    "state": "gap",
+    "reason": "fractal set construction (outside PhaseCont scope)"
+  },
+  {
+    "figure": "11.4.1",
+    "state": "gap",
+    "reason": "fractal set construction (outside PhaseCont scope)"
+  },
+  {
+    "figure": "11.4.2",
+    "state": "gap",
+    "reason": "fractal set construction (outside PhaseCont scope)"
+  },
+  {
+    "figure": "11.5.3",
+    "state": "gap",
+    "reason": "correlation dimension"
+  },
+  {
+    "figure": "11.5.4",
+    "state": "n/a",
+    "reason": "nothing to compute (decision D3)"
+  },
+  {
+    "figure": "11.5.5",
+    "state": "gap",
+    "reason": "correlation dimension"
+  },
+  {
+    "figure": "12.2.1",
+    "state": "n/a",
+    "reason": "nothing to compute (decision D3)"
+  },
+  {
+    "figure": "12.2.4",
+    "state": "gap",
+    "reason": "global unstable manifold"
+  },
+  {
+    "figure": "12.5.6",
+    "state": "gap",
+    "reason": "Poincare map"
+  },
+  {
+    "figure": "13.2.3",
+    "state": "gap",
+    "reason": "the .ode reader has no sum(..)of(..) (decision D4)"
+  },
+  {
+    "figure": "13.2.4",
+    "state": "gap",
+    "reason": "the .ode reader has no sum(..)of(..) (decision D4)"
+  },
+  {
+    "figure": "13.2.5",
+    "state": "n/a",
+    "reason": "nothing to compute (decision D3)"
+  },
+  {
+    "figure": "13.4.1",
+    "state": "gap",
+    "reason": "1-D phase line plot"
+  },
+  {
+    "figure": "13.4.3",
+    "state": "gap",
+    "reason": "1-D phase line plot"
+  },
+  {
+    "figure": "13.4.4",
+    "state": "gap",
+    "reason": "phase plot on the circle"
+  },
+  {
+    "figure": "13.4.5",
+    "state": "gap",
+    "reason": "phase plot on the circle"
+  },
+  {
+    "figure": "13.5.2",
+    "state": "gap",
+    "reason": "phase plot on the circle"
+  },
+  {
+    "figure": "13.5.3",
+    "state": "n/a",
+    "reason": "nothing to compute (decision D3)"
+  }
+]

@@ -152,6 +152,7 @@ fn job_of<'a>(
         precision: head.precision,
         math: head.math,
         native,
+        stack: head.stack,
     }
 }
 
@@ -182,11 +183,35 @@ pub(crate) fn start(
         &model.ir, &head, members, x0, params, per_member, None,
     ))?;
     check_math(head.backend, head.precision, head.math)?;
+    // Every backend runs recursive calls (SPEC 8af-5), but a GPU kernel is emitted from the
+    // tape, so a GPU run of a model with calls that the tape rejects fails here, before the
+    // device probe, and the error is the same on a machine without that GPU. The message adds
+    // the tape's reason, since the cpu backend refuses that model too, and names the first
+    // function of the DAG.
+    let ir = &model.ir;
+    let tape = Tape::build(ir);
+    if head.backend != Backend::Cpu
+        && ir.f.iter().any(|&id| ir.dag.has_call(id))
+        && let Err(e) = &tape
+    {
+        let name = ir.dag.units().first().map_or("", |u| u.name.as_str());
+        let backend = head.backend.name();
+        let why = match e {
+            pc_ensemble::EnsembleError::Unsupported(m) => m.clone(),
+            e => e.to_string(),
+        };
+        return Err(Error::Model(format!(
+            "the right-hand side calls the recursive function {name}, which the {backend} \
+             ensemble backend does not run, and {why}"
+        )));
+    }
     let device = find_device(head.backend, head.device).map_err(Error::GpuUnavailable)?;
     // Only a CPU run calls a compiled `F`, one per precision. The first CPU run of a model in a
     // precision compiles it, after `validate` and only when the tape takes every op of `F`, so
     // a model the ensemble refuses is never compiled. The refused run fails later, as before.
-    let native = if device.backend == Backend::Cpu && Tape::build(&model.ir).is_ok() {
+    // A model with recursive calls runs on the tape, since the compiled `F` has no calls.
+    let call_free = tape.as_ref().is_ok_and(|t| t.units.is_empty());
+    let native = if device.backend == Backend::Cpu && call_free {
         model.native_rhs(head.precision)?
     } else {
         None
@@ -209,6 +234,9 @@ fn label_json(l: &Label) -> Value {
         "precision": l.precision.name(),
         "single_precision": l.single_precision(),
         "math": l.math.name(),
+        "stack": l.stack.name(),
+        "stack_ran": l.stack_ran.name(),
+        "sorted": l.sorted,
     })
 }
 
@@ -225,6 +253,7 @@ fn done_json(r: &EnsembleResult) -> Value {
             "step_too_small": count(Status::StepTooSmall),
             "max_steps": count(Status::MaxSteps),
             "nonfinite": count(Status::NonFinite),
+            "recursion_depth": count(Status::RecursionDepth),
         },
         "label": label_json(&r.label),
     })

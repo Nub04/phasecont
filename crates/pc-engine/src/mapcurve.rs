@@ -52,7 +52,7 @@ use crate::curve2::{CurveSetup, Model2, dot, norm, start_tangent};
 use crate::cycle::{
     kappa_roots, nearest_pair, nearest_pair_is_complex, pair_product, remove_nearest, rest_product,
 };
-use crate::error::EngineError;
+use crate::error::{EngineError, keep_call_limit};
 use crate::hopfcurve::{matmul, matvec, matvec_t, orthonormalize};
 use crate::model::ModelEval;
 use crate::normal::map_ns_core;
@@ -247,8 +247,16 @@ impl<'a> MapLpPdProblem<'a> {
     }
 
     /// GPD = <w, C(v, v, v) + 3 B(v, h)> / 6 with (I - A) h = B(v, v) and `bvv = B(v, v)`,
-    /// NaN where the solve fails or the value is not finite.
-    fn gpd(&mut self, u: &[f64], a: &[f64], vh: &[f64], wh: &[f64], bvv: &[f64]) -> f64 {
+    /// NaN where the solve fails or the value is not finite. A recursion cap error is returned
+    /// as an error and never becomes NaN (SPEC 8af-5).
+    fn gpd(
+        &mut self,
+        u: &[f64],
+        a: &[f64],
+        vh: &[f64],
+        wh: &[f64],
+        bvv: &[f64],
+    ) -> Result<f64, EngineError> {
         let n = self.m.n;
         let mut go = || -> Result<f64, EngineError> {
             // (A - I) h' = B(v, v), so h = -h' solves (I - A) h = B(v, v).
@@ -260,10 +268,7 @@ impl<'a> MapLpPdProblem<'a> {
             let bvh = self.m.b(u, vh, &h)?;
             Ok((dot(wh, &c) + 3.0 * dot(wh, &bvh)) / 6.0)
         };
-        match go() {
-            Ok(g) if g.is_finite() => g,
-            _ => f64::NAN,
-        }
+        keep_call_limit(go(), |_| f64::NAN).map(|g| if g.is_finite() { g } else { f64::NAN })
     }
 
     fn labels(&self) -> &'static [&'static str] {
@@ -347,7 +352,7 @@ impl Problem for MapLpPdProblem<'_> {
         let third = if self.sigma < 0.0 {
             dot(&wh, &bvv)
         } else {
-            self.gpd(u, &a, &vh, &wh, &bvv)
+            self.gpd(u, &a, &vh, &wh, &bvv)?
         };
         let r = dot(&wh, &vh);
         self.v_b = vh;
@@ -561,10 +566,14 @@ impl Problem for MapNsProblem<'_> {
             .iter()
             .copied()
             .min_by(|p, q| dist(p).total_cmp(&dist(q)))
-            .and_then(|m| {
+            .map(|m| {
                 let gx = shifted(&a, n, -1.0);
-                map_ns_core(&mut self.m.at(u), &a, &gx, m).ok()
+                keep_call_limit(map_ns_core(&mut self.m.at(u), &a, &gx, m).map(Some), |_| {
+                    None
+                })
             })
+            .transpose()?
+            .flatten()
             .map_or(f64::NAN, |c| {
                 let r = c.c1.0.hypot(c.c1.1);
                 if r.is_finite() && r > 0.0 {

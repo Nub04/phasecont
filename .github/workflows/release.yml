@@ -33,9 +33,21 @@ env:
   RUST_VERSION: 1.99.1
 
 jobs:
+  # Built in a digest-pinned Fedora 45 container with the MinGW versions that
+  # scripts/mingw-fedora pins (msvcrt), the same set as the dev machine and the
+  # pckern-win job of ci.yml.
   lib-win:
     runs-on: ubuntu-latest
+    container: fedora:45@sha256:a7d72ba2745b100a3351087472e5ee7b2450af7cf331e7673007e3817612839c
+    defaults:
+      run:
+        shell: bash
     steps:
+      - name: Install the host tools
+        run: |
+          pkgs=(gcc git-core tar gzip findutils gawk diffutils)
+          command -v curl >/dev/null || pkgs+=(curl)
+          dnf install -y --setopt=install_weak_deps=False "${pkgs[@]}"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -43,8 +55,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
           targets: x86_64-pc-windows-gnu
-      - name: Install MinGW
-        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+      - name: Install the pinned MinGW
+        run: scripts/mingw-fedora install
       - name: Cross build pckern.dll
         run: |
           export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc
@@ -55,6 +67,7 @@ jobs:
           cargo build --release --locked -p pc-cli
           target/release/pc-cli dll-imports target/x86_64-pc-windows-gnu/release/pckern.dll
           scripts/check-host-paths target/x86_64-pc-windows-gnu/release/pckern.dll
+          scripts/check-x87-math target/x86_64-pc-windows-gnu/release/pckern.dll
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: lib-win64

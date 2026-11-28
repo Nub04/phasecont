@@ -38,7 +38,7 @@
 use crate::branch::{Branch, Options, Point};
 use crate::codim2::{BT_NORMALIZATION, bt_coefficients};
 use crate::curve2::{CurveSetup, Model2, dot, norm, start_tangent};
-use crate::error::EngineError;
+use crate::error::{EngineError, keep_call_limit};
 use crate::model::ModelEval;
 use crate::normal::{
     GH_NORMALIZATION, double_hopf_at, first_lyapunov_at, second_lyapunov_at, store_double_hopf,
@@ -269,8 +269,9 @@ impl<'a> HopfCurveProblem<'a> {
     }
 
     /// Adds the normal form coefficients to the codim-2 points of a finished run. A point
-    /// whose coefficient cannot be computed keeps `coefficient = None`.
-    fn annotate(&mut self, branch: &mut Branch) {
+    /// whose coefficient cannot be computed keeps `coefficient = None`. A recursion cap error
+    /// is returned instead (SPEC 8af-5); the points annotated before it keep their values.
+    fn annotate(&mut self, branch: &mut Branch) -> Result<(), EngineError> {
         let n = self.m.n;
         for sp in branch.specials.iter_mut() {
             if !matches!(sp.label.as_str(), "GH" | "BT" | "ZH" | "HH") {
@@ -285,7 +286,8 @@ impl<'a> HopfCurveProblem<'a> {
                 "GH" => {
                     if kappa > 0.0 {
                         let omega = kappa.sqrt();
-                        if let Ok(l2) = second_lyapunov_at(&mut self.m.at(u), omega) {
+                        let l2 = second_lyapunov_at(&mut self.m.at(u), omega).map(Some);
+                        if let Some(l2) = keep_call_limit(l2, |_| None)? {
                             sp.extras.coefficient = Some(l2);
                             sp.extras.omega = Some(omega);
                             sp.extras.normalization = Some(GH_NORMALIZATION.to_string());
@@ -295,27 +297,29 @@ impl<'a> HopfCurveProblem<'a> {
                 "ZH" => {
                     if kappa > 0.0 {
                         let omega = kappa.sqrt();
-                        if let Ok(z) = zero_hopf_at(&mut self.m.at(u), omega) {
+                        let z = zero_hopf_at(&mut self.m.at(u), omega).map(Some);
+                        if let Some(z) = keep_call_limit(z, |_| None)? {
                             store_zero_hopf(&mut sp.extras, &z, omega);
                         }
                     }
                 }
                 "HH" => {
                     let wc = kappa.max(0.0).sqrt();
-                    let a = self.m.jac_u(u);
+                    let a = keep_call_limit(self.m.jac_u(u).map(Some), |_| None)?;
                     let w2 = a
-                        .ok()
                         .and_then(|a| eigenvalues(&a, n).ok())
                         .and_then(|eigs| second_frequency(&eigs, wc));
                     if let Some(wo) = w2 {
                         let (w1, w2) = (wc.max(wo), wc.min(wo));
-                        if let Ok(d) = double_hopf_at(&mut self.m.at(u), w1, w2) {
+                        let d = double_hopf_at(&mut self.m.at(u), w1, w2).map(Some);
+                        if let Some(d) = keep_call_limit(d, |_| None)? {
                             store_double_hopf(&mut sp.extras, &d, w1, w2);
                         }
                     }
                 }
                 _ => {
-                    if let Ok((a, b)) = bt_coefficients(&mut self.m, u) {
+                    let ab = bt_coefficients(&mut self.m, u).map(Some);
+                    if let Some((a, b)) = keep_call_limit(ab, |_| None)? {
                         sp.extras.coefficient = Some(a);
                         sp.extras.coefficient2 = Some(b);
                         sp.extras.normalization = Some(BT_NORMALIZATION.to_string());
@@ -323,6 +327,7 @@ impl<'a> HopfCurveProblem<'a> {
                 }
             }
         }
+        Ok(())
     }
 }
 
@@ -410,7 +415,9 @@ impl Problem for HopfCurveProblem<'_> {
         let u = &x[..n];
         let kappa = x[n + 1];
         let gh = if kappa > 0.0 {
-            first_lyapunov_at(&mut self.m.at(u), kappa.sqrt()).unwrap_or(f64::NAN)
+            keep_call_limit(first_lyapunov_at(&mut self.m.at(u), kappa.sqrt()), |_| {
+                f64::NAN
+            })?
         } else {
             f64::NAN
         };
@@ -463,7 +470,10 @@ pub fn continue_hopf_curve(
         cancel,
         on_point,
     )?;
-    problem.annotate(&mut branch);
+    // A recursion cap error in an annotation ends the run with that error and keeps the branch.
+    if let Err(e) = problem.annotate(&mut branch) {
+        branch.end_with_error(e);
+    }
     Ok(branch)
 }
 

@@ -56,6 +56,46 @@ classdef ClassifyTest < matlab.unittest.TestCase
                 Label = "EP", Model = m);
         end
 
+        function verifyTdExtents(testCase, ax, tbl, isMap, at)
+            % The T and D ranges of the reference curves as SPEC section 8ad
+            % states them, from the path, the special points, 0 and the
+            % triangle.
+            sp = findobj(ax, Tag = "pc-special");
+            px = zeros(0, 1);
+            py = zeros(0, 1);
+            for k = 1:numel(sp)
+                px = [px; sp(k).XData(:)]; %#ok<AGROW>
+                py = [py; sp(k).YData(:)]; %#ok<AGROW>
+            end
+            tr = [tbl.T; px; 0];
+            dr = [tbl.D; py; 0];
+            if isMap
+                tr = [tr; -2; 2];
+                dr = [dr; -1; 1];
+            end
+            w = max(tr) - min(tr);
+            pad = 0.1 * max(w, 1);
+            tlo = min(tr) - pad;
+            thi = max(tr) + pad;
+            tt = linspace(tlo, thi, 201);
+            dr = [dr; tt(:).^2/4];
+            dpad = 0.1 * max(max(dr) - min(dr), 1);
+            dlo = min(dr) - dpad;
+            dhi = max(dr) + dpad;
+            axs = findobj(ax, Tag = "pc-td-axis");
+            testCase.assertSize(axs, [2 1]);
+            horiz = axs(arrayfun(@(a) all(a.YData == 0), axs));
+            vert = axs(arrayfun(@(a) all(a.XData == 0), axs));
+            testCase.assertSize(horiz, [1 1], at);
+            testCase.assertSize(vert, [1 1], at);
+            testCase.verifyEqual(horiz.XData, [tlo thi], "AbsTol", 1e-12, at);
+            testCase.verifyEqual(vert.YData, [dlo dhi], "AbsTol", 1e-12, at);
+            par = findobj(ax, Tag = "pc-td-parabola");
+            testCase.verifyEqual(par.XData([1 end]), [tlo thi], "AbsTol", 1e-12, at);
+            testCase.verifyEqual(par.YData, par.XData.^2/4, "AbsTol", 1e-12, at);
+            testCase.verifyTrue(tlo < 0 && thi > 0, at);
+        end
+
         function verifyClass2(testCase, c, type, stable, hyperbolic, counts, borderline)
             testCase.verifyEqual(c.Type, string(type));
             testCase.verifyEqual(c.Stable, stable);
@@ -290,6 +330,11 @@ classdef ClassifyTest < matlab.unittest.TestCase
                 testCase.verifyError(@() classify(pt, Tol = tol), ...
                     "phasecont:point:badOption", sprintf("Tol %g", tol));
             end
+            % Not of class double: refused before it can be converted (SPEC 8ac).
+            for tol = {single(1e-9), int32(0)}
+                testCase.verifyError(@() classify(pt, Tol = tol{1}), ...
+                    "MATLAB:validators:mustBeA", class(tol{1}));
+            end
         end
 
         % Branch.classify and Branch.tdplot (SPEC section 8ad, tests 1 to 4).
@@ -399,6 +444,15 @@ classdef ClassifyTest < matlab.unittest.TestCase
                 testCase.verifyError(@() classify(br, Tol = tol), ...
                     "phasecont:branch:badOption", sprintf("Tol %g", tol));
             end
+            % Not of class double, in classify and in tdplot (SPEC 8ad).
+            f = figure(Visible = "off");
+            testCase.addTeardown(@() close(f));
+            for tol = {single(1e-9), int32(0)}
+                testCase.verifyError(@() classify(br, Tol = tol{1}), ...
+                    "MATLAB:validators:mustBeA", class(tol{1}));
+                testCase.verifyError(@() tdplot(br, Tol = tol{1}, Parent = axes(f)), ...
+                    "MATLAB:validators:mustBeA", "tdplot " + class(tol{1}));
+            end
         end
 
         function tdplotOfTheSpiralBranch(testCase)
@@ -448,6 +502,74 @@ classdef ClassifyTest < matlab.unittest.TestCase
             testCase.addTeardown(@() close(f));
             testCase.verifyError(@() tdplot(br, Parent = axes(f)), ...
                 "phasecont:branch:badOption");
+        end
+
+        % Coverage added 2026-11-24 (SPEC section 8ad).
+
+        function saddleNodeRowsEqualPointClassify(testCase)
+            m = testCase.model("par r=1" + newline + ...
+                "x'=r-x^2" + newline + "y'=-y" + newline + "done" + newline);
+            br = phasecont.continuation(m, [1 0], Free = "r", Direction = -1, ...
+                Bounds = [-1 1.5], Hmax = 0.05, MaxSteps = 300);
+            tbl = classify(br);
+            for i = 1:height(tbl)
+                p = br.P;
+                p(br.FreeIndex) = br.Alpha(i);
+                pt = phasecont.Point(U = br.U(i, :).', P = p, Label = "EP", ...
+                    Model = m);
+                c = classify(pt);
+                at = sprintf("row %d", i);
+                testCase.verifyEqual(tbl.Type(i), c.Type, at);
+                testCase.verifyEqual(tbl.Borderline(i), strjoin(c.Borderline, " "), at);
+                testCase.verifyEqual([tbl.T(i) tbl.D(i) tbl.Disc(i)], ...
+                    [c.T c.D c.Disc], at);
+                testCase.verifyEqual(tbl.Hyperbolic(i), c.Hyperbolic, at);
+            end
+        end
+
+        function nonDoubleTolFailsTheArgumentsBlock(testCase)
+            m = testCase.model("par r=-1" + newline + ...
+                "x'=r*x-y" + newline + "y'=x+r*y" + newline + "done" + newline);
+            br = phasecont.continuation(m, [0 0], Free = "r", Direction = 1, ...
+                Bounds = [-1 -0.5], Hmax = 0.05, MaxSteps = 20);
+            pt = testCase.origin(m);
+            bad = {[1e-9 1e-9], 1e-9 + 1i};
+            for k = 1:numel(bad)
+                for target = {pt, br}
+                    id = "";
+                    try
+                        classify(target{1}, Tol = bad{k});
+                    catch e
+                        id = string(e.identifier);
+                    end
+                    testCase.verifyTrue(startsWith(id, "MATLAB:"), ...
+                        sprintf("case %d, %s: %s", k, class(target{1}), id));
+                end
+            end
+        end
+
+        function tdplotReferenceCurvesSpanThePath(testCase)
+            m = testCase.model("par r=-1" + newline + ...
+                "x'=r*x-y" + newline + "y'=x+r*y" + newline + "done" + newline);
+            % A T width below 1 (pad 0.1) and one above 1 (pad 10 percent).
+            for b = [0.2 1]
+                br = phasecont.continuation(m, [0 0], Free = "r", Direction = 1, ...
+                    Bounds = [-b b], Hmax = 0.05, MaxSteps = 200);
+                f = figure(Visible = "off");
+                testCase.addTeardown(@() close(f));
+                ax = axes(f);
+                tdplot(br, Parent = ax);
+                testCase.verifyTdExtents(ax, classify(br), false, sprintf("b %g", b));
+            end
+        end
+
+        function tdplotReferenceCurvesSpanTheTriangle(testCase)
+            br = testCase.henonBranch();
+            f = figure(Visible = "off");
+            testCase.addTeardown(@() close(f));
+            ax = axes(f);
+            tdplot(br, Parent = ax);
+            testCase.verifyTdExtents(ax, classify(br), true, "henon");
         end
     end
 end

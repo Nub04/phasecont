@@ -1064,3 +1064,37 @@ fn a_map_runs_an_ns_curve_and_matches_the_api() {
         },
     );
 }
+
+#[test]
+fn a_recursion_cap_hit_exits_1_and_keeps_the_branch_points() {
+    // The first step goes from a = 0 to a = 1.2e6, where `cnt` would need more than
+    // 1,000,000 active calls (SPEC 8af-5, Errors).
+    let model = scratch().join("cap_hit.ode");
+    std::fs::write(
+        &model,
+        "par a=0\ncnt(n)=if(n<1)then(0)else(1+cnt(n-1))\ninit x=0\nx'=-x+1e-9*cnt(a)\ndone\n",
+    )
+    .unwrap();
+    let path = scratch().join("cap_hit.json");
+    std::fs::write(
+        &path,
+        r#"{"type":"EP","free":"a","u0":[0],"options":{"h0":1.2e6,"hmax":2e6,"bounds":[-1e30,1e7]}}"#,
+    )
+    .unwrap();
+    let o = run(
+        &scratch(),
+        &["cont", model.to_str().unwrap(), path.to_str().unwrap()],
+    );
+    assert_eq!(code(&o), 1, "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("run failed") && stderr(&o).contains("recursion limit"),
+        "{}",
+        stderr(&o)
+    );
+    let v: Value = serde_json::from_str(&stdout(&o)).unwrap();
+    assert_eq!(v["branches"][0]["stop"], "error", "{v}");
+    assert!(
+        !v["branches"][0]["points"].as_array().unwrap().is_empty(),
+        "{v}"
+    );
+}

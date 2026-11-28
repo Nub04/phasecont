@@ -127,7 +127,7 @@ impl ModelEval for FallbackEval {
                 )));
             }
         }
-        self.fb.eval(kind, x, p, v, out);
+        self.fb.try_eval(kind, x, p, v, out)?;
         check_finite(kind, out)
     }
 }
@@ -212,6 +212,9 @@ fn finish(
         return Err(EngineError::NonAutonomous);
     }
     check_tables(model, info)?;
+    if matches!(which, Evaluator::Aot { .. }) {
+        refuse_calls(&ir)?;
+    }
     Ok(match which {
         Evaluator::Jit => Box::new(CompiledModel::new(ir)),
         Evaluator::Aot { lib, tag } => {
@@ -227,6 +230,27 @@ fn finish(
             })
         }
     })
+}
+
+/// Refuses with `Model` an IR that calls a recursive function, for the AOT path, which does
+/// not run calls (SPEC 8af-5, F-5). The JIT and the fallback run them, and the front end
+/// picks the JIT for such a model. The text names the functions and those evaluators.
+fn refuse_calls(ir: &IrModel) -> Result<(), EngineError> {
+    let mut names: Vec<&str> = Vec::new();
+    for u in ir.dag.units() {
+        if !names.contains(&u.name.as_str()) {
+            names.push(&u.name);
+        }
+    }
+    if names.is_empty() {
+        return Ok(());
+    }
+    Err(EngineError::Model(format!(
+        "the model calls the recursive function{} {}, which the AOT path does not \
+         run; the JIT and the fallback evaluator run it",
+        if names.len() == 1 { "" } else { "s" },
+        names.join(", ")
+    )))
 }
 
 /// A model with `delay(x,tau)` calls, lowered with hidden parameters (SPEC section 8d).

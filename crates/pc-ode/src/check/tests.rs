@@ -493,14 +493,36 @@ fn recursive_functions() {
     let text = "f(u)=f(u)";
     let d = check_one(text, RECURSIVE_FUNCTION, nth(text, "f", 0), &[]);
     assert!(d.message.contains("`f`"), "{}", d.message);
+    // F-4: a warning that names the depth cap, not an error.
+    assert_eq!(d.severity, Severity::Warning);
+    assert!(d.message.contains("1,000,000"), "{}", d.message);
     let text = "f(u)=g(u)\ng(u)=h(u)\nh(u)=f(u)";
-    check_one(
+    let d = check_one(
         text,
         RECURSIVE_FUNCTION,
         nth(text, "f", 0),
         &[nth(text, "g", 1), nth(text, "h", 1)],
     );
+    assert_eq!(d.severity, Severity::Warning);
+    assert!(d.message.contains("1,000,000"), "{}", d.message);
     clean("f(u)=g(u)+g(u)\ng(u)=u");
+}
+
+#[test]
+fn recursive_set_holds_the_cyclic_components_only() {
+    let keys = |text: &str| -> Vec<String> { run(text).0.recursive.into_iter().collect() };
+    assert_eq!(keys("F(u)=f(u)"), ["f"]);
+    assert_eq!(
+        keys("f(u)=g(u)\ng(u)=h(u)\nh(u)=f(u)\nk(u)=f(u)"),
+        ["f", "g", "h"]
+    );
+    assert_eq!(
+        keys("ev(n)=od(n-1)\nod(n)=ev(n-1)\nw(n)=w(n)"),
+        ["ev", "od", "w"]
+    );
+    assert!(keys("f(u)=g(u)+g(u)\ng(u)=u").is_empty());
+    // A cycle through a fixed quantity is ODE0043, not recursion.
+    assert!(keys("a=f(1)\nf(u)=a*u\nx'=a").is_empty());
 }
 
 #[test]

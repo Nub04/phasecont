@@ -1,0 +1,6 @@
+# Linear oscillator with damping c
+par k=1, c=-3
+init x=0, y=0
+x'=y
+y'=-k*x-c*y
+done

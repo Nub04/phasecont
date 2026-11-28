@@ -22,8 +22,9 @@
 
 use pc_codegen::kernel::{Dialect, KernelError, Scalar, emit_rhs, float_literal, prelude};
 
+use crate::job::StackLayout;
 use crate::real::Real;
-use crate::tape::Tape;
+use crate::tape::{KERNEL_FRAMES, Tape, emit_calls_rhs, kernel_frame, kernel_stride};
 use crate::traj::Coef;
 
 /// Control words per member, see [`crate::abi`].
@@ -106,6 +107,26 @@ pub fn kernel_source_in(
     dialect: Dialect,
     layout: Layout,
 ) -> Result<String, KernelError> {
+    kernel_source_with(
+        tape,
+        integrator,
+        scalar,
+        dialect,
+        layout,
+        StackLayout::Member,
+    )
+}
+
+/// [`kernel_source_in`] with the call stack in `stack`. A tape without calls gives the same
+/// text under either stack layout.
+pub fn kernel_source_with(
+    tape: &Tape,
+    integrator: Integrator,
+    scalar: Scalar,
+    dialect: Dialect,
+    layout: Layout,
+    stack: StackLayout,
+) -> Result<String, KernelError> {
     // The prelude comes first so that a dialect without the scalar reports that first.
     let mut s = prelude(dialect, scalar)?;
     let entry = match dialect {
@@ -134,25 +155,239 @@ pub fn kernel_source_in(
         Scalar::F32 => consts::<f32>(integrator, scalar),
         Scalar::F64 => consts::<f64>(integrator, scalar),
     });
-    s.push_str(&emit_rhs(
-        &tape.ops,
-        &tape.outputs,
-        tape.n_p,
-        scalar,
-        "pc_rhs",
-    )?);
-    s.push_str(BAD_STATE);
-    match integrator {
-        Integrator::Rk4 => s.push_str(&RK4.replace(ARRAYS, arrays(integrator, layout))),
+    let body = match integrator {
+        Integrator::Rk4 => RK4.replace(ARRAYS, arrays(integrator, layout)),
         Integrator::Dp5 => {
-            s.push_str(DP5_HELPERS);
-            s.push_str(&DP5.replace(ARRAYS, arrays(integrator, layout)));
+            let mut b = DP5_HELPERS.to_string();
+            b.push_str(&DP5.replace(ARRAYS, arrays(integrator, layout)));
+            b
         }
-        Integrator::Iter => s.push_str(&ITER.replace(ARRAYS, arrays(integrator, layout))),
+        Integrator::Iter => ITER.replace(ARRAYS, arrays(integrator, layout)),
+    };
+    if tape.units.is_empty() {
+        s.push_str(&emit_rhs(
+            &tape.ops,
+            &tape.outputs,
+            tape.n_p,
+            scalar,
+            "pc_rhs",
+        )?);
+        s.push_str(BAD_STATE);
+        s.push_str(&body);
+        s.push_str(entry);
+    } else {
+        // A tape with calls runs its functions on a stack of `PC_STK` reals per member.
+        let (rhs, stride) = emit_calls_rhs(tape, scalar, stack)?;
+        s.push_str("#define PC_RECURSION_DEPTH 6u\n");
+        s.push_str(&format!("#define PC_STK {}u\n", KERNEL_FRAMES * stride));
+        s.push_str(&rhs);
+        s.push_str(BAD_STATE);
+        s.push_str(&with_calls(integrator, &body, entry, stack));
     }
-    s.push_str(entry);
     Ok(s)
 }
+
+/// Reals of the per-member stack that the kernel of `tape` needs: [`KERNEL_FRAMES`] frames
+/// of the largest frame of its functions, or 0 for a tape without calls (SPEC section 8af-5).
+pub fn stack_len(tape: &Tape) -> usize {
+    KERNEL_FRAMES * kernel_stride(tape)
+}
+
+/// The per-member stack of a kernel with calls (SPEC section 8af-5): [`KERNEL_FRAMES`] frames
+/// of `frame_reals` reals, the frame of `function`, the widest function of the tape.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stack {
+    pub function: String,
+    pub frame_reals: usize,
+    pub frames: usize,
+}
+
+impl Stack {
+    /// Reals of the stack of one member, the same as [`stack_len`].
+    pub fn reals(&self) -> usize {
+        self.frames.saturating_mul(self.frame_reals)
+    }
+}
+
+/// The stack the kernel of `tape` needs, or `None` for a tape without calls.
+pub fn stack_of(tape: &Tape) -> Option<Stack> {
+    kernel_frame(tape).map(|(function, frame_reals)| Stack {
+        function,
+        frame_reals,
+        frames: KERNEL_FRAMES,
+    })
+}
+
+/// Replaces each of the `count` copies of `from` in `s`. The templates are fixed text, so a
+/// count that does not match is a bug in this file, which the tests of every template catch.
+fn swap(s: &str, from: &str, to: &str, count: usize) -> String {
+    debug_assert_eq!(s.matches(from).count(), count, "{from}");
+    s.replace(from, to)
+}
+
+/// The integrator and entry of a tape with calls: every right-hand side also takes the
+/// member's stack and error word, and a set word ends the member with `PC_RECURSION_DEPTH`
+/// where the CPU backend tests its slab, before the state checks and before a DP5 step is
+/// judged, so a failed stage is never a rejected step.
+fn with_calls(integrator: Integrator, body: &str, entry: &str, stack: StackLayout) -> String {
+    let mut b = String::new();
+    for line in body.split_inclusive('\n') {
+        let call = ["pc_rhs(", "pc_hinit(", "pc_dp5_step("]
+            .iter()
+            .any(|f| line.contains(f) && !line.starts_with("PC_FN"));
+        match line.strip_suffix(");\n") {
+            Some(head) if call => {
+                b.push_str(head);
+                b.push_str(", stk, cerr);\n");
+            }
+            _ => b.push_str(line),
+        }
+    }
+    let auto = stack == StackLayout::Auto;
+    let mut b = if auto {
+        // The auto variant keeps the peak and the calls of the last right-hand side in words 1
+        // and 2 of the error word's array and writes them to `dep` when the launch ends.
+        let mut b = swap(
+            &b,
+            "                     pc_uint ns)\n{\n",
+            "                     pc_uint ns, PC_GLOBAL pc_real *stk, PC_GLOBAL pc_uint *dep)\n{\n    pc_uint cerr_w[3] = {0u, 0u, 0u};\n    PC_PRIV pc_uint *cerr = cerr_w;\n",
+            1,
+        );
+        b = swap(
+            &b,
+            "    c[0] = st;\n",
+            "    dep[0] = cerr_w[1];\n    dep[1] = cerr_w[2];\n    c[0] = st;\n",
+            1,
+        );
+        b
+    } else {
+        swap(
+            &b,
+            "                     pc_uint ns)\n{\n",
+            "                     pc_uint ns, PC_GLOBAL pc_real *stk)\n{\n    pc_uint cerr_w = 0u;\n    PC_PRIV pc_uint *cerr = &cerr_w;\n",
+            1,
+        )
+    };
+    match integrator {
+        Integrator::Rk4 | Integrator::Iter => {
+            b = swap(
+                &b,
+                "        bad = pc_bad_state(y1, lim);\n",
+                "        bad = (*cerr != 0u) ? PC_RECURSION_DEPTH : pc_bad_state(y1, lim);\n",
+                1,
+            );
+        }
+        Integrator::Dp5 => {
+            b = swap(
+                &b,
+                "                       PC_IN pc_real *par)\n",
+                "                       PC_IN pc_real *par, PC_GLOBAL pc_real *stk, PC_PRIV pc_uint *cerr)\n",
+                1,
+            );
+            b = swap(
+                &b,
+                "                          pc_real t_end, pc_real rtol, pc_real atol)\n",
+                "                          pc_real t_end, pc_real rtol, pc_real atol,\n                          PC_GLOBAL pc_real *stk, PC_PRIV pc_uint *cerr)\n",
+                1,
+            );
+            b = swap(
+                &b,
+                "                st = PC_NONFINITE;\n            }\n        }\n        if (st == PC_RUNNING) {\n",
+                "                st = PC_NONFINITE;\n            }\n        }\n        if (*cerr != 0u) {\n            st = PC_RECURSION_DEPTH;\n        }\n        if (st == PC_RUNNING) {\n",
+                1,
+            );
+            b = swap(
+                &b,
+                "            if (!(pc_isfinite(h) && h > PC_ZERO)) {\n",
+                "            if (*cerr != 0u) {\n                st = PC_RECURSION_DEPTH;\n            } else if (!(pc_isfinite(h) && h > PC_ZERO)) {\n",
+                1,
+            );
+            b = swap(
+                &b,
+                "            if (err <= PC_ONE) {\n",
+                "            if (*cerr != 0u) {\n                st = PC_RECURSION_DEPTH;\n            } else if (err <= PC_ONE) {\n",
+                1,
+            );
+        }
+    }
+    // Member layout: each member owns PC_STK consecutive reals. Warp layout: a group of 32
+    // members owns 32 * PC_STK reals, and slot e of lane l sits at e * 32 + l, so the lanes
+    // of a warp that touch the same slot touch adjacent reals. Auto runs the warp layout.
+    let base = match stack {
+        StackLayout::Member => "stk + m * PC_STK",
+        StackLayout::Warp | StackLayout::Auto => {
+            "stk + (m / 32u) * (32u * (pc_ulong)PC_STK) + (m % 32u)"
+        }
+    };
+    let dep = if auto { ", dep + 2u * m" } else { "" };
+    let e = swap(
+        entry,
+        "ctl + m * PC_CTL, steps, max_steps, ns);\n",
+        &format!("ctl + m * PC_CTL, steps, max_steps, ns,\n              {base}{dep});\n"),
+        1,
+    );
+    let e = match (e.contains("[[buffer(11)]]"), auto) {
+        (true, false) => swap(
+            &e,
+            "constant pc_ulong &pstride [[buffer(11)]],\n",
+            "constant pc_ulong &pstride [[buffer(11)]],\n                   PC_GLOBAL pc_real *PC_RESTRICT stk [[buffer(12)]],\n",
+            1,
+        ),
+        (true, true) => swap(
+            &e,
+            "constant pc_ulong &pstride [[buffer(11)]],\n",
+            "constant pc_ulong &pstride [[buffer(11)]],\n                   PC_GLOBAL pc_real *PC_RESTRICT stk [[buffer(12)]],\n                   PC_GLOBAL pc_uint *PC_RESTRICT dep [[buffer(13)]],\n",
+            1,
+        ),
+        (false, false) => swap(
+            &e,
+            "pc_ulong pstride)\n",
+            "pc_ulong pstride,\n            PC_GLOBAL pc_real *PC_RESTRICT stk)\n",
+            1,
+        ),
+        (false, true) => swap(
+            &e,
+            "pc_ulong pstride)\n",
+            "pc_ulong pstride,\n            PC_GLOBAL pc_real *PC_RESTRICT stk, PC_GLOBAL pc_uint *PC_RESTRICT dep)\n",
+            1,
+        ),
+    };
+    b.push_str(&e);
+    if auto && e.contains("__global__") {
+        b.push_str(KEYS_CUDA);
+    }
+    b
+}
+
+/// The key kernel of the CUDA counting variant (SPEC section 8af-5): thread `i` evaluates the
+/// right-hand side of member `idx[i]` once at `(x0, t0)` and writes the peak and the calls of
+/// that evaluation to `dep[2i]` and `dep[2i + 1]`. The stack slots follow the warp layout over
+/// `i`, so `stk` holds whole groups of 32 of the `count` threads.
+const KEYS_CUDA: &str = r#"
+extern "C" __global__ void pc_keys(PC_IN pc_real *PC_RESTRICT x0, PC_IN pc_real *PC_RESTRICT par,
+                                   PC_IN pc_ulong *PC_RESTRICT idx,
+                                   PC_GLOBAL pc_real *PC_RESTRICT stk,
+                                   PC_GLOBAL pc_uint *PC_RESTRICT dep, pc_ulong count,
+                                   pc_ulong pstride, pc_real t0)
+{
+    pc_ulong i = (pc_ulong)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) {
+        return;
+    }
+    pc_ulong m = idx[i];
+    pc_real y[PC_N];
+    pc_real k[PC_N];
+    pc_uint j;
+    for (j = 0u; j < PC_N; j++) {
+        y[j] = x0[m * PC_N + j];
+    }
+    pc_uint cerr_w[3] = {0u, 0u, 0u};
+    pc_rhs(t0, y, par + m * pstride, k, stk + (i / 32u) * (32u * (pc_ulong)PC_STK) + (i % 32u),
+           cerr_w);
+    dep[2u * i] = cerr_w[1];
+    dep[2u * i + 1u] = cerr_w[2];
+}
+"#;
 
 /// The line of a template that the declarations of the scratch replace.
 const ARRAYS: &str = "    /*PC_ARRAYS*/\n";

@@ -147,6 +147,67 @@ classdef GatewayTest < matlab.unittest.TestCase
             clear cleanup
         end
 
+        function jacobianBatchMatchesJacobianPerColumn(testCase)
+            % SPEC 8ai-1, test 1.
+            [m, ~] = pckern("model_from_ode", testCase.Lorenz);
+            cleanup = onCleanup(@() pckern("free", m));
+            p = testCase.P;
+            X = [1 2 3 -1; 2 0 1 5; 3 4 -2 0.5];
+            for ev = ["fallback" "jit"]
+                pckern("model_compile", m, "{""evaluator"":""" + ev + """}");
+                [J, bad] = pckern("model_jacobian_batch", m, X, p, '');
+                testCase.verifySize(J, [3 3 4]);
+                testCase.verifyEqual(bad, 0);
+                for k = 1:4
+                    testCase.verifyEqual(J(:, :, k), ...
+                        pckern("model_jacobian", m, X(:, k), p, ''), AbsTol = 0);
+                end
+                testCase.verifyEqual(pckern("model_jacobian_batch", m, X, p, ''), J, ...
+                    AbsTol = 0);
+            end
+            J0 = pckern("model_jacobian_batch", m, zeros(3, 0), p, '');
+            testCase.verifySize(J0, [3 3 0]);
+            testCase.verifyClass(J0, "double");
+            testCase.verifyError(@() pckern("model_jacobian_batch", m, ones(2, 4), p, ''), ...
+                "phasecont:engine:badArg");
+            testCase.verifyError(@() pckern("model_jacobian_batch", m, single(X), p, ''), ...
+                "phasecont:engine:badArg");
+            testCase.verifyError(@() pckern("model_jacobian_batch", m, complex(X), p, ''), ...
+                "phasecont:engine:badArg");
+            testCase.verifyError(@() pckern("model_jacobian_batch", m, zeros(0, 2), p, ''), ...
+                "phasecont:engine:badArg");
+            testCase.verifyError(@() pckern("model_jacobian_batch", m, X, [1 2], ''), ...
+                "phasecont:engine:badArg");
+            testCase.verifyError(@() pckern("model_jacobian_batch", m, X, p), ...
+                "phasecont:engine:badArg");
+            testCase.verifyError(@() pckern("model_jacobian_batch", uint64(1), X, p, ''), ...
+                "phasecont:engine:badHandle");
+            clear cleanup
+        end
+
+        function jacobianBatchReportsTheRefusedColumn(testCase)
+            % SPEC 8ai-1, test 2: the slope of sqrt(x+1) is not finite at x = -1,
+            % and the engine refuses it.
+            m = pckern("model_from_ode", "x'=sqrt(x+1)" + newline + "y'=-y" + ...
+                newline + "done" + newline);
+            cleanup = onCleanup(@() pckern("free", m));
+            pckern("model_compile", m);
+            X = [0 1 -1 2; 0 1 0 3];
+            testCase.verifyError(@() pckern("model_jacobian", m, X(:, 3), zeros(0, 1), ''), ...
+                "phasecont:engine:numeric");
+            [J, bad] = pckern("model_jacobian_batch", m, X, zeros(0, 1), '');
+            testCase.verifyEqual(bad, 3);
+            testCase.verifySize(J, [2 2 4]);
+            for k = 1:2
+                testCase.verifyEqual(J(:, :, k), ...
+                    pckern("model_jacobian", m, X(:, k), zeros(0, 1), ''), AbsTol = 0);
+            end
+            testCase.verifyEqual(J(:, :, 3:4), zeros(2, 2, 2));
+            testCase.verifyError(@() pckern("model_jacobian_batch", m, X, zeros(0, 1), ''), ...
+                "phasecont:engine:numeric");
+            clear cleanup
+        end
+
         function equilibriumAtTheLorenzOrigin(testCase)
             m = pckern("model_from_ode", testCase.Lorenz);
             cleanup = onCleanup(@() pckern("free", m));

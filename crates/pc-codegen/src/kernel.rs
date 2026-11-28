@@ -12,7 +12,7 @@
 use core::fmt;
 use core::fmt::Write as _;
 
-use pc_ir::dag::{Cmp, Fn1, Fn2, Op};
+use pc_ir::dag::{Cmp, Fn1, Fn2, NodeId, Op};
 
 /// The language a kernel is written in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -350,83 +350,11 @@ pub fn emit_rhs(
     for (i, op) in ops.iter().enumerate() {
         let i = i as u32;
         let id = v(i);
-        let expr = match *op {
-            Op::Const(bits) => float_literal(f64::from_bits(bits), scalar),
-            Op::Var(k) => format!("x[{k}]"),
-            Op::Param(j) => {
-                if j as usize == n_p {
-                    "t".to_string()
-                } else {
-                    format!("p[{j}]")
-                }
-            }
-            Op::Neg(a) => format!("-{}", v(a.0)),
-            Op::Add(a, c) => format!("{} + {}", v(a.0), v(c.0)),
-            Op::Sub(a, c) => format!("{} - {}", v(a.0), v(c.0)),
-            Op::Mul(a, c) => format!("{} * {}", v(a.0), v(c.0)),
-            // `t == 0` gives +0 whatever `p` is; see `Op::ZMul`.
-            Op::ZMul(t, p) => format!("({0} == PC_ZERO) ? PC_ZERO : {0} * {1}", v(t.0), v(p.0)),
-            Op::Div(a, c) => format!("{} / {}", v(a.0), v(c.0)),
-            // `n == 0` gives +0 whatever `d` is; see `Op::ZDiv`.
-            Op::ZDiv(n, d) => format!("({0} == PC_ZERO) ? PC_ZERO : {0} / {1}", v(n.0), v(d.0)),
-            Op::PowI(a, n) => {
-                emit_powi(&mut b, i, &v(a.0), n);
-                continue;
-            }
-            Op::Call1(f, a) => {
-                let x = v(a.0);
-                match f {
-                    Fn1::Heav => format!("({x} >= PC_ZERO) ? PC_ONE : PC_ZERO"),
-                    Fn1::Sign => format!(
-                        "({x} > PC_ZERO) ? PC_ONE : (({x} < PC_ZERO) ? (-PC_ONE) : (({x} == PC_ZERO) ? PC_ZERO : PC_NAN))"
-                    ),
-                    _ => format!("{}({x})", fn1_name(f)),
-                }
-            }
-            Op::Call2(f, a, c) => {
-                let (x, y) = (v(a.0), v(c.0));
-                match f {
-                    Fn2::Atan2 => format!("pc_atan2({x}, {y})"),
-                    Fn2::Pow => format!("pc_pow({x}, {y})"),
-                    Fn2::Mod => {
-                        let _ = writeln!(b, "    const pc_real {id}_r = pc_fmod({x}, {y});");
-                        format!("({id}_r < PC_ZERO) ? ({id}_r + {y}) : {id}_r")
-                    }
-                    Fn2::Min => format!("({x} < {y}) ? {x} : {y}"),
-                    Fn2::Max => format!("({x} > {y}) ? {x} : {y}"),
-                    Fn2::BesselJ | Fn2::BesselY | Fn2::Polygamma => unreachable!("refused above"),
-                }
-            }
-            Op::Cmp(c, a, d) => {
-                let sym = match c {
-                    Cmp::Lt => "<",
-                    Cmp::Le => "<=",
-                    Cmp::Gt => ">",
-                    Cmp::Ge => ">=",
-                    Cmp::Eq => "==",
-                };
-                format!("({} {sym} {}) ? PC_ONE : PC_ZERO", v(a.0), v(d.0))
-            }
-            Op::And(a, c) => format!(
-                "(({} != PC_ZERO) && ({} != PC_ZERO)) ? PC_ONE : PC_ZERO",
-                v(a.0),
-                v(c.0)
-            ),
-            Op::Or(a, c) => format!(
-                "(({} != PC_ZERO) || ({} != PC_ZERO)) ? PC_ONE : PC_ZERO",
-                v(a.0),
-                v(c.0)
-            ),
-            Op::Not(a) => format!("({} == PC_ZERO) ? PC_ONE : PC_ZERO", v(a.0)),
-            Op::Select(c, a, d) => format!("({} != PC_ZERO) ? {} : {}", v(c.0), v(a.0), v(d.0)),
-            Op::Dir(_)
-            | Op::Table(..)
-            | Op::TableSlope(..)
-            | Op::Arg(_)
-            | Op::Call(..)
-            | Op::If(..)
-            | Op::Out(..) => unreachable!("refused above"),
-        };
+        if let Op::PowI(a, n) = *op {
+            emit_powi(&mut b, i, &v(a.0), n);
+            continue;
+        }
+        let expr = op_expr(op, &mut |a| v(a.0), n_p, scalar, &id, &mut b);
         let _ = writeln!(b, "    const pc_real {id} = {expr};");
     }
     for (k, &o) in outputs.iter().enumerate() {
@@ -434,6 +362,93 @@ pub fn emit_rhs(
     }
     b.push_str("}\n");
     Ok(b)
+}
+
+/// The C expression of one op whose operands are named by `o`. An op that needs a temporary
+/// first (`mod`) writes it to `pre` under the name `{id}_r`. `n_p` is the index of `t` among
+/// the parameters. `PowI` and the ops `unsupported_op` refuses are not one expression.
+pub fn op_expr(
+    op: &Op,
+    o: &mut dyn FnMut(NodeId) -> String,
+    n_p: usize,
+    scalar: Scalar,
+    id: &str,
+    pre: &mut String,
+) -> String {
+    match *op {
+        Op::Const(bits) => float_literal(f64::from_bits(bits), scalar),
+        Op::Var(k) => format!("x[{k}]"),
+        Op::Param(j) => {
+            if j as usize == n_p {
+                "t".to_string()
+            } else {
+                format!("p[{j}]")
+            }
+        }
+        Op::Neg(a) => format!("-{}", o(a)),
+        Op::Add(a, c) => format!("{} + {}", o(a), o(c)),
+        Op::Sub(a, c) => format!("{} - {}", o(a), o(c)),
+        Op::Mul(a, c) => format!("{} * {}", o(a), o(c)),
+        // `t == 0` gives +0 whatever `p` is; see `Op::ZMul`.
+        Op::ZMul(t, p) => format!("({0} == PC_ZERO) ? PC_ZERO : {0} * {1}", o(t), o(p)),
+        Op::Div(a, c) => format!("{} / {}", o(a), o(c)),
+        // `n == 0` gives +0 whatever `d` is; see `Op::ZDiv`.
+        Op::ZDiv(n, d) => format!("({0} == PC_ZERO) ? PC_ZERO : {0} / {1}", o(n), o(d)),
+        Op::Call1(f, a) => {
+            let x = o(a);
+            match f {
+                Fn1::Heav => format!("({x} >= PC_ZERO) ? PC_ONE : PC_ZERO"),
+                Fn1::Sign => format!(
+                    "({x} > PC_ZERO) ? PC_ONE : (({x} < PC_ZERO) ? (-PC_ONE) : (({x} == PC_ZERO) ? PC_ZERO : PC_NAN))"
+                ),
+                _ => format!("{}({x})", fn1_name(f)),
+            }
+        }
+        Op::Call2(f, a, c) => {
+            let (x, y) = (o(a), o(c));
+            match f {
+                Fn2::Atan2 => format!("pc_atan2({x}, {y})"),
+                Fn2::Pow => format!("pc_pow({x}, {y})"),
+                Fn2::Mod => {
+                    let _ = writeln!(pre, "    const pc_real {id}_r = pc_fmod({x}, {y});");
+                    format!("({id}_r < PC_ZERO) ? ({id}_r + {y}) : {id}_r")
+                }
+                Fn2::Min => format!("({x} < {y}) ? {x} : {y}"),
+                Fn2::Max => format!("({x} > {y}) ? {x} : {y}"),
+                Fn2::BesselJ | Fn2::BesselY | Fn2::Polygamma => unreachable!("not one expression"),
+            }
+        }
+        Op::Cmp(c, a, d) => {
+            let sym = match c {
+                Cmp::Lt => "<",
+                Cmp::Le => "<=",
+                Cmp::Gt => ">",
+                Cmp::Ge => ">=",
+                Cmp::Eq => "==",
+            };
+            format!("({} {sym} {}) ? PC_ONE : PC_ZERO", o(a), o(d))
+        }
+        Op::And(a, c) => format!(
+            "(({} != PC_ZERO) && ({} != PC_ZERO)) ? PC_ONE : PC_ZERO",
+            o(a),
+            o(c)
+        ),
+        Op::Or(a, c) => format!(
+            "(({} != PC_ZERO) || ({} != PC_ZERO)) ? PC_ONE : PC_ZERO",
+            o(a),
+            o(c)
+        ),
+        Op::Not(a) => format!("({} == PC_ZERO) ? PC_ONE : PC_ZERO", o(a)),
+        Op::Select(c, a, d) => format!("({} != PC_ZERO) ? {} : {}", o(c), o(a), o(d)),
+        Op::PowI(..)
+        | Op::Dir(_)
+        | Op::Table(..)
+        | Op::TableSlope(..)
+        | Op::Arg(_)
+        | Op::Call(..)
+        | Op::If(..)
+        | Op::Out(..) => unreachable!("not one expression"),
+    }
 }
 
 /// `v{i} = base^n` in the order documented on `Op::PowI`.

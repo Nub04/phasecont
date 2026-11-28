@@ -9,6 +9,9 @@
 //! between c = 2.5 and 2.9, and the doubled orbit is still stable at c = 3, so RK4 finds
 //! it there. Run with `-- --nocapture` to see the errors.
 
+// Test references may use the std functions; see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 mod common;
 
 use common::{load, rk4};

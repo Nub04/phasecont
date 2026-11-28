@@ -23,11 +23,18 @@ classdef FitResult < handle
     %               rows follow Residual(:)
     %   Iterations  trial steps taken
     %   Converged   true when the gradient or the step test stopped the run
-    %   Stop        "gradient", "step" or "maxIter"
+    %   Stop        "gradient", "step" or "maxIter", or "failed" for a start
+    %               of a fit with Starts whose fit raised an error
     %   History     table with one row per trial step: Iter, Cost, GradNorm,
     %               StepNorm, Mu, Rho, Accepted. Cost and GradNorm are those
     %               of the iterate after the step (unchanged when the step is
     %               rejected). Rho is NaN when the trial point did not finish.
+    %   Starts      1-by-K FitResult, one per column of the Starts option in
+    %               input order; 1-by-0 for a fit without Starts and for
+    %               each entry of Starts
+    %   BestStart   index in Starts of this result; empty without Starts
+    %   Error       the MException of a start with Stop "failed", the one
+    %               a fit from that start alone raises; empty otherwise
 
     properties (SetAccess = private)
         Fit (1,:) string = strings(1,0)
@@ -45,6 +52,9 @@ classdef FitResult < handle
         Converged (1,1) logical = false
         Stop (1,1) string = ""
         History table = table()
+        Starts                        % 1-by-K FitResult, set in the constructor
+        BestStart double = []
+        Error = MException.empty
     end
 
     methods
@@ -53,6 +63,7 @@ classdef FitResult < handle
             arguments
                 values (1,1) struct = struct()
             end
+            obj.Starts = phasecont.FitResult.empty(1, 0);
             for name = string(fieldnames(values))'
                 obj.(name) = values.(name);
             end

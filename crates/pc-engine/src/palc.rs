@@ -411,11 +411,13 @@ pub(crate) fn run_branch(
     let mut x = x0.to_vec();
     let first = make_point(p, &x, v.clone(), det, 0.0, 0, opts, &mut warnings)?;
     on_point(&first);
-    p.accept(&x);
     let mut points = vec![first];
     let mut specials = Vec::new();
     let (lo, hi) = opts.bounds;
     let stop = 'run: {
+        if let Err(e) = p.accept(&x) {
+            break 'run classify(e);
+        }
         if x[n - 1] < lo || x[n - 1] > hi {
             break 'run StopReason::Bounds;
         }
@@ -458,6 +460,12 @@ pub(crate) fn run_branch(
                         let (pt, reason) = match built {
                             Ok(pt) => (pt, StopReason::Bounds),
                             Err(e) => {
+                                // A recursion cap hit ends the run with its error. The bare point
+                                // is dropped: its tests are NaN, which the cap error must never
+                                // become (SPEC 8af-5, Errors).
+                                if e.is_call_limit() {
+                                    break 'run StopReason::Error(e);
+                                }
                                 let bare = bare_point(&l.x, v.clone(), l.s * h, l.iters, p.mesh());
                                 if e == EngineError::Cancelled {
                                     (bare, StopReason::Cancelled)
@@ -515,7 +523,9 @@ pub(crate) fn run_branch(
             {
                 break 'run r;
             }
-            p.accept(&x1);
+            if let Err(e) = p.accept(&x1) {
+                break 'run classify(e);
+            }
             x = x1;
             v = vn;
             p.adapt(&mut x, &mut v, false);

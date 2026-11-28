@@ -275,3 +275,41 @@ fn a_curve_run_cannot_switch_branches() {
         st.state
     );
 }
+
+/// SPEC 8af-5, Errors: a continuation run on a recursive model whose first step needs more
+/// than 1,000,000 active calls ends `Failed` with the cap error, not `Done`. The point
+/// before the step stays on the branch and its stop reason is the same error.
+#[test]
+fn a_cap_hit_ends_a_run_failed_and_keeps_the_points_before_it() {
+    // Inline, not in tests/models: the recursion baseline golden lists every file there.
+    let mut map = pc_ode::SourceMap::new();
+    let top = map.add(
+        "cnt.ode",
+        "par a=0\ncnt(n)=if(n<1)then(0)else(1+cnt(n-1))\ninit x=0\nx'=-x+1e-9*cnt(a)\ndone\n",
+    );
+    let l = pc_ode::load(top, &mut map, &mut pc_ode::MapLoader::new());
+    let setup = EpSetup::new(0, vec![0.0], vec![0.0]);
+    let opts = Options {
+        h0: 1.2e6,
+        hmax: 2e6,
+        bounds: (f64::NEG_INFINITY, 1e7),
+        ..Options::default()
+    };
+    let run = Run::start(RunSpec::new(
+        l.expanded,
+        l.info,
+        Evaluator::Jit,
+        setup,
+        opts,
+    ));
+    let st = wait_for(&run, |s| s.state != RunState::Running);
+    match &st.state {
+        RunState::Failed(EngineError::CallLimit(m)) => assert!(m.contains("cnt"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(st.points[0] >= 1, "the first point is kept: {st:?}");
+    assert!(matches!(
+        run.stop(0),
+        Some(pc_engine::StopReason::Error(EngineError::CallLimit(_)))
+    ));
+}

@@ -110,6 +110,14 @@ const BETA: f64 = 0.04;
 /// Unit roundoff the step-too-small test uses, as in `dopri5`.
 const UROUND: f64 = 2.3e-16;
 
+// The powers of the starting step and the step control. `hostmath::powf` is the platform
+// `pow` on Linux and macOS and the port of glibc's `pow` on x86_64-pc-windows-gnu, where
+// MinGW-w64's `pow` runs on the x87 unit and took 68 ns per call against 5 ns for the port
+// (2026-11-27, one core).
+fn ctl_pow(x: f64, y: f64) -> f64 {
+    pc_ir::hostmath::powf(x, y)
+}
+
 /// The right-hand side as a closure over time, state and output.
 type Rhs<'a> = dyn FnMut(f64, &[f64], &mut [f64]) -> Result<(), EngineError> + 'a;
 
@@ -190,7 +198,7 @@ fn initial_step(
     let h1 = if der12 <= 1e-15 {
         (1e-6_f64).max(h.abs() * 1e-3)
     } else {
-        (0.01 / der12).powf(1.0 / 5.0)
+        ctl_pow(0.01 / der12, 1.0 / 5.0)
     };
     Ok(posneg * (100.0 * h.abs()).min(h1).min(hmax))
 }
@@ -355,7 +363,10 @@ pub(crate) fn integrate_rows(
     };
 
     let expo1 = 0.2 - BETA * 0.75;
-    let mut facold = 1e-4_f64;
+    // facold^BETA, where facold is the error of the last accepted step floored at 1e-4. An
+    // accepted step computes err^BETA once and the next step reuses it.
+    let facold_min_pb = ctl_pow(1e-4, BETA);
+    let mut facold_pb = facold_min_pb;
     let mut reject = false;
     let mut last = false;
     let mut accepted = 0usize;
@@ -378,11 +389,14 @@ pub(crate) fn integrate_rows(
             Ok(e) => e,
             Err(e) => break StopReason::Error(e),
         };
-        let fac11 = err.powf(expo1);
-        let fac = (fac11 / facold.powf(BETA) / SAFE).clamp(1.0 / FAC2, 1.0 / FAC1);
-        let mut hnew = h / fac;
         if err <= 1.0 {
-            facold = err.max(1e-4);
+            // err^expo1 for this step and err^BETA for the next one.
+            let (fac11, err_pb) = (ctl_pow(err, expo1), ctl_pow(err, BETA));
+            let fac = (fac11 / facold_pb / SAFE).clamp(1.0 / FAC2, 1.0 / FAC1);
+            let mut hnew = h / fac;
+            // facold = max(err, 1e-4), kept as facold^BETA.
+            facold_pb = if err >= 1e-4 { err_pb } else { facold_min_pb };
+            debug_assert!(facold_pb.to_bits() == ctl_pow(err.max(1e-4), BETA).to_bits());
             accepted += 1;
             x = if last { xend } else { x + h };
             std::mem::swap(&mut y, &mut y1);
@@ -410,11 +424,12 @@ pub(crate) fn integrate_rows(
             reject = false;
             h = hnew;
         } else {
-            // The clamp above would give a NaN error a growth factor; shrink instead.
-            hnew = h / (1.0 / FAC1).min(fac11 / SAFE);
+            // The clamp of an accepted step would give a NaN error a growth factor; shrink
+            // instead.
+            let fac11 = ctl_pow(err, expo1);
+            h /= (1.0 / FAC1).min(fac11 / SAFE);
             reject = true;
             last = false;
-            h = hnew;
         }
     };
     Ok(stop)

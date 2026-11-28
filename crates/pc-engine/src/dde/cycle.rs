@@ -261,6 +261,19 @@ impl<'a> DdeCycleProblem<'a> {
         })
     }
 
+    /// Re-references the phase row to the profile in `x`. A profile whose row is zero or not
+    /// finite keeps the old reference.
+    fn set_phase_reference(&mut self, x: &[f64]) {
+        let plen = self.dim - 2;
+        if x.len() < plen {
+            return;
+        }
+        if let Ok((phase, phase0)) = reference_row(&self.basis, self.n, self.ntst, &x[..plen]) {
+            self.phase = phase;
+            self.phase0 = phase0;
+        }
+    }
+
     /// Takes `mesh` (`ntst + 1` increasing values from 0 to 1) and switches to the general
     /// formulas.
     fn set_mesh(&mut self, mesh: Vec<f64>) {
@@ -557,15 +570,9 @@ impl Problem for DdeCycleProblem<'_> {
     /// Re-references the phase row to the accepted profile, so that it stays a condition
     /// on the shift of the orbit along the branch. A profile whose row is zero or not
     /// finite keeps the old reference.
-    fn accept(&mut self, x: &[f64]) {
-        let plen = self.dim - 2;
-        if x.len() < plen {
-            return;
-        }
-        if let Ok((phase, phase0)) = reference_row(&self.basis, self.n, self.ntst, &x[..plen]) {
-            self.phase = phase;
-            self.phase0 = phase0;
-        }
+    fn accept(&mut self, x: &[f64]) -> Result<(), EngineError> {
+        self.set_phase_reference(x);
+        Ok(())
     }
 
     /// The mesh of the profile, stored with each point of an adapting run; empty when the
@@ -617,7 +624,7 @@ impl Problem for DdeCycleProblem<'_> {
         x[..k].copy_from_slice(&xu);
         v[..k].copy_from_slice(&vu);
         self.set_mesh(new);
-        self.accept(x);
+        self.set_phase_reference(x);
         true
     }
 }

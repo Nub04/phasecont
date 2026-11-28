@@ -24,7 +24,7 @@ function r = ensemble(m, x0, p, tspan, options)
 %   still required, and Backend, Device and Bounds work as for an ODE. Dt,
 %   Rtol, Atol, Hmax and MaxSteps do not apply to a map, and each one passed
 %   raises phasecont:ensemble:mapOption. A member of a map stops early only
-%   with Status "bounds" or "notFinite".
+%   with Status "bounds", "notFinite" or "recursionDepth".
 %
 %   Nothing here has a default for a value that changes a result. These
 %   options are required (for a map, only Precision):
@@ -64,9 +64,26 @@ function r = ensemble(m, x0, p, tspan, options)
 %                 phasecont:ensemble:fastMath, and R.Label.Math is "fma"
 %                 instead of "exact". The results are not bit-reproducible:
 %                 call refine before they feed continuation.
+%     StackLayout "auto" (default), "member" or "warp". Where a GPU kernel
+%                 keeps the call frames of a model with recursive
+%                 functions. It changes the speed of a run, never its
+%                 results: every layout gives the same bits. "member" keeps
+%                 the frames of one member together, "warp" interleaves the
+%                 frames of 32 members so that the threads of a warp at the
+%                 same depth read adjacent memory, and "auto" lets CUDA pick
+%                 warp or member for each batch from the call depths the
+%                 kernel reports. OpenCL and Metal run "auto" as "member",
+%                 and the CPU and a model without calls ignore the option.
+%                 R.Label.Stack is the layout asked for and R.Label.StackRan
+%                 the one that ran: "member", "warp", or "mixed" when an
+%                 "auto" run used both.
 %
-%   A trajectory that stops with "stepTooSmall", "maxSteps" or "notFinite"
-%   is reported with the warning ID phasecont:ensemble:memberStopped. The
+%   A trajectory that stops with "stepTooSmall", "maxSteps", "notFinite" or
+%   "recursionDepth" is reported with the warning ID
+%   phasecont:ensemble:memberStopped. A member ends with "recursionDepth"
+%   when a recursive function call in its right-hand side needs more than
+%   1,000,000 active frames on the CPU or 4,096 on a GPU backend; the other
+%   members go on. The
 %   call blocks while the engine runs and polls it, first after 1 ms and then
 %   at growing intervals up to 50 ms, so a short run returns within a few
 %   milliseconds. Ctrl+C cancels the run.
@@ -87,6 +104,7 @@ arguments
     options.MaxSteps double {mustBeScalarOrEmpty} = []
     options.Bounds (1,1) double = Inf
     options.FastMath (1,1) logical = false
+    options.StackLayout (1,1) string = "auto"
 end
 import phasecont.internal.num2json
 
@@ -154,6 +172,11 @@ if ~(options.Bounds > 0)
     error("phasecont:ensemble:badOption", ...
         "Bounds must be positive; Inf turns the test off.");
 end
+stack = options.StackLayout;
+if ~any(stack == ["member" "warp" "auto"])
+    error("phasecont:ensemble:badOption", ...
+        "StackLayout must be ""member"", ""warp"" or ""auto"", got ""%s"".", stack);
+end
 
 [backend, device] = chooseDevice(options, precision);
 math = "exact";
@@ -201,6 +224,7 @@ end
 job = "{""backend"":""" + backend + """,""device"":" + sprintf("%d", device) ...
     + ",""precision"":""" + precision + """" ...
     + ",""math"":""" + math + """" ...
+    + ",""stack"":""" + stack + """" ...
     + ",""t0"":" + num2json(tspan(1)) + ",""t1"":" + num2json(tspan(end)) ...
     + ",""method"":" + methodJson + ",""output"":" + outputJson ...
     + ",""bounds"":" + boundsJson ...
@@ -248,17 +272,20 @@ reached = ens.copy(phasecont.internal.Ens.TReached, members);
 accepted = ens.copy(phasecont.internal.Ens.Accepted, members);
 rejected = ens.copy(phasecont.internal.Ens.Rejected, members);
 
-names = ["ok" "bounds" "stepTooSmall" "maxSteps" "notFinite"];
+% Code 5 means a member still running, which a finished run never returns.
+names = ["ok" "bounds" "stepTooSmall" "maxSteps" "notFinite" "running" "recursionDepth"];
 label = struct("Backend", string(st.label.backend), ...
     "Device", string(st.label.device), ...
     "Driver", string(st.label.driver), ...
     "Precision", string(st.label.precision), ...
     "SinglePrecision", logical(st.label.single_precision), ...
-    "Math", string(st.label.math));
+    "Math", string(st.label.math), ...
+    "Stack", string(st.label.stack), ...
+    "StackRan", string(st.label.stack_ran));
 jobInfo = struct("TSpan", tspan, "Method", method, "Dt", double(options.Dt), ...
     "Rtol", double(options.Rtol), "Atol", double(options.Atol), ...
     "Hmax", Inf, "MaxSteps", maxSteps, "Bounds", options.Bounds, ...
-    "FastMath", math == "fma");
+    "FastMath", math == "fma", "StackLayout", stack);
 if method == "iter"
     jobInfo.Hmax = [];
 elseif method == "dp5" && ~isempty(options.Hmax)
@@ -271,15 +298,18 @@ r = phasecont.EnsembleResult(struct( ...
     "Accepted", accepted, "Rejected", rejected, ...
     "Label", label, "Job", jobInfo));
 
-failed = ismember(r.Status, ["stepTooSmall" "maxSteps" "notFinite"]);
-if any(failed) && isMap
-    warning("phasecont:ensemble:memberStopped", ...
-        "%d of %d members stopped before n = %d (notFinite). See Status.", ...
-        nnz(failed), members, tspan(end));
-elseif any(failed)
-    warning("phasecont:ensemble:memberStopped", ...
-        "%d of %d members stopped before t = %.6g (stepTooSmall, maxSteps or notFinite). See Status.", ...
-        nnz(failed), members, tspan(end));
+failed = ismember(r.Status, ["stepTooSmall" "maxSteps" "notFinite" "recursionDepth"]);
+if any(failed)
+    why = strjoin(unique(r.Status(failed), "stable"), ", ");
+    if isMap
+        warning("phasecont:ensemble:memberStopped", ...
+            "%d of %d members stopped before n = %d (%s). See Status.", ...
+            nnz(failed), members, tspan(end), why);
+    else
+        warning("phasecont:ensemble:memberStopped", ...
+            "%d of %d members stopped before t = %.6g (%s). See Status.", ...
+            nnz(failed), members, tspan(end), why);
+    end
 end
 end
 

@@ -83,7 +83,13 @@ fn the_cpu_selftest_passes_in_both_precisions() {
         assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
         let tiers = v["tiers"].as_array().unwrap();
         let names: Vec<&str> = tiers.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        for want in ["analytic-rk4", "analytic-dp5", "iterate", "determinism"] {
+        for want in [
+            "analytic-rk4",
+            "analytic-dp5",
+            "iterate",
+            "determinism",
+            "recursion",
+        ] {
             assert!(names.contains(&want), "{names:?}");
         }
         for t in tiers {

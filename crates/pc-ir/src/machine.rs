@@ -20,6 +20,7 @@
 //! [`crate::eval::eval_err`]. A call adds no rounding of its own: a formal takes the bound of
 //! its argument, and a call takes the bound of the body output.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 
 use crate::dag::{Dag, NodeId, Op};
@@ -148,6 +149,42 @@ pub fn run(
     Ok(m.stats)
 }
 
+/// Runs unit `unit` once on the argument values `args`, from depth 0, and writes its outputs
+/// into `out[..nout]`: the entry point of the JIT helper for a call in an entry. At most `cap`
+/// calls are active at once, counting the call of `unit` itself. On an error every `out` slot
+/// is NaN.
+///
+/// The buffers of the machine are kept per thread, so a call costs the work of the unit and
+/// not the size of the DAG: the global store is cleared by the flags that the run set. A run
+/// that fails leaves no value, frame or task behind for the next one. A call from inside a
+/// run on the same thread finds the buffers taken and works on fresh ones.
+#[allow(clippy::too_many_arguments)]
+pub fn run_unit(
+    dag: &Dag,
+    unit: u32,
+    args: &[f64],
+    x: &[f64],
+    p: &[f64],
+    v: &[f64],
+    out: &mut [f64],
+    cap: usize,
+) -> Result<EvalStats, EvalError> {
+    out.fill(f64::NAN);
+    let bufs = BUFS
+        .try_with(Cell::take)
+        .ok()
+        .flatten()
+        .unwrap_or_else(Bufs::new);
+    let mut m = Machine::from_bufs(dag, x, p, v, cap, bufs)?;
+    let r = m.run_top(unit, args, out);
+    let stats = m.stats;
+    let bufs = m.into_bufs();
+    if !bufs.too_big() {
+        let _ = BUFS.try_with(|c| c.set(Some(bufs)));
+    }
+    r.map(|()| stats)
+}
+
 /// Whether an output reaches a call, or reads a formal (which only the machine reports as
 /// malformed).
 fn needs_machine(dag: &Dag, outputs: &[NodeId]) -> bool {
@@ -168,6 +205,9 @@ enum Task {
     CallEnter(NodeId),
     /// The body outputs of a call are stored: leave its frame.
     CallExit(NodeId),
+    /// The body outputs of the unit [`run_unit`] entered are stored: leave its frame and keep
+    /// the outputs in `scratch`.
+    TopExit,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -184,6 +224,10 @@ struct Store {
     err: Vec<f64>,
     set: Vec<u64>,
     want_err: bool,
+    /// With `track` set, the index of every `put`, so [`Store::reset_sparse`] clears only the
+    /// flags that were set.
+    track: bool,
+    dirty: Vec<usize>,
 }
 
 impl Store {
@@ -193,7 +237,29 @@ impl Store {
             err: Vec::new(),
             set: Vec::new(),
             want_err,
+            track: false,
+            dirty: Vec::new(),
         }
+    }
+
+    /// Clears the set flags that [`Store::put`] logged. Every entry is unset afterwards.
+    fn reset_sparse(&mut self) {
+        for &i in &self.dirty {
+            if let Some(w) = self.set.get_mut(i / 64) {
+                *w &= !(1u64 << (i % 64));
+            }
+        }
+        self.dirty.clear();
+    }
+
+    /// Resizes to `n` entries, all unset. The flags must be clear already.
+    fn fit(&mut self, n: usize) -> Result<(), EvalError> {
+        if self.val.len() > n {
+            self.truncate(n);
+        } else if self.val.len() < n {
+            self.extend(n - self.val.len())?;
+        }
+        Ok(())
     }
 
     fn len(&self) -> usize {
@@ -244,6 +310,10 @@ impl Store {
         if self.want_err {
             self.err[i] = e;
         }
+        if self.track && !self.is_set(i) {
+            grow(&mut self.dirty, 1)?;
+            self.dirty.push(i);
+        }
         self.set[i / 64] |= 1u64 << (i % 64);
         Ok(())
     }
@@ -253,6 +323,45 @@ impl Store {
 enum Loc {
     Global(usize),
     Slot(usize),
+}
+
+/// The stacks of a [`Machine`], kept per thread by [`run_unit`]. At rest the flags of `global`
+/// are all unset and every other buffer is empty.
+struct Bufs {
+    global: Store,
+    slots: Store,
+    frames: Vec<Frame>,
+    tasks: Vec<Task>,
+    outs: HashMap<NodeId, Vec<(f64, f64)>>,
+    scratch: Vec<(f64, f64)>,
+}
+
+impl Bufs {
+    fn new() -> Bufs {
+        let mut global = Store::new(false);
+        global.track = true;
+        Bufs {
+            global,
+            slots: Store::new(false),
+            frames: Vec::new(),
+            tasks: Vec::new(),
+            outs: HashMap::new(),
+            scratch: Vec::new(),
+        }
+    }
+
+    /// Whether a run left so much capacity that keeping it would pin memory for the life of
+    /// the thread (a recursion that went hundreds of thousands of calls deep).
+    fn too_big(&self) -> bool {
+        self.frames.capacity() > 1 << 16
+            || self.tasks.capacity() > 1 << 18
+            || self.slots.val.capacity() > 1 << 20
+    }
+}
+
+thread_local! {
+    /// The buffers of the last [`run_unit`] on this thread, taken out while a run uses them.
+    static BUFS: Cell<Option<Bufs>> = const { Cell::new(None) };
 }
 
 struct Machine<'a> {
@@ -298,6 +407,72 @@ impl<'a> Machine<'a> {
             scratch: Vec::new(),
             stats: EvalStats::default(),
         })
+    }
+
+    /// A machine over the buffers `b`, with the global store sized to `dag`. Bounds are not
+    /// kept.
+    fn from_bufs(
+        dag: &'a Dag,
+        x: &'a [f64],
+        p: &'a [f64],
+        v: &'a [f64],
+        cap: usize,
+        mut b: Bufs,
+    ) -> Result<Machine<'a>, EvalError> {
+        b.global.fit(dag.len())?;
+        Ok(Machine {
+            dag,
+            x,
+            p,
+            v,
+            cap,
+            want_err: false,
+            global: b.global,
+            slots: b.slots,
+            frames: b.frames,
+            tasks: b.tasks,
+            outs: b.outs,
+            scratch: b.scratch,
+            stats: EvalStats::default(),
+        })
+    }
+
+    /// Clears the machine, whatever state a run left it in, and hands back its buffers.
+    fn into_bufs(mut self) -> Bufs {
+        self.global.reset_sparse();
+        self.slots.truncate(0);
+        self.frames.clear();
+        self.tasks.clear();
+        self.outs.clear();
+        self.scratch.clear();
+        Bufs {
+            global: self.global,
+            slots: self.slots,
+            frames: self.frames,
+            tasks: self.tasks,
+            outs: self.outs,
+            scratch: self.scratch,
+        }
+    }
+
+    /// Enters unit `unit` with the formals `args`, runs it and copies its outputs to `out`.
+    fn run_top(&mut self, unit: u32, args: &[f64], out: &mut [f64]) -> Result<(), EvalError> {
+        self.scratch.clear();
+        grow(&mut self.scratch, args.len())?;
+        for &a in args {
+            self.scratch.push((a, f64::NAN));
+        }
+        self.enter_frame(unit, Task::TopExit)?;
+        self.drain()?;
+        if out.len() < self.scratch.len() {
+            return Err(malformed(
+                "the output slice is shorter than the unit's outputs",
+            ));
+        }
+        for (slot, &(val, _)) in out.iter_mut().zip(&self.scratch) {
+            *slot = val;
+        }
+        Ok(())
     }
 
     fn push(&mut self, t: Task) -> Result<(), EvalError> {
@@ -415,6 +590,9 @@ impl<'a> Machine<'a> {
             }
             Task::CallEnter(id) => self.enter(id)?,
             Task::CallExit(id) => self.exit(id)?,
+            Task::TopExit => {
+                self.leave()?;
+            }
         }
         Ok(())
     }
@@ -457,26 +635,33 @@ impl<'a> Machine<'a> {
         let Op::Call(u, list) = *dag.op(id) else {
             return Err(malformed("CallEnter on a node that is not a call"));
         };
+        let args = dag.args(list);
+        self.scratch.clear();
+        grow(&mut self.scratch, args.len())?;
+        for &a in args {
+            let ve = self.read(a)?;
+            self.scratch.push(ve);
+        }
+        self.enter_frame(u, Task::CallExit(id))
+    }
+
+    /// Pushes the frame of unit `u`, binds the formals to the values in `scratch` and queues
+    /// the body outputs, then `exit`. Fails when one more frame would pass the cap.
+    fn enter_frame(&mut self, u: u32, exit: Task) -> Result<(), EvalError> {
+        let dag = self.dag;
         let unit = dag
             .unit(u)
             .ok_or_else(|| malformed("a call of an unknown unit"))?;
         let outs = unit
             .outputs()
             .ok_or_else(|| EvalError::Malformed(format!("unit {} has no body", unit.name)))?;
-        let args = dag.args(list);
-        if args.len() != unit.arity as usize {
+        if self.scratch.len() != unit.arity as usize {
             return Err(EvalError::Malformed(format!(
                 "a call of {} with {} arguments, not {}",
                 unit.name,
-                args.len(),
+                self.scratch.len(),
                 unit.arity
             )));
-        }
-        self.scratch.clear();
-        grow(&mut self.scratch, args.len())?;
-        for &a in args {
-            let ve = self.read(a)?;
-            self.scratch.push(ve);
         }
         if self.frames.len() >= self.cap {
             return Err(EvalError::Depth {
@@ -496,14 +681,15 @@ impl<'a> Machine<'a> {
                 self.slots.put(base + s as usize, ve)?;
             }
         }
-        self.push(Task::CallExit(id))?;
+        self.push(exit)?;
         for &o in outs.iter().rev() {
             self.push(Task::Eval(o))?;
         }
         Ok(())
     }
 
-    fn exit(&mut self, id: NodeId) -> Result<(), EvalError> {
+    /// Reads the body outputs of the top frame into `scratch`, then pops the frame.
+    fn leave(&mut self) -> Result<(), EvalError> {
         let dag = self.dag;
         let f = *self
             .frames
@@ -522,6 +708,11 @@ impl<'a> Machine<'a> {
         }
         self.frames.pop();
         self.slots.truncate(f.base);
+        Ok(())
+    }
+
+    fn exit(&mut self, id: NodeId) -> Result<(), EvalError> {
+        self.leave()?;
         let first = *self
             .scratch
             .first()

@@ -12,6 +12,7 @@ mod ddelyap;
 mod ddezh;
 mod dllimports;
 mod ensemble;
+mod fpreset;
 mod gpu;
 mod ircmd;
 mod latexcmd;

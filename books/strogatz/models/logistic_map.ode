@@ -1,0 +1,5 @@
+# Logistic map
+par r=0.5
+init x=0
+x(t+1)=r*x*(1-x)
+done

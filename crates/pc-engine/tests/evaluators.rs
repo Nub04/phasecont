@@ -3,7 +3,7 @@
 mod common;
 
 use common::{load, ulp_dist};
-use pc_engine::{EngineError, Evaluator, build, build_allowing_t};
+use pc_engine::{EngineError, Evaluator, build, build_allowing_t, build_dde};
 use pc_ir::{EntryKind, Slot};
 
 /// Points per model: the declared state with the declared parameters, then two shifted
@@ -174,5 +174,206 @@ fn wrong_length_is_an_error() {
             m.eval(&EntryKind::F, &[1.0, 2.0], &[0.0, 0.0], &[], &mut out)
                 .is_err()
         );
+    }
+}
+
+/// SPEC 8af-5, stage 2: the JIT and the fallback run a recursive function and agree; an AOT
+/// library still refuses at build with `Model`, before any library is opened.
+#[test]
+fn recursive_model_runs_on_the_jit_and_the_fallback_but_not_on_aot() {
+    // Inline, not in tests/models: the recursion baseline golden lists every file there.
+    let mut map = pc_ode::SourceMap::new();
+    let top = map.add(
+        "pw.ode",
+        "par k=3\npw(x,n)=if(n<1)then(1)else(x*pw(x,n-1))\ninit x=1.5\nx'=pw(x,k)\ndone\n",
+    );
+    let l = pc_ode::load(top, &mut map, &mut pc_ode::MapLoader::new());
+    let (model, info) = (l.expanded, l.info);
+    match build(
+        &model,
+        &info,
+        Evaluator::Aot {
+            lib: std::path::PathBuf::from("no-such-library"),
+            tag: 0,
+        },
+    ) {
+        Err(EngineError::Model(m)) => assert!(m.contains("pw"), "{m}"),
+        Err(e) => panic!("{e:?}"),
+        Ok(_) => panic!("an AOT build of a recursive model must be refused"),
+    }
+    for which in [Evaluator::Jit, Evaluator::Fallback] {
+        let mut ev = build(&model, &info, which).expect("builds");
+        let mut out = [f64::NAN];
+        ev.eval(&EntryKind::F, &[1.5], &[3.0, 0.0], &[], &mut out)
+            .expect("evaluates");
+        assert_eq!(out[0], 3.375);
+        let mut j = [f64::NAN];
+        ev.eval(&EntryKind::JacU, &[1.5], &[3.0, 0.0], &[], &mut j)
+            .expect("evaluates");
+        assert_eq!(j[0], 6.75);
+    }
+}
+
+/// Builds an inline model on the fallback evaluator, which runs the interpreter.
+fn fallback_of(src: &str) -> Box<dyn pc_engine::ModelEval> {
+    let mut map = pc_ode::SourceMap::new();
+    let top = map.add("t.ode", src);
+    let l = pc_ode::load(top, &mut map, &mut pc_ode::MapLoader::new());
+    build(&l.expanded, &l.info, Evaluator::Fallback).expect("fallback")
+}
+
+/// SPEC 8af-5: `pw(x, n)` gives x^n, a JacU of n x^(n-1) and a second derivative of
+/// n(n-1) x^(n-2) to 1 ulp on the interpreter too, not only on the DAG evaluator.
+#[test]
+fn interpreter_gives_pw_and_its_derivatives_to_1_ulp() {
+    let mut fb =
+        fallback_of("par k=3\npw(x,n)=if(n<1)then(1)else(x*pw(x,n-1))\nx'=pw(x,k)\ndone\n");
+    for x in [1.5f64, 0.5] {
+        for n in 0..=30i32 {
+            let nf = f64::from(n);
+            let p = [nf, 0.0];
+            let mut f = [f64::NAN];
+            let mut j = [f64::NAN];
+            let mut d = [f64::NAN];
+            fb.eval(&EntryKind::F, &[x], &p, &[], &mut f).unwrap();
+            fb.eval(&EntryKind::JacU, &[x], &p, &[], &mut j).unwrap();
+            fb.eval(
+                &EntryKind::Dir(vec![Slot::U, Slot::U]),
+                &[x],
+                &p,
+                &[1.0, 1.0],
+                &mut d,
+            )
+            .unwrap();
+            // x = 1.5 and 0.5 make every power, and so every closed form below, exact.
+            let w0 = x.powi(n);
+            let w1 = if n >= 1 { nf * x.powi(n - 1) } else { 0.0 };
+            let w2 = if n >= 2 {
+                nf * (nf - 1.0) * x.powi(n - 2)
+            } else {
+                0.0
+            };
+            for (what, g, w) in [("F", f[0], w0), ("JacU", j[0], w1), ("Dir", d[0], w2)] {
+                assert!(
+                    g == w || ulp_dist(g, w) <= 1,
+                    "{what} at x={x} n={n}: {g:?} vs {w:?}"
+                );
+            }
+        }
+    }
+}
+
+/// SPEC 8af-5: on the interpreter, `sum(999999)` runs 1,000,000 active calls and gives
+/// n(n+1)/2, and `sum(1000000)` is the cap error, not a NaN.
+#[test]
+fn interpreter_reaches_the_cap_and_one_more_fails() {
+    // The interpreter keeps its frames on the heap, so a small native stack is enough.
+    std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(|| {
+            let mut fb =
+                fallback_of("par k=3\nsum(n)=if(n<1)then(0)else(n+sum(n-1))\nx'=sum(k)\ndone\n");
+            let mut out = [f64::NAN];
+            fb.eval(&EntryKind::F, &[0.0], &[999_999.0, 0.0], &[], &mut out)
+                .expect("1,000,000 active calls");
+            assert_eq!(out[0], 999_999.0 * 1_000_000.0 / 2.0);
+            match fb.eval(&EntryKind::F, &[0.0], &[1_000_000.0, 0.0], &[], &mut out) {
+                Err(EngineError::CallLimit(m)) => {
+                    assert!(m.contains("sum") && m.contains("1000000"), "{m}")
+                }
+                other => panic!("{other:?}"),
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+/// Builds an inline model on the JIT.
+fn jit_of(src: &str) -> Box<dyn pc_engine::ModelEval> {
+    let mut map = pc_ode::SourceMap::new();
+    let top = map.add("t.ode", src);
+    let l = pc_ode::load(top, &mut map, &mut pc_ode::MapLoader::new());
+    build(&l.expanded, &l.info, Evaluator::Jit).expect("jit")
+}
+
+/// SPEC 8af-5, stage 2: on the JIT, `sum(999999)` runs 1,000,000 active calls, and
+/// `sum(1000000)` is the cap error with the function and the cap in its text, not a NaN. The
+/// next call on the same evaluator runs again, so the error does not stick.
+#[test]
+fn jit_reaches_the_cap_and_one_more_fails() {
+    std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(|| {
+            let mut ev =
+                jit_of("par k=3\nsum(n)=if(n<1)then(0)else(n+sum(n-1))\nx'=sum(k)\ndone\n");
+            let mut out = [f64::NAN];
+            ev.eval(&EntryKind::F, &[0.0], &[999_999.0, 0.0], &[], &mut out)
+                .expect("1,000,000 active calls");
+            assert_eq!(out[0], 999_999.0 * 1_000_000.0 / 2.0);
+            match ev.eval(&EntryKind::F, &[0.0], &[1_000_000.0, 0.0], &[], &mut out) {
+                Err(EngineError::CallLimit(m)) => {
+                    assert!(m.contains("sum") && m.contains("1000000"), "{m}")
+                }
+                other => panic!("{other:?}"),
+            }
+            ev.eval(&EntryKind::F, &[0.0], &[10.0, 0.0], &[], &mut out)
+                .expect("the error does not stick");
+            assert_eq!(out[0], 55.0);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+/// SPEC 8af-5, stage 2, delay in a recursive body: `build_dde` runs the model on the JIT and on
+/// the fallback evaluator and the two agree to 0 ulp. The parameters are the declared `k`, the
+/// hidden slot of `delay(x,1)`, then `t`.
+#[test]
+fn delay_in_a_recursive_body_runs_on_the_jit_and_agrees_with_the_fallback() {
+    let src = "par k=3\nf(n)=if(n<1)then(1)else(delay(x,1)*f(n-1))\nx'=f(k)\ndone\n";
+    let mut map = pc_ode::SourceMap::new();
+    let top = map.add("dde_rec.ode", src);
+    let l = pc_ode::load(top, &mut map, &mut pc_ode::MapLoader::new());
+    let mut jit = build_dde(&l.expanded, &l.info, Evaluator::Jit).expect("jit");
+    let mut fb = build_dde(&l.expanded, &l.info, Evaluator::Fallback).expect("fallback");
+    assert_eq!(jit.n_user_params, 1);
+    assert_eq!(jit.delays.len(), 1);
+    let kinds = [
+        EntryKind::F,
+        EntryKind::JacU,
+        EntryKind::JacP,
+        EntryKind::Dir(vec![Slot::U, Slot::U]),
+        EntryKind::Dir(vec![Slot::U, Slot::P]),
+    ];
+    for (x, k, d) in [(0.7f64, 3.0, 1.5), (-0.4, 2.0, 0.9), (1.1, 0.0, 2.0)] {
+        let p = [k, d, 0.0];
+        for kind in &kinds {
+            let n_p = jit.eval.n_p();
+            assert_eq!(n_p, 2);
+            let v: Vec<f64> = match kind {
+                EntryKind::Dir(slots) => slots
+                    .iter()
+                    .flat_map(|s| vec![1.0; s.len(1, n_p)])
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let out_len = match kind {
+                EntryKind::JacP => n_p,
+                _ => 1,
+            };
+            let mut a = vec![f64::NAN; out_len];
+            let mut b = vec![f64::NAN; out_len];
+            jit.eval.eval(kind, &[x], &p, &v, &mut a).expect("jit eval");
+            fb.eval
+                .eval(kind, &[x], &p, &v, &mut b)
+                .expect("fallback eval");
+            for (u, w) in a.iter().zip(&b) {
+                assert_eq!(ulp_dist(*u, *w), 0, "{kind:?} x={x} k={k}: {u:e} vs {w:e}");
+            }
+        }
+        let mut f = [f64::NAN];
+        jit.eval.eval(&EntryKind::F, &[x], &p, &[], &mut f).unwrap();
+        assert_eq!(f[0], d.powi(k as i32), "x={x} k={k}");
     }
 }

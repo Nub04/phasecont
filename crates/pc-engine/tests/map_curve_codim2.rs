@@ -719,3 +719,27 @@ fn test6_ns4() {
         }),
     });
 }
+
+/// SPEC section 8x ruling (e): the CH test counts a sign change only if the larger of its two
+/// end values is at least `CH_BRACKET_FLOOR`, and the floor touches no other test.
+#[test]
+fn the_ch_bracket_floor_refuses_only_small_ch_brackets() {
+    use pc_engine::{CH_BRACKET_FLOOR, MapNsProblem, Problem};
+    let mut m = model("map_ns4", &Evaluator::Jit);
+    let setup = CurveSetup::new(
+        [0, 2],
+        vec![0.0, -0.4, 1.1, 0.95, 1.6, 0.9, 0.3],
+        vec![0.0; 4],
+    );
+    let p = MapNsProblem::new(m.as_mut(), &setup).unwrap();
+    let f = CH_BRACKET_FLOOR;
+    assert_eq!(f, 1e-8);
+    assert!(!p.crossing_ok(NS_CH, -0.1 * f, 0.5 * f));
+    assert!(!p.crossing_ok(NS_CH, 0.5 * f, -0.1 * f));
+    assert!(p.crossing_ok(NS_CH, -0.1 * f, f));
+    assert!(p.crossing_ok(NS_CH, -f, 0.1 * f));
+    assert!(p.crossing_ok(NS_CH, -0.1 * f, 2.0 * f));
+    for i in [NS_R1, NS_R2, NS_R3, NS_R4, NS_LPNS, NS_PDNS, NS_NSNS] {
+        assert!(p.crossing_ok(i, -1e-12, 1e-12), "test {i}");
+    }
+}

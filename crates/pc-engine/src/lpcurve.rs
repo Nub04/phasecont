@@ -24,7 +24,7 @@ use crate::codim2::{
     BT_NORMALIZATION, CUSP_NORMALIZATION, bt_coefficients, cusp_coefficient, without_zero,
 };
 use crate::curve2::{CurveSetup, Model2, dot, norm, start_tangent};
-use crate::error::EngineError;
+use crate::error::{EngineError, keep_call_limit};
 use crate::model::ModelEval;
 use crate::normal::{store_zero_hopf, zero_hopf_at};
 use crate::palc::run_branch;
@@ -73,8 +73,9 @@ impl<'a> LpCurveProblem<'a> {
     }
 
     /// Adds the normal form coefficients to the codim-2 points of a finished run. A point
-    /// whose coefficient cannot be computed keeps `coefficient = None`.
-    fn annotate(&mut self, branch: &mut Branch) {
+    /// whose coefficient cannot be computed keeps `coefficient = None`. A recursion cap error
+    /// is returned instead (SPEC 8af-5); the points annotated before it keep their values.
+    fn annotate(&mut self, branch: &mut Branch) -> Result<(), EngineError> {
         let n = self.m.n;
         for sp in branch.specials.iter_mut() {
             if !matches!(sp.label.as_str(), "CP" | "BT" | "ZH") {
@@ -85,7 +86,8 @@ impl<'a> LpCurveProblem<'a> {
             self.m.set(&x);
             match sp.label.as_str() {
                 "CP" => {
-                    if let Ok(c) = cusp_coefficient(&mut self.m, &x[..n]) {
+                    let c = cusp_coefficient(&mut self.m, &x[..n]).map(Some);
+                    if let Some(c) = keep_call_limit(c, |_| None)? {
                         sp.extras.coefficient = Some(c);
                         sp.extras.normalization = Some(CUSP_NORMALIZATION.to_string());
                     }
@@ -96,13 +98,15 @@ impl<'a> LpCurveProblem<'a> {
                         && let Some((i, _)) = critical_pair(&rest)
                     {
                         let omega = rest[i].1.abs();
-                        if let Ok(z) = zero_hopf_at(&mut self.m.at(&x[..n]), omega) {
+                        let z = zero_hopf_at(&mut self.m.at(&x[..n]), omega).map(Some);
+                        if let Some(z) = keep_call_limit(z, |_| None)? {
                             store_zero_hopf(&mut sp.extras, &z, omega);
                         }
                     }
                 }
                 _ => {
-                    if let Ok((a, b)) = bt_coefficients(&mut self.m, &x[..n]) {
+                    let ab = bt_coefficients(&mut self.m, &x[..n]).map(Some);
+                    if let Some((a, b)) = keep_call_limit(ab, |_| None)? {
                         sp.extras.coefficient = Some(a);
                         sp.extras.coefficient2 = Some(b);
                         sp.extras.normalization = Some(BT_NORMALIZATION.to_string());
@@ -110,6 +114,7 @@ impl<'a> LpCurveProblem<'a> {
                 }
             }
         }
+        Ok(())
     }
 
     /// `(q, g)` and `(w, h)` of the bordered systems at `a`.
@@ -266,6 +271,9 @@ pub fn continue_lp_curve(
         cancel,
         on_point,
     )?;
-    problem.annotate(&mut branch);
+    // A recursion cap error in an annotation ends the run with that error and keeps the branch.
+    if let Err(e) = problem.annotate(&mut branch) {
+        branch.end_with_error(e);
+    }
     Ok(branch)
 }

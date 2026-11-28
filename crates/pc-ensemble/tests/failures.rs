@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use common::*;
+use pc_ensemble::job::TOLERANCE_FACTOR;
+use pc_ensemble::real::Real;
 use pc_ensemble::{EnsembleError, Method, Output, Params, Precision, Status, run_cpu};
 
 fn bad(e: EnsembleError) -> String {
@@ -160,6 +162,25 @@ fn a_tolerance_below_what_the_precision_resolves_is_an_error() {
     ));
     assert!(tight(1e-5, Precision::Single).is_ok());
     assert!(tight(1e-13, Precision::Double).is_ok());
+
+    // SPEC section 11: the bound is 13 times the unit roundoff of the precision. The bound
+    // itself runs and the next double below it is refused.
+    for (precision, uround) in [
+        (Precision::Single, <f32 as Real>::UROUND_F64),
+        (Precision::Double, <f64 as Real>::UROUND_F64),
+    ] {
+        let least = TOLERANCE_FACTOR * uround;
+        assert_eq!(TOLERANCE_FACTOR, 13.0);
+        assert!(tight(least, precision).is_ok(), "{precision:?}");
+        let below = f64::from_bits(least.to_bits() - 1);
+        assert!(
+            matches!(
+                tight(below, precision),
+                Err(EnsembleError::ToleranceTooTight(_))
+            ),
+            "{precision:?}"
+        );
+    }
 }
 
 #[test]

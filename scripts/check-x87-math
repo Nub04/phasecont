@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Fail when a windows-gnu binary defines or imports MinGW-w64's fma or fmaf,
+# or a math function whose MinGW-w64 msvcrt version uses x87 precision
+# control, so its bits depend on the thread that calls it (see "x87
+# precision on windows-gnu" in docs/STATUS.md). The source routes the x87
+# functions through pc_ir::hostmath, and clippy.toml bans the std methods
+# and mul_add, but a lint cannot see a libcall that
+# the compiler emits on its own (powi with a runtime exponent is one). This
+# scan of the linked binary is the check that counts.
+#
+# Usage:
+#   scripts/check-x87-math FILE...
+#
+# Needs x86_64-w64-mingw32-nm and x86_64-w64-mingw32-objdump (binutils).
+set -euo pipefail
+
+if [[ $# -eq 0 ]]; then
+  echo "usage: scripts/check-x87-math FILE..." >&2
+  exit 2
+fi
+
+NM=${NM:-x86_64-w64-mingw32-nm}
+OBJDUMP=${OBJDUMP:-x86_64-w64-mingw32-objdump}
+# The f64 functions that gave different bits on the main thread and on a
+# worker thread in the 2026-11-25 probe (1e6 inputs each).
+x87_names='pow|exp|exp2|expm1|log1p|atanh|asinh|acosh'
+# MinGW-w64's fmaf (spike S4) and fma are not correctly rounded: fma gave
+# other bits than vfmadd on 2,241,553 of 10,000,000 inputs (2026-11-27). So a
+# fused multiply-add must be a vfmadd instruction, never a call
+# (pc_ir::aorpow).
+names="$x87_names|fma|fmaf"
+
+for tool in "$NM" "$OBJDUMP"; do
+  if ! command -v "$tool" >/dev/null; then
+    echo "check-x87-math: $tool not found" >&2
+    exit 2
+  fi
+done
+
+status=0
+for f in "$@"; do
+  if [[ ! -f "$f" ]]; then
+    echo "check-x87-math: no such file: $f" >&2
+    status=1
+    continue
+  fi
+  if ! syms="$("$NM" "$f" 2>&1)"; then
+    echo "check-x87-math: $NM failed on $f: $syms" >&2
+    status=1
+    continue
+  fi
+  # A stripped binary has no symbol table, and an empty scan would pass
+  # for the wrong reason. libm and the CRT always add more than this.
+  count="$(printf '%s\n' "$syms" | grep -c . || true)"
+  if (( count < 100 )); then
+    echo "check-x87-math: $f has $count symbols; the scan needs the symbol table" >&2
+    status=1
+    continue
+  fi
+  defined="$(printf '%s\n' "$syms" | grep -E " [TtIi] (__imp_)?($names)$" || true)"
+  if ! headers="$("$OBJDUMP" -p "$f" 2>&1)"; then
+    echo "check-x87-math: $OBJDUMP failed on $f: $headers" >&2
+    status=1
+    continue
+  fi
+  # Import table rows read "vma  Ordinal  Hint  Member-Name", for example
+  # "00fb7e70  <none>  03f4  acos", with the hint in hex.
+  imported="$(printf '%s\n' "$headers" | grep -E "^[[:space:]]+[0-9a-f]+[[:space:]]+(<none>|[0-9a-f]+)[[:space:]]+[0-9a-f]+[[:space:]]+($names)$" || true)"
+  if [[ -n "$defined$imported" ]]; then
+    echo "check-x87-math: $f links x87 math functions or fma:" >&2
+    [[ -n "$defined" ]] && echo "$defined" >&2
+    [[ -n "$imported" ]] && echo "imported: $imported" >&2
+    status=1
+  else
+    echo "check-x87-math: $f is clean ($count symbols scanned)"
+  fi
+done
+exit "$status"

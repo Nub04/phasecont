@@ -14,7 +14,7 @@ mod cc_check;
 use pc_codegen::kernel::{Dialect, Scalar};
 use pc_ensemble::abi::pack_in;
 use pc_ensemble::job::{Job, Label, Method, Precision, validate};
-use pc_ensemble::kernel::{Integrator, Layout, kernel_source_in};
+use pc_ensemble::kernel::{Integrator, Layout, kernel_source_with, stack_len};
 use pc_ensemble::real::Real;
 use pc_ensemble::{EnsembleResult, Tape};
 
@@ -133,6 +133,41 @@ type Ens<T> = unsafe extern "C" fn(
     u64,
 );
 
+/// The entry of a tape with calls, which takes the members' stacks last.
+type EnsStk<T> = unsafe extern "C" fn(
+    *const T,
+    *const u64,
+    *const T,
+    *const T,
+    *mut T,
+    *mut T,
+    *mut u32,
+    u64,
+    u64,
+    u32,
+    u32,
+    u64,
+    *mut T,
+);
+
+/// The entry of the `auto` variant, which also writes two depth words per member last.
+type EnsDep<T> = unsafe extern "C" fn(
+    *const T,
+    *const u64,
+    *const T,
+    *const T,
+    *mut T,
+    *mut T,
+    *mut u32,
+    u64,
+    u64,
+    u32,
+    u32,
+    u64,
+    *mut T,
+    *mut u32,
+);
+
 impl Shim {
     /// Builds the kernel for the model, method and precision of `job`. `None` after a loud
     /// skip when there is no C compiler.
@@ -160,8 +195,8 @@ impl Shim {
             Precision::Single => Scalar::F32,
             Precision::Double => Scalar::F64,
         };
-        let source =
-            kernel_source_in(&tape, integrator, scalar, Dialect::C, layout).expect("kernel source");
+        let source = kernel_source_with(&tape, integrator, scalar, Dialect::C, layout, job.stack)
+            .expect("kernel source");
         let dir = Dir::new(tag);
         let src = dir.0.join("k.c");
         let so = dir.0.join("k.so");
@@ -211,10 +246,75 @@ impl Shim {
         };
         // SAFETY: `tbl` outlives the run and `pc_shim_init` copies it.
         unsafe { init(&tbl) };
+        // A tape with calls gets one stack per member, NaN-filled so a read of a slot the
+        // kernel never wrote shows up in the bits; it is kept across launches like a device
+        // buffer.
+        let len = stack_len(&tape);
+        let mut stk = vec![T::NAN; job.stack.buffer_reals(p.members, len)];
+        // SAFETY: a tape with calls defines `pc_ens` with the stack argument last.
+        let auto = job.stack == pc_ensemble::StackLayout::Auto;
+        let ens_stk: Option<Symbol<EnsStk<T>>> =
+            (len > 0 && !auto).then(|| unsafe { self.lib.get(b"pc_ens").expect("pc_ens") });
+        // SAFETY: the `auto` text of a tape with calls takes the depth words after the stack.
+        let ens_dep: Option<Symbol<EnsDep<T>>> =
+            (len > 0 && auto).then(|| unsafe { self.lib.get(b"pc_ens").expect("pc_ens") });
+        // Poisoned so a member whose words the kernel did not write shows up.
+        let mut dep = vec![u32::MAX - 1; 2 * p.members];
         let mut launches = 0;
         while !p.done() {
             launches += 1;
             assert!(launches <= LAUNCH_LIMIT, "the kernel never finished");
+            if let Some(e) = &ens_stk {
+                // SAFETY: as below, and `stk` holds `stack_len` reals per member.
+                unsafe {
+                    e(
+                        p.rc.as_ptr(),
+                        p.segm.as_ptr(),
+                        p.x0.as_ptr(),
+                        p.par.as_ptr(),
+                        p.work.as_mut_ptr(),
+                        p.out.as_mut_ptr(),
+                        p.ctl.as_mut_ptr(),
+                        p.members as u64,
+                        steps,
+                        p.max_steps,
+                        p.ns as u32,
+                        p.pstride as u64,
+                        stk.as_mut_ptr(),
+                    );
+                }
+                continue;
+            }
+            if let Some(e) = &ens_dep {
+                // SAFETY: as above, and `dep` holds two words per member.
+                unsafe {
+                    e(
+                        p.rc.as_ptr(),
+                        p.segm.as_ptr(),
+                        p.x0.as_ptr(),
+                        p.par.as_ptr(),
+                        p.work.as_mut_ptr(),
+                        p.out.as_mut_ptr(),
+                        p.ctl.as_mut_ptr(),
+                        p.members as u64,
+                        steps,
+                        p.max_steps,
+                        p.ns as u32,
+                        p.pstride as u64,
+                        stk.as_mut_ptr(),
+                        dep.as_mut_ptr(),
+                    );
+                }
+                // A member that ran in the launch wrote the peak and the calls of its last
+                // right-hand side; a chain or a tree enters at least as many frames as it
+                // has active at once.
+                for m in 0..p.members {
+                    let (peak, calls) = (dep[2 * m], dep[2 * m + 1]);
+                    assert_ne!(peak, u32::MAX - 1, "member {m} wrote no depth");
+                    assert!(peak <= calls, "member {m}: peak {peak}, calls {calls}");
+                }
+                continue;
+            }
             // SAFETY: every buffer is sized by `pack` for `members` members and `ns` samples.
             unsafe {
                 ens(
@@ -239,6 +339,9 @@ impl Shim {
             driver: "cc".into(),
             precision: job.precision,
             math: job.math,
+            stack: job.stack,
+            stack_ran: pc_ensemble::StackRan::of(job.stack),
+            sorted: false,
         };
         p.finish(label).expect("finish")
     }
